@@ -8,3 +8,5 @@
 Read the design docs before any planning phase. Update the docs after any design change, and update CLAUDE.md if a document is added.
 
 If anything is unclear, ALWAYS ask the user to clarify.
+
+design.md follows: @docs/design.md

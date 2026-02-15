@@ -129,12 +129,12 @@ impl MpvPlayer {
     pub async fn handle_crash(&mut self) -> Result<mpsc::Receiver<PlayerEvent>, PlayerError> {
         let now = Instant::now();
 
-        if let Some(last) = self.last_crash {
-            if now.duration_since(last).as_secs() < 30 {
-                return Err(PlayerError::SpawnFailed(
-                    "second crash within 30 seconds".to_string(),
-                ));
-            }
+        if let Some(last) = self.last_crash
+            && now.duration_since(last).as_secs() < 30
+        {
+            return Err(PlayerError::SpawnFailed(
+                "second crash within 30 seconds".to_string(),
+            ));
         }
 
         self.last_crash = Some(now);

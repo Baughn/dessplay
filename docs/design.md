@@ -304,7 +304,9 @@ Chat messages include:
 - Timestamp
 - Sequence number (per-user)
 
-Reliability approach: Include last N messages from each user in every state broadcast. Recipients deduplicate by (user, sequence).
+Reliability: Chat uses the per-user append log mechanism (see `network-design.md`).
+New messages are eager-pushed via datagrams; state vectors in periodic snapshots
+detect gaps; missing entries are recovered via reliable-stream gap fill.
 
 ---
 
@@ -576,7 +578,7 @@ dessplay/
 
 - **TUI**: `ratatui`, `crossterm`
 - **Async**: `tokio`
-- **Network**: `tokio`, QUIC library (TBD)
+- **Network**: `tokio`, `quinn` (QUIC)
 - **Database**: `rusqlite`
 - **Serialization**: `serde`, `postcard`
 - **Player IPC**: Custom (mpv JSON-IPC, VLC Lua TCP)
@@ -602,8 +604,9 @@ case (small friend groups) but should be documented clearly.
 
 - **Identity**: Users are identified by self-chosen nicknames. There is no
   cryptographic identity — users trust each other not to impersonate.
-- **Confidentiality**: Traffic is not encrypted beyond the shared password.
-  Chat messages and filenames are visible to anyone on the network path.
+- **Confidentiality**: Peer-to-peer traffic is encrypted via QUIC's built-in
+  TLS 1.3. Rendezvous protocol messages are authenticated with HMAC but not
+  encrypted (they contain only addresses and room names, no sensitive content).
 - **Integrity**: No message authentication beyond HMAC. A peer with the
   password could send forged state updates.
 - **Availability**: Any peer can pause playback for everyone. This is by design.
@@ -611,14 +614,13 @@ case (small friend groups) but should be documented clearly.
 For v1, this is acceptable. Future improvements could include:
 - Session invite codes (short-lived tokens instead of shared password)
 - Per-user key pairs for identity and message authentication
-- DTLS or Noise protocol for encrypted transport
 
 ---
 
 ## Open Questions
 
 1. **Keyboard shortcuts**: Need to finalize keybindings
-2. **TURN implementation**: Use existing library or implement minimal version?
+2. ~~**TURN implementation**~~: Resolved — minimal custom implementation over the rendezvous server
 3. **Edit distance algorithm**: Levenshtein? Jaro-Winkler?
 4. **Hash parameters**: How many bytes from how many offsets?
 5. **Playlist compaction**: Design snapshot-based compaction for append logs (TODO — not needed for v1 but should be designed early)
