@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && INPUT=$(cat) && if [ \"$(echo \"$INPUT\" | jq -r '.stop_hook_active')\" = \"true\" ]; then exit 0; fi && cargo test 2>&1 || { echo 'cargo test failed' >&2; exit 2; }",
+            "timeout": 120,
+            "statusMessage": "Running cargo test..."
+          },
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && INPUT=$(cat) && if [ \"$(echo \"$INPUT\" | jq -r '.stop_hook_active')\" = \"true\" ]; then exit 0; fi && cargo clippy -- -D warnings 2>&1 || { echo 'cargo clippy found warnings' >&2; exit 2; }",
+            "timeout": 120,
+            "statusMessage": "Running cargo clippy..."
+          }
+        ]
+      }
+    ]
+  }
+}
