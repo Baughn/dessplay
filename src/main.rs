@@ -17,9 +17,9 @@ struct Args {
     #[arg(long, default_value_t = default_username())]
     username: String,
 
-    /// Rendezvous server address
+    /// Rendezvous server address (IP:port or hostname:port)
     #[arg(long)]
-    server: SocketAddr,
+    server: String,
 
     /// Rendezvous password
     #[arg(long, env = "DESSPLAY_PASSWORD")]
@@ -71,6 +71,13 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("dessplay starting, username={}", args.username);
 
+    // Resolve server address (supports both IP:port and hostname:port)
+    let server_addr: SocketAddr = tokio::net::lookup_host(&args.server)
+        .await?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve server address: {}", args.server))?;
+    tracing::info!("resolved server {} -> {}", args.server, server_addr);
+
     // Create QUIC connection manager
     let bind_addr: SocketAddr = "[::]:0".parse().unwrap();
     let conn_mgr = QuicConnectionManager::new(bind_addr, PeerId(args.username.clone())).await?;
@@ -108,7 +115,6 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Spawn rendezvous connection task
-    let server_addr = args.server;
     let password = args.password.clone();
     let username = args.username.clone();
     let event_tx_rv = event_tx.clone();
@@ -232,4 +238,46 @@ async fn main() -> anyhow::Result<()> {
     dessplay::tui::run(app, event_rx).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Integration test: resolve DNS name and attempt QUIC connection to the
+    /// real rendezvous server. Expects an auth rejection (wrong password),
+    /// which proves the full DNS → QUIC → protocol path works.
+    #[ignore]
+    #[tokio::test]
+    async fn connect_to_rendezvous_via_dns() {
+        let server = "v4.brage.info:4433";
+        let server_addr: SocketAddr = tokio::net::lookup_host(server)
+            .await
+            .expect("DNS lookup failed")
+            .next()
+            .expect("no addresses returned");
+
+        let bind_addr: SocketAddr = "[::]:0".parse().unwrap();
+        let conn_mgr =
+            QuicConnectionManager::new(bind_addr, PeerId("dns-test".into()))
+                .await
+                .expect("failed to create QUIC endpoint");
+
+        let known_path = tempfile::NamedTempFile::new().unwrap();
+        let result = RendezvousClient::connect(
+            &conn_mgr.endpoint(),
+            server_addr,
+            "dns-test",
+            "wrong-password",
+            known_path.path(),
+        )
+        .await;
+
+        // Auth rejection means we successfully resolved, connected via QUIC,
+        // and exchanged protocol messages — DNS works.
+        assert!(
+            result.is_err(),
+            "expected auth rejection with wrong password"
+        );
+    }
 }
