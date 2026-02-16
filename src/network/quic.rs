@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
-use super::{ConnectionError, ConnectionEvent, ConnectionManager, PeerId};
+use super::rendezvous::{decode_relay_header, encode_relay_header};
+use super::{ConnectionError, ConnectionEvent, ConnectionManager, ConnectionState, PeerId};
 
 /// Handshake message exchanged after QUIC connection establishment.
 #[derive(Serialize, Deserialize)]
@@ -33,9 +34,20 @@ pub struct QuicConnectionManager {
     reliable_tx: mpsc::UnboundedSender<(PeerId, Vec<u8>)>,
     event_tx: broadcast::Sender<ConnectionEvent>,
     accept_task: Mutex<Option<JoinHandle<()>>>,
+    relay: Mutex<Option<RelayState>>,
 }
 
 struct PeerState {
+    routing: PeerRouting,
+    _tasks: Vec<JoinHandle<()>>,
+}
+
+enum PeerRouting {
+    Direct(quinn::Connection),
+    Relayed,
+}
+
+struct RelayState {
     connection: quinn::Connection,
     _tasks: Vec<JoinHandle<()>>,
 }
@@ -79,6 +91,7 @@ impl QuicConnectionManager {
             reliable_tx,
             event_tx,
             accept_task: Mutex::new(Some(accept_task)),
+            relay: Mutex::new(None),
         })
     }
 
@@ -142,7 +155,7 @@ impl QuicConnectionManager {
             peers.insert(
                 peer_id.clone(),
                 PeerState {
-                    connection,
+                    routing: PeerRouting::Direct(connection),
                     _tasks: tasks,
                 },
             );
@@ -154,6 +167,93 @@ impl QuicConnectionManager {
 
         tracing::info!(local = %self.local_peer_id, remote = %peer_id, "connected to peer");
         Ok(peer_id)
+    }
+
+    /// The underlying quinn endpoint (for use by RendezvousClient).
+    pub fn endpoint(&self) -> &quinn::Endpoint {
+        &self.endpoint
+    }
+
+    /// Register a relay connection (from the rendezvous server).
+    ///
+    /// Spawns background tasks that read datagrams and uni streams from the
+    /// relay connection, decode the relay header, and inject them into the
+    /// regular datagram/reliable channels.
+    pub fn set_relay(&self, connection: quinn::Connection) {
+        let mut tasks = Vec::new();
+
+        // Relay datagram reader
+        tasks.push(tokio::spawn({
+            let conn = connection.clone();
+            let datagram_tx = self.datagram_tx.clone();
+            async move {
+                while let Ok(data) = conn.read_datagram().await {
+                    if let Some((peer_id, payload)) = decode_relay_header(&data) {
+                        let _ = datagram_tx.send((PeerId(peer_id), payload.to_vec()));
+                    }
+                }
+            }
+        }));
+
+        // Relay uni stream reader
+        tasks.push(tokio::spawn({
+            let conn = connection.clone();
+            let reliable_tx = self.reliable_tx.clone();
+            async move {
+                while let Ok(mut recv) = conn.accept_uni().await {
+                    let reliable_tx = reliable_tx.clone();
+                    tokio::spawn(async move {
+                        match read_stream_to_end(&mut recv).await {
+                            Ok(data) => {
+                                if let Some((peer_id, payload)) =
+                                    decode_relay_header(&data)
+                                {
+                                    let _ = reliable_tx
+                                        .send((PeerId(peer_id), payload.to_vec()));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!("relay stream read error: {e}");
+                            }
+                        }
+                    });
+                }
+            }
+        }));
+
+        let mut relay = self.relay.lock().unwrap();
+        // Abort old relay tasks if any
+        if let Some(old) = relay.take() {
+            for task in &old._tasks {
+                task.abort();
+            }
+        }
+        *relay = Some(RelayState {
+            connection,
+            _tasks: tasks,
+        });
+    }
+
+    /// Add a peer that can only be reached via the relay.
+    pub fn add_relayed_peer(&self, peer_id: PeerId) {
+        let mut peers = self.peers.write().unwrap();
+        if peers.contains_key(&peer_id) {
+            return; // already connected (maybe directly)
+        }
+        peers.insert(
+            peer_id.clone(),
+            PeerState {
+                routing: PeerRouting::Relayed,
+                _tasks: Vec::new(),
+            },
+        );
+        let _ = self
+            .event_tx
+            .send(ConnectionEvent::PeerConnected(peer_id.clone()));
+        let _ = self.event_tx.send(ConnectionEvent::ConnectionStateChanged {
+            peer: peer_id,
+            state: ConnectionState::Relayed,
+        });
     }
 
     /// Close the endpoint and all connections.
@@ -210,17 +310,34 @@ impl Drop for QuicConnectionManager {
 #[async_trait]
 impl ConnectionManager for QuicConnectionManager {
     async fn send_datagram(&self, peer: &PeerId, data: &[u8]) -> Result<(), ConnectionError> {
-        let connection = {
+        let routing = {
             let peers = self.peers.read().unwrap();
-            peers
+            let state = peers
                 .get(peer)
-                .ok_or_else(|| ConnectionError::PeerNotConnected(peer.clone()))?
-                .connection
-                .clone()
+                .ok_or_else(|| ConnectionError::PeerNotConnected(peer.clone()))?;
+            match &state.routing {
+                PeerRouting::Direct(conn) => PeerRouting::Direct(conn.clone()),
+                PeerRouting::Relayed => PeerRouting::Relayed,
+            }
         };
-        connection
-            .send_datagram(data.to_vec().into())
-            .map_err(|e| ConnectionError::Other(Box::new(e)))?;
+        match routing {
+            PeerRouting::Direct(connection) => {
+                connection
+                    .send_datagram(data.to_vec().into())
+                    .map_err(|e| ConnectionError::Other(Box::new(e)))?;
+            }
+            PeerRouting::Relayed => {
+                let relay = self.relay.lock().unwrap();
+                let relay = relay
+                    .as_ref()
+                    .ok_or_else(|| ConnectionError::Other("no relay connection".into()))?;
+                let relayed = encode_relay_header(&peer.0, data);
+                relay
+                    .connection
+                    .send_datagram(relayed.into())
+                    .map_err(|e| ConnectionError::Other(Box::new(e)))?;
+            }
+        }
         Ok(())
     }
 
@@ -230,19 +347,34 @@ impl ConnectionManager for QuicConnectionManager {
     }
 
     async fn send_reliable(&self, peer: &PeerId, data: &[u8]) -> Result<(), ConnectionError> {
-        let connection = {
+        let is_relayed = {
             let peers = self.peers.read().unwrap();
-            peers
+            let state = peers
                 .get(peer)
-                .ok_or_else(|| ConnectionError::PeerNotConnected(peer.clone()))?
-                .connection
-                .clone()
+                .ok_or_else(|| ConnectionError::PeerNotConnected(peer.clone()))?;
+            matches!(&state.routing, PeerRouting::Relayed)
+        };
+        let (connection, payload) = if is_relayed {
+            let relay = self.relay.lock().unwrap();
+            let relay = relay
+                .as_ref()
+                .ok_or_else(|| ConnectionError::Other("no relay connection".into()))?;
+            (relay.connection.clone(), encode_relay_header(&peer.0, data))
+        } else {
+            let peers = self.peers.read().unwrap();
+            let state = peers
+                .get(peer)
+                .ok_or_else(|| ConnectionError::PeerNotConnected(peer.clone()))?;
+            match &state.routing {
+                PeerRouting::Direct(conn) => (conn.clone(), data.to_vec()),
+                PeerRouting::Relayed => unreachable!(),
+            }
         };
         let mut send = connection
             .open_uni()
             .await
             .map_err(|e| ConnectionError::Other(Box::new(e)))?;
-        send.write_all(data)
+        send.write_all(&payload)
             .await
             .map_err(|e| ConnectionError::Other(Box::new(e)))?;
         send.finish()
@@ -349,7 +481,7 @@ async fn accept_loop(
                 peers_guard.insert(
                     peer_id.clone(),
                     PeerState {
-                        connection,
+                        routing: PeerRouting::Direct(connection),
                         _tasks: tasks,
                     },
                 );

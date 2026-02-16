@@ -1,5 +1,6 @@
 pub mod clock;
 pub mod quic;
+pub mod rendezvous;
 pub mod wire;
 
 use async_trait::async_trait;

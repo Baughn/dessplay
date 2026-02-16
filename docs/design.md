@@ -31,10 +31,10 @@ This section describes the full workflow from a user's perspective.
 
 ### Connecting to Friends
 
-1. DessPlay automatically connects to the rendezvous server
-2. The rendezvous server provides peer addresses
-3. Direct peer-to-peer connections are established (QUIC)
-4. If direct connection fails, traffic relays through TURN
+1. DessPlay connects to the rendezvous server (QUIC, TOFU certificate trust)
+2. The rendezvous server provides peer addresses and the client's observed address
+3. Direct peer-to-peer QUIC connections are established to discovered peers
+4. If direct connection fails, traffic relays through the rendezvous server
 5. Connected users appear in the **Users pane** (top-right area)
 6. Connection happens automatically on launch; no manual action needed
 
@@ -242,14 +242,18 @@ Access settings screen to configure:
 
 ### Rendezvous Server
 
-Located on VPS. Responsibilities:
+Located on VPS. Separate binary (`dessplay-rendezvous`). Responsibilities:
 
-1. **Peer registration**: Clients report their presence
+1. **Peer registration**: Clients report their presence via QUIC control stream
 2. **Peer list distribution**: Clients receive list of other peers
-3. **STUN**: Tell clients their public IP:port
-4. **TURN relay**: Fallback when direct connection fails
+3. **STUN**: Tell clients their observed IP:port in Register response
+4. **TURN relay**: Forward datagrams and streams between clients who cannot connect directly
 
-**Authentication**: Password entered on first client launch, then stored in database
+**Authentication**: Password entered on first client launch, sent in plaintext
+over TLS-encrypted QUIC. Server configured via `--password-file` or env var.
+
+**TLS**: TOFU (Trust On First Use) — server generates a persistent self-signed
+cert; clients store and verify the fingerprint on subsequent connections.
 
 The rendezvous server does NOT participate in state sync. Once peers are connected, they communicate directly.
 

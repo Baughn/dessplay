@@ -1,6 +1,6 @@
 # DessPlay Network Protocol Design
 
-Last updated: 2026-02-15
+Last updated: 2026-02-16
 
 Sub-design for the network module. See `docs/design.md` for overall architecture.
 
@@ -18,7 +18,7 @@ Sub-design for the network module. See `docs/design.md` for overall architecture
 │  (NTP-like shared timestamps)                │
 ├─────────────────────────────────────────────┤
 │  Connection Manager                          │
-│  (QUIC via quinn, rendezvous, hole-punching) │
+│  (QUIC via quinn, rendezvous, TURN relay)    │
 └─────────────────────────────────────────────┘
 ```
 
@@ -34,8 +34,8 @@ channels:
 - **Reliable streams** — ordered, guaranteed delivery (for gap fill responses)
 - Peer discovery notifications
 
-Handles internally: rendezvous server communication, hole-punching,
-TURN relay fallback, per-peer connection state machine.
+Handles internally: rendezvous server communication, TURN relay fallback,
+per-peer connection state machine.
 
 ### Transport: QUIC via quinn
 
@@ -59,16 +59,41 @@ Located on VPS. Separate binary (`dessplay-rendezvous`).
 Responsibilities:
 1. **Peer registration** — clients announce themselves
 2. **Peer list** — clients learn about other peers in their room
-3. **STUN** — tell clients their public IP:port
+3. **STUN** — tell clients their public IP:port (observed address in Register response)
 4. **TURN relay** — fallback when direct QUIC connection fails
 
-**Authentication**: Password entered on first client launch, stored locally.
-The password is run through HKDF-SHA256 to derive an HMAC key used to
-authenticate rendezvous protocol messages. The rendezvous server is configured
-with the same derived key (via `--key-file`).
+**Protocol**: QUIC connection between client and server, with a long-lived
+bidirectional control stream using length-prefixed postcard messages:
 
-The rendezvous protocol itself uses UDP (lightweight, no connection state on
-server). Once peers discover each other, they establish direct QUIC connections.
+```rust
+// Client → Server
+enum ClientMessage {
+    Register { peer_id: String, password: String },
+    Keepalive,
+}
+
+// Server → Client
+enum ServerMessage {
+    Registered { peers: Vec<PeerEntry>, your_addr: SocketAddr },
+    PeerList { peers: Vec<PeerEntry> },
+    AuthFailed { reason: String },
+}
+```
+
+**Authentication**: Password sent in plaintext over the TLS-encrypted QUIC
+connection. No HMAC key derivation needed — TLS provides confidentiality.
+Server configured via `--password-file` or `DESSPLAY_PASSWORD` env var.
+
+**TLS: TOFU (Trust On First Use)**: SSH-style certificate trust for the
+rendezvous server. Server generates a self-signed cert on first run, persists
+it to disk (stable identity), and prints its fingerprint on startup. Client
+stores `server_name → SHA256 fingerprint` on first connect; subsequent
+connections verify the fingerprint matches. Mismatch rejects the connection.
+Peer-to-peer connections continue using skip-verification.
+
+**Relay protocol**: Datagrams and uni streams on the rendezvous QUIC connection,
+with a simple header: `[1 byte: peer_id length][peer_id UTF-8 bytes][payload]`.
+Server swaps the peer_id (destination → source) when forwarding.
 
 The rendezvous server does NOT participate in state sync. Once peers are
 connected, they communicate directly.
@@ -76,8 +101,8 @@ connected, they communicate directly.
 ### Connection Lifecycle (per peer)
 
 ```
-Disconnected → Connecting → Direct (QUIC handshake succeeds via hole-punch)
-                           → Relayed (TURN fallback)
+Disconnected → Connecting → Direct (QUIC handshake to peer address succeeds)
+                           → Relayed (relay via rendezvous server)
                            → Disconnected (handshake timeout)
 
 Direct/Relayed → Disconnected (QUIC idle timeout)
@@ -86,7 +111,7 @@ Relayed → Direct (periodic direct probe succeeds)
 
 QUIC's built-in keep-alive (configured idle timeout) replaces manual heartbeat
 logic. A connection transitions to Disconnected when QUIC reports the connection
-as lost.
+as lost. No hole-punching — all peers expected to have IPv6 connectivity.
 
 ### API Surface
 
@@ -413,9 +438,9 @@ playlist, playback position, user states, and enough chat history to fill gaps.
 
 Each layer is a session-sized chunk, built bottom-up:
 
-1. **Connection Manager** — QUIC via quinn, peer discovery. SimulatedNetwork for testing.
-2. **Application framework** — Rendezvous server, hole-punching, TURN relay, basic (logging-only) client.
-3. **Clock Sync** — NTP-like protocol over QUIC datagrams.
+1. **Connection Manager** — QUIC via quinn, peer discovery. SimulatedNetwork for testing. ✅
+2. **Rendezvous + Relay** — Rendezvous server (QUIC), TOFU TLS, TURN relay, mesh bootstrap. ✅
+3. **Clock Sync** — NTP-like protocol over QUIC datagrams. ✅
 4. **Sync Engine** — LWW + append log primitives, gossip forwarding, gap fill.
 5. **Application Channels** — Wire up player state, user states, playlist, chat.
 
