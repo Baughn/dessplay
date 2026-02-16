@@ -3,12 +3,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 use super::wire::{self, ClockSyncMessage, WireMessage};
-use super::{ConnectionError, ConnectionManager, PeerId};
+use super::{ConnectionError, ConnectionEvent, ConnectionManager, PeerId};
 
 /// A microsecond-resolution timestamp on the shared clock.
 ///
@@ -208,6 +208,11 @@ impl ClockSyncService {
     /// Get the underlying connection manager's connected peers.
     pub fn connected_peers(&self) -> Vec<PeerId> {
         self.conn.connected_peers()
+    }
+
+    /// Subscribe to connection events (passthrough to ConnectionManager).
+    pub fn subscribe(&self) -> broadcast::Receiver<ConnectionEvent> {
+        self.conn.subscribe()
     }
 
     // --- Internal ---

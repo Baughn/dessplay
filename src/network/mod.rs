@@ -1,6 +1,7 @@
 pub mod clock;
 pub mod quic;
 pub mod rendezvous;
+pub mod sync;
 pub mod wire;
 
 use async_trait::async_trait;
@@ -8,7 +9,7 @@ use tokio::sync::broadcast;
 
 /// Opaque peer identifier. In production this wraps a QUIC connection ID
 /// or similar; in tests it's an arbitrary string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PeerId(pub String);
 
 impl std::fmt::Display for PeerId {

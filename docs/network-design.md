@@ -272,8 +272,8 @@ The version byte (currently `1`) allows protocol evolution. Peers drop messages
 with unknown versions and log a warning.
 
 ```rust
+// No version byte — WireMessage already provides one.
 struct GossipMessage {
-    version: u8,  // always first byte on the wire
     origin: PeerId,
     timestamp: SharedTimestamp,
     payload: GossipPayload,
@@ -283,29 +283,31 @@ enum GossipPayload {
     /// Periodic full state snapshot
     StateSnapshot {
         player_state: PlayerStateSnapshot,
-        user_states: HashMap<UserId, UserState>,
-        chat_vectors: HashMap<UserId, SequenceNumber>,
-        playlist_vectors: HashMap<UserId, SequenceNumber>,
+        user_states: HashMap<PeerId, (UserState, SharedTimestamp)>,
+        file_states: HashMap<PeerId, (FileState, SharedTimestamp)>,
+        chat_vectors: HashMap<PeerId, SequenceNumber>,
+        playlist_vectors: HashMap<PeerId, SequenceNumber>,
     },
     /// Eager-push of a new append log entry (via datagram)
     AppendEntry {
         log_type: LogType,
-        user: UserId,
+        user: PeerId,
         seq: SequenceNumber,
-        entry: Vec<u8>,
+        data: Vec<u8>,
+        timestamp: SharedTimestamp,
     },
     /// Request missing entries (via datagram)
     GapFillRequest {
         log_type: LogType,
-        user: UserId,
+        user: PeerId,
         from_seq: SequenceNumber,
         to_seq: SequenceNumber,
     },
     /// Response with missing entries (via reliable stream)
     GapFillResponse {
         log_type: LogType,
-        user: UserId,
-        entries: Vec<(SequenceNumber, Vec<u8>)>,
+        user: PeerId,
+        entries: Vec<(SequenceNumber, Vec<u8>, SharedTimestamp)>,
     },
 }
 ```
@@ -441,8 +443,8 @@ Each layer is a session-sized chunk, built bottom-up:
 1. **Connection Manager** — QUIC via quinn, peer discovery. SimulatedNetwork for testing. ✅
 2. **Rendezvous + Relay** — Rendezvous server (QUIC), TOFU TLS, TURN relay, mesh bootstrap. ✅
 3. **Clock Sync** — NTP-like protocol over QUIC datagrams. ✅
-4. **Sync Engine** — LWW + append log primitives, gossip forwarding, gap fill.
-5. **Application Channels** — Wire up player state, user states, playlist, chat.
+4. **Sync Engine** — LWW + append log primitives, gossip forwarding, gap fill. ✅
+5. **Application Channels** — Wire up player state, user states, playlist, chat. ✅
 
 Each layer can be tested independently with the SimulatedNetwork (see
 `docs/testing-strategy.md` for details).
