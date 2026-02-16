@@ -2,6 +2,7 @@
 name = "dessplay"
 version = "0.1.0"
 edition = "2024"
+default-run = "dessplay"
 
 [dependencies]
 anyhow = "1"
