@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SESSION="dessplay"
+BIND="[::1]:4433"
+PASSWORD="dessplay-test"
+PW_FILE="/tmp/dessplay-test-pw"
+USERS=("alice" "bob" "charlie")
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/tmux.sh <command> [args...]
+
+Commands:
+  start                  Launch rendezvous server + 3 clients (alice, bob, charlie)
+  stop                   Kill the test session and clean up
+  capture <window>       Print pane contents (server, alice, bob, charlie)
+  wait-and-capture <window> [seconds]  Sleep then capture (default 4s)
+EOF
+    exit 1
+}
+
+[[ $# -lt 1 ]] && usage
+
+cmd="$1"; shift
+
+case "$cmd" in
+    start)
+        tmux kill-session -t "$SESSION" 2>/dev/null || true
+        echo -n "$PASSWORD" > "$PW_FILE"
+
+        # Server window
+        tmux new-session -d -s "$SESSION" -n server -x 160 -y 40 \
+            "cargo run --bin dessplay-rendezvous -- --bind '$BIND' --password-file '$PW_FILE'; read"
+        sleep 4  # wait for server to start + compile if needed
+
+        # Client windows
+        for user in "${USERS[@]}"; do
+            tmux new-window -t "$SESSION" -n "$user" \
+                "cargo run -- --server '$BIND' --password '$PASSWORD' --username '$user'; read"
+        done
+
+        sleep 4  # wait for clients to connect
+        echo "Test session started: server + ${USERS[*]}"
+        ;;
+    stop)
+        tmux kill-session -t "$SESSION" 2>/dev/null || true
+        rm -f "$PW_FILE"
+        echo "Test session stopped"
+        ;;
+    capture)
+        [[ $# -lt 1 ]] && usage
+        tmux capture-pane -t "$SESSION:$1" -p
+        ;;
+    wait-and-capture)
+        [[ $# -lt 1 ]] && usage
+        secs="${2:-4}"
+        sleep "$secs"
+        tmux capture-pane -t "$SESSION:$1" -p
+        ;;
+    *)
+        echo "Unknown command: $cmd" >&2
+        usage
+        ;;
+esac
