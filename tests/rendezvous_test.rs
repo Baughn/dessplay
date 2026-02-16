@@ -291,6 +291,7 @@ async fn server_starts_and_client_authenticates() {
         "alice",
         "secret123",
         &known_servers,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -317,6 +318,7 @@ async fn auth_failure() {
         "alice",
         "wrong-password",
         &known_servers,
+        &server.addr().to_string(),
     )
     .await;
 
@@ -349,6 +351,7 @@ async fn peer_discovery_on_register() {
         "alice",
         "pass",
         &ks_a,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -361,6 +364,7 @@ async fn peer_discovery_on_register() {
         "bob",
         "pass",
         &ks_b,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -387,6 +391,7 @@ async fn keepalive_returns_new_peers() {
         "alice",
         "pass",
         &ks_a,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -398,6 +403,7 @@ async fn keepalive_returns_new_peers() {
         "bob",
         "pass",
         &ks_b,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -425,6 +431,7 @@ async fn mesh_bootstrap_via_rendezvous() {
         "a",
         "pass",
         &ks_a,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -435,6 +442,7 @@ async fn mesh_bootstrap_via_rendezvous() {
         "b",
         "pass",
         &ks_b,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -446,6 +454,7 @@ async fn mesh_bootstrap_via_rendezvous() {
         "c",
         "pass",
         &ks_c,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -491,6 +500,7 @@ async fn relay_datagram() {
         "alice",
         "pass",
         &ks_a,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -501,6 +511,7 @@ async fn relay_datagram() {
         "bob",
         "pass",
         &ks_b,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -538,6 +549,7 @@ async fn relay_reliable() {
         "alice",
         "pass",
         &ks_a,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -548,6 +560,7 @@ async fn relay_reliable() {
         "bob",
         "pass",
         &ks_b,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -585,6 +598,7 @@ async fn client_disconnect_removes_from_peer_list() {
         "alice",
         "pass",
         &ks_a,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -595,6 +609,7 @@ async fn client_disconnect_removes_from_peer_list() {
         "bob",
         "pass",
         &ks_b,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -627,6 +642,7 @@ async fn observed_address_stun() {
         "alice",
         "pass",
         &known_servers,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -649,6 +665,7 @@ async fn tofu_accept_on_first_connect() {
         "alice",
         "pass",
         &known_servers,
+        &server.addr().to_string(),
     )
     .await
     .unwrap();
@@ -656,7 +673,7 @@ async fn tofu_accept_on_first_connect() {
     // Verify fingerprint was stored
     let contents = std::fs::read_to_string(&known_servers).unwrap();
     assert!(contents.contains("SHA256:"));
-    assert!(contents.contains("dessplay-rendezvous"));
+    assert!(contents.contains(&server.addr().to_string()));
 
     // Second connect to same server — should also succeed
     let client2 = make_client("alice2").await;
@@ -666,6 +683,7 @@ async fn tofu_accept_on_first_connect() {
         "alice2",
         "pass",
         &known_servers,
+        &server.addr().to_string(),
     )
     .await;
     assert!(result.is_ok());
@@ -685,6 +703,7 @@ async fn tofu_reject_on_cert_change() {
         "alice",
         "pass",
         &known_servers,
+        &server1_addr.to_string(),
     )
     .await
     .unwrap();
@@ -698,13 +717,13 @@ async fn tofu_reject_on_cert_change() {
 
     // Manually write a fingerprint for the new server's address
     // using the OLD server's fingerprint format, to simulate cert change.
-    // Instead, we write a fake fingerprint for dessplay-rendezvous
+    // Instead, we write a fake fingerprint for the server1 address
     // to the known_servers file to force a mismatch.
     let contents = std::fs::read_to_string(&known_servers).unwrap();
-    // The stored entry is for "dessplay-rendezvous" - both servers use same server name
-    assert!(contents.contains("dessplay-rendezvous"));
+    // The stored entry is for server1's address
+    assert!(contents.contains(&server1_addr.to_string()));
 
-    // Connect to server2 — the TOFU verifier checks the server name "dessplay-rendezvous"
+    // Connect to server2 — the TOFU verifier checks the server_key (server1_addr)
     // which already has a stored fingerprint from server1. Server2 has a different cert.
     let client2 = make_client("alice2").await;
     let result = RendezvousClient::connect(
@@ -713,6 +732,7 @@ async fn tofu_reject_on_cert_change() {
         "alice2",
         "pass",
         &known_servers,
+        &server1_addr.to_string(),
     )
     .await;
 

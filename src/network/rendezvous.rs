@@ -100,13 +100,16 @@ impl fmt::Display for Fingerprint {
 #[derive(Debug)]
 pub struct TofuVerifier {
     known_servers_path: PathBuf,
+    /// The key used to look up/store the fingerprint (e.g. "host:port").
+    server_key: String,
     crypto_provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
 impl TofuVerifier {
-    pub fn new(known_servers_path: PathBuf) -> Arc<Self> {
+    pub fn new(known_servers_path: PathBuf, server_key: String) -> Arc<Self> {
         Arc::new(Self {
             known_servers_path,
+            server_key,
             crypto_provider: Arc::new(rustls::crypto::ring::default_provider()),
         })
     }
@@ -148,15 +151,15 @@ impl rustls::client::danger::ServerCertVerifier for TofuVerifier {
         &self,
         end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
-        server_name: &rustls::pki_types::ServerName<'_>,
+        _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         let fingerprint = cert_fingerprint(end_entity.as_ref());
-        let name = server_name.to_str().to_string();
+        let name = &self.server_key;
         let known = self.load_known_fingerprints();
 
-        if let Some(stored_fp) = known.get(&name) {
+        if let Some(stored_fp) = known.get(name) {
             if *stored_fp == fingerprint {
                 Ok(rustls::client::danger::ServerCertVerified::assertion())
             } else {
@@ -171,7 +174,7 @@ impl rustls::client::danger::ServerCertVerifier for TofuVerifier {
                 fingerprint = %fingerprint,
                 "TOFU: accepting new server certificate"
             );
-            if let Err(e) = self.save_fingerprint(&name, &fingerprint) {
+            if let Err(e) = self.save_fingerprint(name, &fingerprint) {
                 tracing::warn!("failed to save server fingerprint: {e}");
             }
             Ok(rustls::client::danger::ServerCertVerified::assertion())
@@ -250,9 +253,10 @@ impl RendezvousClient {
         peer_id: &str,
         password: &str,
         known_servers_path: &Path,
+        server_key: &str,
     ) -> Result<(Self, Vec<PeerEntry>, SocketAddr), ConnectionError> {
         // Build a client config with TOFU verification
-        let tofu = TofuVerifier::new(known_servers_path.to_path_buf());
+        let tofu = TofuVerifier::new(known_servers_path.to_path_buf(), server_key.to_string());
         let crypto_config = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(tofu)

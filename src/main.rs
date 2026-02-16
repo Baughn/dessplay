@@ -117,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
     // Spawn rendezvous connection task
     let password = args.password.clone();
     let username = args.username.clone();
+    let server_key = args.server.clone();
     let event_tx_rv = event_tx.clone();
     tokio::spawn(async move {
         let _ = event_tx_rv.send(AppEvent::SystemMessage {
@@ -133,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
             &username,
             &password,
             &known_path,
+            &server_key,
         )
         .await;
 
@@ -270,6 +272,7 @@ mod tests {
             "dns-test",
             "wrong-password",
             known_path.path(),
+            &server_addr.to_string(),
         )
         .await;
 
