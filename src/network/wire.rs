@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Current wire protocol version.
-pub const WIRE_VERSION: u8 = 1;
+pub const WIRE_VERSION: u8 = 2;
 
 /// Top-level message envelope for all datagram traffic.
 ///

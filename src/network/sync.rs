@@ -194,16 +194,22 @@ pub struct GossipMessage {
     pub payload: GossipPayload,
 }
 
+/// Full state snapshot data, sent periodically and on peer connect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateSnapshotData {
+    pub file_register: FileRegister,
+    pub position_register: PositionRegister,
+    pub user_states: HashMap<PeerId, (UserState, SharedTimestamp)>,
+    pub file_states: HashMap<PeerId, (FileState, SharedTimestamp)>,
+    pub peer_generations: HashMap<PeerId, SharedTimestamp>,
+    pub chat_vectors: HashMap<PeerId, SequenceNumber>,
+    pub playlist_vectors: HashMap<PeerId, SequenceNumber>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GossipPayload {
     /// Periodic full state snapshot.
-    StateSnapshot {
-        player_state: PlayerStateSnapshot,
-        user_states: HashMap<PeerId, (UserState, SharedTimestamp)>,
-        file_states: HashMap<PeerId, (FileState, SharedTimestamp)>,
-        chat_vectors: HashMap<PeerId, SequenceNumber>,
-        playlist_vectors: HashMap<PeerId, SequenceNumber>,
-    },
+    StateSnapshot(Box<StateSnapshotData>),
     /// Eager-push of a new append log entry (via datagram).
     AppendEntry {
         log_type: LogType,
@@ -285,8 +291,9 @@ impl SyncEngine {
         let now = clock.now();
         let (local_event_tx, local_event_rx) = mpsc::unbounded_channel();
 
-        // Register ourselves as a peer
+        // Register ourselves as a peer with our generation
         state.add_peer(local_peer.clone());
+        state.update_peer_generation(&local_peer, now);
         state.set_user_state(&local_peer, UserState::Ready, now);
         state.set_file_state(&local_peer, FileState::Ready, now);
 
@@ -402,13 +409,15 @@ impl SyncEngine {
             GossipMessage {
                 origin: self.local_peer.clone(),
                 timestamp: self.clock.now(),
-                payload: GossipPayload::StateSnapshot {
-                    player_state: self.state.player_state(),
+                payload: GossipPayload::StateSnapshot(Box::new(StateSnapshotData {
+                    file_register: self.state.file_register(),
+                    position_register: self.state.position_register(),
                     user_states: self.state.raw_user_states(),
                     file_states: self.state.raw_file_states(),
+                    peer_generations: self.state.peer_generations(),
                     chat_vectors: inner.chat_log.state_vector().clone(),
                     playlist_vectors: inner.playlist_log.state_vector().clone(),
-                },
+                })),
             }
         };
 
@@ -488,13 +497,15 @@ impl SyncEngine {
                     GossipMessage {
                         origin: self.local_peer.clone(),
                         timestamp: self.clock.now(),
-                        payload: GossipPayload::StateSnapshot {
-                            player_state: self.state.player_state(),
+                        payload: GossipPayload::StateSnapshot(Box::new(StateSnapshotData {
+                            file_register: self.state.file_register(),
+                            position_register: self.state.position_register(),
                             user_states: self.state.raw_user_states(),
                             file_states: self.state.raw_file_states(),
+                            peer_generations: self.state.peer_generations(),
                             chat_vectors: inner.chat_log.state_vector().clone(),
                             playlist_vectors: inner.playlist_log.state_vector().clone(),
-                        },
+                        })),
                     }
                 };
                 if let Ok(data) = postcard::to_allocvec(&msg) {
@@ -519,13 +530,15 @@ impl SyncEngine {
                         GossipMessage {
                             origin: self.local_peer.clone(),
                             timestamp: self.clock.now(),
-                            payload: GossipPayload::StateSnapshot {
-                                player_state: self.state.player_state(),
+                            payload: GossipPayload::StateSnapshot(Box::new(StateSnapshotData {
+                                file_register: self.state.file_register(),
+                                position_register: self.state.position_register(),
                                 user_states: self.state.raw_user_states(),
                                 file_states: self.state.raw_file_states(),
+                                peer_generations: self.state.peer_generations(),
                                 chat_vectors: inner.chat_log.state_vector().clone(),
                                 playlist_vectors: inner.playlist_log.state_vector().clone(),
-                            },
+                            })),
                         }
                     };
                     if let Ok(data) = postcard::to_allocvec(&msg) {
@@ -577,40 +590,48 @@ impl SyncEngine {
                 }
                 LocalEvent::PositionUpdated { position } => {
                     let now = self.clock.now();
-                    let ps = PlayerStateSnapshot {
-                        file_id: self.state.player_state().file_id,
-                        position: PositionRegister {
-                            position,
-                            timestamp: now,
-                        },
+                    let file_reg = self.state.file_register();
+                    let pos_reg = PositionRegister {
+                        position,
+                        for_file: file_reg.file_id,
+                        timestamp: now,
+                        origin: self.local_peer.clone(),
                     };
-                    self.state.update_player_state(ps);
+                    self.state.update_position(pos_reg);
                 }
                 LocalEvent::FileChanged { file_id } => {
                     let now = self.clock.now();
-                    let ps = PlayerStateSnapshot {
+                    let file_reg = FileRegister {
                         file_id,
-                        position: PositionRegister {
-                            position: 0.0,
-                            timestamp: now,
-                        },
+                        timestamp: now,
+                        origin: self.local_peer.clone(),
                     };
-                    self.state.update_player_state(ps);
+                    self.state.update_file_register(file_reg);
                     self.enter_burst_mode();
                 }
                 LocalEvent::ChatSent { text } => {
                     let now = self.clock.now();
+
+                    // Peek at next seq (we're the only writer for our own peer)
+                    let seq = {
+                        let inner = self.inner.lock().unwrap();
+                        inner.chat_log.state_vector()
+                            .get(&self.local_peer).copied().unwrap_or(0) + 1
+                    };
+
                     let msg = ChatMessage {
                         sender: self.local_peer.clone(),
                         text,
                         timestamp: now,
+                        seq,
                     };
                     let data = postcard::to_allocvec(&msg).unwrap();
 
-                    let seq = {
+                    let actual_seq = {
                         let mut inner = self.inner.lock().unwrap();
                         inner.chat_log.append_local(&self.local_peer, data.clone(), now)
                     };
+                    debug_assert_eq!(seq, actual_seq);
 
                     self.state.add_chat_message(msg);
 
@@ -642,29 +663,55 @@ impl SyncEngine {
         let origin = msg.origin.clone();
 
         match msg.payload {
-            GossipPayload::StateSnapshot {
-                player_state,
-                user_states,
-                file_states,
-                chat_vectors,
-                playlist_vectors,
-            } => {
+            GossipPayload::StateSnapshot(snapshot) => {
+                let StateSnapshotData {
+                    file_register,
+                    position_register,
+                    user_states,
+                    file_states,
+                    peer_generations,
+                    chat_vectors,
+                    playlist_vectors,
+                } = *snapshot;
                 let mut any_updated = false;
 
-                // Merge player state (LWW)
-                if self.state.update_player_state(player_state) {
+                // 1. Process peer generations first (gates per-peer state acceptance)
+                for (peer, generation) in &peer_generations {
+                    self.state.update_peer_generation(peer, *generation);
+                }
+
+                // 2. Merge file register BEFORE position register
+                //    (position is conditional on file_id match)
+                if self.state.update_file_register(file_register) {
                     any_updated = true;
                 }
 
-                // Merge user states (per-peer LWW)
+                // 3. Merge position register (rejected if for_file doesn't match)
+                if self.state.update_position(position_register) {
+                    any_updated = true;
+                }
+
+                // 4. Merge user states (per-peer LWW) — skip entries with stale generation
                 for (peer, (us, ts)) in &user_states {
+                    if let Some(known_gen) = self.state.peer_generation(peer)
+                        && let Some(msg_gen) = peer_generations.get(peer)
+                        && *msg_gen < known_gen
+                    {
+                        continue; // stale generation, skip
+                    }
                     if self.state.set_user_state(peer, *us, *ts) {
                         any_updated = true;
                     }
                 }
 
-                // Merge file states (per-peer LWW)
+                // 5. Merge file states (per-peer LWW) — same generation check
                 for (peer, (fs, ts)) in &file_states {
+                    if let Some(known_gen) = self.state.peer_generation(peer)
+                        && let Some(msg_gen) = peer_generations.get(peer)
+                        && *msg_gen < known_gen
+                    {
+                        continue;
+                    }
                     if self.state.set_file_state(peer, *fs, *ts) {
                         any_updated = true;
                     }
@@ -898,13 +945,15 @@ impl SyncEngine {
             GossipMessage {
                 origin: origin.clone(),
                 timestamp: self.clock.now(),
-                payload: GossipPayload::StateSnapshot {
-                    player_state: self.state.player_state(),
+                payload: GossipPayload::StateSnapshot(Box::new(StateSnapshotData {
+                    file_register: self.state.file_register(),
+                    position_register: self.state.position_register(),
                     user_states: self.state.raw_user_states(),
                     file_states: self.state.raw_file_states(),
+                    peer_generations: self.state.peer_generations(),
                     chat_vectors: inner.chat_log.state_vector().clone(),
                     playlist_vectors: inner.playlist_log.state_vector().clone(),
-                },
+                })),
             }
         };
 
@@ -1130,19 +1179,24 @@ mod tests {
         let msg = GossipMessage {
             origin: peer("alice"),
             timestamp: ts(12345),
-            payload: GossipPayload::StateSnapshot {
-                player_state: PlayerStateSnapshot {
+            payload: GossipPayload::StateSnapshot(Box::new(StateSnapshotData {
+                file_register: FileRegister {
                     file_id: None,
-                    position: PositionRegister {
-                        position: 42.5,
-                        timestamp: ts(12345),
-                    },
+                    timestamp: ts(12345),
+                    origin: peer("alice"),
+                },
+                position_register: PositionRegister {
+                    position: 42.5,
+                    for_file: None,
+                    timestamp: ts(12345),
+                    origin: peer("alice"),
                 },
                 user_states: HashMap::from([(peer("alice"), (UserState::Ready, ts(100)))]),
                 file_states: HashMap::from([(peer("alice"), (FileState::Ready, ts(100)))]),
+                peer_generations: HashMap::from([(peer("alice"), ts(100))]),
                 chat_vectors: HashMap::new(),
                 playlist_vectors: HashMap::new(),
-            },
+            })),
         };
 
         let encoded = postcard::to_allocvec(&msg).unwrap();
@@ -1151,8 +1205,8 @@ mod tests {
         assert_eq!(decoded.origin, peer("alice"));
         assert_eq!(decoded.timestamp, ts(12345));
         match decoded.payload {
-            GossipPayload::StateSnapshot { player_state, .. } => {
-                assert_eq!(player_state.position.position, 42.5);
+            GossipPayload::StateSnapshot(snapshot) => {
+                assert_eq!(snapshot.position_register.position, 42.5);
             }
             _ => panic!("expected StateSnapshot"),
         }

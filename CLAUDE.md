@@ -2,6 +2,7 @@
 
 - Overall design: docs/design.md
 - Network design: docs/network-design.md
+- Sync state registers: docs/sync-state.md
 - Implementation plan: docs/plan.md
 - Testing strategy: docs/testing-strategy.md
 

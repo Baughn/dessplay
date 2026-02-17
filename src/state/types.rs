@@ -95,22 +95,34 @@ impl ReadyState {
     }
 }
 
-/// Playback position with a timestamp for LWW merge.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// LWW register for the currently loaded file.
+///
+/// Merged with `(timestamp, origin) >` for deterministic tiebreaking at equal timestamps.
+/// When accepted, the position register is reset to 0.0 for the new file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileRegister {
+    /// Currently loaded file, if any.
+    pub file_id: Option<ItemId>,
+    /// Shared clock timestamp when this file was loaded.
+    pub timestamp: SharedTimestamp,
+    /// The peer that made this change (for LWW tiebreaking).
+    pub origin: PeerId,
+}
+
+/// LWW register for playback position, tagged with the file it belongs to.
+///
+/// Merged with `(timestamp, origin) >` for deterministic tiebreaking.
+/// Rejected during merge if `for_file` doesn't match the current FileRegister.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionRegister {
     /// Playback position in seconds.
     pub position: f64,
+    /// Which file this position is for. Must match the current FileRegister to be accepted.
+    pub for_file: Option<ItemId>,
     /// Shared clock timestamp when this position was recorded.
     pub timestamp: SharedTimestamp,
-}
-
-/// Snapshot of the player's state. LWW register.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlayerStateSnapshot {
-    /// Currently loaded file, if any.
-    pub file_id: Option<ItemId>,
-    /// Playback position.
-    pub position: PositionRegister,
+    /// The peer that made this change (for LWW tiebreaking).
+    pub origin: PeerId,
 }
 
 /// An action on the playlist. Entries in the per-user playlist append log.
@@ -138,6 +150,8 @@ pub struct ChatMessage {
     pub sender: PeerId,
     pub text: String,
     pub timestamp: SharedTimestamp,
+    /// Per-user sequence number (for deduplication).
+    pub seq: SequenceNumber,
 }
 
 /// A resolved playlist item (result of replaying playlist actions).

@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 
 /// Opaque peer identifier. In production this wraps a QUIC connection ID
 /// or similar; in tests it's an arbitrary string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PeerId(pub String);
 
 impl std::fmt::Display for PeerId {
