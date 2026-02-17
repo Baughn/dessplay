@@ -150,8 +150,12 @@ async fn main() -> anyhow::Result<()> {
         };
 
         let _ = event_tx_rv.send(AppEvent::SystemMessage {
-            text: format!("Your address: {observed_addr}"),
+            text: format!("Connected to rendezvous server ({} peer(s))", peers.len()),
             min_verbosity: 0,
+        });
+        let _ = event_tx_rv.send(AppEvent::SystemMessage {
+            text: format!("Your address: {observed_addr}"),
+            min_verbosity: 1,
         });
 
         // Set up relay
