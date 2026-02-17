@@ -4,7 +4,6 @@ set -euo pipefail
 SESSION="dessplay"
 BIND="[::1]:4433"
 PASSWORD="dessplay-test"
-PW_FILE="/tmp/dessplay-test-pw"
 USERS=("alice" "bob" "charlie")
 
 usage() {
@@ -16,6 +15,7 @@ Commands:
   stop                   Kill the test session and clean up
   capture <window>       Print pane contents (server, alice, bob, charlie)
   wait-and-capture <window> [seconds]  Sleep then capture (default 4s)
+  v4                     Connect to v4.brage.info with a bad password
 EOF
     exit 1
 }
@@ -27,11 +27,10 @@ cmd="$1"; shift
 case "$cmd" in
     start)
         tmux kill-session -t "$SESSION" 2>/dev/null || true
-        echo -n "$PASSWORD" > "$PW_FILE"
 
         # Server window
-        tmux new-session -d -s "$SESSION" -n server -x 160 -y 40 \
-            "cargo run --bin dessplay-rendezvous -- --bind '$BIND' --password-file '$PW_FILE'; read"
+        tmux new-session -d -s "$SESSION" -n server -x 80 -y 40 \
+            "cargo run --bin dessplay-rendezvous -- --bind '$BIND' --password '$PASSWORD'; read"
         sleep 4  # wait for server to start + compile if needed
 
         # Client windows
@@ -45,7 +44,6 @@ case "$cmd" in
         ;;
     stop)
         tmux kill-session -t "$SESSION" 2>/dev/null || true
-        rm -f "$PW_FILE"
         echo "Test session stopped"
         ;;
     capture)

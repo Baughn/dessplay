@@ -37,7 +37,7 @@ scripts/tmux.sh stop
 - **Start waits 8s total** (4s for server, 4s for clients to connect). If binaries need compilation, the first `start` takes longer — use `wait-and-capture` with extra delay.
 - **Disconnect detection** takes ~30s (QUIC idle timeout). Use `wait-and-capture <window> 35` if testing disconnects.
 - **Windows run fixed commands**, not interactive shells. When the process exits, `read` keeps the window open so output can still be captured.
-- Always `stop` when done to clean up the tmux session and `/tmp/dessplay-test-pw`.
+- Always `scripts/tmux.sh stop` when done to clean up the tmux session.
 
 ## In case of missing commands
 

@@ -20,8 +20,12 @@ struct Args {
     #[arg(long, default_value = "[::]:4433")]
     bind: SocketAddr,
 
-    /// Path to password file (alternative to DESSPLAY_PASSWORD env var)
+    /// Password (alternative to DESSPLAY_PASSWORD env var or --password-file)
     #[arg(long)]
+    password: Option<String>,
+
+    /// Path to password file (alternative to DESSPLAY_PASSWORD env var)
+    #[arg(long, conflicts_with = "password")]
     password_file: Option<PathBuf>,
 
     /// Directory for persistent data (cert, key)
@@ -48,13 +52,15 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let password = if let Some(ref path) = args.password_file {
+    let password = if let Some(pw) = args.password {
+        pw
+    } else if let Some(ref path) = args.password_file {
         std::fs::read_to_string(path)?.trim().to_string()
     } else if let Ok(pw) = std::env::var("DESSPLAY_PASSWORD") {
         pw
     } else {
         anyhow::bail!(
-            "password required: set DESSPLAY_PASSWORD env var or use --password-file"
+            "password required: use --password, --password-file, or DESSPLAY_PASSWORD env var"
         );
     };
 
@@ -107,6 +113,9 @@ async fn handle_connection(
                     reason: "invalid password".to_string(),
                 };
                 write_message(&mut send, &resp).await.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { format!("{e}").into() })?;
+                let _ = send.finish();
+                // Close with reason — delivered reliably via QUIC CONNECTION_CLOSE
+                connection.close(1u32.into(), b"auth failed: invalid password");
                 return Ok(());
             }
             peer_id

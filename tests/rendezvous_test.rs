@@ -101,6 +101,8 @@ async fn server_accept_loop(endpoint: quinn::Endpoint, password: String) {
                             },
                         )
                         .await;
+                        let _ = send.finish();
+                        connection.close(1u32.into(), b"auth failed: invalid password");
                         return;
                     }
                     peer_id
@@ -325,11 +327,9 @@ async fn auth_failure() {
     match result {
         Err(e) => {
             let msg = e.to_string();
-            // Server sends AuthFailed then the handler returns, which may close
-            // the connection before the client reads the response.
             assert!(
-                msg.contains("auth failed") || msg.contains("connection") || msg.contains("reset"),
-                "unexpected error: {msg}"
+                msg.contains("auth failed"),
+                "expected auth failed message, got: {msg}"
             );
         }
         Ok(_) => panic!("expected auth failure"),

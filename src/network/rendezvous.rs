@@ -298,8 +298,21 @@ impl RendezvousClient {
         )
         .await?;
 
-        // Read response
-        let response: ServerMessage = read_message(&mut recv).await?;
+        // Read response — may fail if the server closed the connection (e.g. auth failure)
+        let response: ServerMessage = match read_message(&mut recv).await {
+            Ok(msg) => msg,
+            Err(_) => {
+                // Extract the close reason from the QUIC CONNECTION_CLOSE frame
+                let close_err = connection.closed().await;
+                if let quinn::ConnectionError::ApplicationClosed(ref close) = close_err
+                    && !close.reason.is_empty()
+                {
+                    let reason = String::from_utf8_lossy(&close.reason);
+                    return Err(ConnectionError::Other(reason.into_owned().into()));
+                }
+                return Err(ConnectionError::Other(close_err.to_string().into()));
+            }
+        };
 
         match response {
             ServerMessage::Registered { peers, your_addr } => Ok((
