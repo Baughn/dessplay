@@ -1,13 +1,17 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
+use dessplay::network::clock::ClockSyncService;
 use dessplay::network::quic::QuicConnectionManager;
 use dessplay::network::rendezvous::RendezvousClient;
+use dessplay::network::sync::SyncEngine;
 use dessplay::network::{ConnectionEvent, ConnectionManager, ConnectionState, PeerId};
+use dessplay::state::SharedState;
 use dessplay::tui::{App, AppEvent};
 
 #[derive(Parser)]
@@ -82,13 +86,37 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr: SocketAddr = "[::]:0".parse().unwrap();
     let conn_mgr = QuicConnectionManager::new(bind_addr, PeerId(args.username.clone())).await?;
     tracing::info!("listening on {}", conn_mgr.local_addr());
+    let conn_mgr = Arc::new(conn_mgr);
+
+    // Create clock sync service
+    let clock_svc = ClockSyncService::new(
+        Arc::clone(&conn_mgr) as Arc<dyn ConnectionManager>,
+        std::time::Duration::from_secs(2),
+    );
+    clock_svc.start();
+
+    // Create shared state and sync engine
+    let (shared_state, _version_rx) = SharedState::new();
+    let shared_state = Arc::new(shared_state);
+    let sync_engine = SyncEngine::new(
+        Arc::clone(&clock_svc),
+        PeerId(args.username.clone()),
+        Arc::clone(&shared_state),
+    );
+    sync_engine.start();
 
     // Set up TUI event channel
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let app = App::new(args.username.clone(), args.verbose);
 
-    // Spawn connection event forwarder
-    let mut conn_events = conn_mgr.subscribe();
+    // Send SyncReady to TUI
+    let _ = event_tx.send(AppEvent::SyncReady {
+        state: Arc::clone(&shared_state),
+        event_tx: sync_engine.local_event_sender(),
+    });
+
+    // Spawn connection event forwarder (uses clock_svc.subscribe for post-clock-sync events)
+    let mut conn_events = clock_svc.subscribe();
     let event_tx_conn = event_tx.clone();
     tokio::spawn(async move {
         while let Ok(event) = conn_events.recv().await {
@@ -119,7 +147,9 @@ async fn main() -> anyhow::Result<()> {
     let username = args.username.clone();
     let server_key = args.server.clone();
     let event_tx_rv = event_tx.clone();
+    let conn_mgr_rv = Arc::clone(&conn_mgr);
     tokio::spawn(async move {
+        let conn_mgr = conn_mgr_rv;
         let _ = event_tx_rv.send(AppEvent::SystemMessage {
             text: format!("Connecting to {server_addr}..."),
             min_verbosity: 0,

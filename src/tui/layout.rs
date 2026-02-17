@@ -7,17 +7,19 @@ pub struct PaneRects {
     pub users: Rect,
     pub playlist: Rect,
     pub player_status: Rect,
+    pub keybindings: Rect,
 }
 
 pub fn compute_layout(area: Rect) -> PaneRects {
-    // Split: main area (85%) | player status (15%)
+    // Split: main area | player status (3 lines) | keybindings (1 line)
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(1)])
         .split(area);
 
     let main_area = vertical[0];
     let player_status = vertical[1];
+    let keybindings = vertical[2];
 
     // Split main: left 50% | right 50%
     let horizontal = Layout::default()
@@ -54,5 +56,6 @@ pub fn compute_layout(area: Rect) -> PaneRects {
         users: right_split[1],
         playlist: right_split[2],
         player_status,
+        keybindings,
     }
 }

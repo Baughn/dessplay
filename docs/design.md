@@ -160,6 +160,8 @@ This prevents sync issues from different encodes/versions.
 - Press Enter to send
 - Messages appear in the chat pane AND as OSD in the video player
 - System messages (joins, disconnects, state changes) appear in chat
+- Text commands start with `/`:
+  - `/exit`, `/quit`, `/q` — quit DessPlay
 
 ### Watching a Series
 
@@ -216,18 +218,40 @@ Access settings screen to configure:
 |  Player Status: [=====>       ] 12:34 / 24:00       |
 |  Now Playing: [Frieren] Sousou no Frieren - 01.mkv  |
 +-----------------------------------------------------+
+| Tab Next pane | Enter Send | Esc Clear | Ctrl-C Quit |
++-----------------------------------------------------+
 ```
 
 **Proportions:**
-- Bottom 15%: Player status
+- Bottom: Player status (3 lines) then keybinding bar (1 line)
 - Left 50%: Chat (with input line at bottom)
 - Right 50%, top: Recent Series
 - Right 50%, middle: Users
 - Right 50%, bottom: Playlist
 
+**Keybinding bar:** 1-line context-sensitive bar at the very bottom. Shows
+available actions for the currently focused pane (e.g. Chat shows
+`Tab | Enter | Esc | Ctrl-C`, other panes show `Tab | Ctrl-C`).
+
 **Focus cycling:** `Tab` cycles through Chat, Recent Series, Playlist
 
 **Mouse support:** Click to focus panes, scroll, select items (if convenient to implement)
+
+### Keyboard Shortcuts
+
+| Key | Context | Action |
+|-----|---------|--------|
+| `Ctrl-C` | Any | Quit |
+| `Tab` | Any | Cycle focus: Chat → Recent Series → Playlist → Chat |
+| `Enter` | Chat | Send message (or execute `/command`) |
+| `Esc` | Chat | Clear input |
+| `Backspace` | Chat | Delete character before cursor |
+| `Delete` | Chat | Delete character after cursor |
+| `Left` / `Right` | Chat | Move cursor |
+| `Ctrl-Left` / `Ctrl-Right` | Chat | Move cursor by word |
+| `Home` / `End` | Chat | Move cursor to start/end |
+
+Note: there is no `q` to quit — too easy to hit while typing in chat.
 
 ---
 
@@ -623,7 +647,7 @@ For v1, this is acceptable. Future improvements could include:
 
 ## Open Questions
 
-1. **Keyboard shortcuts**: Need to finalize keybindings
+1. ~~**Keyboard shortcuts**~~: Resolved — see [Keyboard Shortcuts](#keyboard-shortcuts)
 2. ~~**TURN implementation**~~: Resolved — minimal custom implementation over the rendezvous server
 3. **Edit distance algorithm**: Levenshtein? Jaro-Winkler?
 4. **Hash parameters**: How many bytes from how many offsets?

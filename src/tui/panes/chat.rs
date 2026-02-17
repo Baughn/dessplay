@@ -4,9 +4,9 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use super::super::ChatMessage;
+use super::super::DisplayMessage;
 
-pub fn render(frame: &mut Frame, area: Rect, messages: &[ChatMessage], verbosity: u8) {
+pub fn render(frame: &mut Frame, area: Rect, messages: &[DisplayMessage], verbosity: u8) {
     let block = Block::default().borders(Borders::ALL).title(" Chat ");
 
     let lines: Vec<Line> = messages
@@ -35,13 +35,23 @@ pub fn render(frame: &mut Frame, area: Rect, messages: &[ChatMessage], verbosity
     frame.render_widget(paragraph, area);
 }
 
-pub fn render_input(frame: &mut Frame, area: Rect) {
+pub fn render_input(frame: &mut Frame, area: Rect, text: &str, cursor_pos: usize, focused: bool) {
+    let border_style = if focused {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Message ")
-        .style(Style::default().fg(Color::DarkGray));
-    let paragraph = Paragraph::new("  (chat not yet implemented)")
-        .block(block)
-        .style(Style::default().fg(Color::DarkGray));
+        .style(border_style);
+
+    let paragraph = Paragraph::new(Line::from(vec![Span::raw(" "), Span::raw(text)])).block(block);
     frame.render_widget(paragraph, area);
+
+    if focused {
+        // Position cursor inside the bordered block (+1 border, +1 padding)
+        frame.set_cursor_position((area.x + 2 + cursor_pos as u16, area.y + 1));
+    }
 }

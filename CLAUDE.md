@@ -9,6 +9,12 @@ Read the design docs before any planning phase. Update the docs after any design
 
 If anything is unclear, ALWAYS ask the user to clarify.
 
+# Revision Control
+
+This project uses **jujutsu** (`jj`) for revision control, not raw git. Use `jj` commands for commits, branches, and history operations.
+
+When asked to commit, use `jj commit`; not `jj describe`.
+
 # Testing
 
 Full details in docs/testing-strategy.md. This section covers the practical essentials.
