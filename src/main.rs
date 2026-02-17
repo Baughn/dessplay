@@ -3,14 +3,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
 
 use dessplay::network::clock::ClockSyncService;
 use dessplay::network::quic::QuicConnectionManager;
 use dessplay::network::rendezvous::RendezvousClient;
-use dessplay::network::sync::SyncEngine;
+use dessplay::network::sync::{LocalEvent, SyncEngine};
 use dessplay::network::{ConnectionEvent, ConnectionManager, ConnectionState, PeerId};
+use dessplay::player::bridge::PlayerBridge;
+use dessplay::player::mpv::MpvPlayer;
+use dessplay::player_loop;
+use dessplay::state::types::{ItemId, PlaylistAction};
 use dessplay::state::SharedState;
 use dessplay::tui::{App, AppEvent};
 
@@ -32,6 +36,10 @@ struct Args {
     /// Verbosity (-v, -vv)
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+
+    /// Run mpv headless (no video/audio output)
+    #[arg(long)]
+    headless: bool,
 }
 
 fn default_username() -> String {
@@ -96,11 +104,12 @@ async fn main() -> anyhow::Result<()> {
     clock_svc.start();
 
     // Create shared state and sync engine
-    let (shared_state, _version_rx) = SharedState::new();
+    let (shared_state, version_rx) = SharedState::new();
     let shared_state = Arc::new(shared_state);
+    let local_peer = PeerId(args.username.clone());
     let sync_engine = SyncEngine::new(
         Arc::clone(&clock_svc),
-        PeerId(args.username.clone()),
+        local_peer.clone(),
         Arc::clone(&shared_state),
     );
     sync_engine.start();
@@ -114,6 +123,43 @@ async fn main() -> anyhow::Result<()> {
         state: Arc::clone(&shared_state),
         event_tx: sync_engine.local_event_sender(),
     });
+
+    // Create and spawn the player
+    let mut player = MpvPlayer::new(args.headless);
+    let player_rx = player.spawn().await?;
+    let player = Arc::new(player);
+
+    // Player position channel (shared between event loop and control loop)
+    let (player_pos_tx, player_pos_rx) = watch::channel(0.0f64);
+
+    // Add a stub playlist item and set it as the current file
+    let local_event_tx = sync_engine.local_event_sender();
+    let item_id = ItemId {
+        user: local_peer.clone(),
+        seq: 0,
+    };
+    let _ = local_event_tx.send(LocalEvent::PlaylistAction(PlaylistAction::Add {
+        id: item_id.clone(),
+        filename: "video.mkv".to_string(),
+        after: None,
+    }));
+    let _ = local_event_tx.send(LocalEvent::FileChanged {
+        file_id: Some(item_id),
+    });
+
+    // Spawn player ↔ sync bridge tasks
+    tokio::spawn(player_loop::player_event_loop(
+        player_rx,
+        sync_engine.local_event_sender(),
+        player_pos_tx,
+    ));
+    tokio::spawn(player_loop::player_control_loop(
+        Arc::clone(&shared_state),
+        Arc::clone(&player),
+        local_peer,
+        version_rx,
+        player_pos_rx,
+    ));
 
     // Spawn connection event forwarder (uses clock_svc.subscribe for post-clock-sync events)
     let mut conn_events = clock_svc.subscribe();

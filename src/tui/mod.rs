@@ -220,6 +220,8 @@ impl App {
     fn render(&mut self, frame: &mut ratatui::Frame) {
         let rects = layout::compute_layout(frame.area());
 
+        let view = self.shared_state.as_ref().map(|s| s.view());
+
         let messages = self.build_chat_messages();
         panes::chat::render(frame, rects.chat, &messages, self.verbosity);
         panes::chat::render_input(
@@ -231,8 +233,8 @@ impl App {
         );
         panes::series::render(frame, rects.recent_series);
         panes::users::render(frame, rects.users, &self.username, &self.connected_peers);
-        panes::playlist::render(frame, rects.playlist);
-        panes::status::render(frame, rects.player_status);
+        panes::playlist::render(frame, rects.playlist, view.as_ref());
+        panes::status::render(frame, rects.player_status, view.as_ref());
         panes::keybindings::render(frame, rects.keybindings, self.focused);
     }
 }

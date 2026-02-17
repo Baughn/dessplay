@@ -38,7 +38,7 @@ case "$cmd" in
         # Client windows
         for user in "${USERS[@]}"; do
             tmux -L dessplay new-window -t "$SESSION" -n "$user" \
-                "cargo run -- --server '$BIND' --password '$PASSWORD' --username '$user'; read"
+                "cargo run -- --headless --server '$BIND' --password '$PASSWORD' --username '$user'; read"
         done
 
         sleep 1  # wait for clients to connect
