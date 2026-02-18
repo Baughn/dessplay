@@ -49,10 +49,8 @@ fn find_in_directory(dir: &Path, target_filename: &str) -> Option<PathBuf> {
             if let Some(found) = find_in_directory(&path, target_filename) {
                 return Some(found);
             }
-        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name == target_filename {
-                return Some(path);
-            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(target_filename) {
+            return Some(path);
         }
     }
     None

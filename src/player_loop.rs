@@ -46,13 +46,16 @@ pub async fn player_event_loop(
                 if let (Some(db), Some(info_rx)) = (&db, &current_file_info_rx) {
                     let now = tokio::time::Instant::now();
                     if now.duration_since(last_db_write) > std::time::Duration::from_secs(10) {
-                        if let Some(info) = &*info_rx.borrow() {
-                            let dur = duration.unwrap_or(0.0);
-                            if let Err(e) =
-                                db.record_watch_progress(&info.filename, &info.directory, pos, dur)
-                            {
-                                warn!("failed to record watch progress: {e}");
-                            }
+                        let dur = duration.unwrap_or(0.0);
+                        if let Some(info) = &*info_rx.borrow()
+                            && let Err(e) = db.record_watch_progress(
+                                &info.filename,
+                                &info.directory,
+                                pos,
+                                dur,
+                            )
+                        {
+                            warn!("failed to record watch progress: {e}");
                         }
                         last_db_write = now;
                     }
@@ -73,12 +76,11 @@ pub async fn player_event_loop(
             }
             PlayerEvent::EndOfFile => {
                 // Mark as watched (EOF implies we reached the end)
-                if let (Some(db), Some(info_rx)) = (&db, &current_file_info_rx) {
-                    if let Some(info) = &*info_rx.borrow() {
-                        if let Err(e) = db.mark_watched(&info.filename, &info.directory) {
-                            warn!("failed to mark file as watched: {e}");
-                        }
-                    }
+                if let (Some(db), Some(info_rx)) = (&db, &current_file_info_rx)
+                    && let Some(info) = &*info_rx.borrow()
+                    && let Err(e) = db.mark_watched(&info.filename, &info.directory)
+                {
+                    warn!("failed to mark file as watched: {e}");
                 }
                 // TODO: advance playlist
             }

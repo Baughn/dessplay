@@ -25,14 +25,20 @@ pub struct SeriesPaneState {
     pub dirty: bool,
 }
 
-impl SeriesPaneState {
-    pub fn new() -> Self {
+impl Default for SeriesPaneState {
+    fn default() -> Self {
         Self {
             items: Vec::new(),
             selected: 0,
             scroll: 0,
             dirty: true,
         }
+    }
+}
+
+impl SeriesPaneState {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn move_up(&mut self) {
