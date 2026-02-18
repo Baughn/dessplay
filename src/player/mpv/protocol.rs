@@ -5,6 +5,7 @@ use serde_json::Value;
 pub const OBSERVE_TIME_POS: u64 = 1;
 pub const OBSERVE_PAUSE: u64 = 2;
 pub const OBSERVE_EOF_REACHED: u64 = 3;
+pub const OBSERVE_DURATION: u64 = 4;
 
 /// A command sent to mpv over the IPC socket.
 #[derive(Debug, Serialize)]

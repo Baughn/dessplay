@@ -352,7 +352,12 @@ media_roots = [
 ]
 ```
 
-Stored in local SQLite database, editable via settings screen.
+Stored in local SQLite database. Configured via chat commands:
+- `/add-root <path>` — add a media root directory
+- `/remove-root <path>` — remove a media root directory
+- `/list-roots` — show configured roots
+
+Media roots are also shown at the top of the Recent Series pane for browsing.
 
 ### File Matching
 
@@ -500,13 +505,13 @@ All inserts use `INSERT OR IGNORE` for idempotency (gap fills may re-deliver ent
 State vectors and local sequence counters are derived from the stored logs on load.
 Ready states are ephemeral and not persisted.
 
-### Schema (planned, not yet implemented)
+### Schema (implemented — file management)
 
 ```sql
 -- Media root directories
 CREATE TABLE media_roots (
     id INTEGER PRIMARY KEY,
-    path TEXT NOT NULL,
+    path TEXT NOT NULL UNIQUE,
     position INTEGER NOT NULL  -- for ordering
 );
 
@@ -514,12 +519,22 @@ CREATE TABLE media_roots (
 CREATE TABLE watch_history (
     filename TEXT PRIMARY KEY,
     directory TEXT NOT NULL,  -- parent directory, for known-series lookups
-    last_watched TIMESTAMP,
-    watch_count INTEGER,
-    last_position REAL,  -- seconds, for resume
-    completed BOOLEAN    -- watched >= 90%
+    last_watched INTEGER,
+    watch_count INTEGER NOT NULL DEFAULT 0,
+    last_position REAL NOT NULL DEFAULT 0.0,
+    completed INTEGER NOT NULL DEFAULT 0  -- watched >= 90%
 );
 
+-- User settings (key-value)
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+```
+
+### Schema (planned, not yet implemented)
+
+```sql
 -- Session markers
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,

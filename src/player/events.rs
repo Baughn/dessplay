@@ -12,6 +12,9 @@ pub enum PlayerEvent {
     /// NOT emitted for programmatic bridge.pause()/play().
     UserPauseToggled { paused: bool },
 
+    /// File duration became known (reported once after file load).
+    DurationChanged(f64),
+
     /// Current file reached end-of-file.
     EndOfFile,
 

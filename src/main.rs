@@ -9,13 +9,13 @@ use tracing_subscriber::EnvFilter;
 use dessplay::network::clock::ClockSyncService;
 use dessplay::network::quic::QuicConnectionManager;
 use dessplay::network::rendezvous::RendezvousClient;
-use dessplay::network::sync::{LocalEvent, SyncEngine};
+use dessplay::network::sync::SyncEngine;
 use dessplay::network::{ConnectionEvent, ConnectionManager, ConnectionState, PeerId};
 use dessplay::player::bridge::PlayerBridge;
 use dessplay::player::mpv::MpvPlayer;
 use dessplay::player_loop;
-use dessplay::state::types::{ItemId, PlaylistAction};
 use dessplay::state::SharedState;
+use dessplay::storage::Database;
 use dessplay::tui::{App, AppEvent};
 
 #[derive(Parser)]
@@ -114,9 +114,16 @@ async fn main() -> anyhow::Result<()> {
     );
     sync_engine.start();
 
+    // Open database
+    let data_dir = directories::ProjectDirs::from("", "", "dessplay")
+        .map(|d| d.data_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&data_dir).ok();
+    let db = Arc::new(Database::open(&data_dir.join("dessplay.db"))?);
+
     // Set up TUI event channel
     let (event_tx, event_rx) = mpsc::unbounded_channel();
-    let app = App::new(args.username.clone(), args.verbose);
+    let app = App::new(args.username.clone(), args.verbose, Arc::clone(&db));
 
     // Send SyncReady to TUI
     let _ = event_tx.send(AppEvent::SyncReady {
@@ -132,26 +139,17 @@ async fn main() -> anyhow::Result<()> {
     // Player position channel (shared between event loop and control loop)
     let (player_pos_tx, player_pos_rx) = watch::channel(0.0f64);
 
-    // Add a stub playlist item and set it as the current file
-    let local_event_tx = sync_engine.local_event_sender();
-    let item_id = ItemId {
-        user: local_peer.clone(),
-        seq: 0,
-    };
-    let _ = local_event_tx.send(LocalEvent::PlaylistAction(PlaylistAction::Add {
-        id: item_id.clone(),
-        filename: "video.mkv".to_string(),
-        after: None,
-    }));
-    let _ = local_event_tx.send(LocalEvent::FileChanged {
-        file_id: Some(item_id),
-    });
+    // Resolved file path channel: TUI tells player control loop which file to load
+    let (resolved_path_tx, resolved_path_rx) = watch::channel(None::<PathBuf>);
+    let _ = event_tx.send(AppEvent::ResolvedPathSender(resolved_path_tx));
 
     // Spawn player ↔ sync bridge tasks
     tokio::spawn(player_loop::player_event_loop(
         player_rx,
         sync_engine.local_event_sender(),
         player_pos_tx,
+        Some(Arc::clone(&db)),
+        None, // TODO: wire CurrentFileInfo channel from TUI
     ));
     tokio::spawn(player_loop::player_control_loop(
         Arc::clone(&shared_state),
@@ -159,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         local_peer,
         version_rx,
         player_pos_rx,
+        resolved_path_rx,
     ));
 
     // Spawn connection event forwarder (uses clock_svc.subscribe for post-clock-sync events)

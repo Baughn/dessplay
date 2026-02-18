@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, trace};
 
 use self::ipc::MpvIpc;
-use self::protocol::{MpvEvent, OBSERVE_EOF_REACHED, OBSERVE_PAUSE, OBSERVE_TIME_POS};
+use self::protocol::{MpvEvent, OBSERVE_DURATION, OBSERVE_EOF_REACHED, OBSERVE_PAUSE, OBSERVE_TIME_POS};
 use super::bridge::PlayerBridge;
 use super::error::PlayerError;
 use super::events::PlayerEvent;
@@ -201,6 +201,12 @@ impl MpvPlayer {
             json!("eof-reached"),
         ])
         .await?;
+        ipc.send_command(vec![
+            json!("observe_property"),
+            json!(OBSERVE_DURATION),
+            json!("duration"),
+        ])
+        .await?;
         Ok(())
     }
 
@@ -281,6 +287,12 @@ impl MpvPlayer {
                                     .unwrap_or(false);
                                 if eof {
                                     let _ = player_tx.try_send(PlayerEvent::EndOfFile);
+                                }
+                            }
+                            (OBSERVE_DURATION, "duration") => {
+                                let dur = prop.data.as_ref().and_then(|v| v.as_f64());
+                                if let Some(dur) = dur {
+                                    let _ = player_tx.try_send(PlayerEvent::DurationChanged(dur));
                                 }
                             }
                             _ => {

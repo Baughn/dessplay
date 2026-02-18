@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -5,8 +7,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::state::StateView;
+use crate::tui::FileResolution;
 
-pub fn render(frame: &mut Frame, area: Rect, view: Option<&StateView>) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    view: Option<&StateView>,
+    resolutions: &HashMap<String, FileResolution>,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Playlist ");
@@ -19,12 +27,17 @@ pub fn render(frame: &mut Frame, area: Rect, view: Option<&StateView>) {
             .iter()
             .map(|item| {
                 let is_current = view.current_file.as_ref() == Some(&item.id);
-                let style = if is_current {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
+                let style = match resolutions.get(&item.filename) {
+                    Some(FileResolution::Missing) => Style::default().fg(Color::Red),
+                    _ => {
+                        if is_current {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        }
+                    }
                 };
                 let prefix = if is_current { "> " } else { "  " };
                 ListItem::new(Line::from(Span::styled(
