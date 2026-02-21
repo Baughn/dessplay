@@ -1,13 +1,11 @@
-[package]
-name = "dessplay"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["dessplay-core", "dessplay", "dessplay-rendezvous"]
+exclude = ["fuzz"]
+resolver = "3"
 
-[lints.clippy]
+[workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 todo = "deny"
 dbg_macro = "deny"
-
-[dependencies]

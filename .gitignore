@@ -1,11 +1,7 @@
-/target
+target
 /cert.der
 /key.der
 .env
-
-
-# Added by cargo
-#
-# already existing elements were commented out
-
-#/target
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/crash-*

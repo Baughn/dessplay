@@ -1,0 +1,33 @@
+[package]
+name = "dessplay-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dessplay-core = { path = "../dessplay-core", features = ["fuzz"] }
+arbitrary = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "crdt_op"
+path = "fuzz_targets/crdt_op.rs"
+doc = false
+
+[[bin]]
+name = "crdt_convergence"
+path = "fuzz_targets/crdt_convergence.rs"
+doc = false
+
+[[bin]]
+name = "snapshot_roundtrip"
+path = "fuzz_targets/snapshot_roundtrip.rs"
+doc = false
+
+[[bin]]
+name = "ops_since"
+path = "fuzz_targets/ops_since.rs"
+doc = false

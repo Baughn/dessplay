@@ -349,11 +349,10 @@ are mapped onto the wire.
 
 ```rust
 enum CrdtOp {
-    /// LWW Register write
+    /// LWW Register write (strongly typed)
     LwwWrite {
-        register: RegisterId,
         timestamp: u64,
-        value: Vec<u8>,  // postcard-encoded register value
+        value: LwwValue,
     },
 
     /// Playlist operation
@@ -371,6 +370,14 @@ enum CrdtOp {
     },
 }
 
+/// Typed LWW register value — the register identity is embedded in the variant.
+enum LwwValue {
+    UserState(UserId, UserState),
+    FileState(UserId, FileId, FileState),
+    AniDb(FileId, Option<AniDbMetadata>),
+}
+
+/// Register identity without a value (used in version vectors and gap fill).
 enum RegisterId {
     UserState(UserId),
     FileState(UserId, FileId),

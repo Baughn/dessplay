@@ -1,0 +1,10 @@
+[package]
+name = "dessplay-rendezvous"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+dessplay-core = { path = "../dessplay-core" }

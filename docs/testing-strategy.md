@@ -354,45 +354,44 @@ text parsing.
 
 ## Fuzz Testing
 
-### Deserialization Fuzzing
+All fuzz targets use structured `Arbitrary`-based input generation (via
+`#[derive(arbitrary::Arbitrary)]` on core types, behind the `fuzz` feature
+flag). This lets libfuzzer explore application logic directly rather than
+spending time on serialization format coverage.
 
-All postcard-encoded messages received from the network are deserialized from
-untrusted input. Fuzz targets ensure malformed input cannot crash the process:
+Run with `cargo +nightly fuzz run <target>`, or use the convenience script:
 
-```rust
-// fuzz/fuzz_targets/peer_control.rs
-fuzz_target!(|data: &[u8]| {
-    let _ = postcard::from_bytes::<PeerControl>(data);
-});
-
-// fuzz/fuzz_targets/peer_datagram.rs
-fuzz_target!(|data: &[u8]| {
-    let _ = postcard::from_bytes::<PeerDatagram>(data);
-});
-
-// fuzz/fuzz_targets/rv_control.rs
-fuzz_target!(|data: &[u8]| {
-    let _ = postcard::from_bytes::<RvControl>(data);
-});
+```bash
+./fuzz/run.sh                     # all targets, 300s each
+./fuzz/run.sh crdt_op             # one target, 300s
+./fuzz/run.sh crdt_op 30          # one target, 30s
 ```
 
-Run with `cargo fuzz run <target>`. Fuzz for at least 10 minutes per target
-before release.
+Requires a nightly toolchain and `cargo-fuzz` installed globally. Fuzz for at
+least 10 minutes per target before release.
 
-### CRDT Op Fuzzing
+### CRDT Op Replay (`crdt_op`)
 
-Beyond deserialization, fuzz the CRDT replay engine with random op sequences
-to ensure it never panics:
+Applies arbitrary sequences of `CrdtOp` to a `CrdtState`, then calls
+`snapshot()` and `version_vectors()`. Asserts no panics on any input.
 
-```rust
-fuzz_target!(|ops: Vec<CrdtOp>| {
-    let mut state = CrdtState::new();
-    for op in ops {
-        state.apply(op);  // must not panic
-    }
-    state.snapshot();  // must not panic
-});
-```
+### CRDT Convergence (`crdt_convergence`)
+
+Applies the same set of ops in two different orders (original and a seeded
+shuffle), then asserts that both states produce identical snapshots. Tests the
+core CRDT invariant: convergence regardless of operation order.
+
+### Snapshot Round-Trip (`snapshot_roundtrip`)
+
+Builds state from ops, takes a snapshot, loads it into a fresh `CrdtState`,
+and asserts both states produce identical snapshots and version vectors.
+
+### Gap-Fill Round-Trip (`ops_since`)
+
+Builds two peers from overlapping op sets (a "behind" peer with base ops, an
+"ahead" peer with base + new ops). Uses `version_vectors()` and `ops_since()`
+to compute catch-up ops, applies them to the behind peer, and asserts the
+snapshots converge.
 
 ---
 
@@ -452,6 +451,6 @@ a test media file). They are:
 |-------|---------|
 | `proptest` | Property-based testing for CRDT convergence |
 | `insta` | Snapshot testing for TUI rendering |
-| `cargo-fuzz` / `libfuzzer-sys` | Fuzz testing for deserialization and CRDT ops |
+| `cargo-fuzz` / `libfuzzer-sys` | Fuzz testing for CRDT state machine properties |
 | `tokio::time::pause()` | Deterministic time control in async tests |
 | `tracing-test` | Capture and assert on log output in tests |
