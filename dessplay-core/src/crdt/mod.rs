@@ -44,7 +44,11 @@ impl CrdtState {
     /// Apply a single CRDT operation, dispatching to the correct sub-CRDT.
     ///
     /// Returns true if the operation changed state (was not a duplicate/stale).
+    /// Returns false (and ignores the op) if validation fails.
     pub fn apply_op(&mut self, op: &CrdtOp) -> bool {
+        if !Self::validate_op(op) {
+            return false;
+        }
         match op {
             CrdtOp::LwwWrite { timestamp, value } => self.apply_lww_write(*timestamp, value),
             CrdtOp::PlaylistOp { timestamp, action } => {
@@ -56,6 +60,26 @@ impl CrdtState {
                 timestamp,
                 text,
             } => self.chat.append(user_id.clone(), *seq, *timestamp, text.clone()),
+        }
+    }
+
+    /// Reject ops with invalid fields: timestamp 0 (reserved sentinel),
+    /// non-finite f32 progress (breaks PartialOrd tiebreak in LWW).
+    fn validate_op(op: &CrdtOp) -> bool {
+        match op {
+            CrdtOp::LwwWrite { timestamp, value } => {
+                if *timestamp == 0 {
+                    return false;
+                }
+                if let LwwValue::FileState(_, _, FileState::Downloading { progress }) = value
+                    && !progress.is_finite()
+                {
+                    return false;
+                }
+                true
+            }
+            CrdtOp::PlaylistOp { timestamp, .. } => *timestamp != 0,
+            CrdtOp::ChatAppend { timestamp, .. } => *timestamp != 0,
         }
     }
 
@@ -355,6 +379,122 @@ mod tests {
         let vv = state.version_vectors();
         let ops = state.ops_since(&vv);
         assert!(ops.is_empty());
+    }
+
+    // --- Regression tests for fuzz-discovered bugs ---
+
+    #[test]
+    fn test_nan_filestate_rejected() {
+        let mut state = CrdtState::new();
+        let op = make_lww_op(
+            LwwValue::FileState(
+                uid("alice"),
+                fid(1),
+                FileState::Downloading {
+                    progress: f32::NAN,
+                },
+            ),
+            100,
+        );
+        assert!(!state.apply_op(&op));
+        assert_eq!(state.file_states.read(&(uid("alice"), fid(1))), None);
+
+        // Also reject infinity
+        let op_inf = make_lww_op(
+            LwwValue::FileState(
+                uid("alice"),
+                fid(1),
+                FileState::Downloading {
+                    progress: f32::INFINITY,
+                },
+            ),
+            100,
+        );
+        assert!(!state.apply_op(&op_inf));
+        assert_eq!(state.file_states.read(&(uid("alice"), fid(1))), None);
+    }
+
+    #[test]
+    fn test_timestamp_zero_rejected() {
+        let mut state = CrdtState::new();
+
+        // LWW with timestamp 0
+        let lww_op = make_lww_op(
+            LwwValue::UserState(uid("alice"), UserState::Ready),
+            0,
+        );
+        assert!(!state.apply_op(&lww_op));
+        assert_eq!(state.user_states.read(&uid("alice")), None);
+
+        // Playlist with timestamp 0
+        let playlist_op = CrdtOp::PlaylistOp {
+            timestamp: 0,
+            action: PlaylistAction::Add {
+                file_id: fid(1),
+                after: None,
+            },
+        };
+        assert!(!state.apply_op(&playlist_op));
+        assert!(state.playlist.snapshot().is_empty());
+
+        // Chat with timestamp 0
+        let chat_op = CrdtOp::ChatAppend {
+            user_id: uid("alice"),
+            seq: 0,
+            timestamp: 0,
+            text: "hello".into(),
+        };
+        assert!(!state.apply_op(&chat_op));
+        assert!(state.chat.merged_view().is_empty());
+    }
+
+    #[test]
+    fn test_chat_gap_fill_with_noncontiguous_seqs() {
+        // Peer A ("behind") has only seq 3
+        let mut behind = CrdtState::new();
+        behind.apply_op(&CrdtOp::ChatAppend {
+            user_id: uid("alice"),
+            seq: 3,
+            timestamp: 400,
+            text: "msg3".into(),
+        });
+
+        // Peer B ("ahead") has seq 1 and seq 3
+        let mut ahead = CrdtState::new();
+        ahead.apply_op(&CrdtOp::ChatAppend {
+            user_id: uid("alice"),
+            seq: 1,
+            timestamp: 200,
+            text: "msg1".into(),
+        });
+        ahead.apply_op(&CrdtOp::ChatAppend {
+            user_id: uid("alice"),
+            seq: 3,
+            timestamp: 400,
+            text: "msg3".into(),
+        });
+
+        // Behind's version vector: seq 3 is present but no contiguous prefix
+        // from 0, so version = None
+        let behind_vv = behind.version_vectors();
+        assert_eq!(behind_vv.chat_versions.get(&uid("alice")), None);
+
+        // Ahead should send all its ops (seq 1 and 3) to behind
+        let ops = ahead.ops_since(&behind_vv);
+        let chat_ops: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, CrdtOp::ChatAppend { .. }))
+            .collect();
+        assert_eq!(chat_ops.len(), 2);
+
+        // Apply them — behind now has seq 1 and 3
+        for op in &ops {
+            behind.apply_op(op);
+        }
+        let entries = behind.chat.entries_since(&uid("alice"), None);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].seq, 1);
+        assert_eq!(entries[1].seq, 3);
     }
 
 }

@@ -41,6 +41,8 @@ impl fmt::Display for UserId {
 pub struct PeerId(pub u64);
 
 /// Milliseconds since Unix epoch, adjusted via NTP-style shared clock.
+/// Value 0 is reserved as a sentinel meaning "no timestamp" / "never seen"
+/// and must not appear in any CRDT operation.
 pub type SharedTimestamp = u64;
 
 /// A user's self-reported readiness state.

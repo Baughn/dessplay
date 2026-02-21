@@ -11,6 +11,9 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 dessplay-core = { path = "../dessplay-core", features = ["fuzz"] }
 arbitrary = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+
+# --- Existing targets ---
 
 [[bin]]
 name = "crdt_op"
@@ -30,4 +33,31 @@ doc = false
 [[bin]]
 name = "ops_since"
 path = "fuzz_targets/ops_since.rs"
+doc = false
+
+# --- Targeted targets ---
+
+[[bin]]
+name = "lww_filestate_convergence"
+path = "fuzz_targets/lww_filestate_convergence.rs"
+doc = false
+
+[[bin]]
+name = "chat_gap_fill"
+path = "fuzz_targets/chat_gap_fill.rs"
+doc = false
+
+[[bin]]
+name = "playlist_targeted"
+path = "fuzz_targets/playlist_targeted.rs"
+doc = false
+
+[[bin]]
+name = "postcard_deserialize"
+path = "fuzz_targets/postcard_deserialize.rs"
+doc = false
+
+[[bin]]
+name = "multi_peer_sync"
+path = "fuzz_targets/multi_peer_sync.rs"
 doc = false

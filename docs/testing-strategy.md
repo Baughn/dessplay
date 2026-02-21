@@ -362,36 +362,93 @@ spending time on serialization format coverage.
 Run with `cargo +nightly fuzz run <target>`, or use the convenience script:
 
 ```bash
-./fuzz/run.sh                     # all targets, 300s each
+./fuzz/run.sh                     # all targets, 300s each, parallel
 ./fuzz/run.sh crdt_op             # one target, 300s
 ./fuzz/run.sh crdt_op 30          # one target, 30s
+./fuzz/run.sh --quick             # all targets, 30s each
+./fuzz/run.sh --targeted          # only targeted tests, 300s each
+./fuzz/run.sh -j4                 # limit to 4 parallel jobs
 ```
 
 Requires a nightly toolchain and `cargo-fuzz` installed globally. Fuzz for at
 least 10 minutes per target before release.
 
-### CRDT Op Replay (`crdt_op`)
+The run script suppresses libfuzzer progress output, showing only pass/fail
+per target with a final summary. Logs are written to a temp directory shown
+at startup. On failure, the crash artifact path is printed.
+
+### Generic Targets
+
+These throw unconstrained random `CrdtOp` sequences at `CrdtState`. Good for
+catching panics and broad invariant violations, but the vast input space means
+specific edge cases are unlikely to be hit quickly.
+
+#### CRDT Op Replay (`crdt_op`)
 
 Applies arbitrary sequences of `CrdtOp` to a `CrdtState`, then calls
 `snapshot()` and `version_vectors()`. Asserts no panics on any input.
 
-### CRDT Convergence (`crdt_convergence`)
+#### CRDT Convergence (`crdt_convergence`)
 
 Applies the same set of ops in two different orders (original and a seeded
 shuffle), then asserts that both states produce identical snapshots. Tests the
 core CRDT invariant: convergence regardless of operation order.
 
-### Snapshot Round-Trip (`snapshot_roundtrip`)
+#### Snapshot Round-Trip (`snapshot_roundtrip`)
 
 Builds state from ops, takes a snapshot, loads it into a fresh `CrdtState`,
 and asserts both states produce identical snapshots and version vectors.
 
-### Gap-Fill Round-Trip (`ops_since`)
+#### Gap-Fill Round-Trip (`ops_since`)
 
 Builds two peers from overlapping op sets (a "behind" peer with base ops, an
 "ahead" peer with base + new ops). Uses `version_vectors()` and `ops_since()`
 to compute catch-up ops, applies them to the behind peer, and asserts the
 snapshots converge.
+
+### Targeted Targets
+
+These use constrained input spaces (small key sets, small timestamp ranges) to
+force specific edge cases that the generic targets rarely hit. Much higher
+probability of finding real bugs per fuzzer iteration.
+
+#### LWW FileState Convergence (`lww_filestate_convergence`)
+
+Tests LWW register convergence with `FileState` values specifically. Uses only
+4 keys and 4 timestamps to force same-key same-timestamp tiebreaks constantly.
+Since `Arbitrary` for `f32` generates NaN/Infinity/subnormals, this directly
+targets the PartialOrd tiebreak path. Applies ops forward and reversed, asserts
+both registers are equal.
+
+#### Chat Gap Fill (`chat_gap_fill`)
+
+Tests the chat CRDT's gap-fill protocol with constrained inputs: 2 users, seq
+numbers 0-15. The small seq space makes non-contiguous sequences inevitable,
+exposing bugs where max-seq version tracking fails to identify missing entries
+with lower sequence numbers.
+
+#### Playlist Targeted (`playlist_targeted`)
+
+Convergence test for the playlist op-log CRDT with constrained inputs: 5 file
+IDs, 16 timestamps, compact action encoding. Forces meaningful Add/Remove/Move
+interactions on the same files (the generic target's random 16-byte FileIds
+almost never collide).
+
+#### Postcard Deserialize (`postcard_deserialize`)
+
+Feeds raw bytes (not structured `Arbitrary` input) to `postcard::from_bytes`
+for all network-facing protocol types: `CrdtOp`, `RvControl`, `PeerControl`,
+`PeerDatagram`, `RelayEnvelope`, `GapFillRequest`, `GapFillResponse`,
+`ChunkRequest`, `ChunkData`. Must not panic on any input. Defends against DoS
+from malformed network packets.
+
+#### Multi-Peer Sync (`multi_peer_sync`)
+
+Simulates 3 peers receiving random subsets of operations (controlled by a
+per-op bitmask), then performing 3 rounds of version-vector-based sync via
+`ops_since`. Asserts all peers converge to identical snapshots. Exercises the
+complete sync protocol: partial delivery, gap detection, catch-up, and
+multi-round convergence.
 
 ---
 

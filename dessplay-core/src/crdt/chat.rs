@@ -71,11 +71,23 @@ impl Chat {
         all
     }
 
-    /// Highest sequence number seen for a user.
+    /// Highest contiguous seq starting from 0. Returns `None` if the user has
+    /// no entries or their first entry isn't seq 0 (need everything resent).
     pub fn version(&self, user_id: &UserId) -> Option<u64> {
-        self.logs
-            .get(user_id)
-            .and_then(|log| log.last().map(|e| e.seq))
+        let log = self.logs.get(user_id)?;
+        // Entries are sorted by seq (maintained by partition_point in append).
+        // Walk from the start to find the contiguous prefix.
+        for (i, entry) in log.iter().enumerate() {
+            if entry.seq != i as u64 {
+                return if i == 0 { None } else { Some(i as u64 - 1) };
+            }
+        }
+        // All entries are contiguous 0..len
+        if log.is_empty() {
+            None
+        } else {
+            Some(log.len() as u64 - 1)
+        }
     }
 
     /// All entries for a user after the given seq number.
@@ -199,5 +211,35 @@ mod tests {
         assert_eq!(chat.version(&uid("alice")), Some(2));
         let entries = chat.entries_since(&uid("alice"), Some(u64::MAX));
         assert!(entries.is_empty());
+    }
+
+    // --- Regression test for fuzz-discovered bug ---
+
+    #[test]
+    fn test_version_contiguous_prefix() {
+        let mut chat = Chat::new();
+
+        // [0, 1, 5] → contiguous prefix is 0,1 → version = Some(1)
+        chat.append(uid("alice"), 0, 100, "a".into());
+        chat.append(uid("alice"), 1, 200, "b".into());
+        chat.append(uid("alice"), 5, 600, "f".into());
+        assert_eq!(chat.version(&uid("alice")), Some(1));
+
+        // [3, 5] → no contiguous prefix from 0 → version = None
+        let mut chat2 = Chat::new();
+        chat2.append(uid("bob"), 3, 400, "d".into());
+        chat2.append(uid("bob"), 5, 600, "f".into());
+        assert_eq!(chat2.version(&uid("bob")), None);
+
+        // [0, 1, 2] → all contiguous → version = Some(2)
+        let mut chat3 = Chat::new();
+        chat3.append(uid("carol"), 0, 100, "a".into());
+        chat3.append(uid("carol"), 1, 200, "b".into());
+        chat3.append(uid("carol"), 2, 300, "c".into());
+        assert_eq!(chat3.version(&uid("carol")), Some(2));
+
+        // Empty → None
+        let chat4 = Chat::new();
+        assert_eq!(chat4.version(&uid("dave")), None);
     }
 }

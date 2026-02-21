@@ -121,6 +121,7 @@ dependencies = [
  "arbitrary",
  "dessplay-core",
  "libfuzzer-sys",
+ "postcard",
 ]
 
 [[package]]
