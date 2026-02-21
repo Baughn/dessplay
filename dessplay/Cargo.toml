@@ -12,3 +12,13 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 postcard = { version = "1", features = ["alloc"] }
 dirs = "6"
 anyhow = "1"
+quinn = "0.11"
+rustls = "0.23"
+rcgen = "0.13"
+tokio = { version = "1", features = ["full"] }
+ring = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+dessplay-rendezvous = { path = "../dessplay-rendezvous" }

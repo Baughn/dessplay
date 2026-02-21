@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 dessplay-core = { path = "../dessplay-core", features = ["fuzzing"] }
 arbitrary = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
+tokio = { version = "1", features = ["rt", "time", "macros"] }
 
 # --- Existing targets ---
 
@@ -60,4 +61,19 @@ doc = false
 [[bin]]
 name = "multi_peer_sync"
 path = "fuzz_targets/multi_peer_sync.rs"
+doc = false
+
+[[bin]]
+name = "framing_deserialize"
+path = "fuzz_targets/framing_deserialize.rs"
+doc = false
+
+[[bin]]
+name = "time_sync_convergence"
+path = "fuzz_targets/time_sync_convergence.rs"
+doc = false
+
+[[bin]]
+name = "network_sim"
+path = "fuzz_targets/network_sim.rs"
 doc = false

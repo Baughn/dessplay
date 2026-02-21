@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use dessplay_core::crdt::CrdtState;
 
-use crate::storage::ServerStorage;
+use dessplay_rendezvous::storage::ServerStorage;
 
 pub fn dump_database(storage: &ServerStorage) -> Result<()> {
     println!("=== DessPlay Rendezvous Server Database Dump ===\n");
@@ -75,7 +75,7 @@ fn dump_anidb_queue(storage: &ServerStorage) -> Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::storage::ServerStorage;
+    use dessplay_rendezvous::storage::ServerStorage;
     use dessplay_core::protocol::{CrdtOp, LwwValue, PlaylistAction};
     use dessplay_core::types::{FileId, UserId, UserState};
 

@@ -40,6 +40,12 @@ impl fmt::Display for UserId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PeerId(pub u64);
 
+impl fmt::Display for PeerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Peer({})", self.0)
+    }
+}
+
 /// Milliseconds since Unix epoch, adjusted via NTP-style shared clock.
 /// Value 0 is reserved as a sentinel meaning "no timestamp" / "never seen"
 /// and must not appear in any CRDT operation.

@@ -147,6 +147,7 @@ pub struct ChatEntry {
 /// Information about a connected peer, distributed by the rendezvous server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerInfo {
+    pub peer_id: PeerId,
     pub username: String,
     pub addresses: Vec<SocketAddr>,
     pub connected_since: SharedTimestamp,
@@ -160,11 +161,11 @@ pub struct PeerInfo {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RvControl {
     // Client → Server
-    Auth { password: String },
+    Auth { password: String, username: String },
     TimeSyncRequest { client_send: u64 },
 
     // Server → Client
-    AuthOk { observed_addr: SocketAddr },
+    AuthOk { peer_id: PeerId, observed_addr: SocketAddr },
     AuthFailed,
     PeerList { peers: Vec<PeerInfo> },
     TimeSyncResponse {
@@ -193,7 +194,7 @@ pub enum RvControl {
 /// Messages on the peer ↔ peer control stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerControl {
-    Hello { username: String },
+    Hello { peer_id: PeerId, username: String },
 
     // State sync
     StateOp { op: CrdtOp },

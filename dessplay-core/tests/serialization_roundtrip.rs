@@ -156,6 +156,7 @@ fn roundtrip_crdt_snapshot() {
 #[test]
 fn roundtrip_peer_info() {
     roundtrip(&PeerInfo {
+        peer_id: PeerId(1),
         username: "alice".into(),
         addresses: vec![SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 8080)],
         connected_since: 12345,
@@ -168,8 +169,10 @@ fn roundtrip_peer_info() {
 fn roundtrip_rv_control() {
     roundtrip(&RvControl::Auth {
         password: "secret".into(),
+        username: "alice".into(),
     });
     roundtrip(&RvControl::AuthOk {
+        peer_id: PeerId(1),
         observed_addr: SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 1234),
     });
     roundtrip(&RvControl::AuthFailed);
@@ -181,6 +184,7 @@ fn roundtrip_rv_control() {
     });
     roundtrip(&RvControl::PeerList {
         peers: vec![PeerInfo {
+            peer_id: PeerId(2),
             username: "bob".into(),
             addresses: vec![],
             connected_since: 0,
@@ -204,6 +208,7 @@ fn roundtrip_rv_control() {
 #[test]
 fn roundtrip_peer_control() {
     roundtrip(&PeerControl::Hello {
+        peer_id: PeerId(1),
         username: "alice".into(),
     });
     roundtrip(&PeerControl::StateOp {
