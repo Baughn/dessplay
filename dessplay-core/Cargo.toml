@@ -7,13 +7,12 @@ edition = "2024"
 workspace = true
 
 [features]
-fuzz = ["arbitrary"]
+fuzzing = ["arbitrary"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 ed2k = "1"
-bitvec = { version = "1", features = ["serde"] }
 digest = "0.10"
 arbitrary = { version = "1", features = ["derive"], optional = true }
 

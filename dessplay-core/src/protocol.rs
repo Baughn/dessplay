@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
-use bitvec::vec::BitVec;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{AniDbMetadata, FileId, FileState, PeerId, SharedTimestamp, UserId, UserState};
@@ -26,7 +25,7 @@ pub enum RegisterId {
 /// This replaces the previous `RegisterId` + `Vec<u8>` representation so that
 /// the wire format cannot carry a value mismatched for its register type.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub enum LwwValue {
     UserState(UserId, UserState),
     FileState(UserId, FileId, FileState),
@@ -49,7 +48,7 @@ impl LwwValue {
 
 /// A single playlist mutation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub enum PlaylistAction {
     Add {
         file_id: FileId,
@@ -66,7 +65,7 @@ pub enum PlaylistAction {
 
 /// A CRDT operation — the unit of replication.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub enum CrdtOp {
     /// LWW Register write with strongly-typed value.
     LwwWrite {
@@ -192,7 +191,7 @@ pub enum RvControl {
 // ---------------------------------------------------------------------------
 
 /// Messages on the peer ↔ peer control stream.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerControl {
     Hello { username: String },
 
@@ -204,11 +203,8 @@ pub enum PeerControl {
     },
 
     // File transfer
-    FileAvailability { file_id: FileId, bitfield: BitVec },
+    FileAvailability { file_id: FileId, bitfield: Vec<u8> },
 }
-
-// Manual Eq: BitVec supports Eq, so this is safe.
-impl Eq for PeerControl {}
 
 // ---------------------------------------------------------------------------
 // Peer Datagram Messages

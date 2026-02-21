@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-dessplay-core = { path = "../dessplay-core", features = ["fuzz"] }
+dessplay-core = { path = "../dessplay-core", features = ["fuzzing"] }
 arbitrary = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 

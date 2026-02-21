@@ -219,15 +219,9 @@ fn roundtrip_peer_control() {
         epoch: 5,
         versions: VersionVectors::new(5),
     });
-    let mut bv = bitvec::vec::BitVec::new();
-    bv.push(true);
-    bv.push(false);
-    bv.push(true);
-    bv.push(true);
-    bv.push(false);
     roundtrip(&PeerControl::FileAvailability {
         file_id: fid(1),
-        bitfield: bv,
+        bitfield: vec![0b10110000],
     });
 }
 
@@ -283,6 +277,21 @@ fn roundtrip_chunk_data() {
         index: 42,
         data: vec![0xAB; 256],
     });
+}
+
+/// Regression test: bitvec serde panic on corrupted input.
+/// Crash artifact from fuzz/artifacts/postcard_deserialize/crash-7ca0899...
+#[test]
+fn deserialize_corrupted_peer_control_no_panic() {
+    let bad_bytes: &[u8] = &[
+        0x03, 0x00, 0x05, 0x13, 0x13, 0x13, 0x3f, 0x13, 0x33, 0x00, 0x13, 0x1b,
+        0xf1, 0x4c, 0x13, 0x13, 0x13, 0x13, 0x62, 0x69, 0x74, 0x76, 0x65, 0x63,
+        0x3a, 0x3a, 0x6f, 0x72, 0x64, 0x65, 0x72, 0x3a, 0x3a, 0x4c, 0x73, 0x62,
+        0x30, 0x40, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x63,
+        0x3a, 0x3a, 0x6f, 0x72, 0x33, 0x00, 0x64, 0x65, 0x72, 0x3a, 0x3a,
+    ];
+    // Must not panic — should return Err.
+    let _ = postcard::from_bytes::<PeerControl>(bad_bytes);
 }
 
 // --- Core types ---

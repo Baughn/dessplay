@@ -101,19 +101,48 @@ impl Playlist {
     /// receiver deduplicates. This avoids the bug where a lower-timestamp
     /// op was invisible to timestamp-based version tracking.
     pub fn version(&self) -> u64 {
-        // FNV-1a style hash over op count + each (timestamp, action discriminant)
+        // FNV-1a style hash over op count + each (timestamp, full action data)
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(self.ops.len() as u64);
         for (ts, action) in &self.ops {
             h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(*ts);
-            let disc = match action {
-                PlaylistAction::Add { .. } => 0u64,
-                PlaylistAction::Remove { .. } => 1,
-                PlaylistAction::Move { .. } => 2,
-            };
-            h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(disc);
+            match action {
+                PlaylistAction::Add { file_id, after } => {
+                    h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(0);
+                    h = Self::hash_file_id(h, file_id);
+                    h = Self::hash_option_file_id(h, after.as_ref());
+                }
+                PlaylistAction::Remove { file_id } => {
+                    h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(1);
+                    h = Self::hash_file_id(h, file_id);
+                }
+                PlaylistAction::Move { file_id, after } => {
+                    h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(2);
+                    h = Self::hash_file_id(h, file_id);
+                    h = Self::hash_option_file_id(h, after.as_ref());
+                }
+            }
         }
         h
+    }
+
+    fn hash_file_id(mut h: u64, fid: &FileId) -> u64 {
+        for chunk in fid.0.chunks(8) {
+            let mut buf = [0u8; 8];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(u64::from_le_bytes(buf));
+        }
+        h
+    }
+
+    fn hash_option_file_id(mut h: u64, fid: Option<&FileId>) -> u64 {
+        match fid {
+            Some(fid) => {
+                h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(1);
+                Self::hash_file_id(h, fid)
+            }
+            None => h.wrapping_mul(0x0100_0000_01b3).wrapping_add(0),
+        }
     }
 
     /// All operations that the remote may be missing.
@@ -270,6 +299,25 @@ mod tests {
         let mut pl = Playlist::new();
         assert!(pl.apply(1, PlaylistAction::Add { file_id: fid(1), after: None }));
         assert!(!pl.apply(1, PlaylistAction::Add { file_id: fid(1), after: None }));
+    }
+
+    // --- Regression test: version hash must include FileId ---
+    #[test]
+    fn version_differs_for_different_file_ids() {
+        // Regression: version() only hashed action discriminant, not FileId.
+        // Two playlists with different FileIds but the same timestamps and
+        // action types produced identical hashes, causing sync to miss ops.
+        let mut pl_a = Playlist::new();
+        pl_a.apply(100, PlaylistAction::Remove { file_id: fid(1) });
+
+        let mut pl_b = Playlist::new();
+        pl_b.apply(100, PlaylistAction::Remove { file_id: fid(2) });
+
+        assert_ne!(
+            pl_a.version(),
+            pl_b.version(),
+            "version must differ when FileIds differ",
+        );
     }
 
     // --- Regression test: ops_since must not miss lower-timestamp ops ---

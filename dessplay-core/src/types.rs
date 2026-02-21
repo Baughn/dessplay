@@ -3,7 +3,7 @@ use std::fmt;
 
 /// ed2k hash = MD4 = 128 bits. Unique file identifier used across the protocol.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub struct FileId(pub [u8; 16]);
 
 impl fmt::Debug for FileId {
@@ -27,7 +27,7 @@ impl fmt::Display for FileId {
 
 /// Self-chosen username identifying a user.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub struct UserId(pub String);
 
 impl fmt::Display for UserId {
@@ -47,7 +47,7 @@ pub type SharedTimestamp = u64;
 
 /// A user's self-reported readiness state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub enum UserState {
     Ready,
     Paused,
@@ -56,7 +56,7 @@ pub enum UserState {
 
 /// A user's ability to play the current file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub enum FileState {
     Ready,
     Missing,
@@ -103,7 +103,7 @@ impl Ord for FileState {
 
 /// Metadata retrieved from AniDB for a file.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub struct AniDbMetadata {
     pub anime_id: u64,
     pub anime_name: String,

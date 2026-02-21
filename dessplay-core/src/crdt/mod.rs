@@ -140,11 +140,12 @@ impl CrdtState {
     pub fn ops_since(&self, remote: &VersionVectors) -> Vec<CrdtOp> {
         let mut ops = Vec::new();
 
-        // LWW registers: send any that are newer than remote's known version
+        // LWW registers: send any that are newer or equal (equal timestamps may
+        // hide value differences from Ord tiebreaking)
         for (key, (ts, val)) in self.user_states.iter() {
             let reg = RegisterId::UserState(key.clone());
             let remote_ts = remote.lww_versions.get(&reg).copied().unwrap_or(0);
-            if *ts > remote_ts {
+            if *ts >= remote_ts {
                 ops.push(CrdtOp::LwwWrite {
                     timestamp: *ts,
                     value: LwwValue::UserState(key.clone(), *val),
@@ -156,7 +157,7 @@ impl CrdtState {
             let (uid, fid) = key;
             let reg = RegisterId::FileState(uid.clone(), *fid);
             let remote_ts = remote.lww_versions.get(&reg).copied().unwrap_or(0);
-            if *ts > remote_ts {
+            if *ts >= remote_ts {
                 ops.push(CrdtOp::LwwWrite {
                     timestamp: *ts,
                     value: LwwValue::FileState(uid.clone(), *fid, val.clone()),
@@ -167,7 +168,7 @@ impl CrdtState {
         for (key, (ts, val)) in self.anidb.iter() {
             let reg = RegisterId::AniDb(*key);
             let remote_ts = remote.lww_versions.get(&reg).copied().unwrap_or(0);
-            if *ts > remote_ts {
+            if *ts >= remote_ts {
                 ops.push(CrdtOp::LwwWrite {
                     timestamp: *ts,
                     value: LwwValue::AniDb(*key, val.clone()),
@@ -219,6 +220,7 @@ impl CrdtState {
 mod tests {
     use super::*;
     use crate::protocol::PlaylistAction;
+    use crate::types::AniDbMetadata;
 
     fn uid(name: &str) -> UserId {
         UserId(name.to_string())
@@ -544,6 +546,118 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].seq, 1);
         assert_eq!(entries[1].seq, 3);
+    }
+
+    // --- Regression tests for LWW tiebreak divergence (fuzz round 3) ---
+
+    #[test]
+    fn test_ops_since_lww_tiebreak_same_timestamp() {
+        // Regression: ops_since used `>` instead of `>=`, so when remote had the
+        // same timestamp but a different (losing) value from a tiebreak, the
+        // winning value was never sent.
+        let user = uid("alice");
+
+        // "behind" peer writes Ready at ts=100
+        let mut behind = CrdtState::new();
+        behind.apply_op(&make_lww_op(
+            LwwValue::UserState(user.clone(), UserState::Ready),
+            100,
+        ));
+
+        // "ahead" = clone of behind, then receives a concurrent write at the
+        // SAME timestamp but with a higher value (NotWatching > Ready in Ord)
+        let mut ahead = behind.clone();
+        ahead.apply_op(&make_lww_op(
+            LwwValue::UserState(user.clone(), UserState::NotWatching),
+            100,
+        ));
+
+        // Sanity: ahead resolved the tiebreak to NotWatching (higher Ord value)
+        assert_eq!(
+            ahead.user_states.read(&user),
+            Some(&UserState::NotWatching),
+        );
+        // behind still has Ready
+        assert_eq!(
+            behind.user_states.read(&user),
+            Some(&UserState::Ready),
+        );
+
+        // behind's version vector says ts=100 for this register
+        let behind_vv = behind.version_vectors();
+        assert_eq!(
+            behind_vv
+                .lww_versions
+                .get(&RegisterId::UserState(user.clone())),
+            Some(&100),
+        );
+
+        // ops_since must return the winning write so behind can catch up
+        let catch_up = ahead.ops_since(&behind_vv);
+        assert!(
+            !catch_up.is_empty(),
+            "ops_since must send the tiebreak-winning value when timestamps are equal",
+        );
+
+        // Apply catch-up and verify convergence
+        for op in &catch_up {
+            behind.apply_op(op);
+        }
+        assert_eq!(ahead.snapshot(), behind.snapshot());
+    }
+
+    #[test]
+    fn test_ops_since_lww_tiebreak_all_register_types() {
+        // Verify the fix applies to all three LWW register types:
+        // user_states, file_states, and anidb.
+        let user = uid("bob");
+        let file = fid(1);
+
+        let mut behind = CrdtState::new();
+        // FileState: Ready (discriminant 0) at ts=200
+        behind.apply_op(&make_lww_op(
+            LwwValue::FileState(user.clone(), file, FileState::Ready),
+            200,
+        ));
+        // AniDb: None at ts=300
+        behind.apply_op(&make_lww_op(LwwValue::AniDb(file, None), 300));
+
+        let mut ahead = behind.clone();
+        // FileState: Missing (discriminant 1 > 0) at same ts=200
+        ahead.apply_op(&make_lww_op(
+            LwwValue::FileState(user.clone(), file, FileState::Missing),
+            200,
+        ));
+        // AniDb: Some(metadata) > None at same ts=300
+        let meta = AniDbMetadata {
+            anime_id: 1,
+            anime_name: "Test".into(),
+            episode_number: 1,
+            episode_name: "Ep1".into(),
+            group_name: "Grp".into(),
+        };
+        ahead.apply_op(&make_lww_op(LwwValue::AniDb(file, Some(meta)), 300));
+
+        let behind_vv = behind.version_vectors();
+        let catch_up = ahead.ops_since(&behind_vv);
+
+        // Must include both the FileState and AniDb ops
+        let file_state_ops = catch_up
+            .iter()
+            .filter(|op| matches!(op, CrdtOp::LwwWrite { value: LwwValue::FileState(..), .. }))
+            .count();
+        let anidb_ops = catch_up
+            .iter()
+            .filter(|op| matches!(op, CrdtOp::LwwWrite { value: LwwValue::AniDb(..), .. }))
+            .count();
+
+        assert_eq!(file_state_ops, 1, "must send FileState tiebreak winner");
+        assert_eq!(anidb_ops, 1, "must send AniDb tiebreak winner");
+
+        for op in &catch_up {
+            behind.apply_op(op);
+        }
+        assert_eq!(ahead.snapshot(), behind.snapshot());
     }
 
 }
