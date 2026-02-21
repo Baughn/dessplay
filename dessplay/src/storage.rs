@@ -18,6 +18,14 @@ pub struct Config {
     pub password: Option<String>,
 }
 
+/// TOFU certificate entry, as stored in SQLite.
+#[derive(Debug)]
+pub struct TofuCert {
+    pub server_address: String,
+    pub fingerprint: Vec<u8>,
+    pub first_seen_at: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Client storage
 // ---------------------------------------------------------------------------
@@ -363,6 +371,53 @@ impl ClientStorage {
                 |row| row.get(0),
             )
             .optional()
+    }
+
+    pub fn get_all_tofu_certs(&self) -> Result<Vec<TofuCert>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT server_address, fingerprint, first_seen_at FROM tofu_certs \
+             ORDER BY server_address",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(server_address, fingerprint, first_seen_at)| TofuCert {
+                server_address,
+                fingerprint,
+                first_seen_at: first_seen_at as u64,
+            })
+            .collect())
+    }
+
+    pub fn get_all_file_mappings(&self) -> Result<Vec<(FileId, PathBuf)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT file_hash, local_path FROM file_mappings ORDER BY local_path")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(hash, path)| {
+                ensure!(
+                    hash.len() == 16,
+                    "corrupt file_hash in file_mappings: expected 16 bytes, got {}",
+                    hash.len()
+                );
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&hash);
+                Ok((FileId(arr), PathBuf::from(path)))
+            })
+            .collect()
     }
 }
 

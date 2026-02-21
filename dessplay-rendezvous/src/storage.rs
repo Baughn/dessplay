@@ -6,6 +6,21 @@ use dessplay_core::protocol::{CrdtOp, CrdtSnapshot};
 use dessplay_core::types::FileId;
 
 // ---------------------------------------------------------------------------
+// AniDB queue entry (for dump/diagnostics)
+// ---------------------------------------------------------------------------
+
+/// An entry in the AniDB validation queue.
+#[derive(Debug)]
+pub struct AniDbQueueEntry {
+    pub file_id: FileId,
+    pub has_data: bool,
+    pub first_seen_at: u64,
+    pub last_checked_at: Option<u64>,
+    pub next_check_at: u64,
+    pub retry_count: u32,
+}
+
+// ---------------------------------------------------------------------------
 // AniDB revalidation schedule constants (milliseconds)
 // ---------------------------------------------------------------------------
 
@@ -266,6 +281,45 @@ impl ServerStorage {
             ],
         )?;
         Ok(())
+    }
+
+    /// Return all entries in the AniDB validation queue, ordered by next check time.
+    pub fn get_all_anidb_queue(&self) -> Result<Vec<AniDbQueueEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_hash, has_data, first_seen_at, last_checked_at, next_check_at, retry_count \
+             FROM anidb_queue ORDER BY next_check_at",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i32>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(hash, has_data, first_seen_at, last_checked_at, next_check_at, retry_count)| {
+                ensure!(
+                    hash.len() == 16,
+                    "corrupt file_hash in anidb_queue: expected 16 bytes, got {}",
+                    hash.len()
+                );
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&hash);
+                Ok(AniDbQueueEntry {
+                    file_id: FileId(arr),
+                    has_data,
+                    first_seen_at: first_seen_at as u64,
+                    last_checked_at: last_checked_at.map(|v| v as u64),
+                    next_check_at: next_check_at as u64,
+                    retry_count: retry_count as u32,
+                })
+            })
+            .collect()
     }
 }
 

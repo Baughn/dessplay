@@ -78,11 +78,29 @@ CRDT state and config survive process restarts.
 
 ## Phase 2.5: Debugging
 
+Status: Completed
+
 **Goal**: Debugging tools for network and storage layers.
 
 ### What gets built
+- `--dump` flag on both client and server binaries
+- Reads SQLite database, reconstructs full CRDT state from snapshot + op log
+- Pretty-prints all stored data: config, media roots, CRDT state, watch history,
+  file mappings, TOFU certs (client); CRDT state, AniDB queue (server)
+- `--help` flag on both binaries
+- Manual arg parsing (no clap dependency)
 
-TBD
+### Files added/modified
+- `dessplay/src/dump.rs` (new): client dump logic
+- `dessplay-rendezvous/src/dump.rs` (new): server dump logic
+- `dessplay/src/main.rs`: arg parsing, `--dump`/`--help`
+- `dessplay-rendezvous/src/main.rs`: arg parsing, `--dump`/`--help`
+- `dessplay/src/storage.rs`: added `get_all_tofu_certs()`, `get_all_file_mappings()`
+- `dessplay-rendezvous/src/storage.rs`: added `AniDbQueueEntry`, `get_all_anidb_queue()`
+
+### Testing
+- Smoke tests: empty DB and populated DB for both client and server dump modules
+- 4 new tests (2 per binary)
 
 
 ---
