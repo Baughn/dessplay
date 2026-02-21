@@ -15,7 +15,8 @@
 cd "$(dirname "$0")/.."
 
 DURATION=300
-JOBS=$(nproc 2>/dev/null || echo 4)
+JOBS=$(( $(lscpu -p=CORE | grep -v '^#' | sort -u | wc -l) - 2 ))
+if [[ "$JOBS" -lt 1 ]]; then JOBS=1; fi
 TARGET_SET="all"
 SINGLE_TARGET=""
 
@@ -76,17 +77,19 @@ run_one() {
     fi
 }
 
-# Launch all targets in parallel
-pids=()
+# Launch targets, limiting to $JOBS in parallel
+running=0
 for target in "${TARGETS[@]}"; do
+    if [[ $running -ge $JOBS ]]; then
+        wait -n 2>/dev/null || true
+        ((running--))
+    fi
     run_one "$target" &
-    pids+=($!)
+    ((running++))
 done
 
-# Wait for all to finish
-for pid in "${pids[@]}"; do
-    wait "$pid" 2>/dev/null || true
-done
+# Wait for remaining jobs to finish
+wait
 
 # Collect and display results
 PASSED=0
