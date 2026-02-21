@@ -8,3 +8,7 @@ workspace = true
 
 [dependencies]
 dessplay-core = { path = "../dessplay-core" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+postcard = { version = "1", features = ["alloc"] }
+dirs = "6"
+anyhow = "1"

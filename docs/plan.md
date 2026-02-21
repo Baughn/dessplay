@@ -19,6 +19,8 @@ dessplay-rendezvous/          (server binary: auth, relay, compaction, AniDB)
 
 ## Phase 1: Foundation & CRDTs
 
+Status: Completed
+
 **Goal**: Workspace, shared types, all CRDT implementations with property tests.
 No networking — pure logic.
 
@@ -49,6 +51,8 @@ round-trip correctly.
 
 ## Phase 2: Storage & Configuration
 
+Status: Completed
+
 **Goal**: SQLite persistence, config management.
 
 ### What gets built
@@ -69,6 +73,17 @@ round-trip correctly.
 
 ### Milestone
 CRDT state and config survive process restarts.
+
+---
+
+## Phase 2.5: Debugging
+
+**Goal**: Debugging tools for network and storage layers.
+
+### What gets built
+
+TBD
+
 
 ---
 
