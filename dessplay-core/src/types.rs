@@ -55,7 +55,7 @@ pub enum UserState {
 }
 
 /// A user's ability to play the current file.
-#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "fuzz", derive(arbitrary::Arbitrary))]
 pub enum FileState {
     Ready,
@@ -63,9 +63,43 @@ pub enum FileState {
     Downloading { progress: f32 },
 }
 
-// Manual Eq impl because f32 doesn't impl Eq, but our usage is safe
-// (progress is always a finite value 0.0..=1.0).
+// Manual PartialEq/Eq/PartialOrd/Ord impls to handle f32 (NaN-safe via total_cmp).
+impl PartialEq for FileState {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
 impl Eq for FileState {}
+
+impl PartialOrd for FileState {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FileState {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        fn discriminant(s: &FileState) -> u8 {
+            match s {
+                FileState::Ready => 0,
+                FileState::Missing => 1,
+                FileState::Downloading { .. } => 2,
+            }
+        }
+        let d = discriminant(self).cmp(&discriminant(other));
+        if d != std::cmp::Ordering::Equal {
+            return d;
+        }
+        match (self, other) {
+            (
+                FileState::Downloading { progress: a },
+                FileState::Downloading { progress: b },
+            ) => a.total_cmp(b),
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+}
 
 /// Metadata retrieved from AniDB for a file.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

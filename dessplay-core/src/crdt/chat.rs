@@ -28,7 +28,11 @@ impl Chat {
         }
     }
 
-    /// Append a message. Returns true if it was new (not a duplicate seq).
+    /// Append a message. Returns true if the operation changed state.
+    ///
+    /// On duplicate `(user_id, seq)`: applies LWW conflict resolution —
+    /// higher timestamp wins; on equal timestamp, lexicographically greater
+    /// text wins. This ensures convergence regardless of application order.
     pub fn append(
         &mut self,
         user_id: UserId,
@@ -38,13 +42,24 @@ impl Chat {
     ) -> bool {
         let log = self.logs.entry(user_id).or_default();
 
-        // Check for duplicate sequence number
-        if log.iter().any(|entry| entry.seq == seq) {
+        // Check for existing entry with same seq
+        let pos = log.partition_point(|entry| entry.seq < seq);
+        if pos < log.len() && log[pos].seq == seq {
+            let existing = &log[pos];
+            if timestamp > existing.timestamp
+                || (timestamp == existing.timestamp && text > existing.text)
+            {
+                log[pos] = ChatEntry {
+                    seq,
+                    timestamp,
+                    text,
+                };
+                return true;
+            }
             return false;
         }
 
-        // Insert maintaining seq order within this user's log
-        let pos = log.partition_point(|entry| entry.seq < seq);
+        // New seq — insert maintaining order
         log.insert(
             pos,
             ChatEntry {
@@ -71,40 +86,41 @@ impl Chat {
         all
     }
 
-    /// Highest contiguous seq starting from 0. Returns `None` if the user has
-    /// no entries or their first entry isn't seq 0 (need everything resent).
+    /// Deterministic hash of a user's chat log. Used for version vectors.
+    ///
+    /// Returns `None` if the user has no entries. When hashes differ between
+    /// peers, all entries are exchanged and the receiver applies LWW per-seq.
     pub fn version(&self, user_id: &UserId) -> Option<u64> {
         let log = self.logs.get(user_id)?;
-        // Entries are sorted by seq (maintained by partition_point in append).
-        // Walk from the start to find the contiguous prefix.
-        for (i, entry) in log.iter().enumerate() {
-            if entry.seq != i as u64 {
-                return if i == 0 { None } else { Some(i as u64 - 1) };
+        if log.is_empty() {
+            return None;
+        }
+        // FNV-1a style hash over entry count + each (seq, timestamp, text bytes)
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(log.len() as u64);
+        for entry in log {
+            h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(entry.seq);
+            h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(entry.timestamp);
+            for &b in entry.text.as_bytes() {
+                h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(b as u64);
             }
         }
-        // All entries are contiguous 0..len
-        if log.is_empty() {
-            None
-        } else {
-            Some(log.len() as u64 - 1)
-        }
+        Some(h)
     }
 
-    /// All entries for a user after the given seq number.
+    /// All entries for a user that the remote may be missing.
+    ///
+    /// `remote_version` is the remote's `version()` hash for this user.
     /// Pass `None` to get all entries (remote knows nothing about this user).
-    pub fn entries_since(&self, user_id: &UserId, since_seq: Option<u64>) -> Vec<ChatEntry> {
-        self.logs
-            .get(user_id)
-            .map(|log| {
-                log.iter()
-                    .filter(|e| match since_seq {
-                        Some(seq) => e.seq > seq,
-                        None => true,
-                    })
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+    /// If the hash matches, returns empty (already in sync).
+    pub fn entries_since(&self, user_id: &UserId, remote_version: Option<u64>) -> Vec<ChatEntry> {
+        let Some(log) = self.logs.get(user_id) else {
+            return Vec::new();
+        };
+        match remote_version {
+            Some(rv) if Some(rv) == self.version(user_id) => Vec::new(),
+            _ => log.clone(),
+        }
     }
 
     /// Get the raw logs (for snapshot serialization).
@@ -143,13 +159,25 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_seq_ignored() {
+    fn duplicate_seq_lww_higher_timestamp_wins() {
         let mut chat = Chat::new();
         assert!(chat.append(uid("alice"), 0, 100, "first".into()));
-        assert!(!chat.append(uid("alice"), 0, 200, "duplicate".into()));
+        // Higher timestamp wins via LWW
+        assert!(chat.append(uid("alice"), 0, 200, "updated".into()));
         let view = chat.merged_view();
         assert_eq!(view.len(), 1);
-        assert_eq!(view[0].1.text, "first");
+        assert_eq!(view[0].1.text, "updated");
+    }
+
+    #[test]
+    fn duplicate_seq_lww_lower_timestamp_rejected() {
+        let mut chat = Chat::new();
+        assert!(chat.append(uid("alice"), 0, 200, "winner".into()));
+        // Lower timestamp loses
+        assert!(!chat.append(uid("alice"), 0, 100, "loser".into()));
+        let view = chat.merged_view();
+        assert_eq!(view.len(), 1);
+        assert_eq!(view[0].1.text, "winner");
     }
 
     #[test]
@@ -180,9 +208,12 @@ mod tests {
         let mut chat = Chat::new();
         assert_eq!(chat.version(&uid("alice")), None);
         chat.append(uid("alice"), 0, 100, "a".into());
-        assert_eq!(chat.version(&uid("alice")), Some(0));
+        let v1 = chat.version(&uid("alice"));
+        assert!(v1.is_some());
         chat.append(uid("alice"), 1, 200, "b".into());
-        assert_eq!(chat.version(&uid("alice")), Some(1));
+        let v2 = chat.version(&uid("alice"));
+        assert!(v2.is_some());
+        assert_ne!(v1, v2, "version must change when entries are added");
     }
 
     #[test]
@@ -192,10 +223,14 @@ mod tests {
         chat.append(uid("alice"), 1, 200, "b".into());
         chat.append(uid("alice"), 2, 300, "c".into());
 
-        let since = chat.entries_since(&uid("alice"), Some(0));
-        assert_eq!(since.len(), 2);
-        assert_eq!(since[0].seq, 1);
-        assert_eq!(since[1].seq, 2);
+        // Matching hash returns empty (already in sync)
+        let my_version = chat.version(&uid("alice"));
+        let synced = chat.entries_since(&uid("alice"), my_version);
+        assert!(synced.is_empty(), "matching version means in sync");
+
+        // Mismatched hash returns all entries
+        let since = chat.entries_since(&uid("alice"), Some(999));
+        assert_eq!(since.len(), 3);
 
         // None means "need everything"
         let all = chat.entries_since(&uid("alice"), None);
@@ -208,38 +243,68 @@ mod tests {
         chat.append(uid("alice"), 2, 300, "c".into());
         chat.append(uid("alice"), 0, 100, "a".into());
         chat.append(uid("alice"), 1, 200, "b".into());
-        assert_eq!(chat.version(&uid("alice")), Some(2));
-        let entries = chat.entries_since(&uid("alice"), Some(u64::MAX));
+        assert!(chat.version(&uid("alice")).is_some());
+
+        // entries_since with matching version returns empty
+        let v = chat.version(&uid("alice"));
+        let entries = chat.entries_since(&uid("alice"), v);
         assert!(entries.is_empty());
     }
 
-    // --- Regression test for fuzz-discovered bug ---
+    // --- Regression tests for fuzz-discovered bugs ---
 
     #[test]
-    fn test_version_contiguous_prefix() {
-        let mut chat = Chat::new();
+    fn duplicate_seq_different_content_converges() {
+        // Two peers receive the same (user, seq) with different content.
+        // Regardless of application order, result must be identical.
+        let mut chat_a = Chat::new();
+        chat_a.append(uid("alice"), 0, 100, "first".into());
+        chat_a.append(uid("alice"), 0, 200, "second".into());
 
-        // [0, 1, 5] → contiguous prefix is 0,1 → version = Some(1)
-        chat.append(uid("alice"), 0, 100, "a".into());
-        chat.append(uid("alice"), 1, 200, "b".into());
-        chat.append(uid("alice"), 5, 600, "f".into());
-        assert_eq!(chat.version(&uid("alice")), Some(1));
+        let mut chat_b = Chat::new();
+        chat_b.append(uid("alice"), 0, 200, "second".into());
+        chat_b.append(uid("alice"), 0, 100, "first".into());
 
-        // [3, 5] → no contiguous prefix from 0 → version = None
-        let mut chat2 = Chat::new();
-        chat2.append(uid("bob"), 3, 400, "d".into());
-        chat2.append(uid("bob"), 5, 600, "f".into());
-        assert_eq!(chat2.version(&uid("bob")), None);
+        assert_eq!(chat_a, chat_b);
 
-        // [0, 1, 2] → all contiguous → version = Some(2)
-        let mut chat3 = Chat::new();
-        chat3.append(uid("carol"), 0, 100, "a".into());
-        chat3.append(uid("carol"), 1, 200, "b".into());
-        chat3.append(uid("carol"), 2, 300, "c".into());
-        assert_eq!(chat3.version(&uid("carol")), Some(2));
+        // Same timestamp, different text — should also converge
+        let mut chat_c = Chat::new();
+        chat_c.append(uid("alice"), 0, 100, "aaa".into());
+        chat_c.append(uid("alice"), 0, 100, "zzz".into());
+
+        let mut chat_d = Chat::new();
+        chat_d.append(uid("alice"), 0, 100, "zzz".into());
+        chat_d.append(uid("alice"), 0, 100, "aaa".into());
+
+        assert_eq!(chat_c, chat_d);
+    }
+
+    #[test]
+    fn version_is_hash_of_content() {
+        // Same entries → same version hash
+        let mut chat_a = Chat::new();
+        chat_a.append(uid("alice"), 0, 100, "a".into());
+        chat_a.append(uid("alice"), 1, 200, "b".into());
+
+        let mut chat_b = Chat::new();
+        chat_b.append(uid("alice"), 1, 200, "b".into());
+        chat_b.append(uid("alice"), 0, 100, "a".into());
+
+        assert_eq!(chat_a.version(&uid("alice")), chat_b.version(&uid("alice")));
+
+        // Different entries → different version hash
+        let mut chat_c = Chat::new();
+        chat_c.append(uid("alice"), 0, 100, "different".into());
+        assert_ne!(chat_a.version(&uid("alice")), chat_c.version(&uid("alice")));
 
         // Empty → None
-        let chat4 = Chat::new();
-        assert_eq!(chat4.version(&uid("dave")), None);
+        let chat_d = Chat::new();
+        assert_eq!(chat_d.version(&uid("dave")), None);
+
+        // Non-contiguous seqs still produce a version
+        let mut chat_e = Chat::new();
+        chat_e.append(uid("bob"), 3, 400, "d".into());
+        chat_e.append(uid("bob"), 5, 600, "f".into());
+        assert!(chat_e.version(&uid("bob")).is_some());
     }
 }

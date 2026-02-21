@@ -103,13 +103,8 @@ proptest! {
         ),
         perm_seed in any::<u64>(),
     ) {
-        // Deduplicate by (user, seq) — in the real protocol, the same user
-        // never sends two different messages with the same sequence number.
-        let mut seen = std::collections::HashSet::new();
-        let messages: Vec<_> = messages
-            .into_iter()
-            .filter(|(uid, seq, _, _)| seen.insert((uid.clone(), *seq)))
-            .collect();
+        // No dedup filter needed — Chat::append() uses LWW on duplicate
+        // (user, seq), so convergence holds even with conflicting content.
 
         // Apply in original order
         let mut chat_a = Chat::new();

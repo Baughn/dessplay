@@ -36,16 +36,16 @@ pub fn detect_gaps(local: &VersionVectors, remote: &VersionVectors) -> Option<Ga
         }
     }
 
-    // Check chat versions
-    for (uid, remote_seq) in &remote.chat_versions {
-        let local_seq = local.chat_versions.get(uid).copied().unwrap_or(0);
-        if *remote_seq > local_seq {
-            chat_needed.push((uid.clone(), local_seq));
+    // Check chat versions (hash-based: any difference means we need data)
+    for (uid, remote_hash) in &remote.chat_versions {
+        let local_hash = local.chat_versions.get(uid).copied().unwrap_or(0);
+        if *remote_hash != local_hash {
+            chat_needed.push((uid.clone(), local_hash));
         }
     }
 
-    // Check playlist
-    if remote.playlist_version > local.playlist_version {
+    // Check playlist (hash-based: any difference means we need data)
+    if remote.playlist_version != local.playlist_version {
         playlist_after = Some(local.playlist_version);
     }
 
@@ -61,6 +61,9 @@ pub fn detect_gaps(local: &VersionVectors, remote: &VersionVectors) -> Option<Ga
 }
 
 /// Check if local state is at least as up-to-date as remote.
+///
+/// For LWW registers, "up to date" means local timestamp >= remote timestamp.
+/// For chat and playlist (hash-based versions), "up to date" means hashes match.
 pub fn is_up_to_date(local: &VersionVectors, remote: &VersionVectors) -> bool {
     if local.epoch != remote.epoch {
         return false;
@@ -73,14 +76,16 @@ pub fn is_up_to_date(local: &VersionVectors, remote: &VersionVectors) -> bool {
         }
     }
 
-    for (uid, remote_seq) in &remote.chat_versions {
-        let local_seq = local.chat_versions.get(uid).copied().unwrap_or(0);
-        if *remote_seq > local_seq {
+    // Chat: hash-based — must match exactly
+    for (uid, remote_hash) in &remote.chat_versions {
+        let local_hash = local.chat_versions.get(uid).copied().unwrap_or(0);
+        if *remote_hash != local_hash {
             return false;
         }
     }
 
-    remote.playlist_version <= local.playlist_version
+    // Playlist: hash-based — must match exactly
+    remote.playlist_version == local.playlist_version
 }
 
 #[cfg(test)]

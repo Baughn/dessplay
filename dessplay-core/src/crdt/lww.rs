@@ -29,19 +29,18 @@ impl<K: Ord, V> LwwRegister<K, V> {
     }
 
     /// Write a value if the timestamp is newer than the existing one.
-    /// On equal timestamp, the higher value (by `PartialOrd`) wins for
+    /// On equal timestamp, the higher value (by `Ord`) wins for
     /// deterministic convergence regardless of application order.
     /// Returns true if the write was applied.
     pub fn write(&mut self, key: K, timestamp: SharedTimestamp, value: V) -> bool
     where
         K: Clone,
-        V: PartialOrd,
+        V: Ord,
     {
         let dominated = match self.entries.get(&key) {
             Some((existing_ts, existing_val)) => {
                 timestamp > *existing_ts
-                    || (timestamp == *existing_ts
-                        && value.partial_cmp(existing_val) == Some(std::cmp::Ordering::Greater))
+                    || (timestamp == *existing_ts && value > *existing_val)
             }
             None => true,
         };
@@ -137,5 +136,29 @@ mod tests {
         reg.write("b", 2, 20);
         assert_eq!(reg.read(&"a"), Some(&10));
         assert_eq!(reg.read(&"b"), Some(&20));
+    }
+
+    // --- Regression test: NaN FileState must converge regardless of order ---
+    #[test]
+    fn filestate_nan_convergence() {
+        use crate::types::FileState;
+
+        let nan_state = FileState::Downloading {
+            progress: f32::NAN,
+        };
+        let ready_state = FileState::Ready;
+
+        // Order A: NaN first, then Ready
+        let mut reg_a: LwwRegister<u8, FileState> = LwwRegister::new();
+        reg_a.write(0, 10, nan_state.clone());
+        reg_a.write(0, 10, ready_state.clone());
+
+        // Order B: Ready first, then NaN
+        let mut reg_b: LwwRegister<u8, FileState> = LwwRegister::new();
+        reg_b.write(0, 10, ready_state.clone());
+        reg_b.write(0, 10, nan_state.clone());
+
+        // Both must converge to the same value
+        assert_eq!(reg_a.read(&0), reg_b.read(&0));
     }
 }

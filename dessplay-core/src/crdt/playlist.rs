@@ -95,18 +95,36 @@ impl Playlist {
         list
     }
 
-    /// Latest operation timestamp (used for version vectors).
-    pub fn version(&self) -> SharedTimestamp {
-        self.ops.last().map_or(0, |(ts, _)| *ts)
+    /// Deterministic hash of the op set. Used for version vectors.
+    ///
+    /// When hashes differ between peers, all ops are exchanged and the
+    /// receiver deduplicates. This avoids the bug where a lower-timestamp
+    /// op was invisible to timestamp-based version tracking.
+    pub fn version(&self) -> u64 {
+        // FNV-1a style hash over op count + each (timestamp, action discriminant)
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(self.ops.len() as u64);
+        for (ts, action) in &self.ops {
+            h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(*ts);
+            let disc = match action {
+                PlaylistAction::Add { .. } => 0u64,
+                PlaylistAction::Remove { .. } => 1,
+                PlaylistAction::Move { .. } => 2,
+            };
+            h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(disc);
+        }
+        h
     }
 
-    /// All operations after the given timestamp.
-    pub fn ops_since(&self, since: SharedTimestamp) -> Vec<(SharedTimestamp, PlaylistAction)> {
-        self.ops
-            .iter()
-            .filter(|(ts, _)| *ts > since)
-            .cloned()
-            .collect()
+    /// All operations that the remote may be missing.
+    ///
+    /// `remote_version` is the remote's `version()` hash. If it differs from
+    /// ours, we send ALL ops (receiver deduplicates). If equal, nothing to send.
+    pub fn ops_since(&self, remote_version: u64) -> Vec<(SharedTimestamp, PlaylistAction)> {
+        if remote_version == self.version() {
+            return Vec::new();
+        }
+        self.ops.clone()
     }
 
     /// Get the full op log (for snapshot serialization).
@@ -238,11 +256,13 @@ mod tests {
     #[test]
     fn version_tracking() {
         let mut pl = Playlist::new();
-        assert_eq!(pl.version(), 0);
+        let v0 = pl.version();
         pl.apply(10, PlaylistAction::Add { file_id: fid(1), after: None });
-        assert_eq!(pl.version(), 10);
+        let v1 = pl.version();
+        assert_ne!(v0, v1, "version must change when ops are added");
         pl.apply(5, PlaylistAction::Add { file_id: fid(2), after: None });
-        assert_eq!(pl.version(), 10); // Still 10 since ops are sorted
+        let v2 = pl.version();
+        assert_ne!(v1, v2, "version must change when more ops are added");
     }
 
     #[test]
@@ -250,5 +270,25 @@ mod tests {
         let mut pl = Playlist::new();
         assert!(pl.apply(1, PlaylistAction::Add { file_id: fid(1), after: None }));
         assert!(!pl.apply(1, PlaylistAction::Add { file_id: fid(1), after: None }));
+    }
+
+    // --- Regression test: ops_since must not miss lower-timestamp ops ---
+    #[test]
+    fn ops_since_misses_lower_timestamps() {
+        let mut pl = Playlist::new();
+        pl.apply(10, PlaylistAction::Add { file_id: fid(1), after: None });
+
+        // Record version after first op
+        let v1 = pl.version();
+
+        // Add a second op with LOWER timestamp
+        pl.apply(5, PlaylistAction::Add { file_id: fid(2), after: None });
+
+        // ops_since(v1) must include the ts=5 op
+        let ops = pl.ops_since(v1);
+        assert!(
+            ops.iter().any(|(ts, _)| *ts == 5),
+            "ops_since must return the lower-timestamp op; got: {ops:?}"
+        );
     }
 }

@@ -39,7 +39,7 @@ Test comprehensively, especially on high-risk areas (echo suppression, network c
 - **Spec-driven**: Write tests from the specification, not the implementation.
   If the spec is unclear, clarify it before writing the test.
 - **Regression tests first**: When fixing a bug, write a test that reproduces
-  it *before* writing the fix.
+  it *before* writing the fix. The tests MUST be executed and confirmed to fail.
 - **High-risk areas get extra coverage**: Echo suppression, CRDT convergence,
   playlist conflict resolution, reconnection/epoch handling.
 

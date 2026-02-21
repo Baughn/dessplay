@@ -344,12 +344,14 @@ mod tests {
         });
 
         let vv = state.version_vectors();
+        // LWW versions are still timestamp-based
         assert_eq!(
             vv.lww_versions.get(&RegisterId::UserState(uid("alice"))),
             Some(&42)
         );
-        assert_eq!(vv.chat_versions.get(&uid("bob")), Some(&0));
-        assert_eq!(vv.playlist_version, 77);
+        // Chat and playlist versions are now hashes — just check they're present
+        assert!(vv.chat_versions.contains_key(&uid("bob")));
+        assert_ne!(vv.playlist_version, 0, "playlist version should be non-zero after adding ops");
     }
 
     #[test]
@@ -449,6 +451,54 @@ mod tests {
     }
 
     #[test]
+    fn playlist_sync_lower_timestamp_op() {
+        // Peer A has ops at ts=10 and ts=5
+        let mut peer_a = CrdtState::new();
+        peer_a.apply_op(&CrdtOp::PlaylistOp {
+            timestamp: 10,
+            action: PlaylistAction::Add {
+                file_id: fid(1),
+                after: None,
+            },
+        });
+        peer_a.apply_op(&CrdtOp::PlaylistOp {
+            timestamp: 5,
+            action: PlaylistAction::Add {
+                file_id: fid(2),
+                after: None,
+            },
+        });
+
+        // Peer B has only the ts=10 op
+        let mut peer_b = CrdtState::new();
+        peer_b.apply_op(&CrdtOp::PlaylistOp {
+            timestamp: 10,
+            action: PlaylistAction::Add {
+                file_id: fid(1),
+                after: None,
+            },
+        });
+
+        // Peer A should send the ts=5 op to peer B
+        let b_vv = peer_b.version_vectors();
+        let ops = peer_a.ops_since(&b_vv);
+        let playlist_ops: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, CrdtOp::PlaylistOp { .. }))
+            .collect();
+        assert!(
+            !playlist_ops.is_empty(),
+            "ops_since must send the lower-timestamp playlist op"
+        );
+
+        // Apply and verify convergence
+        for op in &ops {
+            peer_b.apply_op(op);
+        }
+        assert_eq!(peer_a.playlist.snapshot(), peer_b.playlist.snapshot());
+    }
+
+    #[test]
     fn test_chat_gap_fill_with_noncontiguous_seqs() {
         // Peer A ("behind") has only seq 3
         let mut behind = CrdtState::new();
@@ -474,12 +524,11 @@ mod tests {
             text: "msg3".into(),
         });
 
-        // Behind's version vector: seq 3 is present but no contiguous prefix
-        // from 0, so version = None
+        // Behind has a version hash for alice (it has seq 3)
         let behind_vv = behind.version_vectors();
-        assert_eq!(behind_vv.chat_versions.get(&uid("alice")), None);
+        assert!(behind_vv.chat_versions.contains_key(&uid("alice")));
 
-        // Ahead should send all its ops (seq 1 and 3) to behind
+        // Hashes differ so ahead should send all its ops
         let ops = ahead.ops_since(&behind_vv);
         let chat_ops: Vec<_> = ops
             .iter()
