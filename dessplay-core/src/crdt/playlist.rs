@@ -101,39 +101,18 @@ impl Playlist {
         list
     }
 
-    /// Deterministic hash of base + ops. Used for version vectors.
+    /// Deterministic hash of the materialized playlist. Used for version vectors.
     ///
-    /// When hashes differ between peers, all ops are exchanged and the
-    /// receiver deduplicates. This avoids the bug where a lower-timestamp
-    /// op was invisible to timestamp-based version tracking.
+    /// Hashes the logical content (the ordered list of FileIds after replaying
+    /// all ops on the base), NOT the internal representation. This ensures that
+    /// a compacted playlist (base=materialized, ops=[]) produces the same hash
+    /// as the original (base=[], ops=[…]).
     pub fn version(&self) -> u64 {
-        // FNV-1a style hash over base + ops
+        let materialized = self.snapshot();
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        // Hash base (materialized state from last compaction)
-        h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(self.base.len() as u64);
-        for fid in &self.base {
+        h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(materialized.len() as u64);
+        for fid in &materialized {
             h = Self::hash_file_id(h, fid);
-        }
-        // Hash ops (changes since compaction)
-        h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(self.ops.len() as u64);
-        for (ts, action) in &self.ops {
-            h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(*ts);
-            match action {
-                PlaylistAction::Add { file_id, after } => {
-                    h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(0);
-                    h = Self::hash_file_id(h, file_id);
-                    h = Self::hash_option_file_id(h, after.as_ref());
-                }
-                PlaylistAction::Remove { file_id } => {
-                    h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(1);
-                    h = Self::hash_file_id(h, file_id);
-                }
-                PlaylistAction::Move { file_id, after } => {
-                    h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(2);
-                    h = Self::hash_file_id(h, file_id);
-                    h = Self::hash_option_file_id(h, after.as_ref());
-                }
-            }
         }
         h
     }
@@ -145,16 +124,6 @@ impl Playlist {
             h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(u64::from_le_bytes(buf));
         }
         h
-    }
-
-    fn hash_option_file_id(mut h: u64, fid: Option<&FileId>) -> u64 {
-        match fid {
-            Some(fid) => {
-                h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(1);
-                Self::hash_file_id(h, fid)
-            }
-            None => h.wrapping_mul(0x0100_0000_01b3).wrapping_add(0),
-        }
     }
 
     /// All operations that the remote may be missing.
@@ -319,14 +288,12 @@ mod tests {
     // --- Regression test: version hash must include FileId ---
     #[test]
     fn version_differs_for_different_file_ids() {
-        // Regression: version() only hashed action discriminant, not FileId.
-        // Two playlists with different FileIds but the same timestamps and
-        // action types produced identical hashes, causing sync to miss ops.
+        // Two playlists with different FileIds must produce different hashes.
         let mut pl_a = Playlist::new();
-        pl_a.apply(100, PlaylistAction::Remove { file_id: fid(1) });
+        pl_a.apply(100, PlaylistAction::Add { file_id: fid(1), after: None });
 
         let mut pl_b = Playlist::new();
-        pl_b.apply(100, PlaylistAction::Remove { file_id: fid(2) });
+        pl_b.apply(100, PlaylistAction::Add { file_id: fid(2), after: None });
 
         assert_ne!(
             pl_a.version(),
@@ -399,6 +366,26 @@ mod tests {
             empty.version(),
             with_base.version(),
             "empty vs non-empty base must have different versions",
+        );
+    }
+
+    // --- Regression test: version must survive snapshot roundtrip ---
+    #[test]
+    fn version_stable_after_compaction() {
+        // Regression: version() hashed base + ops separately, so a compacted
+        // playlist (base=[materialized], ops=[]) produced a different hash
+        // than the original (base=[], ops=[…]) even though the logical
+        // content was identical.
+        let mut pl = Playlist::new();
+        pl.apply(1, PlaylistAction::Add { file_id: fid(1), after: None });
+        pl.apply(2, PlaylistAction::Add { file_id: fid(2), after: None });
+        pl.apply(3, PlaylistAction::Remove { file_id: fid(1) });
+
+        let compacted = Playlist::from_materialized(pl.snapshot());
+        assert_eq!(
+            pl.version(),
+            compacted.version(),
+            "version must be identical after compaction roundtrip",
         );
     }
 

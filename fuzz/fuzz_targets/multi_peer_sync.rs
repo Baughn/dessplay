@@ -64,4 +64,11 @@ fuzz_target!(|input: Input| {
     let snap2 = peers[2].snapshot();
     assert_eq!(snap0, snap1);
     assert_eq!(snap1, snap2);
+
+    // Version vectors must also agree so all peers consider themselves in sync
+    let vv0 = peers[0].version_vectors();
+    let vv1 = peers[1].version_vectors();
+    let vv2 = peers[2].version_vectors();
+    assert_eq!(vv0, vv1);
+    assert_eq!(vv1, vv2);
 });

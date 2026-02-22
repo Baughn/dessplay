@@ -37,4 +37,7 @@ fuzz_target!(|input: OpsSinceInput| {
 
     // After catch-up, snapshots must match
     assert_eq!(ahead.snapshot(), behind.snapshot());
+
+    // Version vectors must also agree so both peers consider themselves in sync
+    assert_eq!(ahead.version_vectors(), behind.version_vectors());
 });

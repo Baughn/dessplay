@@ -47,4 +47,8 @@ fuzz_target!(|input: ConvergenceInput| {
 
     // Snapshots must be identical regardless of application order
     assert_eq!(state_a.snapshot(), state_b.snapshot());
+
+    // Version vectors must also agree (catches bugs where internal
+    // representation diverges even though logical content matches)
+    assert_eq!(state_a.version_vectors(), state_b.version_vectors());
 });
