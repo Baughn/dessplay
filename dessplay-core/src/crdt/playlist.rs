@@ -3,12 +3,15 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::PlaylistAction;
 use crate::types::{FileId, SharedTimestamp};
 
-/// Playlist CRDT — an ordered set maintained by an operation log.
+/// Playlist CRDT — an ordered set maintained by a base state plus operation log.
 ///
-/// Operations are stored sorted by timestamp. The snapshot (ordered list of
-/// FileIds) is produced by replaying all operations in order.
+/// The `base` is the materialized playlist from the last compaction (epoch
+/// snapshot). The `ops` are changes since that compaction. The snapshot
+/// (ordered list of FileIds) is produced by starting from `base` and replaying
+/// `ops` in timestamp order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {
+    base: Vec<FileId>,
     ops: Vec<(SharedTimestamp, PlaylistAction)>,
 }
 
@@ -20,7 +23,10 @@ impl Default for Playlist {
 
 impl Playlist {
     pub fn new() -> Self {
-        Self { ops: Vec::new() }
+        Self {
+            base: Vec::new(),
+            ops: Vec::new(),
+        }
     }
 
     /// Apply an operation. Inserts into the log in sorted timestamp order.
@@ -39,9 +45,9 @@ impl Playlist {
         true
     }
 
-    /// Replay all operations to produce the current ordered playlist.
+    /// Replay all operations on top of the base to produce the current ordered playlist.
     pub fn snapshot(&self) -> Vec<FileId> {
-        let mut list: Vec<FileId> = Vec::new();
+        let mut list: Vec<FileId> = self.base.clone();
 
         for (_, action) in &self.ops {
             match action {
@@ -95,14 +101,20 @@ impl Playlist {
         list
     }
 
-    /// Deterministic hash of the op set. Used for version vectors.
+    /// Deterministic hash of base + ops. Used for version vectors.
     ///
     /// When hashes differ between peers, all ops are exchanged and the
     /// receiver deduplicates. This avoids the bug where a lower-timestamp
     /// op was invisible to timestamp-based version tracking.
     pub fn version(&self) -> u64 {
-        // FNV-1a style hash over op count + each (timestamp, full action data)
+        // FNV-1a style hash over base + ops
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        // Hash base (materialized state from last compaction)
+        h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(self.base.len() as u64);
+        for fid in &self.base {
+            h = Self::hash_file_id(h, fid);
+        }
+        // Hash ops (changes since compaction)
         h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(self.ops.len() as u64);
         for (ts, action) in &self.ops {
             h = h.wrapping_mul(0x0100_0000_01b3).wrapping_add(*ts);
@@ -156,12 +168,15 @@ impl Playlist {
         self.ops.clone()
     }
 
-    /// Get the full op log (for snapshot serialization).
-    pub fn ops(&self) -> &[(SharedTimestamp, PlaylistAction)] {
-        &self.ops
+    /// Load from a compacted snapshot (materialized playlist, no ops).
+    pub fn from_materialized(files: Vec<FileId>) -> Self {
+        Self {
+            base: files,
+            ops: Vec::new(),
+        }
     }
 
-    /// Load from a snapshot op log.
+    /// Load from an op log (used for gap-fill and op-based sync).
     pub fn from_ops(ops: Vec<(SharedTimestamp, PlaylistAction)>) -> Self {
         let mut playlist = Self::new();
         for (ts, action) in ops {
@@ -338,5 +353,83 @@ mod tests {
             ops.iter().any(|(ts, _)| *ts == 5),
             "ops_since must return the lower-timestamp op; got: {ops:?}"
         );
+    }
+
+    // --- Base + ops (compaction) tests ---
+
+    #[test]
+    fn from_materialized_snapshot() {
+        let pl = Playlist::from_materialized(vec![fid(1), fid(2), fid(3)]);
+        assert_eq!(pl.snapshot(), vec![fid(1), fid(2), fid(3)]);
+    }
+
+    #[test]
+    fn base_plus_add() {
+        let mut pl = Playlist::from_materialized(vec![fid(1)]);
+        pl.apply(100, PlaylistAction::Add { file_id: fid(2), after: None });
+        assert_eq!(pl.snapshot(), vec![fid(1), fid(2)]);
+    }
+
+    #[test]
+    fn base_plus_remove() {
+        let mut pl = Playlist::from_materialized(vec![fid(1), fid(2)]);
+        pl.apply(100, PlaylistAction::Remove { file_id: fid(1) });
+        assert_eq!(pl.snapshot(), vec![fid(2)]);
+    }
+
+    #[test]
+    fn base_plus_move() {
+        let mut pl = Playlist::from_materialized(vec![fid(1), fid(2), fid(3)]);
+        pl.apply(100, PlaylistAction::Move { file_id: fid(3), after: Some(fid(1)) });
+        assert_eq!(pl.snapshot(), vec![fid(1), fid(3), fid(2)]);
+    }
+
+    #[test]
+    fn base_add_duplicate_ignored() {
+        let mut pl = Playlist::from_materialized(vec![fid(1)]);
+        pl.apply(100, PlaylistAction::Add { file_id: fid(1), after: None });
+        assert_eq!(pl.snapshot(), vec![fid(1)]);
+    }
+
+    #[test]
+    fn version_changes_with_base() {
+        let empty = Playlist::new();
+        let with_base = Playlist::from_materialized(vec![fid(1)]);
+        assert_ne!(
+            empty.version(),
+            with_base.version(),
+            "empty vs non-empty base must have different versions",
+        );
+    }
+
+    #[test]
+    fn compaction_round_trip() {
+        // Build a playlist via ops
+        let mut pl = Playlist::new();
+        pl.apply(1, PlaylistAction::Add { file_id: fid(1), after: None });
+        pl.apply(2, PlaylistAction::Add { file_id: fid(2), after: None });
+        pl.apply(3, PlaylistAction::Add { file_id: fid(3), after: None });
+        pl.apply(4, PlaylistAction::Remove { file_id: fid(2) });
+        pl.apply(5, PlaylistAction::Move { file_id: fid(3), after: None });
+
+        let materialized = pl.snapshot();
+
+        // "Compact" by creating from materialized state
+        let compacted = Playlist::from_materialized(materialized.clone());
+        assert_eq!(compacted.snapshot(), materialized);
+
+        // New ops should layer on top correctly
+        let mut pl_after = compacted.clone();
+        pl_after.apply(10, PlaylistAction::Add { file_id: fid(4), after: Some(fid(1)) });
+
+        let mut pl_from_scratch = Playlist::new();
+        pl_from_scratch.apply(1, PlaylistAction::Add { file_id: fid(1), after: None });
+        pl_from_scratch.apply(2, PlaylistAction::Add { file_id: fid(2), after: None });
+        pl_from_scratch.apply(3, PlaylistAction::Add { file_id: fid(3), after: None });
+        pl_from_scratch.apply(4, PlaylistAction::Remove { file_id: fid(2) });
+        pl_from_scratch.apply(5, PlaylistAction::Move { file_id: fid(3), after: None });
+        pl_from_scratch.apply(10, PlaylistAction::Add { file_id: fid(4), after: Some(fid(1)) });
+
+        assert_eq!(pl_after.snapshot(), pl_from_scratch.snapshot());
     }
 }

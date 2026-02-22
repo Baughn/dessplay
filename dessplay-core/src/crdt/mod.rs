@@ -103,7 +103,7 @@ impl CrdtState {
             user_states: self.user_states.clone().into_inner(),
             file_states: self.file_states.clone().into_inner(),
             anidb: self.anidb.clone().into_inner(),
-            playlist_ops: self.playlist.ops().to_vec(),
+            playlist: self.playlist.snapshot(),
             chat: self.chat.clone().into_inner(),
         }
     }
@@ -206,7 +206,7 @@ impl CrdtState {
         self.user_states = LwwRegister::from_inner(snap.user_states);
         self.file_states = LwwRegister::from_inner(snap.file_states);
         self.anidb = LwwRegister::from_inner(snap.anidb);
-        self.playlist = Playlist::from_ops(snap.playlist_ops);
+        self.playlist = Playlist::from_materialized(snap.playlist);
         self.chat = Chat::from_inner(snap.chat);
     }
 

@@ -128,7 +128,7 @@ pub struct CrdtSnapshot {
     pub user_states: BTreeMap<UserId, (SharedTimestamp, UserState)>,
     pub file_states: BTreeMap<(UserId, FileId), (SharedTimestamp, FileState)>,
     pub anidb: BTreeMap<FileId, (SharedTimestamp, Option<AniDbMetadata>)>,
-    pub playlist_ops: Vec<(SharedTimestamp, PlaylistAction)>,
+    pub playlist: Vec<FileId>,
     pub chat: BTreeMap<UserId, Vec<ChatEntry>>,
 }
 

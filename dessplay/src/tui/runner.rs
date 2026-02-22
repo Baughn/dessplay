@@ -58,6 +58,7 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
     if config.is_none() {
         ui = ui.with_settings();
         run_settings_screen(&mut guard.terminal, &mut ui, &storage).await?;
+        ui.settings = None;
     }
 
     loop {

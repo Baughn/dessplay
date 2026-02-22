@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-02-20
+Last updated: 2026-02-22
 
 DessPlay uses **operation-based CRDTs** (CmRDTs) to synchronize state across
 peers. Each piece of shared state is a replicated data type with its own
@@ -35,7 +35,10 @@ of timestamped operations. Every peer:
 3. Replays the log to produce a **snapshot** — the materialized state that
    application code reads
 
-The op log is the source of truth. The snapshot is a cache derived from it.
+Between compactions, the op log is the source of truth. At compaction, the
+op log is materialized into a snapshot and discarded. Each CRDT type stores
+its appropriate compact representation in the snapshot — e.g. the playlist
+stores the materialized ordered list of FileIds, not the op log.
 
 ### Epochs
 
@@ -185,7 +188,10 @@ scenario — everyone closes their laptops after watching anime.
 ### How It Works
 
 1. Server replays all operations using the same CRDT logic as clients
-2. Produces a snapshot for each replicated data type
+2. Produces a **materialized snapshot** for each replicated data type:
+   - LWW registers: current `(key → timestamp, value)` pairs
+   - Playlist: materialized `Vec<FileId>` (ordered list, no op history)
+   - Chat: current `(user_id → entries)` map
 3. Discards the op log
 4. Increments the epoch counter
 5. Stores the snapshot as the new baseline

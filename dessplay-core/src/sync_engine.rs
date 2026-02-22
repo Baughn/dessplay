@@ -563,7 +563,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
-            playlist_ops: vec![],
+            playlist: vec![],
             chat: Default::default(),
         };
         engine.state.load_snapshot(3, snap);
@@ -594,7 +594,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
-            playlist_ops: vec![],
+            playlist: vec![],
             chat: Default::default(),
         };
 
@@ -612,7 +612,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
-            playlist_ops: vec![],
+            playlist: vec![],
             chat: Default::default(),
         };
         engine.state.load_snapshot(5, snap);
@@ -622,7 +622,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
-            playlist_ops: vec![],
+            playlist: vec![],
             chat: Default::default(),
         };
         let actions = engine.on_state_snapshot(3, old_snap);
@@ -638,7 +638,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
-            playlist_ops: vec![],
+            playlist: vec![],
             chat: Default::default(),
         };
 
@@ -657,7 +657,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
-            playlist_ops: vec![],
+            playlist: vec![],
             chat: Default::default(),
         };
         engine.on_state_snapshot(1, snap);

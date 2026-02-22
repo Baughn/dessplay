@@ -145,7 +145,7 @@ fn roundtrip_crdt_snapshot() {
         user_states,
         file_states: BTreeMap::new(),
         anidb: BTreeMap::new(),
-        playlist_ops: vec![(1, PlaylistAction::Add { file_id: fid(1), after: None })],
+        playlist: vec![fid(1)],
         chat: BTreeMap::new(),
     };
     roundtrip(&snap);
