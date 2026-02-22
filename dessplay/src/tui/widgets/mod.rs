@@ -5,4 +5,5 @@ pub mod player_status;
 pub mod playlist;
 pub mod recent_series;
 pub mod settings;
+pub mod tofu_warning;
 pub mod users;

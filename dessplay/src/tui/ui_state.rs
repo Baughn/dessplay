@@ -26,6 +26,7 @@ pub enum Screen {
     Main,
     Settings,
     FileBrowser,
+    TofuWarning,
 }
 
 /// Text input state with char-boundary-aware cursor.
@@ -399,6 +400,14 @@ fn is_media_file(name: &str) -> bool {
         || lower.ends_with(".ts")
 }
 
+/// State for the TOFU certificate mismatch warning modal.
+#[derive(Clone, Debug)]
+pub struct TofuWarningState {
+    pub server: String,
+    pub stored_fingerprint: Vec<u8>,
+    pub received_fingerprint: Vec<u8>,
+}
+
 /// The complete TUI state, separate from the app state.
 pub struct UiState {
     pub screen: Screen,
@@ -409,6 +418,7 @@ pub struct UiState {
     pub recent_selected: usize,
     pub settings: Option<SettingsState>,
     pub file_browser: Option<FileBrowserState>,
+    pub tofu_warning: Option<TofuWarningState>,
     pub should_quit: bool,
     /// Status message shown temporarily.
     pub status_message: Option<String>,
@@ -431,6 +441,7 @@ impl UiState {
             recent_selected: 0,
             settings: None,
             file_browser: None,
+            tofu_warning: None,
             should_quit: false,
             status_message: None,
         }
@@ -504,6 +515,9 @@ pub enum UiAction {
     FileBrowserSelect,
     FileBrowserBack,
     FileBrowserSelectDir,
+    // TOFU warning
+    TofuAccept,
+    TofuReject,
 }
 
 #[cfg(test)]

@@ -65,10 +65,18 @@ impl ServerCertVerifier for AcceptAnyCert {
     }
 }
 
+/// Details of a TOFU fingerprint mismatch, for display to the user.
+pub struct TofuMismatch {
+    pub server: String,
+    pub stored_fingerprint: Vec<u8>,
+    pub received_fingerprint: Vec<u8>,
+}
+
 /// TOFU certificate verifier that stores fingerprints in SQLite.
 pub struct TofuVerifier {
     storage: Arc<Mutex<ClientStorage>>,
     server_address: String,
+    mismatch: Mutex<Option<TofuMismatch>>,
 }
 
 impl TofuVerifier {
@@ -76,7 +84,14 @@ impl TofuVerifier {
         Self {
             storage,
             server_address,
+            mismatch: Mutex::new(None),
         }
+    }
+
+    /// Take the stored mismatch details, if any. Returns `None` if the last
+    /// verification failure was not a fingerprint mismatch.
+    pub fn take_mismatch(&self) -> Option<TofuMismatch> {
+        self.mismatch.lock().ok()?.take()
     }
 }
 
@@ -114,6 +129,13 @@ impl ServerCertVerifier for TofuVerifier {
                         server = %self.server_address,
                         "Certificate fingerprint mismatch! Stored fingerprint does not match."
                     );
+                    if let Ok(mut m) = self.mismatch.lock() {
+                        *m = Some(TofuMismatch {
+                            server: self.server_address.clone(),
+                            stored_fingerprint: stored_fp.clone(),
+                            received_fingerprint: fp_bytes.to_vec(),
+                        });
+                    }
                     Err(Error::General(format!(
                         "TOFU: certificate fingerprint changed for {}",
                         self.server_address

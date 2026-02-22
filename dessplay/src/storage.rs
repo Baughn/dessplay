@@ -363,6 +363,14 @@ impl ClientStorage {
         Ok(())
     }
 
+    pub fn delete_cert(&self, server: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM tofu_certs WHERE server_address = ?1",
+            params![server],
+        )?;
+        Ok(())
+    }
+
     pub fn get_cert(&self, server: &str) -> Result<Option<Vec<u8>>> {
         self.conn
             .query_row(

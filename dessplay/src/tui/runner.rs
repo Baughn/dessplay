@@ -18,8 +18,11 @@ use crate::tui::ui_state::{
     FileBrowserOrigin, FileBrowserState, FocusedPane, InputResult, Screen, SettingsState, UiAction,
     UiState,
 };
+use crate::tls::TofuVerifier;
+use crate::tui::ui_state::TofuWarningState;
 use crate::tui::widgets::{
-    chat, file_browser, keybinding_bar, player_status, playlist, recent_series, settings, users,
+    chat, file_browser, keybinding_bar, player_status, playlist, recent_series, settings,
+    tofu_warning, users,
 };
 use dessplay_core::framing::{
     read_framed, write_framed, TAG_GAP_FILL_REQUEST, TAG_GAP_FILL_RESPONSE,
@@ -69,7 +72,17 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
         ui.focus = FocusedPane::Chat;
 
         // Connect to server and run main loop
-        match run_connected(&mut guard.terminal, &mut ui, &storage, &config, args).await {
+        let mut tofu_ref = None;
+        match run_connected(
+            &mut guard.terminal,
+            &mut ui,
+            &storage,
+            &config,
+            args,
+            &mut tofu_ref,
+        )
+        .await
+        {
             Ok(()) => {
                 if ui.settings.is_some() {
                     // Settings saved from inline modal — reconnect with new config
@@ -84,6 +97,40 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
 
                 if ui.should_quit {
                     return Ok(());
+                }
+
+                // Check for TOFU certificate mismatch
+                if let Some(mismatch) = tofu_ref.and_then(|t| t.take_mismatch()) {
+                    ui.tofu_warning = Some(TofuWarningState {
+                        server: mismatch.server,
+                        stored_fingerprint: mismatch.stored_fingerprint,
+                        received_fingerprint: mismatch.received_fingerprint,
+                    });
+                    ui.screen = Screen::TofuWarning;
+
+                    let accepted =
+                        run_tofu_warning_screen(&mut guard.terminal, &mut ui, &storage).await?;
+
+                    if ui.should_quit {
+                        return Ok(());
+                    }
+
+                    if accepted {
+                        // Delete stored cert and retry connection
+                        let server = ui
+                            .tofu_warning
+                            .as_ref()
+                            .map(|w| w.server.clone())
+                            .unwrap_or_default();
+                        if let Ok(s) = storage.lock() {
+                            s.delete_cert(&server)?;
+                        }
+                        ui.tofu_warning = None;
+                        continue;
+                    }
+
+                    ui.tofu_warning = None;
+                    // Fall through to settings screen with error
                 }
 
                 // Re-open settings with the error as alert
@@ -169,6 +216,50 @@ async fn run_settings_screen(
     }
 
     Ok(())
+}
+
+/// Run the TOFU warning modal loop. Returns `true` if the user accepted the new certificate.
+async fn run_tofu_warning_screen(
+    terminal: &mut crate::tui::terminal::Tui,
+    ui: &mut UiState,
+    _storage: &Arc<Mutex<ClientStorage>>,
+) -> Result<bool> {
+    let mut event_stream = EventStream::new();
+
+    loop {
+        // Draw
+        terminal.draw(|frame| {
+            let wf = keybinding_bar::WindowFrame::new(frame.area());
+            if let Some(ref warning_state) = ui.tofu_warning {
+                tofu_warning::render_tofu_warning(wf.content, frame.buffer_mut(), warning_state);
+            }
+            wf.render_bar(frame.buffer_mut(), tofu_warning::keybindings());
+        })?;
+
+        // Wait for input
+        let Some(event) = event_stream.next().await else {
+            break;
+        };
+
+        let event = event.context("failed to read terminal event")?;
+
+        if let crossterm::event::Event::Key(key) = event {
+            let result = crate::tui::input::handle_key_event(key, ui);
+            if let InputResult::UiAction(action) = result {
+                match action {
+                    UiAction::TofuAccept => return Ok(true),
+                    UiAction::TofuReject => return Ok(false),
+                    UiAction::Quit => {
+                        ui.should_quit = true;
+                        return Ok(false);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 fn apply_settings_action(
@@ -412,6 +503,7 @@ async fn run_connected(
     storage: &Arc<Mutex<ClientStorage>>,
     config: &Config,
     args: &[String],
+    tofu_out: &mut Option<Arc<TofuVerifier>>,
 ) -> Result<()> {
     // Get password
     let password = config
@@ -428,10 +520,8 @@ async fn run_connected(
         .next()
         .ok_or_else(|| anyhow::anyhow!("server address resolved to no addresses: {server_str}"))?;
 
-    let tofu = Arc::new(crate::tls::TofuVerifier::new(
-        Arc::clone(storage),
-        server_str.clone(),
-    ));
+    let tofu = Arc::new(TofuVerifier::new(Arc::clone(storage), server_str.clone()));
+    *tofu_out = Some(Arc::clone(&tofu));
 
     let bind_addr: std::net::SocketAddr = "[::]:0".parse().context("invalid bind address")?;
     let crate::quic::DualEndpoint {

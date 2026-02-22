@@ -13,6 +13,7 @@ pub fn handle_key_event(key: KeyEvent, ui: &UiState) -> InputResult {
     match &ui.screen {
         Screen::Settings => handle_settings_key(key, ui),
         Screen::FileBrowser => handle_file_browser_key(key),
+        Screen::TofuWarning => handle_tofu_warning_key(key),
         Screen::Main => handle_main_key(key, ui),
     }
 }
@@ -160,6 +161,16 @@ fn handle_settings_key(key: KeyEvent, ui: &UiState) -> InputResult {
                 _ => InputResult::None,
             }
         }
+        _ => InputResult::None,
+    }
+}
+
+fn handle_tofu_warning_key(key: KeyEvent) -> InputResult {
+    match key.code {
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            InputResult::UiAction(UiAction::TofuAccept)
+        }
+        KeyCode::Esc => InputResult::UiAction(UiAction::TofuReject),
         _ => InputResult::None,
     }
 }
