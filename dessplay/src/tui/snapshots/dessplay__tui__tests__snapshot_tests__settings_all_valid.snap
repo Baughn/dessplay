@@ -1,0 +1,24 @@
+---
+source: dessplay/src/tui/tests.rs
+expression: terminal.backend()
+---
+"┌ Settings ──────────────────────────────────────────────────────────┐"
+"│                                                                    │"
+"│      Username: [ok]                                                │"
+"│      alice                                                         │"
+"│      Server: [ok]                                                  │"
+"│      dessplay.brage.info:4433                                      │"
+"│      Player:                                                       │"
+"│      mpv                                                           │"
+"│      Password:                                                     │"
+"│      ******                                                        │"
+"│      Media Roots: [ok]                                             │"
+"│        /home/alice/anime [download]                                │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│      Ctrl-S to save                                                │"
+"│                                                                    │"
+"│                                                                    │"
+"└────────────────────────────────────────────────────────────────────┘"
+" Tab  Next field |  Shift-Tab  Prev field |  Ctrl-S  Save |  Esc  Canc"

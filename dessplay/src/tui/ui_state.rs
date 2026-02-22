@@ -164,6 +164,8 @@ pub struct SettingsState {
     /// Which field has focus (0=username, 1=server, 2=player, 3=password, 4=media_roots).
     pub focused_field: usize,
     pub field_count: usize,
+    /// Error banner shown at the top of the settings screen.
+    pub alert: Option<String>,
 }
 
 impl Default for SettingsState {
@@ -185,6 +187,7 @@ impl SettingsState {
             media_roots: Vec::new(),
             focused_field: 0,
             field_count: 5,
+            alert: None,
         }
     }
 
@@ -197,6 +200,7 @@ impl SettingsState {
             media_roots,
             focused_field: 0,
             field_count: 5,
+            alert: None,
         }
     }
 
@@ -212,12 +216,71 @@ impl SettingsState {
         }
     }
 
-    /// Returns true if the config is valid (non-empty username, server, >=1 media root).
+    /// Returns true if the config is valid (non-empty username, valid server, >=1 media root).
     pub fn is_valid(&self) -> bool {
-        !self.username.trim().is_empty()
-            && !self.server.trim().is_empty()
-            && !self.media_roots.is_empty()
+        self.is_username_valid() && self.is_server_valid() && self.has_media_roots()
     }
+
+    pub fn is_username_valid(&self) -> bool {
+        !self.username.trim().is_empty()
+    }
+
+    pub fn is_server_valid(&self) -> bool {
+        validate_server_format(&self.server).is_ok()
+    }
+
+    pub fn server_error(&self) -> Option<&'static str> {
+        validate_server_format(&self.server).err()
+    }
+
+    pub fn has_media_roots(&self) -> bool {
+        !self.media_roots.is_empty()
+    }
+}
+
+/// Validate that a server string is in `host:port` format with a valid port.
+/// Returns `Ok(())` on valid, `Err(reason)` on invalid.
+pub fn validate_server_format(server: &str) -> Result<(), &'static str> {
+    let server = server.trim();
+    if server.is_empty() {
+        return Err("server required");
+    }
+
+    // Handle IPv6 bracket notation: [::1]:4433
+    let (host, port_str) = if server.starts_with('[') {
+        // IPv6 literal
+        let bracket_end = server.find(']').ok_or("missing closing ']' for IPv6 address")?;
+        let host = &server[1..bracket_end];
+        if host.is_empty() {
+            return Err("empty host");
+        }
+        let rest = &server[bracket_end + 1..];
+        let port_str = rest.strip_prefix(':').ok_or("expected ':port' after IPv6 address")?;
+        (host, port_str)
+    } else {
+        // hostname or IPv4: split on last ':'
+        let colon = server.rfind(':').ok_or("expected host:port")?;
+        let host = &server[..colon];
+        if host.is_empty() {
+            return Err("empty host");
+        }
+        let port_str = &server[colon + 1..];
+        (host, port_str)
+    };
+
+    // Validate host is non-empty (already checked above, but be safe)
+    let _ = host;
+
+    // Validate port
+    if port_str.is_empty() {
+        return Err("expected host:port");
+    }
+    let port: u32 = port_str.parse().map_err(|_| "port must be a number")?;
+    if port == 0 || port > 65535 {
+        return Err("port must be 1-65535");
+    }
+
+    Ok(())
 }
 
 /// State for the file browser.
@@ -432,6 +495,9 @@ pub enum UiAction {
     SettingsRemoveMediaRoot,
     SettingsMoveRootUp,
     SettingsMoveRootDown,
+    SettingsCancel,
+    // Settings (from main screen)
+    OpenSettings,
     // File browser
     FileBrowserUp,
     FileBrowserDown,
@@ -594,6 +660,45 @@ mod tests {
         assert!(s.is_valid());
         s.username.clear();
         assert!(!s.is_valid()); // empty username
+    }
+
+    #[test]
+    fn validate_server_format_valid() {
+        use super::validate_server_format;
+        assert!(validate_server_format("localhost:4433").is_ok());
+        assert!(validate_server_format("dessplay.brage.info:4433").is_ok());
+        assert!(validate_server_format("192.168.1.1:8080").is_ok());
+        assert!(validate_server_format("[::1]:4433").is_ok());
+        assert!(validate_server_format("example.com:1").is_ok());
+        assert!(validate_server_format("example.com:65535").is_ok());
+    }
+
+    #[test]
+    fn validate_server_format_invalid() {
+        use super::validate_server_format;
+        assert!(validate_server_format("").is_err());
+        assert!(validate_server_format("localhost").is_err()); // no port
+        assert!(validate_server_format("localhost:0").is_err()); // port 0
+        assert!(validate_server_format("localhost:65536").is_err()); // port too high
+        assert!(validate_server_format("localhost:abc").is_err()); // non-numeric port
+        assert!(validate_server_format(":4433").is_err()); // no host
+        assert!(validate_server_format("localhost:").is_err()); // empty port
+    }
+
+    #[test]
+    fn settings_validation_rejects_bad_server() {
+        let mut s = SettingsState::new();
+        s.username = "alice".into();
+        s.server = "localhost".into(); // no port
+        s.media_roots.push(PathBuf::from("/anime"));
+        assert!(!s.is_valid());
+        assert!(!s.is_server_valid());
+        assert!(s.server_error().is_some());
+
+        s.server = "localhost:4433".into();
+        assert!(s.is_valid());
+        assert!(s.is_server_valid());
+        assert!(s.server_error().is_none());
     }
 
     #[test]

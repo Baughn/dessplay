@@ -1,0 +1,24 @@
+---
+source: dessplay/src/tui/tests.rs
+expression: terminal.backend()
+---
+"┌ Settings ──────────────────────────────────────────────────────────┐"
+"│                                                                    │"
+"│      Username: [X]                                                 │"
+"│                                                                    │"
+"│      Server: [X]                                                   │"
+"│                                                                    │"
+"│      Player:                                                       │"
+"│      mpv                                                           │"
+"│      Password:                                                     │"
+"│                                                                    │"
+"│      Media Roots: [X]                                              │"
+"│        (none)                                                      │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│      username required, server required, add at least one media    │"
+"│                                                                    │"
+"│                                                                    │"
+"└────────────────────────────────────────────────────────────────────┘"
+" Tab  Next field |  Shift-Tab  Prev field |  Ctrl-S  Save |  Esc  Canc"

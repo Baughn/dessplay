@@ -321,4 +321,97 @@ mod snapshot_tests {
         }).unwrap();
         assert_snapshot!(terminal.backend());
     }
+
+    // -----------------------------------------------------------------------
+    // Settings widget tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn settings_all_valid() {
+        use crate::tui::ui_state::SettingsState;
+        use crate::tui::widgets::settings;
+
+        let mut state = SettingsState::new();
+        state.username = "alice".to_string();
+        state.server = "dessplay.brage.info:4433".to_string();
+        state.player = "mpv".to_string();
+        state.password = "secret".to_string();
+        state.media_roots = vec![
+            std::path::PathBuf::from("/home/alice/anime"),
+        ];
+
+        let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+        terminal.draw(|frame| {
+            let wf = keybinding_bar::WindowFrame::new(frame.area());
+            settings::render_settings(wf.content, frame.buffer_mut(), &state);
+            wf.render_bar(frame.buffer_mut(), settings::keybindings());
+        }).unwrap();
+        assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn settings_invalid_server() {
+        use crate::tui::ui_state::SettingsState;
+        use crate::tui::widgets::settings;
+
+        let mut state = SettingsState::new();
+        state.username = "alice".to_string();
+        state.server = "localhost".to_string(); // missing port
+        state.player = "mpv".to_string();
+        state.media_roots = vec![
+            std::path::PathBuf::from("/home/alice/anime"),
+        ];
+
+        let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+        terminal.draw(|frame| {
+            let wf = keybinding_bar::WindowFrame::new(frame.area());
+            settings::render_settings(wf.content, frame.buffer_mut(), &state);
+            wf.render_bar(frame.buffer_mut(), settings::keybindings());
+        }).unwrap();
+        assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn settings_with_alert() {
+        use crate::tui::ui_state::SettingsState;
+        use crate::tui::widgets::settings;
+
+        let mut state = SettingsState::new();
+        state.username = "alice".to_string();
+        state.server = "dessplay.brage.info:4433".to_string();
+        state.player = "mpv".to_string();
+        state.media_roots = vec![
+            std::path::PathBuf::from("/home/alice/anime"),
+        ];
+        state.alert = Some("failed to resolve server address: dessplay.brage.info:4433".to_string());
+
+        let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+        terminal.draw(|frame| {
+            let wf = keybinding_bar::WindowFrame::new(frame.area());
+            settings::render_settings(wf.content, frame.buffer_mut(), &state);
+            wf.render_bar(frame.buffer_mut(), settings::keybindings());
+        }).unwrap();
+        assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn settings_all_empty() {
+        use crate::tui::ui_state::SettingsState;
+        use crate::tui::widgets::settings;
+
+        let mut state = SettingsState::new();
+        state.username = String::new();
+        state.server = String::new();
+        state.player = "mpv".to_string();
+        state.password = String::new();
+        state.media_roots = vec![];
+
+        let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+        terminal.draw(|frame| {
+            let wf = keybinding_bar::WindowFrame::new(frame.area());
+            settings::render_settings(wf.content, frame.buffer_mut(), &state);
+            wf.render_bar(frame.buffer_mut(), settings::keybindings());
+        }).unwrap();
+        assert_snapshot!(terminal.backend());
+    }
 }

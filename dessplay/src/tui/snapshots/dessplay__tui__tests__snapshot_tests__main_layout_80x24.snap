@@ -25,4 +25,4 @@ expression: terminal.backend()
 "┌──────────────────────────────────────────────────────────────────────────────┐"
 "│  Now Playing: Idle                                                           │"
 "└──────────────────────────────────────────────────────────────────────────────┘"
-" Tab  Next pane |  Enter  Send |  Esc  Clear |  Ctrl-C  Quit                    "
+" Tab  Next pane |  Enter  Send |  Esc  Clear |  Ctrl-S  Settings |  Ctrl-C  Quit"

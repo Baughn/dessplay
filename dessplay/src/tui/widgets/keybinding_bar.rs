@@ -47,6 +47,7 @@ pub fn render_keybinding_bar(area: Rect, buf: &mut Buffer, focus: &FocusedPane) 
             ("Tab", "Next pane"),
             ("Enter", "Send"),
             ("Esc", "Clear"),
+            ("Ctrl-S", "Settings"),
             ("Ctrl-C", "Quit"),
         ],
         FocusedPane::Playlist => &[
@@ -54,18 +55,20 @@ pub fn render_keybinding_bar(area: Rect, buf: &mut Buffer, focus: &FocusedPane) 
             ("a", "Add"),
             ("d", "Remove"),
             ("C-j/k", "Move"),
+            ("Ctrl-S", "Settings"),
             ("Ctrl-C", "Quit"),
         ],
         FocusedPane::RecentSeries => &[
             ("Tab", "Next pane"),
             ("Enter", "Browse"),
+            ("Ctrl-S", "Settings"),
             ("Ctrl-C", "Quit"),
         ],
     };
     render_bar(area, buf, bindings);
 }
 
-fn render_bar(area: Rect, buf: &mut Buffer, bindings: &[(&str, &str)]) {
+pub fn render_bar(area: Rect, buf: &mut Buffer, bindings: &[(&str, &str)]) {
     if area.height == 0 || area.width == 0 {
         return;
     }

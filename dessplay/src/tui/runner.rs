@@ -10,10 +10,13 @@ use crate::app_state::{AppEffect, AppEvent, AppState};
 use crate::peer_conn::PeerManager;
 use crate::rendezvous_client::{RendezvousClient, RendezvousEvent};
 use crate::storage::{ClientStorage, Config};
+use ratatui::layout::Rect;
+
 use crate::tui::layout::compute_layout;
 use crate::tui::terminal::{setup_file_logging, setup_terminal};
 use crate::tui::ui_state::{
-    FileBrowserOrigin, FileBrowserState, FocusedPane, InputResult, Screen, UiAction, UiState,
+    FileBrowserOrigin, FileBrowserState, FocusedPane, InputResult, Screen, SettingsState, UiAction,
+    UiState,
 };
 use crate::tui::widgets::{
     chat, file_browser, keybinding_bar, player_status, playlist, recent_series, settings, users,
@@ -49,23 +52,55 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
         run_settings_screen(&mut guard.terminal, &mut ui, &storage).await?;
     }
 
-    // Reload config (may have been saved from settings screen)
-    let config = {
-        let s = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        s.get_config()?
-            .ok_or_else(|| anyhow::anyhow!("no config — settings not saved"))?
-    };
+    loop {
+        // Reload config (may have been saved from settings screen)
+        let config = {
+            let s = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            s.get_config()?
+                .ok_or_else(|| anyhow::anyhow!("no config — settings not saved"))?
+        };
 
-    if ui.should_quit {
-        return Ok(());
+        if ui.should_quit {
+            return Ok(());
+        }
+
+        // Reset to main screen
+        ui.screen = Screen::Main;
+        ui.focus = FocusedPane::Chat;
+
+        // Connect to server and run main loop
+        match run_connected(&mut guard.terminal, &mut ui, &storage, &config, args).await {
+            Ok(()) => {
+                if ui.settings.is_some() {
+                    // Settings saved from inline modal — reconnect with new config
+                    ui.settings = None;
+                    ui.screen = Screen::Main;
+                    continue;
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!("Connection error: {e:#}");
+
+                if ui.should_quit {
+                    return Ok(());
+                }
+
+                // Re-open settings with the error as alert
+                let media_roots = storage
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get_media_roots().ok())
+                    .unwrap_or_default();
+                let mut settings = SettingsState::from_config(&config, media_roots);
+                settings.alert = Some(format!("{e:#}"));
+
+                ui.screen = Screen::Settings;
+                ui.settings = Some(settings);
+                run_settings_screen(&mut guard.terminal, &mut ui, &storage).await?;
+            }
+        }
     }
-
-    // Reset to main screen
-    ui.screen = Screen::Main;
-    ui.focus = FocusedPane::Chat;
-
-    // Connect to server and run main loop
-    run_connected(&mut guard.terminal, &mut ui, &storage, &config, args).await
 }
 
 /// Run the settings screen loop until the user saves or quits.
@@ -117,6 +152,11 @@ async fn run_settings_screen(
                             && s.is_valid() {
                                 return Ok(());
                             }
+                    if matches!(action, UiAction::SettingsCancel) {
+                        // In first-run/error context, cancel means quit
+                        ui.should_quit = true;
+                        return Ok(());
+                    }
                 }
                 InputResult::None => {}
                 _ => {}
@@ -152,6 +192,7 @@ fn apply_settings_action(
         }
         UiAction::SettingsInsertChar(c) => {
             if let Some(ref mut s) = ui.settings {
+                s.alert = None;
                 match s.focused_field {
                     0 => s.username.push(*c),
                     1 => s.server.push(*c),
@@ -162,6 +203,7 @@ fn apply_settings_action(
         }
         UiAction::SettingsDeleteBack => {
             if let Some(ref mut s) = ui.settings {
+                s.alert = None;
                 match s.focused_field {
                     0 => { s.username.pop(); }
                     1 => { s.server.pop(); }
@@ -172,6 +214,7 @@ fn apply_settings_action(
         }
         UiAction::SettingsTogglePlayer => {
             if let Some(ref mut s) = ui.settings {
+                s.alert = None;
                 s.player = if s.player == "mpv" {
                     "vlc".to_string()
                 } else {
@@ -191,6 +234,7 @@ fn apply_settings_action(
         UiAction::SettingsRemoveMediaRoot => {
             if let Some(ref mut s) = ui.settings
                 && !s.media_roots.is_empty() {
+                    s.alert = None;
                     s.media_roots.pop();
                 }
         }
@@ -199,6 +243,7 @@ fn apply_settings_action(
             if let Some(ref mut s) = ui.settings {
                 let len = s.media_roots.len();
                 if len >= 2 {
+                    s.alert = None;
                     s.media_roots.swap(len - 2, len - 1);
                 }
             }
@@ -207,6 +252,7 @@ fn apply_settings_action(
             if let Some(ref mut s) = ui.settings {
                 let len = s.media_roots.len();
                 if len >= 2 {
+                    s.alert = None;
                     s.media_roots.swap(0, 1);
                 }
             }
@@ -229,6 +275,10 @@ fn apply_settings_action(
                     st.save_config(&config)?;
                     st.set_media_roots(&roots)?;
                 }
+        }
+        UiAction::SettingsCancel => {
+            ui.settings = None;
+            ui.screen = Screen::Main;
         }
         _ => {}
     }
@@ -372,9 +422,11 @@ async fn run_connected(
 
     let server_str = get_arg(args, "--server").unwrap_or_else(|| config.server.clone());
 
-    let server_addr: std::net::SocketAddr = server_str
-        .parse()
-        .context("invalid server address — expected host:port")?;
+    let server_addr = tokio::net::lookup_host(&server_str)
+        .await
+        .context(format!("failed to resolve server address: {server_str}"))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("server address resolved to no addresses: {server_str}"))?;
 
     let tofu = Arc::new(crate::tls::TofuVerifier::new(
         Arc::clone(storage),
@@ -518,7 +570,12 @@ async fn run_connected(
                                 }
                             } else if ui.file_browser.is_none() {
                                 // File browser was closed without selection
-                                ui.screen = Screen::Main;
+                                // Return to settings if open, otherwise main
+                                if ui.settings.is_some() {
+                                    ui.screen = Screen::Settings;
+                                } else {
+                                    ui.screen = Screen::Main;
+                                }
                             }
 
                             needs_redraw = true;
@@ -528,26 +585,55 @@ async fn run_connected(
                         let result = crate::tui::input::handle_key_event(key, ui);
                         match result {
                             InputResult::AppEvent(event) => {
-                                let now = rv_client.shared_now().await;
-                                let effects = app_state.lock().await.process_event(event, now);
-                                dispatch_effects(
-                                    effects, &peer_mgr, &rv_client, storage,
-                                    &app_state, &gap_fill_tx,
-                                ).await;
+                                if ui.screen != Screen::Settings {
+                                    let now = rv_client.shared_now().await;
+                                    let effects = app_state.lock().await.process_event(event, now);
+                                    dispatch_effects(
+                                        effects, &peer_mgr, &rv_client, storage,
+                                        &app_state, &gap_fill_tx,
+                                    ).await;
+                                }
                                 needs_redraw = true;
                             }
                             InputResult::UiAction(action) => {
-                                apply_main_ui_action(ui, &action, storage, &app_state, &rv_client).await?;
+                                if ui.screen == Screen::Settings {
+                                    apply_settings_action(ui, &action, storage)?;
+                                    if matches!(action, UiAction::SettingsSave)
+                                        && ui.settings.as_ref().is_some_and(|s| s.is_valid())
+                                    {
+                                        // Settings saved — break to reconnect with new config
+                                        break;
+                                    }
+                                    if matches!(action, UiAction::SettingsCancel) {
+                                        ui.settings = None;
+                                        ui.screen = Screen::Main;
+                                    }
+                                } else {
+                                    apply_main_ui_action(ui, &action, storage, &app_state, &rv_client).await?;
+                                }
                                 needs_redraw = true;
                             }
                             InputResult::Both(event, action) => {
-                                let now = rv_client.shared_now().await;
-                                let effects = app_state.lock().await.process_event(event, now);
-                                dispatch_effects(
-                                    effects, &peer_mgr, &rv_client, storage,
-                                    &app_state, &gap_fill_tx,
-                                ).await;
-                                apply_main_ui_action(ui, &action, storage, &app_state, &rv_client).await?;
+                                if ui.screen == Screen::Settings {
+                                    apply_settings_action(ui, &action, storage)?;
+                                    if matches!(action, UiAction::SettingsSave)
+                                        && ui.settings.as_ref().is_some_and(|s| s.is_valid())
+                                    {
+                                        break;
+                                    }
+                                    if matches!(action, UiAction::SettingsCancel) {
+                                        ui.settings = None;
+                                        ui.screen = Screen::Main;
+                                    }
+                                } else {
+                                    let now = rv_client.shared_now().await;
+                                    let effects = app_state.lock().await.process_event(event, now);
+                                    dispatch_effects(
+                                        effects, &peer_mgr, &rv_client, storage,
+                                        &app_state, &gap_fill_tx,
+                                    ).await;
+                                    apply_main_ui_action(ui, &action, storage, &app_state, &rv_client).await?;
+                                }
                                 needs_redraw = true;
                             }
                             InputResult::None => {}
@@ -870,12 +956,33 @@ async fn draw_main_screen(
             current_file_name.as_deref(),
         );
 
-        // Keybinding bar
-        keybinding_bar::render_keybinding_bar(
-            layout.keybinding_bar,
-            frame.buffer_mut(),
-            &ui.focus,
-        );
+        // Settings modal overlay (if open)
+        if let Some(ref settings_state) = ui.settings {
+            // Modal: full width minus 4 padding, leaves 3 chat lines visible at bottom
+            let modal_height = layout.chat_messages.height.saturating_sub(3);
+            if modal_height > 0 {
+                let modal_area = Rect {
+                    x: area.x + 2,
+                    y: area.y,
+                    width: area.width.saturating_sub(4),
+                    height: modal_height,
+                };
+                settings::render_settings(modal_area, frame.buffer_mut(), settings_state);
+            }
+            // Override keybinding bar with settings keybindings
+            keybinding_bar::render_bar(
+                layout.keybinding_bar,
+                frame.buffer_mut(),
+                settings::keybindings(),
+            );
+        } else {
+            // Keybinding bar
+            keybinding_bar::render_keybinding_bar(
+                layout.keybinding_bar,
+                frame.buffer_mut(),
+                &ui.focus,
+            );
+        }
     })?;
 
     Ok(())
@@ -991,6 +1098,17 @@ async fn apply_main_ui_action(
         }
         UiAction::RecentSelectDown => {
             ui.recent_selected += 1; // Stub: no bounds check until Phase 8
+        }
+        // Settings
+        UiAction::OpenSettings => {
+            let (config, media_roots) = {
+                let s = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                let config = s.get_config()?.ok_or_else(|| anyhow::anyhow!("no config"))?;
+                let roots = s.get_media_roots().unwrap_or_default();
+                (config, roots)
+            };
+            ui.settings = Some(SettingsState::from_config(&config, media_roots));
+            ui.screen = Screen::Settings;
         }
         _ => {}
     }

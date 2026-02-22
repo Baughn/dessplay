@@ -23,6 +23,11 @@ fn handle_main_key(key: KeyEvent, ui: &UiState) -> InputResult {
         return InputResult::UiAction(UiAction::CycleFocus);
     }
 
+    // Ctrl-S opens settings (must be before pane dispatch so chat doesn't swallow it)
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+        return InputResult::UiAction(UiAction::OpenSettings);
+    }
+
     match ui.focus {
         FocusedPane::Chat => handle_chat_key(key, ui),
         FocusedPane::Playlist => handle_playlist_key(key),
@@ -112,6 +117,7 @@ fn handle_settings_key(key: KeyEvent, ui: &UiState) -> InputResult {
     }
 
     match key.code {
+        KeyCode::Esc => InputResult::UiAction(UiAction::SettingsCancel),
         KeyCode::Tab => {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 InputResult::UiAction(UiAction::SettingsPrevField)

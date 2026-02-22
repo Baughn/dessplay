@@ -2,4 +2,4 @@
 source: dessplay/src/tui/tests.rs
 expression: terminal.backend()
 ---
-" Tab  Next pane |  a  Add |  d  Remove |  C-j/k  Move |  Ctrl-C  Quit           "
+" Tab  Next pane |  a  Add |  d  Remove |  C-j/k  Move |  Ctrl-S  Settings |  Ctr"

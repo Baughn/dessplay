@@ -11,6 +11,7 @@ pub fn keybindings() -> &'static [(&'static str, &'static str)] {
         ("Tab", "Next field"),
         ("Shift-Tab", "Prev field"),
         ("Ctrl-S", "Save"),
+        ("Esc", "Cancel"),
         ("Ctrl-C", "Quit"),
     ]
 }
@@ -40,9 +41,11 @@ pub fn render_settings(area: Rect, buf: &mut Buffer, state: &SettingsState) {
         height: inner.height.saturating_sub(2),
     };
 
+    let has_alert = state.alert.is_some();
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(if has_alert { 2 } else { 0 }), // alert banner
             Constraint::Length(2), // username
             Constraint::Length(2), // server
             Constraint::Length(2), // player
@@ -52,18 +55,33 @@ pub fn render_settings(area: Rect, buf: &mut Buffer, state: &SettingsState) {
         ])
         .split(form_area);
 
-    render_field(buf, rows[0], "Username", &state.username, state.focused_field == 0);
-    render_field(buf, rows[1], "Server", &state.server, state.focused_field == 1);
+    // Alert banner
+    if let Some(ref alert) = state.alert {
+        let alert_line = Line::from(Span::styled(
+            format!("  {alert}"),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+        Paragraph::new(alert_line).render(rows[0], buf);
+    }
 
-    // Player: show as toggle rather than free text
-    render_toggle_field(buf, rows[2], "Player", &state.player, state.focused_field == 2);
+    let username_ok = state.is_username_valid();
+    let server_ok = state.is_server_valid();
+    let roots_ok = state.has_media_roots();
 
-    // Password: show masked
+    render_field_with_indicator(buf, rows[1], "Username", &state.username, state.focused_field == 0, username_ok);
+    render_field_with_indicator(buf, rows[2], "Server", &state.server, state.focused_field == 1, server_ok);
+
+    // Player: show as toggle rather than free text (always valid)
+    render_toggle_field(buf, rows[3], "Player", &state.player, state.focused_field == 2);
+
+    // Password: show masked (no validation)
     let masked = "*".repeat(state.password.len());
-    render_field(buf, rows[3], "Password", &masked, state.focused_field == 3);
+    render_field(buf, rows[4], "Password", &masked, state.focused_field == 3);
 
     // Media roots
-    render_media_roots(buf, rows[4], &state.media_roots, state.focused_field == 4);
+    render_media_roots_with_indicator(buf, rows[5], &state.media_roots, state.focused_field == 4, roots_ok);
 
     // Validation / save hint
     let hint = if state.is_valid() {
@@ -73,13 +91,13 @@ pub fn render_settings(area: Rect, buf: &mut Buffer, state: &SettingsState) {
         ))
     } else {
         let mut issues = Vec::new();
-        if state.username.trim().is_empty() {
+        if !username_ok {
             issues.push("username required");
         }
-        if state.server.trim().is_empty() {
-            issues.push("server required");
+        if let Some(err) = state.server_error() {
+            issues.push(err);
         }
-        if state.media_roots.is_empty() {
+        if !roots_ok {
             issues.push("add at least one media root");
         }
         Line::from(Span::styled(
@@ -87,7 +105,46 @@ pub fn render_settings(area: Rect, buf: &mut Buffer, state: &SettingsState) {
             Style::default().fg(Color::Red),
         ))
     };
-    Paragraph::new(hint).render(rows[5], buf);
+    Paragraph::new(hint).render(rows[6], buf);
+}
+
+fn render_field_with_indicator(
+    buf: &mut Buffer,
+    area: Rect,
+    label: &str,
+    value: &str,
+    focused: bool,
+    valid: bool,
+) {
+    if area.height == 0 {
+        return;
+    }
+
+    let label_style = if focused {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let value_style = if focused {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    let indicator = if valid {
+        Span::styled(" [ok]", Style::default().fg(Color::Green))
+    } else {
+        Span::styled(" [X]", Style::default().fg(Color::Red))
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("  {label}:"), label_style),
+            indicator,
+        ]),
+        Line::from(Span::styled(format!("  {value}"), value_style)),
+    ];
+    Paragraph::new(lines).render(area, buf);
 }
 
 fn render_field(buf: &mut Buffer, area: Rect, label: &str, value: &str, focused: bool) {
@@ -136,6 +193,69 @@ fn render_toggle_field(buf: &mut Buffer, area: Rect, label: &str, value: &str, f
     Paragraph::new(lines).render(area, buf);
 }
 
+fn render_media_roots_with_indicator(
+    buf: &mut Buffer,
+    area: Rect,
+    roots: &[std::path::PathBuf],
+    focused: bool,
+    valid: bool,
+) {
+    if area.height == 0 {
+        return;
+    }
+
+    let label_style = if focused {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let indicator = if valid {
+        Span::styled(" [ok]", Style::default().fg(Color::Green))
+    } else {
+        Span::styled(" [X]", Style::default().fg(Color::Red))
+    };
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled("  Media Roots:", label_style),
+        indicator,
+    ])];
+
+    if roots.is_empty() {
+        let hint = if focused {
+            "(Enter to add)"
+        } else {
+            "(none)"
+        };
+        lines.push(Line::from(Span::styled(
+            format!("    {hint}"),
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (i, root) in roots.iter().enumerate() {
+            let marker = if i == 0 { " [download]" } else { "" };
+            let style = if i == 0 {
+                Style::default().fg(Color::Blue)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {}", root.display()), style),
+                Span::styled(marker, Style::default().fg(Color::Blue)),
+            ]));
+        }
+        if focused {
+            lines.push(Line::from(Span::styled(
+                "    Enter=add  d=remove  Ctrl-j/k=reorder",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    Paragraph::new(lines).render(area, buf);
+}
+
+#[allow(dead_code)]
 fn render_media_roots(buf: &mut Buffer, area: Rect, roots: &[std::path::PathBuf], focused: bool) {
     if area.height == 0 {
         return;

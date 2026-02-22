@@ -1,0 +1,24 @@
+---
+source: dessplay/src/tui/tests.rs
+expression: terminal.backend()
+---
+"┌ Settings ──────────────────────────────────────────────────────────┐"
+"│                                                                    │"
+"│      Username: [ok]                                                │"
+"│      alice                                                         │"
+"│      Server: [X]                                                   │"
+"│      localhost                                                     │"
+"│      Player:                                                       │"
+"│      mpv                                                           │"
+"│      Password:                                                     │"
+"│                                                                    │"
+"│      Media Roots: [ok]                                             │"
+"│        /home/alice/anime [download]                                │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│      expected host:port                                            │"
+"│                                                                    │"
+"│                                                                    │"
+"└────────────────────────────────────────────────────────────────────┘"
+" Tab  Next field |  Shift-Tab  Prev field |  Ctrl-S  Save |  Esc  Canc"
