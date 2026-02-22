@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-02-20
+Last updated: 2026-02-22
 
 11 phases, bottom-up. Each phase produces testable artifacts. The first
 user-facing demo (TUI with chat + shared playlist) arrives at Phase 6;
@@ -163,6 +163,8 @@ simulated packet loss.
 ---
 
 ## Phase 5: Application Core & Rendezvous Server
+
+Status: Completed
 
 **Goal**: AppState event loop, server compaction, headless client.
 

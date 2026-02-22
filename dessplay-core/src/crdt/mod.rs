@@ -213,6 +213,11 @@ impl CrdtState {
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
+
+    /// Set the epoch (used by compaction).
+    pub(crate) fn set_epoch(&mut self, epoch: u64) {
+        self.epoch = epoch;
+    }
 }
 
 #[cfg(test)]

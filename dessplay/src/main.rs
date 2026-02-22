@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use dessplay::app_state::{AppEffect, AppEvent, AppState};
 use dessplay::peer_conn::PeerManager;
 use dessplay::rendezvous_client::RendezvousEvent;
 use dessplay::storage;
@@ -15,7 +16,7 @@ use dessplay_core::protocol::{
     GapFillRequest, GapFillResponse, PeerControl, PeerDatagram, RvControl,
 };
 use dessplay_core::sync_engine::{SyncAction, SyncEngine};
-use dessplay_core::types::PeerId;
+use dessplay_core::types::{PeerId, UserId};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -109,9 +110,10 @@ async fn main() -> Result<()> {
     ));
     peer_mgr.spawn_accept_loop();
 
-    // Initialize sync engine from persisted state
-    let sync_engine = {
+    // Initialize AppState from persisted state
+    let app_state = {
         let s = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let user_id = UserId(config.username.clone());
         match s.load_latest_snapshot()? {
             Some((epoch, snapshot)) => {
                 let mut state = dessplay_core::crdt::CrdtState::new();
@@ -120,23 +122,28 @@ async fn main() -> Result<()> {
                     state.apply_op(&op);
                 }
                 tracing::info!(%epoch, "Loaded persisted CRDT state");
-                SyncEngine::from_persisted(epoch, state, epoch)
+                let engine = SyncEngine::from_persisted(epoch, state, epoch);
+                AppState::from_persisted(user_id, engine)
             }
             None => {
                 tracing::info!("No persisted state, starting fresh");
-                SyncEngine::new()
+                AppState::new(user_id)
             }
         }
     };
-    let sync_engine = Arc::new(tokio::sync::Mutex::new(sync_engine));
+    let app_state = Arc::new(tokio::sync::Mutex::new(app_state));
 
     // Send our state summary to the server
     {
-        let eng = sync_engine.lock().await;
+        let app = app_state.lock().await;
         rv_client.send(RvControl::StateSummary {
-            versions: eng.version_vectors(),
+            versions: app.sync_engine.version_vectors(),
         });
     }
+
+    // Gap fill response channel — spawned tasks send results here
+    let (gap_fill_tx, mut gap_fill_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(PeerId, GapFillResponse)>();
 
     // Periodic state summary timer
     let mut summary_interval = tokio::time::interval(Duration::from_secs(1));
@@ -146,42 +153,44 @@ async fn main() -> Result<()> {
         tokio::select! {
             // Rendezvous server events
             event = rv_client.recv() => {
+                let now = rv_client.shared_now().await;
                 match event {
                     Some(RendezvousEvent::PeerList { peers }) => {
                         tracing::info!(count = peers.len(), "Got peer list update");
                         peer_mgr.update_peer_list(peers).await;
                     }
                     Some(RendezvousEvent::StateOp { op }) => {
-                        // Use a special PeerId(0) for the server
-                        let actions = sync_engine.lock().await.on_remote_op(PeerId(0), op);
-                        dispatch_actions(
-                            actions,
-                            &peer_mgr,
-                            &rv_client,
-                            &storage,
-                            &sync_engine,
+                        let effects = app_state.lock().await.process_event(
+                            AppEvent::RemoteOp { from: PeerId(0), op },
+                            now,
+                        );
+                        dispatch_effects(
+                            effects, &peer_mgr, &rv_client, &storage,
+                            &app_state, &gap_fill_tx,
                         ).await;
                     }
                     Some(RendezvousEvent::StateSummary { versions }) => {
-                        let actions = sync_engine.lock().await
-                            .on_state_summary(PeerId(0), versions.epoch, versions);
-                        dispatch_actions(
-                            actions,
-                            &peer_mgr,
-                            &rv_client,
-                            &storage,
-                            &sync_engine,
+                        let effects = app_state.lock().await.process_event(
+                            AppEvent::StateSummary {
+                                from: PeerId(0),
+                                epoch: versions.epoch,
+                                versions,
+                            },
+                            now,
+                        );
+                        dispatch_effects(
+                            effects, &peer_mgr, &rv_client, &storage,
+                            &app_state, &gap_fill_tx,
                         ).await;
                     }
                     Some(RendezvousEvent::StateSnapshot { epoch, crdts }) => {
-                        let actions = sync_engine.lock().await
-                            .on_state_snapshot(epoch, crdts);
-                        dispatch_actions(
-                            actions,
-                            &peer_mgr,
-                            &rv_client,
-                            &storage,
-                            &sync_engine,
+                        let effects = app_state.lock().await.process_event(
+                            AppEvent::StateSnapshot { epoch, snapshot: crdts },
+                            now,
+                        );
+                        dispatch_effects(
+                            effects, &peer_mgr, &rv_client, &storage,
+                            &app_state, &gap_fill_tx,
                         ).await;
                     }
                     None => {
@@ -193,67 +202,74 @@ async fn main() -> Result<()> {
 
             // Peer network events
             event = peer_mgr.recv() => {
+                let now = rv_client.shared_now().await;
                 match event {
                     Ok(NetworkEvent::PeerConnected { peer_id, username }) => {
                         tracing::info!(%peer_id, %username, "Peer connected");
-                        let actions = sync_engine.lock().await.on_peer_connected(peer_id);
-                        dispatch_actions(
-                            actions,
-                            &peer_mgr,
-                            &rv_client,
-                            &storage,
-                            &sync_engine,
+                        let effects = app_state.lock().await.process_event(
+                            AppEvent::PeerConnected { peer_id, username },
+                            now,
+                        );
+                        dispatch_effects(
+                            effects, &peer_mgr, &rv_client, &storage,
+                            &app_state, &gap_fill_tx,
                         ).await;
                     }
                     Ok(NetworkEvent::PeerDisconnected { peer_id }) => {
                         tracing::info!(%peer_id, "Peer disconnected");
-                        sync_engine.lock().await.on_peer_disconnected(peer_id);
+                        let effects = app_state.lock().await.process_event(
+                            AppEvent::PeerDisconnected { peer_id },
+                            now,
+                        );
+                        dispatch_effects(
+                            effects, &peer_mgr, &rv_client, &storage,
+                            &app_state, &gap_fill_tx,
+                        ).await;
                     }
                     Ok(NetworkEvent::PeerControl { from, message }) => {
-                        let actions = match message {
+                        let app_event = match message {
                             PeerControl::StateOp { op } => {
-                                sync_engine.lock().await.on_remote_op(from, op)
+                                Some(AppEvent::RemoteOp { from, op })
                             }
                             PeerControl::StateSummary { epoch, versions } => {
-                                sync_engine.lock().await
-                                    .on_state_summary(from, epoch, versions)
+                                Some(AppEvent::StateSummary { from, epoch, versions })
                             }
                             PeerControl::StateSnapshot { epoch, crdts } => {
-                                sync_engine.lock().await.on_state_snapshot(epoch, crdts)
+                                Some(AppEvent::StateSnapshot { epoch, snapshot: crdts })
                             }
                             other => {
                                 tracing::debug!(%from, ?other, "Unhandled peer control");
-                                vec![]
+                                None
                             }
                         };
-                        dispatch_actions(
-                            actions,
-                            &peer_mgr,
-                            &rv_client,
-                            &storage,
-                            &sync_engine,
-                        ).await;
+                        if let Some(event) = app_event {
+                            let effects = app_state.lock().await.process_event(event, now);
+                            dispatch_effects(
+                                effects, &peer_mgr, &rv_client, &storage,
+                                &app_state, &gap_fill_tx,
+                            ).await;
+                        }
                     }
                     Ok(NetworkEvent::PeerDatagram { from, message }) => {
-                        let actions = match message {
+                        let app_event = match message {
                             PeerDatagram::StateOp { op } => {
-                                sync_engine.lock().await.on_remote_op(from, op)
+                                Some(AppEvent::RemoteOp { from, op })
                             }
-                            _ => vec![], // Position/Seek — Phase 7
+                            _ => None, // Position/Seek — Phase 7
                         };
-                        dispatch_actions(
-                            actions,
-                            &peer_mgr,
-                            &rv_client,
-                            &storage,
-                            &sync_engine,
-                        ).await;
+                        if let Some(event) = app_event {
+                            let effects = app_state.lock().await.process_event(event, now);
+                            dispatch_effects(
+                                effects, &peer_mgr, &rv_client, &storage,
+                                &app_state, &gap_fill_tx,
+                            ).await;
+                        }
                     }
                     Ok(NetworkEvent::IncomingStream { from, stream }) => {
                         tracing::debug!(%from, "Incoming stream");
-                        let engine = Arc::clone(&sync_engine);
+                        let app = Arc::clone(&app_state);
                         tokio::spawn(async move {
-                            if let Err(e) = handle_incoming_stream(stream, engine).await {
+                            if let Err(e) = handle_incoming_stream(stream, app).await {
                                 tracing::debug!(%from, "Gap fill stream error: {e}");
                             }
                         });
@@ -265,15 +281,28 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Gap fill responses from spawned tasks
+            result = gap_fill_rx.recv() => {
+                if let Some((from, response)) = result {
+                    let now = rv_client.shared_now().await;
+                    let effects = app_state.lock().await.process_event(
+                        AppEvent::GapFillResponse { from, response },
+                        now,
+                    );
+                    dispatch_effects(
+                        effects, &peer_mgr, &rv_client, &storage,
+                        &app_state, &gap_fill_tx,
+                    ).await;
+                }
+            }
+
             // Periodic state summary
             _ = summary_interval.tick() => {
-                let actions = sync_engine.lock().await.on_periodic_tick();
-                dispatch_actions(
-                    actions,
-                    &peer_mgr,
-                    &rv_client,
-                    &storage,
-                    &sync_engine,
+                let now = rv_client.shared_now().await;
+                let effects = app_state.lock().await.process_event(AppEvent::Tick, now);
+                dispatch_effects(
+                    effects, &peer_mgr, &rv_client, &storage,
+                    &app_state, &gap_fill_tx,
                 ).await;
             }
         }
@@ -282,13 +311,41 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Dispatch AppEffects to the runtime (network, storage, etc).
+async fn dispatch_effects(
+    effects: Vec<AppEffect>,
+    peer_mgr: &Arc<PeerManager>,
+    rv_client: &dessplay::rendezvous_client::RendezvousClient,
+    storage: &Arc<Mutex<storage::ClientStorage>>,
+    app_state: &Arc<tokio::sync::Mutex<AppState>>,
+    gap_fill_tx: &tokio::sync::mpsc::UnboundedSender<(PeerId, GapFillResponse)>,
+) {
+    for effect in effects {
+        match effect {
+            AppEffect::Sync(actions) => {
+                dispatch_sync_actions(
+                    actions, peer_mgr, rv_client, storage, app_state, gap_fill_tx,
+                )
+                .await;
+            }
+            AppEffect::Redraw => {} // Phase 6
+            AppEffect::PlayerPause
+            | AppEffect::PlayerUnpause
+            | AppEffect::PlayerSeek(_)
+            | AppEffect::PlayerLoadFile(_)
+            | AppEffect::PlayerShowOsd(_) => {} // Phase 7
+        }
+    }
+}
+
 /// Dispatch sync actions to the network and storage layers.
-async fn dispatch_actions(
+async fn dispatch_sync_actions(
     actions: Vec<SyncAction>,
     peer_mgr: &Arc<PeerManager>,
     rv_client: &dessplay::rendezvous_client::RendezvousClient,
     storage: &Arc<Mutex<storage::ClientStorage>>,
-    sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+    app_state: &Arc<tokio::sync::Mutex<AppState>>,
+    gap_fill_tx: &tokio::sync::mpsc::UnboundedSender<(PeerId, GapFillResponse)>,
 ) {
     for action in actions {
         match action {
@@ -343,23 +400,24 @@ async fn dispatch_actions(
             }
             SyncAction::RequestGapFill { peer, request } => {
                 if peer == PeerId(0) {
-                    // Server gap fill — not supported in P2P gap fill protocol
-                    // (server sends ops on the control stream instead)
                     tracing::debug!("Gap fill to server not supported via streams");
                 } else {
                     let peer_mgr = Arc::clone(peer_mgr);
-                    let engine = Arc::clone(sync_engine);
+                    let tx = gap_fill_tx.clone();
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            handle_gap_fill_request(peer, request, &peer_mgr, engine).await
-                        {
-                            tracing::debug!(%peer, "Gap fill request failed: {e}");
+                        match do_gap_fill(peer, request, &peer_mgr).await {
+                            Ok(response) => {
+                                let _ = tx.send((peer, response));
+                            }
+                            Err(e) => {
+                                tracing::debug!(%peer, "Gap fill request failed: {e}");
+                            }
                         }
                     });
                 }
             }
             SyncAction::PersistOp { op } => {
-                let epoch = sync_engine.lock().await.epoch();
+                let epoch = app_state.lock().await.sync_engine.epoch();
                 if let Ok(s) = storage.lock()
                     && let Err(e) = s.append_op(epoch, &op)
                 {
@@ -378,46 +436,31 @@ async fn dispatch_actions(
 }
 
 /// Open a gap fill stream to a peer, send request, read response.
-async fn handle_gap_fill_request(
+async fn do_gap_fill(
     peer: PeerId,
     request: GapFillRequest,
     peer_mgr: &PeerManager,
-    sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>,
-) -> Result<()> {
+) -> Result<GapFillResponse> {
     let mut stream = peer_mgr.open_stream(peer).await?;
     write_framed(&mut stream.send, TAG_GAP_FILL_REQUEST, &request).await?;
     let response: GapFillResponse = read_framed(&mut stream.recv, TAG_GAP_FILL_RESPONSE)
         .await?
         .ok_or_else(|| anyhow::anyhow!("gap fill stream closed without response"))?;
-
-    let mut eng = sync_engine.lock().await;
-    let actions = eng.on_gap_fill_response(peer, response);
-    // Gap fill response only produces PersistOp actions — handled in the caller
-    drop(eng);
-
-    // Persist the ops directly (these are PersistOp actions only)
-    for action in actions {
-        if let SyncAction::PersistOp { .. } = action {
-            // Persistence will be handled by the next periodic tick's
-            // summary exchange if any ops were applied. For now, the ops
-            // are in the in-memory CrdtState which is sufficient.
-        }
-    }
-    Ok(())
+    Ok(response)
 }
 
 /// Handle an incoming gap fill stream from a peer.
 async fn handle_incoming_stream(
     mut stream: dessplay_core::network::MessageStream,
-    sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>,
+    app_state: Arc<tokio::sync::Mutex<AppState>>,
 ) -> Result<()> {
     let request: GapFillRequest = read_framed(&mut stream.recv, TAG_GAP_FILL_REQUEST)
         .await?
         .ok_or_else(|| anyhow::anyhow!("stream closed before gap fill request"))?;
 
     let response = {
-        let eng = sync_engine.lock().await;
-        eng.on_gap_fill_request(&request)
+        let app = app_state.lock().await;
+        app.on_gap_fill_request(&request)
     };
     write_framed(&mut stream.send, TAG_GAP_FILL_RESPONSE, &response).await?;
     Ok(())

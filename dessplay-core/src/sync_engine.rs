@@ -262,6 +262,18 @@ impl SyncEngine {
     pub fn version_vectors(&self) -> VersionVectors {
         self.state.version_vectors()
     }
+
+    /// Compact in-memory state into a snapshot and increment the epoch.
+    ///
+    /// Returns the new epoch and the snapshot. The caller is responsible for
+    /// persisting the snapshot and cleaning up old data in storage.
+    pub fn compact(&mut self) -> (u64, CrdtSnapshot) {
+        let new_epoch = self.state.epoch() + 1;
+        self.state.set_epoch(new_epoch);
+        let snapshot = self.state.snapshot();
+        self.pending_gap_fills.clear();
+        (new_epoch, snapshot)
+    }
 }
 
 impl Default for SyncEngine {
@@ -857,5 +869,89 @@ mod tests {
         }
 
         assert_eq!(engine_a.state().snapshot(), engine_b.state().snapshot());
+    }
+
+    // -----------------------------------------------------------------------
+    // compact
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compact_increments_epoch() {
+        let mut engine = SyncEngine::new();
+        engine.apply_local_op(user_state_op("alice", UserState::Ready, 100));
+        assert_eq!(engine.epoch(), 0);
+
+        let (new_epoch, _) = engine.compact();
+        assert_eq!(new_epoch, 1);
+        assert_eq!(engine.epoch(), 1);
+    }
+
+    #[test]
+    fn compact_preserves_state() {
+        let mut engine = SyncEngine::new();
+        engine.apply_local_op(user_state_op("alice", UserState::Paused, 100));
+        engine.apply_local_op(playlist_add_op(1, 200));
+        engine.apply_local_op(chat_op("alice", 0, 300, "hi"));
+
+        let snapshot_before = engine.state().snapshot();
+        let (_, snapshot_after) = engine.compact();
+
+        assert_eq!(snapshot_before, snapshot_after);
+    }
+
+    #[test]
+    fn compact_clears_pending_gap_fills() {
+        let mut engine = SyncEngine::new();
+        engine.pending_gap_fills.insert(peer(1));
+        engine.pending_gap_fills.insert(peer(2));
+        engine.compact();
+        assert!(engine.pending_gap_fills.is_empty());
+    }
+
+    #[test]
+    fn compact_round_trip() {
+        // Server side: build up some state and compact
+        let mut server = SyncEngine::new();
+        server.apply_local_op(user_state_op("alice", UserState::Paused, 100));
+        server.apply_local_op(playlist_add_op(1, 200));
+        server.apply_local_op(chat_op("alice", 0, 300, "hi"));
+
+        let (new_epoch, _snapshot) = server.compact();
+        assert_eq!(new_epoch, 1);
+
+        // Client with stale epoch 0
+        let mut client = SyncEngine::new();
+        assert_eq!(client.epoch(), 0);
+
+        // Client sends its summary; server detects stale epoch and responds
+        let server_actions =
+            server.on_state_summary(peer(1), 0, client.version_vectors());
+
+        // Server must send a StateSnapshot to the stale client
+        let snapshot_action = server_actions.iter().find(|a| {
+            matches!(
+                a,
+                SyncAction::SendControl {
+                    msg: PeerControl::StateSnapshot { .. },
+                    ..
+                }
+            )
+        });
+        assert!(
+            snapshot_action.is_some(),
+            "server must send snapshot to stale client"
+        );
+
+        // Client applies the snapshot
+        if let Some(SyncAction::SendControl {
+            msg: PeerControl::StateSnapshot { epoch, crdts },
+            ..
+        }) = snapshot_action
+        {
+            let actions = client.on_state_snapshot(*epoch, crdts.clone());
+            assert!(!actions.is_empty(), "must produce PersistSnapshot");
+            assert_eq!(client.epoch(), 1);
+            assert_eq!(client.state().snapshot(), server.state().snapshot());
+        }
     }
 }

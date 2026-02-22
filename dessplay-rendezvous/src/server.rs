@@ -36,6 +36,7 @@ pub struct RendezvousServer {
     next_peer_id: AtomicU64,
     sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>,
     storage: Arc<std::sync::Mutex<ServerStorage>>,
+    compaction_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl RendezvousServer {
@@ -71,6 +72,7 @@ impl RendezvousServer {
             next_peer_id: AtomicU64::new(1),
             sync_engine: Arc::new(tokio::sync::Mutex::new(sync_engine)),
             storage: Arc::new(std::sync::Mutex::new(storage)),
+            compaction_task: Arc::new(tokio::sync::Mutex::new(None)),
         })
     }
 
@@ -177,6 +179,9 @@ impl RendezvousServer {
             );
         }
 
+        // Cancel any pending compaction since a client just connected
+        self.cancel_compaction().await;
+
         // Send our state to the new client
         {
             let eng = self.sync_engine.lock().await;
@@ -219,6 +224,15 @@ impl RendezvousServer {
         }
         tracing::info!(%peer_id, %username, "Client disconnected");
         self.broadcast_peer_list().await;
+
+        // Schedule compaction if no clients remain
+        {
+            let clients = self.clients.read().await;
+            if clients.is_empty() {
+                drop(clients);
+                self.schedule_compaction().await;
+            }
+        }
 
         result
     }
@@ -353,6 +367,48 @@ impl RendezvousServer {
         }
     }
 
+    /// Schedule compaction to run after 5 minutes with no connected clients.
+    pub(crate) async fn schedule_compaction(self: &Arc<Self>) {
+        let mut task = self.compaction_task.lock().await;
+        if task.is_some() {
+            return; // already scheduled
+        }
+        let server = Arc::clone(self);
+        *task = Some(tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+            server.run_compaction().await;
+        }));
+        tracing::debug!("Compaction scheduled in 5 minutes");
+    }
+
+    /// Cancel a pending compaction (e.g. when a client connects).
+    pub(crate) async fn cancel_compaction(&self) {
+        let mut task = self.compaction_task.lock().await;
+        if let Some(handle) = task.take() {
+            handle.abort();
+            tracing::debug!("Compaction cancelled: client connected");
+        }
+    }
+
+    /// Run compaction: snapshot the CRDT state, increment epoch, and persist.
+    async fn run_compaction(&self) {
+        tracing::info!("Compacting CRDT state (no clients for 5 minutes)");
+        let (new_epoch, snapshot) = {
+            let mut eng = self.sync_engine.lock().await;
+            eng.compact()
+        };
+        if let Ok(s) = self.storage.lock() {
+            if let Err(e) = s.save_snapshot(new_epoch, &snapshot) {
+                tracing::warn!("Failed to persist compaction snapshot: {e}");
+                return;
+            }
+            if let Err(e) = s.delete_before_epoch(new_epoch) {
+                tracing::warn!("Failed to delete pre-compaction data: {e}");
+            }
+        }
+        tracing::info!(%new_epoch, "Compaction complete");
+    }
+
     /// Build and broadcast the current peer list to all clients.
     async fn broadcast_peer_list(&self) {
         let clients = self.clients.read().await;
@@ -376,4 +432,101 @@ fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use dessplay_core::protocol::CrdtOp;
+
+    /// Create a test server (real QUIC endpoint on loopback, in-memory storage).
+    fn create_test_server() -> Arc<RendezvousServer> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let rcgen::CertifiedKey { cert, key_pair } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+
+        let cert_der = rustls::pki_types::CertificateDer::from(cert.der().to_vec());
+        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(key_pair.serialize_der());
+
+        let mut server_crypto = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der.into())
+            .unwrap();
+        server_crypto.alpn_protocols = vec![b"dessplay".to_vec()];
+
+        let server_config = quinn::ServerConfig::with_crypto(Arc::new(
+            quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto).unwrap(),
+        ));
+
+        let bind: SocketAddr = "[::1]:0".parse().unwrap();
+        let endpoint = Endpoint::server(server_config, bind).unwrap();
+
+        let storage = crate::storage::ServerStorage::open_in_memory().unwrap();
+        RendezvousServer::new(endpoint, "test".to_string(), storage)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn compaction_fires_after_timeout() {
+        let server = create_test_server();
+
+        // Initial epoch is 0
+        assert_eq!(server.sync_engine.lock().await.epoch(), 0);
+
+        // Apply an op so compaction has something to snapshot
+        let op = CrdtOp::LwwWrite {
+            timestamp: 100,
+            value: dessplay_core::protocol::LwwValue::UserState(
+                dessplay_core::types::UserId("alice".into()),
+                dessplay_core::types::UserState::Ready,
+            ),
+        };
+        let _ = server.sync_engine.lock().await.on_remote_op(PeerId(99), op);
+
+        // Schedule compaction
+        server.schedule_compaction().await;
+
+        // Advance past 5 minutes
+        tokio::time::sleep(Duration::from_secs(5 * 60 + 1)).await;
+        // Yield to let the spawned task run
+        tokio::task::yield_now().await;
+
+        // Epoch should be incremented
+        assert_eq!(server.sync_engine.lock().await.epoch(), 1);
+
+        // Compaction task should be consumed (ran to completion)
+        // The handle stays in the mutex but the task is done
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn compaction_cancelled_on_connect() {
+        let server = create_test_server();
+
+        // Apply an op
+        let op = CrdtOp::LwwWrite {
+            timestamp: 200,
+            value: dessplay_core::protocol::LwwValue::UserState(
+                dessplay_core::types::UserId("bob".into()),
+                dessplay_core::types::UserState::Paused,
+            ),
+        };
+        let _ = server.sync_engine.lock().await.on_remote_op(PeerId(99), op);
+
+        // Schedule compaction
+        server.schedule_compaction().await;
+
+        // Advance 2 minutes (less than 5 min)
+        tokio::time::sleep(Duration::from_secs(2 * 60)).await;
+
+        // Cancel (simulates a client connecting)
+        server.cancel_compaction().await;
+
+        // Advance past the original 5 min mark
+        tokio::time::sleep(Duration::from_secs(4 * 60)).await;
+        tokio::task::yield_now().await;
+
+        // Epoch should NOT have changed
+        assert_eq!(server.sync_engine.lock().await.epoch(), 0);
+    }
 }
