@@ -21,6 +21,29 @@ pub fn compute_ed2k(mut reader: impl Read) -> io::Result<FileId> {
     Ok(FileId(id))
 }
 
+/// Like [`compute_ed2k`], but calls `progress(bytes_read_so_far)` after each chunk.
+pub fn compute_ed2k_with_progress(
+    mut reader: impl Read,
+    progress: impl Fn(u64),
+) -> io::Result<FileId> {
+    let mut hasher = ed2k::Ed2kBlue::new();
+    let mut buf = [0u8; 65536];
+    let mut bytes_read: u64 = 0;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        bytes_read += n as u64;
+        progress(bytes_read);
+    }
+    let hash = hasher.finalize();
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&hash);
+    Ok(FileId(id))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -71,5 +94,21 @@ mod tests {
         let a = compute_ed2k(&b"hello"[..]).unwrap();
         let b = compute_ed2k(&b"world"[..]).unwrap();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn with_progress_matches_without() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let data = vec![0xABu8; 100_000];
+        let expected = compute_ed2k(&data[..]).unwrap();
+
+        let progress_bytes = AtomicU64::new(0);
+        let result =
+            compute_ed2k_with_progress(&data[..], |b| progress_bytes.store(b, Ordering::Relaxed))
+                .unwrap();
+
+        assert_eq!(result, expected);
+        assert_eq!(progress_bytes.load(Ordering::Relaxed), 100_000);
     }
 }

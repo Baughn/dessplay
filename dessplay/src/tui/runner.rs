@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,19 +14,20 @@ use crate::player::mpv::MpvPlayer;
 use crate::player::Player;
 use crate::rendezvous_client::{RendezvousClient, RendezvousEvent};
 use crate::storage::{ClientStorage, Config};
+use dessplay_core::types::FileId;
 use ratatui::layout::Rect;
 
 use crate::tui::layout::compute_layout;
 use crate::tui::terminal::{setup_file_logging, setup_terminal};
 use crate::tui::ui_state::{
-    FileBrowserOrigin, FileBrowserState, FocusedPane, InputResult, Screen, SettingsState, UiAction,
-    UiState,
+    FileBrowserOrigin, FileBrowserState, FocusedPane, HashingState, InputResult, Screen,
+    SettingsState, UiAction, UiState,
 };
 use crate::tls::TofuVerifier;
 use crate::tui::ui_state::TofuWarningState;
 use crate::tui::widgets::{
-    chat, file_browser, keybinding_bar, player_status, playlist, recent_series, settings,
-    tofu_warning, users,
+    chat, file_browser, hashing_progress, keybinding_bar, player_status, playlist, recent_series,
+    settings, tofu_warning, users,
 };
 use dessplay_core::framing::{
     read_framed, write_framed, TAG_GAP_FILL_REQUEST, TAG_GAP_FILL_RESPONSE,
@@ -589,6 +591,10 @@ async fn run_connected(
     let (gap_fill_tx, mut gap_fill_rx) =
         tokio::sync::mpsc::unbounded_channel::<(PeerId, GapFillResponse)>();
 
+    // Channel for non-blocking file hash results
+    let (hash_tx, mut hash_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(PathBuf, std::io::Result<FileId>)>();
+
     let mut summary_interval = tokio::time::interval(Duration::from_secs(1));
     let mut position_tick = tokio::time::interval(Duration::from_millis(100));
     let mut event_stream = EventStream::new();
@@ -634,39 +640,38 @@ async fn run_connected(
 
                             if let Some(path) = selected_file {
                                 ui.file_browser = None;
-                                ui.screen = Screen::Main;
 
+                                // Get file size for progress display
+                                let total_bytes = std::fs::metadata(&path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0);
+                                let progress = Arc::new(AtomicU64::new(0));
+                                let filename = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.display().to_string());
+
+                                ui.hashing = Some(HashingState {
+                                    filename,
+                                    total_bytes,
+                                    bytes_hashed: Arc::clone(&progress),
+                                });
+                                ui.screen = Screen::Hashing;
+
+                                // Spawn non-blocking hash
+                                let tx = hash_tx.clone();
                                 let path_for_hash = path.clone();
-                                let hash_result = tokio::task::spawn_blocking(move || {
-                                    let file = std::fs::File::open(&path_for_hash)?;
-                                    let reader = std::io::BufReader::new(file);
-                                    dessplay_core::ed2k::compute_ed2k(reader)
-                                }).await;
-
-                                match hash_result {
-                                    Ok(Ok(file_id)) => {
-                                        if let Ok(s) = storage.lock() {
-                                            let _ = s.set_file_mapping(&file_id, &path);
-                                        }
-                                        let now = rv_client.shared_now().await;
-                                        let effects = app_state.lock().await.process_event(
-                                            AppEvent::AddToPlaylist { file_id, after: None },
-                                            now,
-                                        );
-                                        dispatch_effects(
-                                            effects, &peer_mgr, &rv_client, storage,
-                                            &app_state, &gap_fill_tx,
-                                            &mut player, &mut echo_filter,
-                                        ).await;
-                                    }
-                                    Ok(Err(e)) => {
-                                        tracing::warn!("Failed to hash file: {e}");
-                                        ui.status_message = Some(format!("Hash error: {e}"));
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Hash task panicked: {e}");
-                                    }
-                                }
+                                tokio::task::spawn_blocking(move || {
+                                    let result = (|| {
+                                        let file = std::fs::File::open(&path_for_hash)?;
+                                        let reader = std::io::BufReader::new(file);
+                                        dessplay_core::ed2k::compute_ed2k_with_progress(
+                                            reader,
+                                            |bytes| progress.store(bytes, Ordering::Relaxed),
+                                        )
+                                    })();
+                                    let _ = tx.send((path_for_hash, result));
+                                });
                             } else if ui.file_browser.is_none() {
                                 // File browser was closed without selection
                                 // Return to settings if open, otherwise main
@@ -912,6 +917,37 @@ async fn run_connected(
                 }
             }
 
+            // File hash completed
+            result = hash_rx.recv() => {
+                if let Some((path, hash_result)) = result {
+                    ui.hashing = None;
+                    ui.screen = Screen::Main;
+
+                    match hash_result {
+                        Ok(file_id) => {
+                            if let Ok(s) = storage.lock() {
+                                let _ = s.set_file_mapping(&file_id, &path);
+                            }
+                            let now = rv_client.shared_now().await;
+                            let effects = app_state.lock().await.process_event(
+                                AppEvent::AddToPlaylist { file_id, after: None },
+                                now,
+                            );
+                            dispatch_effects(
+                                effects, &peer_mgr, &rv_client, storage,
+                                &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
+                            ).await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to hash file: {e}");
+                            ui.status_message = Some(format!("Hash error: {e}"));
+                        }
+                    }
+                    needs_redraw = true;
+                }
+            }
+
             // Player events
             event = async {
                 if let Some(p) = player.as_ref() {
@@ -963,11 +999,10 @@ async fn run_connected(
 
             // Position poll tick (100ms)
             _ = position_tick.tick() => {
-                // Position comes from observed property changes in mpv,
-                // but we also need to periodically check for position broadcasts.
-                // The mpv reader task sends Position events via property observation,
-                // so we don't need to poll here — but we keep the interval to drive
-                // periodic position broadcast checking when no events arrive.
+                // Redraw during hashing to update the progress bar
+                if ui.hashing.is_some() {
+                    needs_redraw = true;
+                }
             }
 
             // Periodic tick
@@ -1165,6 +1200,11 @@ async fn draw_main_screen(
             is_playing,
             &blocking_users,
         );
+
+        // Hashing progress modal overlay
+        if let Some(ref hashing_state) = ui.hashing {
+            hashing_progress::render_hashing_progress(area, frame.buffer_mut(), hashing_state);
+        }
 
         // Settings modal overlay (if open)
         if let Some(ref settings_state) = ui.settings {

@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use crate::app_state::AppEvent;
 
@@ -27,6 +29,7 @@ pub enum Screen {
     Settings,
     FileBrowser,
     TofuWarning,
+    Hashing,
 }
 
 /// Text input state with char-boundary-aware cursor.
@@ -400,6 +403,14 @@ fn is_media_file(name: &str) -> bool {
         || lower.ends_with(".ts")
 }
 
+/// State for the hashing progress modal.
+pub struct HashingState {
+    pub filename: String,
+    pub total_bytes: u64,
+    /// Shared with the blocking hash task; updated atomically.
+    pub bytes_hashed: Arc<AtomicU64>,
+}
+
 /// State for the TOFU certificate mismatch warning modal.
 #[derive(Clone, Debug)]
 pub struct TofuWarningState {
@@ -419,6 +430,7 @@ pub struct UiState {
     pub settings: Option<SettingsState>,
     pub file_browser: Option<FileBrowserState>,
     pub tofu_warning: Option<TofuWarningState>,
+    pub hashing: Option<HashingState>,
     pub should_quit: bool,
     /// Status message shown temporarily.
     pub status_message: Option<String>,
@@ -442,6 +454,7 @@ impl UiState {
             settings: None,
             file_browser: None,
             tofu_warning: None,
+            hashing: None,
             should_quit: false,
             status_message: None,
         }

@@ -15,6 +15,7 @@ pub fn handle_key_event(key: KeyEvent, ui: &UiState) -> InputResult {
         Screen::FileBrowser => handle_file_browser_key(key),
         Screen::TofuWarning => handle_tofu_warning_key(key),
         Screen::Main => handle_main_key(key, ui),
+        Screen::Hashing => InputResult::None, // only Ctrl-C (handled above) during hashing
     }
 }
 
