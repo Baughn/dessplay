@@ -163,6 +163,7 @@ pub enum RvControl {
     // Client → Server
     Auth { password: String, username: String },
     TimeSyncRequest { client_send: u64 },
+    AniDbLookup { file_id: FileId, file_size: u64 },
 
     // Server → Client
     AuthOk { peer_id: PeerId, observed_addr: SocketAddr },

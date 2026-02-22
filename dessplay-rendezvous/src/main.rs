@@ -31,6 +31,8 @@ async fn main() -> Result<()> {
         println!("  --password <PW>  Authentication password (or set DESSPLAY_PASSWORD)");
         println!("  --data-dir <DIR> Data directory for certs and database");
         println!("  --db <PATH>      Database path (overrides --data-dir for db only)");
+        println!("  --anidb-user <U> AniDB username (or set ANIDB_USER)");
+        println!("  --anidb-password <P> AniDB password (or set ANIDB_PASSWORD)");
         println!("  --dump           Read and pretty-print the server database to stdout");
         println!("  --help           Show this help message");
         return Ok(());
@@ -63,6 +65,19 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok())
         .context("password required: set --password or DESSPLAY_PASSWORD")?;
 
+    // AniDB credentials: --anidb-user / ANIDB_USER and --anidb-password / ANIDB_PASSWORD
+    let anidb_user = get_arg(&args, "--anidb-user")
+        .or_else(|| std::env::var("ANIDB_USER").ok());
+    let anidb_password = get_arg(&args, "--anidb-password")
+        .or_else(|| std::env::var("ANIDB_PASSWORD").ok());
+
+    // Validate both-or-neither
+    match (&anidb_user, &anidb_password) {
+        (Some(_), None) => anyhow::bail!("--anidb-user provided without --anidb-password"),
+        (None, Some(_)) => anyhow::bail!("--anidb-password provided without --anidb-user"),
+        _ => {}
+    }
+
     let cert_path = data_dir.join("cert.der");
     let key_path = data_dir.join("key.der");
 
@@ -73,7 +88,13 @@ async fn main() -> Result<()> {
     let endpoint = quic::create_server_endpoint(bind_addr, &cert_path, &key_path)?;
 
     // Start server
-    let server = server::RendezvousServer::new(endpoint, password, server_storage);
+    let server = server::RendezvousServer::new(
+        endpoint,
+        password,
+        server_storage,
+        anidb_user,
+        anidb_password,
+    );
     server.run().await
 }
 

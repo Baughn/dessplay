@@ -57,8 +57,9 @@ fn dump_anidb_queue(storage: &ServerStorage) -> Result<()> {
                 None => "never".to_string(),
             };
             println!(
-                "  {}  has_data={}  first_seen={}  last_checked={}  next_check={}  retries={}",
+                "  {}  size={}  has_data={}  first_seen={}  last_checked={}  next_check={}  retries={}",
                 entry.file_id,
+                entry.file_size,
                 entry.has_data,
                 entry.first_seen_at,
                 checked,
@@ -121,8 +122,8 @@ mod tests {
         .unwrap();
 
         // AniDB queue
-        db.enqueue_anidb_lookup(&fid(1), 1_000_000).unwrap();
-        db.enqueue_anidb_lookup(&fid(2), 2_000_000).unwrap();
+        db.enqueue_anidb_lookup(&fid(1), 12345, 1_000_000).unwrap();
+        db.enqueue_anidb_lookup(&fid(2), 67890, 2_000_000).unwrap();
         db.record_success(&fid(1), 1_500_000).unwrap();
         db.record_failure(&fid(2), 2_500_000).unwrap();
 

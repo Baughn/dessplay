@@ -19,13 +19,13 @@ use dessplay_core::types::PeerId;
 use crate::storage::ServerStorage;
 
 /// A connected and authenticated client.
-struct ConnectedClient {
-    peer_id: PeerId,
-    username: String,
-    observed_addr: SocketAddr,
-    connected_since: u64,
+pub(crate) struct ConnectedClient {
+    pub(crate) peer_id: PeerId,
+    pub(crate) username: String,
+    pub(crate) observed_addr: SocketAddr,
+    pub(crate) connected_since: u64,
     /// Send half of the control stream (for pushing messages to the client).
-    control_tx: tokio::sync::mpsc::UnboundedSender<RvControl>,
+    pub(crate) control_tx: tokio::sync::mpsc::UnboundedSender<RvControl>,
 }
 
 /// The rendezvous server.
@@ -37,11 +37,20 @@ pub struct RendezvousServer {
     sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>,
     storage: Arc<std::sync::Mutex<ServerStorage>>,
     compaction_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    anidb_user: Option<String>,
+    anidb_password: Option<String>,
 }
 
 impl RendezvousServer {
-    /// Create a new server with the given endpoint, password, and storage.
-    pub fn new(endpoint: Endpoint, password: String, storage: ServerStorage) -> Arc<Self> {
+    /// Create a new server with the given endpoint, password, storage, and
+    /// optional AniDB credentials.
+    pub fn new(
+        endpoint: Endpoint,
+        password: String,
+        storage: ServerStorage,
+        anidb_user: Option<String>,
+        anidb_password: Option<String>,
+    ) -> Arc<Self> {
         // Load persisted CRDT state from storage
         let sync_engine = match storage.load_latest_snapshot() {
             Ok(Some((epoch, snapshot))) => {
@@ -73,12 +82,27 @@ impl RendezvousServer {
             sync_engine: Arc::new(tokio::sync::Mutex::new(sync_engine)),
             storage: Arc::new(std::sync::Mutex::new(storage)),
             compaction_task: Arc::new(tokio::sync::Mutex::new(None)),
+            anidb_user,
+            anidb_password,
         })
     }
 
     /// Run the accept loop. Returns only on fatal error.
     pub async fn run(self: Arc<Self>) -> Result<()> {
         tracing::info!("Rendezvous server accepting connections");
+
+        // Spawn AniDB worker if credentials are configured
+        if let (Some(user), Some(pass)) = (self.anidb_user.clone(), self.anidb_password.clone()) {
+            tracing::info!("AniDB credentials configured, spawning worker");
+            let sync_engine = Arc::clone(&self.sync_engine);
+            let storage = Arc::clone(&self.storage);
+            let clients = Arc::clone(&self.clients);
+            tokio::spawn(async move {
+                crate::anidb::worker::run(sync_engine, storage, clients, user, pass).await;
+            });
+        } else {
+            tracing::warn!("AniDB credentials not configured; metadata lookups disabled");
+        }
 
         // Spawn periodic state summary broadcast (every 1s)
         let server_for_tick = Arc::clone(&self);
@@ -281,6 +305,14 @@ impl RendezvousServer {
                         .on_state_snapshot(epoch, crdts);
                     self.dispatch_sync_actions(actions, Some(peer_id)).await;
                 }
+                RvControl::AniDbLookup { file_id, file_size } => {
+                    tracing::info!(%peer_id, %file_id, file_size, "AniDB lookup request");
+                    if let Ok(s) = self.storage.lock()
+                        && let Err(e) = s.enqueue_anidb_lookup(&file_id, file_size, now_millis())
+                    {
+                        tracing::warn!("Failed to enqueue AniDB lookup: {e}");
+                    }
+                }
                 other => {
                     tracing::debug!(%peer_id, "Unhandled message: {other:?}");
                 }
@@ -464,7 +496,7 @@ mod tests {
         let endpoint = Endpoint::server(server_config, bind).unwrap();
 
         let storage = crate::storage::ServerStorage::open_in_memory().unwrap();
-        RendezvousServer::new(endpoint, "test".to_string(), storage)
+        RendezvousServer::new(endpoint, "test".to_string(), storage, None, None)
     }
 
     #[tokio::test(start_paused = true)]

@@ -921,6 +921,7 @@ async fn run_connected(
             // File hash completed
             result = hash_rx.recv() => {
                 if let Some((path, hash_result)) = result {
+                    let file_size = ui.hashing.as_ref().map(|h| h.total_bytes).unwrap_or(0);
                     ui.hashing = None;
                     ui.screen = Screen::Main;
 
@@ -929,6 +930,11 @@ async fn run_connected(
                             if let Ok(s) = storage.lock() {
                                 let _ = s.set_file_mapping(&file_id, &path);
                             }
+                            // Request AniDB metadata lookup from server
+                            rv_client.send(dessplay_core::protocol::RvControl::AniDbLookup {
+                                file_id,
+                                file_size,
+                            });
                             let now = rv_client.shared_now().await;
                             let effects = app_state.lock().await.process_event(
                                 AppEvent::AddToPlaylist { file_id, after: None },

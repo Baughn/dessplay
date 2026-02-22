@@ -637,7 +637,7 @@ mod tests {
         let meta = AniDbMetadata {
             anime_id: 1,
             anime_name: "Test".into(),
-            episode_number: 1,
+            episode_number: "1".into(),
             episode_name: "Ep1".into(),
             group_name: "Grp".into(),
         };

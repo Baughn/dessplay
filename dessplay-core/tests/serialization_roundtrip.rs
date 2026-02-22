@@ -55,7 +55,7 @@ fn roundtrip_lww_write_anidb() {
             Some(AniDbMetadata {
                 anime_id: 12345,
                 anime_name: "Frieren".into(),
-                episode_number: 1,
+                episode_number: "1".into(),
                 episode_name: "The Journey's End".into(),
                 group_name: "SubsPlease".into(),
             }),
@@ -320,7 +320,7 @@ fn roundtrip_anidb_metadata() {
     roundtrip(&AniDbMetadata {
         anime_id: 12345,
         anime_name: "Frieren".into(),
-        episode_number: 1,
+        episode_number: "1".into(),
         episode_name: "The Journey's End".into(),
         group_name: "SubsPlease".into(),
     });

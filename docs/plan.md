@@ -248,7 +248,37 @@ video playback in mpv, chat on OSD.
 
 ---
 
-## Phase 8: File Management
+## Phase 8: AniDB Integration
+
+Status: Completed
+
+**Goal**: Server-side metadata lookups.
+
+### What gets built
+- AniDB UDP API client (client id: "dessplay")
+- Login session management
+- Rate limiter (4s minimum interval, 5s penalty on throttle)
+- SQLite-backed validation queue with file_size
+- ed2k hash → file lookup → series/season/episode
+- Results written as server-authoritative LWW Register ops
+- Re-validation schedule (30min <1d, 2h <1w, ...; ≥3mo skip; known ≤1/week)
+- `anidb-probe` binary for manual API testing
+- Client sends `AniDbLookup` to server after hashing
+- `episode_number` changed from u32 to String (AniDB uses "S1", "C1", etc.)
+
+### Testing
+- Rate limiter unit tests (paused tokio time)
+- Response parsing tests (FILE 220, special episodes, escaped pipes)
+- Queue scheduling tests with file_size
+- Worker unit tests (PeerControl → RvControl conversion)
+
+### Milestone
+Playlist files enriched with series/season/episode from AniDB. Recent
+Series shows proper names.
+
+---
+
+## Phase 9: File Management
 
 **Goal**: Media scanning, file matching, watch tracking, manual mapping.
 
@@ -275,7 +305,7 @@ drives Recent Series.
 
 ---
 
-## Phase 9: Hole Punching, Relay & File Transfer
+## Phase 10: Hole Punching, Relay & File Transfer
 
 **Goal**: NAT traversal, relay fallback, peer-to-peer file distribution.
 
@@ -299,30 +329,6 @@ drives Recent Series.
 
 ### Milestone
 Works across firewalls. Missing files downloaded from peers automatically.
-
----
-
-## Phase 10: AniDB Integration
-
-**Goal**: Server-side metadata lookups.
-
-### What gets built
-- AniDB UDP API client (client id: "dessplay")
-- Login session management
-- Rate limiter (1/2s sustained, 1/4s burst of 60, 5s retry on throttle)
-- SQLite-backed validation queue
-- ed2k hash → file lookup → series/season/episode
-- Results written as server-authoritative LWW Register ops
-- Re-validation schedule (30min <1d, 2h <1w, ...; ≥3mo skip; known ≤1/week)
-
-### Testing
-- Rate limiter unit tests
-- Queue scheduling tests
-- Mock AniDB server
-
-### Milestone
-Playlist files enriched with series/season/episode from AniDB. Recent
-Series shows proper names.
 
 ---
 

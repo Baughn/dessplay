@@ -56,7 +56,7 @@ async fn start_test_server(password: &str) -> (SocketAddr, tokio::task::JoinHand
     let storage =
         dessplay_rendezvous::storage::ServerStorage::open_in_memory().unwrap();
     let server =
-        dessplay_rendezvous::server::RendezvousServer::new(endpoint, password.to_string(), storage);
+        dessplay_rendezvous::server::RendezvousServer::new(endpoint, password.to_string(), storage, None, None);
     let handle = tokio::spawn(async move {
         let _ = server.run().await;
     });

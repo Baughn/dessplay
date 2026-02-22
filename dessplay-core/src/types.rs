@@ -113,7 +113,7 @@ impl Ord for FileState {
 pub struct AniDbMetadata {
     pub anime_id: u64,
     pub anime_name: String,
-    pub episode_number: u32,
+    pub episode_number: String,
     pub episode_name: String,
     pub group_name: String,
 }

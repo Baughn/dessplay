@@ -13,6 +13,7 @@ use dessplay_core::types::FileId;
 #[derive(Debug)]
 pub struct AniDbQueueEntry {
     pub file_id: FileId,
+    pub file_size: u64,
     pub has_data: bool,
     pub first_seen_at: u64,
     pub last_checked_at: Option<u64>,
@@ -118,6 +119,7 @@ impl ServerStorage {
 
             CREATE TABLE IF NOT EXISTS anidb_queue (
                 file_hash       BLOB PRIMARY KEY,
+                file_size       INTEGER NOT NULL,
                 has_data        INTEGER NOT NULL DEFAULT 0,
                 first_seen_at   INTEGER NOT NULL,
                 last_checked_at INTEGER,
@@ -203,30 +205,31 @@ impl ServerStorage {
     // -----------------------------------------------------------------------
 
     /// Add a file to the AniDB lookup queue. No-op if already queued.
-    pub fn enqueue_anidb_lookup(&self, file_id: &FileId, now: u64) -> Result<()> {
+    pub fn enqueue_anidb_lookup(&self, file_id: &FileId, file_size: u64, now: u64) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO anidb_queue \
-             (file_hash, has_data, first_seen_at, next_check_at, retry_count) \
-             VALUES (?1, 0, ?2, ?2, 0)",
-            params![file_id.0.as_slice(), now as i64],
+             (file_hash, file_size, has_data, first_seen_at, next_check_at, retry_count) \
+             VALUES (?1, ?2, 0, ?3, ?3, 0)",
+            params![file_id.0.as_slice(), file_size as i64, now as i64],
         )?;
         Ok(())
     }
 
     /// Get the next file due for AniDB lookup (earliest `next_check_at` <= now).
-    pub fn get_next_pending(&self, now: u64) -> Result<Option<FileId>> {
-        let row: Option<Vec<u8>> = self
+    /// Returns the file ID and file size.
+    pub fn get_next_pending(&self, now: u64) -> Result<Option<(FileId, u64)>> {
+        let row: Option<(Vec<u8>, i64)> = self
             .conn
             .query_row(
-                "SELECT file_hash FROM anidb_queue \
+                "SELECT file_hash, file_size FROM anidb_queue \
                  WHERE next_check_at <= ?1 \
                  ORDER BY next_check_at ASC LIMIT 1",
                 params![now as i64],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
         match row {
-            Some(hash) => {
+            Some((hash, file_size)) => {
                 ensure!(
                     hash.len() == 16,
                     "corrupt file_hash in anidb_queue: expected 16 bytes, got {}",
@@ -234,7 +237,7 @@ impl ServerStorage {
                 );
                 let mut arr = [0u8; 16];
                 arr.copy_from_slice(&hash);
-                Ok(Some(FileId(arr)))
+                Ok(Some((FileId(arr), file_size as u64)))
             }
             None => Ok(None),
         }
@@ -286,23 +289,24 @@ impl ServerStorage {
     /// Return all entries in the AniDB validation queue, ordered by next check time.
     pub fn get_all_anidb_queue(&self) -> Result<Vec<AniDbQueueEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT file_hash, has_data, first_seen_at, last_checked_at, next_check_at, retry_count \
+            "SELECT file_hash, file_size, has_data, first_seen_at, last_checked_at, next_check_at, retry_count \
              FROM anidb_queue ORDER BY next_check_at",
         )?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, bool>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i32>(5)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i32>(6)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(|(hash, has_data, first_seen_at, last_checked_at, next_check_at, retry_count)| {
+            .map(|(hash, file_size, has_data, first_seen_at, last_checked_at, next_check_at, retry_count)| {
                 ensure!(
                     hash.len() == 16,
                     "corrupt file_hash in anidb_queue: expected 16 bytes, got {}",
@@ -312,6 +316,7 @@ impl ServerStorage {
                 arr.copy_from_slice(&hash);
                 Ok(AniDbQueueEntry {
                     file_id: FileId(arr),
+                    file_size: file_size as u64,
                     has_data,
                     first_seen_at: first_seen_at as u64,
                     last_checked_at: last_checked_at.map(|v| v as u64),
@@ -537,17 +542,19 @@ mod tests {
         assert!(db.get_next_pending(now).unwrap().is_none());
 
         // Enqueue a file — next_check_at = now, so it's immediately pending
-        db.enqueue_anidb_lookup(&f1, now).unwrap();
-        assert_eq!(db.get_next_pending(now).unwrap(), Some(f1));
+        db.enqueue_anidb_lookup(&f1, 12345, now).unwrap();
+        let (got_id, got_size) = db.get_next_pending(now).unwrap().unwrap();
+        assert_eq!(got_id, f1);
+        assert_eq!(got_size, 12345);
     }
 
     #[test]
     fn anidb_enqueue_is_idempotent() {
         let db = ServerStorage::open_in_memory().unwrap();
         let f1 = fid(1);
-        db.enqueue_anidb_lookup(&f1, 1000).unwrap();
+        db.enqueue_anidb_lookup(&f1, 12345, 1000).unwrap();
         // Re-enqueue with a different timestamp should be a no-op (INSERT OR IGNORE)
-        db.enqueue_anidb_lookup(&f1, 9999).unwrap();
+        db.enqueue_anidb_lookup(&f1, 99999, 9999).unwrap();
 
         // Should still use the original timestamp
         assert!(db.get_next_pending(1000).unwrap().is_some());
@@ -559,7 +566,7 @@ mod tests {
         let f1 = fid(1);
         let now = 1_000_000;
 
-        db.enqueue_anidb_lookup(&f1, now).unwrap();
+        db.enqueue_anidb_lookup(&f1, 12345, now).unwrap();
         db.record_success(&f1, now).unwrap();
 
         // Should not be pending now
@@ -575,7 +582,7 @@ mod tests {
         let f1 = fid(1);
         let now = 1_000_000;
 
-        db.enqueue_anidb_lookup(&f1, now).unwrap();
+        db.enqueue_anidb_lookup(&f1, 12345, now).unwrap();
         db.record_failure(&f1, now).unwrap();
 
         // File is < 1 day old, so next check is in 30 minutes
@@ -593,7 +600,7 @@ mod tests {
 
         // File first seen at t=0
         let first_seen = 0u64;
-        db.enqueue_anidb_lookup(&f1, first_seen).unwrap();
+        db.enqueue_anidb_lookup(&f1, 12345, first_seen).unwrap();
 
         // Check at 2 days old → < 1 week → next check in 2 hours
         let check_time = 2 * ONE_DAY;
@@ -629,12 +636,12 @@ mod tests {
         let f1 = fid(1);
         let f2 = fid(2);
 
-        db.enqueue_anidb_lookup(&f1, 2000).unwrap();
-        db.enqueue_anidb_lookup(&f2, 1000).unwrap();
+        db.enqueue_anidb_lookup(&f1, 12345, 2000).unwrap();
+        db.enqueue_anidb_lookup(&f2, 67890, 1000).unwrap();
 
         // f2 has earlier next_check_at, should come first
-        let next = db.get_next_pending(3000).unwrap().unwrap();
-        assert_eq!(next, f2);
+        let (next_id, _) = db.get_next_pending(3000).unwrap().unwrap();
+        assert_eq!(next_id, f2);
     }
 
     #[test]
