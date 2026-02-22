@@ -512,6 +512,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dessplay-core",
+ "dirs",
  "postcard",
  "quinn",
  "rcgen",

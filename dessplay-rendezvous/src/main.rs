@@ -30,15 +30,25 @@ async fn main() -> Result<()> {
         println!("  --bind <ADDR>    Bind address (default: [::]:4433)");
         println!("  --password <PW>  Authentication password (or set DESSPLAY_PASSWORD)");
         println!("  --data-dir <DIR> Data directory for certs and database");
+        println!("  --db <PATH>      Database path (overrides --data-dir for db only)");
         println!("  --dump           Read and pretty-print the server database to stdout");
         println!("  --help           Show this help message");
         return Ok(());
     }
 
+    // Data directory: --data-dir > default_data_dir()
+    let data_dir = get_arg(&args, "--data-dir")
+        .map(PathBuf::from)
+        .map_or_else(|| storage::default_data_dir(), Ok)?;
+
+    // Database path: --db > data_dir/server.db
+    let db_path = get_arg(&args, "--db")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join("server.db"));
+
     if args.iter().any(|a| a == "--dump") {
-        let db_path = storage::default_db_path()?;
-        let storage = storage::ServerStorage::open(&db_path)?;
-        dump::dump_database(&storage)?;
+        let server_storage = storage::ServerStorage::open(&db_path)?;
+        dump::dump_database(&server_storage)?;
         return Ok(());
     }
 
@@ -53,16 +63,10 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok())
         .context("password required: set --password or DESSPLAY_PASSWORD")?;
 
-    // Data directory
-    let data_dir = get_arg(&args, "--data-dir")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-
     let cert_path = data_dir.join("cert.der");
     let key_path = data_dir.join("key.der");
 
     // Open server database
-    let db_path = data_dir.join("server.db");
     let server_storage = storage::ServerStorage::open(&db_path)?;
 
     // Create QUIC endpoint

@@ -327,11 +327,19 @@ impl ServerStorage {
 // Default DB path
 // ---------------------------------------------------------------------------
 
+pub fn default_data_dir() -> Result<PathBuf> {
+    // Prefer systemd StateDirectory if running under systemd
+    if let Ok(dir) = std::env::var("STATE_DIRECTORY") {
+        return Ok(PathBuf::from(dir));
+    }
+    // Fall back to XDG data directory
+    let data_dir =
+        dirs::data_dir().ok_or_else(|| anyhow::anyhow!("could not determine XDG data directory"))?;
+    Ok(data_dir.join("dessplay-rendezvous"))
+}
+
 pub fn default_db_path() -> Result<PathBuf> {
-    let data_dir = std::env::var("DESSPLAY_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    Ok(data_dir.join("dessplay-rendezvous.db"))
+    Ok(default_data_dir()?.join("server.db"))
 }
 
 // ---------------------------------------------------------------------------
