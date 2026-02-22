@@ -8,6 +8,9 @@ use tokio_stream::StreamExt;
 
 use crate::app_state::{AppEffect, AppEvent, AppState};
 use crate::peer_conn::PeerManager;
+use crate::player::echo::EchoFilter;
+use crate::player::mpv::MpvPlayer;
+use crate::player::Player;
 use crate::rendezvous_client::{RendezvousClient, RendezvousEvent};
 use crate::storage::{ClientStorage, Config};
 use ratatui::layout::Rect;
@@ -587,8 +590,13 @@ async fn run_connected(
         tokio::sync::mpsc::unbounded_channel::<(PeerId, GapFillResponse)>();
 
     let mut summary_interval = tokio::time::interval(Duration::from_secs(1));
+    let mut position_tick = tokio::time::interval(Duration::from_millis(100));
     let mut event_stream = EventStream::new();
     let mut needs_redraw = true;
+
+    // Player state
+    let mut player: Option<MpvPlayer> = None;
+    let mut echo_filter = EchoFilter::new();
 
     loop {
         // Draw if needed
@@ -648,6 +656,7 @@ async fn run_connected(
                                         dispatch_effects(
                                             effects, &peer_mgr, &rv_client, storage,
                                             &app_state, &gap_fill_tx,
+                                            &mut player, &mut echo_filter,
                                         ).await;
                                     }
                                     Ok(Err(e)) => {
@@ -681,6 +690,7 @@ async fn run_connected(
                                     dispatch_effects(
                                         effects, &peer_mgr, &rv_client, storage,
                                         &app_state, &gap_fill_tx,
+                                        &mut player, &mut echo_filter,
                                     ).await;
                                 }
                                 needs_redraw = true;
@@ -721,6 +731,7 @@ async fn run_connected(
                                     dispatch_effects(
                                         effects, &peer_mgr, &rv_client, storage,
                                         &app_state, &gap_fill_tx,
+                                        &mut player, &mut echo_filter,
                                     ).await;
                                     apply_main_ui_action(ui, &action, storage, &app_state, &rv_client).await?;
                                 }
@@ -756,6 +767,7 @@ async fn run_connected(
                         dispatch_effects(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
+                            &mut player, &mut echo_filter,
                         ).await;
                     }
                     Some(RendezvousEvent::StateSummary { versions }) => {
@@ -770,6 +782,7 @@ async fn run_connected(
                         dispatch_effects(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
+                            &mut player, &mut echo_filter,
                         ).await;
                     }
                     Some(RendezvousEvent::StateSnapshot { epoch, crdts }) => {
@@ -780,6 +793,7 @@ async fn run_connected(
                         dispatch_effects(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
+                            &mut player, &mut echo_filter,
                         ).await;
                     }
                     None => {
@@ -803,6 +817,7 @@ async fn run_connected(
                         dispatch_effects(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
+                            &mut player, &mut echo_filter,
                         ).await;
                     }
                     Ok(NetworkEvent::PeerDisconnected { peer_id }) => {
@@ -814,6 +829,7 @@ async fn run_connected(
                         dispatch_effects(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
+                            &mut player, &mut echo_filter,
                         ).await;
                     }
                     Ok(NetworkEvent::PeerControl { from, message }) => {
@@ -837,6 +853,7 @@ async fn run_connected(
                             dispatch_effects(
                                 effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
                             ).await;
                         }
                     }
@@ -845,13 +862,19 @@ async fn run_connected(
                             PeerDatagram::StateOp { op } => {
                                 Some(AppEvent::RemoteOp { from, op })
                             }
-                            _ => None,
+                            PeerDatagram::Position { position_secs, .. } => {
+                                Some(AppEvent::RemotePosition { from, position_secs })
+                            }
+                            PeerDatagram::Seek { target_secs, .. } => {
+                                Some(AppEvent::RemoteSeek { from, target_secs })
+                            }
                         };
                         if let Some(event) = app_event {
                             let effects = app_state.lock().await.process_event(event, now);
                             dispatch_effects(
                                 effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
                             ).await;
                         }
                     }
@@ -883,9 +906,68 @@ async fn run_connected(
                     dispatch_effects(
                         effects, &peer_mgr, &rv_client, storage,
                         &app_state, &gap_fill_tx,
+                        &mut player, &mut echo_filter,
                     ).await;
                     needs_redraw = true;
                 }
+            }
+
+            // Player events
+            event = async {
+                if let Some(p) = player.as_ref() {
+                    p.recv_event().await
+                } else {
+                    // No player — pend forever
+                    std::future::pending::<anyhow::Result<crate::player::PlayerEvent>>().await
+                }
+            } => {
+                if let Ok(raw_event) = event {
+                    // Run through echo filter
+                    if let Some(filtered) = echo_filter.filter(raw_event) {
+                        let app_event = match filtered {
+                            crate::player::PlayerEvent::Paused => AppEvent::PlayerPaused,
+                            crate::player::PlayerEvent::Unpaused => AppEvent::PlayerUnpaused,
+                            crate::player::PlayerEvent::Seeked { position_secs } => {
+                                AppEvent::PlayerSeeked { position_secs }
+                            }
+                            crate::player::PlayerEvent::Position { position_secs } => {
+                                AppEvent::PlayerPosition { position_secs }
+                            }
+                            crate::player::PlayerEvent::Duration { duration_secs } => {
+                                AppEvent::PlayerDuration { duration_secs }
+                            }
+                            crate::player::PlayerEvent::Eof => AppEvent::PlayerEof,
+                            crate::player::PlayerEvent::Crashed => AppEvent::PlayerCrashed,
+                        };
+                        let now = rv_client.shared_now().await;
+                        let effects = app_state.lock().await.process_event(app_event, now);
+                        dispatch_effects(
+                            effects, &peer_mgr, &rv_client, storage,
+                            &app_state, &gap_fill_tx,
+                            &mut player, &mut echo_filter,
+                        ).await;
+                        needs_redraw = true;
+                    }
+                } else {
+                    // Player channel closed — player crashed
+                    let now = rv_client.shared_now().await;
+                    let effects = app_state.lock().await.process_event(AppEvent::PlayerCrashed, now);
+                    dispatch_effects(
+                        effects, &peer_mgr, &rv_client, storage,
+                        &app_state, &gap_fill_tx,
+                        &mut player, &mut echo_filter,
+                    ).await;
+                    needs_redraw = true;
+                }
+            }
+
+            // Position poll tick (100ms)
+            _ = position_tick.tick() => {
+                // Position comes from observed property changes in mpv,
+                // but we also need to periodically check for position broadcasts.
+                // The mpv reader task sends Position events via property observation,
+                // so we don't need to poll here — but we keep the interval to drive
+                // periodic position broadcast checking when no events arrive.
             }
 
             // Periodic tick
@@ -895,10 +977,16 @@ async fn run_connected(
                 dispatch_effects(
                     effects, &peer_mgr, &rv_client, storage,
                     &app_state, &gap_fill_tx,
+                    &mut player, &mut echo_filter,
                 ).await;
                 // Don't redraw on every tick unless effects requested it
             }
         }
+    }
+
+    // Clean up player on exit
+    if let Some(p) = player {
+        let _ = p.quit().await;
     }
 
     Ok(())
@@ -912,7 +1000,16 @@ async fn draw_main_screen(
     storage: &Arc<Mutex<ClientStorage>>,
 ) -> Result<()> {
     // Collect all data from app state into owned values, then drop the lock
-    let (chat_msgs, user_entries, playlist_entries, current_file_name) = {
+    let (
+        chat_msgs,
+        user_entries,
+        playlist_entries,
+        current_file_name,
+        position_secs,
+        duration_secs,
+        is_playing,
+        blocking_users,
+    ) = {
         let app = app_state.lock().await;
         let crdt = app.sync_engine.state();
 
@@ -987,7 +1084,26 @@ async fn draw_main_screen(
         let current_file_name: Option<String> =
             playlist_entries.first().map(|e| e.display_name.clone());
 
-        (chat_msgs, user_entries, playlist_entries, current_file_name)
+        let position_secs = app.our_position_secs;
+        let duration_secs = app.file_duration_secs;
+        let is_playing = app.playback.should_play;
+        let blocking: Vec<String> = app
+            .playback
+            .blocking_users
+            .iter()
+            .map(|u| u.0.clone())
+            .collect();
+
+        (
+            chat_msgs,
+            user_entries,
+            playlist_entries,
+            current_file_name,
+            position_secs,
+            duration_secs,
+            is_playing,
+            blocking,
+        )
     };
 
     terminal.draw(|frame| {
@@ -1039,11 +1155,15 @@ async fn draw_main_screen(
             ui.focus == crate::tui::ui_state::FocusedPane::Playlist,
         );
 
-        // Player status (stub)
+        // Player status
         player_status::render_player_status(
             layout.player_status,
             frame.buffer_mut(),
             current_file_name.as_deref(),
+            position_secs,
+            duration_secs,
+            is_playing,
+            &blocking_users,
         );
 
         // Settings modal overlay (if open)
@@ -1206,6 +1326,7 @@ async fn apply_main_ui_action(
 }
 
 /// Dispatch AppEffects to the runtime.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_effects(
     effects: Vec<AppEffect>,
     peer_mgr: &Arc<PeerManager>,
@@ -1213,6 +1334,8 @@ async fn dispatch_effects(
     storage: &Arc<Mutex<ClientStorage>>,
     app_state: &Arc<tokio::sync::Mutex<AppState>>,
     gap_fill_tx: &tokio::sync::mpsc::UnboundedSender<(PeerId, GapFillResponse)>,
+    player: &mut Option<MpvPlayer>,
+    echo_filter: &mut EchoFilter,
 ) {
     for effect in effects {
         match effect {
@@ -1223,11 +1346,69 @@ async fn dispatch_effects(
                 .await;
             }
             AppEffect::Redraw => {} // Handled by needs_redraw flag
-            AppEffect::PlayerPause
-            | AppEffect::PlayerUnpause
-            | AppEffect::PlayerSeek(_)
-            | AppEffect::PlayerLoadFile(_)
-            | AppEffect::PlayerShowOsd(_) => {} // Phase 7
+            AppEffect::PlayerPause => {
+                if let Some(p) = player.as_ref() {
+                    echo_filter.register_pause();
+                    if let Err(e) = p.pause().await {
+                        tracing::debug!("Failed to pause player: {e}");
+                    }
+                }
+            }
+            AppEffect::PlayerUnpause => {
+                if let Some(p) = player.as_ref() {
+                    echo_filter.register_unpause();
+                    if let Err(e) = p.unpause().await {
+                        tracing::debug!("Failed to unpause player: {e}");
+                    }
+                }
+            }
+            AppEffect::PlayerSeek(pos) => {
+                if let Some(p) = player.as_ref() {
+                    echo_filter.register_seek(pos);
+                    if let Err(e) = p.seek(pos).await {
+                        tracing::debug!("Failed to seek player: {e}");
+                    }
+                }
+            }
+            AppEffect::PlayerLoadFile(file_id) => {
+                // Look up local file path from storage
+                let local_path = storage
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get_file_mapping(&file_id).ok().flatten());
+
+                if let Some(path) = local_path {
+                    // Ensure player is alive; launch if needed
+                    let need_launch =
+                        player.as_ref().is_none_or(|p| !p.is_alive());
+                    if need_launch {
+                        match MpvPlayer::launch().await {
+                            Ok(p) => {
+                                *player = Some(p);
+                                tracing::info!("Launched mpv player");
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to launch mpv: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(p) = player.as_ref()
+                        && let Err(e) = p.load_file(&path).await
+                    {
+                        tracing::warn!("Failed to load file into player: {e}");
+                    }
+                } else {
+                    tracing::debug!(?file_id, "No local path for file, skipping load");
+                }
+            }
+            AppEffect::PlayerShowOsd(text) => {
+                if let Some(p) = player.as_ref()
+                    && let Err(e) = p.show_osd(&text, 3000).await
+                {
+                    tracing::debug!("Failed to show OSD: {e}");
+                }
+            }
         }
     }
 }

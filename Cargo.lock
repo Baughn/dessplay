@@ -482,6 +482,7 @@ dependencies = [
  "ring",
  "rusqlite",
  "rustls",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tracing",
