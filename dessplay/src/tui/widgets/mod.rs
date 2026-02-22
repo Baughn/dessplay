@@ -1,0 +1,8 @@
+pub mod chat;
+pub mod file_browser;
+pub mod keybinding_bar;
+pub mod player_status;
+pub mod playlist;
+pub mod recent_series;
+pub mod settings;
+pub mod users;

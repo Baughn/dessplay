@@ -1,0 +1,12 @@
+---
+source: dessplay/src/tui/tests.rs
+expression: terminal.backend()
+---
+"┌ Users ───────────────────────────────┐"
+"│alice (you) [Ready]                   │"
+"│bob [Ready]                           │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"└──────────────────────────────────────┘"
