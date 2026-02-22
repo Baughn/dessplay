@@ -8,6 +8,11 @@ use dessplay_rendezvous::{quic, server, storage};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install the ring crypto provider for rustls (must happen before any TLS use)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("failed to install rustls CryptoProvider"))?;
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
