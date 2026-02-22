@@ -6,7 +6,7 @@ mod snapshot_tests {
     use ratatui::Terminal;
 
     use crate::tui::layout::compute_layout;
-    use crate::tui::ui_state::{FocusedPane, InputState, Screen};
+    use crate::tui::ui_state::{FocusedPane, InputState};
     use crate::tui::widgets::{
         chat, keybinding_bar, player_status, playlist, recent_series, users,
     };
@@ -51,7 +51,7 @@ mod snapshot_tests {
             );
             keybinding_bar::render_keybinding_bar(
                 layout.keybinding_bar, frame.buffer_mut(),
-                &Screen::Main, &FocusedPane::Chat,
+                &FocusedPane::Chat,
             );
         }).unwrap();
         assert_snapshot!(terminal.backend());
@@ -86,7 +86,7 @@ mod snapshot_tests {
             );
             keybinding_bar::render_keybinding_bar(
                 layout.keybinding_bar, frame.buffer_mut(),
-                &Screen::Main, &FocusedPane::Chat,
+                &FocusedPane::Chat,
             );
         }).unwrap();
         assert_snapshot!(terminal.backend());
@@ -266,7 +266,7 @@ mod snapshot_tests {
         terminal.draw(|frame| {
             keybinding_bar::render_keybinding_bar(
                 frame.area(), frame.buffer_mut(),
-                &Screen::Main, &FocusedPane::Chat,
+                &FocusedPane::Chat,
             );
         }).unwrap();
         assert_snapshot!(terminal.backend());
@@ -278,7 +278,7 @@ mod snapshot_tests {
         terminal.draw(|frame| {
             keybinding_bar::render_keybinding_bar(
                 frame.area(), frame.buffer_mut(),
-                &Screen::Main, &FocusedPane::Playlist,
+                &FocusedPane::Playlist,
             );
         }).unwrap();
         assert_snapshot!(terminal.backend());
@@ -290,7 +290,7 @@ mod snapshot_tests {
         terminal.draw(|frame| {
             keybinding_bar::render_keybinding_bar(
                 frame.area(), frame.buffer_mut(),
-                &Screen::Main, &FocusedPane::RecentSeries,
+                &FocusedPane::RecentSeries,
             );
         }).unwrap();
         assert_snapshot!(terminal.backend());

@@ -4,7 +4,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
-use crate::tui::ui_state::FileBrowserState;
+use crate::tui::ui_state::{FileBrowserOrigin, FileBrowserState};
+
+pub fn keybindings(origin: &FileBrowserOrigin) -> Vec<(&'static str, &'static str)> {
+    match origin {
+        FileBrowserOrigin::SettingsMediaRoot => vec![
+            ("Enter", "Open"),
+            ("s", "Select dir"),
+            ("Esc", "Back"),
+            ("Ctrl-C", "Quit"),
+        ],
+        FileBrowserOrigin::Playlist => vec![
+            ("Enter", "Select"),
+            ("Esc", "Back"),
+            ("Ctrl-C", "Quit"),
+        ],
+    }
+}
 
 pub fn render_file_browser(area: Rect, buf: &mut Buffer, state: &FileBrowserState) {
     // Clear the area first (overlay)

@@ -6,6 +6,15 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::tui::ui_state::SettingsState;
 
+pub fn keybindings() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("Tab", "Next field"),
+        ("Shift-Tab", "Prev field"),
+        ("Ctrl-S", "Save"),
+        ("Ctrl-C", "Quit"),
+    ]
+}
+
 pub fn render_settings(area: Rect, buf: &mut Buffer, state: &SettingsState) {
     Clear.render(area, buf);
 

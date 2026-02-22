@@ -86,26 +86,11 @@ async fn run_settings_screen(
     loop {
         // Draw
         terminal.draw(|frame| {
-            let area = frame.area();
+            let wf = keybinding_bar::WindowFrame::new(frame.area());
             if let Some(ref settings_state) = ui.settings {
-                settings::render_settings(area, frame.buffer_mut(), settings_state);
+                settings::render_settings(wf.content, frame.buffer_mut(), settings_state);
             }
-
-            // Keybinding bar at bottom
-            if area.height > 1 {
-                let bar_area = ratatui::layout::Rect {
-                    x: area.x,
-                    y: area.y + area.height - 1,
-                    width: area.width,
-                    height: 1,
-                };
-                keybinding_bar::render_keybinding_bar(
-                    bar_area,
-                    frame.buffer_mut(),
-                    &ui.screen,
-                    &ui.focus,
-                );
-            }
+            wf.render_bar(frame.buffer_mut(), settings::keybindings());
         })?;
 
         // Handle file browser overlay if active
@@ -260,9 +245,10 @@ async fn run_file_browser_overlay(
     loop {
         // Draw
         terminal.draw(|frame| {
-            let area = frame.area();
+            let wf = keybinding_bar::WindowFrame::new(frame.area());
             if let Some(ref fb) = ui.file_browser {
-                file_browser::render_file_browser(area, frame.buffer_mut(), fb);
+                file_browser::render_file_browser(wf.content, frame.buffer_mut(), fb);
+                wf.render_bar(frame.buffer_mut(), &file_browser::keybindings(&fb.origin));
             }
         })?;
 
@@ -888,7 +874,6 @@ async fn draw_main_screen(
         keybinding_bar::render_keybinding_bar(
             layout.keybinding_bar,
             frame.buffer_mut(),
-            &ui.screen,
             &ui.focus,
         );
     })?;

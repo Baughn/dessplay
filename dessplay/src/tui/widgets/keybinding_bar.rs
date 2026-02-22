@@ -4,46 +4,71 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-use crate::tui::ui_state::{FocusedPane, Screen};
+use crate::tui::ui_state::FocusedPane;
 
-pub fn render_keybinding_bar(area: Rect, buf: &mut Buffer, screen: &Screen, focus: &FocusedPane) {
+/// A frame that reserves 1 line at the bottom for a keybinding bar.
+pub struct WindowFrame {
+    pub content: Rect,
+    bar: Rect,
+}
+
+impl WindowFrame {
+    pub fn new(area: Rect) -> Self {
+        if area.height <= 1 {
+            Self {
+                content: area,
+                bar: Rect::default(),
+            }
+        } else {
+            Self {
+                content: Rect {
+                    height: area.height - 1,
+                    ..area
+                },
+                bar: Rect {
+                    x: area.x,
+                    y: area.y + area.height - 1,
+                    width: area.width,
+                    height: 1,
+                },
+            }
+        }
+    }
+
+    pub fn render_bar(&self, buf: &mut Buffer, bindings: &[(&str, &str)]) {
+        render_bar(self.bar, buf, bindings);
+    }
+}
+
+/// Render a keybinding bar for the main screen, routed by focused pane.
+pub fn render_keybinding_bar(area: Rect, buf: &mut Buffer, focus: &FocusedPane) {
+    let bindings: &[(&str, &str)] = match focus {
+        FocusedPane::Chat => &[
+            ("Tab", "Next pane"),
+            ("Enter", "Send"),
+            ("Esc", "Clear"),
+            ("Ctrl-C", "Quit"),
+        ],
+        FocusedPane::Playlist => &[
+            ("Tab", "Next pane"),
+            ("a", "Add"),
+            ("d", "Remove"),
+            ("C-j/k", "Move"),
+            ("Ctrl-C", "Quit"),
+        ],
+        FocusedPane::RecentSeries => &[
+            ("Tab", "Next pane"),
+            ("Enter", "Browse"),
+            ("Ctrl-C", "Quit"),
+        ],
+    };
+    render_bar(area, buf, bindings);
+}
+
+fn render_bar(area: Rect, buf: &mut Buffer, bindings: &[(&str, &str)]) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-
-    let bindings = match screen {
-        Screen::Settings => vec![
-            ("Tab", "Next field"),
-            ("Shift-Tab", "Prev field"),
-            ("Ctrl-S", "Save"),
-            ("Ctrl-C", "Quit"),
-        ],
-        Screen::FileBrowser => vec![
-            ("Enter", "Select"),
-            ("Esc", "Back"),
-            ("Ctrl-C", "Quit"),
-        ],
-        Screen::Main => match focus {
-            FocusedPane::Chat => vec![
-                ("Tab", "Next pane"),
-                ("Enter", "Send"),
-                ("Esc", "Clear"),
-                ("Ctrl-C", "Quit"),
-            ],
-            FocusedPane::Playlist => vec![
-                ("Tab", "Next pane"),
-                ("a", "Add"),
-                ("d", "Remove"),
-                ("C-j/k", "Move"),
-                ("Ctrl-C", "Quit"),
-            ],
-            FocusedPane::RecentSeries => vec![
-                ("Tab", "Next pane"),
-                ("Enter", "Browse"),
-                ("Ctrl-C", "Quit"),
-            ],
-        },
-    };
 
     let key_style = Style::default()
         .fg(Color::Black)
