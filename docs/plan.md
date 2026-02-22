@@ -137,6 +137,8 @@ establish direct peer connections with synchronized clocks.
 
 ## Phase 4: State Sync Engine
 
+Status: Completed
+
 **Goal**: CRDTs sync across peers. Op broadcast, version vectors, gap fill.
 
 ### What gets built
@@ -152,6 +154,7 @@ establish direct peer connections with synchronized clocks.
 - SimulatedNetwork: N peers with packet loss → verify convergence
 - Partition/heal: ops on both sides of partition → heal → converge
 - Reconnection: peer misses ops → reconnects → full state recovery
+- Fuzz test: Expanded network sim, with events for new user actions
 
 ### Milestone
 Multiple clients modify CRDTs and converge to identical state, even with

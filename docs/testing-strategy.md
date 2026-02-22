@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-02-20
+Last updated: 2026-02-22
 
 ## Table of Contents
 
@@ -449,6 +449,46 @@ per-op bitmask), then performing 3 rounds of version-vector-based sync via
 `ops_since`. Asserts all peers converge to identical snapshots. Exercises the
 complete sync protocol: partial delivery, gap detection, catch-up, and
 multi-round convergence.
+
+### Network & Sync Targets
+
+These targets fuzz the network and sync layers above the raw CRDTs.
+
+#### Framing Deserialize (`framing_deserialize`)
+
+Feeds raw bytes to the stream/datagram framing layer for all message type
+tags. Must not panic on any input. Complements `postcard_deserialize` by
+testing the length-prefix framing and tag dispatch on top of serialization.
+
+#### Time Sync Convergence (`time_sync_convergence`)
+
+Drives `TimeSyncState` with arbitrary NTP-style round-trip samples
+(t1/t2/t3/t4 tuples). Asserts no panics and no integer overflow on extreme
+timestamp values.
+
+#### Network Sim (`network_sim`)
+
+Exercises the `SimulatedNetwork` transport layer with random sequences of
+control messages, datagrams, partition/heal, and loss rate changes across
+2-4 peers. Tests the transport plumbing, not sync logic — complements
+`sync_engine` which tests the layer above.
+
+#### Sync Engine (`sync_engine`)
+
+Drives 2-4 `SyncEngine` instances through random event sequences: local ops,
+peer connect/disconnect, periodic ticks, summary exchanges, snapshot sends,
+partition toggles, and packet loss. Actions are dispatched through a simulated
+network layer that respects partitions and loss rates.
+
+**Mid-run convergence checks**: The fuzzer generates `AssertConvergence`
+events at arbitrary points. When fired, it computes connected components from
+the current partition state (union-find), runs reliable (no-loss) sync rounds
+within each component, and asserts all members have identical snapshots. This
+catches bugs where reachable peers fail to converge — not just after healing,
+but during normal operation with partial connectivity.
+
+After all events, partitions are healed and a final global convergence
+assertion is made.
 
 ---
 

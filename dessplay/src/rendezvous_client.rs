@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use tokio::sync::RwLock;
 
 use dessplay_core::framing::{read_framed, write_framed, TAG_RV_CONTROL};
-use dessplay_core::protocol::{PeerInfo, RvControl};
+use dessplay_core::protocol::{CrdtOp, CrdtSnapshot, PeerInfo, RvControl, VersionVectors};
 use dessplay_core::time_sync::TimeSyncState;
 use dessplay_core::types::{PeerId, SharedTimestamp};
 
@@ -31,6 +31,12 @@ pub struct RendezvousClient {
 pub enum RendezvousEvent {
     /// Updated peer list from the server.
     PeerList { peers: Vec<PeerInfo> },
+    /// A CRDT operation from the server.
+    StateOp { op: CrdtOp },
+    /// A state summary from the server.
+    StateSummary { versions: VersionVectors },
+    /// A full state snapshot from the server (epoch upgrade).
+    StateSnapshot { epoch: u64, crdts: CrdtSnapshot },
 }
 
 impl RendezvousClient {
@@ -194,6 +200,18 @@ impl RendezvousClient {
                     "Received peer list"
                 );
                 let _ = event_tx.send(RendezvousEvent::PeerList { peers });
+            }
+            RvControl::StateOp { op } => {
+                tracing::debug!("State op from server");
+                let _ = event_tx.send(RendezvousEvent::StateOp { op });
+            }
+            RvControl::StateSummary { versions } => {
+                tracing::debug!("State summary from server");
+                let _ = event_tx.send(RendezvousEvent::StateSummary { versions });
+            }
+            RvControl::StateSnapshot { epoch, crdts } => {
+                tracing::info!(%epoch, "State snapshot from server");
+                let _ = event_tx.send(RendezvousEvent::StateSnapshot { epoch, crdts });
             }
             other => {
                 tracing::debug!("Unhandled server message: {other:?}");

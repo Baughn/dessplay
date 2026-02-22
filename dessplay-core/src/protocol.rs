@@ -202,6 +202,10 @@ pub enum PeerControl {
         epoch: u64,
         versions: VersionVectors,
     },
+    StateSnapshot {
+        epoch: u64,
+        crdts: CrdtSnapshot,
+    },
 
     // File transfer
     FileAvailability { file_id: FileId, bitfield: Vec<u8> },

@@ -15,6 +15,7 @@ use quinn::Endpoint;
 use dessplay_core::framing::{read_framed, write_framed, TAG_RV_CONTROL};
 use dessplay_core::network::NetworkEvent;
 use dessplay_core::protocol::{PeerControl, PeerInfo, RvControl};
+use dessplay_core::sync_engine::SyncEngine;
 use dessplay_core::types::PeerId;
 
 use dessplay::peer_conn::PeerManager;
@@ -52,8 +53,10 @@ async fn start_test_server(password: &str) -> (SocketAddr, tokio::task::JoinHand
     let endpoint = Endpoint::server(server_config, bind).unwrap();
     let addr = endpoint.local_addr().unwrap();
 
+    let storage =
+        dessplay_rendezvous::storage::ServerStorage::open_in_memory().unwrap();
     let server =
-        dessplay_rendezvous::server::RendezvousServer::new(endpoint, password.to_string());
+        dessplay_rendezvous::server::RendezvousServer::new(endpoint, password.to_string(), storage);
     let handle = tokio::spawn(async move {
         let _ = server.run().await;
     });
@@ -158,6 +161,32 @@ async fn connect_and_auth(
     }
 }
 
+/// Read messages from a raw recv stream until we get a PeerList (skipping StateSummary etc.).
+async fn read_until_peer_list(recv: &mut quinn::RecvStream) -> RvControl {
+    loop {
+        let msg: RvControl = read_framed(recv, TAG_RV_CONTROL)
+            .await
+            .unwrap()
+            .expect("stream closed while waiting for PeerList");
+        if matches!(msg, RvControl::PeerList { .. }) {
+            return msg;
+        }
+    }
+}
+
+/// Read messages until we get a specific non-PeerList message (skipping PeerList and StateSummary).
+async fn read_until_time_sync_response(recv: &mut quinn::RecvStream) -> RvControl {
+    loop {
+        let msg: RvControl = read_framed(recv, TAG_RV_CONTROL)
+            .await
+            .unwrap()
+            .expect("stream closed while waiting for TimeSyncResponse");
+        if matches!(msg, RvControl::TimeSyncResponse { .. }) {
+            return msg;
+        }
+    }
+}
+
 /// Wait for a PeerList with at least `count` peers from a RendezvousClient.
 async fn wait_for_peer_list(rv: &RendezvousClient, count: usize) -> Vec<PeerInfo> {
     loop {
@@ -225,8 +254,8 @@ async fn time_sync_accuracy() {
     let (_conn, mut send, mut recv, _peer_id, _) =
         connect_and_auth(&client, addr, "pw", "alice").await.unwrap();
 
-    // Drain the initial PeerList
-    let _: Option<RvControl> = read_framed(&mut recv, TAG_RV_CONTROL).await.unwrap();
+    // Drain until we see the initial PeerList (server may send StateSummary first)
+    let _ = read_until_peer_list(&mut recv).await;
 
     // Send time sync request
     let t1 = std::time::SystemTime::now()
@@ -242,10 +271,8 @@ async fn time_sync_accuracy() {
     .await
     .unwrap();
 
-    let response: RvControl = read_framed(&mut recv, TAG_RV_CONTROL)
-        .await
-        .unwrap()
-        .expect("expected time sync response");
+    // Read until we get TimeSyncResponse (may skip periodic StateSummary broadcasts)
+    let response = read_until_time_sync_response(&mut recv).await;
 
     match response {
         RvControl::TimeSyncResponse {
@@ -281,11 +308,8 @@ async fn peer_discovery() {
     let (_conn_a, _send_a, mut recv_a, peer_id_a, _) =
         connect_and_auth(&client_a, addr, "pw", "alice").await.unwrap();
 
-    // Drain Alice's initial peer list (just herself)
-    let msg: RvControl = read_framed(&mut recv_a, TAG_RV_CONTROL)
-        .await
-        .unwrap()
-        .expect("expected peer list");
+    // Drain until Alice's initial peer list (server may send StateSummary first)
+    let msg = read_until_peer_list(&mut recv_a).await;
     match &msg {
         RvControl::PeerList { peers } => {
             assert_eq!(peers.len(), 1);
@@ -300,11 +324,8 @@ async fn peer_discovery() {
 
     assert_ne!(peer_id_a, peer_id_b);
 
-    // Alice should receive an updated PeerList with both peers
-    let msg: RvControl = read_framed(&mut recv_a, TAG_RV_CONTROL)
-        .await
-        .unwrap()
-        .expect("expected updated peer list");
+    // Alice should receive an updated PeerList with both peers (skip any StateSummary)
+    let msg = read_until_peer_list(&mut recv_a).await;
     match &msg {
         RvControl::PeerList { peers } => {
             assert_eq!(peers.len(), 2);
@@ -315,11 +336,8 @@ async fn peer_discovery() {
         other => panic!("expected PeerList, got {other:?}"),
     }
 
-    // Bob should receive a PeerList with both peers
-    let msg: RvControl = read_framed(&mut recv_b, TAG_RV_CONTROL)
-        .await
-        .unwrap()
-        .expect("expected peer list for bob");
+    // Bob should receive a PeerList with both peers (skip any StateSummary)
+    let msg = read_until_peer_list(&mut recv_b).await;
     match &msg {
         RvControl::PeerList { peers } => {
             assert_eq!(peers.len(), 2);
@@ -341,24 +359,23 @@ async fn peer_disconnect_updates_list() {
     let (conn_b, _send_b, _recv_b, _, _) =
         connect_and_auth(&client_b, addr, "pw", "bob").await.unwrap();
 
-    // Drain Alice's peer list messages (initial + bob joined)
-    let _ = read_framed::<_, RvControl>(&mut recv_a, TAG_RV_CONTROL).await;
-    let _ = read_framed::<_, RvControl>(&mut recv_a, TAG_RV_CONTROL).await;
+    // Drain Alice's messages until we see a PeerList with 2 peers (initial + bob joined)
+    // There may be StateSummary messages interspersed
+    let _ = read_until_peer_list(&mut recv_a).await; // initial (1 peer)
+    let _ = read_until_peer_list(&mut recv_a).await; // bob joined (2 peers)
 
     // Disconnect Bob
     conn_b.close(0u32.into(), b"bye");
     // Give server time to detect and broadcast
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Alice should get an updated peer list with only herself
+    // Alice should get an updated peer list with only herself (skip any StateSummary)
     let msg = tokio::time::timeout(
         Duration::from_secs(2),
-        read_framed::<_, RvControl>(&mut recv_a, TAG_RV_CONTROL),
+        read_until_peer_list(&mut recv_a),
     )
     .await
-    .expect("timeout waiting for updated peer list")
-    .unwrap()
-    .expect("expected peer list");
+    .expect("timeout waiting for updated peer list");
 
     match &msg {
         RvControl::PeerList { peers } => {
@@ -558,4 +575,232 @@ async fn peer_message_exchange() {
         }
         other => panic!("expected PeerControl, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Full-Stack State Sync Tests
+// ---------------------------------------------------------------------------
+
+/// Helper: drain RendezvousEvents until a specific StateOp or StateSnapshot arrives,
+/// returning it. Times out after `timeout`.
+async fn wait_for_state_event(
+    rv: &RendezvousClient,
+    timeout: Duration,
+) -> Option<RendezvousEvent> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match tokio::time::timeout_at(deadline, rv.recv()).await {
+            Ok(Some(event @ RendezvousEvent::StateOp { .. })) => return Some(event),
+            Ok(Some(event @ RendezvousEvent::StateSnapshot { .. })) => return Some(event),
+            Ok(Some(_)) => continue, // PeerList, StateSummary — skip
+            Ok(None) => return None,
+            Err(_) => return None, // timeout
+        }
+    }
+}
+
+/// Full-stack test: Client A applies a local op, then Client B triggers
+/// gap detection by sending its (stale) StateSummary to the server. The server
+/// detects B is behind and sends the missing ops.
+#[tokio::test]
+async fn state_sync_via_rendezvous_server() {
+    use dessplay_core::protocol::{CrdtOp, LwwValue};
+    use dessplay_core::types::{UserId, UserState};
+
+    // Start rendezvous server (with in-memory storage)
+    let (server_addr, _server) = start_test_server("pw").await;
+
+    let client_a = create_test_client();
+    let client_b = create_test_client();
+
+    let rv_a = RendezvousClient::connect(&client_a, server_addr, "localhost", "pw", "alice")
+        .await
+        .unwrap();
+    let rv_b = RendezvousClient::connect(&client_b, server_addr, "localhost", "pw", "bob")
+        .await
+        .unwrap();
+
+    let _ = wait_for_peer_list(&rv_a, 2).await;
+    let _ = wait_for_peer_list(&rv_b, 2).await;
+
+    let engine_a = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    let engine_b = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+
+    // Client A applies a local op and sends it to the server
+    let op = CrdtOp::LwwWrite {
+        timestamp: 1000,
+        value: LwwValue::UserState(UserId("alice".into()), UserState::Ready),
+    };
+    let actions = engine_a.lock().await.apply_local_op(op.clone());
+    for action in actions {
+        if let dessplay_core::sync_engine::SyncAction::BroadcastControl { msg } = action {
+            if let PeerControl::StateOp { op } = &msg {
+                rv_a.send(RvControl::StateOp { op: op.clone() });
+            }
+        }
+    }
+
+    // Give server time to process A's op
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Client B sends its (empty) StateSummary to the server.
+    // The server detects B is behind and sends the missing ops.
+    {
+        let eng_b = engine_b.lock().await;
+        rv_b.send(RvControl::StateSummary {
+            versions: eng_b.version_vectors(),
+        });
+    }
+
+    // Client B should receive the missing op from the server
+    let event = wait_for_state_event(&rv_b, Duration::from_secs(5))
+        .await
+        .expect("Client B did not receive state op from server");
+
+    match event {
+        RendezvousEvent::StateOp { op: received_op } => {
+            let _ = engine_b.lock().await.on_remote_op(PeerId(0), received_op);
+        }
+        RendezvousEvent::StateSnapshot { epoch, crdts } => {
+            let _ = engine_b.lock().await.on_state_snapshot(epoch, crdts);
+        }
+        _ => panic!("unexpected event type"),
+    }
+
+    // Verify both engines have the same state
+    let snap_a = engine_a.lock().await.state().snapshot();
+    let snap_b = engine_b.lock().await.state().snapshot();
+
+    assert_eq!(snap_a.user_states, snap_b.user_states);
+    assert_eq!(snap_a.user_states.len(), 1);
+    assert_eq!(
+        snap_a.user_states.get(&UserId("alice".into())),
+        Some(&(1000, UserState::Ready))
+    );
+}
+
+/// Full-stack test: Both clients apply concurrent ops, then exchange summaries
+/// via the server to converge.
+#[tokio::test]
+async fn state_sync_convergence_via_server() {
+    use dessplay_core::protocol::{CrdtOp, LwwValue};
+    use dessplay_core::types::{UserId, UserState};
+
+    let (server_addr, _server) = start_test_server("pw").await;
+
+    let client_a = create_test_client();
+    let client_b = create_test_client();
+
+    let rv_a = RendezvousClient::connect(&client_a, server_addr, "localhost", "pw", "alice")
+        .await
+        .unwrap();
+    let rv_b = RendezvousClient::connect(&client_b, server_addr, "localhost", "pw", "bob")
+        .await
+        .unwrap();
+
+    let _ = wait_for_peer_list(&rv_a, 2).await;
+    let _ = wait_for_peer_list(&rv_b, 2).await;
+
+    let engine_a = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    let engine_b = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+
+    // Client A sets alice=Ready
+    let op_a = CrdtOp::LwwWrite {
+        timestamp: 1000,
+        value: LwwValue::UserState(UserId("alice".into()), UserState::Ready),
+    };
+    let actions_a = engine_a.lock().await.apply_local_op(op_a);
+    for action in actions_a {
+        if let dessplay_core::sync_engine::SyncAction::BroadcastControl { msg } = action {
+            if let PeerControl::StateOp { op } = &msg {
+                rv_a.send(RvControl::StateOp { op: op.clone() });
+            }
+        }
+    }
+
+    // Client B sets bob=Paused
+    let op_b = CrdtOp::LwwWrite {
+        timestamp: 1001,
+        value: LwwValue::UserState(UserId("bob".into()), UserState::Paused),
+    };
+    let actions_b = engine_b.lock().await.apply_local_op(op_b);
+    for action in actions_b {
+        if let dessplay_core::sync_engine::SyncAction::BroadcastControl { msg } = action {
+            if let PeerControl::StateOp { op } = &msg {
+                rv_b.send(RvControl::StateOp { op: op.clone() });
+            }
+        }
+    }
+
+    // Give server time to process both ops
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Both clients send their StateSummary to trigger gap fill from server
+    {
+        let eng = engine_a.lock().await;
+        rv_a.send(RvControl::StateSummary {
+            versions: eng.version_vectors(),
+        });
+    }
+    {
+        let eng = engine_b.lock().await;
+        rv_b.send(RvControl::StateSummary {
+            versions: eng.version_vectors(),
+        });
+    }
+
+    // Process incoming events for both clients (each should get the other's op)
+    let engine_a_clone = Arc::clone(&engine_a);
+    let engine_b_clone = Arc::clone(&engine_b);
+
+    let drain_a = tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match tokio::time::timeout_at(deadline, rv_a.recv()).await {
+                Ok(Some(RendezvousEvent::StateOp { op })) => {
+                    let _ = engine_a_clone.lock().await.on_remote_op(PeerId(0), op);
+                    // Check if we have all 2 user states
+                    if engine_a_clone.lock().await.state().snapshot().user_states.len() >= 2 {
+                        break;
+                    }
+                }
+                Ok(Some(RendezvousEvent::StateSnapshot { epoch, crdts })) => {
+                    let _ = engine_a_clone.lock().await.on_state_snapshot(epoch, crdts);
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+    });
+
+    let drain_b = tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match tokio::time::timeout_at(deadline, rv_b.recv()).await {
+                Ok(Some(RendezvousEvent::StateOp { op })) => {
+                    let _ = engine_b_clone.lock().await.on_remote_op(PeerId(0), op);
+                    if engine_b_clone.lock().await.state().snapshot().user_states.len() >= 2 {
+                        break;
+                    }
+                }
+                Ok(Some(RendezvousEvent::StateSnapshot { epoch, crdts })) => {
+                    let _ = engine_b_clone.lock().await.on_state_snapshot(epoch, crdts);
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+    });
+
+    let _ = tokio::join!(drain_a, drain_b);
+
+    // Both engines should now have both user states
+    let snap_a = engine_a.lock().await.state().snapshot();
+    let snap_b = engine_b.lock().await.state().snapshot();
+
+    assert_eq!(snap_a.user_states.len(), 2, "A should have 2 user states");
+    assert_eq!(snap_b.user_states.len(), 2, "B should have 2 user states");
+    assert_eq!(snap_a.user_states, snap_b.user_states, "States should converge");
 }

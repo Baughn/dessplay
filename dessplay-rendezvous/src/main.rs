@@ -56,11 +56,15 @@ async fn main() -> Result<()> {
     let cert_path = data_dir.join("cert.der");
     let key_path = data_dir.join("key.der");
 
+    // Open server database
+    let db_path = data_dir.join("server.db");
+    let server_storage = storage::ServerStorage::open(&db_path)?;
+
     // Create QUIC endpoint
     let endpoint = quic::create_server_endpoint(bind_addr, &cert_path, &key_path)?;
 
     // Start server
-    let server = server::RendezvousServer::new(endpoint, password);
+    let server = server::RendezvousServer::new(endpoint, password, server_storage);
     server.run().await
 }
 

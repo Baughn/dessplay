@@ -77,3 +77,8 @@ doc = false
 name = "network_sim"
 path = "fuzz_targets/network_sim.rs"
 doc = false
+
+[[bin]]
+name = "sync_engine"
+path = "fuzz_targets/sync_engine.rs"
+doc = false
