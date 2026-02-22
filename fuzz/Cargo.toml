@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 dessplay-core = { path = "../dessplay-core", features = ["fuzzing"] }
+dessplay = { path = "../dessplay" }
 arbitrary = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 tokio = { version = "1", features = ["rt", "time", "macros"] }
@@ -81,4 +82,9 @@ doc = false
 [[bin]]
 name = "sync_engine"
 path = "fuzz_targets/sync_engine.rs"
+doc = false
+
+[[bin]]
+name = "app_state"
+path = "fuzz_targets/app_state.rs"
 doc = false

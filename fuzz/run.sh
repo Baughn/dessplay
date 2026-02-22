@@ -21,7 +21,7 @@ TARGET_SET="all"
 SINGLE_TARGET=""
 
 ORIGINAL_TARGETS=(crdt_op crdt_convergence snapshot_roundtrip ops_since)
-TARGETED_TARGETS=(lww_filestate_convergence chat_gap_fill playlist_targeted postcard_deserialize multi_peer_sync framing_deserialize time_sync_convergence network_sim)
+TARGETED_TARGETS=(lww_filestate_convergence chat_gap_fill playlist_targeted postcard_deserialize multi_peer_sync framing_deserialize time_sync_convergence network_sim sync_engine app_state)
 ALL_TARGETS=("${ORIGINAL_TARGETS[@]}" "${TARGETED_TARGETS[@]}")
 
 while [[ $# -gt 0 ]]; do
