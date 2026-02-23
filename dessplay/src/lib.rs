@@ -1,5 +1,6 @@
 pub mod app_state;
 pub mod dump;
+pub mod media_scanner;
 pub mod peer_conn;
 pub mod player;
 pub mod quic;

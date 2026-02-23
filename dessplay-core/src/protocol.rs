@@ -3,7 +3,9 @@ use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{AniDbMetadata, FileId, FileState, PeerId, SharedTimestamp, UserId, UserState};
+use crate::types::{
+    AniDbMetadata, FileId, FileState, PeerId, SharedTimestamp, UserId, UserState,
+};
 
 // ---------------------------------------------------------------------------
 // CRDT Operations
@@ -18,6 +20,7 @@ pub enum RegisterId {
     UserState(UserId),
     FileState(UserId, FileId),
     AniDb(FileId),
+    FileName(FileId),
 }
 
 /// A typed LWW register value, combining register identity and payload.
@@ -30,6 +33,7 @@ pub enum LwwValue {
     UserState(UserId, UserState),
     FileState(UserId, FileId, FileState),
     AniDb(FileId, Option<AniDbMetadata>),
+    FileName(FileId, String),
 }
 
 // Manual Eq: FileState contains f32 (progress), but values are always finite.
@@ -42,6 +46,7 @@ impl LwwValue {
             LwwValue::UserState(uid, _) => RegisterId::UserState(uid.clone()),
             LwwValue::FileState(uid, fid, _) => RegisterId::FileState(uid.clone(), *fid),
             LwwValue::AniDb(fid, _) => RegisterId::AniDb(*fid),
+            LwwValue::FileName(fid, _) => RegisterId::FileName(*fid),
         }
     }
 }
@@ -130,6 +135,8 @@ pub struct CrdtSnapshot {
     pub anidb: BTreeMap<FileId, (SharedTimestamp, Option<AniDbMetadata>)>,
     pub playlist: Vec<FileId>,
     pub chat: BTreeMap<UserId, Vec<ChatEntry>>,
+    #[serde(default)]
+    pub filenames: BTreeMap<FileId, (SharedTimestamp, String)>,
 }
 
 /// A single chat message.

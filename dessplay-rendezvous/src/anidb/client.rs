@@ -325,6 +325,7 @@ fn parse_file_response(data: &str) -> Result<AniDbMetadata> {
         episode_number: epno.to_string(),
         episode_name: ep_name.to_string(),
         group_name: group_short.to_string(),
+        source: dessplay_core::types::MetadataSource::AniDb,
     })
 }
 

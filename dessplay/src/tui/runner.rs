@@ -8,36 +8,37 @@ use crossterm::event::EventStream;
 use tokio_stream::StreamExt;
 
 use crate::app_state::{AppEffect, AppEvent, AppState};
+use crate::media_scanner::MediaIndex;
 use crate::peer_conn::PeerManager;
 use crate::player::echo::EchoFilter;
 use crate::player::mpv::MpvPlayer;
 use crate::player::Player;
 use crate::rendezvous_client::{RendezvousClient, RendezvousEvent};
 use crate::storage::{ClientStorage, Config};
-use dessplay_core::types::FileId;
+use dessplay_core::types::{FileId, SharedTimestamp};
 use ratatui::layout::Rect;
 
 use crate::tui::layout::compute_layout;
 use crate::tui::terminal::{setup_file_logging, setup_terminal};
 use crate::tui::ui_state::{
-    FileBrowserOrigin, FileBrowserState, FocusedPane, HashingState, InputResult, Screen,
-    SettingsState, UiAction, UiState,
+    FileBrowserOrigin, FileBrowserState, FocusedPane, HashingState, InputResult, InputState,
+    MetadataAssignState, MetadataAssignStep, Screen, SeriesChoice, SettingsState, UiAction, UiState,
 };
 use crate::tls::TofuVerifier;
 use crate::tui::ui_state::TofuWarningState;
 use crate::tui::widgets::{
-    chat, file_browser, hashing_progress, keybinding_bar, player_status, playlist, recent_series,
-    settings, tofu_warning, users,
+    chat, file_browser, hashing_progress, keybinding_bar, metadata_assign, player_status, playlist,
+    recent_series, settings, tofu_warning, users,
 };
 use dessplay_core::framing::{
     read_framed, write_framed, TAG_GAP_FILL_REQUEST, TAG_GAP_FILL_RESPONSE,
 };
 use dessplay_core::network::NetworkEvent;
 use dessplay_core::protocol::{
-    GapFillRequest, GapFillResponse, PeerControl, PeerDatagram, RvControl,
+    CrdtOp, GapFillRequest, GapFillResponse, LwwValue, PeerControl, PeerDatagram, RvControl,
 };
 use dessplay_core::sync_engine::{SyncAction, SyncEngine};
-use dessplay_core::types::{FileState, PeerId, UserId, UserState};
+use dessplay_core::types::{AniDbMetadata, FileState, MetadataSource, PeerId, UserId, UserState};
 
 /// Main TUI entry point. Handles settings screen, connection, and event loop.
 pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<()> {
@@ -581,6 +582,15 @@ async fn run_connected(
     };
     let app_state = Arc::new(tokio::sync::Mutex::new(app_state));
 
+    // Build media index from configured media roots
+    let media_roots = storage
+        .lock()
+        .ok()
+        .and_then(|s| s.get_media_roots().ok())
+        .unwrap_or_default();
+    let media_index = Arc::new(MediaIndex::scan(&media_roots));
+    tracing::info!(files = media_index.file_count(), "Media index built");
+
     // Send initial state summary
     {
         let app = app_state.lock().await;
@@ -604,6 +614,18 @@ async fn run_connected(
     // Player state
     let mut player: Option<MpvPlayer> = None;
     let mut echo_filter = EchoFilter::new();
+
+    // Try auto-matching all existing playlist items (after player is declared)
+    {
+        let now = rv_client.shared_now().await;
+        let effects =
+            try_auto_match_all(&app_state, &media_index, storage, now).await;
+        dispatch_effects(
+            effects, &peer_mgr, &rv_client, storage,
+            &app_state, &gap_fill_tx,
+            &mut player, &mut echo_filter,
+        ).await;
+    }
 
     loop {
         // Draw if needed
@@ -640,39 +662,94 @@ async fn run_connected(
                             });
 
                             if let Some(path) = selected_file {
-                                ui.file_browser = None;
-
-                                // Get file size for progress display
-                                let total_bytes = std::fs::metadata(&path)
-                                    .map(|m| m.len())
-                                    .unwrap_or(0);
-                                let progress = Arc::new(AtomicU64::new(0));
-                                let filename = path
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| path.display().to_string());
-
-                                ui.hashing = Some(HashingState {
-                                    filename,
-                                    total_bytes,
-                                    bytes_hashed: Arc::clone(&progress),
+                                // Check if this is a manual map selection
+                                let manual_map_info = ui.file_browser.as_ref().and_then(|fb| {
+                                    if let FileBrowserOrigin::ManualMap {
+                                        ref file_id,
+                                        ..
+                                    } = fb.origin
+                                    {
+                                        Some(*file_id)
+                                    } else {
+                                        None
+                                    }
                                 });
-                                ui.screen = Screen::Hashing;
 
-                                // Spawn non-blocking hash
-                                let tx = hash_tx.clone();
-                                let path_for_hash = path.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    let result = (|| {
-                                        let file = std::fs::File::open(&path_for_hash)?;
-                                        let reader = std::io::BufReader::new(file);
-                                        dessplay_core::ed2k::compute_ed2k_with_progress(
-                                            reader,
-                                            |bytes| progress.store(bytes, Ordering::Relaxed),
-                                        )
-                                    })();
-                                    let _ = tx.send((path_for_hash, result));
-                                });
+                                if let Some(file_id) = manual_map_info {
+                                    // Manual map: store mapping, clear Missing, record dir
+                                    ui.file_browser = None;
+                                    ui.screen = Screen::Main;
+
+                                    if let Ok(s) = storage.lock() {
+                                        let _ = s.set_file_mapping(&file_id, &path);
+                                    }
+                                    // Record the directory for this series
+                                    if let Some(dir) = path.parent() {
+                                        let app = app_state.lock().await;
+                                        let anime_id = app
+                                            .sync_engine
+                                            .state()
+                                            .anidb
+                                            .read(&file_id)
+                                            .and_then(|opt| opt.as_ref())
+                                            .map(|meta| meta.anime_id);
+                                        drop(app);
+                                        if let Some(aid) = anime_id {
+                                            if let Ok(s) = storage.lock() {
+                                                let _ = s.set_series_mapping_dir(aid, dir);
+                                            }
+                                        }
+                                    }
+                                    // Set file state to Ready
+                                    let now = rv_client.shared_now().await;
+                                    let effects = app_state.lock().await.process_event(
+                                        AppEvent::SetFileState {
+                                            file_id,
+                                            state: dessplay_core::types::FileState::Ready,
+                                        },
+                                        now,
+                                    );
+                                    dispatch_effects(
+                                        effects, &peer_mgr, &rv_client, storage,
+                                        &app_state, &gap_fill_tx,
+                                        &mut player, &mut echo_filter,
+                                    ).await;
+                                    tracing::info!(?file_id, path = %path.display(), "Manual map stored");
+                                } else {
+                                    ui.file_browser = None;
+
+                                    // Normal playlist add: hash and add
+                                    let total_bytes = std::fs::metadata(&path)
+                                        .map(|m| m.len())
+                                        .unwrap_or(0);
+                                    let progress = Arc::new(AtomicU64::new(0));
+                                    let filename = path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| path.display().to_string());
+
+                                    ui.hashing = Some(HashingState {
+                                        filename,
+                                        total_bytes,
+                                        bytes_hashed: Arc::clone(&progress),
+                                    });
+                                    ui.screen = Screen::Hashing;
+
+                                    // Spawn non-blocking hash
+                                    let tx = hash_tx.clone();
+                                    let path_for_hash = path.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        let result = (|| {
+                                            let file = std::fs::File::open(&path_for_hash)?;
+                                            let reader = std::io::BufReader::new(file);
+                                            dessplay_core::ed2k::compute_ed2k_with_progress(
+                                                reader,
+                                                |bytes| progress.store(bytes, Ordering::Relaxed),
+                                            )
+                                        })();
+                                        let _ = tx.send((path_for_hash, result));
+                                    });
+                                }
                             } else if ui.file_browser.is_none() {
                                 // File browser was closed without selection
                                 // Return to settings if open, otherwise main
@@ -766,6 +843,14 @@ async fn run_connected(
                         peer_mgr.update_peer_list(peers).await;
                     }
                     Some(RendezvousEvent::StateOp { op }) => {
+                        let triggers_auto_match = matches!(
+                            &op,
+                            dessplay_core::protocol::CrdtOp::LwwWrite {
+                                value: LwwValue::FileName(..)
+                                    | LwwValue::AniDb(..),
+                                ..
+                            } | dessplay_core::protocol::CrdtOp::PlaylistOp { .. }
+                        );
                         let effects = app_state.lock().await.process_event(
                             AppEvent::RemoteOp { from: PeerId(0), op },
                             now,
@@ -775,6 +860,15 @@ async fn run_connected(
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
                         ).await;
+                        if triggers_auto_match {
+                            let match_effects =
+                                try_auto_match_all(&app_state, &media_index, storage, now).await;
+                            dispatch_effects(
+                                match_effects, &peer_mgr, &rv_client, storage,
+                                &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
+                            ).await;
+                        }
                     }
                     Some(RendezvousEvent::StateSummary { versions }) => {
                         let effects = app_state.lock().await.process_event(
@@ -798,6 +892,13 @@ async fn run_connected(
                         );
                         dispatch_effects(
                             effects, &peer_mgr, &rv_client, storage,
+                            &app_state, &gap_fill_tx,
+                            &mut player, &mut echo_filter,
+                        ).await;
+                        let match_effects =
+                            try_auto_match_all(&app_state, &media_index, storage, now).await;
+                        dispatch_effects(
+                            match_effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
                         ).await;
@@ -839,6 +940,18 @@ async fn run_connected(
                         ).await;
                     }
                     Ok(NetworkEvent::PeerControl { from, message }) => {
+                        let triggers_auto_match = matches!(
+                            &message,
+                            PeerControl::StateOp {
+                                op: dessplay_core::protocol::CrdtOp::LwwWrite {
+                                    value: LwwValue::FileName(..)
+                                        | LwwValue::AniDb(..),
+                                    ..
+                                }
+                            } | PeerControl::StateOp {
+                                op: dessplay_core::protocol::CrdtOp::PlaylistOp { .. }
+                            } | PeerControl::StateSnapshot { .. }
+                        );
                         let app_event = match message {
                             PeerControl::StateOp { op } => {
                                 Some(AppEvent::RemoteOp { from, op })
@@ -862,8 +975,29 @@ async fn run_connected(
                                 &mut player, &mut echo_filter,
                             ).await;
                         }
+                        if triggers_auto_match {
+                            let match_effects =
+                                try_auto_match_all(&app_state, &media_index, storage, now).await;
+                            dispatch_effects(
+                                match_effects, &peer_mgr, &rv_client, storage,
+                                &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
+                            ).await;
+                        }
                     }
                     Ok(NetworkEvent::PeerDatagram { from, message }) => {
+                        let triggers_auto_match = matches!(
+                            &message,
+                            PeerDatagram::StateOp {
+                                op: dessplay_core::protocol::CrdtOp::LwwWrite {
+                                    value: LwwValue::FileName(..)
+                                        | LwwValue::AniDb(..),
+                                    ..
+                                }
+                            } | PeerDatagram::StateOp {
+                                op: dessplay_core::protocol::CrdtOp::PlaylistOp { .. }
+                            }
+                        );
                         let app_event = match message {
                             PeerDatagram::StateOp { op } => {
                                 Some(AppEvent::RemoteOp { from, op })
@@ -879,6 +1013,15 @@ async fn run_connected(
                             let effects = app_state.lock().await.process_event(event, now);
                             dispatch_effects(
                                 effects, &peer_mgr, &rv_client, storage,
+                                &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
+                            ).await;
+                        }
+                        if triggers_auto_match {
+                            let match_effects =
+                                try_auto_match_all(&app_state, &media_index, storage, now).await;
+                            dispatch_effects(
+                                match_effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
                                 &mut player, &mut echo_filter,
                             ).await;
@@ -936,6 +1079,25 @@ async fn run_connected(
                                 file_size,
                             });
                             let now = rv_client.shared_now().await;
+                            // Share the filename via CRDT
+                            let filename = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            if !filename.is_empty() {
+                                let filename_op = CrdtOp::LwwWrite {
+                                    timestamp: now,
+                                    value: LwwValue::FileName(file_id, filename),
+                                };
+                                let fn_effects = app_state.lock().await
+                                    .sync_engine.apply_local_op(filename_op);
+                                dispatch_effects(
+                                    vec![AppEffect::Sync(fn_effects)],
+                                    &peer_mgr, &rv_client, storage,
+                                    &app_state, &gap_fill_tx,
+                                    &mut player, &mut echo_filter,
+                                ).await;
+                            }
                             let effects = app_state.lock().await.process_event(
                                 AppEvent::AddToPlaylist { file_id, after: None },
                                 now,
@@ -1111,8 +1273,9 @@ async fn draw_main_screen(
                     .lock()
                     .ok()
                     .and_then(|s| s.get_file_mapping(file_id).ok().flatten());
+                let crdt_filename = crdt.filenames.read(file_id).cloned();
                 let display_name =
-                    playlist::file_display_name(file_id, local_path.as_deref());
+                    playlist::file_display_name(file_id, local_path.as_deref(), crdt_filename.as_deref());
                 let is_missing = local_path.is_none();
                 playlist::PlaylistEntry {
                     file_id: *file_id,
@@ -1232,6 +1395,24 @@ async fn draw_main_screen(
                 frame.buffer_mut(),
                 settings::keybindings(),
             );
+        } else if let Some(ref ma_state) = ui.metadata_assign {
+            // Metadata assignment modal overlay (centered)
+            let modal_height = area.height.min(20);
+            let modal_width = area.width.saturating_sub(4).min(60);
+            let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
+            let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
+            let modal_area = Rect {
+                x,
+                y,
+                width: modal_width,
+                height: modal_height,
+            };
+            metadata_assign::render_metadata_assign(modal_area, frame.buffer_mut(), ma_state);
+            keybinding_bar::render_bar(
+                layout.keybinding_bar,
+                frame.buffer_mut(),
+                &metadata_assign::keybindings(&ma_state.step),
+            );
         } else {
             // Keybinding bar
             keybinding_bar::render_keybinding_bar(
@@ -1349,6 +1530,174 @@ async fn apply_main_ui_action(
             ui.file_browser = Some(FileBrowserState::open(start_dir, FileBrowserOrigin::Playlist));
             ui.screen = Screen::FileBrowser;
         }
+        UiAction::ManualMapFile => {
+            // Get the selected playlist item's FileId and metadata
+            let info = {
+                let app = app_state.lock().await;
+                let crdt = app.sync_engine.state();
+                let snapshot = crdt.playlist.snapshot();
+                snapshot.get(ui.playlist_selected).map(|file_id| {
+                    let filename = crdt.filenames.read(file_id).cloned();
+                    let anime_id = crdt
+                        .anidb
+                        .read(file_id)
+                        .and_then(|opt| opt.as_ref())
+                        .map(|meta| meta.anime_id);
+                    (*file_id, filename, anime_id)
+                })
+            };
+
+            if let Some((file_id, filename, anime_id)) = info {
+                let target_filename = filename.unwrap_or_default();
+
+                // Smart default: determine starting directory
+                // 1. If user previously mapped this series → that directory
+                // 2. Otherwise → first media root or home
+                let start_dir = anime_id
+                    .and_then(|aid| {
+                        storage
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.get_series_mapping_dir(aid).ok().flatten())
+                    })
+                    .or_else(|| {
+                        storage
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.get_media_roots().ok())
+                            .and_then(|roots| roots.into_iter().next())
+                    })
+                    .or_else(dirs::home_dir)
+                    .unwrap_or_else(|| PathBuf::from("/"));
+
+                ui.file_browser = Some(FileBrowserState::open(
+                    start_dir,
+                    FileBrowserOrigin::ManualMap {
+                        file_id,
+                        target_filename,
+                    },
+                ));
+                ui.screen = Screen::FileBrowser;
+            }
+        }
+        // Metadata assignment
+        UiAction::AssignMetadata => {
+            let app = app_state.lock().await;
+            let crdt = app.sync_engine.state();
+            let snapshot = crdt.playlist.snapshot();
+
+            if let Some(file_id) = snapshot.get(ui.playlist_selected).copied() {
+                // Collect unique series from all anidb entries
+                let mut seen = std::collections::HashSet::new();
+                let mut series_list = Vec::new();
+
+                for (_key, (_ts, value)) in crdt.anidb.iter() {
+                    if let Some(meta) = value
+                        && seen.insert(meta.anime_id)
+                    {
+                        series_list.push(SeriesChoice {
+                            anime_id: meta.anime_id,
+                            name: meta.anime_name.clone(),
+                        });
+                    }
+                }
+
+                series_list.sort_by(|a, b| a.name.cmp(&b.name));
+                drop(app);
+
+                ui.metadata_assign = Some(MetadataAssignState {
+                    file_id,
+                    series_list,
+                    selected: 0,
+                    step: MetadataAssignStep::SelectSeries,
+                    episode_input: InputState::new(),
+                });
+                ui.screen = Screen::MetadataAssign;
+            }
+        }
+        UiAction::MetadataSelectUp => {
+            if let Some(ref mut state) = ui.metadata_assign {
+                state.selected = state.selected.saturating_sub(1);
+            }
+        }
+        UiAction::MetadataSelectDown => {
+            if let Some(ref mut state) = ui.metadata_assign
+                && !state.series_list.is_empty()
+            {
+                state.selected = (state.selected + 1).min(state.series_list.len() - 1);
+            }
+        }
+        UiAction::MetadataConfirmSeries => {
+            if let Some(ref mut state) = ui.metadata_assign
+                && !state.series_list.is_empty()
+            {
+                state.step = MetadataAssignStep::EnterEpisode;
+            }
+        }
+        UiAction::MetadataInsertChar(c) => {
+            if let Some(ref mut state) = ui.metadata_assign {
+                state.episode_input.insert_char(*c);
+            }
+        }
+        UiAction::MetadataDeleteBack => {
+            if let Some(ref mut state) = ui.metadata_assign {
+                state.episode_input.delete_back();
+            }
+        }
+        UiAction::MetadataConfirmEpisode => {
+            if let Some(ref state) = ui.metadata_assign {
+                let episode = state.episode_input.text.trim().to_string();
+                if !episode.is_empty()
+                    && let Some(series) = state.series_list.get(state.selected)
+                {
+                    let file_id = state.file_id;
+                    let anime_id = series.anime_id;
+                    let anime_name = series.name.clone();
+
+                    let now = rv_client.shared_now().await;
+                    let mut app = app_state.lock().await;
+
+                    // Determine MetadataSource based on current data
+                    let current_source = app
+                        .sync_engine
+                        .state()
+                        .anidb
+                        .read(&file_id)
+                        .and_then(|opt| opt.as_ref())
+                        .map(|meta| meta.source);
+
+                    let source = match current_source {
+                        None | Some(MetadataSource::User) => MetadataSource::User,
+                        Some(MetadataSource::AniDb)
+                        | Some(MetadataSource::UserOverAniDb) => {
+                            MetadataSource::UserOverAniDb
+                        }
+                    };
+
+                    let metadata = AniDbMetadata {
+                        anime_id,
+                        anime_name,
+                        episode_number: episode,
+                        episode_name: String::new(),
+                        group_name: String::new(),
+                        source,
+                    };
+
+                    let op = CrdtOp::LwwWrite {
+                        timestamp: now,
+                        value: LwwValue::AniDb(file_id, Some(metadata)),
+                    };
+                    // Apply locally; sync will propagate via periodic summary
+                    let _ = app.sync_engine.apply_local_op(op);
+                }
+            }
+            ui.metadata_assign = None;
+            ui.screen = Screen::Main;
+        }
+        UiAction::MetadataCancel => {
+            ui.metadata_assign = None;
+            ui.screen = Screen::Main;
+        }
         // Recent series
         UiAction::RecentSelectUp => {
             ui.recent_selected = ui.recent_selected.saturating_sub(1);
@@ -1454,6 +1803,16 @@ async fn dispatch_effects(
                     && let Err(e) = p.show_osd(&text, 3000).await
                 {
                     tracing::debug!("Failed to show OSD: {e}");
+                }
+            }
+            AppEffect::MarkWatched(file_id) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as u64);
+                if let Ok(s) = storage.lock() {
+                    if let Err(e) = s.mark_watched(&file_id, now) {
+                        tracing::warn!("Failed to mark file as watched: {e}");
+                    }
                 }
             }
         }
@@ -1581,6 +1940,144 @@ async fn handle_incoming_stream(
     };
     write_framed(&mut stream.send, TAG_GAP_FILL_RESPONSE, &response).await?;
     Ok(())
+}
+
+/// Try auto-matching all unmapped playlist items against the media index.
+/// Also evaluates known/unknown series for files that remain unmatched,
+/// setting FileState::Missing and (for unknown series) UserState::NotWatching.
+async fn try_auto_match_all(
+    app_state: &Arc<tokio::sync::Mutex<AppState>>,
+    media_index: &MediaIndex,
+    storage: &Arc<Mutex<ClientStorage>>,
+    now: SharedTimestamp,
+) -> Vec<AppEffect> {
+    // Collect watched file IDs from storage
+    let watched_files: Vec<FileId> = storage
+        .lock()
+        .ok()
+        .and_then(|s| s.watched_files().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(fid, _ts)| fid)
+        .collect();
+
+    // Phase 1: Read CRDT state under lock, collect per-file info
+    let file_info = {
+        let app = app_state.lock().await;
+        let crdt = app.sync_engine.state();
+        let playlist = crdt.playlist.snapshot();
+        let our_user_id = &app.our_user_id;
+
+        // Build set of anime_ids from watched files
+        let mut known_anime_ids = std::collections::HashSet::new();
+        for fid in &watched_files {
+            if let Some(Some(meta)) = crdt.anidb.read(fid) {
+                known_anime_ids.insert(meta.anime_id);
+            }
+        }
+
+        playlist
+            .iter()
+            .map(|file_id| {
+                let already_mapped = storage
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get_file_mapping(file_id).ok().flatten())
+                    .is_some();
+                let filename = crdt.filenames.read(file_id).cloned();
+                let is_known_series = crdt
+                    .anidb
+                    .read(file_id)
+                    .and_then(|opt| opt.as_ref())
+                    .is_some_and(|meta| known_anime_ids.contains(&meta.anime_id));
+                let current_file_state = crdt
+                    .file_states
+                    .read(&(our_user_id.clone(), *file_id))
+                    .cloned();
+                (*file_id, already_mapped, filename, is_known_series, current_file_state)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    if file_info.is_empty() {
+        return vec![];
+    }
+
+    let current_file_id = file_info.first().map(|(fid, ..)| *fid);
+
+    // Phase 2: Try auto-matching, collect events for state changes
+    let mut events: Vec<AppEvent> = Vec::new();
+
+    for (file_id, already_mapped, filename, is_known_series, current_file_state) in &file_info {
+        if *already_mapped {
+            continue;
+        }
+
+        let matched = filename
+            .as_deref()
+            .is_some_and(|name| try_auto_match_file(file_id, name, media_index, storage));
+
+        if matched {
+            // Just matched — clear Missing state if set
+            if matches!(current_file_state, Some(FileState::Missing)) {
+                events.push(AppEvent::SetFileState {
+                    file_id: *file_id,
+                    state: FileState::Ready,
+                });
+            }
+        } else {
+            // Not matched — set Missing if not already
+            if !matches!(current_file_state, Some(FileState::Missing)) {
+                events.push(AppEvent::SetFileState {
+                    file_id: *file_id,
+                    state: FileState::Missing,
+                });
+            }
+
+            // Unknown series + current file → set NotWatching
+            if !is_known_series && current_file_id == Some(*file_id) {
+                events.push(AppEvent::SetUserState {
+                    state: UserState::NotWatching,
+                });
+            }
+        }
+    }
+
+    // Phase 3: Process collected events
+    if events.is_empty() {
+        return vec![];
+    }
+
+    let mut app = app_state.lock().await;
+    let mut all_effects = Vec::new();
+    for event in events {
+        all_effects.extend(app.process_event(event, now));
+    }
+    all_effects
+}
+
+/// Try to auto-match a single file by filename against the media index.
+/// Returns true if a mapping was created.
+fn try_auto_match_file(
+    file_id: &FileId,
+    filename: &str,
+    media_index: &MediaIndex,
+    storage: &Arc<Mutex<ClientStorage>>,
+) -> bool {
+    if let Some(paths) = media_index.find_by_filename(filename) {
+        // Prefer the first match (from the first media root)
+        if let Some(path) = paths.first() {
+            if let Ok(s) = storage.lock() {
+                if let Err(e) = s.set_file_mapping(file_id, path) {
+                    tracing::warn!(?file_id, "Failed to store auto-match: {e}");
+                    return false;
+                }
+                tracing::info!(?file_id, path = %path.display(), "Auto-matched file");
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn get_arg(args: &[String], flag: &str) -> Option<String> {

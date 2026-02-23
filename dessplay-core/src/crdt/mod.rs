@@ -19,6 +19,7 @@ pub struct CrdtState {
     pub user_states: LwwRegister<UserId, UserState>,
     pub file_states: LwwRegister<(UserId, FileId), FileState>,
     pub anidb: LwwRegister<FileId, Option<AniDbMetadata>>,
+    pub filenames: LwwRegister<FileId, String>,
     pub playlist: Playlist,
     pub chat: Chat,
 }
@@ -36,6 +37,7 @@ impl CrdtState {
             user_states: LwwRegister::new(),
             file_states: LwwRegister::new(),
             anidb: LwwRegister::new(),
+            filenames: LwwRegister::new(),
             playlist: Playlist::new(),
             chat: Chat::new(),
         }
@@ -94,6 +96,9 @@ impl CrdtState {
                     .write((uid.clone(), *fid), timestamp, val.clone())
             }
             LwwValue::AniDb(fid, val) => self.anidb.write(*fid, timestamp, val.clone()),
+            LwwValue::FileName(fid, name) => {
+                self.filenames.write(*fid, timestamp, name.clone())
+            }
         }
     }
 
@@ -103,6 +108,7 @@ impl CrdtState {
             user_states: self.user_states.clone().into_inner(),
             file_states: self.file_states.clone().into_inner(),
             anidb: self.anidb.clone().into_inner(),
+            filenames: self.filenames.clone().into_inner(),
             playlist: self.playlist.snapshot(),
             chat: self.chat.clone().into_inner(),
         }
@@ -123,6 +129,9 @@ impl CrdtState {
         }
         for (key, (ts, _)) in self.anidb.iter() {
             vv.lww_versions.insert(RegisterId::AniDb(*key), *ts);
+        }
+        for (key, (ts, _)) in self.filenames.iter() {
+            vv.lww_versions.insert(RegisterId::FileName(*key), *ts);
         }
 
         for uid in self.chat.users() {
@@ -176,6 +185,17 @@ impl CrdtState {
             }
         }
 
+        for (key, (ts, val)) in self.filenames.iter() {
+            let reg = RegisterId::FileName(*key);
+            let remote_ts = remote.lww_versions.get(&reg).copied().unwrap_or(0);
+            if *ts >= remote_ts {
+                ops.push(CrdtOp::LwwWrite {
+                    timestamp: *ts,
+                    value: LwwValue::FileName(*key, val.clone()),
+                });
+            }
+        }
+
         // Playlist ops since remote's known version
         for (ts, action) in self.playlist.ops_since(remote.playlist_version) {
             ops.push(CrdtOp::PlaylistOp {
@@ -206,6 +226,7 @@ impl CrdtState {
         self.user_states = LwwRegister::from_inner(snap.user_states);
         self.file_states = LwwRegister::from_inner(snap.file_states);
         self.anidb = LwwRegister::from_inner(snap.anidb);
+        self.filenames = LwwRegister::from_inner(snap.filenames);
         self.playlist = Playlist::from_materialized(snap.playlist);
         self.chat = Chat::from_inner(snap.chat);
     }
@@ -640,6 +661,7 @@ mod tests {
             episode_number: "1".into(),
             episode_name: "Ep1".into(),
             group_name: "Grp".into(),
+            source: crate::types::MetadataSource::AniDb,
         };
         ahead.apply_op(&make_lww_op(LwwValue::AniDb(file, Some(meta)), 300));
 

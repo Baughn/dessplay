@@ -2,6 +2,7 @@ pub mod chat;
 pub mod file_browser;
 pub mod hashing_progress;
 pub mod keybinding_bar;
+pub mod metadata_assign;
 pub mod player_status;
 pub mod playlist;
 pub mod recent_series;

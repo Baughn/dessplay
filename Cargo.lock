@@ -483,6 +483,8 @@ dependencies = [
  "rusqlite",
  "rustls",
  "serde_json",
+ "strsim",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tracing",

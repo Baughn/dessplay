@@ -107,6 +107,18 @@ impl Ord for FileState {
     }
 }
 
+/// How metadata was obtained — controls whether AniDB can overwrite it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
+pub enum MetadataSource {
+    /// Set by a user when no AniDB data existed. AniDB CAN overwrite.
+    User,
+    /// Set by AniDB server. User override → UserOverAniDb.
+    AniDb,
+    /// User overwrote AniDB data. AniDB CANNOT overwrite.
+    UserOverAniDb,
+}
+
 /// Metadata retrieved from AniDB for a file.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
@@ -116,4 +128,10 @@ pub struct AniDbMetadata {
     pub episode_number: String,
     pub episode_name: String,
     pub group_name: String,
+    #[serde(default = "default_metadata_source")]
+    pub source: MetadataSource,
+}
+
+fn default_metadata_source() -> MetadataSource {
+    MetadataSource::AniDb
 }

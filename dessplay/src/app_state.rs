@@ -86,6 +86,8 @@ pub enum AppEffect {
     PlayerSeek(f64),
     PlayerLoadFile(FileId),
     PlayerShowOsd(String),
+    /// Mark a file as watched (85% rule).
+    MarkWatched(FileId),
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +159,8 @@ pub struct AppState {
     prev_should_play: bool,
     /// Remote peer positions (for UI display).
     pub remote_positions: HashMap<PeerId, f64>,
+    /// Whether the "watched" marker has been sent for the current file.
+    watched_marker_sent: bool,
 }
 
 impl AppState {
@@ -183,6 +187,7 @@ impl AppState {
             player_loaded_file: None,
             prev_should_play: false,
             remote_positions: HashMap::new(),
+            watched_marker_sent: false,
         };
         state.recompute_playback();
         state
@@ -220,6 +225,7 @@ impl AppState {
             player_loaded_file: None,
             prev_should_play: false,
             remote_positions: HashMap::new(),
+            watched_marker_sent: false,
         };
         state.recompute_playback();
         state
@@ -565,6 +571,18 @@ impl AppState {
 
         let mut effects = Vec::new();
 
+        // Watch tracking: emit MarkWatched at 85% through the file
+        if !self.watched_marker_sent {
+            if let (Some(duration), Some(file_id)) =
+                (self.file_duration_secs, self.playback.current_file)
+            {
+                if duration > 0.0 && position_secs / duration >= 0.85 {
+                    self.watched_marker_sent = true;
+                    effects.push(AppEffect::MarkWatched(file_id));
+                }
+            }
+        }
+
         // Check position broadcast timer
         let interval = if self.playback.should_play {
             POSITION_BROADCAST_PLAYING_MS
@@ -624,6 +642,7 @@ impl AppState {
             self.our_position_secs = 0.0;
             self.file_duration_secs = None;
             self.player_loaded_file = None;
+            self.watched_marker_sent = false;
 
             // Recompute — if there's a next file, load it
             self.recompute_playback();
@@ -733,6 +752,7 @@ impl AppState {
             self.player_loaded_file = Some(file_id);
             self.our_position_secs = 0.0;
             self.file_duration_secs = None;
+            self.watched_marker_sent = false;
         }
 
         // should_play transitions
@@ -1537,5 +1557,165 @@ mod tests {
             value: LwwValue::UserState(uid(user), state),
         };
         app.process_event(AppEvent::RemoteOp { from: peer(0), op }, ts)
+    }
+
+    // -----------------------------------------------------------------------
+    // Watch tracking tests
+    // -----------------------------------------------------------------------
+
+    fn has_mark_watched(effects: &[AppEffect]) -> bool {
+        effects
+            .iter()
+            .any(|e| matches!(e, AppEffect::MarkWatched(_)))
+    }
+
+    #[test]
+    fn watch_84_percent_no_mark() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        app.file_duration_secs = Some(100.0);
+
+        let effects = app.process_event(AppEvent::PlayerPosition { position_secs: 84.0 }, 1000);
+        assert!(!has_mark_watched(&effects));
+        assert!(!app.watched_marker_sent);
+    }
+
+    #[test]
+    fn watch_85_percent_marks() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        app.file_duration_secs = Some(100.0);
+
+        let effects = app.process_event(AppEvent::PlayerPosition { position_secs: 85.0 }, 1000);
+        assert!(has_mark_watched(&effects));
+        assert!(app.watched_marker_sent);
+    }
+
+    #[test]
+    fn watch_only_emits_once() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        app.file_duration_secs = Some(100.0);
+
+        // First at 85%
+        let effects = app.process_event(AppEvent::PlayerPosition { position_secs: 85.0 }, 1000);
+        assert!(has_mark_watched(&effects));
+
+        // Second at 90% — no duplicate
+        let effects = app.process_event(AppEvent::PlayerPosition { position_secs: 90.0 }, 1100);
+        assert!(!has_mark_watched(&effects));
+    }
+
+    #[test]
+    fn watch_resets_on_file_change() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        add_file(&mut app, 2, 101);
+        app.file_duration_secs = Some(100.0);
+
+        // Mark first file watched
+        app.process_event(AppEvent::PlayerPosition { position_secs: 85.0 }, 1000);
+        assert!(app.watched_marker_sent);
+
+        // EOF advances to next file, should reset marker
+        app.process_event(AppEvent::PlayerEof, 2000);
+        assert!(!app.watched_marker_sent);
+    }
+
+    // -----------------------------------------------------------------------
+    // Known/unknown series detection tests (9.4)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_file_state_missing_blocks_playback() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        assert!(app.playback.should_play);
+
+        // Set our file state to Missing → should block
+        app.process_event(
+            AppEvent::SetFileState {
+                file_id: fid(1),
+                state: FileState::Missing,
+            },
+            200,
+        );
+
+        let our_fs = app
+            .sync_engine
+            .state()
+            .file_states
+            .read(&(uid("alice"), fid(1)))
+            .cloned();
+        assert_eq!(our_fs, Some(FileState::Missing));
+        assert!(!app.playback.should_play);
+        assert!(app.playback.blocking_users.contains(&uid("alice")));
+    }
+
+    #[test]
+    fn set_user_state_not_watching_allows_playback() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        connect_peer(&mut app, 1, "bob");
+
+        // Set alice to NotWatching → doesn't block (even with Missing file)
+        app.process_event(
+            AppEvent::SetFileState {
+                file_id: fid(1),
+                state: FileState::Missing,
+            },
+            200,
+        );
+        assert!(!app.playback.should_play);
+
+        app.process_event(
+            AppEvent::SetUserState {
+                state: UserState::NotWatching,
+            },
+            201,
+        );
+
+        let our_us = app
+            .sync_engine
+            .state()
+            .user_states
+            .read(&uid("alice"))
+            .copied();
+        assert_eq!(our_us, Some(UserState::NotWatching));
+        // NotWatching doesn't block, so playback should resume
+        assert!(app.playback.should_play);
+    }
+
+    #[test]
+    fn file_state_ready_clears_missing() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+
+        // Set Missing
+        app.process_event(
+            AppEvent::SetFileState {
+                file_id: fid(1),
+                state: FileState::Missing,
+            },
+            200,
+        );
+        assert!(!app.playback.should_play);
+
+        // Clear Missing → Ready
+        app.process_event(
+            AppEvent::SetFileState {
+                file_id: fid(1),
+                state: FileState::Ready,
+            },
+            300,
+        );
+        let our_fs = app
+            .sync_engine
+            .state()
+            .file_states
+            .read(&(uid("alice"), fid(1)))
+            .cloned();
+        assert_eq!(our_fs, Some(FileState::Ready));
+        assert!(app.playback.should_play);
     }
 }

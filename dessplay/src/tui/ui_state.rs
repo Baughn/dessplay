@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use crate::app_state::AppEvent;
+use dessplay_core::types::FileId;
 
 /// Which pane has focus in the main screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub enum Screen {
     FileBrowser,
     TofuWarning,
     Hashing,
+    MetadataAssign,
 }
 
 /// Text input state with char-boundary-aware cursor.
@@ -311,6 +313,11 @@ pub enum FileBrowserOrigin {
     Playlist,
     /// Adding a media root from settings.
     SettingsMediaRoot,
+    /// Manual file mapping (Ctrl-M on a missing playlist item).
+    ManualMap {
+        file_id: FileId,
+        target_filename: String,
+    },
 }
 
 impl FileBrowserState {
@@ -331,6 +338,8 @@ impl FileBrowserState {
         let mut dirs = Vec::new();
         let mut files = Vec::new();
 
+        let show_files = !matches!(self.origin, FileBrowserOrigin::SettingsMediaRoot);
+
         if let Ok(read_dir) = std::fs::read_dir(&self.current_dir) {
             for entry in read_dir.flatten() {
                 let path = entry.path();
@@ -345,8 +354,7 @@ impl FileBrowserState {
                         path,
                         is_dir: true,
                     });
-                } else if is_media_file(&name) || self.origin == FileBrowserOrigin::SettingsMediaRoot
-                {
+                } else if show_files && crate::media_scanner::is_media_file(&name) {
                     files.push(FileBrowserEntry {
                         name,
                         path,
@@ -357,7 +365,28 @@ impl FileBrowserState {
         }
 
         dirs.sort_by(|a, b| a.name.cmp(&b.name));
-        files.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // For ManualMap origin, sort files by edit distance to target filename
+        if let FileBrowserOrigin::ManualMap {
+            target_filename, ..
+        } = &self.origin
+        {
+            let target_clean = strip_brackets(target_filename);
+            files.sort_by(|a, b| {
+                let da = strsim::normalized_damerau_levenshtein(
+                    &strip_brackets(&a.name),
+                    &target_clean,
+                );
+                let db = strsim::normalized_damerau_levenshtein(
+                    &strip_brackets(&b.name),
+                    &target_clean,
+                );
+                // Higher similarity first
+                db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        } else {
+            files.sort_by(|a, b| a.name.cmp(&b.name));
+        }
 
         self.entries = Vec::new();
         // Parent directory entry
@@ -369,8 +398,7 @@ impl FileBrowserState {
             });
         }
         self.entries.extend(dirs);
-        // Only show files when browsing for playlist files, not for media root dirs
-        if self.origin != FileBrowserOrigin::SettingsMediaRoot {
+        if show_files {
             self.entries.extend(files);
         }
 
@@ -388,19 +416,50 @@ impl FileBrowserState {
     }
 }
 
-/// Check if a filename looks like a media file.
-fn is_media_file(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.ends_with(".mkv")
-        || lower.ends_with(".mp4")
-        || lower.ends_with(".avi")
-        || lower.ends_with(".webm")
-        || lower.ends_with(".m4v")
-        || lower.ends_with(".mov")
-        || lower.ends_with(".wmv")
-        || lower.ends_with(".flv")
-        || lower.ends_with(".ogm")
-        || lower.ends_with(".ts")
+/// Strip text in [brackets] from a filename for edit distance comparison.
+/// e.g. "[SubsPlease] Frieren 01 [DEADBEEF].mkv" → " Frieren 01 .mkv"
+fn strip_brackets(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut depth = 0u32;
+    for c in s.chars() {
+        if c == '[' {
+            depth += 1;
+        } else if c == ']' && depth > 0 {
+            depth -= 1;
+        } else if depth == 0 {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// State for the metadata assignment modal (Ctrl-A on playlist).
+#[derive(Clone, Debug)]
+pub struct MetadataAssignState {
+    /// The file being assigned metadata.
+    pub file_id: FileId,
+    /// Known series from the CRDT AniDB register.
+    pub series_list: Vec<SeriesChoice>,
+    /// Which series is selected.
+    pub selected: usize,
+    /// Which step: selecting series or entering episode.
+    pub step: MetadataAssignStep,
+    /// Episode input field.
+    pub episode_input: InputState,
+}
+
+/// A series choice in the metadata assign modal.
+#[derive(Clone, Debug)]
+pub struct SeriesChoice {
+    pub anime_id: u64,
+    pub name: String,
+}
+
+/// Which step of the metadata assignment modal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MetadataAssignStep {
+    SelectSeries,
+    EnterEpisode,
 }
 
 /// State for the hashing progress modal.
@@ -431,6 +490,7 @@ pub struct UiState {
     pub file_browser: Option<FileBrowserState>,
     pub tofu_warning: Option<TofuWarningState>,
     pub hashing: Option<HashingState>,
+    pub metadata_assign: Option<MetadataAssignState>,
     pub should_quit: bool,
     /// Status message shown temporarily.
     pub status_message: Option<String>,
@@ -455,6 +515,7 @@ impl UiState {
             file_browser: None,
             tofu_warning: None,
             hashing: None,
+            metadata_assign: None,
             should_quit: false,
             status_message: None,
         }
@@ -505,6 +566,10 @@ pub enum UiAction {
     PlaylistMoveDown,
     PlaylistRemove,
     OpenFileBrowser,
+    /// Open file browser for manual file mapping (Ctrl-M on missing playlist item).
+    ManualMapFile,
+    /// Open metadata assignment modal (Ctrl-A on playlist item).
+    AssignMetadata,
     // Recent series
     RecentSelectUp,
     RecentSelectDown,
@@ -531,6 +596,14 @@ pub enum UiAction {
     // TOFU warning
     TofuAccept,
     TofuReject,
+    // Metadata assignment
+    MetadataSelectUp,
+    MetadataSelectDown,
+    MetadataConfirmSeries,
+    MetadataInsertChar(char),
+    MetadataDeleteBack,
+    MetadataConfirmEpisode,
+    MetadataCancel,
 }
 
 #[cfg(test)]
@@ -741,5 +814,28 @@ mod tests {
         assert_eq!(s.focused_field, 0); // wraps around
         s.prev_field();
         assert_eq!(s.focused_field, 4);
+    }
+
+    #[test]
+    fn strip_brackets_removes_tagged_content() {
+        assert_eq!(
+            super::strip_brackets("[SubsPlease] Frieren 01 [DEADBEEF].mkv"),
+            " Frieren 01 .mkv"
+        );
+    }
+
+    #[test]
+    fn strip_brackets_no_brackets() {
+        assert_eq!(super::strip_brackets("Frieren 01.mkv"), "Frieren 01.mkv");
+    }
+
+    #[test]
+    fn strip_brackets_nested() {
+        assert_eq!(super::strip_brackets("foo [[bar]] baz"), "foo  baz");
+    }
+
+    #[test]
+    fn strip_brackets_empty() {
+        assert_eq!(super::strip_brackets(""), "");
     }
 }

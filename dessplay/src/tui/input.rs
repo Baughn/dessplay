@@ -16,6 +16,7 @@ pub fn handle_key_event(key: KeyEvent, ui: &UiState) -> InputResult {
         Screen::TofuWarning => handle_tofu_warning_key(key),
         Screen::Main => handle_main_key(key, ui),
         Screen::Hashing => InputResult::None, // only Ctrl-C (handled above) during hashing
+        Screen::MetadataAssign => handle_metadata_assign_key(key, ui),
     }
 }
 
@@ -83,17 +84,21 @@ fn handle_chat_key(key: KeyEvent, ui: &UiState) -> InputResult {
 }
 
 fn handle_playlist_key(key: KeyEvent) -> InputResult {
+    // Check Ctrl modifiers first, before bare characters
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('a') => InputResult::UiAction(UiAction::AssignMetadata),
+            KeyCode::Char('m') => InputResult::UiAction(UiAction::ManualMapFile),
+            KeyCode::Char('j') => InputResult::UiAction(UiAction::PlaylistMoveDown),
+            KeyCode::Char('k') => InputResult::UiAction(UiAction::PlaylistMoveUp),
+            _ => InputResult::None,
+        };
+    }
     match key.code {
         KeyCode::Up => InputResult::UiAction(UiAction::PlaylistSelectUp),
         KeyCode::Down => InputResult::UiAction(UiAction::PlaylistSelectDown),
         KeyCode::Char('a') => InputResult::UiAction(UiAction::OpenFileBrowser),
         KeyCode::Char('d') => InputResult::UiAction(UiAction::PlaylistRemove),
-        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            InputResult::UiAction(UiAction::PlaylistMoveDown)
-        }
-        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            InputResult::UiAction(UiAction::PlaylistMoveUp)
-        }
         _ => InputResult::None,
     }
 }
@@ -173,6 +178,29 @@ fn handle_tofu_warning_key(key: KeyEvent) -> InputResult {
         }
         KeyCode::Esc => InputResult::UiAction(UiAction::TofuReject),
         _ => InputResult::None,
+    }
+}
+
+fn handle_metadata_assign_key(key: KeyEvent, ui: &UiState) -> InputResult {
+    let Some(ref state) = ui.metadata_assign else {
+        return InputResult::None;
+    };
+
+    match state.step {
+        crate::tui::ui_state::MetadataAssignStep::SelectSeries => match key.code {
+            KeyCode::Up => InputResult::UiAction(UiAction::MetadataSelectUp),
+            KeyCode::Down => InputResult::UiAction(UiAction::MetadataSelectDown),
+            KeyCode::Enter => InputResult::UiAction(UiAction::MetadataConfirmSeries),
+            KeyCode::Esc => InputResult::UiAction(UiAction::MetadataCancel),
+            _ => InputResult::None,
+        },
+        crate::tui::ui_state::MetadataAssignStep::EnterEpisode => match key.code {
+            KeyCode::Enter => InputResult::UiAction(UiAction::MetadataConfirmEpisode),
+            KeyCode::Esc => InputResult::UiAction(UiAction::MetadataCancel),
+            KeyCode::Backspace => InputResult::UiAction(UiAction::MetadataDeleteBack),
+            KeyCode::Char(c) => InputResult::UiAction(UiAction::MetadataInsertChar(c)),
+            _ => InputResult::None,
+        },
     }
 }
 

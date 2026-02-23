@@ -67,6 +67,9 @@ impl ClientStorage {
         if version < 1 {
             self.migrate_v1()?;
         }
+        if version < 2 {
+            self.migrate_v2()?;
+        }
         Ok(())
     }
 
@@ -143,6 +146,20 @@ impl ClientStorage {
         )?;
         self.conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '1')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn migrate_v2(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS series_mapping_dirs (
+                anime_id  INTEGER PRIMARY KEY,
+                dir_path  TEXT NOT NULL
+            );",
+        )?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '2')",
             [],
         )?;
         Ok(())
@@ -350,6 +367,36 @@ impl ClientStorage {
     }
 
     // -----------------------------------------------------------------------
+    // Series mapping directories
+    // -----------------------------------------------------------------------
+
+    /// Store the directory used for manual mapping of a series.
+    pub fn set_series_mapping_dir(&self, anime_id: u64, dir: &Path) -> Result<()> {
+        let dir_str = dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("series mapping dir path is not valid UTF-8: {dir:?}"))?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO series_mapping_dirs (anime_id, dir_path) VALUES (?1, ?2)",
+            params![anime_id as i64, dir_str],
+        )?;
+        Ok(())
+    }
+
+    /// Get the last-used directory for manual mapping of a series.
+    pub fn get_series_mapping_dir(&self, anime_id: u64) -> Result<Option<PathBuf>> {
+        self.conn
+            .query_row(
+                "SELECT dir_path FROM series_mapping_dirs WHERE anime_id = ?1",
+                params![anime_id as i64],
+                |row| {
+                    let path: String = row.get(0)?;
+                    Ok(PathBuf::from(path))
+                },
+            )
+            .optional()
+    }
+
+    // -----------------------------------------------------------------------
     // TOFU certificates
     // -----------------------------------------------------------------------
 
@@ -507,6 +554,7 @@ mod tests {
         assert!(tables.contains(&"watch_history".to_string()));
         assert!(tables.contains(&"file_mappings".to_string()));
         assert!(tables.contains(&"tofu_certs".to_string()));
+        assert!(tables.contains(&"series_mapping_dirs".to_string()));
     }
 
     #[test]
@@ -514,7 +562,7 @@ mod tests {
         let db = ClientStorage::open_in_memory().unwrap();
         // Running migrate again should not fail
         db.migrate().unwrap();
-        assert_eq!(db.schema_version().unwrap(), 1);
+        assert_eq!(db.schema_version().unwrap(), 2);
     }
 
     #[test]
@@ -787,5 +835,24 @@ mod tests {
     fn no_ops_returns_empty() {
         let db = ClientStorage::open_in_memory().unwrap();
         assert!(db.load_ops(1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn series_mapping_dirs() {
+        let db = ClientStorage::open_in_memory().unwrap();
+        let dir = PathBuf::from("/anime/Frieren");
+
+        assert!(db.get_series_mapping_dir(12345).unwrap().is_none());
+
+        db.set_series_mapping_dir(12345, &dir).unwrap();
+        assert_eq!(db.get_series_mapping_dir(12345).unwrap(), Some(dir.clone()));
+
+        // Overwrite
+        let new_dir = PathBuf::from("/anime/Frieren/Season2");
+        db.set_series_mapping_dir(12345, &new_dir).unwrap();
+        assert_eq!(db.get_series_mapping_dir(12345).unwrap(), Some(new_dir));
+
+        // Different anime_id
+        assert!(db.get_series_mapping_dir(99999).unwrap().is_none());
     }
 }

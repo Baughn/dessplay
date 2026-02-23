@@ -58,6 +58,7 @@ fn roundtrip_lww_write_anidb() {
                 episode_number: "1".into(),
                 episode_name: "The Journey's End".into(),
                 group_name: "SubsPlease".into(),
+                source: dessplay_core::types::MetadataSource::AniDb,
             }),
         ),
     });
@@ -145,6 +146,7 @@ fn roundtrip_crdt_snapshot() {
         user_states,
         file_states: BTreeMap::new(),
         anidb: BTreeMap::new(),
+        filenames: BTreeMap::new(),
         playlist: vec![fid(1)],
         chat: BTreeMap::new(),
     };
@@ -323,6 +325,7 @@ fn roundtrip_anidb_metadata() {
         episode_number: "1".into(),
         episode_name: "The Journey's End".into(),
         group_name: "SubsPlease".into(),
+        source: dessplay_core::types::MetadataSource::AniDb,
     });
     let none: Option<AniDbMetadata> = None;
     roundtrip(&none);

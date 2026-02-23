@@ -83,13 +83,16 @@ pub fn render_playlist(
     paragraph.render(inner, buf);
 }
 
-/// Get a display name for a file: use the filename from the path, or hex hash fallback.
-pub fn file_display_name(file_id: &FileId, local_path: Option<&Path>) -> String {
-    match local_path {
-        Some(path) => path
+/// Get a display name for a file: use local path filename, then CRDT filename, then hex hash.
+pub fn file_display_name(file_id: &FileId, local_path: Option<&Path>, crdt_filename: Option<&str>) -> String {
+    if let Some(path) = local_path {
+        return path
             .file_name()
             .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| format!("{file_id}")),
-        None => format!("{file_id}"),
+            .unwrap_or_else(|| format!("{file_id}"));
     }
+    if let Some(name) = crdt_filename {
+        return name.to_string();
+    }
+    format!("{file_id}")
 }

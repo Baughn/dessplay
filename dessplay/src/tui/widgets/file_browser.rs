@@ -14,7 +14,7 @@ pub fn keybindings(origin: &FileBrowserOrigin) -> Vec<(&'static str, &'static st
             ("Esc", "Back"),
             ("Ctrl-C", "Quit"),
         ],
-        FileBrowserOrigin::Playlist => vec![
+        FileBrowserOrigin::Playlist | FileBrowserOrigin::ManualMap { .. } => vec![
             ("Enter", "Select"),
             ("Esc", "Back"),
             ("Ctrl-C", "Quit"),

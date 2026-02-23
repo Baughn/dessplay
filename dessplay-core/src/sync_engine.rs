@@ -563,6 +563,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
+            filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
         };
@@ -594,6 +595,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
+            filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
         };
@@ -612,6 +614,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
+            filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
         };
@@ -622,6 +625,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
+            filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
         };
@@ -638,6 +642,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
+            filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
         };
@@ -657,6 +662,7 @@ mod tests {
             user_states: Default::default(),
             file_states: Default::default(),
             anidb: Default::default(),
+            filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
         };
