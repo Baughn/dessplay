@@ -573,6 +573,7 @@ pub enum UiAction {
     // Recent series
     RecentSelectUp,
     RecentSelectDown,
+    RecentSeriesSelect,
     // Settings
     SettingsNextField,
     SettingsPrevField,

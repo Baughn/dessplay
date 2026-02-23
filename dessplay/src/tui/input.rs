@@ -107,7 +107,7 @@ fn handle_recent_series_key(key: KeyEvent) -> InputResult {
     match key.code {
         KeyCode::Up => InputResult::UiAction(UiAction::RecentSelectUp),
         KeyCode::Down => InputResult::UiAction(UiAction::RecentSelectDown),
-        KeyCode::Enter => InputResult::None, // stub - Phase 8
+        KeyCode::Enter => InputResult::UiAction(UiAction::RecentSeriesSelect),
         _ => InputResult::None,
     }
 }

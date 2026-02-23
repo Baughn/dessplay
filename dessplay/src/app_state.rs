@@ -572,15 +572,14 @@ impl AppState {
         let mut effects = Vec::new();
 
         // Watch tracking: emit MarkWatched at 85% through the file
-        if !self.watched_marker_sent {
-            if let (Some(duration), Some(file_id)) =
+        if !self.watched_marker_sent
+            && let (Some(duration), Some(file_id)) =
                 (self.file_duration_secs, self.playback.current_file)
-            {
-                if duration > 0.0 && position_secs / duration >= 0.85 {
-                    self.watched_marker_sent = true;
-                    effects.push(AppEffect::MarkWatched(file_id));
-                }
-            }
+            && duration > 0.0
+            && position_secs / duration >= 0.85
+        {
+            self.watched_marker_sent = true;
+            effects.push(AppEffect::MarkWatched(file_id));
         }
 
         // Check position broadcast timer

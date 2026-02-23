@@ -2,6 +2,7 @@ pub mod app_state;
 pub mod dump;
 pub mod media_scanner;
 pub mod peer_conn;
+pub mod series_browser;
 pub mod player;
 pub mod quic;
 pub mod rendezvous_client;

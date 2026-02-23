@@ -1,14 +1,16 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
-/// Stub widget for Recent Series — full implementation in Phase 8 (media scanning).
+use crate::series_browser::SeriesEntry;
+
 pub fn render_recent_series(
     area: Rect,
     buf: &mut Buffer,
-    _selected: usize,
+    entries: &[SeriesEntry],
+    selected: usize,
     focused: bool,
 ) {
     let border_style = if focused {
@@ -29,9 +31,56 @@ pub fn render_recent_series(
         return;
     }
 
-    let placeholder = Paragraph::new(Line::from(Span::styled(
-        "No media scanned yet",
-        Style::default().fg(Color::DarkGray),
-    )));
-    placeholder.render(inner, buf);
+    if entries.is_empty() {
+        let placeholder = Paragraph::new(Line::from(Span::styled(
+            "No media scanned yet",
+            Style::default().fg(Color::DarkGray),
+        )));
+        placeholder.render(inner, buf);
+        return;
+    }
+
+    let visible_height = inner.height as usize;
+    let scroll = if selected >= visible_height {
+        selected - visible_height + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line<'_>> = entries
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_height)
+        .map(|(i, entry)| {
+            let is_selected = i == selected;
+
+            let mut name_style = if entry.has_unwatched {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            if is_selected {
+                name_style = name_style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+                if entry.has_unwatched {
+                    name_style = name_style.fg(Color::Yellow);
+                }
+            }
+
+            let indicator = if entry.has_unwatched { "● " } else { "  " };
+            let indicator_style = if entry.has_unwatched {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+
+            Line::from(vec![
+                Span::styled(indicator, indicator_style),
+                Span::styled(&entry.name, name_style),
+            ])
+        })
+        .collect();
+
+    Paragraph::new(lines).render(inner, buf);
 }

@@ -9,6 +9,7 @@ use tokio_stream::StreamExt;
 
 use crate::app_state::{AppEffect, AppEvent, AppState};
 use crate::media_scanner::MediaIndex;
+use crate::series_browser;
 use crate::peer_conn::PeerManager;
 use crate::player::echo::EchoFilter;
 use crate::player::mpv::MpvPlayer;
@@ -694,10 +695,10 @@ async fn run_connected(
                                             .and_then(|opt| opt.as_ref())
                                             .map(|meta| meta.anime_id);
                                         drop(app);
-                                        if let Some(aid) = anime_id {
-                                            if let Ok(s) = storage.lock() {
-                                                let _ = s.set_series_mapping_dir(aid, dir);
-                                            }
+                                        if let Some(aid) = anime_id
+                                            && let Ok(s) = storage.lock()
+                                        {
+                                            let _ = s.set_series_mapping_dir(aid, dir);
                                         }
                                     }
                                     // Set file state to Ready
@@ -1208,6 +1209,7 @@ async fn draw_main_screen(
         chat_msgs,
         user_entries,
         playlist_entries,
+        series_entries,
         current_file_name,
         position_secs,
         duration_secs,
@@ -1286,6 +1288,12 @@ async fn draw_main_screen(
             })
             .collect();
 
+        // Series list for Recent Series pane
+        let series_entries = {
+            let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            series_browser::build_series_list(crdt, &st)
+        };
+
         let current_file_name: Option<String> =
             playlist_entries.first().map(|e| e.display_name.clone());
 
@@ -1303,6 +1311,7 @@ async fn draw_main_screen(
             chat_msgs,
             user_entries,
             playlist_entries,
+            series_entries,
             current_file_name,
             position_secs,
             duration_secs,
@@ -1335,10 +1344,11 @@ async fn draw_main_screen(
             chat_focused,
         );
 
-        // Recent series (stub)
+        // Recent series
         recent_series::render_recent_series(
             layout.recent_series,
             frame.buffer_mut(),
+            &series_entries,
             ui.recent_selected,
             ui.focus == crate::tui::ui_state::FocusedPane::RecentSeries,
         );
@@ -1703,7 +1713,45 @@ async fn apply_main_ui_action(
             ui.recent_selected = ui.recent_selected.saturating_sub(1);
         }
         UiAction::RecentSelectDown => {
-            ui.recent_selected += 1; // Stub: no bounds check until Phase 8
+            let app = app_state.lock().await;
+            let crdt = app.sync_engine.state();
+            let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let count = series_browser::build_series_list(crdt, &st).len();
+            drop(st);
+            drop(app);
+            if count > 0 {
+                ui.recent_selected = (ui.recent_selected + 1).min(count - 1);
+            }
+        }
+        UiAction::RecentSeriesSelect => {
+            // Build series list, find the selected series, open file browser to its directory
+            let info = {
+                let app = app_state.lock().await;
+                let crdt = app.sync_engine.state();
+                let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                let list = series_browser::build_series_list(crdt, &st);
+
+                list.get(ui.recent_selected).map(|entry| {
+                    let dir = series_browser::series_directory(crdt, &st, entry.anime_id);
+                    let next_file =
+                        series_browser::next_unwatched_filename(crdt, &st, entry.anime_id);
+                    (dir, next_file)
+                })
+            };
+
+            if let Some((Some(dir), next_file)) = info {
+                let mut fb = FileBrowserState::open(dir, FileBrowserOrigin::Playlist);
+
+                // Position cursor on next unwatched episode if known
+                if let Some(filename) = next_file
+                    && let Some(idx) = fb.entries.iter().position(|e| e.name == filename)
+                {
+                    fb.selected = idx;
+                }
+
+                ui.file_browser = Some(fb);
+                ui.screen = Screen::FileBrowser;
+            }
         }
         // Settings
         UiAction::OpenSettings => {
@@ -1809,10 +1857,10 @@ async fn dispatch_effects(
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_millis() as u64);
-                if let Ok(s) = storage.lock() {
-                    if let Err(e) = s.mark_watched(&file_id, now) {
-                        tracing::warn!("Failed to mark file as watched: {e}");
-                    }
+                if let Ok(s) = storage.lock()
+                    && let Err(e) = s.mark_watched(&file_id, now)
+                {
+                    tracing::warn!("Failed to mark file as watched: {e}");
                 }
             }
         }
@@ -2007,6 +2055,7 @@ async fn try_auto_match_all(
 
     // Phase 2: Try auto-matching, collect events for state changes
     let mut events: Vec<AppEvent> = Vec::new();
+    let mut placeholder_filename: Option<String> = None;
 
     for (file_id, already_mapped, filename, is_known_series, current_file_state) in &file_info {
         if *already_mapped {
@@ -2034,11 +2083,12 @@ async fn try_auto_match_all(
                 });
             }
 
-            // Unknown series + current file → set NotWatching
+            // Unknown series + current file → set NotWatching + show OSD placeholder
             if !is_known_series && current_file_id == Some(*file_id) {
                 events.push(AppEvent::SetUserState {
                     state: UserState::NotWatching,
                 });
+                placeholder_filename = filename.clone();
             }
         }
     }
@@ -2053,6 +2103,14 @@ async fn try_auto_match_all(
     for event in events {
         all_effects.extend(app.process_event(event, now));
     }
+
+    // Show OSD placeholder when set to NotWatching
+    if let Some(filename) = placeholder_filename {
+        all_effects.push(AppEffect::PlayerShowOsd(format!(
+            "You don't have this file:\n{filename}"
+        )));
+    }
+
     all_effects
 }
 
@@ -2066,15 +2124,15 @@ fn try_auto_match_file(
 ) -> bool {
     if let Some(paths) = media_index.find_by_filename(filename) {
         // Prefer the first match (from the first media root)
-        if let Some(path) = paths.first() {
-            if let Ok(s) = storage.lock() {
-                if let Err(e) = s.set_file_mapping(file_id, path) {
-                    tracing::warn!(?file_id, "Failed to store auto-match: {e}");
-                    return false;
-                }
-                tracing::info!(?file_id, path = %path.display(), "Auto-matched file");
-                return true;
+        if let Some(path) = paths.first()
+            && let Ok(s) = storage.lock()
+        {
+            if let Err(e) = s.set_file_mapping(file_id, path) {
+                tracing::warn!(?file_id, "Failed to store auto-match: {e}");
+                return false;
             }
+            tracing::info!(?file_id, path = %path.display(), "Auto-matched file");
+            return true;
         }
     }
     false

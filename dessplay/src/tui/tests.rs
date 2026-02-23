@@ -38,7 +38,7 @@ mod snapshot_tests {
                 layout.chat_input, frame.buffer_mut(), &input, true,
             );
             recent_series::render_recent_series(
-                layout.recent_series, frame.buffer_mut(), 0, false,
+                layout.recent_series, frame.buffer_mut(), &[], 0, false,
             );
             users::render_users(
                 layout.users, frame.buffer_mut(), &[], false,
@@ -73,7 +73,7 @@ mod snapshot_tests {
                 layout.chat_input, frame.buffer_mut(), &input, true,
             );
             recent_series::render_recent_series(
-                layout.recent_series, frame.buffer_mut(), 0, false,
+                layout.recent_series, frame.buffer_mut(), &[], 0, false,
             );
             users::render_users(
                 layout.users, frame.buffer_mut(), &[], false,
