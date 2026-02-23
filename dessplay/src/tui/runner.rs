@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,6 +41,48 @@ use dessplay_core::protocol::{
 };
 use dessplay_core::sync_engine::{SyncAction, SyncEngine};
 use dessplay_core::types::{AniDbMetadata, FileState, MetadataSource, PeerId, UserId, UserState};
+
+/// Tracks file mtimes and manual-map status for re-hash on unpause.
+struct MtimeTracker {
+    /// Loaded file mtimes: FileId → (path, last known mtime).
+    mtimes: HashMap<FileId, (PathBuf, std::time::SystemTime)>,
+    /// Files that were manually mapped (Ctrl-M) — skip mtime checks.
+    manually_mapped: HashSet<FileId>,
+}
+
+impl MtimeTracker {
+    fn new() -> Self {
+        Self {
+            mtimes: HashMap::new(),
+            manually_mapped: HashSet::new(),
+        }
+    }
+
+    /// Record the mtime of a file when it's loaded into the player.
+    fn record_mtime(&mut self, file_id: FileId, path: &std::path::Path) {
+        if let Ok(meta) = std::fs::metadata(path)
+            && let Ok(mtime) = meta.modified()
+        {
+            self.mtimes.insert(file_id, (path.to_path_buf(), mtime));
+        }
+    }
+
+    /// Check if a file's mtime has changed since it was recorded.
+    /// Returns Some(path) if mtime changed and file is not manually mapped.
+    fn check_mtime_changed(&self, file_id: &FileId) -> Option<PathBuf> {
+        if self.manually_mapped.contains(file_id) {
+            return None;
+        }
+        if let Some((path, recorded_mtime)) = self.mtimes.get(file_id)
+            && let Ok(meta) = std::fs::metadata(path)
+            && let Ok(current_mtime) = meta.modified()
+            && current_mtime != *recorded_mtime
+        {
+            return Some(path.clone());
+        }
+        None
+    }
+}
 
 /// Main TUI entry point. Handles settings screen, connection, and event loop.
 pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<()> {
@@ -612,9 +655,14 @@ async fn run_connected(
     let mut event_stream = EventStream::new();
     let mut needs_redraw = true;
 
+    // Channel for mtime re-hash results: (file_id, new_hash_result)
+    let (rehash_tx, mut rehash_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(FileId, std::io::Result<FileId>)>();
+
     // Player state
     let mut player: Option<MpvPlayer> = None;
     let mut echo_filter = EchoFilter::new();
+    let mut mtime_tracker = MtimeTracker::new();
 
     // Try auto-matching all existing playlist items (after player is declared)
     {
@@ -625,6 +673,7 @@ async fn run_connected(
             effects, &peer_mgr, &rv_client, storage,
             &app_state, &gap_fill_tx,
             &mut player, &mut echo_filter,
+            &mut mtime_tracker, &rehash_tx,
         ).await;
     }
 
@@ -684,6 +733,8 @@ async fn run_connected(
                                     if let Ok(s) = storage.lock() {
                                         let _ = s.set_file_mapping(&file_id, &path);
                                     }
+                                    // Mark as manually mapped — skip mtime checks
+                                    mtime_tracker.manually_mapped.insert(file_id);
                                     // Record the directory for this series
                                     if let Some(dir) = path.parent() {
                                         let app = app_state.lock().await;
@@ -714,6 +765,7 @@ async fn run_connected(
                                         effects, &peer_mgr, &rv_client, storage,
                                         &app_state, &gap_fill_tx,
                                         &mut player, &mut echo_filter,
+                                        &mut mtime_tracker, &rehash_tx,
                                     ).await;
                                     tracing::info!(?file_id, path = %path.display(), "Manual map stored");
                                 } else {
@@ -775,6 +827,7 @@ async fn run_connected(
                                         effects, &peer_mgr, &rv_client, storage,
                                         &app_state, &gap_fill_tx,
                                         &mut player, &mut echo_filter,
+                                        &mut mtime_tracker, &rehash_tx,
                                     ).await;
                                 }
                                 needs_redraw = true;
@@ -816,6 +869,7 @@ async fn run_connected(
                                         effects, &peer_mgr, &rv_client, storage,
                                         &app_state, &gap_fill_tx,
                                         &mut player, &mut echo_filter,
+                                        &mut mtime_tracker, &rehash_tx,
                                     ).await;
                                     apply_main_ui_action(ui, &action, storage, &app_state, &rv_client).await?;
                                 }
@@ -860,6 +914,7 @@ async fn run_connected(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
+                            &mut mtime_tracker, &rehash_tx,
                         ).await;
                         if triggers_auto_match {
                             let match_effects =
@@ -868,6 +923,7 @@ async fn run_connected(
                                 match_effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
                                 &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
                             ).await;
                         }
                     }
@@ -884,6 +940,7 @@ async fn run_connected(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
+                            &mut mtime_tracker, &rehash_tx,
                         ).await;
                     }
                     Some(RendezvousEvent::StateSnapshot { epoch, crdts }) => {
@@ -895,6 +952,7 @@ async fn run_connected(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
+                            &mut mtime_tracker, &rehash_tx,
                         ).await;
                         let match_effects =
                             try_auto_match_all(&app_state, &media_index, storage, now).await;
@@ -902,6 +960,7 @@ async fn run_connected(
                             match_effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
+                            &mut mtime_tracker, &rehash_tx,
                         ).await;
                     }
                     None => {
@@ -926,6 +985,7 @@ async fn run_connected(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
+                            &mut mtime_tracker, &rehash_tx,
                         ).await;
                     }
                     Ok(NetworkEvent::PeerDisconnected { peer_id }) => {
@@ -938,6 +998,7 @@ async fn run_connected(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
+                            &mut mtime_tracker, &rehash_tx,
                         ).await;
                     }
                     Ok(NetworkEvent::PeerControl { from, message }) => {
@@ -974,6 +1035,7 @@ async fn run_connected(
                                 effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
                                 &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
                             ).await;
                         }
                         if triggers_auto_match {
@@ -983,6 +1045,7 @@ async fn run_connected(
                                 match_effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
                                 &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
                             ).await;
                         }
                     }
@@ -1016,6 +1079,7 @@ async fn run_connected(
                                 effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
                                 &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
                             ).await;
                         }
                         if triggers_auto_match {
@@ -1025,6 +1089,7 @@ async fn run_connected(
                                 match_effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
                                 &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
                             ).await;
                         }
                     }
@@ -1057,6 +1122,7 @@ async fn run_connected(
                         effects, &peer_mgr, &rv_client, storage,
                         &app_state, &gap_fill_tx,
                         &mut player, &mut echo_filter,
+                        &mut mtime_tracker, &rehash_tx,
                     ).await;
                     needs_redraw = true;
                 }
@@ -1097,6 +1163,7 @@ async fn run_connected(
                                     &peer_mgr, &rv_client, storage,
                                     &app_state, &gap_fill_tx,
                                     &mut player, &mut echo_filter,
+                                    &mut mtime_tracker, &rehash_tx,
                                 ).await;
                             }
                             let effects = app_state.lock().await.process_event(
@@ -1107,11 +1174,79 @@ async fn run_connected(
                                 effects, &peer_mgr, &rv_client, storage,
                                 &app_state, &gap_fill_tx,
                                 &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
                             ).await;
                         }
                         Err(e) => {
                             tracing::warn!("Failed to hash file: {e}");
                             ui.status_message = Some(format!("Hash error: {e}"));
+                        }
+                    }
+                    needs_redraw = true;
+                }
+            }
+
+            // Mtime re-hash completed
+            result = rehash_rx.recv() => {
+                if let Some((expected_file_id, hash_result)) = result {
+                    match hash_result {
+                        Ok(actual_file_id) => {
+                            if actual_file_id == expected_file_id {
+                                // Hash matches — file content unchanged, update stored mtime
+                                tracing::info!(?expected_file_id, "Re-hash matches, mtime updated");
+                                if let Some((path, _)) = mtime_tracker.mtimes.get(&expected_file_id) {
+                                    let path = path.clone();
+                                    mtime_tracker.record_mtime(expected_file_id, &path);
+                                }
+                                // Proceed with the deferred unpause
+                                if let Some(p) = player.as_ref() {
+                                    echo_filter.register_unpause();
+                                    if let Err(e) = p.unpause().await {
+                                        tracing::debug!("Failed to unpause player after re-hash: {e}");
+                                    }
+                                }
+                            } else {
+                                // Hash mismatch — file was replaced, set FileState::Missing
+                                tracing::warn!(
+                                    ?expected_file_id, ?actual_file_id,
+                                    "Re-hash mismatch: file content changed"
+                                );
+                                let now = rv_client.shared_now().await;
+                                let effects = app_state.lock().await.process_event(
+                                    AppEvent::SetFileState {
+                                        file_id: expected_file_id,
+                                        state: FileState::Missing,
+                                    },
+                                    now,
+                                );
+                                dispatch_effects(
+                                    effects, &peer_mgr, &rv_client, storage,
+                                    &app_state, &gap_fill_tx,
+                                    &mut player, &mut echo_filter,
+                                    &mut mtime_tracker, &rehash_tx,
+                                ).await;
+                                // Remove the stale mtime entry
+                                mtime_tracker.mtimes.remove(&expected_file_id);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(?expected_file_id, "Re-hash failed: {e}");
+                            // Can't verify — set Missing to be safe
+                            let now = rv_client.shared_now().await;
+                            let effects = app_state.lock().await.process_event(
+                                AppEvent::SetFileState {
+                                    file_id: expected_file_id,
+                                    state: FileState::Missing,
+                                },
+                                now,
+                            );
+                            dispatch_effects(
+                                effects, &peer_mgr, &rv_client, storage,
+                                &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
+                            ).await;
+                            mtime_tracker.mtimes.remove(&expected_file_id);
                         }
                     }
                     needs_redraw = true;
@@ -1151,6 +1286,7 @@ async fn run_connected(
                             effects, &peer_mgr, &rv_client, storage,
                             &app_state, &gap_fill_tx,
                             &mut player, &mut echo_filter,
+                            &mut mtime_tracker, &rehash_tx,
                         ).await;
                         needs_redraw = true;
                     }
@@ -1162,6 +1298,7 @@ async fn run_connected(
                         effects, &peer_mgr, &rv_client, storage,
                         &app_state, &gap_fill_tx,
                         &mut player, &mut echo_filter,
+                        &mut mtime_tracker, &rehash_tx,
                     ).await;
                     needs_redraw = true;
                 }
@@ -1183,6 +1320,7 @@ async fn run_connected(
                     effects, &peer_mgr, &rv_client, storage,
                     &app_state, &gap_fill_tx,
                     &mut player, &mut echo_filter,
+                    &mut mtime_tracker, &rehash_tx,
                 ).await;
                 // Don't redraw on every tick unless effects requested it
             }
@@ -1780,6 +1918,8 @@ async fn dispatch_effects(
     gap_fill_tx: &tokio::sync::mpsc::UnboundedSender<(PeerId, GapFillResponse)>,
     player: &mut Option<MpvPlayer>,
     echo_filter: &mut EchoFilter,
+    mtime_tracker: &mut MtimeTracker,
+    rehash_tx: &tokio::sync::mpsc::UnboundedSender<(FileId, std::io::Result<FileId>)>,
 ) {
     for effect in effects {
         match effect {
@@ -1799,7 +1939,27 @@ async fn dispatch_effects(
                 }
             }
             AppEffect::PlayerUnpause => {
-                if let Some(p) = player.as_ref() {
+                // Check file mtime before unpausing
+                let current_file = app_state.lock().await.playback.current_file;
+                let mut mtime_changed = false;
+                if let Some(file_id) = current_file
+                    && let Some(path) = mtime_tracker.check_mtime_changed(&file_id)
+                {
+                    tracing::info!(?file_id, "File mtime changed, re-hashing before unpause");
+                    mtime_changed = true;
+                    let tx = rehash_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let result = (|| {
+                            let file = std::fs::File::open(&path)?;
+                            let reader = std::io::BufReader::new(file);
+                            dessplay_core::ed2k::compute_ed2k(reader)
+                        })();
+                        let _ = tx.send((file_id, result));
+                    });
+                }
+                if !mtime_changed
+                    && let Some(p) = player.as_ref()
+                {
                     echo_filter.register_unpause();
                     if let Err(e) = p.unpause().await {
                         tracing::debug!("Failed to unpause player: {e}");
@@ -1842,6 +2002,8 @@ async fn dispatch_effects(
                     {
                         tracing::warn!("Failed to load file into player: {e}");
                     }
+                    // Record file mtime for re-hash on unpause
+                    mtime_tracker.record_mtime(file_id, &path);
                 } else {
                     tracing::debug!(?file_id, "No local path for file, skipping load");
                 }
@@ -2143,4 +2305,117 @@ fn get_arg(args: &[String], flag: &str) -> Option<String> {
         .position(|a| a == flag)
         .and_then(|i| args.get(i + 1))
         .cloned()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod mtime_tests {
+    use super::*;
+    use dessplay_core::types::FileId;
+    use std::io::Write;
+
+    fn fid(n: u8) -> FileId {
+        let mut arr = [0u8; 16];
+        arr[0] = n;
+        FileId(arr)
+    }
+
+    #[test]
+    fn record_and_check_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.mkv");
+        std::fs::write(&path, b"hello").unwrap();
+
+        let mut tracker = MtimeTracker::new();
+        tracker.record_mtime(fid(1), &path);
+
+        // Mtime unchanged — should return None
+        assert!(tracker.check_mtime_changed(&fid(1)).is_none());
+    }
+
+    #[test]
+    fn detect_mtime_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.mkv");
+        std::fs::write(&path, b"hello").unwrap();
+
+        let mut tracker = MtimeTracker::new();
+        tracker.record_mtime(fid(1), &path);
+
+        // Modify the file (change mtime)
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"world").unwrap();
+        file.flush().unwrap();
+        drop(file);
+
+        // Mtime changed — should return Some(path)
+        let result = tracker.check_mtime_changed(&fid(1));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), path);
+    }
+
+    #[test]
+    fn manually_mapped_skips_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.mkv");
+        std::fs::write(&path, b"hello").unwrap();
+
+        let mut tracker = MtimeTracker::new();
+        tracker.record_mtime(fid(1), &path);
+        tracker.manually_mapped.insert(fid(1));
+
+        // Modify the file
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&path, b"world").unwrap();
+
+        // Should return None because manually mapped
+        assert!(tracker.check_mtime_changed(&fid(1)).is_none());
+    }
+
+    #[test]
+    fn unknown_file_returns_none() {
+        let tracker = MtimeTracker::new();
+        assert!(tracker.check_mtime_changed(&fid(99)).is_none());
+    }
+
+    #[test]
+    fn record_mtime_updates_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.mkv");
+        std::fs::write(&path, b"hello").unwrap();
+
+        let mut tracker = MtimeTracker::new();
+        tracker.record_mtime(fid(1), &path);
+
+        // Modify the file
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&path, b"world").unwrap();
+
+        // Re-record mtime (simulating what happens after successful re-hash)
+        tracker.record_mtime(fid(1), &path);
+
+        // Should now be considered unchanged
+        assert!(tracker.check_mtime_changed(&fid(1)).is_none());
+    }
+
+    #[test]
+    fn deleted_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.mkv");
+        std::fs::write(&path, b"hello").unwrap();
+
+        let mut tracker = MtimeTracker::new();
+        tracker.record_mtime(fid(1), &path);
+
+        // Delete the file
+        std::fs::remove_file(&path).unwrap();
+
+        // Should return None (can't stat deleted file)
+        assert!(tracker.check_mtime_changed(&fid(1)).is_none());
+    }
 }
