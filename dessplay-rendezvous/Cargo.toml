@@ -11,6 +11,7 @@ dessplay-core = { path = "../dessplay-core" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 postcard = { version = "1", features = ["alloc"] }
 anyhow = "1"
+dotenvy = "0.15"
 quinn = "0.11"
 rustls = { version = "0.23", features = ["ring"] }
 rcgen = "0.13"

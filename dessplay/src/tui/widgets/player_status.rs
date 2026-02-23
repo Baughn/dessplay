@@ -18,6 +18,10 @@ fn format_time(secs: f64) -> String {
 }
 
 /// Render the player status bar with progress, current file, and blocking users.
+///
+/// `bg_hash_progress` is `Some((completed, total))` when background media indexing is active.
+/// Shown on line 2 when idle (no file playing).
+#[allow(clippy::too_many_arguments)]
 pub fn render_player_status(
     area: Rect,
     buf: &mut Buffer,
@@ -26,6 +30,7 @@ pub fn render_player_status(
     duration_secs: Option<f64>,
     is_playing: bool,
     blocking_users: &[String],
+    bg_hash_progress: Option<(u64, usize)>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -49,7 +54,7 @@ pub fn render_player_status(
     let time_text = format!(" {pos_str} / {dur_str} ");
     let indicator_width = play_indicator.len() + 2; // [>] or [||]
     let bar_available =
-        (inner.width as usize).saturating_sub(indicator_width + 1 + time_text.len());
+        (inner.width as usize).saturating_sub(indicator_width + 3 + time_text.len());
 
     let progress_fraction = duration_secs
         .filter(|&d| d > 0.0)
@@ -70,13 +75,23 @@ pub fn render_player_status(
         Style::default().fg(Color::White),
     )));
 
-    // Line 2: Now playing
+    // Line 2: Now playing / indexing status
     if inner.height > 1 {
         let file_name = current_file_name.unwrap_or("Idle");
         lines.push(Line::from(Span::styled(
             format!("  Now Playing: {file_name}"),
             Style::default().add_modifier(Modifier::BOLD),
         )));
+
+        // Show background indexing progress
+        if let Some((completed, total)) = bg_hash_progress
+            && inner.height > 2
+        {
+            lines.push(Line::from(Span::styled(
+                format!("  Indexing media: {completed}/{total}"),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
     }
 
     // Line 3: Blocking users (if any)

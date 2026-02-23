@@ -27,12 +27,12 @@ pub struct AppLayout {
 /// +-----------------------------------------------------+
 /// ```
 pub fn compute_layout(area: Rect) -> AppLayout {
-    // Vertical split: [main content | player status (3) | keybinding bar (1)]
+    // Vertical split: [main content | player status (5 = 3 content + 2 border) | keybinding bar (1)]
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(6),       // main content
-            Constraint::Length(3),     // player status
+            Constraint::Length(5),     // player status (3 content lines + borders)
             Constraint::Length(1),     // keybinding bar
         ])
         .split(area);
@@ -59,6 +59,12 @@ pub fn compute_layout(area: Rect) -> AppLayout {
     let chat_messages = left_split[0];
     let chat_input = left_split[1];
 
+    // Right column: trim 1 line at the bottom to align with chat messages
+    let right_trim = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(right);
+
     // Right column: [recent series (30%) | users (30%) | playlist (40%)]
     let right_split = Layout::default()
         .direction(Direction::Vertical)
@@ -67,7 +73,7 @@ pub fn compute_layout(area: Rect) -> AppLayout {
             Constraint::Percentage(30),
             Constraint::Percentage(40),
         ])
-        .split(right);
+        .split(right_trim[0]);
 
     let recent_series = right_split[0];
     let users = right_split[1];
@@ -94,8 +100,8 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let layout = compute_layout(area);
 
-        // Player status is 3 lines from bottom
-        assert_eq!(layout.player_status.height, 3);
+        // Player status is 5 lines from bottom (3 content + 2 border)
+        assert_eq!(layout.player_status.height, 5);
         // Keybinding bar is 1 line at very bottom
         assert_eq!(layout.keybinding_bar.height, 1);
         assert_eq!(layout.keybinding_bar.y + layout.keybinding_bar.height, 40);
@@ -113,7 +119,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let layout = compute_layout(area);
 
-        assert_eq!(layout.player_status.height, 3);
+        assert_eq!(layout.player_status.height, 5);
         assert_eq!(layout.keybinding_bar.height, 1);
         assert!(layout.chat_messages.height > 0);
     }

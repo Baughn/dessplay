@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -450,6 +451,17 @@ impl ClientStorage {
                 first_seen_at: first_seen_at as u64,
             })
             .collect())
+    }
+
+    pub fn get_all_mapped_paths(&self) -> Result<HashSet<PathBuf>> {
+        let mut stmt = self.conn.prepare("SELECT local_path FROM file_mappings")?;
+        let paths = stmt
+            .query_map([], |row| {
+                let p: String = row.get(0)?;
+                Ok(PathBuf::from(p))
+            })?
+            .collect::<Result<HashSet<_>, _>>()?;
+        Ok(paths)
     }
 
     pub fn get_all_file_mappings(&self) -> Result<Vec<(FileId, PathBuf)>> {

@@ -47,7 +47,7 @@ mod snapshot_tests {
                 layout.playlist, frame.buffer_mut(), &[], 0, false,
             );
             player_status::render_player_status(
-                layout.player_status, frame.buffer_mut(), None, 0.0, None, false, &[],
+                layout.player_status, frame.buffer_mut(), None, 0.0, None, false, &[], None,
             );
             keybinding_bar::render_keybinding_bar(
                 layout.keybinding_bar, frame.buffer_mut(),
@@ -82,7 +82,7 @@ mod snapshot_tests {
                 layout.playlist, frame.buffer_mut(), &[], 0, false,
             );
             player_status::render_player_status(
-                layout.player_status, frame.buffer_mut(), None, 0.0, None, false, &[],
+                layout.player_status, frame.buffer_mut(), None, 0.0, None, false, &[], None,
             );
             keybinding_bar::render_keybinding_bar(
                 layout.keybinding_bar, frame.buffer_mut(),
@@ -305,7 +305,7 @@ mod snapshot_tests {
         let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
         terminal.draw(|frame| {
             player_status::render_player_status(
-                frame.area(), frame.buffer_mut(), None, 0.0, None, false, &[],
+                frame.area(), frame.buffer_mut(), None, 0.0, None, false, &[], None,
             );
         }).unwrap();
         assert_snapshot!(terminal.backend());
@@ -317,7 +317,7 @@ mod snapshot_tests {
         terminal.draw(|frame| {
             player_status::render_player_status(
                 frame.area(), frame.buffer_mut(), Some("Frieren - 01.mkv"),
-                754.0, Some(1440.0), true, &[],
+                754.0, Some(1440.0), true, &[], None,
             );
         }).unwrap();
         assert_snapshot!(terminal.backend());

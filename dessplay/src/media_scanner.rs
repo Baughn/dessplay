@@ -28,6 +28,11 @@ impl MediaIndex {
         self.by_filename.get(filename).map(|v| v.as_slice())
     }
 
+    /// Returns every indexed media file path.
+    pub fn all_paths(&self) -> Vec<&PathBuf> {
+        self.by_filename.values().flatten().collect()
+    }
+
     /// Total number of indexed files.
     pub fn file_count(&self) -> usize {
         self.by_filename.values().map(|v| v.len()).sum()

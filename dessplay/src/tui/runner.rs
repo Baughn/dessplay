@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -81,6 +81,71 @@ impl MtimeTracker {
             return Some(path.clone());
         }
         None
+    }
+}
+
+/// Result of a background file hash operation.
+struct BgHashResult {
+    path: PathBuf,
+    file_size: u64,
+    result: std::io::Result<FileId>,
+}
+
+/// Shared progress counters for background media indexing.
+struct BgHashProgress {
+    total_files: usize,
+    completed_files: Arc<AtomicU64>,
+}
+
+/// Background worker that hashes all media files not yet in file_mappings.
+///
+/// Yields to user-initiated hashes when `user_hash_active` is set.
+async fn bg_hash_worker(
+    paths: Vec<PathBuf>,
+    user_hash_active: Arc<AtomicBool>,
+    progress: Arc<BgHashProgress>,
+    tx: tokio::sync::mpsc::UnboundedSender<BgHashResult>,
+) {
+    for path in paths {
+        // Yield to user-initiated hashes
+        while user_hash_active.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        let file_size = match std::fs::metadata(&path) {
+            Ok(m) => m.len(),
+            Err(e) => {
+                tracing::debug!(path = %path.display(), "Skipping bg hash, metadata error: {e}");
+                progress.completed_files.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+        };
+
+        let path_clone = path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let file = std::fs::File::open(&path_clone)?;
+            let reader = std::io::BufReader::new(file);
+            dessplay_core::ed2k::compute_ed2k(reader)
+        })
+        .await;
+
+        let hash_result = match result {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(path = %path.display(), "Bg hash task panicked: {e}");
+                progress.completed_files.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+        };
+
+        progress.completed_files.fetch_add(1, Ordering::Relaxed);
+
+        if tx.send(BgHashResult { path, file_size, result: hash_result }).is_err() {
+            break; // Receiver dropped, stop
+        }
+
+        // Small yield between files to avoid monopolizing the runtime
+        tokio::task::yield_now().await;
     }
 }
 
@@ -646,9 +711,42 @@ async fn run_connected(
     let (gap_fill_tx, mut gap_fill_rx) =
         tokio::sync::mpsc::unbounded_channel::<(PeerId, GapFillResponse)>();
 
-    // Channel for non-blocking file hash results
+    // Channel for non-blocking file hash results (user-initiated)
     let (hash_tx, mut hash_rx) =
         tokio::sync::mpsc::unbounded_channel::<(PathBuf, std::io::Result<FileId>)>();
+
+    // Background hash worker state
+    let user_hash_active = Arc::new(AtomicBool::new(false));
+    let (bg_hash_tx, mut bg_hash_rx) = tokio::sync::mpsc::unbounded_channel::<BgHashResult>();
+    let bg_hash_progress = {
+        // Collect paths not yet in file_mappings
+        let known_paths: HashSet<PathBuf> = storage
+            .lock()
+            .ok()
+            .and_then(|s| s.get_all_mapped_paths().ok())
+            .unwrap_or_default();
+        let all_paths = media_index.all_paths();
+        let unknown_paths: Vec<PathBuf> = all_paths
+            .into_iter()
+            .filter(|p| !known_paths.contains(p.as_path()))
+            .cloned()
+            .collect();
+        let total = unknown_paths.len();
+        if total > 0 {
+            let progress = Arc::new(BgHashProgress {
+                total_files: total,
+                completed_files: Arc::new(AtomicU64::new(0)),
+            });
+            let worker_progress = Arc::clone(&progress);
+            let worker_active = Arc::clone(&user_hash_active);
+            let worker_tx = bg_hash_tx.clone();
+            tokio::spawn(bg_hash_worker(unknown_paths, worker_active, worker_progress, worker_tx));
+            tracing::info!(total, "Spawned background hash worker");
+            Some(progress)
+        } else {
+            None
+        }
+    };
 
     let mut summary_interval = tokio::time::interval(Duration::from_secs(1));
     let mut position_tick = tokio::time::interval(Duration::from_millis(100));
@@ -680,7 +778,7 @@ async fn run_connected(
     loop {
         // Draw if needed
         if needs_redraw {
-            draw_main_screen(terminal, ui, &app_state, storage).await?;
+            draw_main_screen(terminal, ui, &app_state, storage, &bg_hash_progress).await?;
             needs_redraw = false;
         }
 
@@ -787,6 +885,9 @@ async fn run_connected(
                                         bytes_hashed: Arc::clone(&progress),
                                     });
                                     ui.screen = Screen::Hashing;
+
+                                    // Pause background hashing during user hash
+                                    user_hash_active.store(true, Ordering::Relaxed);
 
                                     // Spawn non-blocking hash
                                     let tx = hash_tx.clone();
@@ -1128,9 +1229,12 @@ async fn run_connected(
                 }
             }
 
-            // File hash completed
+            // File hash completed (user-initiated)
             result = hash_rx.recv() => {
                 if let Some((path, hash_result)) = result {
+                    // Resume background hashing
+                    user_hash_active.store(false, Ordering::Relaxed);
+
                     let file_size = ui.hashing.as_ref().map(|h| h.total_bytes).unwrap_or(0);
                     ui.hashing = None;
                     ui.screen = Screen::Main;
@@ -1253,6 +1357,56 @@ async fn run_connected(
                 }
             }
 
+            // Background hash completed
+            result = bg_hash_rx.recv() => {
+                if let Some(BgHashResult { path, file_size, result: hash_result }) = result {
+                    match hash_result {
+                        Ok(file_id) => {
+                            if let Ok(s) = storage.lock() {
+                                let _ = s.set_file_mapping(&file_id, &path);
+                            }
+                            // Request AniDB metadata lookup from server
+                            rv_client.send(RvControl::AniDbLookup { file_id, file_size });
+                            let now = rv_client.shared_now().await;
+                            // Share filename via CRDT
+                            let filename = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            if !filename.is_empty() {
+                                let filename_op = CrdtOp::LwwWrite {
+                                    timestamp: now,
+                                    value: LwwValue::FileName(file_id, filename),
+                                };
+                                let fn_effects = app_state.lock().await
+                                    .sync_engine.apply_local_op(filename_op);
+                                dispatch_effects(
+                                    vec![AppEffect::Sync(fn_effects)],
+                                    &peer_mgr, &rv_client, storage,
+                                    &app_state, &gap_fill_tx,
+                                    &mut player, &mut echo_filter,
+                                    &mut mtime_tracker, &rehash_tx,
+                                ).await;
+                            }
+                            // Try auto-matching any pending playlist items
+                            let now = rv_client.shared_now().await;
+                            let match_effects =
+                                try_auto_match_all(&app_state, &media_index, storage, now).await;
+                            dispatch_effects(
+                                match_effects, &peer_mgr, &rv_client, storage,
+                                &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
+                            ).await;
+                        }
+                        Err(e) => {
+                            tracing::debug!(path = %path.display(), "Background hash failed: {e}");
+                        }
+                    }
+                    needs_redraw = true;
+                }
+            }
+
             // Player events
             event = async {
                 if let Some(p) = player.as_ref() {
@@ -1310,6 +1464,12 @@ async fn run_connected(
                 if ui.hashing.is_some() {
                     needs_redraw = true;
                 }
+                // Redraw during background indexing to update the counter
+                if bg_hash_progress.as_ref().is_some_and(|p| {
+                    p.completed_files.load(Ordering::Relaxed) < p.total_files as u64
+                }) {
+                    needs_redraw = true;
+                }
             }
 
             // Periodic tick
@@ -1341,6 +1501,7 @@ async fn draw_main_screen(
     ui: &UiState,
     app_state: &Arc<tokio::sync::Mutex<AppState>>,
     storage: &Arc<Mutex<ClientStorage>>,
+    bg_hash_progress: &Option<Arc<BgHashProgress>>,
 ) -> Result<()> {
     // Collect all data from app state into owned values, then drop the lock
     let (
@@ -1509,6 +1670,15 @@ async fn draw_main_screen(
         );
 
         // Player status
+        let bg_progress = bg_hash_progress.as_ref().and_then(|p| {
+            let completed = p.completed_files.load(Ordering::Relaxed);
+            let total = p.total_files;
+            if completed < total as u64 {
+                Some((completed, total))
+            } else {
+                None
+            }
+        });
         player_status::render_player_status(
             layout.player_status,
             frame.buffer_mut(),
@@ -1517,6 +1687,7 @@ async fn draw_main_screen(
             duration_secs,
             is_playing,
             &blocking_users,
+            bg_progress,
         );
 
         // Hashing progress modal overlay

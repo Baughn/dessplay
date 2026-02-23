@@ -13,6 +13,9 @@ async fn main() -> Result<()> {
         .install_default()
         .map_err(|_| anyhow::anyhow!("failed to install rustls CryptoProvider"))?;
 
+    // Load .env file (ignore if missing)
+    let _ = dotenvy::dotenv();
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
