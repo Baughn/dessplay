@@ -4,6 +4,7 @@
 - Sync state (CRDTs, op logs, compaction): docs/sync-state.md
 - Network design (QUIC, hole punching, relay, file transfer): docs/network-design.md
 - Testing strategy: docs/testing-strategy.md
+- UI architecture (declarative layer, ViewSpec, renderers): docs/ui-architecture.md
 - Implementation plan: docs/plan.md
 
 Read the design docs before any planning phase. Update the docs after any design change, and update CLAUDE.md if a document is added.
