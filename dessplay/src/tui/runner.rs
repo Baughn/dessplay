@@ -10,28 +10,24 @@ use tokio_stream::StreamExt;
 
 use crate::app_state::{AppEffect, AppEvent, AppState};
 use crate::media_scanner::MediaIndex;
-use crate::series_browser;
 use crate::peer_conn::PeerManager;
 use crate::player::echo::EchoFilter;
 use crate::player::mpv::MpvPlayer;
 use crate::player::Player;
 use crate::rendezvous_client::{RendezvousClient, RendezvousEvent};
+use crate::series_browser;
 use crate::storage::{ClientStorage, Config};
-use dessplay_core::types::{FileId, SharedTimestamp};
-use ratatui::layout::Rect;
-
-use crate::tui::layout::compute_layout;
+use crate::tls::TofuVerifier;
+use crate::tui::display_data::{build_display_data, DisplayData};
+use crate::tui::renderer;
+use crate::tui::resolve::resolve_input;
 use crate::tui::terminal::{setup_file_logging, setup_terminal};
 use crate::tui::ui_state::{
-    FileBrowserOrigin, FileBrowserState, FocusedPane, HashingState, InputResult, InputState,
-    MetadataAssignState, MetadataAssignStep, Screen, SeriesChoice, SettingsState, UiAction, UiState,
+    FileBrowserOrigin, FileBrowserState, FocusedPane, HashingState, InputState,
+    MetadataAssignState, MetadataAssignStep, Screen, SeriesChoice, SettingsState, TofuWarningState,
+    UiState,
 };
-use crate::tls::TofuVerifier;
-use crate::tui::ui_state::TofuWarningState;
-use crate::tui::widgets::{
-    chat, file_browser, hashing_progress, keybinding_bar, metadata_assign, player_status, playlist,
-    recent_series, settings, tofu_warning, users,
-};
+use crate::tui::view;
 use dessplay_core::framing::{
     read_framed, write_framed, TAG_GAP_FILL_REQUEST, TAG_GAP_FILL_RESPONSE,
 };
@@ -40,7 +36,14 @@ use dessplay_core::protocol::{
     CrdtOp, GapFillRequest, GapFillResponse, LwwValue, PeerControl, PeerDatagram, RvControl,
 };
 use dessplay_core::sync_engine::{SyncAction, SyncEngine};
-use dessplay_core::types::{AniDbMetadata, FileState, MetadataSource, PeerId, UserId, UserState};
+use dessplay_core::types::{
+    AniDbMetadata, FileId, FileState, MetadataSource, PeerId, SharedTimestamp, UserId, UserState,
+};
+use dessplay_core::view_spec::Action;
+
+// =========================================================================
+// MtimeTracker
+// =========================================================================
 
 /// Tracks file mtimes and manual-map status for re-hash on unpause.
 struct MtimeTracker {
@@ -84,6 +87,10 @@ impl MtimeTracker {
     }
 }
 
+// =========================================================================
+// Background hash types
+// =========================================================================
+
 /// Result of a background file hash operation.
 struct BgHashResult {
     path: PathBuf,
@@ -92,9 +99,9 @@ struct BgHashResult {
 }
 
 /// Shared progress counters for background media indexing.
-struct BgHashProgress {
-    total_files: usize,
-    completed_files: Arc<AtomicU64>,
+pub struct BgHashProgress {
+    pub total_files: usize,
+    pub completed_files: Arc<AtomicU64>,
 }
 
 /// Background worker that hashes all media files not yet in file_mappings.
@@ -140,7 +147,14 @@ async fn bg_hash_worker(
 
         progress.completed_files.fetch_add(1, Ordering::Relaxed);
 
-        if tx.send(BgHashResult { path, file_size, result: hash_result }).is_err() {
+        if tx
+            .send(BgHashResult {
+                path,
+                file_size,
+                result: hash_result,
+            })
+            .is_err()
+        {
             break; // Receiver dropped, stop
         }
 
@@ -148,6 +162,10 @@ async fn bg_hash_worker(
         tokio::task::yield_now().await;
     }
 }
+
+// =========================================================================
+// Main TUI entry point
+// =========================================================================
 
 /// Main TUI entry point. Handles settings screen, connection, and event loop.
 pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<()> {
@@ -167,7 +185,7 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
     // If no config, show settings screen first
     if config.is_none() {
         ui = ui.with_settings();
-        run_settings_screen(&mut guard.terminal, &mut ui, &storage).await?;
+        run_preconnection_settings(&mut guard.terminal, &mut ui, &storage).await?;
         ui.settings = None;
     }
 
@@ -225,7 +243,7 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
                     ui.screen = Screen::TofuWarning;
 
                     let accepted =
-                        run_tofu_warning_screen(&mut guard.terminal, &mut ui, &storage).await?;
+                        run_preconnection_tofu(&mut guard.terminal, &mut ui).await?;
 
                     if ui.should_quit {
                         return Ok(());
@@ -260,14 +278,19 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
 
                 ui.screen = Screen::Settings;
                 ui.settings = Some(settings);
-                run_settings_screen(&mut guard.terminal, &mut ui, &storage).await?;
+                run_preconnection_settings(&mut guard.terminal, &mut ui, &storage).await?;
             }
         }
     }
 }
 
-/// Run the settings screen loop until the user saves or quits.
-async fn run_settings_screen(
+// =========================================================================
+// Pre-connection settings loop
+// =========================================================================
+
+/// Run the settings screen loop (first-run or error recovery) using the
+/// ViewSpec pipeline. Handles inline file browser for media root selection.
+async fn run_preconnection_settings(
     terminal: &mut crate::tui::terminal::Tui,
     ui: &mut UiState,
     storage: &Arc<Mutex<ClientStorage>>,
@@ -277,26 +300,16 @@ async fn run_settings_screen(
     // Load existing media roots if any
     if let Some(ref mut settings) = ui.settings
         && let Ok(s) = storage.lock()
-            && let Ok(roots) = s.get_media_roots() {
-                settings.media_roots = roots;
-            }
+        && let Ok(roots) = s.get_media_roots()
+    {
+        settings.media_roots = roots;
+    }
 
     loop {
-        // Draw
-        terminal.draw(|frame| {
-            let wf = keybinding_bar::WindowFrame::new(frame.area());
-            if let Some(ref settings_state) = ui.settings {
-                settings::render_settings(wf.content, frame.buffer_mut(), settings_state);
-            }
-            wf.render_bar(frame.buffer_mut(), settings::keybindings());
-        })?;
-
-        // Handle file browser overlay if active
-        if ui.file_browser.is_some() {
-            run_file_browser_overlay(terminal, ui).await?;
-            // Directory selection is handled inside the file browser overlay
-            continue;
-        }
+        // Render using ViewSpec pipeline
+        let data = DisplayData::empty();
+        let spec = view::view(ui, &data);
+        terminal.draw(|frame| renderer::render(&spec, frame))?;
 
         // Wait for input
         let Some(event) = event_stream.next().await else {
@@ -306,23 +319,22 @@ async fn run_settings_screen(
         let event = event.context("failed to read terminal event")?;
 
         if let crossterm::event::Event::Key(key) = event {
-            let result = crate::tui::input::handle_key_event(key, ui);
-            match result {
-                InputResult::UiAction(action) => {
-                    apply_settings_action(ui, &action, storage)?;
-                    if matches!(action, UiAction::SettingsSave)
-                        && let Some(ref s) = ui.settings
-                            && s.is_valid() {
-                                return Ok(());
-                            }
-                    if matches!(action, UiAction::SettingsCancel) {
-                        // In first-run/error context, cancel means quit
-                        ui.should_quit = true;
-                        return Ok(());
-                    }
+            if let Some(action) = resolve_input(key, &spec) {
+                let is_save = matches!(action, Action::SettingsSave);
+                let is_cancel = matches!(action, Action::SettingsCancel);
+                apply_preconnection_settings_action(action, ui, storage)?;
+
+                // Check for save completion
+                if is_save
+                    && ui.settings.as_ref().is_some_and(|s| s.is_valid())
+                {
+                    return Ok(());
                 }
-                InputResult::None => {}
-                _ => {}
+                if is_cancel {
+                    // In first-run/error context, cancel means quit
+                    ui.should_quit = true;
+                    return Ok(());
+                }
             }
         }
 
@@ -334,25 +346,206 @@ async fn run_settings_screen(
     Ok(())
 }
 
-/// Run the TOFU warning modal loop. Returns `true` if the user accepted the new certificate.
-async fn run_tofu_warning_screen(
+/// Handle actions for the pre-connection settings screen.
+/// Covers settings, file browser, and quit actions.
+fn apply_preconnection_settings_action(
+    action: Action,
+    ui: &mut UiState,
+    storage: &Arc<Mutex<ClientStorage>>,
+) -> Result<()> {
+    match action {
+        Action::Quit => {
+            ui.should_quit = true;
+        }
+        // Settings actions
+        Action::SettingsNextField => {
+            if let Some(ref mut s) = ui.settings {
+                s.next_field();
+            }
+        }
+        Action::SettingsPrevField => {
+            if let Some(ref mut s) = ui.settings {
+                s.prev_field();
+            }
+        }
+        Action::SettingsInsertChar(c) => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                match s.focused_field {
+                    0 => s.username.push(c),
+                    1 => s.server.push(c),
+                    3 => s.password.push(c),
+                    _ => {}
+                }
+            }
+        }
+        Action::SettingsDeleteBack => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                match s.focused_field {
+                    0 => {
+                        s.username.pop();
+                    }
+                    1 => {
+                        s.server.pop();
+                    }
+                    3 => {
+                        s.password.pop();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Action::SettingsTogglePlayer => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                s.player = if s.player == "mpv" {
+                    "vlc".to_string()
+                } else {
+                    "mpv".to_string()
+                };
+            }
+        }
+        Action::SettingsAddMediaRoot => {
+            let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+            ui.file_browser = Some(FileBrowserState::open(
+                start_dir,
+                FileBrowserOrigin::SettingsMediaRoot,
+            ));
+            ui.screen = Screen::FileBrowser;
+        }
+        Action::SettingsRemoveMediaRoot => {
+            if let Some(ref mut s) = ui.settings
+                && !s.media_roots.is_empty()
+            {
+                s.alert = None;
+                s.media_roots.pop();
+            }
+        }
+        Action::SettingsMoveRootUp => {
+            if let Some(ref mut s) = ui.settings {
+                let len = s.media_roots.len();
+                if len >= 2 {
+                    s.alert = None;
+                    s.media_roots.swap(len - 2, len - 1);
+                }
+            }
+        }
+        Action::SettingsMoveRootDown => {
+            if let Some(ref mut s) = ui.settings {
+                let len = s.media_roots.len();
+                if len >= 2 {
+                    s.alert = None;
+                    s.media_roots.swap(0, 1);
+                }
+            }
+        }
+        Action::SettingsSave => {
+            if let Some(ref s) = ui.settings
+                && s.is_valid()
+            {
+                let config = Config {
+                    username: s.username.trim().to_string(),
+                    server: s.server.trim().to_string(),
+                    player: s.player.clone(),
+                    password: if s.password.is_empty() {
+                        std::env::var("DESSPLAY_PASSWORD").ok()
+                    } else {
+                        Some(s.password.clone())
+                    },
+                };
+                let roots: Vec<PathBuf> = s.media_roots.clone();
+                let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                st.save_config(&config)?;
+                st.set_media_roots(&roots)?;
+            }
+        }
+        Action::SettingsCancel => {
+            ui.settings = None;
+            ui.screen = Screen::Main;
+        }
+        // File browser actions (media root selection from settings)
+        Action::FileBrowserUp => {
+            if let Some(ref mut fb) = ui.file_browser {
+                fb.select_up();
+            }
+        }
+        Action::FileBrowserDown => {
+            if let Some(ref mut fb) = ui.file_browser {
+                fb.select_down();
+            }
+        }
+        Action::FileBrowserSelect => {
+            if let Some(ref mut fb) = ui.file_browser {
+                if let Some(entry) = fb.entries.get(fb.selected).cloned() {
+                    if entry.is_dir {
+                        fb.current_dir = entry.path;
+                        fb.selected = 0;
+                        fb.scroll_offset = 0;
+                        fb.refresh_entries();
+                    }
+                    // File selection doesn't happen in settings mode (dirs only)
+                }
+            }
+        }
+        Action::FileBrowserSelectDir => {
+            if let Some(ref fb) = ui.file_browser
+                && fb.origin == FileBrowserOrigin::SettingsMediaRoot
+            {
+                let dir = fb.current_dir.clone();
+                if let Some(ref mut settings) = ui.settings
+                    && !settings.media_roots.contains(&dir)
+                {
+                    settings.media_roots.push(dir);
+                }
+                ui.file_browser = None;
+                ui.screen = Screen::Settings;
+            }
+        }
+        Action::FileBrowserBack => {
+            let should_close = if let Some(ref mut fb) = ui.file_browser {
+                if let Some(parent) = fb.current_dir.parent() {
+                    if fb.current_dir == parent.to_path_buf() {
+                        true
+                    } else {
+                        fb.current_dir = parent.to_path_buf();
+                        fb.selected = 0;
+                        fb.scroll_offset = 0;
+                        fb.refresh_entries();
+                        false
+                    }
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            if should_close {
+                ui.file_browser = None;
+                ui.screen = Screen::Settings;
+            }
+        }
+        _ => {} // Ignore other actions in pre-connection settings
+    }
+    Ok(())
+}
+
+// =========================================================================
+// Pre-connection TOFU warning loop
+// =========================================================================
+
+/// Run the TOFU warning modal loop. Returns `true` if the user accepted.
+async fn run_preconnection_tofu(
     terminal: &mut crate::tui::terminal::Tui,
     ui: &mut UiState,
-    _storage: &Arc<Mutex<ClientStorage>>,
 ) -> Result<bool> {
     let mut event_stream = EventStream::new();
 
     loop {
-        // Draw
-        terminal.draw(|frame| {
-            let wf = keybinding_bar::WindowFrame::new(frame.area());
-            if let Some(ref warning_state) = ui.tofu_warning {
-                tofu_warning::render_tofu_warning(wf.content, frame.buffer_mut(), warning_state);
-            }
-            wf.render_bar(frame.buffer_mut(), tofu_warning::keybindings());
-        })?;
+        let data = DisplayData::empty();
+        let spec = view::view(ui, &data);
+        terminal.draw(|frame| renderer::render(&spec, frame))?;
 
-        // Wait for input
         let Some(event) = event_stream.next().await else {
             break;
         };
@@ -360,12 +553,11 @@ async fn run_tofu_warning_screen(
         let event = event.context("failed to read terminal event")?;
 
         if let crossterm::event::Event::Key(key) = event {
-            let result = crate::tui::input::handle_key_event(key, ui);
-            if let InputResult::UiAction(action) = result {
+            if let Some(action) = resolve_input(key, &spec) {
                 match action {
-                    UiAction::TofuAccept => return Ok(true),
-                    UiAction::TofuReject => return Ok(false),
-                    UiAction::Quit => {
+                    Action::TofuAccept => return Ok(true),
+                    Action::TofuReject => return Ok(false),
+                    Action::Quit => {
                         ui.should_quit = true;
                         return Ok(false);
                     }
@@ -378,239 +570,9 @@ async fn run_tofu_warning_screen(
     Ok(false)
 }
 
-fn apply_settings_action(
-    ui: &mut UiState,
-    action: &UiAction,
-    storage: &Arc<Mutex<ClientStorage>>,
-) -> Result<()> {
-    match action {
-        UiAction::Quit => {
-            ui.should_quit = true;
-        }
-        UiAction::SettingsNextField => {
-            if let Some(ref mut s) = ui.settings {
-                s.next_field();
-            }
-        }
-        UiAction::SettingsPrevField => {
-            if let Some(ref mut s) = ui.settings {
-                s.prev_field();
-            }
-        }
-        UiAction::SettingsInsertChar(c) => {
-            if let Some(ref mut s) = ui.settings {
-                s.alert = None;
-                match s.focused_field {
-                    0 => s.username.push(*c),
-                    1 => s.server.push(*c),
-                    3 => s.password.push(*c),
-                    _ => {}
-                }
-            }
-        }
-        UiAction::SettingsDeleteBack => {
-            if let Some(ref mut s) = ui.settings {
-                s.alert = None;
-                match s.focused_field {
-                    0 => { s.username.pop(); }
-                    1 => { s.server.pop(); }
-                    3 => { s.password.pop(); }
-                    _ => {}
-                }
-            }
-        }
-        UiAction::SettingsTogglePlayer => {
-            if let Some(ref mut s) = ui.settings {
-                s.alert = None;
-                s.player = if s.player == "mpv" {
-                    "vlc".to_string()
-                } else {
-                    "mpv".to_string()
-                };
-            }
-        }
-        UiAction::SettingsAddMediaRoot => {
-            // Open file browser for directory selection
-            let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-            ui.file_browser = Some(FileBrowserState::open(
-                start_dir,
-                FileBrowserOrigin::SettingsMediaRoot,
-            ));
-            ui.screen = Screen::FileBrowser;
-        }
-        UiAction::SettingsRemoveMediaRoot => {
-            if let Some(ref mut s) = ui.settings
-                && !s.media_roots.is_empty() {
-                    s.alert = None;
-                    s.media_roots.pop();
-                }
-        }
-        UiAction::SettingsMoveRootUp => {
-            // For simplicity, swap last two roots (full reorder logic in future)
-            if let Some(ref mut s) = ui.settings {
-                let len = s.media_roots.len();
-                if len >= 2 {
-                    s.alert = None;
-                    s.media_roots.swap(len - 2, len - 1);
-                }
-            }
-        }
-        UiAction::SettingsMoveRootDown => {
-            if let Some(ref mut s) = ui.settings {
-                let len = s.media_roots.len();
-                if len >= 2 {
-                    s.alert = None;
-                    s.media_roots.swap(0, 1);
-                }
-            }
-        }
-        UiAction::SettingsSave => {
-            if let Some(ref s) = ui.settings
-                && s.is_valid() {
-                    let config = Config {
-                        username: s.username.trim().to_string(),
-                        server: s.server.trim().to_string(),
-                        player: s.player.clone(),
-                        password: if s.password.is_empty() {
-                            std::env::var("DESSPLAY_PASSWORD").ok()
-                        } else {
-                            Some(s.password.clone())
-                        },
-                    };
-                    let roots: Vec<PathBuf> = s.media_roots.clone();
-                    let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-                    st.save_config(&config)?;
-                    st.set_media_roots(&roots)?;
-                }
-        }
-        UiAction::SettingsCancel => {
-            ui.settings = None;
-            ui.screen = Screen::Main;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// Run the file browser as an overlay until selection or cancel.
-async fn run_file_browser_overlay(
-    terminal: &mut crate::tui::terminal::Tui,
-    ui: &mut UiState,
-) -> Result<()> {
-    let mut event_stream = EventStream::new();
-
-    loop {
-        // Draw
-        terminal.draw(|frame| {
-            let wf = keybinding_bar::WindowFrame::new(frame.area());
-            if let Some(ref fb) = ui.file_browser {
-                file_browser::render_file_browser(wf.content, frame.buffer_mut(), fb);
-                wf.render_bar(frame.buffer_mut(), &file_browser::keybindings(&fb.origin));
-            }
-        })?;
-
-        let Some(event) = event_stream.next().await else {
-            break;
-        };
-        let event = event.context("failed to read terminal event")?;
-
-        if let crossterm::event::Event::Key(key) = event {
-            let result = crate::tui::input::handle_key_event(key, ui);
-            if let InputResult::UiAction(action) = result {
-                match action {
-                    UiAction::Quit => {
-                        ui.should_quit = true;
-                        return Ok(());
-                    }
-                    UiAction::FileBrowserUp => {
-                        if let Some(ref mut fb) = ui.file_browser {
-                            fb.select_up();
-                        }
-                    }
-                    UiAction::FileBrowserDown => {
-                        if let Some(ref mut fb) = ui.file_browser {
-                            fb.select_down();
-                        }
-                    }
-                    UiAction::FileBrowserSelect => {
-                        let should_close = if let Some(ref mut fb) = ui.file_browser {
-                            if let Some(entry) = fb.entries.get(fb.selected).cloned() {
-                                if entry.is_dir {
-                                    fb.current_dir = entry.path;
-                                    fb.selected = 0;
-                                    fb.scroll_offset = 0;
-                                    fb.refresh_entries();
-                                    false
-                                } else {
-                                    // File selected — will be handled by caller
-                                    true
-                                }
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        if should_close {
-                            // For playlist file browser, the file path is captured
-                            // For settings, this shouldn't happen (dirs only)
-                            return Ok(());
-                        }
-                    }
-                    UiAction::FileBrowserSelectDir => {
-                        // Select the current directory (for media root selection)
-                        if let Some(ref fb) = ui.file_browser
-                            && fb.origin == FileBrowserOrigin::SettingsMediaRoot {
-                                let dir = fb.current_dir.clone();
-                                if let Some(ref mut settings) = ui.settings
-                                    && !settings.media_roots.contains(&dir) {
-                                        settings.media_roots.push(dir);
-                                    }
-                                ui.file_browser = None;
-                                ui.screen = Screen::Settings;
-                                return Ok(());
-                            }
-                    }
-                    UiAction::FileBrowserBack => {
-                        let should_close = if let Some(ref mut fb) = ui.file_browser {
-                            if let Some(parent) = fb.current_dir.parent() {
-                                // If already at root, close
-                                if fb.current_dir == parent.to_path_buf() {
-                                    true
-                                } else {
-                                    fb.current_dir = parent.to_path_buf();
-                                    fb.selected = 0;
-                                    fb.scroll_offset = 0;
-                                    fb.refresh_entries();
-                                    false
-                                }
-                            } else {
-                                true
-                            }
-                        } else {
-                            true
-                        };
-
-                        if should_close {
-                            ui.file_browser = None;
-                            // Return to previous screen
-                            if ui.settings.is_some() {
-                                ui.screen = Screen::Settings;
-                            } else {
-                                ui.screen = Screen::Main;
-                            }
-                            return Ok(());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
+// =========================================================================
+// Connected main loop
+// =========================================================================
 
 /// Run the connected main loop with TUI rendering.
 async fn run_connected(
@@ -632,9 +594,13 @@ async fn run_connected(
 
     let server_addr = tokio::net::lookup_host(&server_str)
         .await
-        .context(format!("failed to resolve server address: {server_str}"))?
+        .context(format!(
+            "failed to resolve server address: {server_str}"
+        ))?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("server address resolved to no addresses: {server_str}"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("server address resolved to no addresses: {server_str}")
+        })?;
 
     let tofu = Arc::new(TofuVerifier::new(Arc::clone(storage), server_str.clone()));
     *tofu_out = Some(Arc::clone(&tofu));
@@ -740,7 +706,12 @@ async fn run_connected(
             let worker_progress = Arc::clone(&progress);
             let worker_active = Arc::clone(&user_hash_active);
             let worker_tx = bg_hash_tx.clone();
-            tokio::spawn(bg_hash_worker(unknown_paths, worker_active, worker_progress, worker_tx));
+            tokio::spawn(bg_hash_worker(
+                unknown_paths,
+                worker_active,
+                worker_progress,
+                worker_tx,
+            ));
             tracing::info!(total, "Spawned background hash worker");
             Some(progress)
         } else {
@@ -751,7 +722,6 @@ async fn run_connected(
     let mut summary_interval = tokio::time::interval(Duration::from_secs(1));
     let mut position_tick = tokio::time::interval(Duration::from_millis(100));
     let mut event_stream = EventStream::new();
-    let mut needs_redraw = true;
 
     // Channel for mtime re-hash results: (file_id, new_hash_result)
     let (rehash_tx, mut rehash_rx) =
@@ -762,25 +732,35 @@ async fn run_connected(
     let mut echo_filter = EchoFilter::new();
     let mut mtime_tracker = MtimeTracker::new();
 
-    // Try auto-matching all existing playlist items (after player is declared)
+    // Try auto-matching all existing playlist items
     {
         let now = rv_client.shared_now().await;
-        let effects =
-            try_auto_match_all(&app_state, &media_index, storage, now).await;
+        let effects = try_auto_match_all(&app_state, &media_index, storage, now).await;
         dispatch_effects(
-            effects, &peer_mgr, &rv_client, storage,
-            &app_state, &gap_fill_tx,
-            &mut player, &mut echo_filter,
-            &mut mtime_tracker, &rehash_tx,
-        ).await;
+            effects,
+            &peer_mgr,
+            &rv_client,
+            storage,
+            &app_state,
+            &gap_fill_tx,
+            &mut player,
+            &mut echo_filter,
+            &mut mtime_tracker,
+            &rehash_tx,
+        )
+        .await;
     }
 
     loop {
-        // Draw if needed
-        if needs_redraw {
-            draw_main_screen(terminal, ui, &app_state, storage, &bg_hash_progress).await?;
-            needs_redraw = false;
-        }
+        // Build display data, produce ViewSpec, render
+        let spec = {
+            let app = app_state.lock().await;
+            let data = build_display_data(&app, storage, &bg_hash_progress);
+            drop(app);
+            let spec = view::view(ui, &data);
+            terminal.draw(|frame| renderer::render(&spec, frame))?;
+            spec
+        };
 
         tokio::select! {
             // Terminal events
@@ -790,198 +770,29 @@ async fn run_connected(
 
                 match event {
                     crossterm::event::Event::Key(key) => {
-                        if ui.screen == Screen::FileBrowser {
-                            // File browser overlay handles its own events
-                            run_file_browser_overlay(terminal, ui).await?;
+                        if let Some(action) = resolve_input(key, &spec) {
+                            let is_settings_save = matches!(action, Action::SettingsSave);
+                            let effects = apply_action(
+                                action, ui, storage, &app_state, &rv_client,
+                                &media_index, &mut mtime_tracker, &hash_tx,
+                                &user_hash_active,
+                            ).await?;
+                            dispatch_effects(
+                                effects, &peer_mgr, &rv_client, storage,
+                                &app_state, &gap_fill_tx,
+                                &mut player, &mut echo_filter,
+                                &mut mtime_tracker, &rehash_tx,
+                            ).await;
 
-                            if ui.should_quit {
+                            // Settings saved inline → break to reconnect
+                            if is_settings_save
+                                && ui.settings.as_ref().is_some_and(|s| s.is_valid())
+                            {
                                 break;
                             }
-
-                            // Check if a file was selected (from playlist add)
-                            let selected_file = ui.file_browser.as_ref().and_then(|fb| {
-                                fb.entries.get(fb.selected).and_then(|entry| {
-                                    if !entry.is_dir {
-                                        Some(entry.path.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            });
-
-                            if let Some(path) = selected_file {
-                                // Check if this is a manual map selection
-                                let manual_map_info = ui.file_browser.as_ref().and_then(|fb| {
-                                    if let FileBrowserOrigin::ManualMap {
-                                        ref file_id,
-                                        ..
-                                    } = fb.origin
-                                    {
-                                        Some(*file_id)
-                                    } else {
-                                        None
-                                    }
-                                });
-
-                                if let Some(file_id) = manual_map_info {
-                                    // Manual map: store mapping, clear Missing, record dir
-                                    ui.file_browser = None;
-                                    ui.screen = Screen::Main;
-
-                                    if let Ok(s) = storage.lock() {
-                                        let _ = s.set_file_mapping(&file_id, &path);
-                                    }
-                                    // Mark as manually mapped — skip mtime checks
-                                    mtime_tracker.manually_mapped.insert(file_id);
-                                    // Record the directory for this series
-                                    if let Some(dir) = path.parent() {
-                                        let app = app_state.lock().await;
-                                        let anime_id = app
-                                            .sync_engine
-                                            .state()
-                                            .anidb
-                                            .read(&file_id)
-                                            .and_then(|opt| opt.as_ref())
-                                            .map(|meta| meta.anime_id);
-                                        drop(app);
-                                        if let Some(aid) = anime_id
-                                            && let Ok(s) = storage.lock()
-                                        {
-                                            let _ = s.set_series_mapping_dir(aid, dir);
-                                        }
-                                    }
-                                    // Set file state to Ready
-                                    let now = rv_client.shared_now().await;
-                                    let effects = app_state.lock().await.process_event(
-                                        AppEvent::SetFileState {
-                                            file_id,
-                                            state: dessplay_core::types::FileState::Ready,
-                                        },
-                                        now,
-                                    );
-                                    dispatch_effects(
-                                        effects, &peer_mgr, &rv_client, storage,
-                                        &app_state, &gap_fill_tx,
-                                        &mut player, &mut echo_filter,
-                                        &mut mtime_tracker, &rehash_tx,
-                                    ).await;
-                                    tracing::info!(?file_id, path = %path.display(), "Manual map stored");
-                                } else {
-                                    ui.file_browser = None;
-
-                                    // Normal playlist add: hash and add
-                                    let total_bytes = std::fs::metadata(&path)
-                                        .map(|m| m.len())
-                                        .unwrap_or(0);
-                                    let progress = Arc::new(AtomicU64::new(0));
-                                    let filename = path
-                                        .file_name()
-                                        .map(|n| n.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| path.display().to_string());
-
-                                    ui.hashing = Some(HashingState {
-                                        filename,
-                                        total_bytes,
-                                        bytes_hashed: Arc::clone(&progress),
-                                    });
-                                    ui.screen = Screen::Hashing;
-
-                                    // Pause background hashing during user hash
-                                    user_hash_active.store(true, Ordering::Relaxed);
-
-                                    // Spawn non-blocking hash
-                                    let tx = hash_tx.clone();
-                                    let path_for_hash = path.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        let result = (|| {
-                                            let file = std::fs::File::open(&path_for_hash)?;
-                                            let reader = std::io::BufReader::new(file);
-                                            dessplay_core::ed2k::compute_ed2k_with_progress(
-                                                reader,
-                                                |bytes| progress.store(bytes, Ordering::Relaxed),
-                                            )
-                                        })();
-                                        let _ = tx.send((path_for_hash, result));
-                                    });
-                                }
-                            } else if ui.file_browser.is_none() {
-                                // File browser was closed without selection
-                                // Return to settings if open, otherwise main
-                                if ui.settings.is_some() {
-                                    ui.screen = Screen::Settings;
-                                } else {
-                                    ui.screen = Screen::Main;
-                                }
-                            }
-
-                            needs_redraw = true;
-                            continue;
-                        }
-
-                        let result = crate::tui::input::handle_key_event(key, ui);
-                        match result {
-                            InputResult::AppEvent(event) => {
-                                if ui.screen != Screen::Settings {
-                                    let now = rv_client.shared_now().await;
-                                    let effects = app_state.lock().await.process_event(event, now);
-                                    dispatch_effects(
-                                        effects, &peer_mgr, &rv_client, storage,
-                                        &app_state, &gap_fill_tx,
-                                        &mut player, &mut echo_filter,
-                                        &mut mtime_tracker, &rehash_tx,
-                                    ).await;
-                                }
-                                needs_redraw = true;
-                            }
-                            InputResult::UiAction(action) => {
-                                if ui.screen == Screen::Settings {
-                                    apply_settings_action(ui, &action, storage)?;
-                                    if matches!(action, UiAction::SettingsSave)
-                                        && ui.settings.as_ref().is_some_and(|s| s.is_valid())
-                                    {
-                                        // Settings saved — break to reconnect with new config
-                                        break;
-                                    }
-                                    if matches!(action, UiAction::SettingsCancel) {
-                                        ui.settings = None;
-                                        ui.screen = Screen::Main;
-                                    }
-                                } else {
-                                    apply_main_ui_action(ui, &action, storage, &app_state, &rv_client).await?;
-                                }
-                                needs_redraw = true;
-                            }
-                            InputResult::Both(event, action) => {
-                                if ui.screen == Screen::Settings {
-                                    apply_settings_action(ui, &action, storage)?;
-                                    if matches!(action, UiAction::SettingsSave)
-                                        && ui.settings.as_ref().is_some_and(|s| s.is_valid())
-                                    {
-                                        break;
-                                    }
-                                    if matches!(action, UiAction::SettingsCancel) {
-                                        ui.settings = None;
-                                        ui.screen = Screen::Main;
-                                    }
-                                } else {
-                                    let now = rv_client.shared_now().await;
-                                    let effects = app_state.lock().await.process_event(event, now);
-                                    dispatch_effects(
-                                        effects, &peer_mgr, &rv_client, storage,
-                                        &app_state, &gap_fill_tx,
-                                        &mut player, &mut echo_filter,
-                                        &mut mtime_tracker, &rehash_tx,
-                                    ).await;
-                                    apply_main_ui_action(ui, &action, storage, &app_state, &rv_client).await?;
-                                }
-                                needs_redraw = true;
-                            }
-                            InputResult::None => {}
                         }
                     }
-                    crossterm::event::Event::Resize(_, _) => {
-                        needs_redraw = true;
-                    }
+                    crossterm::event::Event::Resize(_, _) => {} // re-renders next iteration
                     _ => {}
                 }
 
@@ -1069,7 +880,6 @@ async fn run_connected(
                         break;
                     }
                 }
-                needs_redraw = true;
             }
 
             // Peer events
@@ -1208,7 +1018,6 @@ async fn run_connected(
                         break;
                     }
                 }
-                needs_redraw = true;
             }
 
             // Gap fill responses
@@ -1225,7 +1034,6 @@ async fn run_connected(
                         &mut player, &mut echo_filter,
                         &mut mtime_tracker, &rehash_tx,
                     ).await;
-                    needs_redraw = true;
                 }
             }
 
@@ -1286,7 +1094,6 @@ async fn run_connected(
                             ui.status_message = Some(format!("Hash error: {e}"));
                         }
                     }
-                    needs_redraw = true;
                 }
             }
 
@@ -1296,13 +1103,11 @@ async fn run_connected(
                     match hash_result {
                         Ok(actual_file_id) => {
                             if actual_file_id == expected_file_id {
-                                // Hash matches — file content unchanged, update stored mtime
                                 tracing::info!(?expected_file_id, "Re-hash matches, mtime updated");
                                 if let Some((path, _)) = mtime_tracker.mtimes.get(&expected_file_id) {
                                     let path = path.clone();
                                     mtime_tracker.record_mtime(expected_file_id, &path);
                                 }
-                                // Proceed with the deferred unpause
                                 if let Some(p) = player.as_ref() {
                                     echo_filter.register_unpause();
                                     if let Err(e) = p.unpause().await {
@@ -1310,7 +1115,6 @@ async fn run_connected(
                                     }
                                 }
                             } else {
-                                // Hash mismatch — file was replaced, set FileState::Missing
                                 tracing::warn!(
                                     ?expected_file_id, ?actual_file_id,
                                     "Re-hash mismatch: file content changed"
@@ -1329,13 +1133,11 @@ async fn run_connected(
                                     &mut player, &mut echo_filter,
                                     &mut mtime_tracker, &rehash_tx,
                                 ).await;
-                                // Remove the stale mtime entry
                                 mtime_tracker.mtimes.remove(&expected_file_id);
                             }
                         }
                         Err(e) => {
                             tracing::warn!(?expected_file_id, "Re-hash failed: {e}");
-                            // Can't verify — set Missing to be safe
                             let now = rv_client.shared_now().await;
                             let effects = app_state.lock().await.process_event(
                                 AppEvent::SetFileState {
@@ -1353,7 +1155,6 @@ async fn run_connected(
                             mtime_tracker.mtimes.remove(&expected_file_id);
                         }
                     }
-                    needs_redraw = true;
                 }
             }
 
@@ -1365,10 +1166,8 @@ async fn run_connected(
                             if let Ok(s) = storage.lock() {
                                 let _ = s.set_file_mapping(&file_id, &path);
                             }
-                            // Request AniDB metadata lookup from server
                             rv_client.send(RvControl::AniDbLookup { file_id, file_size });
                             let now = rv_client.shared_now().await;
-                            // Share filename via CRDT
                             let filename = path
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
@@ -1388,7 +1187,6 @@ async fn run_connected(
                                     &mut mtime_tracker, &rehash_tx,
                                 ).await;
                             }
-                            // Try auto-matching any pending playlist items
                             let now = rv_client.shared_now().await;
                             let match_effects =
                                 try_auto_match_all(&app_state, &media_index, storage, now).await;
@@ -1403,7 +1201,6 @@ async fn run_connected(
                             tracing::debug!(path = %path.display(), "Background hash failed: {e}");
                         }
                     }
-                    needs_redraw = true;
                 }
             }
 
@@ -1412,12 +1209,10 @@ async fn run_connected(
                 if let Some(p) = player.as_ref() {
                     p.recv_event().await
                 } else {
-                    // No player — pend forever
                     std::future::pending::<anyhow::Result<crate::player::PlayerEvent>>().await
                 }
             } => {
                 if let Ok(raw_event) = event {
-                    // Run through echo filter
                     if let Some(filtered) = echo_filter.filter(raw_event) {
                         let app_event = match filtered {
                             crate::player::PlayerEvent::Paused => AppEvent::PlayerPaused,
@@ -1442,10 +1237,8 @@ async fn run_connected(
                             &mut player, &mut echo_filter,
                             &mut mtime_tracker, &rehash_tx,
                         ).await;
-                        needs_redraw = true;
                     }
                 } else {
-                    // Player channel closed — player crashed
                     let now = rv_client.shared_now().await;
                     let effects = app_state.lock().await.process_event(AppEvent::PlayerCrashed, now);
                     dispatch_effects(
@@ -1454,22 +1247,12 @@ async fn run_connected(
                         &mut player, &mut echo_filter,
                         &mut mtime_tracker, &rehash_tx,
                     ).await;
-                    needs_redraw = true;
                 }
             }
 
             // Position poll tick (100ms)
             _ = position_tick.tick() => {
-                // Redraw during hashing to update the progress bar
-                if ui.hashing.is_some() {
-                    needs_redraw = true;
-                }
-                // Redraw during background indexing to update the counter
-                if bg_hash_progress.as_ref().is_some_and(|p| {
-                    p.completed_files.load(Ordering::Relaxed) < p.total_files as u64
-                }) {
-                    needs_redraw = true;
-                }
+                // Tick wakes the loop so hashing/bg progress redraws
             }
 
             // Periodic tick
@@ -1482,7 +1265,6 @@ async fn run_connected(
                     &mut player, &mut echo_filter,
                     &mut mtime_tracker, &rehash_tx,
                 ).await;
-                // Don't redraw on every tick unless effects requested it
             }
         }
     }
@@ -1495,300 +1277,84 @@ async fn run_connected(
     Ok(())
 }
 
-/// Draw the main screen.
-async fn draw_main_screen(
-    terminal: &mut crate::tui::terminal::Tui,
-    ui: &UiState,
-    app_state: &Arc<tokio::sync::Mutex<AppState>>,
-    storage: &Arc<Mutex<ClientStorage>>,
-    bg_hash_progress: &Option<Arc<BgHashProgress>>,
-) -> Result<()> {
-    // Collect all data from app state into owned values, then drop the lock
-    let (
-        chat_msgs,
-        user_entries,
-        playlist_entries,
-        series_entries,
-        current_file_name,
-        position_secs,
-        duration_secs,
-        is_playing,
-        blocking_users,
-    ) = {
-        let app = app_state.lock().await;
-        let crdt = app.sync_engine.state();
+// =========================================================================
+// Unified action handler (connected mode)
+// =========================================================================
 
-        // Chat messages → owned
-        let chat_view = crdt.chat.merged_view();
-        let chat_msgs: Vec<(UserId, String)> = chat_view
-            .iter()
-            .map(|(uid, entry)| ((*uid).clone(), entry.text.clone()))
-            .collect();
-
-        // User entries
-        let mut user_entries = Vec::new();
-
-        let our_user_state = crdt
-            .user_states
-            .read(&app.our_user_id)
-            .copied()
-            .unwrap_or(UserState::Ready);
-        let our_file_state = app
-            .playback
-            .current_file
-            .and_then(|fid| crdt.file_states.read(&(app.our_user_id.clone(), fid)).cloned())
-            .unwrap_or(FileState::Ready);
-        user_entries.push(users::UserEntry {
-            name: app.our_user_id.0.clone(),
-            user_state: our_user_state,
-            file_state: our_file_state,
-            is_self: true,
-        });
-
-        for user_id in app.connected_peers.values() {
-            let user_state = crdt
-                .user_states
-                .read(user_id)
-                .copied()
-                .unwrap_or(UserState::Ready);
-            let file_state = app
-                .playback
-                .current_file
-                .and_then(|fid| crdt.file_states.read(&(user_id.clone(), fid)).cloned())
-                .unwrap_or(FileState::Ready);
-            user_entries.push(users::UserEntry {
-                name: user_id.0.clone(),
-                user_state,
-                file_state,
-                is_self: false,
-            });
-        }
-
-        // Playlist entries
-        let playlist_snapshot = crdt.playlist.snapshot();
-        let playlist_entries: Vec<playlist::PlaylistEntry> = playlist_snapshot
-            .iter()
-            .enumerate()
-            .map(|(i, file_id)| {
-                let local_path = storage
-                    .lock()
-                    .ok()
-                    .and_then(|s| s.get_file_mapping(file_id).ok().flatten());
-                let crdt_filename = crdt.filenames.read(file_id).cloned();
-                let display_name =
-                    playlist::file_display_name(file_id, local_path.as_deref(), crdt_filename.as_deref());
-                let is_missing = local_path.is_none();
-                playlist::PlaylistEntry {
-                    file_id: *file_id,
-                    display_name,
-                    is_missing,
-                    is_current: i == 0,
-                }
-            })
-            .collect();
-
-        // Series list for Recent Series pane
-        let series_entries = {
-            let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            series_browser::build_series_list(crdt, &st)
-        };
-
-        let current_file_name: Option<String> =
-            playlist_entries.first().map(|e| e.display_name.clone());
-
-        let position_secs = app.our_position_secs;
-        let duration_secs = app.file_duration_secs;
-        let is_playing = app.playback.should_play;
-        let blocking: Vec<String> = app
-            .playback
-            .blocking_users
-            .iter()
-            .map(|u| u.0.clone())
-            .collect();
-
-        (
-            chat_msgs,
-            user_entries,
-            playlist_entries,
-            series_entries,
-            current_file_name,
-            position_secs,
-            duration_secs,
-            is_playing,
-            blocking,
-        )
-    };
-
-    terminal.draw(|frame| {
-        let area = frame.area();
-        let layout = compute_layout(area);
-
-        // Chat
-        let chat_focused = ui.focus == crate::tui::ui_state::FocusedPane::Chat;
-        let chat_refs: Vec<(&UserId, &str)> = chat_msgs
-            .iter()
-            .map(|(uid, text)| (uid, text.as_str()))
-            .collect();
-        chat::render_chat_messages(
-            layout.chat_messages,
-            frame.buffer_mut(),
-            &chat_refs,
-            ui.chat_scroll,
-            chat_focused,
-        );
-        chat::render_chat_input(
-            layout.chat_input,
-            frame.buffer_mut(),
-            &ui.input,
-            chat_focused,
-        );
-
-        // Recent series
-        recent_series::render_recent_series(
-            layout.recent_series,
-            frame.buffer_mut(),
-            &series_entries,
-            ui.recent_selected,
-            ui.focus == crate::tui::ui_state::FocusedPane::RecentSeries,
-        );
-
-        // Users
-        users::render_users(
-            layout.users,
-            frame.buffer_mut(),
-            &user_entries,
-            false, // users pane is never focused
-        );
-
-        // Playlist
-        playlist::render_playlist(
-            layout.playlist,
-            frame.buffer_mut(),
-            &playlist_entries,
-            ui.playlist_selected,
-            ui.focus == crate::tui::ui_state::FocusedPane::Playlist,
-        );
-
-        // Player status
-        let bg_progress = bg_hash_progress.as_ref().and_then(|p| {
-            let completed = p.completed_files.load(Ordering::Relaxed);
-            let total = p.total_files;
-            if completed < total as u64 {
-                Some((completed, total))
-            } else {
-                None
-            }
-        });
-        player_status::render_player_status(
-            layout.player_status,
-            frame.buffer_mut(),
-            current_file_name.as_deref(),
-            position_secs,
-            duration_secs,
-            is_playing,
-            &blocking_users,
-            bg_progress,
-        );
-
-        // Hashing progress modal overlay
-        if let Some(ref hashing_state) = ui.hashing {
-            hashing_progress::render_hashing_progress(area, frame.buffer_mut(), hashing_state);
-        }
-
-        // Settings modal overlay (if open)
-        if let Some(ref settings_state) = ui.settings {
-            // Modal: full width minus 4 padding, leaves 3 chat lines visible at bottom
-            let modal_height = layout.chat_messages.height.saturating_sub(3);
-            if modal_height > 0 {
-                let modal_area = Rect {
-                    x: area.x + 2,
-                    y: area.y,
-                    width: area.width.saturating_sub(4),
-                    height: modal_height,
-                };
-                settings::render_settings(modal_area, frame.buffer_mut(), settings_state);
-            }
-            // Override keybinding bar with settings keybindings
-            keybinding_bar::render_bar(
-                layout.keybinding_bar,
-                frame.buffer_mut(),
-                settings::keybindings(),
-            );
-        } else if let Some(ref ma_state) = ui.metadata_assign {
-            // Metadata assignment modal overlay (centered)
-            let modal_height = area.height.min(20);
-            let modal_width = area.width.saturating_sub(4).min(60);
-            let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
-            let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
-            let modal_area = Rect {
-                x,
-                y,
-                width: modal_width,
-                height: modal_height,
-            };
-            metadata_assign::render_metadata_assign(modal_area, frame.buffer_mut(), ma_state);
-            keybinding_bar::render_bar(
-                layout.keybinding_bar,
-                frame.buffer_mut(),
-                &metadata_assign::keybindings(&ma_state.step),
-            );
-        } else {
-            // Keybinding bar
-            keybinding_bar::render_keybinding_bar(
-                layout.keybinding_bar,
-                frame.buffer_mut(),
-                &ui.focus,
-            );
-        }
-    })?;
-
-    Ok(())
-}
-
-/// Apply a UI action in the main screen context.
-async fn apply_main_ui_action(
+/// Apply an `Action` from `resolve_input` in the connected main loop.
+/// Returns any `AppEffect`s that need to be dispatched.
+#[allow(clippy::too_many_arguments)]
+async fn apply_action(
+    action: Action,
     ui: &mut UiState,
-    action: &UiAction,
     storage: &Arc<Mutex<ClientStorage>>,
     app_state: &Arc<tokio::sync::Mutex<AppState>>,
     rv_client: &RendezvousClient,
-) -> Result<()> {
+    _media_index: &MediaIndex,
+    mtime_tracker: &mut MtimeTracker,
+    hash_tx: &tokio::sync::mpsc::UnboundedSender<(PathBuf, std::io::Result<FileId>)>,
+    user_hash_active: &Arc<AtomicBool>,
+) -> Result<Vec<AppEffect>> {
+    let mut out_effects = Vec::new();
     match action {
-        UiAction::Quit => {
+        Action::Quit => {
             ui.should_quit = true;
         }
-        UiAction::CycleFocus => {
+        Action::CycleFocus => {
             ui.focus = ui.focus.next();
         }
-        // Chat input
-        UiAction::InsertChar(c) => ui.input.insert_char(*c),
-        UiAction::DeleteBack => ui.input.delete_back(),
-        UiAction::DeleteForward => ui.input.delete_forward(),
-        UiAction::CursorLeft => ui.input.move_left(),
-        UiAction::CursorRight => ui.input.move_right(),
-        UiAction::CursorWordLeft => ui.input.move_word_left(),
-        UiAction::CursorWordRight => ui.input.move_word_right(),
-        UiAction::CursorHome => ui.input.move_home(),
-        UiAction::CursorEnd => ui.input.move_end(),
-        UiAction::ClearInput => ui.input.clear(),
-        UiAction::ScrollChatUp => {
+
+        // ---- Chat input ----
+        Action::SendChat => {
+            let text = ui.input.text.trim().to_string();
+            if !text.is_empty() {
+                // Check for /commands
+                match text.as_str() {
+                    "/exit" | "/quit" | "/q" => {
+                        ui.should_quit = true;
+                        return Ok(out_effects);
+                    }
+                    _ => {}
+                }
+                ui.input.clear();
+                let now = rv_client.shared_now().await;
+                let effects =
+                    app_state
+                        .lock()
+                        .await
+                        .process_event(AppEvent::SendChat { text }, now);
+                out_effects.extend(effects);
+            }
+        }
+        Action::ClearInput => ui.input.clear(),
+        Action::InsertChar(c) => ui.input.insert_char(c),
+        Action::DeleteBack => ui.input.delete_back(),
+        Action::DeleteForward => ui.input.delete_forward(),
+        Action::CursorLeft => ui.input.move_left(),
+        Action::CursorRight => ui.input.move_right(),
+        Action::CursorWordLeft => ui.input.move_word_left(),
+        Action::CursorWordRight => ui.input.move_word_right(),
+        Action::CursorHome => ui.input.move_home(),
+        Action::CursorEnd => ui.input.move_end(),
+        Action::ScrollChatUp => {
             ui.chat_scroll = ui.chat_scroll.saturating_add(3);
         }
-        UiAction::ScrollChatDown => {
+        Action::ScrollChatDown => {
             ui.chat_scroll = ui.chat_scroll.saturating_sub(3);
         }
-        // Playlist
-        UiAction::PlaylistSelectUp => {
+
+        // ---- Playlist ----
+        Action::PlaylistSelectUp => {
             ui.playlist_selected = ui.playlist_selected.saturating_sub(1);
         }
-        UiAction::PlaylistSelectDown => {
+        Action::PlaylistSelectDown => {
             let app = app_state.lock().await;
             let playlist_len = app.sync_engine.state().playlist.snapshot().len();
             if playlist_len > 0 {
                 ui.playlist_selected = (ui.playlist_selected + 1).min(playlist_len - 1);
             }
         }
-        UiAction::PlaylistRemove => {
+        Action::PlaylistRemove => {
             let now = rv_client.shared_now().await;
             let file_id = {
                 let app = app_state.lock().await;
@@ -1797,45 +1363,50 @@ async fn apply_main_ui_action(
             };
             if let Some(file_id) = file_id {
                 let mut app = app_state.lock().await;
-                app.process_event(AppEvent::RemoveFromPlaylist { file_id }, now);
+                let effects =
+                    app.process_event(AppEvent::RemoveFromPlaylist { file_id }, now);
+                out_effects.extend(effects);
             }
         }
-        UiAction::PlaylistMoveUp => {
+        Action::PlaylistMoveUp => {
             let now = rv_client.shared_now().await;
             let mut app = app_state.lock().await;
             let snapshot = app.sync_engine.state().playlist.snapshot();
             if ui.playlist_selected > 0
-                && let Some(file_id) = snapshot.get(ui.playlist_selected) {
-                    let file_id = *file_id;
-                    // Move before the item above: "after" the one two above, or None if moving to first
-                    let after = if ui.playlist_selected >= 2 {
-                        snapshot.get(ui.playlist_selected - 2).copied()
-                    } else {
-                        None
-                    };
-                    app.process_event(
-                        AppEvent::MoveInPlaylist { file_id, after },
-                        now,
-                    );
-                    ui.playlist_selected -= 1;
-                }
+                && let Some(file_id) = snapshot.get(ui.playlist_selected)
+            {
+                let file_id = *file_id;
+                let after = if ui.playlist_selected >= 2 {
+                    snapshot.get(ui.playlist_selected - 2).copied()
+                } else {
+                    None
+                };
+                let effects = app.process_event(
+                    AppEvent::MoveInPlaylist { file_id, after },
+                    now,
+                );
+                out_effects.extend(effects);
+                ui.playlist_selected -= 1;
+            }
         }
-        UiAction::PlaylistMoveDown => {
+        Action::PlaylistMoveDown => {
             let now = rv_client.shared_now().await;
             let mut app = app_state.lock().await;
             let snapshot = app.sync_engine.state().playlist.snapshot();
             if ui.playlist_selected < snapshot.len().saturating_sub(1)
-                && let Some(file_id) = snapshot.get(ui.playlist_selected) {
-                    let file_id = *file_id;
-                    let after = snapshot.get(ui.playlist_selected + 1).copied();
-                    app.process_event(
-                        AppEvent::MoveInPlaylist { file_id, after },
-                        now,
-                    );
-                    ui.playlist_selected += 1;
-                }
+                && let Some(file_id) = snapshot.get(ui.playlist_selected)
+            {
+                let file_id = *file_id;
+                let after = snapshot.get(ui.playlist_selected + 1).copied();
+                let effects = app.process_event(
+                    AppEvent::MoveInPlaylist { file_id, after },
+                    now,
+                );
+                out_effects.extend(effects);
+                ui.playlist_selected += 1;
+            }
         }
-        UiAction::OpenFileBrowser => {
+        Action::OpenFileBrowser => {
             let media_roots = storage
                 .lock()
                 .ok()
@@ -1846,11 +1417,11 @@ async fn apply_main_ui_action(
                 .cloned()
                 .or_else(dirs::home_dir)
                 .unwrap_or_else(|| PathBuf::from("/"));
-            ui.file_browser = Some(FileBrowserState::open(start_dir, FileBrowserOrigin::Playlist));
+            ui.file_browser =
+                Some(FileBrowserState::open(start_dir, FileBrowserOrigin::Playlist));
             ui.screen = Screen::FileBrowser;
         }
-        UiAction::ManualMapFile => {
-            // Get the selected playlist item's FileId and metadata
+        Action::ManualMapFile => {
             let info = {
                 let app = app_state.lock().await;
                 let crdt = app.sync_engine.state();
@@ -1865,13 +1436,8 @@ async fn apply_main_ui_action(
                     (*file_id, filename, anime_id)
                 })
             };
-
             if let Some((file_id, filename, anime_id)) = info {
                 let target_filename = filename.unwrap_or_default();
-
-                // Smart default: determine starting directory
-                // 1. If user previously mapped this series → that directory
-                // 2. Otherwise → first media root or home
                 let start_dir = anime_id
                     .and_then(|aid| {
                         storage
@@ -1888,7 +1454,6 @@ async fn apply_main_ui_action(
                     })
                     .or_else(dirs::home_dir)
                     .unwrap_or_else(|| PathBuf::from("/"));
-
                 ui.file_browser = Some(FileBrowserState::open(
                     start_dir,
                     FileBrowserOrigin::ManualMap {
@@ -1899,17 +1464,13 @@ async fn apply_main_ui_action(
                 ui.screen = Screen::FileBrowser;
             }
         }
-        // Metadata assignment
-        UiAction::AssignMetadata => {
+        Action::AssignMetadata => {
             let app = app_state.lock().await;
             let crdt = app.sync_engine.state();
             let snapshot = crdt.playlist.snapshot();
-
             if let Some(file_id) = snapshot.get(ui.playlist_selected).copied() {
-                // Collect unique series from all anidb entries
                 let mut seen = std::collections::HashSet::new();
                 let mut series_list = Vec::new();
-
                 for (_key, (_ts, value)) in crdt.anidb.iter() {
                     if let Some(meta) = value
                         && seen.insert(meta.anime_id)
@@ -1920,10 +1481,8 @@ async fn apply_main_ui_action(
                         });
                     }
                 }
-
                 series_list.sort_by(|a, b| a.name.cmp(&b.name));
                 drop(app);
-
                 ui.metadata_assign = Some(MetadataAssignState {
                     file_id,
                     series_list,
@@ -1934,36 +1493,270 @@ async fn apply_main_ui_action(
                 ui.screen = Screen::MetadataAssign;
             }
         }
-        UiAction::MetadataSelectUp => {
+
+        // ---- Recent series ----
+        Action::RecentSelectUp => {
+            ui.recent_selected = ui.recent_selected.saturating_sub(1);
+        }
+        Action::RecentSelectDown => {
+            let app = app_state.lock().await;
+            let crdt = app.sync_engine.state();
+            let st = storage
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let count = series_browser::build_series_list(crdt, &st).len();
+            drop(st);
+            drop(app);
+            if count > 0 {
+                ui.recent_selected = (ui.recent_selected + 1).min(count - 1);
+            }
+        }
+        Action::RecentSeriesSelect => {
+            let info = {
+                let app = app_state.lock().await;
+                let crdt = app.sync_engine.state();
+                let st = storage
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                let list = series_browser::build_series_list(crdt, &st);
+                list.get(ui.recent_selected).map(|entry| {
+                    let dir = series_browser::series_directory(crdt, &st, entry.anime_id);
+                    let next_file =
+                        series_browser::next_unwatched_filename(crdt, &st, entry.anime_id);
+                    (dir, next_file)
+                })
+            };
+            if let Some((Some(dir), next_file)) = info {
+                let mut fb = FileBrowserState::open(dir, FileBrowserOrigin::Playlist);
+                if let Some(filename) = next_file
+                    && let Some(idx) = fb.entries.iter().position(|e| e.name == filename)
+                {
+                    fb.selected = idx;
+                }
+                ui.file_browser = Some(fb);
+                ui.screen = Screen::FileBrowser;
+            }
+        }
+
+        // ---- Settings ----
+        Action::OpenSettings => {
+            let (config, media_roots) = {
+                let s = storage
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                let config = s.get_config()?.ok_or_else(|| anyhow::anyhow!("no config"))?;
+                let roots = s.get_media_roots().unwrap_or_default();
+                (config, roots)
+            };
+            ui.settings = Some(SettingsState::from_config(&config, media_roots));
+            ui.screen = Screen::Settings;
+        }
+        Action::SettingsNextField => {
+            if let Some(ref mut s) = ui.settings {
+                s.next_field();
+            }
+        }
+        Action::SettingsPrevField => {
+            if let Some(ref mut s) = ui.settings {
+                s.prev_field();
+            }
+        }
+        Action::SettingsInsertChar(c) => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                match s.focused_field {
+                    0 => s.username.push(c),
+                    1 => s.server.push(c),
+                    3 => s.password.push(c),
+                    _ => {}
+                }
+            }
+        }
+        Action::SettingsDeleteBack => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                match s.focused_field {
+                    0 => {
+                        s.username.pop();
+                    }
+                    1 => {
+                        s.server.pop();
+                    }
+                    3 => {
+                        s.password.pop();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Action::SettingsTogglePlayer => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                s.player = if s.player == "mpv" {
+                    "vlc".to_string()
+                } else {
+                    "mpv".to_string()
+                };
+            }
+        }
+        Action::SettingsAddMediaRoot => {
+            let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+            ui.file_browser = Some(FileBrowserState::open(
+                start_dir,
+                FileBrowserOrigin::SettingsMediaRoot,
+            ));
+            ui.screen = Screen::FileBrowser;
+        }
+        Action::SettingsRemoveMediaRoot => {
+            if let Some(ref mut s) = ui.settings
+                && !s.media_roots.is_empty()
+            {
+                s.alert = None;
+                s.media_roots.pop();
+            }
+        }
+        Action::SettingsMoveRootUp => {
+            if let Some(ref mut s) = ui.settings {
+                let len = s.media_roots.len();
+                if len >= 2 {
+                    s.alert = None;
+                    s.media_roots.swap(len - 2, len - 1);
+                }
+            }
+        }
+        Action::SettingsMoveRootDown => {
+            if let Some(ref mut s) = ui.settings {
+                let len = s.media_roots.len();
+                if len >= 2 {
+                    s.alert = None;
+                    s.media_roots.swap(0, 1);
+                }
+            }
+        }
+        Action::SettingsSave => {
+            if let Some(ref s) = ui.settings
+                && s.is_valid()
+            {
+                let config = Config {
+                    username: s.username.trim().to_string(),
+                    server: s.server.trim().to_string(),
+                    player: s.player.clone(),
+                    password: if s.password.is_empty() {
+                        std::env::var("DESSPLAY_PASSWORD").ok()
+                    } else {
+                        Some(s.password.clone())
+                    },
+                };
+                let roots: Vec<PathBuf> = s.media_roots.clone();
+                let st = storage
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                st.save_config(&config)?;
+                st.set_media_roots(&roots)?;
+                // Don't clear ui.settings — run() checks it to detect reconnect
+            }
+        }
+        Action::SettingsCancel => {
+            ui.settings = None;
+            ui.screen = Screen::Main;
+        }
+
+        // ---- File browser ----
+        Action::FileBrowserUp => {
+            if let Some(ref mut fb) = ui.file_browser {
+                fb.select_up();
+            }
+        }
+        Action::FileBrowserDown => {
+            if let Some(ref mut fb) = ui.file_browser {
+                fb.select_down();
+            }
+        }
+        Action::FileBrowserSelect => {
+            let effects = handle_file_browser_select(
+                ui, storage, app_state, rv_client, mtime_tracker, hash_tx, user_hash_active,
+            )
+            .await?;
+            out_effects.extend(effects);
+        }
+        Action::FileBrowserSelectDir => {
+            if let Some(ref fb) = ui.file_browser
+                && fb.origin == FileBrowserOrigin::SettingsMediaRoot
+            {
+                let dir = fb.current_dir.clone();
+                if let Some(ref mut settings) = ui.settings
+                    && !settings.media_roots.contains(&dir)
+                {
+                    settings.media_roots.push(dir);
+                }
+                ui.file_browser = None;
+                ui.screen = Screen::Settings;
+            }
+        }
+        Action::FileBrowserBack => {
+            let should_close = if let Some(ref mut fb) = ui.file_browser {
+                if let Some(parent) = fb.current_dir.parent() {
+                    if fb.current_dir == parent.to_path_buf() {
+                        true
+                    } else {
+                        fb.current_dir = parent.to_path_buf();
+                        fb.selected = 0;
+                        fb.scroll_offset = 0;
+                        fb.refresh_entries();
+                        false
+                    }
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            if should_close {
+                ui.file_browser = None;
+                if ui.settings.is_some() {
+                    ui.screen = Screen::Settings;
+                } else {
+                    ui.screen = Screen::Main;
+                }
+            }
+        }
+
+        // ---- TOFU ----
+        Action::TofuAccept | Action::TofuReject => {
+            // Handled in pre-connection loop; no-op in connected mode
+        }
+
+        // ---- Metadata assignment ----
+        Action::MetadataSelectUp => {
             if let Some(ref mut state) = ui.metadata_assign {
                 state.selected = state.selected.saturating_sub(1);
             }
         }
-        UiAction::MetadataSelectDown => {
+        Action::MetadataSelectDown => {
             if let Some(ref mut state) = ui.metadata_assign
                 && !state.series_list.is_empty()
             {
                 state.selected = (state.selected + 1).min(state.series_list.len() - 1);
             }
         }
-        UiAction::MetadataConfirmSeries => {
+        Action::MetadataConfirmSeries => {
             if let Some(ref mut state) = ui.metadata_assign
                 && !state.series_list.is_empty()
             {
                 state.step = MetadataAssignStep::EnterEpisode;
             }
         }
-        UiAction::MetadataInsertChar(c) => {
+        Action::MetadataInsertChar(c) => {
             if let Some(ref mut state) = ui.metadata_assign {
-                state.episode_input.insert_char(*c);
+                state.episode_input.insert_char(c);
             }
         }
-        UiAction::MetadataDeleteBack => {
+        Action::MetadataDeleteBack => {
             if let Some(ref mut state) = ui.metadata_assign {
                 state.episode_input.delete_back();
             }
         }
-        UiAction::MetadataConfirmEpisode => {
+        Action::MetadataConfirmEpisode => {
             if let Some(ref state) = ui.metadata_assign {
                 let episode = state.episode_input.text.trim().to_string();
                 if !episode.is_empty()
@@ -1976,7 +1769,6 @@ async fn apply_main_ui_action(
                     let now = rv_client.shared_now().await;
                     let mut app = app_state.lock().await;
 
-                    // Determine MetadataSource based on current data
                     let current_source = app
                         .sync_engine
                         .state()
@@ -1987,8 +1779,7 @@ async fn apply_main_ui_action(
 
                     let source = match current_source {
                         None | Some(MetadataSource::User) => MetadataSource::User,
-                        Some(MetadataSource::AniDb)
-                        | Some(MetadataSource::UserOverAniDb) => {
+                        Some(MetadataSource::AniDb) | Some(MetadataSource::UserOverAniDb) => {
                             MetadataSource::UserOverAniDb
                         }
                     };
@@ -2006,77 +1797,148 @@ async fn apply_main_ui_action(
                         timestamp: now,
                         value: LwwValue::AniDb(file_id, Some(metadata)),
                     };
-                    // Apply locally; sync will propagate via periodic summary
-                    let _ = app.sync_engine.apply_local_op(op);
+                    let actions = app.sync_engine.apply_local_op(op);
+                    if !actions.is_empty() {
+                        out_effects.push(AppEffect::Sync(actions));
+                    }
                 }
             }
             ui.metadata_assign = None;
             ui.screen = Screen::Main;
         }
-        UiAction::MetadataCancel => {
+        Action::MetadataCancel => {
             ui.metadata_assign = None;
             ui.screen = Screen::Main;
         }
-        // Recent series
-        UiAction::RecentSelectUp => {
-            ui.recent_selected = ui.recent_selected.saturating_sub(1);
-        }
-        UiAction::RecentSelectDown => {
-            let app = app_state.lock().await;
-            let crdt = app.sync_engine.state();
-            let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let count = series_browser::build_series_list(crdt, &st).len();
-            drop(st);
-            drop(app);
-            if count > 0 {
-                ui.recent_selected = (ui.recent_selected + 1).min(count - 1);
-            }
-        }
-        UiAction::RecentSeriesSelect => {
-            // Build series list, find the selected series, open file browser to its directory
-            let info = {
-                let app = app_state.lock().await;
-                let crdt = app.sync_engine.state();
-                let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-                let list = series_browser::build_series_list(crdt, &st);
-
-                list.get(ui.recent_selected).map(|entry| {
-                    let dir = series_browser::series_directory(crdt, &st, entry.anime_id);
-                    let next_file =
-                        series_browser::next_unwatched_filename(crdt, &st, entry.anime_id);
-                    (dir, next_file)
-                })
-            };
-
-            if let Some((Some(dir), next_file)) = info {
-                let mut fb = FileBrowserState::open(dir, FileBrowserOrigin::Playlist);
-
-                // Position cursor on next unwatched episode if known
-                if let Some(filename) = next_file
-                    && let Some(idx) = fb.entries.iter().position(|e| e.name == filename)
-                {
-                    fb.selected = idx;
-                }
-
-                ui.file_browser = Some(fb);
-                ui.screen = Screen::FileBrowser;
-            }
-        }
-        // Settings
-        UiAction::OpenSettings => {
-            let (config, media_roots) = {
-                let s = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-                let config = s.get_config()?.ok_or_else(|| anyhow::anyhow!("no config"))?;
-                let roots = s.get_media_roots().unwrap_or_default();
-                (config, roots)
-            };
-            ui.settings = Some(SettingsState::from_config(&config, media_roots));
-            ui.screen = Screen::Settings;
-        }
-        _ => {}
     }
-    Ok(())
+    Ok(out_effects)
 }
+
+/// Handle FileBrowserSelect: navigate into directories, or process file
+/// selection for playlist add / manual map.
+#[allow(clippy::too_many_arguments)]
+async fn handle_file_browser_select(
+    ui: &mut UiState,
+    storage: &Arc<Mutex<ClientStorage>>,
+    app_state: &Arc<tokio::sync::Mutex<AppState>>,
+    rv_client: &RendezvousClient,
+    mtime_tracker: &mut MtimeTracker,
+    hash_tx: &tokio::sync::mpsc::UnboundedSender<(PathBuf, std::io::Result<FileId>)>,
+    user_hash_active: &Arc<AtomicBool>,
+) -> Result<Vec<AppEffect>> {
+    let mut out_effects = Vec::new();
+
+    let entry = ui
+        .file_browser
+        .as_ref()
+        .and_then(|fb| fb.entries.get(fb.selected).cloned());
+    let Some(entry) = entry else {
+        return Ok(out_effects);
+    };
+
+    if entry.is_dir {
+        // Navigate into directory
+        if let Some(ref mut fb) = ui.file_browser {
+            fb.current_dir = entry.path;
+            fb.selected = 0;
+            fb.scroll_offset = 0;
+            fb.refresh_entries();
+        }
+        return Ok(out_effects);
+    }
+
+    // File selected
+    let path = entry.path;
+
+    // Check if this is a manual map selection
+    let manual_map_info = ui.file_browser.as_ref().and_then(|fb| {
+        if let FileBrowserOrigin::ManualMap { ref file_id, .. } = fb.origin {
+            Some(*file_id)
+        } else {
+            None
+        }
+    });
+
+    if let Some(file_id) = manual_map_info {
+        // Manual map: store mapping, clear Missing, record dir
+        ui.file_browser = None;
+        ui.screen = Screen::Main;
+
+        if let Ok(s) = storage.lock() {
+            let _ = s.set_file_mapping(&file_id, &path);
+        }
+        // Mark as manually mapped — skip mtime checks
+        mtime_tracker.manually_mapped.insert(file_id);
+        // Record the directory for this series
+        if let Some(dir) = path.parent() {
+            let app = app_state.lock().await;
+            let anime_id = app
+                .sync_engine
+                .state()
+                .anidb
+                .read(&file_id)
+                .and_then(|opt| opt.as_ref())
+                .map(|meta| meta.anime_id);
+            drop(app);
+            if let Some(aid) = anime_id
+                && let Ok(s) = storage.lock()
+            {
+                let _ = s.set_series_mapping_dir(aid, dir);
+            }
+        }
+        // Set file state to Ready
+        let now = rv_client.shared_now().await;
+        let effects = app_state.lock().await.process_event(
+            AppEvent::SetFileState {
+                file_id,
+                state: FileState::Ready,
+            },
+            now,
+        );
+        out_effects.extend(effects);
+        tracing::info!(?file_id, path = %path.display(), "Manual map stored");
+    } else {
+        // Normal playlist add: hash and add
+        ui.file_browser = None;
+
+        let total_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let progress = Arc::new(AtomicU64::new(0));
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+
+        ui.hashing = Some(HashingState {
+            filename,
+            total_bytes,
+            bytes_hashed: Arc::clone(&progress),
+        });
+        ui.screen = Screen::Hashing;
+
+        // Pause background hashing during user hash
+        user_hash_active.store(true, Ordering::Relaxed);
+
+        // Spawn non-blocking hash
+        let tx = hash_tx.clone();
+        let path_for_hash = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = (|| {
+                let file = std::fs::File::open(&path_for_hash)?;
+                let reader = std::io::BufReader::new(file);
+                dessplay_core::ed2k::compute_ed2k_with_progress(reader, |bytes| {
+                    progress.store(bytes, Ordering::Relaxed);
+                })
+            })();
+            let _ = tx.send((path_for_hash, result));
+        });
+    }
+
+    Ok(out_effects)
+}
+
+// =========================================================================
+// Effect dispatch
+// =========================================================================
 
 /// Dispatch AppEffects to the runtime.
 #[allow(clippy::too_many_arguments)]
@@ -2100,7 +1962,6 @@ async fn dispatch_effects(
                 )
                 .await;
             }
-            AppEffect::Redraw => {} // Handled by needs_redraw flag
             AppEffect::PlayerPause => {
                 if let Some(p) = player.as_ref() {
                     echo_filter.register_pause();
@@ -2146,16 +2007,13 @@ async fn dispatch_effects(
                 }
             }
             AppEffect::PlayerLoadFile(file_id) => {
-                // Look up local file path from storage
                 let local_path = storage
                     .lock()
                     .ok()
                     .and_then(|s| s.get_file_mapping(&file_id).ok().flatten());
 
                 if let Some(path) = local_path {
-                    // Ensure player is alive; launch if needed
-                    let need_launch =
-                        player.as_ref().is_none_or(|p| !p.is_alive());
+                    let need_launch = player.as_ref().is_none_or(|p| !p.is_alive());
                     if need_launch {
                         match MpvPlayer::launch().await {
                             Ok(p) => {
@@ -2173,7 +2031,6 @@ async fn dispatch_effects(
                     {
                         tracing::warn!("Failed to load file into player: {e}");
                     }
-                    // Record file mtime for re-hash on unpause
                     mtime_tracker.record_mtime(file_id, &path);
                 } else {
                     tracing::debug!(?file_id, "No local path for file, skipping load");
@@ -2294,6 +2151,10 @@ async fn dispatch_sync_actions(
     }
 }
 
+// =========================================================================
+// Gap fill helpers
+// =========================================================================
+
 async fn do_gap_fill(
     peer: PeerId,
     request: GapFillRequest,
@@ -2322,6 +2183,10 @@ async fn handle_incoming_stream(
     write_framed(&mut stream.send, TAG_GAP_FILL_RESPONSE, &response).await?;
     Ok(())
 }
+
+// =========================================================================
+// Auto-matching
+// =========================================================================
 
 /// Try auto-matching all unmapped playlist items against the media index.
 /// Also evaluates known/unknown series for files that remain unmatched,
@@ -2375,7 +2240,13 @@ async fn try_auto_match_all(
                     .file_states
                     .read(&(our_user_id.clone(), *file_id))
                     .cloned();
-                (*file_id, already_mapped, filename, is_known_series, current_file_state)
+                (
+                    *file_id,
+                    already_mapped,
+                    filename,
+                    is_known_series,
+                    current_file_state,
+                )
             })
             .collect::<Vec<_>>()
     };
@@ -2400,7 +2271,6 @@ async fn try_auto_match_all(
             .is_some_and(|name| try_auto_match_file(file_id, name, media_index, storage));
 
         if matched {
-            // Just matched — clear Missing state if set
             if matches!(current_file_state, Some(FileState::Missing)) {
                 events.push(AppEvent::SetFileState {
                     file_id: *file_id,
@@ -2408,7 +2278,6 @@ async fn try_auto_match_all(
                 });
             }
         } else {
-            // Not matched — set Missing if not already
             if !matches!(current_file_state, Some(FileState::Missing)) {
                 events.push(AppEvent::SetFileState {
                     file_id: *file_id,
@@ -2416,7 +2285,6 @@ async fn try_auto_match_all(
                 });
             }
 
-            // Unknown series + current file → set NotWatching + show OSD placeholder
             if !is_known_series && current_file_id == Some(*file_id) {
                 events.push(AppEvent::SetUserState {
                     state: UserState::NotWatching,
@@ -2437,7 +2305,6 @@ async fn try_auto_match_all(
         all_effects.extend(app.process_event(event, now));
     }
 
-    // Show OSD placeholder when set to NotWatching
     if let Some(filename) = placeholder_filename {
         all_effects.push(AppEffect::PlayerShowOsd(format!(
             "You don't have this file:\n{filename}"
@@ -2456,7 +2323,6 @@ fn try_auto_match_file(
     storage: &Arc<Mutex<ClientStorage>>,
 ) -> bool {
     if let Some(paths) = media_index.find_by_filename(filename) {
-        // Prefer the first match (from the first media root)
         if let Some(path) = paths.first()
             && let Ok(s) = storage.lock()
         {
@@ -2471,12 +2337,20 @@ fn try_auto_match_file(
     false
 }
 
+// =========================================================================
+// Utilities
+// =========================================================================
+
 fn get_arg(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
         .and_then(|i| args.get(i + 1))
         .cloned()
 }
+
+// =========================================================================
+// Tests
+// =========================================================================
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

@@ -78,8 +78,6 @@ pub enum AppEvent {
 pub enum AppEffect {
     /// Dispatch these sync actions to the network/storage layers.
     Sync(Vec<SyncAction>),
-    /// Signal the TUI to redraw (Phase 6).
-    Redraw,
     /// Player control (Phase 7).
     PlayerPause,
     PlayerUnpause,
@@ -320,7 +318,7 @@ impl AppState {
         };
 
         let actions = self.sync_engine.on_remote_op(from, op);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -334,7 +332,7 @@ impl AppState {
     fn handle_peer_connected(&mut self, peer_id: PeerId, username: String) -> Vec<AppEffect> {
         self.connected_peers.insert(peer_id, UserId(username));
         let actions = self.sync_engine.on_peer_connected(peer_id);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -346,7 +344,7 @@ impl AppState {
         self.connected_peers.remove(&peer_id);
         self.remote_positions.remove(&peer_id);
         let actions = self.sync_engine.on_peer_disconnected(peer_id);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -367,7 +365,7 @@ impl AppState {
     fn handle_state_snapshot(&mut self, epoch: u64, snapshot: CrdtSnapshot) -> Vec<AppEffect> {
         let actions = self.sync_engine.on_state_snapshot(epoch, snapshot);
         if !actions.is_empty() {
-            let mut effects = vec![AppEffect::Redraw];
+            let mut effects = Vec::new();
             effects.extend(self.playback_transition_effects());
             effects.push(AppEffect::Sync(actions));
             return effects;
@@ -382,7 +380,7 @@ impl AppState {
     ) -> Vec<AppEffect> {
         let actions = self.sync_engine.on_gap_fill_response(from, response);
         if !actions.is_empty() {
-            let mut effects = vec![AppEffect::Sync(actions), AppEffect::Redraw];
+            let mut effects = vec![AppEffect::Sync(actions)];
             effects.extend(self.playback_transition_effects());
             return effects;
         }
@@ -399,7 +397,7 @@ impl AppState {
             text,
         };
         let actions = self.sync_engine.apply_local_op(op);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
         }
@@ -412,7 +410,7 @@ impl AppState {
             value: LwwValue::UserState(self.our_user_id.clone(), state),
         };
         let actions = self.sync_engine.apply_local_op(op);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -431,7 +429,7 @@ impl AppState {
             value: LwwValue::FileState(self.our_user_id.clone(), file_id, state),
         };
         let actions = self.sync_engine.apply_local_op(op);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -450,7 +448,7 @@ impl AppState {
             action: PlaylistAction::Add { file_id, after },
         };
         let actions = self.sync_engine.apply_local_op(op);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -468,7 +466,7 @@ impl AppState {
             action: PlaylistAction::Remove { file_id },
         };
         let actions = self.sync_engine.apply_local_op(op);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -487,7 +485,7 @@ impl AppState {
             action: PlaylistAction::Move { file_id, after },
         };
         let actions = self.sync_engine.apply_local_op(op);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -512,7 +510,7 @@ impl AppState {
             value: LwwValue::UserState(self.our_user_id.clone(), UserState::Paused),
         };
         let actions = self.sync_engine.apply_local_op(op);
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -529,7 +527,7 @@ impl AppState {
         };
         let actions = self.sync_engine.apply_local_op(op);
 
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
 
         // If should_play is false, we must immediately re-pause
         // (The user tried to play, but others are blocking)
@@ -559,7 +557,7 @@ impl AppState {
                 .map(|(_, first_time)| (position_secs, first_time));
         }
 
-        vec![AppEffect::Redraw]
+        Vec::new()
     }
 
     fn handle_player_position(
@@ -612,20 +610,16 @@ impl AppState {
             }]));
         }
 
-        if !effects.is_empty() {
-            effects.push(AppEffect::Redraw);
-        }
-
         effects
     }
 
     fn handle_player_duration(&mut self, duration_secs: f64) -> Vec<AppEffect> {
         self.file_duration_secs = Some(duration_secs);
-        vec![AppEffect::Redraw]
+        Vec::new()
     }
 
     fn handle_player_eof(&mut self, now: SharedTimestamp) -> Vec<AppEffect> {
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
 
         // Remove current file from playlist
         if let Some(current) = self.playback.current_file {
@@ -655,7 +649,7 @@ impl AppState {
     }
 
     fn handle_player_crashed(&mut self, now: SharedTimestamp) -> Vec<AppEffect> {
-        let mut effects = vec![AppEffect::Redraw];
+        let mut effects = Vec::new();
 
         let is_rapid_crash = self
             .crash_state
@@ -921,10 +915,6 @@ mod tests {
         effects.iter().any(|e| matches!(e, AppEffect::Sync(_)))
     }
 
-    fn has_redraw_effect(effects: &[AppEffect]) -> bool {
-        effects.iter().any(|e| matches!(e, AppEffect::Redraw))
-    }
-
     // -----------------------------------------------------------------------
     // Derived playback tests
     // -----------------------------------------------------------------------
@@ -1056,7 +1046,6 @@ mod tests {
         );
 
         assert!(has_sync_effect(&effects));
-        assert!(has_redraw_effect(&effects));
 
         // Verify the chat was applied
         let view = app.sync_engine.state().chat.merged_view();
@@ -1103,9 +1092,7 @@ mod tests {
             timestamp: 100,
             value: LwwValue::UserState(uid("bob"), UserState::Paused),
         };
-        let effects = app.process_event(AppEvent::RemoteOp { from: peer(1), op }, 100);
-
-        assert!(has_redraw_effect(&effects));
+        let _effects = app.process_event(AppEvent::RemoteOp { from: peer(1), op }, 100);
 
         let state = app
             .sync_engine
@@ -1243,7 +1230,6 @@ mod tests {
             .copied();
         assert_eq!(state, Some(UserState::Paused));
         assert!(has_sync_effect(&effects));
-        assert!(has_redraw_effect(&effects));
     }
 
     #[test]
@@ -1391,9 +1377,8 @@ mod tests {
     #[test]
     fn player_duration_stored() {
         let mut app = make_app();
-        let effects = app.process_event(AppEvent::PlayerDuration { duration_secs: 1440.0 }, 100);
+        let _effects = app.process_event(AppEvent::PlayerDuration { duration_secs: 1440.0 }, 100);
         assert_eq!(app.file_duration_secs, Some(1440.0));
-        assert!(has_redraw_effect(&effects));
     }
 
     #[test]
@@ -1716,5 +1701,30 @@ mod tests {
             .cloned();
         assert_eq!(our_fs, Some(FileState::Ready));
         assert!(app.playback.should_play);
+    }
+
+    // Regression: playlist remove/move must return Sync effects so they
+    // are broadcast to peers. Previously, the runner discarded these.
+    #[test]
+    fn playlist_remove_returns_sync_effects() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        let effects = app.process_event(AppEvent::RemoveFromPlaylist { file_id: fid(1) }, 200);
+        assert!(has_sync_effect(&effects), "RemoveFromPlaylist must produce Sync effects");
+    }
+
+    #[test]
+    fn playlist_move_returns_sync_effects() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        add_file(&mut app, 2, 200);
+        let effects = app.process_event(
+            AppEvent::MoveInPlaylist {
+                file_id: fid(1),
+                after: Some(fid(2)),
+            },
+            300,
+        );
+        assert!(has_sync_effect(&effects), "MoveInPlaylist must produce Sync effects");
     }
 }

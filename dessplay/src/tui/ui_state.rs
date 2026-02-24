@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use crate::app_state::AppEvent;
 use dessplay_core::types::FileId;
 
 /// Which pane has focus in the main screen.
@@ -529,83 +528,6 @@ impl UiState {
     }
 }
 
-/// Result of processing an input event.
-pub enum InputResult {
-    /// Produces an AppEvent to send to AppState.
-    AppEvent(AppEvent),
-    /// Changes only the UiState (no AppState mutation).
-    UiAction(UiAction),
-    /// Both an AppEvent and a UiAction.
-    Both(AppEvent, UiAction),
-    /// Nothing happened.
-    None,
-}
-
-/// Actions that only affect the UI state.
-#[derive(Debug)]
-pub enum UiAction {
-    Quit,
-    CycleFocus,
-    // Chat
-    InsertChar(char),
-    DeleteBack,
-    DeleteForward,
-    CursorLeft,
-    CursorRight,
-    CursorWordLeft,
-    CursorWordRight,
-    CursorHome,
-    CursorEnd,
-    ClearInput,
-    ScrollChatUp,
-    ScrollChatDown,
-    // Playlist
-    PlaylistSelectUp,
-    PlaylistSelectDown,
-    PlaylistMoveUp,
-    PlaylistMoveDown,
-    PlaylistRemove,
-    OpenFileBrowser,
-    /// Open file browser for manual file mapping (Ctrl-M on missing playlist item).
-    ManualMapFile,
-    /// Open metadata assignment modal (Ctrl-A on playlist item).
-    AssignMetadata,
-    // Recent series
-    RecentSelectUp,
-    RecentSelectDown,
-    RecentSeriesSelect,
-    // Settings
-    SettingsNextField,
-    SettingsPrevField,
-    SettingsSave,
-    SettingsInsertChar(char),
-    SettingsDeleteBack,
-    SettingsTogglePlayer,
-    SettingsAddMediaRoot,
-    SettingsRemoveMediaRoot,
-    SettingsMoveRootUp,
-    SettingsMoveRootDown,
-    SettingsCancel,
-    // Settings (from main screen)
-    OpenSettings,
-    // File browser
-    FileBrowserUp,
-    FileBrowserDown,
-    FileBrowserSelect,
-    FileBrowserBack,
-    FileBrowserSelectDir,
-    // TOFU warning
-    TofuAccept,
-    TofuReject,
-    // Metadata assignment
-    MetadataSelectUp,
-    MetadataSelectDown,
-    MetadataConfirmSeries,
-    MetadataInsertChar(char),
-    MetadataDeleteBack,
-    MetadataConfirmEpisode,
-    MetadataCancel,
-}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

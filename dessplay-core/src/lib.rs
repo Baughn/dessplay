@@ -6,3 +6,4 @@ pub mod protocol;
 pub mod sync_engine;
 pub mod time_sync;
 pub mod types;
+pub mod view_spec;
