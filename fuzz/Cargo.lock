@@ -454,6 +454,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "serde_json",
+ "strsim",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -482,10 +483,12 @@ name = "dessplay-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "crossterm 0.28.1",
  "dessplay",
  "dessplay-core",
  "libfuzzer-sys",
  "postcard",
+ "ratatui",
  "tokio",
 ]
 

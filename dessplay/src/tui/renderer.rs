@@ -64,7 +64,7 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
 
     match node {
         LayoutNode::HSplit { left, right, ratio } => {
-            let left_width = ((area.width as f32) * ratio) as u16;
+            let left_width = ((area.width as f32) * ratio.clamp(0.0, 1.0)) as u16;
             let right_width = area.width.saturating_sub(left_width);
             let left_area = Rect {
                 width: left_width,
@@ -138,7 +138,7 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
                 render_layout(bottom, bottom_area, buf);
             } else {
                 // Proportional split
-                let top_height = ((area.height as f32) * ratio) as u16;
+                let top_height = ((area.height as f32) * ratio.clamp(0.0, 1.0)) as u16;
                 let bottom_height = area.height.saturating_sub(top_height);
                 let top_area = Rect {
                     height: top_height,
@@ -338,13 +338,17 @@ fn render_text_input(
     buf: &mut Buffer,
     show_cursor: bool,
 ) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
     let line = Line::from(Span::raw(text));
     let paragraph = Paragraph::new(line);
     paragraph.render(area, buf);
 
     if show_cursor {
-        let cx = area.x + cursor_pos as u16;
-        if cx < area.x + area.width {
+        let cx = area.x.saturating_add(cursor_pos as u16);
+        if cx < area.x.saturating_add(area.width) && buf.area.contains((cx, area.y).into()) {
             buf[(cx, area.y)]
                 .set_style(Style::default().fg(Color::Black).bg(Color::White));
         }
@@ -382,8 +386,13 @@ fn render_text_input_bare(
     paragraph.render(area, buf);
 
     if focused {
-        let cx = area.x + prompt.len() as u16 + cursor_pos as u16;
-        if cx < area.x + area.width {
+        let cx = area
+            .x
+            .saturating_add(prompt.len() as u16)
+            .saturating_add(cursor_pos as u16);
+        if cx < area.x.saturating_add(area.width)
+            && buf.area.contains((cx, area.y).into())
+        {
             buf[(cx, area.y)]
                 .set_style(Style::default().fg(Color::Black).bg(Color::White));
         }
@@ -397,7 +406,8 @@ fn render_progress_bar(fraction: f64, label: &str, area: Rect, buf: &mut Buffer)
 
     let label_len = label.len();
     let bar_width = (area.width as usize).saturating_sub(label_len + 3); // 2 for [ ] + 1 space
-    let filled = (bar_width as f64 * fraction) as usize;
+    let clamped = fraction.clamp(0.0, 1.0);
+    let filled = (bar_width as f64 * clamped) as usize;
     let empty = bar_width.saturating_sub(filled);
 
     let bar = format!(
@@ -516,7 +526,9 @@ fn render_form(
                     Paragraph::new(Line::from(Span::styled(value, style))).render(val_area, buf);
                     if is_focused {
                         let cx = val_area.x + value.len() as u16;
-                        if cx < val_area.x + val_area.width {
+                        if cx < val_area.x + val_area.width
+                            && buf.area.contains((cx, val_area.y).into())
+                        {
                             buf[(cx, val_area.y)].set_style(
                                 Style::default().fg(Color::Black).bg(Color::White),
                             );
@@ -542,7 +554,9 @@ fn render_form(
                     Paragraph::new(Line::from(Span::styled(masked, style))).render(val_area, buf);
                     if is_focused {
                         let cx = val_area.x + value.len() as u16;
-                        if cx < val_area.x + val_area.width {
+                        if cx < val_area.x + val_area.width
+                            && buf.area.contains((cx, val_area.y).into())
+                        {
                             buf[(cx, val_area.y)].set_style(
                                 Style::default().fg(Color::Black).bg(Color::White),
                             );
@@ -890,6 +904,53 @@ mod tests {
             modals: Vec::new(),
             status_bar: None,
         };
+        term.draw(|frame| render(&spec, frame)).unwrap();
+    }
+
+    /// Regression test for fuzz crash: render_text_input accesses buffer
+    /// out of bounds when a VSplit with ratio > 1.0 gives a pane a height
+    /// far exceeding the terminal buffer, and a Composite child pushes y
+    /// past the actual buffer boundary.
+    /// Artifact: fuzz/artifacts/render_viewspec/crash-6c37c3c1142f8cc0c6d583e020ec440b609d5e12
+    #[test]
+    fn render_text_input_oob_from_bad_vsplit_ratio() {
+        let mut term = test_terminal(20, 5);
+        let spec = ViewSpec {
+            base: LayoutNode::VSplit {
+                top: Box::new(LayoutNode::Pane(PaneSpec {
+                    id: PaneId::Chat,
+                    title: "T".to_string(),
+                    focused: false,
+                    content: ContentKind::Composite {
+                        children: vec![
+                            // 6 lines pushes the TextInput to y >= 7 (after border),
+                            // well past the 5-row buffer
+                            ContentKind::TextLog {
+                                lines: vec![vec![StyledSpan::plain("a")]; 6],
+                                scroll_back: 0,
+                            },
+                            ContentKind::TextInput {
+                                text: "x".to_string(),
+                                cursor_pos: 0,
+                                placeholder: String::new(),
+                            },
+                        ],
+                    },
+                    bindings: Vec::new(),
+                })),
+                bottom: Box::new(LayoutNode::Pane(PaneSpec {
+                    id: PaneId::Playlist,
+                    title: "B".to_string(),
+                    focused: false,
+                    content: ContentKind::Empty,
+                    bindings: Vec::new(),
+                })),
+                ratio: 999.0,
+            },
+            modals: Vec::new(),
+            status_bar: None,
+        };
+        // Should not panic — the cursor write must be bounds-checked
         term.draw(|frame| render(&spec, frame)).unwrap();
     }
 

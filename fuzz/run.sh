@@ -6,8 +6,6 @@
 #   ./fuzz/run.sh crdt_op                  # one target, 300s
 #   ./fuzz/run.sh crdt_op 60              # one target, 60s
 #   ./fuzz/run.sh --quick                  # all targets, 30s each
-#   ./fuzz/run.sh --targeted               # only targeted tests, 300s each
-#   ./fuzz/run.sh --targeted --quick       # only targeted tests, 30s each
 #   ./fuzz/run.sh -j4                      # limit to 4 parallel jobs
 #
 # Requires: cargo-fuzz, nightly toolchain
@@ -15,19 +13,16 @@
 cd "$(dirname "$0")/.."
 
 DURATION=300
-JOBS=$(( $(lscpu -p=CORE | grep -v '^#' | sort -u | wc -l) - 2 ))
+JOBS=$(( $(lscpu -p=CORE | grep -v '^#' | sort -u | wc -l)))
 if [[ "$JOBS" -lt 1 ]]; then JOBS=1; fi
 TARGET_SET="all"
 SINGLE_TARGET=""
 
-ORIGINAL_TARGETS=(crdt_op crdt_convergence snapshot_roundtrip ops_since)
-TARGETED_TARGETS=(lww_filestate_convergence chat_gap_fill playlist_targeted postcard_deserialize multi_peer_sync framing_deserialize time_sync_convergence network_sim sync_engine app_state)
-ALL_TARGETS=("${ORIGINAL_TARGETS[@]}" "${TARGETED_TARGETS[@]}")
+ALL_TARGETS=(lww_filestate_convergence chat_gap_fill playlist_targeted postcard_deserialize multi_peer_sync framing_deserialize time_sync_convergence network_sim sync_engine app_state crdt_op crdt_convergence snapshot_roundtrip ops_since render_viewspec resolve_viewspec)
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --quick)     DURATION=30; shift ;;
-        --targeted)  TARGET_SET="targeted"; shift ;;
         -j*)         JOBS="${1#-j}"; shift ;;
         -h|--help)
             sed -n '2,/^$/{ s/^# //; s/^#$//; p }' "$0"
@@ -46,8 +41,6 @@ done
 
 if [[ -n "$SINGLE_TARGET" ]]; then
     TARGETS=("$SINGLE_TARGET")
-elif [[ "$TARGET_SET" == "targeted" ]]; then
-    TARGETS=("${TARGETED_TARGETS[@]}")
 else
     TARGETS=("${ALL_TARGETS[@]}")
 fi

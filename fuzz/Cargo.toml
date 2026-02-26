@@ -14,6 +14,8 @@ dessplay = { path = "../dessplay" }
 arbitrary = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 tokio = { version = "1", features = ["rt", "time", "macros"] }
+ratatui = "0.30"
+crossterm = "0.28"
 
 # --- Existing targets ---
 
@@ -87,4 +89,16 @@ doc = false
 [[bin]]
 name = "app_state"
 path = "fuzz_targets/app_state.rs"
+doc = false
+
+# --- UI targets ---
+
+[[bin]]
+name = "render_viewspec"
+path = "fuzz_targets/render_viewspec.rs"
+doc = false
+
+[[bin]]
+name = "resolve_viewspec"
+path = "fuzz_targets/resolve_viewspec.rs"
 doc = false

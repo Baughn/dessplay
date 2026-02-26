@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 /// Complete description of one frame of the UI.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub struct ViewSpec {
     /// The base layout tree (panes and splits).
@@ -24,6 +25,7 @@ pub struct ViewSpec {
 // ---------------------------------------------------------------------------
 
 /// Spatial arrangement node.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub enum LayoutNode {
     /// Horizontal split: left | right at `ratio` (0.0..1.0 = fraction for left).
@@ -52,6 +54,7 @@ pub enum LayoutNode {
 // ---------------------------------------------------------------------------
 
 /// Unique pane identifier for focus routing.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaneId {
     Chat,
@@ -63,6 +66,7 @@ pub enum PaneId {
 }
 
 /// A bordered, optionally focusable content region.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub struct PaneSpec {
     pub id: PaneId,
@@ -77,6 +81,7 @@ pub struct PaneSpec {
 // ---------------------------------------------------------------------------
 
 /// An overlay rendered on top of the base layout.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub struct ModalSpec {
     pub title: String,
@@ -93,6 +98,7 @@ pub struct ModalSpec {
 // ---------------------------------------------------------------------------
 
 /// Semantic content within a pane or modal.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub enum ContentKind {
     /// Scrollable log of styled lines (chat, system messages).
@@ -137,6 +143,7 @@ pub enum ContentKind {
 }
 
 /// A field in a form.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub struct FormField {
     pub label: String,
@@ -145,6 +152,7 @@ pub struct FormField {
 }
 
 /// The kind of form field.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub enum FormFieldKind {
     /// Editable text.
@@ -161,6 +169,7 @@ pub enum FormFieldKind {
 }
 
 /// An entry in a path list form field.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub struct PathListEntry {
     pub path: String,
@@ -173,6 +182,7 @@ pub struct PathListEntry {
 // ---------------------------------------------------------------------------
 
 /// A span of text with semantic styling.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone)]
 pub struct StyledSpan {
     pub text: String,
@@ -207,6 +217,7 @@ impl StyledSpan {
 }
 
 /// Semantic colors — renderers map these to platform-appropriate values.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemanticColor {
     /// Default foreground.
@@ -250,6 +261,7 @@ pub struct Keybinding {
 }
 
 /// A key or key combination.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyCombo {
     /// A plain key press.
@@ -261,6 +273,7 @@ pub enum KeyCombo {
 }
 
 /// Individual key values.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Char(char),
@@ -286,6 +299,7 @@ pub enum Key {
 /// Produced by keybinding resolution; consumed by the runner to mutate
 /// `UiState` and/or `AppState`.  Lives in `dessplay-core` so that the
 /// `ViewSpec` types (which reference `Action`) are platform-independent.
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     // --- Global ---
@@ -366,4 +380,30 @@ pub enum Action {
 pub struct StatusBarSpec {
     /// (key label, action label) pairs to display.
     pub bindings: Vec<(String, &'static str)>,
+}
+
+// ---------------------------------------------------------------------------
+// Manual Arbitrary impls for types containing &'static str
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "fuzzing")]
+impl<'a> arbitrary::Arbitrary<'a> for Keybinding {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            key: u.arbitrary()?,
+            label: "",
+            action: u.arbitrary()?,
+            show_in_bar: u.arbitrary()?,
+        })
+    }
+}
+
+#[cfg(feature = "fuzzing")]
+impl<'a> arbitrary::Arbitrary<'a> for StatusBarSpec {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let bindings: Vec<String> = u.arbitrary()?;
+        Ok(Self {
+            bindings: bindings.into_iter().map(|s| (s, "")).collect(),
+        })
+    }
 }
