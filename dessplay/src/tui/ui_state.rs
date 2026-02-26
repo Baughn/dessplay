@@ -31,6 +31,13 @@ pub enum Screen {
     TofuWarning,
     Hashing,
     MetadataAssign,
+    Connecting,
+}
+
+/// State for the connecting-to-server modal.
+#[derive(Clone, Debug)]
+pub struct ConnectingState {
+    pub server: String,
 }
 
 /// Text input state with char-boundary-aware cursor.
@@ -490,6 +497,7 @@ pub struct UiState {
     pub tofu_warning: Option<TofuWarningState>,
     pub hashing: Option<HashingState>,
     pub metadata_assign: Option<MetadataAssignState>,
+    pub connecting: Option<ConnectingState>,
     pub should_quit: bool,
     /// Status message shown temporarily.
     pub status_message: Option<String>,
@@ -515,6 +523,7 @@ impl UiState {
             tofu_warning: None,
             hashing: None,
             metadata_assign: None,
+            connecting: None,
             should_quit: false,
             status_message: None,
         }

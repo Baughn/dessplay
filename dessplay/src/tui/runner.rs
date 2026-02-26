@@ -23,7 +23,7 @@ use crate::tui::renderer;
 use crate::tui::resolve::resolve_input;
 use crate::tui::terminal::{setup_file_logging, setup_terminal};
 use crate::tui::ui_state::{
-    FileBrowserOrigin, FileBrowserState, FocusedPane, HashingState, InputState,
+    ConnectingState, FileBrowserOrigin, FileBrowserState, FocusedPane, HashingState, InputState,
     MetadataAssignState, MetadataAssignStep, Screen, SeriesChoice, SettingsState, TofuWarningState,
     UiState,
 };
@@ -164,6 +164,72 @@ async fn bg_hash_worker(
 }
 
 // =========================================================================
+// Connection types
+// =========================================================================
+
+/// Artifacts from a successful rendezvous server connection.
+struct ConnectionResult {
+    rv_client: RendezvousClient,
+    endpoint: quinn::Endpoint,
+    peer_client_config: quinn::ClientConfig,
+}
+
+/// Outcome of the connecting screen loop.
+enum ConnectingOutcome {
+    /// Connection established successfully.
+    Connected(ConnectionResult),
+    /// User cancelled (Ctrl-C or Esc).
+    Cancelled,
+    /// Connection failed.
+    Failed {
+        error: anyhow::Error,
+        tofu: Arc<TofuVerifier>,
+    },
+}
+
+/// Establish a connection to the rendezvous server.
+///
+/// This runs DNS resolution, QUIC endpoint setup, and authentication.
+/// Designed to be spawned as a background task so the TUI stays responsive.
+async fn establish_connection(
+    server_str: String,
+    password: String,
+    username: String,
+    tofu: Arc<TofuVerifier>,
+) -> Result<ConnectionResult> {
+    let server_addr = tokio::net::lookup_host(&server_str)
+        .await
+        .context(format!(
+            "failed to resolve server address: {server_str}"
+        ))?
+        .next()
+        .ok_or_else(|| {
+            anyhow::anyhow!("server address resolved to no addresses: {server_str}")
+        })?;
+
+    let bind_addr: std::net::SocketAddr = "[::]:0".parse().context("invalid bind address")?;
+    let crate::quic::DualEndpoint {
+        endpoint,
+        peer_client_config,
+    } = crate::quic::create_dual_endpoint(bind_addr, Arc::clone(&tofu))?;
+
+    let rv_client = RendezvousClient::connect(
+        &endpoint,
+        server_addr,
+        "dessplay-rendezvous",
+        &password,
+        &username,
+    )
+    .await?;
+
+    Ok(ConnectionResult {
+        rv_client,
+        endpoint,
+        peer_client_config,
+    })
+}
+
+// =========================================================================
 // Main TUI entry point
 // =========================================================================
 
@@ -205,36 +271,76 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
         ui.screen = Screen::Main;
         ui.focus = FocusedPane::Chat;
 
-        // Connect to server and run main loop
-        let mut tofu_ref = None;
-        match run_connected(
+        // Phase 1: Show connecting screen, establish connection in background
+        let outcome = run_preconnection_connecting(
             &mut guard.terminal,
             &mut ui,
             &storage,
             &config,
             args,
-            &mut tofu_ref,
         )
-        .await
-        {
-            Ok(()) => {
-                if ui.settings.is_some() {
-                    // Settings saved from inline modal — reconnect with new config
-                    ui.settings = None;
-                    ui.screen = Screen::Main;
-                    continue;
+        .await?;
+
+        if ui.should_quit {
+            return Ok(());
+        }
+
+        match outcome {
+            ConnectingOutcome::Connected(conn) => {
+                // Phase 2: Run the connected event loop
+                match run_connected(
+                    &mut guard.terminal,
+                    &mut ui,
+                    &storage,
+                    &config,
+                    conn,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        if ui.settings.is_some() {
+                            // Settings saved from inline modal — reconnect with new config
+                            ui.settings = None;
+                            ui.screen = Screen::Main;
+                            continue;
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!("Disconnected: {e:#}");
+
+                        if ui.should_quit {
+                            return Ok(());
+                        }
+
+                        // Re-open settings with the error as alert
+                        let media_roots = storage
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.get_media_roots().ok())
+                            .unwrap_or_default();
+                        let mut settings = SettingsState::from_config(&config, media_roots);
+                        settings.alert = Some(format!("{e:#}"));
+
+                        ui.screen = Screen::Settings;
+                        ui.settings = Some(settings);
+                        run_preconnection_settings(&mut guard.terminal, &mut ui, &storage)
+                            .await?;
+                    }
                 }
+            }
+            ConnectingOutcome::Cancelled => {
                 return Ok(());
             }
-            Err(e) => {
-                tracing::warn!("Connection error: {e:#}");
+            ConnectingOutcome::Failed { error, tofu } => {
+                tracing::warn!("Connection error: {error:#}");
 
                 if ui.should_quit {
                     return Ok(());
                 }
 
                 // Check for TOFU certificate mismatch
-                if let Some(mismatch) = tofu_ref.and_then(|t| t.take_mismatch()) {
+                if let Some(mismatch) = tofu.take_mismatch() {
                     ui.tofu_warning = Some(TofuWarningState {
                         server: mismatch.server,
                         stored_fingerprint: mismatch.stored_fingerprint,
@@ -274,7 +380,7 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
                     .and_then(|s| s.get_media_roots().ok())
                     .unwrap_or_default();
                 let mut settings = SettingsState::from_config(&config, media_roots);
-                settings.alert = Some(format!("{e:#}"));
+                settings.alert = Some(format!("{error:#}"));
 
                 ui.screen = Screen::Settings;
                 ui.settings = Some(settings);
@@ -571,6 +677,101 @@ async fn run_preconnection_tofu(
 }
 
 // =========================================================================
+// Pre-connection connecting screen
+// =========================================================================
+
+/// Show a "Connecting" modal while establishing the server connection in the
+/// background. The user can press Ctrl-C or Esc to cancel.
+async fn run_preconnection_connecting(
+    terminal: &mut crate::tui::terminal::Tui,
+    ui: &mut UiState,
+    storage: &Arc<Mutex<ClientStorage>>,
+    config: &Config,
+    args: &[String],
+) -> Result<ConnectingOutcome> {
+    // Resolve password and server before spawning
+    let password = config
+        .password
+        .clone()
+        .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok())
+        .context("no password configured")?;
+
+    let server_str = get_arg(args, "--server").unwrap_or_else(|| config.server.clone());
+
+    // Create TOFU verifier (needed for mismatch inspection even on failure)
+    let tofu = Arc::new(TofuVerifier::new(Arc::clone(storage), server_str.clone()));
+
+    // Show connecting modal
+    ui.screen = Screen::Connecting;
+    ui.connecting = Some(ConnectingState {
+        server: server_str.clone(),
+    });
+
+    // Spawn connection in background so TUI stays responsive
+    let conn_tofu = Arc::clone(&tofu);
+    let mut conn_handle = tokio::spawn(establish_connection(
+        server_str,
+        password,
+        config.username.clone(),
+        conn_tofu,
+    ));
+
+    let mut event_stream = EventStream::new();
+
+    loop {
+        // Render
+        let data = DisplayData::empty();
+        let spec = view::view(ui, &data);
+        terminal.draw(|frame| renderer::render(&spec, frame))?;
+
+        tokio::select! {
+            result = &mut conn_handle => {
+                ui.connecting = None;
+                ui.screen = Screen::Main;
+                match result {
+                    Ok(Ok(conn)) => {
+                        tracing::info!(
+                            peer_id = %conn.rv_client.peer_id,
+                            observed_addr = %conn.rv_client.observed_addr,
+                            "Connected to rendezvous server"
+                        );
+                        return Ok(ConnectingOutcome::Connected(conn));
+                    }
+                    Ok(Err(error)) => {
+                        return Ok(ConnectingOutcome::Failed { error, tofu });
+                    }
+                    Err(join_err) => {
+                        return Ok(ConnectingOutcome::Failed {
+                            error: anyhow::anyhow!("connection task panicked: {join_err}"),
+                            tofu,
+                        });
+                    }
+                }
+            }
+            event = event_stream.next() => {
+                let Some(event) = event else { break; };
+                let event = event.context("failed to read terminal event")?;
+                if let crossterm::event::Event::Key(key) = event {
+                    if let Some(action) = resolve_input(key, &spec) {
+                        if action == Action::Quit {
+                            conn_handle.abort();
+                            ui.connecting = None;
+                            ui.should_quit = true;
+                            return Ok(ConnectingOutcome::Cancelled);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Event stream ended unexpectedly
+    conn_handle.abort();
+    ui.connecting = None;
+    Ok(ConnectingOutcome::Cancelled)
+}
+
+// =========================================================================
 // Connected main loop
 // =========================================================================
 
@@ -580,51 +781,13 @@ async fn run_connected(
     ui: &mut UiState,
     storage: &Arc<Mutex<ClientStorage>>,
     config: &Config,
-    args: &[String],
-    tofu_out: &mut Option<Arc<TofuVerifier>>,
+    conn: ConnectionResult,
 ) -> Result<()> {
-    // Get password
-    let password = config
-        .password
-        .clone()
-        .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok())
-        .context("no password configured")?;
-
-    let server_str = get_arg(args, "--server").unwrap_or_else(|| config.server.clone());
-
-    let server_addr = tokio::net::lookup_host(&server_str)
-        .await
-        .context(format!(
-            "failed to resolve server address: {server_str}"
-        ))?
-        .next()
-        .ok_or_else(|| {
-            anyhow::anyhow!("server address resolved to no addresses: {server_str}")
-        })?;
-
-    let tofu = Arc::new(TofuVerifier::new(Arc::clone(storage), server_str.clone()));
-    *tofu_out = Some(Arc::clone(&tofu));
-
-    let bind_addr: std::net::SocketAddr = "[::]:0".parse().context("invalid bind address")?;
-    let crate::quic::DualEndpoint {
+    let ConnectionResult {
+        rv_client,
         endpoint,
         peer_client_config,
-    } = crate::quic::create_dual_endpoint(bind_addr, tofu)?;
-
-    let rv_client = RendezvousClient::connect(
-        &endpoint,
-        server_addr,
-        "dessplay-rendezvous",
-        &password,
-        &config.username,
-    )
-    .await?;
-
-    tracing::info!(
-        peer_id = %rv_client.peer_id,
-        observed_addr = %rv_client.observed_addr,
-        "Connected to rendezvous server"
-    );
+    } = conn;
 
     let peer_mgr = Arc::new(PeerManager::new(
         endpoint,

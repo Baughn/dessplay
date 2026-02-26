@@ -12,6 +12,7 @@ use dessplay_core::types::FileId;
 // ---------------------------------------------------------------------------
 
 /// Local user configuration, persisted in SQLite.
+#[derive(Clone)]
 pub struct Config {
     pub username: String,
     pub server: String,

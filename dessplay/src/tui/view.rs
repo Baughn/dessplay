@@ -10,7 +10,7 @@ use dessplay_core::view_spec::*;
 
 use crate::tui::display_data::{DisplayData, PlaylistDisplayEntry, UserDisplayEntry};
 use crate::tui::ui_state::{
-    FocusedPane, MetadataAssignStep, Screen, UiState,
+    ConnectingState, FocusedPane, MetadataAssignStep, Screen, UiState,
 };
 
 // =========================================================================
@@ -46,6 +46,11 @@ pub fn view(ui: &UiState, data: &DisplayData) -> ViewSpec {
     if let Some(ref ma) = ui.metadata_assign {
         if ui.screen == Screen::MetadataAssign {
             modals.push(metadata_assign_modal(ma));
+        }
+    }
+    if let Some(ref connecting) = ui.connecting {
+        if ui.screen == Screen::Connecting {
+            modals.push(connecting_modal(connecting));
         }
     }
 
@@ -560,6 +565,27 @@ fn metadata_assign_modal(
     }
 }
 
+fn connecting_modal(state: &ConnectingState) -> ModalSpec {
+    let lines = vec![
+        vec![],
+        vec![StyledSpan::bold(
+            format!("Connecting to {}...", state.server),
+            SemanticColor::Accent,
+        )],
+    ];
+
+    ModalSpec {
+        title: " Connecting ".to_string(),
+        width_pct: 0.5,
+        height_pct: 0.3,
+        content: ContentKind::TextLog {
+            lines,
+            scroll_back: 0,
+        },
+        bindings: connecting_bindings(),
+    }
+}
+
 // =========================================================================
 // Keybinding declarations
 // =========================================================================
@@ -686,6 +712,13 @@ fn metadata_select_bindings() -> Vec<Keybinding> {
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
         kb(KeyCombo::Plain(Key::Up), "Up", Action::MetadataSelectUp),
         kb(KeyCombo::Plain(Key::Down), "Down", Action::MetadataSelectDown),
+    ]
+}
+
+fn connecting_bindings() -> Vec<Keybinding> {
+    vec![
+        kb_bar(KeyCombo::Plain(Key::Esc), "Exit", Action::Quit),
+        kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
     ]
 }
 
@@ -931,6 +964,24 @@ mod tests {
         let spec = view(&ui, &data);
         assert_eq!(spec.modals.len(), 1);
         assert!(spec.modals[0].title.contains("Settings"));
+    }
+
+    #[test]
+    fn view_connecting_modal_appears() {
+        let mut ui = UiState::new();
+        ui.screen = Screen::Connecting;
+        ui.connecting = Some(crate::tui::ui_state::ConnectingState {
+            server: "dessplay.brage.info:4433".to_string(),
+        });
+        let data = empty_display_data();
+        let spec = view(&ui, &data);
+        assert_eq!(spec.modals.len(), 1);
+        assert!(spec.modals[0].title.contains("Connecting"));
+        // Status bar should show Exit and Quit
+        let bar = spec.status_bar.unwrap();
+        let labels: Vec<&str> = bar.bindings.iter().map(|(_, l)| *l).collect();
+        assert!(labels.contains(&"Exit"), "Connecting bar should have Exit");
+        assert!(labels.contains(&"Quit"), "Connecting bar should have Quit");
     }
 
     #[test]
