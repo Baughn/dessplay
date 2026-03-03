@@ -44,6 +44,7 @@ impl MpvPlayer {
 
         let child = tokio::process::Command::new("mpv")
             .arg("--idle=yes")
+            .arg("--force-window=yes")
             .arg(format!(
                 "--input-ipc-server={}",
                 socket_path.display()

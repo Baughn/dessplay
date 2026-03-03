@@ -1175,8 +1175,17 @@ async fn run_connected(
     // Bandwidth tracking
     let mut bandwidth = BandwidthTracker::new();
 
-    // Player state
-    let mut player: Option<MpvPlayer> = None;
+    // Player state — launch immediately so the window is always visible
+    let mut player: Option<MpvPlayer> = match MpvPlayer::launch().await {
+        Ok(p) => {
+            tracing::info!("Launched mpv player");
+            Some(p)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to launch mpv at startup: {e}");
+            None
+        }
+    };
     let mut echo_filter = EchoFilter::new();
     let mut mtime_tracker = MtimeTracker::new();
 
@@ -1197,6 +1206,27 @@ async fn run_connected(
             &rehash_tx,
         )
         .await;
+    }
+
+    // If there's already a file selected, load it into the player
+    if player.is_some() {
+        let app = app_state.lock().await;
+        if let Some(file_id) = app.playback.current_file {
+            drop(app);
+            dispatch_effects(
+                vec![AppEffect::PlayerLoadFile(file_id)],
+                &peer_mgr,
+                &rv_client,
+                storage,
+                &app_state,
+                &gap_fill_tx,
+                &mut player,
+                &mut echo_filter,
+                &mut mtime_tracker,
+                &rehash_tx,
+            )
+            .await;
+        }
     }
 
     loop {
@@ -1705,10 +1735,18 @@ async fn run_connected(
                             crate::player::PlayerEvent::Eof => AppEvent::PlayerEof,
                             crate::player::PlayerEvent::Crashed => AppEvent::PlayerCrashed,
                         };
-                        // Drop dead player before dispatch — dispatch_effects
-                        // will relaunch if needed (first crash).
+                        // Drop dead player and relaunch — player should be always-on.
                         if is_crash {
                             player = None;
+                            match MpvPlayer::launch().await {
+                                Ok(p) => {
+                                    player = Some(p);
+                                    tracing::info!("Relaunched mpv player after crash");
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to relaunch mpv after crash: {e}");
+                                }
+                            }
                         }
                         let now = rv_client.shared_now().await;
                         let effects = app_state.lock().await.process_event(app_event, now);
@@ -1720,8 +1758,17 @@ async fn run_connected(
                         ).await;
                     }
                 } else {
-                    // Player process died — drop it so we don't spin on errors.
+                    // Player process died — relaunch so it stays always-on.
                     player = None;
+                    match MpvPlayer::launch().await {
+                        Ok(p) => {
+                            player = Some(p);
+                            tracing::info!("Relaunched mpv player after process death");
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to relaunch mpv after process death: {e}");
+                        }
+                    }
                     let now = rv_client.shared_now().await;
                     let effects = app_state.lock().await.process_event(AppEvent::PlayerCrashed, now);
                     dispatch_effects(
