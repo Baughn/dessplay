@@ -113,6 +113,8 @@ pub enum ContentKind {
         selected: usize,
         /// Offset so the renderer can scroll the viewport.
         scroll_offset: usize,
+        /// Secondary highlight index (e.g. now-playing in playlist).
+        highlighted: Option<usize>,
     },
     /// Single-line text input with cursor.
     TextInput {

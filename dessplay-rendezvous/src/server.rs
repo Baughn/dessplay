@@ -70,6 +70,10 @@ impl RendezvousServer {
             }
             Err(e) => {
                 tracing::warn!("Failed to load persisted state: {e}");
+                tracing::warn!("Clearing corrupt snapshots/ops from database");
+                if let Err(e2) = storage.clear_all_crdt_state() {
+                    tracing::warn!("Failed to clear corrupt state: {e2}");
+                }
                 SyncEngine::new()
             }
         };

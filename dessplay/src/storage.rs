@@ -326,6 +326,13 @@ impl ClientStorage {
         Ok(())
     }
 
+    /// Delete all CRDT snapshots and ops. Used when persisted state is corrupt.
+    pub fn clear_all_crdt_state(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM crdt_snapshots", [])?;
+        self.conn.execute("DELETE FROM crdt_ops", [])?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Watch history
     // -----------------------------------------------------------------------

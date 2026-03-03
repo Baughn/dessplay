@@ -841,8 +841,8 @@ async fn run_connected(
     let app_state = {
         let s = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         let user_id = UserId(config.username.clone());
-        match s.load_latest_snapshot()? {
-            Some((epoch, snapshot)) => {
+        match s.load_latest_snapshot() {
+            Ok(Some((epoch, snapshot))) => {
                 let mut state = dessplay_core::crdt::CrdtState::new();
                 state.load_snapshot(epoch, snapshot);
                 for op in s.load_ops(epoch)? {
@@ -852,8 +852,16 @@ async fn run_connected(
                 let engine = SyncEngine::from_persisted(epoch, state, epoch);
                 AppState::from_persisted(user_id, engine)
             }
-            None => {
+            Ok(None) => {
                 tracing::info!("No persisted state, starting fresh");
+                AppState::new(user_id)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load persisted state: {e}");
+                tracing::warn!("Clearing corrupt snapshots/ops from database");
+                if let Err(e2) = s.clear_all_crdt_state() {
+                    tracing::warn!("Failed to clear corrupt state: {e2}");
+                }
                 AppState::new(user_id)
             }
         }

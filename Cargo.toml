@@ -2,6 +2,7 @@
 members = ["dessplay-core", "dessplay", "dessplay-rendezvous"]
 exclude = ["fuzz"]
 resolver = "3"
+default-members = ["dessplay"]
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

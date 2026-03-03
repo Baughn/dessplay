@@ -76,13 +76,6 @@ fn main_layout(ui: &UiState, data: &DisplayData) -> LayoutNode {
     let playlist = playlist_pane(ui, data);
     let player = player_status_spacer(data);
 
-    // Left column: chat messages on top, chat input (1 line) at bottom
-    let left = LayoutNode::VSplit {
-        top: Box::new(chat),
-        bottom: Box::new(chat_input),
-        ratio: 1.0, // chat_input is fixed-height; handled by renderer
-    };
-
     // Right column: recent series (30%) / users (30%) / playlist (40%)
     let right_top = LayoutNode::VSplit {
         top: Box::new(recent),
@@ -95,16 +88,23 @@ fn main_layout(ui: &UiState, data: &DisplayData) -> LayoutNode {
         ratio: 0.6, // top 60%, bottom 40%
     };
 
-    // Main content: left 50% | right 50%
-    let main_content = LayoutNode::HSplit {
-        left: Box::new(left),
+    // Main columns: chat 50% | right 50%
+    let columns = LayoutNode::HSplit {
+        left: Box::new(chat),
         right: Box::new(right),
         ratio: 0.5,
     };
 
-    // Full screen: main content above, player status (fixed 5 lines) below
+    // Content area: columns above, chat input (1 line, full width) below
+    let content = LayoutNode::VSplit {
+        top: Box::new(columns),
+        bottom: Box::new(chat_input),
+        ratio: 1.0, // chat_input is fixed-height; handled by renderer
+    };
+
+    // Full screen: content above, player status (fixed 5 lines) below
     LayoutNode::VSplit {
-        top: Box::new(main_content),
+        top: Box::new(content),
         bottom: Box::new(player),
         ratio: 1.0, // player_status is fixed-height; handled by renderer
     }
@@ -169,6 +169,7 @@ fn users_pane(data: &DisplayData) -> LayoutNode {
             items,
             selected: 0,
             scroll_offset: 0,
+            highlighted: None,
         },
         bindings: Vec::new(),
     })
@@ -183,6 +184,11 @@ fn playlist_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
         .collect();
     items.push(vec![StyledSpan::colored("[Add New]", SemanticColor::Muted)]);
 
+    let highlighted = data
+        .playlist_entries
+        .iter()
+        .position(|e| e.is_current);
+
     LayoutNode::Pane(PaneSpec {
         id: PaneId::Playlist,
         title: "Playlist".to_string(),
@@ -191,6 +197,7 @@ fn playlist_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
             items,
             selected: ui.playlist_selected,
             scroll_offset: 0,
+            highlighted,
         },
         bindings: playlist_bindings(),
     })
@@ -219,6 +226,7 @@ fn recent_series_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
             items,
             selected: ui.recent_selected,
             scroll_offset: 0,
+            highlighted: None,
         },
         bindings: recent_series_bindings(),
     })
@@ -433,6 +441,7 @@ fn file_browser_modal(
             items,
             selected: fb.selected,
             scroll_offset: fb.scroll_offset,
+            highlighted: None,
         },
         bindings: file_browser_bindings(fb),
     }
@@ -541,6 +550,7 @@ fn metadata_assign_modal(
                     items,
                     selected: ma.selected,
                     scroll_offset: 0,
+                    highlighted: None,
                 },
                 bindings: metadata_select_bindings(),
             }

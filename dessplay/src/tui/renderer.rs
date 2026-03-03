@@ -218,8 +218,9 @@ fn render_content(content: &ContentKind, area: Rect, buf: &mut Buffer, focused: 
             items,
             selected,
             scroll_offset,
+            highlighted,
         } => {
-            render_selectable_list(items, *selected, *scroll_offset, area, buf, focused);
+            render_selectable_list(items, *selected, *scroll_offset, *highlighted, area, buf, focused);
         }
         ContentKind::TextInput {
             text,
@@ -281,6 +282,7 @@ fn render_selectable_list(
     items: &[Vec<StyledSpan>],
     selected: usize,
     _scroll_offset: usize,
+    highlighted: Option<usize>,
     area: Rect,
     buf: &mut Buffer,
     focused: bool,
@@ -296,6 +298,7 @@ fn render_selectable_list(
     for (i, item) in items.iter().enumerate().skip(scroll_start).take(visible) {
         let y = area.y + (i - scroll_start) as u16;
         let is_selected = i == selected && focused;
+        let is_highlighted = highlighted == Some(i);
         let row_area = Rect {
             x: area.x,
             y,
@@ -304,8 +307,19 @@ fn render_selectable_list(
         };
 
         let mut spans: Vec<Span<'_>> = Vec::new();
-        let prefix = if is_selected { "> " } else { "  " };
-        spans.push(Span::raw(prefix));
+        if is_selected {
+            spans.push(Span::raw("> "));
+        } else if is_highlighted {
+            if focused {
+                // Dimmed indicator for now-playing when cursor is elsewhere
+                spans.push(Span::styled("> ", Style::default().fg(Color::DarkGray)));
+            } else {
+                // Primary indicator when pane is unfocused
+                spans.push(Span::raw("> "));
+            }
+        } else {
+            spans.push(Span::raw("  "));
+        }
 
         for s in item {
             let mut style = styled_span_to_style(s);
