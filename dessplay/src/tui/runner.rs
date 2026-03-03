@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::EventStream;
@@ -115,6 +115,39 @@ pub struct BgHashProgress {
     pub completed_bytes: Arc<AtomicU64>,
     pub rate_tracker: std::sync::Mutex<crate::device_rate::DeviceRateTracker>,
     pub current_file: Arc<Mutex<Option<String>>>,
+}
+
+/// Tracks network bandwidth by sampling cumulative byte counters.
+struct BandwidthTracker {
+    prev_tx: u64,
+    prev_rx: u64,
+    prev_time: Instant,
+    pub tx_bps: f64,
+    pub rx_bps: f64,
+}
+
+impl BandwidthTracker {
+    fn new() -> Self {
+        Self {
+            prev_tx: 0,
+            prev_rx: 0,
+            prev_time: Instant::now(),
+            tx_bps: 0.0,
+            rx_bps: 0.0,
+        }
+    }
+
+    fn update(&mut self, total_tx: u64, total_rx: u64) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.prev_time).as_secs_f64();
+        if elapsed > 0.0 {
+            self.tx_bps = (total_tx.saturating_sub(self.prev_tx)) as f64 / elapsed;
+            self.rx_bps = (total_rx.saturating_sub(self.prev_rx)) as f64 / elapsed;
+        }
+        self.prev_tx = total_tx;
+        self.prev_rx = total_rx;
+        self.prev_time = now;
+    }
 }
 
 /// Background worker that hashes media files received via channel.
@@ -1081,6 +1114,9 @@ async fn run_connected(
     let (rehash_tx, mut rehash_rx) =
         tokio::sync::mpsc::unbounded_channel::<(FileId, std::io::Result<FileId>)>();
 
+    // Bandwidth tracking
+    let mut bandwidth = BandwidthTracker::new();
+
     // Player state
     let mut player: Option<MpvPlayer> = None;
     let mut echo_filter = EchoFilter::new();
@@ -1109,7 +1145,7 @@ async fn run_connected(
         // Build display data, produce ViewSpec, render
         let spec = {
             let app = app_state.lock().await;
-            let data = build_display_data(&app, storage, &bg_hash_progress, ui.series_mode, ui.all_series_sort);
+            let data = build_display_data(&app, storage, &bg_hash_progress, ui.series_mode, ui.all_series_sort, bandwidth.tx_bps, bandwidth.rx_bps);
             drop(app);
             let spec = view::view(ui, &data);
             let mut feedback = renderer::RenderFeedback::default();
@@ -1646,6 +1682,11 @@ async fn run_connected(
 
             // Periodic tick
             _ = summary_interval.tick() => {
+                // Sample bandwidth
+                let (peer_tx, peer_rx) = peer_mgr.total_udp_bytes().await;
+                let (rv_tx, rv_rx) = rv_client.udp_bytes();
+                bandwidth.update(peer_tx + rv_tx, peer_rx + rv_rx);
+
                 let now = rv_client.shared_now().await;
                 let effects = app_state.lock().await.process_event(AppEvent::Tick, now);
                 dispatch_effects(

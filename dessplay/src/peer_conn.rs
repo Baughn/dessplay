@@ -288,6 +288,19 @@ impl PeerManager {
         self.peers.read().await.keys().copied().collect()
     }
 
+    /// Sum of UDP bytes (tx, rx) across all peer connections.
+    pub async fn total_udp_bytes(&self) -> (u64, u64) {
+        let peers = self.peers.read().await;
+        let mut tx = 0u64;
+        let mut rx = 0u64;
+        for peer in peers.values() {
+            let stats = peer.connection.stats();
+            tx += stats.udp_tx.bytes;
+            rx += stats.udp_rx.bytes;
+        }
+        (tx, rx)
+    }
+
     async fn disconnect_peer(&self, peer_id: PeerId) {
         let mut peers = self.peers.write().await;
         if let Some(peer) = peers.remove(&peer_id) {

@@ -24,6 +24,8 @@ pub struct RendezvousClient {
     msg_tx: tokio::sync::mpsc::UnboundedSender<RvControl>,
     /// Receiver for events (peer lists, etc.).
     event_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<RendezvousEvent>>,
+    /// QUIC connection handle (for stats).
+    connection: quinn::Connection,
 }
 
 /// Events from the rendezvous server.
@@ -149,6 +151,7 @@ impl RendezvousClient {
             time_sync,
             msg_tx: msg_tx_clone,
             event_rx: tokio::sync::Mutex::new(event_rx),
+            connection: conn,
         };
 
         // Run initial time sync (5 rapid rounds)
@@ -240,6 +243,12 @@ impl RendezvousClient {
     /// Send a message to the server.
     pub fn send(&self, msg: RvControl) {
         let _ = self.msg_tx.send(msg);
+    }
+
+    /// Cumulative UDP bytes (tx, rx) on the server connection.
+    pub fn udp_bytes(&self) -> (u64, u64) {
+        let stats = self.connection.stats();
+        (stats.udp_tx.bytes, stats.udp_rx.bytes)
     }
 }
 

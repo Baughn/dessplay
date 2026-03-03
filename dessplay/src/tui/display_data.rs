@@ -57,6 +57,10 @@ pub struct DisplayData {
     pub is_playing: bool,
     pub blocking_users: Vec<String>,
     pub bg_hash_progress: Option<BgHashDisplayData>,
+    /// Network transmit rate (bytes/sec).
+    pub net_tx_bps: f64,
+    /// Network receive rate (bytes/sec).
+    pub net_rx_bps: f64,
 }
 
 /// Pre-computed display data for background indexing progress.
@@ -85,6 +89,8 @@ impl DisplayData {
             is_playing: false,
             blocking_users: Vec::new(),
             bg_hash_progress: None,
+            net_tx_bps: 0.0,
+            net_rx_bps: 0.0,
         }
     }
 }
@@ -99,6 +105,8 @@ pub fn build_display_data(
     bg_hash_progress: &Arc<BgHashProgress>,
     series_mode: SeriesPaneMode,
     all_series_sort: AllSeriesSort,
+    net_tx_bps: f64,
+    net_rx_bps: f64,
 ) -> DisplayData {
     let crdt = app.sync_engine.state();
 
@@ -257,6 +265,8 @@ pub fn build_display_data(
         is_playing,
         blocking_users,
         bg_hash_progress: bg_hash,
+        net_tx_bps,
+        net_rx_bps,
     }
 }
 

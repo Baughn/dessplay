@@ -370,6 +370,19 @@ fn player_status_spacer(data: &DisplayData) -> LayoutNode {
         });
     }
 
+    // Line 4: bandwidth monitor
+    if data.net_tx_bps > 0.0 || data.net_rx_bps > 0.0 {
+        let bw = format!(
+            "\u{2191} {}/s  \u{2193} {}/s",
+            format_bytes(data.net_tx_bps as u64),
+            format_bytes(data.net_rx_bps as u64),
+        );
+        children.push(ContentKind::TextLog {
+            lines: vec![vec![StyledSpan::colored(bw, SemanticColor::Muted)]],
+            scroll_back: 0,
+        });
+    }
+
     LayoutNode::Spacer {
         height: 5,
         content: ContentKind::Composite { children },
@@ -1165,6 +1178,8 @@ mod tests {
             is_playing: false,
             blocking_users: Vec::new(),
             bg_hash_progress: None,
+            net_tx_bps: 0.0,
+            net_rx_bps: 0.0,
         }
     }
 
