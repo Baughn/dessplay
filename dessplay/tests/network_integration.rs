@@ -236,14 +236,16 @@ async fn auth_failure() {
     .await
     .unwrap();
 
-    // Server sends AuthFailed then drops the connection. We may receive
-    // either the AuthFailed message or a connection-closed error.
-    match read_framed::<_, RvControl>(&mut recv, TAG_RV_CONTROL).await {
-        Ok(Some(RvControl::AuthFailed)) => {} // expected
-        Ok(Some(other)) => panic!("expected AuthFailed, got {other:?}"),
-        Ok(None) => {} // server closed cleanly
-        Err(_) => {}   // connection dropped before we could read
-    }
+    // Server sends AuthFailed and keeps the connection open long enough
+    // for us to read it reliably.
+    let response = read_framed::<_, RvControl>(&mut recv, TAG_RV_CONTROL)
+        .await
+        .expect("should be able to read auth response")
+        .expect("stream should not be closed before AuthFailed");
+    assert!(
+        matches!(response, RvControl::AuthFailed),
+        "expected AuthFailed, got {response:?}"
+    );
 }
 
 #[tokio::test]

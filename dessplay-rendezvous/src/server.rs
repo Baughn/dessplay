@@ -168,6 +168,13 @@ impl RendezvousServer {
         if password != self.password {
             tracing::info!(%remote, "Auth failed: wrong password");
             write_framed(&mut send, TAG_RV_CONTROL, &RvControl::AuthFailed).await?;
+            // Give the client time to read the AuthFailed message before we
+            // tear down the connection. Wait for client disconnect or 5s.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                recv.read(&mut [0u8; 1]),
+            )
+            .await;
             return Ok(());
         }
 
