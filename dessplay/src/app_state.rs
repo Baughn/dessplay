@@ -533,6 +533,9 @@ impl AppState {
         self.our_position_secs = 0.0;
         self.file_duration_secs = None;
         self.watched_marker_sent = false;
+        // Clear crash state so the player can be relaunched for the new file
+        self.crash_state.consecutive_crashes = 0;
+        self.crash_state.last_crash_time = None;
 
         let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
@@ -719,8 +722,8 @@ impl AppState {
         }
         self.crash_state.last_crash_time = Some(now);
 
-        if self.crash_state.consecutive_crashes >= 2 {
-            // Second crash within window → global pause + system chat
+        if self.crash_state.consecutive_crashes == 2 {
+            // Exactly 2nd crash within window → global pause + system chat
             let op = CrdtOp::LwwWrite {
                 timestamp: now,
                 value: LwwValue::UserState(self.our_user_id.clone(), UserState::Paused),
@@ -747,7 +750,7 @@ impl AppState {
             if !chat_actions.is_empty() {
                 effects.push(AppEffect::Sync(chat_actions));
             }
-        } else {
+        } else if self.crash_state.consecutive_crashes == 1 {
             // First crash → relaunch and seek to last position
             if let Some(file_id) = self.player_loaded_file {
                 effects.push(AppEffect::PlayerLoadFile(file_id));
@@ -756,6 +759,7 @@ impl AppState {
                 }
             }
         }
+        // 3rd+ crash within window: do nothing (already paused, already notified)
 
         effects
     }
@@ -1871,5 +1875,64 @@ mod tests {
             300,
         );
         assert!(has_sync_effect(&effects), "MoveInPlaylist must produce Sync effects");
+    }
+
+    #[test]
+    fn crash_third_event_does_not_spam_chat() {
+        // Regression: after two rapid crashes, a third PlayerCrashed event
+        // (from the dead player's channel closing) must not emit another
+        // system chat message.
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        app.player_loaded_file = Some(fid(1));
+
+        // First crash → relaunch
+        app.process_event(AppEvent::PlayerCrashed, 1000);
+        // Second crash → global pause + chat
+        app.process_event(AppEvent::PlayerCrashed, 1500);
+        let seq_after_second = app.chat_seq;
+
+        // Third crash event (would happen from dead channel) — no new chat
+        let effects = app.process_event(AppEvent::PlayerCrashed, 1600);
+        assert_eq!(
+            app.chat_seq, seq_after_second,
+            "third crash must not emit another chat message"
+        );
+        assert!(!has_player_load(&effects), "no relaunch after repeated crash");
+    }
+
+    #[test]
+    fn set_now_playing_clears_crash_state() {
+        // Regression: after a double crash, selecting a new file must allow
+        // the player to be relaunched (crash counter resets).
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        add_file(&mut app, 2, 200);
+        app.player_loaded_file = Some(fid(1));
+
+        // Two rapid crashes → locked out
+        app.process_event(AppEvent::PlayerCrashed, 1000);
+        app.process_event(AppEvent::PlayerCrashed, 1500);
+        assert_eq!(app.crash_state.consecutive_crashes, 2);
+
+        // Select a different file
+        app.process_event(
+            AppEvent::SetNowPlaying {
+                file_id: Some(fid(2)),
+            },
+            2000,
+        );
+        assert_eq!(
+            app.crash_state.consecutive_crashes, 0,
+            "crash state must be cleared on file change"
+        );
+
+        // Next crash should be treated as a first crash (relaunch)
+        app.player_loaded_file = Some(fid(2));
+        let effects = app.process_event(AppEvent::PlayerCrashed, 3000);
+        assert!(
+            has_player_load(&effects),
+            "first crash after file change should relaunch"
+        );
     }
 }

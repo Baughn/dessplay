@@ -1489,6 +1489,7 @@ async fn run_connected(
                 }
             } => {
                 if let Ok(raw_event) = event {
+                    let is_crash = matches!(raw_event, crate::player::PlayerEvent::Crashed);
                     if let Some(filtered) = echo_filter.filter(raw_event) {
                         let app_event = match filtered {
                             crate::player::PlayerEvent::Paused => AppEvent::PlayerPaused,
@@ -1505,6 +1506,11 @@ async fn run_connected(
                             crate::player::PlayerEvent::Eof => AppEvent::PlayerEof,
                             crate::player::PlayerEvent::Crashed => AppEvent::PlayerCrashed,
                         };
+                        // Drop dead player before dispatch — dispatch_effects
+                        // will relaunch if needed (first crash).
+                        if is_crash {
+                            player = None;
+                        }
                         let now = rv_client.shared_now().await;
                         let effects = app_state.lock().await.process_event(app_event, now);
                         dispatch_effects(
@@ -1515,6 +1521,8 @@ async fn run_connected(
                         ).await;
                     }
                 } else {
+                    // Player process died — drop it so we don't spin on errors.
+                    player = None;
                     let now = rv_client.shared_now().await;
                     let effects = app_state.lock().await.process_event(AppEvent::PlayerCrashed, now);
                     dispatch_effects(
