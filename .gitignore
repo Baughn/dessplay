@@ -5,3 +5,4 @@ target
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/crash-*
+result
