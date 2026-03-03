@@ -645,7 +645,7 @@ impl UiState {
             status_message: None,
             pending_add_after: None,
             series_mode: SeriesPaneMode::Recent,
-            all_series_sort: AllSeriesSort::ByTitle,
+            all_series_sort: AllSeriesSort::ByYear,
             all_series_selected: 0,
         }
     }

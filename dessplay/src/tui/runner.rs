@@ -2195,9 +2195,14 @@ async fn apply_action(
                     (dir, next_file, entry.clone())
                 })
             };
-            if let Some((Some(dir), next_file, entry)) = info {
-                if entry.members.len() > 1 {
-                    // Multi-season franchise: open episode browser with season list
+            if let Some((Some(_dir), _next_file, entry)) = info {
+                let app = app_state.lock().await;
+                let crdt = app.sync_engine.state();
+                let st = storage
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                let depth = if entry.members.len() > 1 {
+                    // Multi-season franchise: show season list
                     let seasons = entry
                         .members
                         .iter()
@@ -2207,28 +2212,26 @@ async fn apply_action(
                             year: m.year,
                         })
                         .collect();
-                    ui.episode_browser =
-                        Some(crate::tui::ui_state::EpisodeBrowserState {
-                            franchise_name: entry.name.clone(),
-                            depth: crate::tui::ui_state::EpisodeBrowserDepth::Seasons(
-                                seasons,
-                            ),
-                            selected: 0,
-                        });
-                    ui.screen = Screen::EpisodeBrowser;
+                    crate::tui::ui_state::EpisodeBrowserDepth::Seasons(seasons)
                 } else {
-                    // Single-season franchise: open file browser directly
-                    let mut fb =
-                        FileBrowserState::open(dir, FileBrowserOrigin::SeriesBrowser);
-                    if let Some(filename) = next_file
-                        && let Some(idx) =
-                            fb.entries.iter().position(|e| e.name == filename)
-                    {
-                        fb.selected = idx;
+                    // Single-season: skip to episodes directly
+                    let anime_id = entry.members[0].anime_id;
+                    let episodes =
+                        series_browser::episodes_for_anime_id(crdt, &st, anime_id);
+                    crate::tui::ui_state::EpisodeBrowserDepth::Episodes {
+                        anime_id,
+                        episodes,
                     }
-                    ui.file_browser = Some(fb);
-                    ui.screen = Screen::FileBrowser;
-                }
+                };
+                drop(st);
+                drop(app);
+                ui.episode_browser =
+                    Some(crate::tui::ui_state::EpisodeBrowserState {
+                        franchise_name: entry.name.clone(),
+                        depth,
+                        selected: 0,
+                    });
+                ui.screen = Screen::EpisodeBrowser;
             }
         }
 
@@ -2998,8 +3001,11 @@ async fn dispatch_effects(
                 }
             }
             AppEffect::PlayerShowOsd(text) => {
+                // 4s minimum, then 400ms per word (~150 wpm reading speed)
+                let word_count = text.split_whitespace().count() as u64;
+                let duration_ms = 4000u64.max(word_count * 400);
                 if let Some(p) = player.as_ref()
-                    && let Err(e) = p.show_osd(&text, 3000).await
+                    && let Err(e) = p.show_osd(&text, duration_ms).await
                 {
                     tracing::debug!("Failed to show OSD: {e}");
                 }
