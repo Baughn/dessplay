@@ -52,16 +52,21 @@ The settings screen includes several required settings:
 
 ### Adding Files to the Playlist
 
-**From the Recent Series pane:**
-1. Press `Tab` to focus the **Recent Series** pane (top-right)
-2. You see directories sorted by (in order):
-- Existence of unwatched files (yes = on top)
-- Recency of this specific user having watched a file from the series
-- Otherwise, alphabetical
-3. Press `Enter` on a series to open the file browser
-4. Episodes are listed in order. The cursor starts at the next unwatched episode.
-5. For series with multiple seasons, the browser takes the form of a virtual tree (series -> season -> episodes), but selecting the series takes you straight to the current season. Add a virtual [Season List] entry at the top.
-6. Press `Enter` to add a file to the playlist
+**From the Series pane:**
+1. Press `Tab` to focus the **Series** pane (top-right)
+2. The pane has two modes, toggled with `m`:
+   - **Recent Series** (default): franchises sorted by unwatched → recency → alphabetical
+   - **All Series**: same data, sorted by title or year (toggle with `s`)
+3. Related anime are grouped into **franchises** using AniDB's relations graph
+   (sequel, prequel, side story, etc.). Each franchise shows as one entry.
+4. Press `Enter` on a franchise:
+   - **Single-season franchise**: opens the file browser in the series directory,
+     cursor on the next unwatched episode
+   - **Multi-season franchise**: opens the **Episode Browser** modal showing
+     seasons (franchise members). Select a season to see its episodes.
+5. In the Episode Browser, press `Enter` on an episode with a local file to add
+   it to the playlist. Press `Esc`/`Backspace` to go back.
+6. Sort mode for All Series is persisted across sessions.
 
 **From scratch:**
 1. Press `Tab` to focus the **Playlist** pane (bottom-right)
@@ -201,10 +206,10 @@ Typical evening flow:
 
 ```
 +----------------------------------+------------------+
-|                                  | Recent Series    |
-|                                  | (unwatched only, |
-|          Chat Window             |  sorted by       |
-|                                  |  recency)        |
+|                                  | Recent Series |  |
+|                                  | All Series       |
+|          Chat Window             | (dual-mode,      |
+|                                  |  franchise list)  |
 |                                  +------------------+
 |                                  | Users            |
 |                                  | (colored by      |
@@ -225,7 +230,7 @@ Typical evening flow:
 **Proportions:**
 - Bottom: Player status (3 lines) then keybinding bar (1 line)
 - Left 50%: Chat (with input line at bottom)
-- Right 50%, top: Recent Series
+- Right 50%, top: Series (dual-mode: Recent Series / All Series)
 - Right 50%, middle: Users
 - Right 50%, bottom: Playlist
 
@@ -242,7 +247,7 @@ available actions for the currently focused pane (e.g. Chat shows
 | Key | Context | Action |
 |-----|---------|--------|
 | `Ctrl-C` | Any | Quit |
-| `Tab` | Any | Cycle focus: Chat → Recent Series → Playlist → Chat |
+| `Tab` | Any | Cycle focus: Chat → Series → Playlist → Chat |
 | `Enter` | Chat | Send message (or execute `/command`) |
 | `Esc` | Chat | Clear input |
 | `Backspace` | Chat | Delete character before cursor |
@@ -250,6 +255,11 @@ available actions for the currently focused pane (e.g. Chat shows
 | `Left` / `Right` | Chat | Move cursor |
 | `Ctrl-Left` / `Ctrl-Right` | Chat | Move cursor by word |
 | `Home` / `End` | Chat | Move cursor to start/end |
+| `m` | Series | Toggle mode: Recent Series ↔ All Series |
+| `s` | Series (All mode) | Toggle sort: by title ↔ by year |
+| `Enter` | Series | Browse franchise (episode browser or file browser) |
+| `Enter` | Episode Browser | Select season / add episode to playlist |
+| `Esc` / `Backspace` | Episode Browser | Go back (episodes → seasons → close) |
 | `Enter` | Playlist | Play selected entry (or open file browser on [Add New]) |
 | `a` | Playlist | Add file (insert after selected entry) |
 

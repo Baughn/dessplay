@@ -14,6 +14,7 @@ use crate::app_state::AppState;
 use crate::series_browser::{self, SeriesEntry};
 use crate::storage::ClientStorage;
 use crate::tui::runner::BgHashProgress;
+use crate::tui::ui_state::{AllSeriesSort, SeriesPaneMode};
 
 // ---------------------------------------------------------------------------
 // Display entry types
@@ -96,6 +97,8 @@ pub fn build_display_data(
     app: &AppState,
     storage: &std::sync::Mutex<ClientStorage>,
     bg_hash_progress: &Arc<BgHashProgress>,
+    series_mode: SeriesPaneMode,
+    all_series_sort: AllSeriesSort,
 ) -> DisplayData {
     let crdt = app.sync_engine.state();
 
@@ -180,11 +183,17 @@ pub fn build_display_data(
         })
         .collect();
 
-    // Series list
+    // Series list (mode-aware)
     let series_entries = storage
         .lock()
         .ok()
-        .map(|st| series_browser::build_series_list(crdt, &st))
+        .map(|st| match series_mode {
+            SeriesPaneMode::Recent => series_browser::build_franchise_list(crdt, &st),
+            SeriesPaneMode::All => match all_series_sort {
+                AllSeriesSort::ByTitle => series_browser::build_franchise_list_by_title(crdt, &st),
+                AllSeriesSort::ByYear => series_browser::build_franchise_list_by_year(crdt, &st),
+            },
+        })
         .unwrap_or_default();
 
     let current_file_name = playlist_entries

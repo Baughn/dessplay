@@ -191,7 +191,7 @@ mod tests {
         ViewSpec {
             base: LayoutNode::Pane(PaneSpec {
                 id: PaneId::Chat,
-                title: "Chat".to_string(),
+                title: vec![StyledSpan::plain(" Chat ")],
                 focused: true,
                 content: ContentKind::TextLog {
                     lines: Vec::new(),
@@ -287,7 +287,7 @@ mod tests {
         let spec = ViewSpec {
             base: LayoutNode::Pane(PaneSpec {
                 id: PaneId::Chat,
-                title: "Chat".to_string(),
+                title: vec![StyledSpan::plain(" Chat ")],
                 focused: false,
                 content: ContentKind::Empty,
                 bindings: Vec::new(),

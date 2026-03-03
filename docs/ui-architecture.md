@@ -1,5 +1,5 @@
 # Declarative UI Architecture
-Last updated: 2026-02-24
+Last updated: 2026-03-03
 
 ## Table of Contents
 
@@ -86,7 +86,7 @@ struct Keybinding {
 
 struct PaneSpec {
     id: PaneId,
-    title: String,
+    title: Vec<StyledSpan>,  // styled spans allow dual-mode titles (e.g. "Recent Series | All Series")
     focused: bool,
     content: ContentKind,
     bindings: Vec<Keybinding>,

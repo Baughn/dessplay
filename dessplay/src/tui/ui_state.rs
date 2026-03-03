@@ -4,6 +4,20 @@ use std::sync::Arc;
 
 use dessplay_core::types::FileId;
 
+/// Which mode the series pane is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeriesPaneMode {
+    Recent,
+    All,
+}
+
+/// Sort order for All Series mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AllSeriesSort {
+    ByTitle,
+    ByYear,
+}
+
 /// Which pane has focus in the main screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusedPane {
@@ -32,6 +46,7 @@ pub enum Screen {
     Hashing,
     MetadataAssign,
     Connecting,
+    EpisodeBrowser,
 }
 
 /// State for the connecting-to-server modal.
@@ -515,6 +530,43 @@ pub enum MetadataAssignStep {
     EnterEpisode,
 }
 
+/// State for the episode browser modal (franchise → season → episodes).
+#[derive(Clone, Debug)]
+pub struct EpisodeBrowserState {
+    pub franchise_name: String,
+    pub depth: EpisodeBrowserDepth,
+    pub selected: usize,
+}
+
+/// What level the episode browser is showing.
+#[derive(Clone, Debug)]
+pub enum EpisodeBrowserDepth {
+    /// Showing seasons (franchise members). Only if franchise has >1 members.
+    Seasons(Vec<SeasonEntry>),
+    /// Showing episodes for one anime_id.
+    Episodes {
+        anime_id: u64,
+        episodes: Vec<EpisodeEntry>,
+    },
+}
+
+/// A season (franchise member) in the episode browser.
+#[derive(Clone, Debug)]
+pub struct SeasonEntry {
+    pub anime_id: u64,
+    pub name: String,
+    pub year: Option<u32>,
+}
+
+/// An episode in the episode browser.
+#[derive(Clone, Debug)]
+pub struct EpisodeEntry {
+    pub file_id: FileId,
+    pub number: String,
+    pub name: String,
+    pub has_local: bool,
+}
+
 /// State for the hashing progress modal.
 pub struct HashingState {
     pub filename: String,
@@ -545,11 +597,18 @@ pub struct UiState {
     pub hashing: Option<HashingState>,
     pub metadata_assign: Option<MetadataAssignState>,
     pub connecting: Option<ConnectingState>,
+    pub episode_browser: Option<EpisodeBrowserState>,
     pub should_quit: bool,
     /// Status message shown temporarily.
     pub status_message: Option<String>,
     /// When adding via file browser, insert after this playlist entry.
     pub pending_add_after: Option<FileId>,
+    /// Series pane mode: Recent (default) or All.
+    pub series_mode: SeriesPaneMode,
+    /// Sort order for All Series mode. Loaded from DB at startup.
+    pub all_series_sort: AllSeriesSort,
+    /// Separate cursor position for All Series mode.
+    pub all_series_selected: usize,
 }
 
 impl Default for UiState {
@@ -573,9 +632,13 @@ impl UiState {
             hashing: None,
             metadata_assign: None,
             connecting: None,
+            episode_browser: None,
             should_quit: false,
             status_message: None,
             pending_add_after: None,
+            series_mode: SeriesPaneMode::Recent,
+            all_series_sort: AllSeriesSort::ByTitle,
+            all_series_selected: 0,
         }
     }
 

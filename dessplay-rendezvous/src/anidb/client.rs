@@ -164,7 +164,8 @@ impl AniDbSession {
     ///
     /// FILE command with:
     ///   fmask=4000000000 (aid)
-    ///   amask=00A0C040 (romaji_name, english_name, epno, ep_name, group_short_name)
+    ///   amask=2CA0C040 (year, related_aid_list, related_aid_type, romaji_name,
+    ///                    english_name, epno, ep_name, group_short_name)
     pub async fn lookup_file(
         &mut self,
         file_id: &FileId,
@@ -179,7 +180,7 @@ impl AniDbSession {
             .context("no session key")?
             .clone();
         let cmd = format!(
-            "FILE size={file_size}&ed2k={ed2k_hex}&fmask=4000000000&amask=00A0C040&s={session}"
+            "FILE size={file_size}&ed2k={ed2k_hex}&fmask=4000000000&amask=2CA0C040&s={session}"
         );
 
         let response = self.send_command(&cmd).await?;
@@ -211,7 +212,7 @@ impl AniDbSession {
                     .context("no session key after re-login")?
                     .clone();
                 let cmd = format!(
-                    "FILE size={file_size}&ed2k={ed2k_hex}&fmask=4000000000&amask=00A0C040&s={session}"
+                    "FILE size={file_size}&ed2k={ed2k_hex}&fmask=4000000000&amask=2CA0C040&s={session}"
                 );
                 let response = self.send_command(&cmd).await?;
                 let code = parse_response_code(&response);
@@ -290,14 +291,14 @@ fn parse_response_code(response: &str) -> u16 {
 /// Parse AniDB pipe-delimited FILE response data line.
 ///
 /// Expected fields (from our fmask/amask):
-///   fid | aid | romaji_name | english_name | epno | ep_name | group_short_name
+///   fid | aid | year | related_aid_list | related_aid_type | romaji_name | english_name | epno | ep_name | group_short_name
 ///
 /// AniDB uses backtick (`) to escape literal pipe characters in field values.
 fn parse_file_response(data: &str) -> Result<AniDbMetadata> {
     let fields = split_anidb_fields(data);
-    if fields.len() < 7 {
+    if fields.len() < 10 {
         bail!(
-            "AniDB FILE response has {} fields, expected 7: {data}",
+            "AniDB FILE response has {} fields, expected 10: {data}",
             fields.len()
         );
     }
@@ -306,11 +307,14 @@ fn parse_file_response(data: &str) -> Result<AniDbMetadata> {
     let aid: u64 = fields[1]
         .parse()
         .with_context(|| format!("failed to parse aid: '{}'", fields[1]))?;
-    let romaji_name = &fields[2];
-    let english_name = &fields[3];
-    let epno = &fields[4];
-    let ep_name = &fields[5];
-    let group_short = &fields[6];
+    let year_str = &fields[2];
+    let related_aid_list = &fields[3];
+    let related_aid_type = &fields[4];
+    let romaji_name = &fields[5];
+    let english_name = &fields[6];
+    let epno = &fields[7];
+    let ep_name = &fields[8];
+    let group_short = &fields[9];
 
     // anime_name: prefer romaji, fallback to english
     let anime_name = if romaji_name.is_empty() {
@@ -319,6 +323,12 @@ fn parse_file_response(data: &str) -> Result<AniDbMetadata> {
         romaji_name.to_string()
     };
 
+    // Parse year: AniDB returns strings like "2023" or "2023-2024"; parse leading digits.
+    let year = parse_year(year_str);
+
+    // Parse related aids: comma-separated aid list + comma-separated type list, zipped.
+    let related_aids = parse_related_aids(related_aid_list, related_aid_type);
+
     Ok(AniDbMetadata {
         anime_id: aid,
         anime_name,
@@ -326,7 +336,33 @@ fn parse_file_response(data: &str) -> Result<AniDbMetadata> {
         episode_name: ep_name.to_string(),
         group_name: group_short.to_string(),
         source: dessplay_core::types::MetadataSource::AniDb,
+        year,
+        related_aids,
     })
+}
+
+/// Parse a year string from AniDB. Returns None if not a valid year in 1970-2070.
+/// AniDB may return "2023", "2023-2024", or empty strings.
+fn parse_year(s: &str) -> Option<u32> {
+    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let year: u32 = digits.parse().ok()?;
+    if (1970..=2070).contains(&year) {
+        Some(year)
+    } else {
+        None
+    }
+}
+
+/// Parse related aid lists from AniDB.
+/// Both lists are comma-separated and must be the same length.
+/// Returns Vec<(anime_id, relation_type)>.
+fn parse_related_aids(aid_list: &str, type_list: &str) -> Vec<(u64, u16)> {
+    if aid_list.is_empty() || type_list.is_empty() {
+        return Vec::new();
+    }
+    let aids: Vec<u64> = aid_list.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let types: Vec<u16> = type_list.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    aids.into_iter().zip(types).collect()
 }
 
 /// Split AniDB pipe-delimited fields, handling backtick-escaped pipes.
@@ -405,18 +441,21 @@ mod tests {
 
     #[test]
     fn parse_file_response_normal() {
-        let line = "12345|6789|Sousou no Frieren|Frieren: Beyond Journey's End|1|The Journey's End|SubsPlease";
+        // Fields: fid|aid|year|related_aids|related_types|romaji|english|epno|ep_name|group
+        let line = "12345|6789|2023|6790,6791|1,2|Sousou no Frieren|Frieren: Beyond Journey's End|1|The Journey's End|SubsPlease";
         let meta = parse_file_response(line).unwrap();
         assert_eq!(meta.anime_id, 6789);
         assert_eq!(meta.anime_name, "Sousou no Frieren");
         assert_eq!(meta.episode_number, "1");
         assert_eq!(meta.episode_name, "The Journey's End");
         assert_eq!(meta.group_name, "SubsPlease");
+        assert_eq!(meta.year, Some(2023));
+        assert_eq!(meta.related_aids, vec![(6790, 1), (6791, 2)]);
     }
 
     #[test]
     fn parse_file_response_special_episode() {
-        let line = "100|200|TestAnime||S1|Special 1|TestGroup";
+        let line = "100|200|2020|||TestAnime||S1|Special 1|TestGroup";
         let meta = parse_file_response(line).unwrap();
         assert_eq!(meta.episode_number, "S1");
         assert_eq!(meta.anime_name, "TestAnime");
@@ -424,14 +463,14 @@ mod tests {
 
     #[test]
     fn parse_file_response_credit_episode() {
-        let line = "100|200|TestAnime||C1|Opening 1|TestGroup";
+        let line = "100|200|2020|||TestAnime||C1|Opening 1|TestGroup";
         let meta = parse_file_response(line).unwrap();
         assert_eq!(meta.episode_number, "C1");
     }
 
     #[test]
     fn parse_file_response_romaji_empty_fallback() {
-        let line = "100|200||English Name|5|Episode Five|Grp";
+        let line = "100|200|2021||||English Name|5|Episode Five|Grp";
         let meta = parse_file_response(line).unwrap();
         assert_eq!(meta.anime_name, "English Name");
     }
@@ -439,7 +478,7 @@ mod tests {
     #[test]
     fn parse_file_response_escaped_pipe_in_name() {
         // Anime name contains a literal pipe (escaped with backtick)
-        let line = "100|200|Name`|With`|Pipes|English|3|Ep Three|Grp";
+        let line = "100|200|2022|||Name`|With`|Pipes|English|3|Ep Three|Grp";
         let meta = parse_file_response(line).unwrap();
         assert_eq!(meta.anime_name, "Name|With|Pipes");
         assert_eq!(meta.episode_number, "3");
@@ -453,9 +492,64 @@ mod tests {
 
     #[test]
     fn parse_file_response_empty_group() {
-        let line = "100|200|Anime|English|1|Episode 1|";
+        let line = "100|200|2023|||Anime|English|1|Episode 1|";
         let meta = parse_file_response(line).unwrap();
         assert_eq!(meta.group_name, "");
+    }
+
+    #[test]
+    fn parse_file_response_no_related_aids() {
+        let line = "100|200|2023|||Anime|English|1|Episode 1|Grp";
+        let meta = parse_file_response(line).unwrap();
+        assert!(meta.related_aids.is_empty());
+    }
+
+    #[test]
+    fn parse_file_response_year_range() {
+        // AniDB returns "2023-2024" for multi-year series; we parse the first year.
+        let line = "100|200|2023-2024|||Anime||1|Ep1|Grp";
+        let meta = parse_file_response(line).unwrap();
+        assert_eq!(meta.year, Some(2023));
+    }
+
+    #[test]
+    fn parse_file_response_no_year() {
+        let line = "100|200||||Anime||1|Ep1|Grp";
+        let meta = parse_file_response(line).unwrap();
+        assert_eq!(meta.year, None);
+    }
+
+    #[test]
+    fn parse_year_valid() {
+        assert_eq!(parse_year("2023"), Some(2023));
+        assert_eq!(parse_year("2023-2024"), Some(2023));
+        assert_eq!(parse_year("1990"), Some(1990));
+    }
+
+    #[test]
+    fn parse_year_invalid() {
+        assert_eq!(parse_year(""), None);
+        assert_eq!(parse_year("1900"), None); // outside 1970-2070
+        assert_eq!(parse_year("abc"), None);
+    }
+
+    #[test]
+    fn parse_related_aids_basic() {
+        let aids = parse_related_aids("100,200,300", "1,2,51");
+        assert_eq!(aids, vec![(100, 1), (200, 2), (300, 51)]);
+    }
+
+    #[test]
+    fn parse_related_aids_empty() {
+        let aids = parse_related_aids("", "");
+        assert!(aids.is_empty());
+    }
+
+    #[test]
+    fn parse_related_aids_mismatched_lengths() {
+        // zip stops at the shorter list
+        let aids = parse_related_aids("100,200", "1");
+        assert_eq!(aids, vec![(100, 1)]);
     }
 
     #[tokio::test(start_paused = true)]

@@ -184,16 +184,21 @@ fn render_pane(pane: &PaneSpec, area: Rect, buf: &mut Buffer) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let title = if pane.title.is_empty() {
-        String::new()
+    let block = if pane.title.is_empty() {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
     } else {
-        format!(" {} ", pane.title)
+        let title_spans: Vec<Span> = pane
+            .title
+            .iter()
+            .map(|s| styled_span_to_ratatui(s))
+            .collect();
+        Block::default()
+            .title(Line::from(title_spans))
+            .borders(Borders::ALL)
+            .border_style(border_style)
     };
-
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(border_style);
 
     let inner = block.inner(area);
     block.render(area, buf);
@@ -802,7 +807,7 @@ mod tests {
         ViewSpec {
             base: LayoutNode::Pane(PaneSpec {
                 id: PaneId::Chat,
-                title: "Test".to_string(),
+                title: vec![StyledSpan::plain(" Test ")],
                 focused: true,
                 content: ContentKind::TextLog {
                     lines: vec![vec![StyledSpan::plain("hello")]],
@@ -837,7 +842,7 @@ mod tests {
         let spec = ViewSpec {
             base: LayoutNode::Pane(PaneSpec {
                 id: PaneId::Chat,
-                title: "Chat".to_string(),
+                title: vec![StyledSpan::plain(" Chat ")],
                 focused: false,
                 content: ContentKind::Empty,
                 bindings: Vec::new(),
@@ -864,14 +869,14 @@ mod tests {
             base: LayoutNode::HSplit {
                 left: Box::new(LayoutNode::Pane(PaneSpec {
                     id: PaneId::Chat,
-                    title: "Left".to_string(),
+                    title: vec![StyledSpan::plain(" Left ")],
                     focused: true,
                     content: ContentKind::Empty,
                     bindings: Vec::new(),
                 })),
                 right: Box::new(LayoutNode::Pane(PaneSpec {
                     id: PaneId::Playlist,
-                    title: "Right".to_string(),
+                    title: vec![StyledSpan::plain(" Right ")],
                     focused: false,
                     content: ContentKind::Empty,
                     bindings: Vec::new(),
@@ -898,7 +903,7 @@ mod tests {
         let spec = ViewSpec {
             base: LayoutNode::Pane(PaneSpec {
                 id: PaneId::PlayerStatus,
-                title: "Status".to_string(),
+                title: vec![StyledSpan::plain(" Status ")],
                 focused: false,
                 content: ContentKind::ProgressBar {
                     fraction: 0.5,
@@ -924,7 +929,7 @@ mod tests {
             base: LayoutNode::VSplit {
                 top: Box::new(LayoutNode::Pane(PaneSpec {
                     id: PaneId::Chat,
-                    title: "T".to_string(),
+                    title: vec![StyledSpan::plain(" T ")],
                     focused: false,
                     content: ContentKind::Composite {
                         children: vec![
@@ -945,7 +950,7 @@ mod tests {
                 })),
                 bottom: Box::new(LayoutNode::Pane(PaneSpec {
                     id: PaneId::Playlist,
-                    title: "B".to_string(),
+                    title: vec![StyledSpan::plain(" B ")],
                     focused: false,
                     content: ContentKind::Empty,
                     bindings: Vec::new(),
@@ -965,7 +970,7 @@ mod tests {
         let spec = ViewSpec {
             base: LayoutNode::Pane(PaneSpec {
                 id: PaneId::Chat,
-                title: "Form".to_string(),
+                title: vec![StyledSpan::plain(" Form ")],
                 focused: true,
                 content: ContentKind::Form {
                     fields: vec![

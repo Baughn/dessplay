@@ -59,6 +59,8 @@ fn roundtrip_lww_write_anidb() {
                 episode_name: "The Journey's End".into(),
                 group_name: "SubsPlease".into(),
                 source: dessplay_core::types::MetadataSource::AniDb,
+                year: Some(2023),
+                related_aids: vec![(12346, 1)],
             }),
         ),
     });
@@ -339,6 +341,8 @@ fn roundtrip_anidb_metadata() {
         episode_name: "The Journey's End".into(),
         group_name: "SubsPlease".into(),
         source: dessplay_core::types::MetadataSource::AniDb,
+        year: Some(2023),
+        related_aids: vec![(12346, 1), (12347, 2)],
     });
     let none: Option<AniDbMetadata> = None;
     roundtrip(&none);

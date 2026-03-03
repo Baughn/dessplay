@@ -72,6 +72,9 @@ impl ServerStorage {
         if version < 1 {
             self.migrate_v1()?;
         }
+        if version < 2 {
+            self.migrate_v2()?;
+        }
         Ok(())
     }
 
@@ -129,6 +132,20 @@ impl ServerStorage {
         )?;
         self.conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '1')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Migration v2: Reset next_check_at for all entries with has_data=true,
+    /// so they get re-queried with the updated amask (year + related_aids).
+    fn migrate_v2(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE anidb_queue SET next_check_at = 0 WHERE has_data = 1",
+            [],
+        )?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '2')",
             [],
         )?;
         Ok(())
@@ -444,7 +461,7 @@ mod tests {
     fn migration_is_idempotent() {
         let db = ServerStorage::open_in_memory().unwrap();
         db.migrate().unwrap();
-        assert_eq!(db.schema_version().unwrap(), 1);
+        assert_eq!(db.schema_version().unwrap(), 2);
     }
 
     #[test]

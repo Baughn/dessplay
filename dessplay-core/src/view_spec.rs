@@ -70,7 +70,7 @@ pub enum PaneId {
 #[derive(Debug, Clone)]
 pub struct PaneSpec {
     pub id: PaneId,
-    pub title: String,
+    pub title: Vec<StyledSpan>,
     pub focused: bool,
     pub content: ContentKind,
     pub bindings: Vec<Keybinding>,
@@ -341,12 +341,20 @@ pub enum Action {
     ManualMapFile,
     AssignMetadata,
 
-    // --- Recent Series ---
+    // --- Series Pane ---
     RecentSelectUp,
     RecentSelectDown,
     RecentPageUp,
     RecentPageDown,
     RecentSeriesSelect,
+    SeriesToggleMode,
+    SeriesToggleSort,
+
+    // --- Episode Browser ---
+    EpisodeBrowserUp,
+    EpisodeBrowserDown,
+    EpisodeBrowserSelect,
+    EpisodeBrowserBack,
 
     // --- Settings ---
     SettingsNextField,

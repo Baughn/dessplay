@@ -757,6 +757,8 @@ mod tests {
             episode_name: "Ep1".into(),
             group_name: "Grp".into(),
             source: crate::types::MetadataSource::AniDb,
+            year: None,
+            related_aids: Vec::new(),
         };
         ahead.apply_op(&make_lww_op(LwwValue::AniDb(file, Some(meta)), 300));
 

@@ -10,7 +10,8 @@ use dessplay_core::view_spec::*;
 
 use crate::tui::display_data::{DisplayData, PlaylistDisplayEntry, UserDisplayEntry};
 use crate::tui::ui_state::{
-    ConnectingState, FocusedPane, MetadataAssignStep, Screen, UiState,
+    AllSeriesSort, ConnectingState, FocusedPane, MetadataAssignStep, Screen, SeriesPaneMode,
+    UiState,
 };
 
 // =========================================================================
@@ -53,6 +54,11 @@ pub fn view(ui: &UiState, data: &DisplayData) -> ViewSpec {
     {
         modals.push(connecting_modal(connecting));
     }
+    if let Some(ref eb) = ui.episode_browser
+        && ui.screen == Screen::EpisodeBrowser
+    {
+        modals.push(episode_browser_modal(eb));
+    }
 
     // Status bar: collect visible bindings from topmost modal or focused pane
     let status_bar = build_status_bar(&modals, &base);
@@ -71,7 +77,7 @@ pub fn view(ui: &UiState, data: &DisplayData) -> ViewSpec {
 fn main_layout(ui: &UiState, data: &DisplayData) -> LayoutNode {
     let chat = chat_pane(ui, data);
     let chat_input = chat_input_pane(ui);
-    let recent = recent_series_pane(ui, data);
+    let recent = series_pane(ui, data);
     let users = users_pane(data);
     let playlist = playlist_pane(ui, data);
     let player = player_status_spacer(data);
@@ -129,7 +135,7 @@ fn chat_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
 
     LayoutNode::Pane(PaneSpec {
         id: PaneId::Chat,
-        title: "Chat".to_string(),
+        title: vec![StyledSpan::plain(" Chat ")],
         focused,
         content: ContentKind::TextLog {
             lines,
@@ -143,7 +149,7 @@ fn chat_input_pane(ui: &UiState) -> LayoutNode {
     let focused = ui.focus == FocusedPane::Chat;
     LayoutNode::Pane(PaneSpec {
         id: PaneId::ChatInput,
-        title: String::new(),
+        title: Vec::new(),
         focused,
         content: ContentKind::TextInput {
             text: ui.input.text.clone(),
@@ -163,7 +169,7 @@ fn users_pane(data: &DisplayData) -> LayoutNode {
 
     LayoutNode::Pane(PaneSpec {
         id: PaneId::Users,
-        title: "Users".to_string(),
+        title: vec![StyledSpan::plain(" Users ")],
         focused: false, // users pane is never focused
         content: ContentKind::SelectableList {
             items,
@@ -191,7 +197,7 @@ fn playlist_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
 
     LayoutNode::Pane(PaneSpec {
         id: PaneId::Playlist,
-        title: "Playlist".to_string(),
+        title: vec![StyledSpan::plain(" Playlist ")],
         focused,
         content: ContentKind::SelectableList {
             items,
@@ -203,10 +209,59 @@ fn playlist_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
     })
 }
 
-fn recent_series_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
+fn series_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
     let focused = ui.focus == FocusedPane::RecentSeries;
-    let items: Vec<Vec<StyledSpan>> = data
-        .series_entries
+    let title = series_pane_title(ui.series_mode, focused);
+
+    let (items, selected) = match ui.series_mode {
+        SeriesPaneMode::Recent => (series_flat_items(&data.series_entries), ui.recent_selected),
+        SeriesPaneMode::All => match ui.all_series_sort {
+            AllSeriesSort::ByTitle => {
+                (series_flat_items(&data.series_entries), ui.all_series_selected)
+            }
+            AllSeriesSort::ByYear => {
+                let (tree_items, mapped_idx) =
+                    series_year_tree_items(&data.series_entries, ui.all_series_selected);
+                (tree_items, mapped_idx)
+            }
+        },
+    };
+
+    LayoutNode::Pane(PaneSpec {
+        id: PaneId::RecentSeries,
+        title,
+        focused,
+        content: ContentKind::SelectableList {
+            items,
+            selected,
+            scroll_offset: 0,
+            highlighted: None,
+        },
+        bindings: series_pane_bindings(ui.series_mode),
+    })
+}
+
+/// Build the dual title for the series pane.
+/// Active mode uses Default color, inactive uses Muted. If unfocused, both Muted.
+fn series_pane_title(mode: SeriesPaneMode, focused: bool) -> Vec<StyledSpan> {
+    let (recent_color, all_color) = if !focused {
+        (SemanticColor::Muted, SemanticColor::Muted)
+    } else {
+        match mode {
+            SeriesPaneMode::Recent => (SemanticColor::Default, SemanticColor::Muted),
+            SeriesPaneMode::All => (SemanticColor::Muted, SemanticColor::Default),
+        }
+    };
+    vec![
+        StyledSpan::colored(" Recent Series ", recent_color),
+        StyledSpan::colored("| ", SemanticColor::Muted),
+        StyledSpan::colored("All Series ", all_color),
+    ]
+}
+
+/// Flat list of franchise entries (used by Recent and All+ByTitle modes).
+fn series_flat_items(entries: &[crate::series_browser::FranchiseEntry]) -> Vec<Vec<StyledSpan>> {
+    entries
         .iter()
         .map(|entry| {
             let color = if entry.has_unwatched {
@@ -216,20 +271,43 @@ fn recent_series_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
             };
             vec![StyledSpan::colored(&entry.name, color)]
         })
-        .collect();
+        .collect()
+}
 
-    LayoutNode::Pane(PaneSpec {
-        id: PaneId::RecentSeries,
-        title: "Recent Series".to_string(),
-        focused,
-        content: ContentKind::SelectableList {
-            items,
-            selected: ui.recent_selected,
-            scroll_offset: 0,
-            highlighted: None,
-        },
-        bindings: recent_series_bindings(),
-    })
+/// Year-tree list: year headers (non-selectable, bold Accent) interleaved with entries.
+/// Returns the display items and the mapped selected index (accounting for headers).
+fn series_year_tree_items(
+    entries: &[crate::series_browser::FranchiseEntry],
+    logical_selected: usize,
+) -> (Vec<Vec<StyledSpan>>, usize) {
+    let mut items = Vec::new();
+    let mut mapped_selected = 0;
+    let mut current_year: Option<Option<u32>> = None;
+
+    for (logical_idx, entry) in entries.iter().enumerate() {
+        // Insert year header if year changed
+        if current_year != Some(entry.year) {
+            current_year = Some(entry.year);
+            let year_label = match entry.year {
+                Some(y) => format!("── {y} ──"),
+                None => "── Unknown ──".to_string(),
+            };
+            items.push(vec![StyledSpan::bold(year_label, SemanticColor::Accent)]);
+        }
+
+        if logical_idx == logical_selected {
+            mapped_selected = items.len();
+        }
+
+        let color = if entry.has_unwatched {
+            SemanticColor::Ready
+        } else {
+            SemanticColor::Muted
+        };
+        items.push(vec![StyledSpan::colored(format!("  {}", entry.name), color)]);
+    }
+
+    (items, mapped_selected)
 }
 
 fn player_status_spacer(data: &DisplayData) -> LayoutNode {
@@ -618,6 +696,54 @@ fn connecting_modal(state: &ConnectingState) -> ModalSpec {
     }
 }
 
+fn episode_browser_modal(
+    eb: &crate::tui::ui_state::EpisodeBrowserState,
+) -> ModalSpec {
+    use crate::tui::ui_state::EpisodeBrowserDepth;
+
+    let title = format!(" {} ", eb.franchise_name);
+
+    let items: Vec<Vec<StyledSpan>> = match &eb.depth {
+        EpisodeBrowserDepth::Seasons(seasons) => seasons
+            .iter()
+            .map(|s| {
+                let year_suffix = s
+                    .year
+                    .map(|y| format!(" ({y})"))
+                    .unwrap_or_default();
+                vec![StyledSpan::plain(format!("{}{year_suffix}", s.name))]
+            })
+            .collect(),
+        EpisodeBrowserDepth::Episodes { episodes, .. } => episodes
+            .iter()
+            .map(|ep| {
+                let color = if ep.has_local {
+                    SemanticColor::Default
+                } else {
+                    SemanticColor::Muted
+                };
+                vec![StyledSpan::colored(
+                    format!("{} - {}", ep.number, ep.name),
+                    color,
+                )]
+            })
+            .collect(),
+    };
+
+    ModalSpec {
+        title,
+        width_pct: 0.6,
+        height_pct: 0.6,
+        content: ContentKind::SelectableList {
+            items,
+            selected: eb.selected,
+            scroll_offset: 0,
+            highlighted: None,
+        },
+        bindings: episode_browser_bindings(),
+    }
+}
+
 // =========================================================================
 // Keybinding declarations
 // =========================================================================
@@ -670,11 +796,24 @@ fn playlist_bindings() -> Vec<Keybinding> {
     ]
 }
 
-fn recent_series_bindings() -> Vec<Keybinding> {
-    vec![
+fn series_pane_bindings(mode: SeriesPaneMode) -> Vec<Keybinding> {
+    let mut bindings = vec![
         kb_bar(KeyCombo::Plain(Key::Tab), "Next pane", Action::CycleFocus),
-        kb_bar(KeyCombo::Plain(Key::Enter), "Browse", Action::RecentSeriesSelect),
-        kb_bar(KeyCombo::Ctrl(Key::Char('s')), "Settings", Action::OpenSettings),
+        kb_bar(
+            KeyCombo::Plain(Key::Enter),
+            "Browse",
+            Action::RecentSeriesSelect,
+        ),
+        kb_bar(
+            KeyCombo::Plain(Key::Char('m')),
+            "Mode",
+            Action::SeriesToggleMode,
+        ),
+        kb_bar(
+            KeyCombo::Ctrl(Key::Char('s')),
+            "Settings",
+            Action::OpenSettings,
+        ),
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
         kb(KeyCombo::Plain(Key::Up), "Up", Action::RecentSelectUp),
         kb(KeyCombo::Plain(Key::Down), "Down", Action::RecentSelectDown),
@@ -682,7 +821,15 @@ fn recent_series_bindings() -> Vec<Keybinding> {
         kb(KeyCombo::Plain(Key::PageDown), "Page dn", Action::RecentPageDown),
         kb(KeyCombo::Ctrl(Key::Up), "Page up", Action::RecentPageUp),
         kb(KeyCombo::Ctrl(Key::Down), "Page dn", Action::RecentPageDown),
-    ]
+    ];
+    if mode == SeriesPaneMode::All {
+        bindings.push(kb_bar(
+            KeyCombo::Plain(Key::Char('s')),
+            "Sort",
+            Action::SeriesToggleSort,
+        ));
+    }
+    bindings
 }
 
 fn settings_bindings(focused_field: usize) -> Vec<Keybinding> {
@@ -785,6 +932,33 @@ fn connecting_bindings() -> Vec<Keybinding> {
     vec![
         kb_bar(KeyCombo::Plain(Key::Esc), "Back", Action::CancelConnect),
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
+    ]
+}
+
+fn episode_browser_bindings() -> Vec<Keybinding> {
+    vec![
+        kb_bar(
+            KeyCombo::Plain(Key::Enter),
+            "Select",
+            Action::EpisodeBrowserSelect,
+        ),
+        kb_bar(
+            KeyCombo::Plain(Key::Esc),
+            "Back",
+            Action::EpisodeBrowserBack,
+        ),
+        kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
+        kb(KeyCombo::Plain(Key::Up), "Up", Action::EpisodeBrowserUp),
+        kb(
+            KeyCombo::Plain(Key::Down),
+            "Down",
+            Action::EpisodeBrowserDown,
+        ),
+        kb(
+            KeyCombo::Plain(Key::Backspace),
+            "Back",
+            Action::EpisodeBrowserBack,
+        ),
     ]
 }
 
@@ -1163,5 +1337,128 @@ mod tests {
         // Settings modal should override the bar
         assert!(labels.contains(&"Save"), "Settings bar should have Save");
         assert!(!labels.contains(&"Send"), "Settings bar should not have chat Send");
+    }
+
+    // ---- Series pane dual-title tests ----
+
+    #[test]
+    fn series_title_recent_focused() {
+        let title = series_pane_title(SeriesPaneMode::Recent, true);
+        assert_eq!(title.len(), 3);
+        assert_eq!(title[0].color, SemanticColor::Default); // Recent = active
+        assert_eq!(title[2].color, SemanticColor::Muted); // All = inactive
+    }
+
+    #[test]
+    fn series_title_all_focused() {
+        let title = series_pane_title(SeriesPaneMode::All, true);
+        assert_eq!(title[0].color, SemanticColor::Muted); // Recent = inactive
+        assert_eq!(title[2].color, SemanticColor::Default); // All = active
+    }
+
+    #[test]
+    fn series_title_unfocused_both_muted() {
+        let title = series_pane_title(SeriesPaneMode::Recent, false);
+        assert_eq!(title[0].color, SemanticColor::Muted);
+        assert_eq!(title[2].color, SemanticColor::Muted);
+
+        let title = series_pane_title(SeriesPaneMode::All, false);
+        assert_eq!(title[0].color, SemanticColor::Muted);
+        assert_eq!(title[2].color, SemanticColor::Muted);
+    }
+
+    // ---- Year-tree rendering ----
+
+    fn make_franchise(name: &str, year: Option<u32>, unwatched: bool) -> crate::series_browser::FranchiseEntry {
+        crate::series_browser::FranchiseEntry {
+            franchise_id: 1,
+            name: name.to_string(),
+            members: Vec::new(),
+            has_unwatched: unwatched,
+            last_watched_at: None,
+            year,
+        }
+    }
+
+    #[test]
+    fn year_tree_items_inserts_headers() {
+        let entries = vec![
+            make_franchise("Frieren", Some(2023), true),
+            make_franchise("Oshi no Ko", Some(2023), false),
+            make_franchise("Attack on Titan", Some(2013), false),
+        ];
+        let (items, _) = series_year_tree_items(&entries, 0);
+        // 2 year headers + 3 entries = 5 items
+        assert_eq!(items.len(), 5);
+        assert!(items[0][0].text.contains("2023"));
+        assert!(items[3][0].text.contains("2013"));
+    }
+
+    #[test]
+    fn year_tree_items_unknown_year() {
+        let entries = vec![
+            make_franchise("Mystery", None, false),
+        ];
+        let (items, _) = series_year_tree_items(&entries, 0);
+        assert_eq!(items.len(), 2); // 1 header + 1 entry
+        assert!(items[0][0].text.contains("Unknown"));
+    }
+
+    #[test]
+    fn year_tree_selected_maps_correctly() {
+        let entries = vec![
+            make_franchise("A", Some(2023), false),
+            make_franchise("B", Some(2023), false),
+            make_franchise("C", Some(2020), false),
+        ];
+        // Select logical index 2 (C, under 2020 header)
+        let (_, mapped) = series_year_tree_items(&entries, 2);
+        // Items: [2023 header, A, B, 2020 header, C]
+        assert_eq!(mapped, 4);
+    }
+
+    // ---- Series pane keybinding mode tests ----
+
+    #[test]
+    fn series_bindings_recent_mode_no_sort() {
+        let bindings = series_pane_bindings(SeriesPaneMode::Recent);
+        let has_sort = bindings.iter().any(|b| b.action == Action::SeriesToggleSort);
+        assert!(!has_sort, "Recent mode should not have sort toggle");
+        let has_mode = bindings.iter().any(|b| b.action == Action::SeriesToggleMode);
+        assert!(has_mode, "Should have mode toggle");
+    }
+
+    #[test]
+    fn series_bindings_all_mode_has_sort() {
+        let bindings = series_pane_bindings(SeriesPaneMode::All);
+        let has_sort = bindings.iter().any(|b| b.action == Action::SeriesToggleSort);
+        assert!(has_sort, "All mode should have sort toggle");
+    }
+
+    // ---- Episode browser modal test ----
+
+    #[test]
+    fn view_episode_browser_modal_appears() {
+        let mut ui = UiState::new();
+        ui.screen = Screen::EpisodeBrowser;
+        ui.episode_browser = Some(crate::tui::ui_state::EpisodeBrowserState {
+            franchise_name: "Frieren".to_string(),
+            depth: crate::tui::ui_state::EpisodeBrowserDepth::Seasons(vec![
+                crate::tui::ui_state::SeasonEntry {
+                    anime_id: 1,
+                    name: "Season 1".to_string(),
+                    year: Some(2023),
+                },
+            ]),
+            selected: 0,
+        });
+        let data = empty_display_data();
+        let spec = view(&ui, &data);
+        assert_eq!(spec.modals.len(), 1);
+        assert!(spec.modals[0].title.contains("Frieren"));
+        let bar = spec.status_bar.unwrap();
+        let labels: Vec<&str> = bar.bindings.iter().map(|(_, l)| *l).collect();
+        assert!(labels.contains(&"Select"));
+        assert!(labels.contains(&"Back"));
     }
 }

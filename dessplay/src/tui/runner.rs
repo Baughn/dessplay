@@ -268,6 +268,16 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
 
     let mut ui = UiState::new();
 
+    // Load persisted sort preference
+    if let Ok(s) = storage.lock()
+        && let Ok(Some(sort_val)) = s.get_setting("all_series_sort")
+    {
+        ui.all_series_sort = match sort_val.as_str() {
+            "year" => crate::tui::ui_state::AllSeriesSort::ByYear,
+            _ => crate::tui::ui_state::AllSeriesSort::ByTitle,
+        };
+    }
+
     // If no config, show settings screen first
     if config.is_none() {
         ui = ui.with_settings();
@@ -1099,7 +1109,7 @@ async fn run_connected(
         // Build display data, produce ViewSpec, render
         let spec = {
             let app = app_state.lock().await;
-            let data = build_display_data(&app, storage, &bg_hash_progress);
+            let data = build_display_data(&app, storage, &bg_hash_progress, ui.series_mode, ui.all_series_sort);
             drop(app);
             let spec = view::view(ui, &data);
             terminal.draw(|frame| renderer::render(&spec, frame))?;
@@ -2016,7 +2026,14 @@ async fn apply_action(
 
         // ---- Recent series ----
         Action::RecentSelectUp => {
-            ui.recent_selected = ui.recent_selected.saturating_sub(1);
+            match ui.series_mode {
+                crate::tui::ui_state::SeriesPaneMode::Recent => {
+                    ui.recent_selected = ui.recent_selected.saturating_sub(1);
+                }
+                crate::tui::ui_state::SeriesPaneMode::All => {
+                    ui.all_series_selected = ui.all_series_selected.saturating_sub(1);
+                }
+            }
         }
         Action::RecentSelectDown => {
             let app = app_state.lock().await;
@@ -2024,11 +2041,18 @@ async fn apply_action(
             let st = storage
                 .lock()
                 .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-            let count = series_browser::build_series_list(crdt, &st).len();
+            let count = build_series_list_for_mode(crdt, &st, ui.series_mode, ui.all_series_sort).len();
             drop(st);
             drop(app);
             if count > 0 {
-                ui.recent_selected = (ui.recent_selected + 1).min(count - 1);
+                match ui.series_mode {
+                    crate::tui::ui_state::SeriesPaneMode::Recent => {
+                        ui.recent_selected = (ui.recent_selected + 1).min(count - 1);
+                    }
+                    crate::tui::ui_state::SeriesPaneMode::All => {
+                        ui.all_series_selected = (ui.all_series_selected + 1).min(count - 1);
+                    }
+                }
             }
         }
         Action::RecentPageUp => {
@@ -2048,29 +2072,61 @@ async fn apply_action(
             }
         }
         Action::RecentSeriesSelect => {
+            let selected = match ui.series_mode {
+                crate::tui::ui_state::SeriesPaneMode::Recent => ui.recent_selected,
+                crate::tui::ui_state::SeriesPaneMode::All => ui.all_series_selected,
+            };
             let info = {
                 let app = app_state.lock().await;
                 let crdt = app.sync_engine.state();
                 let st = storage
                     .lock()
                     .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-                let list = series_browser::build_series_list(crdt, &st);
-                list.get(ui.recent_selected).map(|entry| {
-                    let dir = series_browser::series_directory(crdt, &st, entry.anime_id);
+                let list = build_series_list_for_mode(crdt, &st, ui.series_mode, ui.all_series_sort);
+                list.get(selected).map(|entry| {
+                    let anime_ids: Vec<u64> =
+                        entry.members.iter().map(|m| m.anime_id).collect();
+                    let dir =
+                        series_browser::series_directory_for_ids(crdt, &st, &anime_ids);
                     let next_file =
-                        series_browser::next_unwatched_filename(crdt, &st, entry.anime_id);
-                    (dir, next_file)
+                        series_browser::next_unwatched_filename_for_ids(crdt, &st, &anime_ids);
+                    (dir, next_file, entry.clone())
                 })
             };
-            if let Some((Some(dir), next_file)) = info {
-                let mut fb = FileBrowserState::open(dir, FileBrowserOrigin::SeriesBrowser);
-                if let Some(filename) = next_file
-                    && let Some(idx) = fb.entries.iter().position(|e| e.name == filename)
-                {
-                    fb.selected = idx;
+            if let Some((Some(dir), next_file, entry)) = info {
+                if entry.members.len() > 1 {
+                    // Multi-season franchise: open episode browser with season list
+                    let seasons = entry
+                        .members
+                        .iter()
+                        .map(|m| crate::tui::ui_state::SeasonEntry {
+                            anime_id: m.anime_id,
+                            name: m.name.clone(),
+                            year: m.year,
+                        })
+                        .collect();
+                    ui.episode_browser =
+                        Some(crate::tui::ui_state::EpisodeBrowserState {
+                            franchise_name: entry.name.clone(),
+                            depth: crate::tui::ui_state::EpisodeBrowserDepth::Seasons(
+                                seasons,
+                            ),
+                            selected: 0,
+                        });
+                    ui.screen = Screen::EpisodeBrowser;
+                } else {
+                    // Single-season franchise: open file browser directly
+                    let mut fb =
+                        FileBrowserState::open(dir, FileBrowserOrigin::SeriesBrowser);
+                    if let Some(filename) = next_file
+                        && let Some(idx) =
+                            fb.entries.iter().position(|e| e.name == filename)
+                    {
+                        fb.selected = idx;
+                    }
+                    ui.file_browser = Some(fb);
+                    ui.screen = Screen::FileBrowser;
                 }
-                ui.file_browser = Some(fb);
-                ui.screen = Screen::FileBrowser;
             }
         }
 
@@ -2421,6 +2477,8 @@ async fn apply_action(
                         episode_name: String::new(),
                         group_name: String::new(),
                         source,
+                        year: None,
+                        related_aids: Vec::new(),
                     };
 
                     let op = CrdtOp::LwwWrite {
@@ -2442,6 +2500,156 @@ async fn apply_action(
         }
         Action::CancelConnect => {
             // Only meaningful on the connecting screen; no-op in connected mode
+        }
+        Action::SeriesToggleMode => {
+            ui.series_mode = match ui.series_mode {
+                crate::tui::ui_state::SeriesPaneMode::Recent => {
+                    crate::tui::ui_state::SeriesPaneMode::All
+                }
+                crate::tui::ui_state::SeriesPaneMode::All => {
+                    crate::tui::ui_state::SeriesPaneMode::Recent
+                }
+            };
+        }
+        Action::SeriesToggleSort => {
+            ui.all_series_sort = match ui.all_series_sort {
+                crate::tui::ui_state::AllSeriesSort::ByTitle => {
+                    crate::tui::ui_state::AllSeriesSort::ByYear
+                }
+                crate::tui::ui_state::AllSeriesSort::ByYear => {
+                    crate::tui::ui_state::AllSeriesSort::ByTitle
+                }
+            };
+            let sort_str = match ui.all_series_sort {
+                crate::tui::ui_state::AllSeriesSort::ByTitle => "title",
+                crate::tui::ui_state::AllSeriesSort::ByYear => "year",
+            };
+            if let Ok(st) = storage.lock() {
+                let _ = st.set_setting("all_series_sort", sort_str);
+            }
+        }
+        Action::EpisodeBrowserUp => {
+            if let Some(ref mut eb) = ui.episode_browser {
+                eb.selected = eb.selected.saturating_sub(1);
+            }
+        }
+        Action::EpisodeBrowserDown => {
+            if let Some(ref mut eb) = ui.episode_browser {
+                let count = match &eb.depth {
+                    crate::tui::ui_state::EpisodeBrowserDepth::Seasons(s) => s.len(),
+                    crate::tui::ui_state::EpisodeBrowserDepth::Episodes { episodes, .. } => {
+                        episodes.len()
+                    }
+                };
+                if count > 0 {
+                    eb.selected = (eb.selected + 1).min(count - 1);
+                }
+            }
+        }
+        Action::EpisodeBrowserSelect => {
+            use crate::tui::ui_state::EpisodeBrowserDepth;
+
+            if let Some(ref mut eb) = ui.episode_browser {
+                let selected = eb.selected;
+                match &eb.depth {
+                    EpisodeBrowserDepth::Seasons(seasons) => {
+                        // Drill into episodes for the selected season
+                        if let Some(season) = seasons.get(selected) {
+                            let app = app_state.lock().await;
+                            let crdt = app.sync_engine.state();
+                            let st = storage
+                                .lock()
+                                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                            let episodes = series_browser::episodes_for_anime_id(
+                                crdt,
+                                &st,
+                                season.anime_id,
+                            );
+                            drop(st);
+                            drop(app);
+                            eb.depth = EpisodeBrowserDepth::Episodes {
+                                anime_id: season.anime_id,
+                                episodes,
+                            };
+                            eb.selected = 0;
+                        }
+                    }
+                    EpisodeBrowserDepth::Episodes { episodes, .. } => {
+                        // Add selected episode's file to playlist (if it has a local copy)
+                        if let Some(ep) = episodes.get(selected)
+                            && ep.has_local
+                        {
+                            let file_id = ep.file_id;
+                            let app = app_state.lock().await;
+                            let playlist = app.sync_engine.state().playlist.snapshot();
+                            if !playlist.contains(&file_id) {
+                                let after = playlist.last().copied();
+                                drop(app);
+                                let now = rv_client.shared_now().await;
+                                let effects = app_state.lock().await.process_event(
+                                    AppEvent::AddToPlaylist { file_id, after },
+                                    now,
+                                );
+                                out_effects.extend(effects);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Action::EpisodeBrowserBack => {
+            use crate::tui::ui_state::EpisodeBrowserDepth;
+
+            if let Some(ref mut eb) = ui.episode_browser {
+                match &eb.depth {
+                    EpisodeBrowserDepth::Episodes { .. } => {
+                        // Check if we came from a seasons list (multi-member franchise)
+                        let app = app_state.lock().await;
+                        let crdt = app.sync_engine.state();
+                        let st = storage
+                            .lock()
+                            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+                        let list = build_series_list_for_mode(
+                            crdt,
+                            &st,
+                            ui.series_mode,
+                            ui.all_series_sort,
+                        );
+                        drop(st);
+                        drop(app);
+                        // Find the franchise we're browsing
+                        let franchise = list
+                            .iter()
+                            .find(|f| f.name == eb.franchise_name);
+                        if let Some(entry) = franchise
+                            && entry.members.len() > 1
+                        {
+                            // Go back to season list
+                            let seasons = entry
+                                .members
+                                .iter()
+                                .map(|m| crate::tui::ui_state::SeasonEntry {
+                                    anime_id: m.anime_id,
+                                    name: m.name.clone(),
+                                    year: m.year,
+                                })
+                                .collect();
+                            eb.depth = EpisodeBrowserDepth::Seasons(seasons);
+                            eb.selected = 0;
+                        } else {
+                            // Single-member franchise: close browser
+                            ui.episode_browser = None;
+                            ui.screen = Screen::Main;
+                        }
+                    }
+                    EpisodeBrowserDepth::Seasons(_) => {
+                        ui.episode_browser = None;
+                        ui.screen = Screen::Main;
+                    }
+                }
+            } else {
+                ui.screen = Screen::Main;
+            }
         }
     }
     Ok(out_effects)
@@ -2945,6 +3153,28 @@ async fn try_auto_match_all(
     }
 
     all_effects
+}
+
+/// Build the series list appropriate for the current UI mode and sort.
+fn build_series_list_for_mode(
+    crdt: &dessplay_core::crdt::CrdtState,
+    storage: &crate::storage::ClientStorage,
+    mode: crate::tui::ui_state::SeriesPaneMode,
+    sort: crate::tui::ui_state::AllSeriesSort,
+) -> Vec<series_browser::FranchiseEntry> {
+    match mode {
+        crate::tui::ui_state::SeriesPaneMode::Recent => {
+            series_browser::build_franchise_list(crdt, storage)
+        }
+        crate::tui::ui_state::SeriesPaneMode::All => match sort {
+            crate::tui::ui_state::AllSeriesSort::ByTitle => {
+                series_browser::build_franchise_list_by_title(crdt, storage)
+            }
+            crate::tui::ui_state::AllSeriesSort::ByYear => {
+                series_browser::build_franchise_list_by_year(crdt, storage)
+            }
+        },
+    }
 }
 
 /// Try to auto-match a single file by filename against the media index.

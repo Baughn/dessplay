@@ -608,6 +608,30 @@ impl ClientStorage {
             .collect()
     }
 
+    // -----------------------------------------------------------------------
+    // Settings (metadata key-value)
+    // -----------------------------------------------------------------------
+
+    /// Get a user setting from the metadata table.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// Set a user setting in the metadata table.
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     /// Delete a file mapping by its local path.
     pub fn delete_file_mapping_by_path(&self, path: &Path) -> Result<()> {
         let path_str = path
@@ -1066,5 +1090,24 @@ mod tests {
         let db = ClientStorage::open_in_memory().unwrap();
         db.migrate_v3().unwrap(); // should not fail even though already migrated
         assert_eq!(db.schema_version().unwrap(), 3);
+    }
+
+    #[test]
+    fn settings_round_trip() {
+        let db = ClientStorage::open_in_memory().unwrap();
+        assert!(db.get_setting("all_series_sort").unwrap().is_none());
+
+        db.set_setting("all_series_sort", "year").unwrap();
+        assert_eq!(
+            db.get_setting("all_series_sort").unwrap(),
+            Some("year".to_string())
+        );
+
+        // Overwrite
+        db.set_setting("all_series_sort", "title").unwrap();
+        assert_eq!(
+            db.get_setting("all_series_sort").unwrap(),
+            Some("title".to_string())
+        );
     }
 }

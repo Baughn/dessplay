@@ -130,6 +130,15 @@ pub struct AniDbMetadata {
     pub group_name: String,
     #[serde(default = "default_metadata_source")]
     pub source: MetadataSource,
+    /// Year the anime started airing (e.g. 2023).
+    #[serde(default)]
+    pub year: Option<u32>,
+    /// Related anime IDs with relation types from AniDB's relations graph.
+    /// Relation types: 1=sequel, 2=prequel, 11=same setting, 12=alt setting,
+    /// 32=alt version, 41=music video, 42=character, 51=side story,
+    /// 52=parent story, 61=summary, 62=full story, 100=other.
+    #[serde(default)]
+    pub related_aids: Vec<(u64, u16)>,
 }
 
 fn default_metadata_source() -> MetadataSource {
