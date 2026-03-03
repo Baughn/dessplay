@@ -114,6 +114,7 @@ pub struct BgHashProgress {
     pub total_bytes: Arc<AtomicU64>,
     pub completed_bytes: Arc<AtomicU64>,
     pub rate_tracker: std::sync::Mutex<crate::device_rate::DeviceRateTracker>,
+    pub current_file: Arc<Mutex<Option<String>>>,
 }
 
 /// Background worker that hashes media files received via channel.
@@ -124,12 +125,17 @@ async fn bg_hash_worker(
     user_hash_active: Arc<AtomicBool>,
     completed_files: Arc<AtomicU64>,
     completed_bytes: Arc<AtomicU64>,
+    current_file: Arc<Mutex<Option<String>>>,
     tx: tokio::sync::mpsc::UnboundedSender<BgHashResult>,
 ) {
     while let Some(job) = rx.recv().await {
         // Yield to user-initiated hashes
         while user_hash_active.load(Ordering::Relaxed) {
             tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        if let Ok(mut cf) = current_file.lock() {
+            *cf = job.path.file_name().map(|n| n.to_string_lossy().into_owned());
         }
 
         let path_clone = job.path.clone();
@@ -141,6 +147,10 @@ async fn bg_hash_worker(
         })
         .await;
         let hash_duration = start.elapsed();
+
+        if let Ok(mut cf) = current_file.lock() {
+            *cf = None;
+        }
 
         let hash_result = match result {
             Ok(r) => r,
@@ -885,8 +895,11 @@ async fn run_connected(
         total_bytes: Arc::new(AtomicU64::new(0)),
         completed_bytes: Arc::new(AtomicU64::new(0)),
         rate_tracker: std::sync::Mutex::new(crate::device_rate::DeviceRateTracker::new()),
+        current_file: Arc::new(Mutex::new(None)),
     });
     let mut bg_hash_files_since_persist: u64 = 0;
+    let bg_hash_queued: Arc<Mutex<HashSet<PathBuf>>> =
+        Arc::new(Mutex::new(HashSet::new()));
     {
         // Load persisted device rates for cold-start ETA
         if let Ok(s) = storage.lock()
@@ -920,6 +933,11 @@ async fn run_connected(
                     tracker.add_pending(f.dev_id, f.size);
                 }
             }
+            if let Ok(mut queued) = bg_hash_queued.lock() {
+                for f in &unknown_files {
+                    queued.insert(f.path.clone());
+                }
+            }
             for f in unknown_files {
                 let _ = bg_hash_feed_tx.send(BgHashJob {
                     path: f.path.clone(),
@@ -931,6 +949,7 @@ async fn run_connected(
         }
         let worker_completed_files = Arc::clone(&bg_hash_progress.completed_files);
         let worker_completed_bytes = Arc::clone(&bg_hash_progress.completed_bytes);
+        let worker_current_file = Arc::clone(&bg_hash_progress.current_file);
         let worker_active = Arc::clone(&user_hash_active);
         let worker_tx = bg_hash_tx.clone();
         tokio::spawn(bg_hash_worker(
@@ -938,6 +957,7 @@ async fn run_connected(
             worker_active,
             worker_completed_files,
             worker_completed_bytes,
+            worker_current_file,
             worker_tx,
         ));
     };
@@ -1386,6 +1406,9 @@ async fn run_connected(
             // Background hash completed
             result = bg_hash_rx.recv() => {
                 if let Some(BgHashResult { path, file_size, dev_id, hash_duration, result: hash_result }) = result {
+                    if let Ok(mut queued) = bg_hash_queued.lock() {
+                        queued.remove(&path);
+                    }
                     // Record rate sample
                     if let Ok(mut tracker) = bg_hash_progress.rate_tracker.lock() {
                         tracker.record_sample(dev_id, crate::device_rate::RateSample {
@@ -1537,14 +1560,29 @@ async fn run_connected(
                     &new_index, &stored, &media_roots,
                 );
 
-                // Feed new/changed files to the background hash worker
-                if !diff.files_to_hash.is_empty() {
-                    let count = diff.files_to_hash.len();
+                // Feed new/changed files to the background hash worker,
+                // filtering out paths already in the hash queue
+                let new_files: Vec<PathBuf> = {
+                    let already_queued = bg_hash_queued.lock().ok()
+                        .map(|set| set.clone())
+                        .unwrap_or_default();
+                    diff.files_to_hash
+                        .into_iter()
+                        .filter(|p| !already_queued.contains(p))
+                        .collect()
+                };
+                if !new_files.is_empty() {
+                    let count = new_files.len();
                     let mut total_new_bytes: u64 = 0;
                     bg_hash_progress
                         .total_files
                         .fetch_add(count as u64, Ordering::Relaxed);
-                    for path in diff.files_to_hash {
+                    if let Ok(mut queued) = bg_hash_queued.lock() {
+                        for path in &new_files {
+                            queued.insert(path.clone());
+                        }
+                    }
+                    for path in new_files {
                         let (size, dev_id) = new_index
                             .get_by_path(&path)
                             .map(|f| (f.size, f.dev_id))

@@ -66,6 +66,7 @@ pub struct BgHashDisplayData {
     pub total_bytes: u64,
     pub rate_bps: Option<f64>,
     pub eta_secs: Option<f64>,
+    pub current_file: Option<String>,
 }
 
 impl DisplayData {
@@ -205,6 +206,11 @@ pub fn build_display_data(
                     (rate, eta)
                 })
                 .unwrap_or((None, None));
+            let current_file = bg_hash_progress
+                .current_file
+                .lock()
+                .ok()
+                .and_then(|cf| cf.clone());
             Some(BgHashDisplayData {
                 completed_files,
                 total_files,
@@ -212,6 +218,7 @@ pub fn build_display_data(
                 total_bytes,
                 rate_bps,
                 eta_secs,
+                current_file,
             })
         } else {
             None

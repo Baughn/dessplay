@@ -252,6 +252,10 @@ fn player_status_spacer(data: &DisplayData) -> LayoutNode {
     }
     if let Some(ref bg) = data.bg_hash_progress {
         let mut parts = format!("  [Indexing: {}/{}", bg.completed_files, bg.total_files);
+        if let Some(ref name) = bg.current_file {
+            parts.push(' ');
+            parts.push_str(name);
+        }
         if let Some(rate) = bg.rate_bps {
             parts.push_str(&format!(" | {}/s", format_bytes(rate as u64)));
         }
