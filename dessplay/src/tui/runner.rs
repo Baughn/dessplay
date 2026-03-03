@@ -287,6 +287,21 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
             return Ok(());
         }
 
+        // If password is missing, go straight to settings instead of trying to connect
+        if config.password.is_none() && std::env::var("DESSPLAY_PASSWORD").is_err() {
+            let media_roots = storage
+                .lock()
+                .ok()
+                .and_then(|s| s.get_media_roots().ok())
+                .unwrap_or_default();
+            let mut settings = SettingsState::from_config(&config, media_roots);
+            settings.alert = Some("password required".to_string());
+            ui.screen = Screen::Settings;
+            ui.settings = Some(settings);
+            run_preconnection_settings(&mut guard.terminal, &mut ui, &storage).await?;
+            continue;
+        }
+
         // Reset to main screen
         ui.screen = Screen::Main;
         ui.focus = FocusedPane::Chat;
@@ -613,12 +628,20 @@ fn apply_preconnection_settings_action(
         }
         Action::SettingsMediaRootUp => {
             if let Some(ref mut s) = ui.settings {
-                s.media_root_selected = s.media_root_selected.saturating_sub(1);
+                if s.media_root_selected == 0 {
+                    s.prev_field();
+                } else {
+                    s.media_root_selected -= 1;
+                }
             }
         }
         Action::SettingsMediaRootDown => {
             if let Some(ref mut s) = ui.settings {
-                s.media_root_selected = (s.media_root_selected + 1).min(s.media_roots.len());
+                if s.media_root_selected >= s.media_roots.len() {
+                    s.next_field();
+                } else {
+                    s.media_root_selected += 1;
+                }
             }
         }
         Action::SettingsMediaRootPageUp => {
@@ -788,13 +811,19 @@ async fn run_preconnection_connecting(
     let password = config
         .password
         .clone()
-        .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok())
-        .context("no password configured")?;
+        .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok());
 
     let server_str = get_arg(args, "--server").unwrap_or_else(|| config.server.clone());
 
     // Create TOFU verifier (needed for mismatch inspection even on failure)
     let tofu = Arc::new(TofuVerifier::new(Arc::clone(storage), server_str.clone()));
+
+    let Some(password) = password else {
+        return Ok(ConnectingOutcome::Failed {
+            error: anyhow::anyhow!("no password configured"),
+            tofu,
+        });
+    };
 
     // Show connecting modal
     ui.screen = Screen::Connecting;
@@ -2173,12 +2202,20 @@ async fn apply_action(
         }
         Action::SettingsMediaRootUp => {
             if let Some(ref mut s) = ui.settings {
-                s.media_root_selected = s.media_root_selected.saturating_sub(1);
+                if s.media_root_selected == 0 {
+                    s.prev_field();
+                } else {
+                    s.media_root_selected -= 1;
+                }
             }
         }
         Action::SettingsMediaRootDown => {
             if let Some(ref mut s) = ui.settings {
-                s.media_root_selected = (s.media_root_selected + 1).min(s.media_roots.len());
+                if s.media_root_selected >= s.media_roots.len() {
+                    s.next_field();
+                } else {
+                    s.media_root_selected += 1;
+                }
             }
         }
         Action::SettingsMediaRootPageUp => {

@@ -345,7 +345,11 @@ fn settings_modal(
         kind: FormFieldKind::Masked {
             value: settings.password.clone(),
         },
-        error: None,
+        error: if !settings.is_password_valid() {
+            Some("required (or set DESSPLAY_PASSWORD)".to_string())
+        } else {
+            None
+        },
     });
 
     // Media roots — prepend [Add New] pseudo-entry
@@ -385,6 +389,9 @@ fn settings_modal(
         }
         if !settings.is_server_valid() {
             parts.push("invalid server");
+        }
+        if !settings.is_password_valid() {
+            parts.push("password required");
         }
         if !settings.has_media_roots() {
             parts.push("add a media root");

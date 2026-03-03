@@ -256,9 +256,12 @@ impl SettingsState {
         }
     }
 
-    /// Returns true if the config is valid (non-empty username, valid server, >=1 media root).
+    /// Returns true if the config is valid (non-empty username, valid server, password, >=1 media root).
     pub fn is_valid(&self) -> bool {
-        self.is_username_valid() && self.is_server_valid() && self.has_media_roots()
+        self.is_username_valid()
+            && self.is_server_valid()
+            && self.is_password_valid()
+            && self.has_media_roots()
     }
 
     pub fn is_username_valid(&self) -> bool {
@@ -271,6 +274,10 @@ impl SettingsState {
 
     pub fn server_error(&self) -> Option<&'static str> {
         validate_server_format(&self.server).err()
+    }
+
+    pub fn is_password_valid(&self) -> bool {
+        !self.password.is_empty() || std::env::var("DESSPLAY_PASSWORD").is_ok()
     }
 
     pub fn has_media_roots(&self) -> bool {
@@ -730,11 +737,15 @@ mod tests {
         let mut s = SettingsState::new();
         s.username = "alice".into();
         s.server = "example.com:4433".into();
+        s.password = "secret".into();
         assert!(!s.is_valid()); // no media roots
         s.media_roots.push(PathBuf::from("/anime"));
         assert!(s.is_valid());
         s.username.clear();
         assert!(!s.is_valid()); // empty username
+        s.username = "alice".into();
+        s.password.clear();
+        assert!(!s.is_valid()); // empty password (no env var)
     }
 
     #[test]
@@ -764,6 +775,7 @@ mod tests {
     fn settings_validation_rejects_bad_server() {
         let mut s = SettingsState::new();
         s.username = "alice".into();
+        s.password = "secret".into();
         s.server = "localhost".into(); // no port
         s.media_roots.push(PathBuf::from("/anime"));
         assert!(!s.is_valid());
