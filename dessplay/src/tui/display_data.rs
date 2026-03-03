@@ -35,6 +35,7 @@ pub struct PlaylistDisplayEntry {
     pub display_name: String,
     pub is_missing: bool,
     pub is_current: bool,
+    pub is_played: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +151,11 @@ pub fn build_display_data(
 
     // Playlist entries
     let playlist_snapshot = crdt.playlist.snapshot();
+    let now_playing = crdt.now_playing.read(&()).and_then(|val| *val);
+    // Find the position of the now-playing file to determine "played" items
+    let now_playing_pos = now_playing.and_then(|np| {
+        playlist_snapshot.iter().position(|fid| *fid == np)
+    });
     let playlist_entries: Vec<PlaylistDisplayEntry> = playlist_snapshot
         .iter()
         .enumerate()
@@ -162,11 +168,14 @@ pub fn build_display_data(
             let display_name =
                 file_display_name(file_id, local_path.as_deref(), crdt_filename.as_deref());
             let is_missing = local_path.is_none();
+            let is_current = now_playing == Some(*file_id);
+            let is_played = now_playing_pos.is_some_and(|np_pos| i < np_pos);
             PlaylistDisplayEntry {
                 file_id: *file_id,
                 display_name,
                 is_missing,
-                is_current: i == 0,
+                is_current,
+                is_played,
             }
         })
         .collect();
@@ -178,7 +187,10 @@ pub fn build_display_data(
         .map(|st| series_browser::build_series_list(crdt, &st))
         .unwrap_or_default();
 
-    let current_file_name = playlist_entries.first().map(|e| e.display_name.clone());
+    let current_file_name = playlist_entries
+        .iter()
+        .find(|e| e.is_current)
+        .map(|e| e.display_name.clone());
 
     let position_secs = app.our_position_secs;
     let duration_secs = app.file_duration_secs;

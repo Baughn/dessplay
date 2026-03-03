@@ -67,6 +67,7 @@ Used for:
 | User State | `user_id` | Ready / Paused / Not Watching | Each user writes their own |
 | File State | `(user_id, file_id)` | Ready / Missing / Downloading | Each user writes their own |
 | AniDB metadata | `ed2k_hash` | `None \| JSON` | Server wins (server overwrites client entries) |
+| Now Playing | `()` (singleton) | `Option<FileId>` | Any peer (last writer wins) |
 
 **Conflict resolution:** Highest timestamp wins. For AniDB metadata, the
 server's writes always have a higher logical timestamp (server is authoritative).

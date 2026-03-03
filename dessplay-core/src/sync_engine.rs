@@ -566,6 +566,7 @@ mod tests {
             filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
+            now_playing: None,
         };
         engine.state.load_snapshot(3, snap);
 
@@ -598,6 +599,7 @@ mod tests {
             filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
+            now_playing: None,
         };
 
         let actions = engine.on_state_snapshot(5, snap);
@@ -617,6 +619,7 @@ mod tests {
             filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
+            now_playing: None,
         };
         engine.state.load_snapshot(5, snap);
 
@@ -628,6 +631,7 @@ mod tests {
             filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
+            now_playing: None,
         };
         let actions = engine.on_state_snapshot(3, old_snap);
 
@@ -645,6 +649,7 @@ mod tests {
             filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
+            now_playing: None,
         };
 
         // epoch 0 snapshot on epoch 0 engine — not newer
@@ -665,6 +670,7 @@ mod tests {
             filenames: Default::default(),
             playlist: vec![],
             chat: Default::default(),
+            now_playing: None,
         };
         engine.on_state_snapshot(1, snap);
 

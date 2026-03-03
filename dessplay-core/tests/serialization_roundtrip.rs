@@ -73,6 +73,18 @@ fn roundtrip_lww_write_anidb_none() {
 }
 
 #[test]
+fn roundtrip_lww_write_now_playing() {
+    roundtrip(&CrdtOp::LwwWrite {
+        timestamp: 400,
+        value: LwwValue::NowPlaying(Some(fid(1))),
+    });
+    roundtrip(&CrdtOp::LwwWrite {
+        timestamp: 401,
+        value: LwwValue::NowPlaying(None),
+    });
+}
+
+#[test]
 fn roundtrip_playlist_op() {
     roundtrip(&CrdtOp::PlaylistOp {
         timestamp: 42,
@@ -149,6 +161,7 @@ fn roundtrip_crdt_snapshot() {
         filenames: BTreeMap::new(),
         playlist: vec![fid(1)],
         chat: BTreeMap::new(),
+        now_playing: None,
     };
     roundtrip(&snap);
 }

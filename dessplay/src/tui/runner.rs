@@ -1322,8 +1322,9 @@ async fn run_connected(
                                     &mut mtime_tracker, &rehash_tx,
                                 ).await;
                             }
+                            let after = ui.pending_add_after.take();
                             let effects = app_state.lock().await.process_event(
-                                AppEvent::AddToPlaylist { file_id, after: None },
+                                AppEvent::AddToPlaylist { file_id, after },
                                 now,
                             );
                             dispatch_effects(
@@ -1705,10 +1706,9 @@ async fn apply_action(
         }
         Action::PlaylistSelectDown => {
             let app = app_state.lock().await;
-            let playlist_len = app.sync_engine.state().playlist.snapshot().len();
-            if playlist_len > 0 {
-                ui.playlist_selected = (ui.playlist_selected + 1).min(playlist_len - 1);
-            }
+            // +1 for the [Add New] entry
+            let total_items = app.sync_engine.state().playlist.snapshot().len() + 1;
+            ui.playlist_selected = (ui.playlist_selected + 1).min(total_items - 1);
         }
         Action::PlaylistRemove => {
             let now = rv_client.shared_now().await;
@@ -1762,7 +1762,48 @@ async fn apply_action(
                 ui.playlist_selected += 1;
             }
         }
+        Action::SetNowPlaying => {
+            let app = app_state.lock().await;
+            let snapshot = app.sync_engine.state().playlist.snapshot();
+            if ui.playlist_selected < snapshot.len() {
+                // Play the selected file
+                let file_id = snapshot[ui.playlist_selected];
+                drop(app);
+                let now = rv_client.shared_now().await;
+                let effects = app_state.lock().await.process_event(
+                    AppEvent::SetNowPlaying {
+                        file_id: Some(file_id),
+                    },
+                    now,
+                );
+                out_effects.extend(effects);
+            } else {
+                // On [Add New] entry — fall through to file browser
+                drop(app);
+                let media_roots = storage
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get_media_roots().ok())
+                    .unwrap_or_default();
+                let start_dir = media_roots
+                    .first()
+                    .cloned()
+                    .or_else(dirs::home_dir)
+                    .unwrap_or_else(|| PathBuf::from("/"));
+                ui.pending_add_after = None;
+                ui.file_browser =
+                    Some(FileBrowserState::open(start_dir, FileBrowserOrigin::Playlist));
+                ui.screen = Screen::FileBrowser;
+            }
+        }
         Action::OpenFileBrowser => {
+            // Capture the currently selected playlist item as the insert-after target
+            let after = {
+                let app = app_state.lock().await;
+                let snapshot = app.sync_engine.state().playlist.snapshot();
+                snapshot.get(ui.playlist_selected).copied()
+            };
+            ui.pending_add_after = after;
             let media_roots = storage
                 .lock()
                 .ok()
@@ -1883,7 +1924,7 @@ async fn apply_action(
                 })
             };
             if let Some((Some(dir), next_file)) = info {
-                let mut fb = FileBrowserState::open(dir, FileBrowserOrigin::Playlist);
+                let mut fb = FileBrowserState::open(dir, FileBrowserOrigin::SeriesBrowser);
                 if let Some(filename) = next_file
                     && let Some(idx) = fb.entries.iter().position(|e| e.name == filename)
                 {
@@ -2051,7 +2092,19 @@ async fn apply_action(
         }
         Action::FileBrowserBack => {
             let should_close = if let Some(ref mut fb) = ui.file_browser {
-                if let Some(parent) = fb.current_dir.parent() {
+                // Series browser: ESC always closes
+                // Playlist/manual-map: close if we're at a media root
+                let should_exit = matches!(fb.origin, FileBrowserOrigin::SeriesBrowser)
+                    || (!matches!(fb.origin, FileBrowserOrigin::SettingsMediaRoot)
+                        && storage
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.get_media_roots().ok())
+                            .unwrap_or_default()
+                            .contains(&fb.current_dir));
+                if should_exit {
+                    true
+                } else if let Some(parent) = fb.current_dir.parent() {
                     if fb.current_dir == parent.to_path_buf() {
                         true
                     } else {

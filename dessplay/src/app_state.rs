@@ -51,6 +51,7 @@ pub enum AppEvent {
         file_id: FileId,
         after: Option<FileId>,
     },
+    SetNowPlaying { file_id: Option<FileId> },
 
     // --- Player ---
     PlayerPaused,
@@ -266,6 +267,9 @@ impl AppState {
             AppEvent::MoveInPlaylist { file_id, after } => {
                 self.handle_move_in_playlist(file_id, after, now)
             }
+            AppEvent::SetNowPlaying { file_id } => {
+                self.handle_set_now_playing(file_id, now)
+            }
             AppEvent::Tick => self.handle_tick(now),
 
             // Player events
@@ -443,12 +447,33 @@ impl AppState {
         after: Option<FileId>,
         now: SharedTimestamp,
     ) -> Vec<AppEffect> {
+        let was_empty = self
+            .sync_engine
+            .state()
+            .now_playing
+            .read(&())
+            .and_then(|val| *val)
+            .is_none();
+
         let op = CrdtOp::PlaylistOp {
             timestamp: now,
             action: PlaylistAction::Add { file_id, after },
         };
         let actions = self.sync_engine.apply_local_op(op);
         let mut effects = Vec::new();
+
+        // Auto-select the first file added to an empty playlist
+        if was_empty {
+            let np_op = CrdtOp::LwwWrite {
+                timestamp: now,
+                value: LwwValue::NowPlaying(Some(file_id)),
+            };
+            let np_actions = self.sync_engine.apply_local_op(np_op);
+            if !np_actions.is_empty() {
+                effects.push(AppEffect::Sync(np_actions));
+            }
+        }
+
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
             effects.push(AppEffect::Sync(actions));
@@ -485,6 +510,30 @@ impl AppState {
             action: PlaylistAction::Move { file_id, after },
         };
         let actions = self.sync_engine.apply_local_op(op);
+        let mut effects = Vec::new();
+        effects.extend(self.playback_transition_effects());
+        if !actions.is_empty() {
+            effects.push(AppEffect::Sync(actions));
+        }
+        effects
+    }
+
+    fn handle_set_now_playing(
+        &mut self,
+        file_id: Option<FileId>,
+        now: SharedTimestamp,
+    ) -> Vec<AppEffect> {
+        let op = CrdtOp::LwwWrite {
+            timestamp: now,
+            value: LwwValue::NowPlaying(file_id),
+        };
+        let actions = self.sync_engine.apply_local_op(op);
+
+        // Reset player state for new file
+        self.our_position_secs = 0.0;
+        self.file_duration_secs = None;
+        self.watched_marker_sent = false;
+
         let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
         if !actions.is_empty() {
@@ -621,11 +670,18 @@ impl AppState {
     fn handle_player_eof(&mut self, now: SharedTimestamp) -> Vec<AppEffect> {
         let mut effects = Vec::new();
 
-        // Remove current file from playlist
         if let Some(current) = self.playback.current_file {
-            let op = CrdtOp::PlaylistOp {
+            // Find the next file in the playlist after the current one
+            let playlist = self.sync_engine.state().playlist.snapshot();
+            let next_file = playlist
+                .iter()
+                .position(|fid| *fid == current)
+                .and_then(|pos| playlist.get(pos + 1).copied());
+
+            // Advance now_playing to the next file (or None if at end)
+            let op = CrdtOp::LwwWrite {
                 timestamp: now,
-                action: PlaylistAction::Remove { file_id: current },
+                value: LwwValue::NowPlaying(next_file),
             };
             let actions = self.sync_engine.apply_local_op(op);
             if !actions.is_empty() {
@@ -762,8 +818,10 @@ impl AppState {
 
     fn recompute_playback(&mut self) {
         let crdt = self.sync_engine.state();
-        let playlist_snapshot = crdt.playlist.snapshot();
-        let current_file = playlist_snapshot.into_iter().next();
+        let current_file = crdt
+            .now_playing
+            .read(&())
+            .and_then(|val| *val);
 
         let mut blocking = Vec::new();
         let mut should_play = current_file.is_some();
@@ -1382,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn player_eof_removes_current_file() {
+    fn player_eof_advances_now_playing() {
         let mut app = make_app();
         add_file(&mut app, 1, 100);
         add_file(&mut app, 2, 101);
@@ -1390,18 +1448,25 @@ mod tests {
         assert_eq!(app.playback.current_file, Some(fid(1)));
 
         let effects = app.process_event(AppEvent::PlayerEof, 200);
-        // File 1 should be removed, file 2 is now current
+        // now_playing advances to file 2, file 1 stays in playlist
         assert_eq!(app.playback.current_file, Some(fid(2)));
         assert!(has_player_load(&effects));
+        // File 1 is still in the playlist
+        let playlist = app.sync_engine.state().playlist.snapshot();
+        assert!(playlist.contains(&fid(1)), "file should stay in playlist after EOF");
+        assert!(playlist.contains(&fid(2)));
     }
 
     #[test]
-    fn player_eof_empty_playlist() {
+    fn player_eof_last_file_clears() {
         let mut app = make_app();
         add_file(&mut app, 1, 100);
 
         app.process_event(AppEvent::PlayerEof, 200);
+        // now_playing becomes None, but file stays in playlist
         assert!(app.playback.current_file.is_none());
+        let playlist = app.sync_engine.state().playlist.snapshot();
+        assert!(playlist.contains(&fid(1)), "file should stay in playlist after EOF");
     }
 
     #[test]
@@ -1701,6 +1766,86 @@ mod tests {
             .cloned();
         assert_eq!(our_fs, Some(FileState::Ready));
         assert!(app.playback.should_play);
+    }
+
+    // -----------------------------------------------------------------------
+    // Now-playing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_now_playing_changes_current() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        add_file(&mut app, 2, 101);
+        assert_eq!(app.playback.current_file, Some(fid(1)));
+
+        // Switch to file 2
+        app.process_event(
+            AppEvent::SetNowPlaying {
+                file_id: Some(fid(2)),
+            },
+            200,
+        );
+        assert_eq!(app.playback.current_file, Some(fid(2)));
+    }
+
+    #[test]
+    fn eof_advances_to_next() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        add_file(&mut app, 2, 101);
+        add_file(&mut app, 3, 102);
+        assert_eq!(app.playback.current_file, Some(fid(1)));
+
+        // EOF on first → advances to second
+        app.process_event(AppEvent::PlayerEof, 200);
+        assert_eq!(app.playback.current_file, Some(fid(2)));
+
+        // All three files still in playlist
+        let playlist = app.sync_engine.state().playlist.snapshot();
+        assert_eq!(playlist.len(), 3);
+    }
+
+    #[test]
+    fn eof_on_last_clears() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        add_file(&mut app, 2, 101);
+
+        // Jump to last file
+        app.process_event(
+            AppEvent::SetNowPlaying {
+                file_id: Some(fid(2)),
+            },
+            150,
+        );
+        assert_eq!(app.playback.current_file, Some(fid(2)));
+
+        // EOF on last → None
+        app.process_event(AppEvent::PlayerEof, 200);
+        assert!(app.playback.current_file.is_none());
+    }
+
+    #[test]
+    fn first_add_auto_selects() {
+        let mut app = make_app();
+        // Empty playlist, now_playing is None
+        assert!(app.playback.current_file.is_none());
+
+        add_file(&mut app, 1, 100);
+        // First add should auto-set now_playing
+        assert_eq!(app.playback.current_file, Some(fid(1)));
+    }
+
+    #[test]
+    fn second_add_no_change() {
+        let mut app = make_app();
+        add_file(&mut app, 1, 100);
+        assert_eq!(app.playback.current_file, Some(fid(1)));
+
+        // Adding second file should NOT change now_playing
+        add_file(&mut app, 2, 101);
+        assert_eq!(app.playback.current_file, Some(fid(1)));
     }
 
     // Regression: playlist remove/move must return Sync effects so they

@@ -20,6 +20,7 @@ pub struct CrdtState {
     pub file_states: LwwRegister<(UserId, FileId), FileState>,
     pub anidb: LwwRegister<FileId, Option<AniDbMetadata>>,
     pub filenames: LwwRegister<FileId, String>,
+    pub now_playing: LwwRegister<(), Option<FileId>>,
     pub playlist: Playlist,
     pub chat: Chat,
 }
@@ -38,6 +39,7 @@ impl CrdtState {
             file_states: LwwRegister::new(),
             anidb: LwwRegister::new(),
             filenames: LwwRegister::new(),
+            now_playing: LwwRegister::new(),
             playlist: Playlist::new(),
             chat: Chat::new(),
         }
@@ -99,11 +101,19 @@ impl CrdtState {
             LwwValue::FileName(fid, name) => {
                 self.filenames.write(*fid, timestamp, name.clone())
             }
+            LwwValue::NowPlaying(val) => {
+                self.now_playing.write((), timestamp, *val)
+            }
         }
     }
 
     /// Produce a full snapshot of the current state.
     pub fn snapshot(&self) -> CrdtSnapshot {
+        let now_playing = self
+            .now_playing
+            .iter()
+            .next()
+            .map(|((), (ts, val))| (*ts, *val));
         CrdtSnapshot {
             user_states: self.user_states.clone().into_inner(),
             file_states: self.file_states.clone().into_inner(),
@@ -111,6 +121,7 @@ impl CrdtState {
             filenames: self.filenames.clone().into_inner(),
             playlist: self.playlist.snapshot(),
             chat: self.chat.clone().into_inner(),
+            now_playing,
         }
     }
 
@@ -132,6 +143,9 @@ impl CrdtState {
         }
         for (key, (ts, _)) in self.filenames.iter() {
             vv.lww_versions.insert(RegisterId::FileName(*key), *ts);
+        }
+        for ((), (ts, _)) in self.now_playing.iter() {
+            vv.lww_versions.insert(RegisterId::NowPlaying, *ts);
         }
 
         for uid in self.chat.users() {
@@ -196,6 +210,20 @@ impl CrdtState {
             }
         }
 
+        for ((), (ts, val)) in self.now_playing.iter() {
+            let remote_ts = remote
+                .lww_versions
+                .get(&RegisterId::NowPlaying)
+                .copied()
+                .unwrap_or(0);
+            if *ts >= remote_ts {
+                ops.push(CrdtOp::LwwWrite {
+                    timestamp: *ts,
+                    value: LwwValue::NowPlaying(*val),
+                });
+            }
+        }
+
         // Playlist ops since remote's known version
         for (ts, action) in self.playlist.ops_since(remote.playlist_version) {
             ops.push(CrdtOp::PlaylistOp {
@@ -227,6 +255,14 @@ impl CrdtState {
         self.file_states = LwwRegister::from_inner(snap.file_states);
         self.anidb = LwwRegister::from_inner(snap.anidb);
         self.filenames = LwwRegister::from_inner(snap.filenames);
+        self.now_playing = match snap.now_playing {
+            Some((ts, val)) => {
+                let mut reg = LwwRegister::new();
+                reg.write((), ts, val);
+                reg
+            }
+            None => LwwRegister::new(),
+        };
         self.playlist = Playlist::from_materialized(snap.playlist);
         self.chat = Chat::from_inner(snap.chat);
     }
@@ -630,6 +666,65 @@ mod tests {
             behind.apply_op(op);
         }
         assert_eq!(ahead.snapshot(), behind.snapshot());
+    }
+
+    #[test]
+    fn now_playing_apply_and_read() {
+        let mut state = CrdtState::new();
+        let op = make_lww_op(LwwValue::NowPlaying(Some(fid(1))), 100);
+        assert!(state.apply_op(&op));
+        assert_eq!(state.now_playing.read(&()), Some(&Some(fid(1))));
+    }
+
+    #[test]
+    fn now_playing_snapshot_round_trip() {
+        let mut state = CrdtState::new();
+        state.apply_op(&make_lww_op(LwwValue::NowPlaying(Some(fid(1))), 100));
+
+        let snap = state.snapshot();
+        assert_eq!(snap.now_playing, Some((100, Some(fid(1)))));
+
+        let mut state2 = CrdtState::new();
+        state2.load_snapshot(0, snap);
+        assert_eq!(state2.now_playing.read(&()), Some(&Some(fid(1))));
+    }
+
+    #[test]
+    fn now_playing_version_vectors() {
+        let mut state = CrdtState::new();
+        state.apply_op(&make_lww_op(LwwValue::NowPlaying(Some(fid(1))), 42));
+
+        let vv = state.version_vectors();
+        assert_eq!(
+            vv.lww_versions.get(&RegisterId::NowPlaying),
+            Some(&42)
+        );
+    }
+
+    #[test]
+    fn now_playing_ops_since() {
+        let mut state = CrdtState::new();
+        state.apply_op(&make_lww_op(LwwValue::NowPlaying(Some(fid(1))), 100));
+
+        let remote_vv = VersionVectors::new(0);
+        let ops = state.ops_since(&remote_vv);
+        let np_ops: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, CrdtOp::LwwWrite { value: LwwValue::NowPlaying(_), .. }))
+            .collect();
+        assert_eq!(np_ops.len(), 1);
+    }
+
+    #[test]
+    fn now_playing_none_snapshot() {
+        let state = CrdtState::new();
+        let snap = state.snapshot();
+        assert_eq!(snap.now_playing, None);
+
+        // Load snapshot with no now_playing (backward compat)
+        let mut state2 = CrdtState::new();
+        state2.load_snapshot(0, snap);
+        assert_eq!(state2.now_playing.read(&()), None);
     }
 
     #[test]

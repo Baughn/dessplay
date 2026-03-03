@@ -319,6 +319,8 @@ pub enum FileBrowserOrigin {
     Playlist,
     /// Adding a media root from settings.
     SettingsMediaRoot,
+    /// Browsing episodes within a series (from Recent Series pane).
+    SeriesBrowser,
     /// Manual file mapping (Ctrl-M on a missing playlist item).
     ManualMap {
         file_id: FileId,
@@ -501,6 +503,8 @@ pub struct UiState {
     pub should_quit: bool,
     /// Status message shown temporarily.
     pub status_message: Option<String>,
+    /// When adding via file browser, insert after this playlist entry.
+    pub pending_add_after: Option<FileId>,
 }
 
 impl Default for UiState {
@@ -526,6 +530,7 @@ impl UiState {
             connecting: None,
             should_quit: false,
             status_message: None,
+            pending_add_after: None,
         }
     }
 

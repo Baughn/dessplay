@@ -285,15 +285,6 @@ fn render_selectable_list(
     buf: &mut Buffer,
     focused: bool,
 ) {
-    if items.is_empty() {
-        let empty = Paragraph::new(Line::from(Span::styled(
-            "  (empty)",
-            Style::default().fg(Color::DarkGray),
-        )));
-        empty.render(area, buf);
-        return;
-    }
-
     let visible = area.height as usize;
     // Auto-scroll to keep selected visible
     let scroll_start = if selected >= visible {

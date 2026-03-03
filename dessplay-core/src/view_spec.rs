@@ -372,6 +372,9 @@ pub enum Action {
     MetadataDeleteBack,
     MetadataConfirmEpisode,
     MetadataCancel,
+
+    // --- Now Playing ---
+    SetNowPlaying,
 }
 
 // ---------------------------------------------------------------------------

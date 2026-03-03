@@ -176,11 +176,12 @@ fn users_pane(data: &DisplayData) -> LayoutNode {
 
 fn playlist_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
     let focused = ui.focus == FocusedPane::Playlist;
-    let items: Vec<Vec<StyledSpan>> = data
+    let mut items: Vec<Vec<StyledSpan>> = data
         .playlist_entries
         .iter()
         .map(playlist_entry_spans)
         .collect();
+    items.push(vec![StyledSpan::colored("[Add New]", SemanticColor::Muted)]);
 
     LayoutNode::Pane(PaneSpec {
         id: PaneId::Playlist,
@@ -628,6 +629,7 @@ fn chat_bindings() -> Vec<Keybinding> {
 fn playlist_bindings() -> Vec<Keybinding> {
     vec![
         kb_bar(KeyCombo::Plain(Key::Tab), "Next pane", Action::CycleFocus),
+        kb_bar(KeyCombo::Plain(Key::Enter), "Play", Action::SetNowPlaying),
         kb_bar(KeyCombo::Plain(Key::Char('a')), "Add", Action::OpenFileBrowser),
         kb_bar(KeyCombo::Plain(Key::Char('d')), "Remove", Action::PlaylistRemove),
         kb_bar(KeyCombo::Ctrl(Key::Char('j')), "Move dn", Action::PlaylistMoveDown),
@@ -856,7 +858,7 @@ fn user_display_color(entry: &UserDisplayEntry) -> (SemanticColor, &'static str)
 fn playlist_entry_spans(entry: &PlaylistDisplayEntry) -> Vec<StyledSpan> {
     let color = if entry.is_missing {
         SemanticColor::Missing
-    } else if !entry.is_current {
+    } else if entry.is_played {
         SemanticColor::Muted
     } else {
         SemanticColor::Default
@@ -1036,6 +1038,7 @@ mod tests {
             display_name: "test.mkv".to_string(),
             is_missing: true,
             is_current: true,
+            is_played: false,
         };
         let spans = playlist_entry_spans(&entry);
         assert_eq!(spans[0].color, SemanticColor::Missing);

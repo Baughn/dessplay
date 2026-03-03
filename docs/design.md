@@ -158,6 +158,10 @@ The OSD on the video player shows a summary: Which users are unready (in any for
 4. When someone seeks, everyone seeks
 5. Sync tolerance is 3 seconds; no seek triggered for smaller drift
 6. Seeks are debounced (1500ms) — only broadcast after the user stops scrubbing
+7. **EOF** advances the synced now-playing pointer to the next playlist entry.
+   Files are **not** removed from the playlist on EOF — they remain visible
+   in muted colors as play history. Users can select any entry with Enter to
+   set it as now-playing.
 
 ### Before Playback Starts
 
@@ -246,6 +250,8 @@ available actions for the currently focused pane (e.g. Chat shows
 | `Left` / `Right` | Chat | Move cursor |
 | `Ctrl-Left` / `Ctrl-Right` | Chat | Move cursor by word |
 | `Home` / `End` | Chat | Move cursor to start/end |
+| `Enter` | Playlist | Play selected entry (or open file browser on [Add New]) |
+| `a` | Playlist | Add file (insert after selected entry) |
 
 Note: there is no `q` to quit — too easy to hit while typing in chat.
 
@@ -307,6 +313,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Playback position | Ephemeral LWW (fire-and-forget) | Datagrams only |
 | Seek events | Imperative command (debounced) | Datagrams only |
 | AniDB metadata | LWW Register (server-authoritative) | Reliable stream |
+| Now Playing | LWW Register (singleton) | Datagrams + reliable gap fill |
 
 Playback state (playing vs paused) is **derived**, not synced directly:
 the video plays iff every user's User State is Ready or Not Watching, and

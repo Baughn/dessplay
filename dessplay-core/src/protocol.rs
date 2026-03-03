@@ -21,6 +21,7 @@ pub enum RegisterId {
     FileState(UserId, FileId),
     AniDb(FileId),
     FileName(FileId),
+    NowPlaying,
 }
 
 /// A typed LWW register value, combining register identity and payload.
@@ -34,6 +35,7 @@ pub enum LwwValue {
     FileState(UserId, FileId, FileState),
     AniDb(FileId, Option<AniDbMetadata>),
     FileName(FileId, String),
+    NowPlaying(Option<FileId>),
 }
 
 // Manual Eq: FileState contains f32 (progress), but values are always finite.
@@ -47,6 +49,7 @@ impl LwwValue {
             LwwValue::FileState(uid, fid, _) => RegisterId::FileState(uid.clone(), *fid),
             LwwValue::AniDb(fid, _) => RegisterId::AniDb(*fid),
             LwwValue::FileName(fid, _) => RegisterId::FileName(*fid),
+            LwwValue::NowPlaying(_) => RegisterId::NowPlaying,
         }
     }
 }
@@ -137,6 +140,8 @@ pub struct CrdtSnapshot {
     pub chat: BTreeMap<UserId, Vec<ChatEntry>>,
     #[serde(default)]
     pub filenames: BTreeMap<FileId, (SharedTimestamp, String)>,
+    #[serde(default)]
+    pub now_playing: Option<(SharedTimestamp, Option<FileId>)>,
 }
 
 /// A single chat message.
