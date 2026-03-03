@@ -357,6 +357,9 @@ pub enum Action {
     FileBrowserBack,
     FileBrowserSelectDir,
 
+    // --- Connecting ---
+    CancelConnect,
+
     // --- TOFU Warning ---
     TofuAccept,
     TofuReject,

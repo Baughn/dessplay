@@ -726,7 +726,7 @@ fn metadata_select_bindings() -> Vec<Keybinding> {
 
 fn connecting_bindings() -> Vec<Keybinding> {
     vec![
-        kb_bar(KeyCombo::Plain(Key::Esc), "Exit", Action::Quit),
+        kb_bar(KeyCombo::Plain(Key::Esc), "Back", Action::CancelConnect),
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
     ]
 }
@@ -1000,10 +1000,10 @@ mod tests {
         let spec = view(&ui, &data);
         assert_eq!(spec.modals.len(), 1);
         assert!(spec.modals[0].title.contains("Connecting"));
-        // Status bar should show Exit and Quit
+        // Status bar should show Back and Quit
         let bar = spec.status_bar.unwrap();
         let labels: Vec<&str> = bar.bindings.iter().map(|(_, l)| *l).collect();
-        assert!(labels.contains(&"Exit"), "Connecting bar should have Exit");
+        assert!(labels.contains(&"Back"), "Connecting bar should have Back");
         assert!(labels.contains(&"Quit"), "Connecting bar should have Quit");
     }
 

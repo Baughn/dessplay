@@ -340,7 +340,20 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
                 }
             }
             ConnectingOutcome::Cancelled => {
-                return Ok(());
+                if ui.should_quit {
+                    return Ok(());
+                }
+                // User pressed Esc — go back to settings
+                let media_roots = storage
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get_media_roots().ok())
+                    .unwrap_or_default();
+                let settings = SettingsState::from_config(&config, media_roots);
+                ui.screen = Screen::Settings;
+                ui.settings = Some(settings);
+                run_preconnection_settings(&mut guard.terminal, &mut ui, &storage)
+                    .await?;
             }
             ConnectingOutcome::Failed { error, tofu } => {
                 tracing::warn!("Connection error: {error:#}");
@@ -763,11 +776,19 @@ async fn run_preconnection_connecting(
                 let event = event.context("failed to read terminal event")?;
                 if let crossterm::event::Event::Key(key) = event {
                     if let Some(action) = resolve_input(key, &spec) {
-                        if action == Action::Quit {
-                            conn_handle.abort();
-                            ui.connecting = None;
-                            ui.should_quit = true;
-                            return Ok(ConnectingOutcome::Cancelled);
+                        match action {
+                            Action::Quit => {
+                                conn_handle.abort();
+                                ui.connecting = None;
+                                ui.should_quit = true;
+                                return Ok(ConnectingOutcome::Cancelled);
+                            }
+                            Action::CancelConnect => {
+                                conn_handle.abort();
+                                ui.connecting = None;
+                                return Ok(ConnectingOutcome::Cancelled);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -2107,6 +2128,9 @@ async fn apply_action(
         Action::MetadataCancel => {
             ui.metadata_assign = None;
             ui.screen = Screen::Main;
+        }
+        Action::CancelConnect => {
+            // Only meaningful on the connecting screen; no-op in connected mode
         }
     }
     Ok(out_effects)
