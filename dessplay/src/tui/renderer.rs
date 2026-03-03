@@ -14,8 +14,27 @@ use dessplay_core::view_spec::*;
 // Public entry point
 // =========================================================================
 
+/// Feedback from the renderer back to the application.
+/// Contains computed values that the renderer knows but the action handler needs.
+#[derive(Debug, Default)]
+pub struct RenderFeedback {
+    /// Maximum valid scroll-back for the chat pane (total lines − visible height).
+    pub chat_max_scroll: usize,
+}
+
 /// Render a `ViewSpec` into a ratatui `Frame`.
 pub fn render(spec: &ViewSpec, frame: &mut ratatui::Frame) {
+    let mut feedback = RenderFeedback::default();
+    render_with_feedback(spec, frame, &mut feedback);
+}
+
+/// Render a `ViewSpec` into a ratatui `Frame`, writing computed metadata
+/// into `feedback` for the caller to use (e.g. clamping scroll offsets).
+pub fn render_with_feedback(
+    spec: &ViewSpec,
+    frame: &mut ratatui::Frame,
+    feedback: &mut RenderFeedback,
+) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -40,7 +59,7 @@ pub fn render(spec: &ViewSpec, frame: &mut ratatui::Frame) {
     };
 
     // Render base layout
-    render_layout(&spec.base, main_area, frame.buffer_mut());
+    render_layout(&spec.base, main_area, frame.buffer_mut(), feedback);
 
     // Render modals (in stack order, last = topmost)
     for modal in &spec.modals {
@@ -57,7 +76,7 @@ pub fn render(spec: &ViewSpec, frame: &mut ratatui::Frame) {
 // Layout rendering
 // =========================================================================
 
-fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
+fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer, feedback: &mut RenderFeedback) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -75,8 +94,8 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
                 width: right_width,
                 ..area
             };
-            render_layout(left, left_area, buf);
-            render_layout(right, right_area, buf);
+            render_layout(left, left_area, buf, feedback);
+            render_layout(right, right_area, buf, feedback);
         }
         LayoutNode::VSplit { top, bottom, ratio } => {
             // Check if bottom is a Spacer with fixed height
@@ -109,8 +128,8 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
                     height: bh,
                     ..area
                 };
-                render_layout(top, top_area, buf);
-                render_layout(bottom, bottom_area, buf);
+                render_layout(top, top_area, buf, feedback);
+                render_layout(bottom, bottom_area, buf, feedback);
             } else if bottom_is_input {
                 // Fixed 1-line bottom (chat input)
                 let top_height = area.height.saturating_sub(1);
@@ -123,8 +142,8 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
                     height: 1,
                     ..area
                 };
-                render_layout(top, top_area, buf);
-                render_layout(bottom, bottom_area, buf);
+                render_layout(top, top_area, buf, feedback);
+                render_layout(bottom, bottom_area, buf, feedback);
             } else if top_is_input {
                 // Fixed 1-line top (shouldn't happen normally but handle it)
                 let bottom_height = area.height.saturating_sub(1);
@@ -134,8 +153,8 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
                     height: bottom_height,
                     ..area
                 };
-                render_layout(top, top_area, buf);
-                render_layout(bottom, bottom_area, buf);
+                render_layout(top, top_area, buf, feedback);
+                render_layout(bottom, bottom_area, buf, feedback);
             } else {
                 // Proportional split
                 let top_height = ((area.height as f32) * ratio.clamp(0.0, 1.0)) as u16;
@@ -149,12 +168,12 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
                     height: bottom_height,
                     ..area
                 };
-                render_layout(top, top_area, buf);
-                render_layout(bottom, bottom_area, buf);
+                render_layout(top, top_area, buf, feedback);
+                render_layout(bottom, bottom_area, buf, feedback);
             }
         }
         LayoutNode::Pane(pane) => {
-            render_pane(pane, area, buf);
+            render_pane(pane, area, buf, feedback);
         }
         LayoutNode::Spacer { content, .. } => {
             render_spacer_content(content, area, buf);
@@ -166,7 +185,7 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer) {
 // Pane rendering
 // =========================================================================
 
-fn render_pane(pane: &PaneSpec, area: Rect, buf: &mut Buffer) {
+fn render_pane(pane: &PaneSpec, area: Rect, buf: &mut Buffer, feedback: &mut RenderFeedback) {
     // Chat input is a special case — no border, just a prompt line
     if pane.id == PaneId::ChatInput {
         render_text_input_bare(
@@ -205,6 +224,14 @@ fn render_pane(pane: &PaneSpec, area: Rect, buf: &mut Buffer) {
 
     if inner.width == 0 || inner.height == 0 {
         return;
+    }
+
+    // Compute chat scroll bounds for feedback
+    if pane.id == PaneId::Chat
+        && let ContentKind::TextLog { lines, .. } = &pane.content
+    {
+        let visible = inner.height as usize;
+        feedback.chat_max_scroll = lines.len().saturating_sub(visible);
     }
 
     render_content(&pane.content, inner, buf, pane.focused);
@@ -999,5 +1026,54 @@ mod tests {
             status_bar: None,
         };
         term.draw(|frame| render(&spec, frame)).unwrap();
+    }
+
+    /// Regression test: PageUp twice on a short chat, then PageDown once,
+    /// should return scroll to 0 — not stay stuck at 18.
+    ///
+    /// The bug: `chat_scroll` was incremented without clamping to max_scroll,
+    /// so two PageUps (each +18) set it to 36 even when max_scroll was 0.
+    /// One PageDown (-18) left it at 18 — visually stuck at the top.
+    #[test]
+    fn chat_scroll_clamps_to_max_after_render() {
+        let mut term = test_terminal(80, 24);
+        // 5 chat lines, visible area is ~22 lines (24 - 2 border) → max_scroll = 0
+        let spec = ViewSpec {
+            base: LayoutNode::Pane(PaneSpec {
+                id: PaneId::Chat,
+                title: vec![StyledSpan::plain(" Chat ")],
+                focused: true,
+                content: ContentKind::TextLog {
+                    lines: vec![vec![StyledSpan::plain("line")]; 5],
+                    scroll_back: 0,
+                },
+                bindings: Vec::new(),
+            }),
+            modals: Vec::new(),
+            status_bar: None,
+        };
+
+        // Render to get the actual max_scroll from the renderer
+        let mut feedback = RenderFeedback::default();
+        term.draw(|frame| render_with_feedback(&spec, frame, &mut feedback))
+            .unwrap();
+
+        // With 5 lines and ~22 visible rows, max_scroll should be 0
+        assert_eq!(feedback.chat_max_scroll, 0);
+
+        // Simulate: PageUp twice (unclamped: 0 → 18 → 36)
+        let mut chat_scroll: usize = 0;
+        chat_scroll = chat_scroll.saturating_add(18); // PageUp 1
+        chat_scroll = chat_scroll.saturating_add(18); // PageUp 2
+
+        // Clamp after render (the fix)
+        chat_scroll = chat_scroll.min(feedback.chat_max_scroll);
+
+        // Should be 0, not 36
+        assert_eq!(chat_scroll, 0);
+
+        // PageDown once should stay at 0
+        chat_scroll = chat_scroll.saturating_sub(18);
+        assert_eq!(chat_scroll, 0);
     }
 }

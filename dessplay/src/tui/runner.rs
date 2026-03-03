@@ -1112,7 +1112,10 @@ async fn run_connected(
             let data = build_display_data(&app, storage, &bg_hash_progress, ui.series_mode, ui.all_series_sort);
             drop(app);
             let spec = view::view(ui, &data);
-            terminal.draw(|frame| renderer::render(&spec, frame))?;
+            let mut feedback = renderer::RenderFeedback::default();
+            terminal.draw(|frame| renderer::render_with_feedback(&spec, frame, &mut feedback))?;
+            // Clamp chat scroll to prevent over-scroll beyond content bounds
+            ui.chat_scroll = ui.chat_scroll.min(feedback.chat_max_scroll);
             spec
         };
 
