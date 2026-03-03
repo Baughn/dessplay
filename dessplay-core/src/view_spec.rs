@@ -350,6 +350,8 @@ pub enum Action {
     SettingsRemoveMediaRoot,
     SettingsMoveRootUp,
     SettingsMoveRootDown,
+    SettingsMediaRootUp,
+    SettingsMediaRootDown,
     SettingsCancel,
 
     // --- File Browser ---

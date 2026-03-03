@@ -546,37 +546,60 @@ fn apply_preconnection_settings_action(
             }
         }
         Action::SettingsAddMediaRoot => {
-            let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-            ui.file_browser = Some(FileBrowserState::open(
-                start_dir,
-                FileBrowserOrigin::SettingsMediaRoot,
-            ));
-            ui.screen = Screen::FileBrowser;
+            if let Some(ref s) = ui.settings
+                && s.media_root_selected == 0
+            {
+                let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                ui.file_browser = Some(FileBrowserState::open(
+                    start_dir,
+                    FileBrowserOrigin::SettingsMediaRoot,
+                ));
+                ui.screen = Screen::FileBrowser;
+            }
         }
         Action::SettingsRemoveMediaRoot => {
             if let Some(ref mut s) = ui.settings
-                && !s.media_roots.is_empty()
+                && s.media_root_selected >= 1
+                && s.media_root_selected <= s.media_roots.len()
             {
                 s.alert = None;
-                s.media_roots.pop();
+                s.media_roots.remove(s.media_root_selected - 1);
+                // Clamp selection
+                let max = s.media_roots.len(); // display list has len+1 entries
+                if s.media_root_selected > max {
+                    s.media_root_selected = max;
+                }
             }
         }
         Action::SettingsMoveRootUp => {
-            if let Some(ref mut s) = ui.settings {
-                let len = s.media_roots.len();
-                if len >= 2 {
-                    s.alert = None;
-                    s.media_roots.swap(len - 2, len - 1);
-                }
+            if let Some(ref mut s) = ui.settings
+                && s.media_root_selected >= 2
+            {
+                let idx = s.media_root_selected - 1;
+                s.alert = None;
+                s.media_roots.swap(idx - 1, idx);
+                s.media_root_selected -= 1;
             }
         }
         Action::SettingsMoveRootDown => {
+            if let Some(ref mut s) = ui.settings
+                && s.media_root_selected >= 1
+                && s.media_root_selected < s.media_roots.len()
+            {
+                let idx = s.media_root_selected - 1;
+                s.alert = None;
+                s.media_roots.swap(idx, idx + 1);
+                s.media_root_selected += 1;
+            }
+        }
+        Action::SettingsMediaRootUp => {
             if let Some(ref mut s) = ui.settings {
-                let len = s.media_roots.len();
-                if len >= 2 {
-                    s.alert = None;
-                    s.media_roots.swap(0, 1);
-                }
+                s.media_root_selected = s.media_root_selected.saturating_sub(1);
+            }
+        }
+        Action::SettingsMediaRootDown => {
+            if let Some(ref mut s) = ui.settings {
+                s.media_root_selected = (s.media_root_selected + 1).min(s.media_roots.len());
             }
         }
         Action::SettingsSave => {
@@ -635,6 +658,7 @@ fn apply_preconnection_settings_action(
                     && !settings.media_roots.contains(&dir)
                 {
                     settings.media_roots.push(dir);
+                    settings.media_root_selected = settings.media_roots.len();
                 }
                 ui.file_browser = None;
                 ui.screen = Screen::Settings;
@@ -2013,37 +2037,59 @@ async fn apply_action(
             }
         }
         Action::SettingsAddMediaRoot => {
-            let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-            ui.file_browser = Some(FileBrowserState::open(
-                start_dir,
-                FileBrowserOrigin::SettingsMediaRoot,
-            ));
-            ui.screen = Screen::FileBrowser;
+            if let Some(ref s) = ui.settings
+                && s.media_root_selected == 0
+            {
+                let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                ui.file_browser = Some(FileBrowserState::open(
+                    start_dir,
+                    FileBrowserOrigin::SettingsMediaRoot,
+                ));
+                ui.screen = Screen::FileBrowser;
+            }
         }
         Action::SettingsRemoveMediaRoot => {
             if let Some(ref mut s) = ui.settings
-                && !s.media_roots.is_empty()
+                && s.media_root_selected >= 1
+                && s.media_root_selected <= s.media_roots.len()
             {
                 s.alert = None;
-                s.media_roots.pop();
+                s.media_roots.remove(s.media_root_selected - 1);
+                let max = s.media_roots.len();
+                if s.media_root_selected > max {
+                    s.media_root_selected = max;
+                }
             }
         }
         Action::SettingsMoveRootUp => {
-            if let Some(ref mut s) = ui.settings {
-                let len = s.media_roots.len();
-                if len >= 2 {
-                    s.alert = None;
-                    s.media_roots.swap(len - 2, len - 1);
-                }
+            if let Some(ref mut s) = ui.settings
+                && s.media_root_selected >= 2
+            {
+                let idx = s.media_root_selected - 1;
+                s.alert = None;
+                s.media_roots.swap(idx - 1, idx);
+                s.media_root_selected -= 1;
             }
         }
         Action::SettingsMoveRootDown => {
+            if let Some(ref mut s) = ui.settings
+                && s.media_root_selected >= 1
+                && s.media_root_selected < s.media_roots.len()
+            {
+                let idx = s.media_root_selected - 1;
+                s.alert = None;
+                s.media_roots.swap(idx, idx + 1);
+                s.media_root_selected += 1;
+            }
+        }
+        Action::SettingsMediaRootUp => {
             if let Some(ref mut s) = ui.settings {
-                let len = s.media_roots.len();
-                if len >= 2 {
-                    s.alert = None;
-                    s.media_roots.swap(0, 1);
-                }
+                s.media_root_selected = s.media_root_selected.saturating_sub(1);
+            }
+        }
+        Action::SettingsMediaRootDown => {
+            if let Some(ref mut s) = ui.settings {
+                s.media_root_selected = (s.media_root_selected + 1).min(s.media_roots.len());
             }
         }
         Action::SettingsSave => {
@@ -2101,6 +2147,7 @@ async fn apply_action(
                     && !settings.media_roots.contains(&dir)
                 {
                     settings.media_roots.push(dir);
+                    settings.media_root_selected = settings.media_roots.len();
                 }
                 ui.file_browser = None;
                 ui.screen = Screen::Settings;

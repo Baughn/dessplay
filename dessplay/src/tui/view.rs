@@ -348,21 +348,22 @@ fn settings_modal(
         error: None,
     });
 
-    // Media roots
-    let paths: Vec<PathListEntry> = settings
-        .media_roots
-        .iter()
-        .enumerate()
-        .map(|(i, p)| PathListEntry {
+    // Media roots — prepend [Add New] pseudo-entry
+    let mut paths = vec![PathListEntry {
+        path: "[Add New]".into(),
+        is_download_target: false,
+    }];
+    paths.extend(settings.media_roots.iter().enumerate().map(|(i, p)| {
+        PathListEntry {
             path: p.display().to_string(),
             is_download_target: i == 0,
-        })
-        .collect();
+        }
+    }));
     fields.push(FormField {
         label: "Media Roots".to_string(),
         kind: FormFieldKind::PathList {
             paths,
-            selected: 0,
+            selected: settings.media_root_selected,
         },
         error: if !settings.has_media_roots() {
             Some("at least one required".to_string())
@@ -671,9 +672,16 @@ fn settings_bindings(focused_field: usize) -> Vec<Keybinding> {
         kb_bar(KeyCombo::Ctrl(Key::Char('s')), "Save", Action::SettingsSave),
         kb_bar(KeyCombo::Plain(Key::Esc), "Cancel", Action::SettingsCancel),
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
-        kb(KeyCombo::Plain(Key::Up), "Prev field", Action::SettingsPrevField),
-        kb(KeyCombo::Plain(Key::Down), "Next field", Action::SettingsNextField),
     ];
+
+    // Up/Down: navigate within media root list when focused, otherwise move between fields
+    if focused_field == 4 {
+        bindings.push(kb(KeyCombo::Plain(Key::Up), "Up", Action::SettingsMediaRootUp));
+        bindings.push(kb(KeyCombo::Plain(Key::Down), "Down", Action::SettingsMediaRootDown));
+    } else {
+        bindings.push(kb(KeyCombo::Plain(Key::Up), "Prev field", Action::SettingsPrevField));
+        bindings.push(kb(KeyCombo::Plain(Key::Down), "Next field", Action::SettingsNextField));
+    }
 
     // Backspace only on text fields (username=0, server=1, password=3)
     match focused_field {
@@ -687,7 +695,7 @@ fn settings_bindings(focused_field: usize) -> Vec<Keybinding> {
     match focused_field {
         2 => bindings.push(kb(KeyCombo::Plain(Key::Enter), "Toggle", Action::SettingsTogglePlayer)),
         4 => {
-            bindings.push(kb_bar(KeyCombo::Plain(Key::Enter), "Add root", Action::SettingsAddMediaRoot));
+            bindings.push(kb_bar(KeyCombo::Plain(Key::Enter), "Select", Action::SettingsAddMediaRoot));
             bindings.push(kb(KeyCombo::Plain(Key::Char('d')), "Remove", Action::SettingsRemoveMediaRoot));
             bindings.push(kb(KeyCombo::Ctrl(Key::Char('j')), "Move dn", Action::SettingsMoveRootDown));
             bindings.push(kb(KeyCombo::Ctrl(Key::Char('k')), "Move up", Action::SettingsMoveRootUp));

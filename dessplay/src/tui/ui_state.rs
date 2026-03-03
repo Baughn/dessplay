@@ -176,6 +176,8 @@ pub struct SettingsState {
     /// Which field has focus (0=username, 1=server, 2=player, 3=password, 4=media_roots).
     pub focused_field: usize,
     pub field_count: usize,
+    /// Selected index within the media root display list (0 = [Add New], 1.. = roots).
+    pub media_root_selected: usize,
     /// Error banner shown at the top of the settings screen.
     pub alert: Option<String>,
 }
@@ -199,6 +201,7 @@ impl SettingsState {
             media_roots: Vec::new(),
             focused_field: 0,
             field_count: 5,
+            media_root_selected: 0,
             alert: None,
         }
     }
@@ -212,6 +215,7 @@ impl SettingsState {
             media_roots,
             focused_field: 0,
             field_count: 5,
+            media_root_selected: 0,
             alert: None,
         }
     }
