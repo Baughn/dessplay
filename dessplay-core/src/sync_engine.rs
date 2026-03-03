@@ -170,8 +170,12 @@ impl SyncEngine {
         // Check if we have data the remote doesn't → proactively send missing ops.
         // This is essential for the server case where gap fill via streams isn't
         // supported, but also benefits P2P by reducing round trips.
-        if let Some(their_gaps) = detect_gaps(&remote_versions, &local_vv) {
-            let ops = self.on_gap_fill_request(&their_gaps).ops;
+        //
+        // We use `ops_since(&remote_versions)` directly instead of constructing
+        // a partial GapFillRequest from detect_gaps, because the gap request
+        // omits chat/playlist hashes, causing ops_since to return ALL entries.
+        if detect_gaps(&remote_versions, &local_vv).is_some() {
+            let ops = self.state.ops_since(&remote_versions);
             for op in ops {
                 actions.push(SyncAction::SendControl {
                     peer: from,
@@ -850,6 +854,69 @@ mod tests {
         assert_eq!(
             engine.state().user_states.read(&uid("new_user")),
             Some(&UserState::Paused)
+        );
+    }
+
+    // Regression: proactive sending (on_state_summary detecting "we have data
+    // the remote doesn't") used to construct a partial GapFillRequest that
+    // omitted chat/playlist hashes. ops_since() then saw None for all chat
+    // users and returned ALL chat entries, causing OSD spam every 1s tick.
+    #[test]
+    fn proactive_send_does_not_include_unneeded_chat() {
+        let mut engine_a = SyncEngine::new();
+        let mut engine_b = SyncEngine::new();
+
+        // Both engines have the same chat message
+        let chat = chat_op("alice", 0, 100, "hello");
+        engine_a.apply_local_op(chat.clone());
+        engine_b.on_remote_op(peer(1), chat);
+
+        // Engine A has an LWW write that B doesn't
+        engine_a.apply_local_op(user_state_op("alice", UserState::Ready, 200));
+
+        // B sends its state summary to A. A should proactively send the
+        // missing LWW op, but NOT re-send the chat message.
+        let b_vv = engine_b.version_vectors();
+        let actions = engine_a.on_state_summary(peer(2), 0, b_vv);
+
+        let chat_ops: Vec<_> = actions
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a,
+                    SyncAction::SendControl {
+                        msg: PeerControl::StateOp {
+                            op: CrdtOp::ChatAppend { .. }
+                        },
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert!(
+            chat_ops.is_empty(),
+            "proactive send must not include chat ops that the remote already has, got {} chat ops",
+            chat_ops.len()
+        );
+
+        // But it SHOULD include the LWW op
+        let lww_ops: Vec<_> = actions
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a,
+                    SyncAction::SendControl {
+                        msg: PeerControl::StateOp {
+                            op: CrdtOp::LwwWrite { .. }
+                        },
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert!(
+            !lww_ops.is_empty(),
+            "proactive send must include the missing LWW op"
         );
     }
 

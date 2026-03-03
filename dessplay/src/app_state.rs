@@ -324,11 +324,14 @@ impl AppState {
         let actions = self.sync_engine.on_remote_op(from, op);
         let mut effects = Vec::new();
         effects.extend(self.playback_transition_effects());
-        if !actions.is_empty() {
+        let is_new = !actions.is_empty();
+        if is_new {
             effects.push(AppEffect::Sync(actions));
         }
         if let Some(text) = osd_text {
-            effects.push(AppEffect::PlayerShowOsd(text));
+            if is_new {
+                effects.push(AppEffect::PlayerShowOsd(text));
+            }
         }
         effects
     }
@@ -1899,6 +1902,30 @@ mod tests {
             "third crash must not emit another chat message"
         );
         assert!(!has_player_load(&effects), "no relaunch after repeated crash");
+    }
+
+    // Regression: duplicate ChatAppend ops must NOT emit OSD a second time.
+    // The CRDT correctly deduplicates, but the OSD extraction used to run
+    // unconditionally before checking the apply_op result.
+    #[test]
+    fn remote_chat_duplicate_does_not_emit_osd() {
+        let mut app = make_app();
+        connect_peer(&mut app, 1, "bob");
+
+        let op = CrdtOp::ChatAppend {
+            user_id: uid("bob"),
+            seq: 0,
+            timestamp: 200,
+            text: "hello".to_string(),
+        };
+
+        // First time → should produce OSD
+        let effects = app.process_event(AppEvent::RemoteOp { from: peer(1), op: op.clone() }, 200);
+        assert!(has_player_osd(&effects), "first chat must emit OSD");
+
+        // Second time (duplicate) → must NOT produce OSD
+        let effects = app.process_event(AppEvent::RemoteOp { from: peer(1), op }, 200);
+        assert!(!has_player_osd(&effects), "duplicate chat must not emit OSD");
     }
 
     #[test]
