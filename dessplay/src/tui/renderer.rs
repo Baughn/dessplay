@@ -175,8 +175,8 @@ fn render_layout(node: &LayoutNode, area: Rect, buf: &mut Buffer, feedback: &mut
         LayoutNode::Pane(pane) => {
             render_pane(pane, area, buf, feedback);
         }
-        LayoutNode::Spacer { content, .. } => {
-            render_spacer_content(content, area, buf);
+        LayoutNode::Spacer { content, right_text, .. } => {
+            render_spacer_content(content, right_text, area, buf);
         }
     }
 }
@@ -679,7 +679,12 @@ fn render_form(
 // Spacer (player status)
 // =========================================================================
 
-fn render_spacer_content(content: &ContentKind, area: Rect, buf: &mut Buffer) {
+fn render_spacer_content(
+    content: &ContentKind,
+    right_text: &[StyledSpan],
+    area: Rect,
+    buf: &mut Buffer,
+) {
     // Render with a border like player status
     let block = Block::default()
         .borders(Borders::ALL)
@@ -699,6 +704,24 @@ fn render_spacer_content(content: &ContentKind, area: Rect, buf: &mut Buffer) {
         ..inner
     };
     render_content(content, indented, buf, false);
+
+    // Render right-aligned text on the last inner line
+    if !right_text.is_empty() {
+        let spans: Vec<Span<'_>> = right_text.iter().map(|s| styled_span_to_ratatui(s)).collect();
+        let text_width: usize = spans.iter().map(|s| s.width()).sum();
+        if text_width > 0 && text_width <= inner.width as usize {
+            let last_y = inner.y + inner.height - 1;
+            let start_x = inner.x + inner.width - text_width as u16;
+            let right_area = Rect {
+                x: start_x,
+                y: last_y,
+                width: text_width as u16,
+                height: 1,
+            };
+            let line = Line::from(spans);
+            Paragraph::new(line).render(right_area, buf);
+        }
+    }
 }
 
 // =========================================================================

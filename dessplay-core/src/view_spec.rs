@@ -46,6 +46,8 @@ pub enum LayoutNode {
     Spacer {
         height: u16,
         content: ContentKind,
+        /// Optional right-aligned text rendered on the last inner line.
+        right_text: Vec<StyledSpan>,
     },
 }
 
