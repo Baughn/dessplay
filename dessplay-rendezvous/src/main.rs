@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     // Data directory: --data-dir > default_data_dir()
     let data_dir = get_arg(&args, "--data-dir")
         .map(PathBuf::from)
-        .map_or_else(|| storage::default_data_dir(), Ok)?;
+        .map_or_else(storage::default_data_dir, Ok)?;
 
     // Database path: --db > data_dir/server.db
     let db_path = get_arg(&args, "--db")

@@ -67,16 +67,14 @@ pub(crate) async fn run(
         // Check if user has overridden AniDB data (UserOverAniDb) — skip if so
         {
             let engine = sync_engine.lock().await;
-            if let Some(existing) = engine.state().anidb.read(&file_id) {
-                if let Some(meta) = existing {
-                    if meta.source == dessplay_core::types::MetadataSource::UserOverAniDb {
-                        tracing::info!(%file_id, "Skipping AniDB lookup: user override");
-                        if let Ok(s) = storage.lock() {
-                            let _ = s.record_success(&file_id, now_millis());
-                        }
-                        continue;
-                    }
+            if let Some(Some(meta)) = engine.state().anidb.read(&file_id)
+                && meta.source == dessplay_core::types::MetadataSource::UserOverAniDb
+            {
+                tracing::info!(%file_id, "Skipping AniDB lookup: user override");
+                if let Ok(s) = storage.lock() {
+                    let _ = s.record_success(&file_id, now_millis());
                 }
+                continue;
             }
         }
 

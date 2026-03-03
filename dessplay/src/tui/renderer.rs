@@ -456,24 +456,24 @@ fn render_form(
     let w = area.width;
 
     // Alert banner
-    if let Some(alert_text) = alert {
-        if y < area.y + area.height {
-            let alert_area = Rect {
-                x: area.x,
-                y,
-                width: w,
-                height: 1,
-            };
-            let line = Line::from(Span::styled(
-                alert_text,
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Red)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            Paragraph::new(line).render(alert_area, buf);
-            y += 2; // alert + blank line
-        }
+    if let Some(alert_text) = alert
+        && y < area.y + area.height
+    {
+        let alert_area = Rect {
+            x: area.x,
+            y,
+            width: w,
+            height: 1,
+        };
+        let line = Line::from(Span::styled(
+            alert_text,
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+        Paragraph::new(line).render(alert_area, buf);
+        y += 2; // alert + blank line
     }
 
     for (i, field) in fields.iter().enumerate() {
@@ -623,18 +623,18 @@ fn render_form(
     }
 
     // Validation hint at the bottom
-    if let Some(spans) = hint {
-        if y < area.y + area.height {
-            let hint_area = Rect {
-                x: area.x,
-                y,
-                width: w,
-                height: 1,
-            };
-            let ratatui_spans: Vec<Span<'_>> =
-                spans.iter().map(|s| styled_span_to_ratatui(s)).collect();
-            Paragraph::new(Line::from(ratatui_spans)).render(hint_area, buf);
-        }
+    if let Some(spans) = hint
+        && y < area.y + area.height
+    {
+        let hint_area = Rect {
+            x: area.x,
+            y,
+            width: w,
+            height: 1,
+        };
+        let ratatui_spans: Vec<Span<'_>> =
+            spans.iter().map(|s| styled_span_to_ratatui(s)).collect();
+        Paragraph::new(Line::from(ratatui_spans)).render(hint_area, buf);
     }
 }
 

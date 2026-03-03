@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     // Open storage
     let db_path = get_arg(&args, "--db")
         .map(PathBuf::from)
-        .map_or_else(|| storage::default_db_path(), Ok)?;
+        .map_or_else(storage::default_db_path, Ok)?;
     let storage = Arc::new(Mutex::new(storage::ClientStorage::open(&db_path)?));
 
     if args.iter().any(|a| a == "--dump") {

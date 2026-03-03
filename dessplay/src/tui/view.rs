@@ -23,39 +23,39 @@ pub fn view(ui: &UiState, data: &DisplayData) -> ViewSpec {
     let mut modals = Vec::new();
 
     // Modal stack (order matters: later = on top)
-    if let Some(ref settings) = ui.settings {
-        if ui.screen == Screen::Settings {
-            modals.push(settings_modal(settings));
-        }
+    if let Some(ref settings) = ui.settings
+        && ui.screen == Screen::Settings
+    {
+        modals.push(settings_modal(settings));
     }
-    if let Some(ref fb) = ui.file_browser {
-        if ui.screen == Screen::FileBrowser {
-            modals.push(file_browser_modal(fb));
-        }
+    if let Some(ref fb) = ui.file_browser
+        && ui.screen == Screen::FileBrowser
+    {
+        modals.push(file_browser_modal(fb));
     }
-    if let Some(ref tofu) = ui.tofu_warning {
-        if ui.screen == Screen::TofuWarning {
-            modals.push(tofu_warning_modal(tofu));
-        }
+    if let Some(ref tofu) = ui.tofu_warning
+        && ui.screen == Screen::TofuWarning
+    {
+        modals.push(tofu_warning_modal(tofu));
     }
-    if let Some(ref hashing) = ui.hashing {
-        if ui.screen == Screen::Hashing {
-            modals.push(hashing_modal(hashing));
-        }
+    if let Some(ref hashing) = ui.hashing
+        && ui.screen == Screen::Hashing
+    {
+        modals.push(hashing_modal(hashing));
     }
-    if let Some(ref ma) = ui.metadata_assign {
-        if ui.screen == Screen::MetadataAssign {
-            modals.push(metadata_assign_modal(ma));
-        }
+    if let Some(ref ma) = ui.metadata_assign
+        && ui.screen == Screen::MetadataAssign
+    {
+        modals.push(metadata_assign_modal(ma));
     }
-    if let Some(ref connecting) = ui.connecting {
-        if ui.screen == Screen::Connecting {
-            modals.push(connecting_modal(connecting));
-        }
+    if let Some(ref connecting) = ui.connecting
+        && ui.screen == Screen::Connecting
+    {
+        modals.push(connecting_modal(connecting));
     }
 
     // Status bar: collect visible bindings from topmost modal or focused pane
-    let status_bar = build_status_bar(&modals, &base, ui);
+    let status_bar = build_status_bar(&modals, &base);
 
     ViewSpec {
         base,
@@ -158,7 +158,7 @@ fn users_pane(data: &DisplayData) -> LayoutNode {
     let items: Vec<Vec<StyledSpan>> = data
         .user_entries
         .iter()
-        .map(|entry| user_entry_spans(entry))
+        .map(user_entry_spans)
         .collect();
 
     LayoutNode::Pane(PaneSpec {
@@ -179,7 +179,7 @@ fn playlist_pane(ui: &UiState, data: &DisplayData) -> LayoutNode {
     let items: Vec<Vec<StyledSpan>> = data
         .playlist_entries
         .iter()
-        .map(|entry| playlist_entry_spans(entry))
+        .map(playlist_entry_spans)
         .collect();
 
     LayoutNode::Pane(PaneSpec {
@@ -771,16 +771,12 @@ fn kb_bar(key: KeyCombo, label: &'static str, action: Action) -> Keybinding {
 // Status bar
 // =========================================================================
 
-fn build_status_bar(
-    modals: &[ModalSpec],
-    base: &LayoutNode,
-    ui: &UiState,
-) -> StatusBarSpec {
+fn build_status_bar(modals: &[ModalSpec], base: &LayoutNode) -> StatusBarSpec {
     // Collect bindings from the topmost modal, or the focused pane
     let bindings_source = if let Some(modal) = modals.last() {
         &modal.bindings
     } else {
-        find_focused_pane_bindings(base, ui)
+        find_focused_pane_bindings(base)
             .unwrap_or(&[])
     };
 
@@ -793,19 +789,14 @@ fn build_status_bar(
     StatusBarSpec { bindings }
 }
 
-fn find_focused_pane_bindings<'a>(
-    node: &'a LayoutNode,
-    ui: &UiState,
-) -> Option<&'a [Keybinding]> {
+fn find_focused_pane_bindings(node: &LayoutNode) -> Option<&[Keybinding]> {
     match node {
         LayoutNode::Pane(pane) if pane.focused => Some(&pane.bindings),
         LayoutNode::HSplit { left, right, .. } => {
-            find_focused_pane_bindings(left, ui)
-                .or_else(|| find_focused_pane_bindings(right, ui))
+            find_focused_pane_bindings(left).or_else(|| find_focused_pane_bindings(right))
         }
         LayoutNode::VSplit { top, bottom, .. } => {
-            find_focused_pane_bindings(top, ui)
-                .or_else(|| find_focused_pane_bindings(bottom, ui))
+            find_focused_pane_bindings(top).or_else(|| find_focused_pane_bindings(bottom))
         }
         _ => None,
     }

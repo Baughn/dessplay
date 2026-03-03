@@ -197,7 +197,7 @@ struct ConnectionResult {
 /// Outcome of the connecting screen loop.
 enum ConnectingOutcome {
     /// Connection established successfully.
-    Connected(ConnectionResult),
+    Connected(Box<ConnectionResult>),
     /// User cancelled (Ctrl-C or Esc).
     Cancelled,
     /// Connection failed.
@@ -313,7 +313,7 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
                     &mut ui,
                     &storage,
                     &config,
-                    conn,
+                    *conn,
                 )
                 .await
                 {
@@ -457,23 +457,23 @@ async fn run_preconnection_settings(
 
         let event = event.context("failed to read terminal event")?;
 
-        if let crossterm::event::Event::Key(key) = event {
-            if let Some(action) = resolve_input(key, &spec) {
-                let is_save = matches!(action, Action::SettingsSave);
-                let is_cancel = matches!(action, Action::SettingsCancel);
-                apply_preconnection_settings_action(action, ui, storage)?;
+        if let crossterm::event::Event::Key(key) = event
+            && let Some(action) = resolve_input(key, &spec)
+        {
+            let is_save = matches!(action, Action::SettingsSave);
+            let is_cancel = matches!(action, Action::SettingsCancel);
+            apply_preconnection_settings_action(action, ui, storage)?;
 
-                // Check for save completion
-                if is_save
-                    && ui.settings.as_ref().is_some_and(|s| s.is_valid())
-                {
-                    return Ok(());
-                }
-                if is_cancel {
-                    // In first-run/error context, cancel means quit
-                    ui.should_quit = true;
-                    return Ok(());
-                }
+            // Check for save completion
+            if is_save
+                && ui.settings.as_ref().is_some_and(|s| s.is_valid())
+            {
+                return Ok(());
+            }
+            if is_cancel {
+                // In first-run/error context, cancel means quit
+                ui.should_quit = true;
+                return Ok(());
             }
         }
 
@@ -614,17 +614,16 @@ fn apply_preconnection_settings_action(
                 fb.select_down();
             }
         }
+        // File selection doesn't happen in settings mode (dirs only)
         Action::FileBrowserSelect => {
-            if let Some(ref mut fb) = ui.file_browser {
-                if let Some(entry) = fb.entries.get(fb.selected).cloned() {
-                    if entry.is_dir {
-                        fb.current_dir = entry.path;
-                        fb.selected = 0;
-                        fb.scroll_offset = 0;
-                        fb.refresh_entries();
-                    }
-                    // File selection doesn't happen in settings mode (dirs only)
-                }
+            if let Some(ref mut fb) = ui.file_browser
+                && let Some(entry) = fb.entries.get(fb.selected).cloned()
+                && entry.is_dir
+            {
+                fb.current_dir = entry.path;
+                fb.selected = 0;
+                fb.scroll_offset = 0;
+                fb.refresh_entries();
             }
         }
         Action::FileBrowserSelectDir => {
@@ -691,17 +690,17 @@ async fn run_preconnection_tofu(
 
         let event = event.context("failed to read terminal event")?;
 
-        if let crossterm::event::Event::Key(key) = event {
-            if let Some(action) = resolve_input(key, &spec) {
-                match action {
-                    Action::TofuAccept => return Ok(true),
-                    Action::TofuReject => return Ok(false),
-                    Action::Quit => {
-                        ui.should_quit = true;
-                        return Ok(false);
-                    }
-                    _ => {}
+        if let crossterm::event::Event::Key(key) = event
+            && let Some(action) = resolve_input(key, &spec)
+        {
+            match action {
+                Action::TofuAccept => return Ok(true),
+                Action::TofuReject => return Ok(false),
+                Action::Quit => {
+                    ui.should_quit = true;
+                    return Ok(false);
                 }
+                _ => {}
             }
         }
     }
@@ -768,7 +767,7 @@ async fn run_preconnection_connecting(
                             observed_addr = %conn.rv_client.observed_addr,
                             "Connected to rendezvous server"
                         );
-                        return Ok(ConnectingOutcome::Connected(conn));
+                        return Ok(ConnectingOutcome::Connected(Box::new(conn)));
                     }
                     Ok(Err(error)) => {
                         return Ok(ConnectingOutcome::Failed { error, tofu });
@@ -784,22 +783,22 @@ async fn run_preconnection_connecting(
             event = event_stream.next() => {
                 let Some(event) = event else { break; };
                 let event = event.context("failed to read terminal event")?;
-                if let crossterm::event::Event::Key(key) = event {
-                    if let Some(action) = resolve_input(key, &spec) {
-                        match action {
-                            Action::Quit => {
-                                conn_handle.abort();
-                                ui.connecting = None;
-                                ui.should_quit = true;
-                                return Ok(ConnectingOutcome::Cancelled);
-                            }
-                            Action::CancelConnect => {
-                                conn_handle.abort();
-                                ui.connecting = None;
-                                return Ok(ConnectingOutcome::Cancelled);
-                            }
-                            _ => {}
+                if let crossterm::event::Event::Key(key) = event
+                    && let Some(action) = resolve_input(key, &spec)
+                {
+                    match action {
+                        Action::Quit => {
+                            conn_handle.abort();
+                            ui.connecting = None;
+                            ui.should_quit = true;
+                            return Ok(ConnectingOutcome::Cancelled);
                         }
+                        Action::CancelConnect => {
+                            conn_handle.abort();
+                            ui.connecting = None;
+                            return Ok(ConnectingOutcome::Cancelled);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2682,17 +2681,16 @@ fn try_auto_match_file(
     media_index: &MediaIndex,
     storage: &Arc<Mutex<ClientStorage>>,
 ) -> bool {
-    if let Some(paths) = media_index.find_by_filename(filename) {
-        if let Some(path) = paths.first()
-            && let Ok(s) = storage.lock()
-        {
-            if let Err(e) = s.set_file_mapping(file_id, path) {
-                tracing::warn!(?file_id, "Failed to store auto-match: {e}");
-                return false;
-            }
-            tracing::info!(?file_id, path = %path.display(), "Auto-matched file");
-            return true;
+    if let Some(paths) = media_index.find_by_filename(filename)
+        && let Some(path) = paths.first()
+        && let Ok(s) = storage.lock()
+    {
+        if let Err(e) = s.set_file_mapping(file_id, path) {
+            tracing::warn!(?file_id, "Failed to store auto-match: {e}");
+            return false;
         }
+        tracing::info!(?file_id, path = %path.display(), "Auto-matched file");
+        return true;
     }
     false
 }
