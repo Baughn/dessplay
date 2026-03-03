@@ -202,8 +202,10 @@ mod tests {
         db.mark_watched(&fid(2), 2000).unwrap();
 
         // File mappings
-        db.set_file_mapping(&fid(3), &std::path::PathBuf::from("/anime/Frieren/01.mkv"))
-            .unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let tmpfile = tmpdir.path().join("01.mkv");
+        std::fs::write(&tmpfile, b"test data").unwrap();
+        db.set_file_mapping(&fid(3), &tmpfile).unwrap();
 
         // TOFU cert
         db.store_cert("dessplay.brage.info", &[0xDE, 0xAD, 0xBE, 0xEF])

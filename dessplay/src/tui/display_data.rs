@@ -54,7 +54,18 @@ pub struct DisplayData {
     pub duration_secs: Option<f64>,
     pub is_playing: bool,
     pub blocking_users: Vec<String>,
-    pub bg_hash_progress: Option<(u64, usize)>,
+    pub bg_hash_progress: Option<BgHashDisplayData>,
+}
+
+/// Pre-computed display data for background indexing progress.
+#[derive(Debug, Clone)]
+pub struct BgHashDisplayData {
+    pub completed_files: u64,
+    pub total_files: u64,
+    pub completed_bytes: u64,
+    pub total_bytes: u64,
+    pub rate_bps: Option<f64>,
+    pub eta_secs: Option<f64>,
 }
 
 impl DisplayData {
@@ -82,7 +93,7 @@ impl DisplayData {
 pub fn build_display_data(
     app: &AppState,
     storage: &std::sync::Mutex<ClientStorage>,
-    bg_hash_progress: &Option<Arc<BgHashProgress>>,
+    bg_hash_progress: &Arc<BgHashProgress>,
 ) -> DisplayData {
     let crdt = app.sync_engine.state();
 
@@ -178,15 +189,34 @@ pub fn build_display_data(
         .map(|u| u.0.clone())
         .collect();
 
-    let bg_hash = bg_hash_progress.as_ref().and_then(|p| {
-        let completed = p.completed_files.load(Ordering::Relaxed);
-        let total = p.total_files;
-        if completed < total as u64 {
-            Some((completed, total))
+    let bg_hash = {
+        let total_files = bg_hash_progress.total_files.load(Ordering::Relaxed);
+        let completed_files = bg_hash_progress.completed_files.load(Ordering::Relaxed);
+        if total_files > 0 && completed_files < total_files {
+            let total_bytes = bg_hash_progress.total_bytes.load(Ordering::Relaxed);
+            let completed_bytes = bg_hash_progress.completed_bytes.load(Ordering::Relaxed);
+            let (rate_bps, eta_secs) = bg_hash_progress
+                .rate_tracker
+                .lock()
+                .ok()
+                .map(|tracker| {
+                    let rate = tracker.current_rate_bps();
+                    let eta = tracker.eta().map(|d| d.as_secs_f64());
+                    (rate, eta)
+                })
+                .unwrap_or((None, None));
+            Some(BgHashDisplayData {
+                completed_files,
+                total_files,
+                completed_bytes,
+                total_bytes,
+                rate_bps,
+                eta_secs,
+            })
         } else {
             None
         }
-    });
+    };
 
     DisplayData {
         chat_messages,

@@ -91,66 +91,76 @@ impl MtimeTracker {
 // Background hash types
 // =========================================================================
 
+/// A file queued for background hashing, with pre-resolved metadata.
+struct BgHashJob {
+    path: PathBuf,
+    size: u64,
+    dev_id: u64,
+}
+
 /// Result of a background file hash operation.
 struct BgHashResult {
     path: PathBuf,
     file_size: u64,
+    dev_id: u64,
+    hash_duration: Duration,
     result: std::io::Result<FileId>,
 }
 
 /// Shared progress counters for background media indexing.
 pub struct BgHashProgress {
-    pub total_files: usize,
+    pub total_files: Arc<AtomicU64>,
     pub completed_files: Arc<AtomicU64>,
+    pub total_bytes: Arc<AtomicU64>,
+    pub completed_bytes: Arc<AtomicU64>,
+    pub rate_tracker: std::sync::Mutex<crate::device_rate::DeviceRateTracker>,
 }
 
-/// Background worker that hashes all media files not yet in file_mappings.
+/// Background worker that hashes media files received via channel.
 ///
 /// Yields to user-initiated hashes when `user_hash_active` is set.
 async fn bg_hash_worker(
-    paths: Vec<PathBuf>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<BgHashJob>,
     user_hash_active: Arc<AtomicBool>,
-    progress: Arc<BgHashProgress>,
+    completed_files: Arc<AtomicU64>,
+    completed_bytes: Arc<AtomicU64>,
     tx: tokio::sync::mpsc::UnboundedSender<BgHashResult>,
 ) {
-    for path in paths {
+    while let Some(job) = rx.recv().await {
         // Yield to user-initiated hashes
         while user_hash_active.load(Ordering::Relaxed) {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        let file_size = match std::fs::metadata(&path) {
-            Ok(m) => m.len(),
-            Err(e) => {
-                tracing::debug!(path = %path.display(), "Skipping bg hash, metadata error: {e}");
-                progress.completed_files.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-        };
-
-        let path_clone = path.clone();
+        let path_clone = job.path.clone();
+        let start = tokio::time::Instant::now();
         let result = tokio::task::spawn_blocking(move || {
             let file = std::fs::File::open(&path_clone)?;
             let reader = std::io::BufReader::new(file);
             dessplay_core::ed2k::compute_ed2k(reader)
         })
         .await;
+        let hash_duration = start.elapsed();
 
         let hash_result = match result {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!(path = %path.display(), "Bg hash task panicked: {e}");
-                progress.completed_files.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(path = %job.path.display(), "Bg hash task panicked: {e}");
+                completed_files.fetch_add(1, Ordering::Relaxed);
+                completed_bytes.fetch_add(job.size, Ordering::Relaxed);
                 continue;
             }
         };
 
-        progress.completed_files.fetch_add(1, Ordering::Relaxed);
+        completed_files.fetch_add(1, Ordering::Relaxed);
+        completed_bytes.fetch_add(job.size, Ordering::Relaxed);
 
         if tx
             .send(BgHashResult {
-                path,
-                file_size,
+                path: job.path,
+                file_size: job.size,
+                dev_id: job.dev_id,
+                hash_duration,
                 result: hash_result,
             })
             .is_err()
@@ -826,7 +836,7 @@ async fn run_connected(
         .ok()
         .and_then(|s| s.get_media_roots().ok())
         .unwrap_or_default();
-    let media_index = Arc::new(MediaIndex::scan(&media_roots));
+    let mut media_index = Arc::new(MediaIndex::scan(&media_roots));
     tracing::info!(files = media_index.file_count(), "Media index built");
 
     // Send initial state summary
@@ -847,43 +857,74 @@ async fn run_connected(
     // Background hash worker state
     let user_hash_active = Arc::new(AtomicBool::new(false));
     let (bg_hash_tx, mut bg_hash_rx) = tokio::sync::mpsc::unbounded_channel::<BgHashResult>();
-    let bg_hash_progress = {
+    let (bg_hash_feed_tx, bg_hash_feed_rx) = tokio::sync::mpsc::unbounded_channel::<BgHashJob>();
+    let bg_hash_progress = Arc::new(BgHashProgress {
+        total_files: Arc::new(AtomicU64::new(0)),
+        completed_files: Arc::new(AtomicU64::new(0)),
+        total_bytes: Arc::new(AtomicU64::new(0)),
+        completed_bytes: Arc::new(AtomicU64::new(0)),
+        rate_tracker: std::sync::Mutex::new(crate::device_rate::DeviceRateTracker::new()),
+    });
+    let mut bg_hash_files_since_persist: u64 = 0;
+    {
+        // Load persisted device rates for cold-start ETA
+        if let Ok(s) = storage.lock()
+            && let Ok(rates) = s.get_device_hash_rates()
+            && let Ok(mut tracker) = bg_hash_progress.rate_tracker.lock()
+        {
+            tracker.load_persisted(&rates);
+        }
+
         // Collect paths not yet in file_mappings
         let known_paths: HashSet<PathBuf> = storage
             .lock()
             .ok()
             .and_then(|s| s.get_all_mapped_paths().ok())
             .unwrap_or_default();
-        let all_paths = media_index.all_paths();
-        let unknown_paths: Vec<PathBuf> = all_paths
-            .into_iter()
-            .filter(|p| !known_paths.contains(p.as_path()))
-            .cloned()
+        let unknown_files: Vec<&crate::media_scanner::ScannedFile> = media_index
+            .all_scanned_files()
+            .filter(|f| !known_paths.contains(&f.path))
             .collect();
-        let total = unknown_paths.len();
+        let total = unknown_files.len();
         if total > 0 {
-            let progress = Arc::new(BgHashProgress {
-                total_files: total,
-                completed_files: Arc::new(AtomicU64::new(0)),
-            });
-            let worker_progress = Arc::clone(&progress);
-            let worker_active = Arc::clone(&user_hash_active);
-            let worker_tx = bg_hash_tx.clone();
-            tokio::spawn(bg_hash_worker(
-                unknown_paths,
-                worker_active,
-                worker_progress,
-                worker_tx,
-            ));
-            tracing::info!(total, "Spawned background hash worker");
-            Some(progress)
-        } else {
-            None
+            let total_bytes: u64 = unknown_files.iter().map(|f| f.size).sum();
+            bg_hash_progress
+                .total_files
+                .fetch_add(total as u64, Ordering::Relaxed);
+            bg_hash_progress
+                .total_bytes
+                .fetch_add(total_bytes, Ordering::Relaxed);
+            if let Ok(mut tracker) = bg_hash_progress.rate_tracker.lock() {
+                for f in &unknown_files {
+                    tracker.add_pending(f.dev_id, f.size);
+                }
+            }
+            for f in unknown_files {
+                let _ = bg_hash_feed_tx.send(BgHashJob {
+                    path: f.path.clone(),
+                    size: f.size,
+                    dev_id: f.dev_id,
+                });
+            }
+            tracing::info!(total, total_bytes, "Queued initial files for background hashing");
         }
+        let worker_completed_files = Arc::clone(&bg_hash_progress.completed_files);
+        let worker_completed_bytes = Arc::clone(&bg_hash_progress.completed_bytes);
+        let worker_active = Arc::clone(&user_hash_active);
+        let worker_tx = bg_hash_tx.clone();
+        tokio::spawn(bg_hash_worker(
+            bg_hash_feed_rx,
+            worker_active,
+            worker_completed_files,
+            worker_completed_bytes,
+            worker_tx,
+        ));
     };
 
     let mut summary_interval = tokio::time::interval(Duration::from_secs(1));
     let mut position_tick = tokio::time::interval(Duration::from_millis(100));
+    let mut rescan_interval = tokio::time::interval(Duration::from_secs(30));
+    rescan_interval.tick().await; // skip first immediate tick
     let mut event_stream = EventStream::new();
 
     // Channel for mtime re-hash results: (file_id, new_hash_result)
@@ -1323,7 +1364,27 @@ async fn run_connected(
 
             // Background hash completed
             result = bg_hash_rx.recv() => {
-                if let Some(BgHashResult { path, file_size, result: hash_result }) = result {
+                if let Some(BgHashResult { path, file_size, dev_id, hash_duration, result: hash_result }) = result {
+                    // Record rate sample
+                    if let Ok(mut tracker) = bg_hash_progress.rate_tracker.lock() {
+                        tracker.record_sample(dev_id, crate::device_rate::RateSample {
+                            bytes: file_size,
+                            duration: hash_duration,
+                        });
+                    }
+                    bg_hash_files_since_persist += 1;
+                    // Persist rates every 10 files or when complete
+                    let total = bg_hash_progress.total_files.load(Ordering::Relaxed);
+                    let completed = bg_hash_progress.completed_files.load(Ordering::Relaxed);
+                    if bg_hash_files_since_persist >= 10 || completed >= total {
+                        bg_hash_files_since_persist = 0;
+                        if let Ok(tracker) = bg_hash_progress.rate_tracker.lock() {
+                            let rates = tracker.rates_for_persistence();
+                            if let Ok(s) = storage.lock() {
+                                let _ = s.set_device_hash_rates(&rates);
+                            }
+                        }
+                    }
                     match hash_result {
                         Ok(file_id) => {
                             if let Ok(s) = storage.lock() {
@@ -1424,6 +1485,80 @@ async fn run_connected(
                 let effects = app_state.lock().await.process_event(AppEvent::Tick, now);
                 dispatch_effects(
                     effects, &peer_mgr, &rv_client, storage,
+                    &app_state, &gap_fill_tx,
+                    &mut player, &mut echo_filter,
+                    &mut mtime_tracker, &rehash_tx,
+                ).await;
+            }
+
+            // 30-second media rescan
+            _ = rescan_interval.tick() => {
+                let roots = media_roots.clone();
+                let new_index = tokio::task::spawn_blocking(move || {
+                    MediaIndex::scan(&roots)
+                }).await;
+                let new_index = match new_index {
+                    Ok(idx) => idx,
+                    Err(e) => {
+                        tracing::warn!("Rescan task panicked: {e}");
+                        continue;
+                    }
+                };
+                tracing::info!(files = new_index.file_count(), "Media rescan complete");
+
+                let stored = storage
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get_all_file_mapping_entries().ok())
+                    .unwrap_or_default();
+
+                let diff = crate::media_scanner::compute_rescan_diff(
+                    &new_index, &stored, &media_roots,
+                );
+
+                // Feed new/changed files to the background hash worker
+                if !diff.files_to_hash.is_empty() {
+                    let count = diff.files_to_hash.len();
+                    let mut total_new_bytes: u64 = 0;
+                    bg_hash_progress
+                        .total_files
+                        .fetch_add(count as u64, Ordering::Relaxed);
+                    for path in diff.files_to_hash {
+                        let (size, dev_id) = new_index
+                            .get_by_path(&path)
+                            .map(|f| (f.size, f.dev_id))
+                            .unwrap_or((0, 0));
+                        total_new_bytes += size;
+                        if let Ok(mut tracker) = bg_hash_progress.rate_tracker.lock() {
+                            tracker.add_pending(dev_id, size);
+                        }
+                        let _ = bg_hash_feed_tx.send(BgHashJob { path, size, dev_id });
+                    }
+                    bg_hash_progress
+                        .total_bytes
+                        .fetch_add(total_new_bytes, Ordering::Relaxed);
+                    tracing::info!(count, total_new_bytes, "Queued changed files for hashing");
+                }
+
+                // Clean up stale mappings
+                if !diff.stale_paths.is_empty() {
+                    let count = diff.stale_paths.len();
+                    if let Ok(s) = storage.lock() {
+                        for path in &diff.stale_paths {
+                            let _ = s.delete_file_mapping_by_path(path);
+                        }
+                    }
+                    tracing::info!(count, "Removed stale file mappings");
+                }
+
+                media_index = Arc::new(new_index);
+
+                // Re-run auto-matching with the updated index
+                let now = rv_client.shared_now().await;
+                let match_effects =
+                    try_auto_match_all(&app_state, &media_index, storage, now).await;
+                dispatch_effects(
+                    match_effects, &peer_mgr, &rv_client, storage,
                     &app_state, &gap_fill_tx,
                     &mut player, &mut echo_filter,
                     &mut mtime_tracker, &rehash_tx,

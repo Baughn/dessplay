@@ -250,9 +250,18 @@ fn player_status_spacer(data: &DisplayData) -> LayoutNode {
     if let Some(ref name) = data.current_file_name {
         line2.push(StyledSpan::plain(format!("Now Playing: {name}")));
     }
-    if let Some((completed, total)) = data.bg_hash_progress {
-        let bg_text = format!("  [Indexing: {completed}/{total}]");
-        line2.push(StyledSpan::colored(bg_text, SemanticColor::Muted));
+    if let Some(ref bg) = data.bg_hash_progress {
+        let mut parts = format!("  [Indexing: {}/{}", bg.completed_files, bg.total_files);
+        if let Some(rate) = bg.rate_bps {
+            parts.push_str(&format!(" | {}/s", format_bytes(rate as u64)));
+        }
+        if let Some(eta) = bg.eta_secs
+            && eta > 0.0
+        {
+            parts.push_str(&format!(" | ETA {}", format_eta(eta)));
+        }
+        parts.push(']');
+        line2.push(StyledSpan::colored(parts, SemanticColor::Muted));
     }
     if !line2.is_empty() {
         children.push(ContentKind::TextLog {
@@ -888,6 +897,20 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn format_eta(secs: f64) -> String {
+    let total = secs as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else if m > 0 {
+        format!("{m}:{s:02}")
+    } else {
+        format!("{s}s")
+    }
+}
+
 // =========================================================================
 // Tests
 // =========================================================================
@@ -1055,6 +1078,26 @@ mod tests {
         assert_eq!(format_bytes(500), "500 B");
         assert_eq!(format_bytes(1024), "1 KiB");
         assert_eq!(format_bytes(1024 * 1024 * 5), "5.0 MiB");
+    }
+
+    #[test]
+    fn format_eta_seconds() {
+        assert_eq!(format_eta(45.0), "45s");
+        assert_eq!(format_eta(0.0), "0s");
+        assert_eq!(format_eta(59.0), "59s");
+    }
+
+    #[test]
+    fn format_eta_minutes() {
+        assert_eq!(format_eta(60.0), "1:00");
+        assert_eq!(format_eta(272.0), "4:32");
+        assert_eq!(format_eta(3599.0), "59:59");
+    }
+
+    #[test]
+    fn format_eta_hours() {
+        assert_eq!(format_eta(3600.0), "1:00:00");
+        assert_eq!(format_eta(3930.0), "1:05:30");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod app_state;
+pub mod device_rate;
 pub mod dump;
 pub mod media_scanner;
 pub mod peer_conn;

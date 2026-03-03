@@ -164,6 +164,23 @@ mod tests {
         }
     }
 
+    /// Create a temp dir with named media files and return (dir, file_paths).
+    fn make_temp_files(names: &[&str]) -> (tempfile::TempDir, Vec<std::path::PathBuf>) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<_> = names
+            .iter()
+            .map(|name| {
+                let p = dir.path().join(name);
+                if let Some(parent) = p.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                std::fs::write(&p, b"test data").unwrap();
+                p
+            })
+            .collect();
+        (dir, paths)
+    }
+
     #[test]
     fn empty_crdt_empty_list() {
         let crdt = CrdtState::new();
@@ -187,15 +204,14 @@ mod tests {
 
     #[test]
     fn local_unwatched_file_shows_series() {
+        let (_dir, paths) = make_temp_files(&["ep01.mkv"]);
         let mut crdt = CrdtState::new();
         crdt.apply_op(&CrdtOp::LwwWrite {
             timestamp: 100,
             value: LwwValue::AniDb(fid(1), Some(make_meta(42, "Frieren", "1"))),
         });
         let storage = ClientStorage::open_in_memory().unwrap();
-        storage
-            .set_file_mapping(&fid(1), std::path::Path::new("/anime/frieren/ep01.mkv"))
-            .unwrap();
+        storage.set_file_mapping(&fid(1), &paths[0]).unwrap();
 
         let list = build_series_list(&crdt, &storage);
         assert_eq!(list.len(), 1);
@@ -207,15 +223,14 @@ mod tests {
 
     #[test]
     fn watched_file_no_unwatched_flag() {
+        let (_dir, paths) = make_temp_files(&["ep01.mkv"]);
         let mut crdt = CrdtState::new();
         crdt.apply_op(&CrdtOp::LwwWrite {
             timestamp: 100,
             value: LwwValue::AniDb(fid(1), Some(make_meta(42, "Frieren", "1"))),
         });
         let storage = ClientStorage::open_in_memory().unwrap();
-        storage
-            .set_file_mapping(&fid(1), std::path::Path::new("/anime/frieren/ep01.mkv"))
-            .unwrap();
+        storage.set_file_mapping(&fid(1), &paths[0]).unwrap();
         storage.mark_watched(&fid(1), 5000).unwrap();
 
         let list = build_series_list(&crdt, &storage);
@@ -226,6 +241,7 @@ mod tests {
 
     #[test]
     fn mixed_watched_unwatched() {
+        let (_dir, paths) = make_temp_files(&["ep01.mkv", "ep02.mkv"]);
         let mut crdt = CrdtState::new();
         crdt.apply_op(&CrdtOp::LwwWrite {
             timestamp: 100,
@@ -236,12 +252,8 @@ mod tests {
             value: LwwValue::AniDb(fid(2), Some(make_meta(42, "Frieren", "2"))),
         });
         let storage = ClientStorage::open_in_memory().unwrap();
-        storage
-            .set_file_mapping(&fid(1), std::path::Path::new("/anime/frieren/ep01.mkv"))
-            .unwrap();
-        storage
-            .set_file_mapping(&fid(2), std::path::Path::new("/anime/frieren/ep02.mkv"))
-            .unwrap();
+        storage.set_file_mapping(&fid(1), &paths[0]).unwrap();
+        storage.set_file_mapping(&fid(2), &paths[1]).unwrap();
         storage.mark_watched(&fid(1), 5000).unwrap();
 
         let list = build_series_list(&crdt, &storage);
@@ -252,6 +264,7 @@ mod tests {
 
     #[test]
     fn sort_unwatched_first() {
+        let (_dir, paths) = make_temp_files(&["frieren/ep01.mkv", "aot/ep01.mkv"]);
         let mut crdt = CrdtState::new();
         crdt.apply_op(&CrdtOp::LwwWrite {
             timestamp: 100,
@@ -262,12 +275,8 @@ mod tests {
             value: LwwValue::AniDb(fid(2), Some(make_meta(99, "Attack on Titan", "1"))),
         });
         let storage = ClientStorage::open_in_memory().unwrap();
-        storage
-            .set_file_mapping(&fid(1), std::path::Path::new("/anime/frieren/ep01.mkv"))
-            .unwrap();
-        storage
-            .set_file_mapping(&fid(2), std::path::Path::new("/anime/aot/ep01.mkv"))
-            .unwrap();
+        storage.set_file_mapping(&fid(1), &paths[0]).unwrap();
+        storage.set_file_mapping(&fid(2), &paths[1]).unwrap();
         // Watch Frieren but not AoT
         storage.mark_watched(&fid(1), 5000).unwrap();
 
@@ -282,6 +291,7 @@ mod tests {
 
     #[test]
     fn sort_recently_watched_before_alphabetical() {
+        let (_dir, paths) = make_temp_files(&["a/ep01.mkv", "z/ep01.mkv"]);
         let mut crdt = CrdtState::new();
         crdt.apply_op(&CrdtOp::LwwWrite {
             timestamp: 100,
@@ -292,12 +302,8 @@ mod tests {
             value: LwwValue::AniDb(fid(2), Some(make_meta(2, "Zeta", "1"))),
         });
         let storage = ClientStorage::open_in_memory().unwrap();
-        storage
-            .set_file_mapping(&fid(1), std::path::Path::new("/a/ep01.mkv"))
-            .unwrap();
-        storage
-            .set_file_mapping(&fid(2), std::path::Path::new("/z/ep01.mkv"))
-            .unwrap();
+        storage.set_file_mapping(&fid(1), &paths[0]).unwrap();
+        storage.set_file_mapping(&fid(2), &paths[1]).unwrap();
         storage.mark_watched(&fid(1), 1000).unwrap();
         storage.mark_watched(&fid(2), 2000).unwrap();
 

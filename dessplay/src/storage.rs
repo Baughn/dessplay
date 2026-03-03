@@ -20,6 +20,16 @@ pub struct Config {
     pub password: Option<String>,
 }
 
+/// A file mapping entry with metadata for change detection.
+#[derive(Debug, Clone)]
+pub struct FileMappingEntry {
+    pub local_path: PathBuf,
+    pub file_hash: FileId,
+    pub file_size: u64,
+    pub mtime_secs: i64,
+    pub mtime_nanos: u32,
+}
+
 /// TOFU certificate entry, as stored in SQLite.
 #[derive(Debug)]
 pub struct TofuCert {
@@ -71,6 +81,9 @@ impl ClientStorage {
         }
         if version < 2 {
             self.migrate_v2()?;
+        }
+        if version < 3 {
+            self.migrate_v3()?;
         }
         Ok(())
     }
@@ -136,9 +149,13 @@ impl ClientStorage {
             );
 
             CREATE TABLE IF NOT EXISTS file_mappings (
-                file_hash  BLOB PRIMARY KEY,
-                local_path TEXT NOT NULL
+                local_path  TEXT PRIMARY KEY,
+                file_hash   BLOB NOT NULL,
+                file_size   INTEGER NOT NULL,
+                mtime_secs  INTEGER NOT NULL,
+                mtime_nanos INTEGER NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_file_mappings_hash ON file_mappings(file_hash);
 
             CREATE TABLE IF NOT EXISTS tofu_certs (
                 server_address TEXT PRIMARY KEY,
@@ -162,6 +179,21 @@ impl ClientStorage {
         )?;
         self.conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '2')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn migrate_v3(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS device_hash_rates (
+                dev_id     INTEGER PRIMARY KEY,
+                rate_bps   REAL NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '3')",
             [],
         )?;
         Ok(())
@@ -348,9 +380,21 @@ impl ClientStorage {
         let path_str = path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("file mapping path is not valid UTF-8: {path:?}"))?;
+        let meta = std::fs::metadata(path)
+            .with_context(|| format!("failed to stat file for mapping: {}", path.display()))?;
+        let mtime = meta
+            .modified()
+            .unwrap_or(std::time::UNIX_EPOCH)
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let file_size = meta.len();
+        let mtime_secs = mtime.as_secs() as i64;
+        let mtime_nanos = mtime.subsec_nanos() as i64;
         self.conn.execute(
-            "INSERT OR REPLACE INTO file_mappings (file_hash, local_path) VALUES (?1, ?2)",
-            params![file_id.0.as_slice(), path_str],
+            "INSERT OR REPLACE INTO file_mappings \
+             (local_path, file_hash, file_size, mtime_secs, mtime_nanos) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![path_str, file_id.0.as_slice(), file_size as i64, mtime_secs, mtime_nanos],
         )?;
         Ok(())
     }
@@ -358,7 +402,7 @@ impl ClientStorage {
     pub fn get_file_mapping(&self, file_id: &FileId) -> Result<Option<PathBuf>> {
         self.conn
             .query_row(
-                "SELECT local_path FROM file_mappings WHERE file_hash = ?1",
+                "SELECT local_path FROM file_mappings WHERE file_hash = ?1 LIMIT 1",
                 params![file_id.0.as_slice()],
                 |row| {
                     let path: String = row.get(0)?;
@@ -396,6 +440,38 @@ impl ClientStorage {
                 },
             )
             .optional()
+    }
+
+    // -----------------------------------------------------------------------
+    // Device hash rates
+    // -----------------------------------------------------------------------
+
+    /// Load persisted per-device hash rates.
+    pub fn get_device_hash_rates(&self) -> Result<Vec<(u64, f64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT dev_id, rate_bps FROM device_hash_rates")?;
+        let rows = stmt
+            .query_map([], |row| {
+                let dev_id: i64 = row.get(0)?;
+                let rate: f64 = row.get(1)?;
+                Ok((dev_id as u64, rate))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Persist per-device hash rates (replaces all existing rows).
+    pub fn set_device_hash_rates(&self, rates: &[(u64, f64)]) -> Result<()> {
+        self.conn.execute("DELETE FROM device_hash_rates", [])?;
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO device_hash_rates (dev_id, rate_bps, updated_at) VALUES (?1, ?2, ?3)",
+        )?;
+        let now = now_millis();
+        for &(dev_id, rate_bps) in rates {
+            stmt.execute(params![dev_id as i64, rate_bps, now])?;
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -487,6 +563,55 @@ impl ClientStorage {
             })
             .collect()
     }
+
+    /// Returns all file mapping entries with full metadata for change detection.
+    pub fn get_all_file_mapping_entries(&self) -> Result<Vec<FileMappingEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT local_path, file_hash, file_size, mtime_secs, mtime_nanos \
+             FROM file_mappings ORDER BY local_path",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(path, hash, size, mtime_s, mtime_ns)| {
+                ensure!(
+                    hash.len() == 16,
+                    "corrupt file_hash in file_mappings: expected 16 bytes, got {}",
+                    hash.len()
+                );
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&hash);
+                Ok(FileMappingEntry {
+                    local_path: PathBuf::from(path),
+                    file_hash: FileId(arr),
+                    file_size: size as u64,
+                    mtime_secs: mtime_s,
+                    mtime_nanos: mtime_ns as u32,
+                })
+            })
+            .collect()
+    }
+
+    /// Delete a file mapping by its local path.
+    pub fn delete_file_mapping_by_path(&self, path: &Path) -> Result<()> {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {path:?}"))?;
+        self.conn.execute(
+            "DELETE FROM file_mappings WHERE local_path = ?1",
+            params![path_str],
+        )?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +693,7 @@ mod tests {
         assert!(tables.contains(&"file_mappings".to_string()));
         assert!(tables.contains(&"tofu_certs".to_string()));
         assert!(tables.contains(&"series_mapping_dirs".to_string()));
+        assert!(tables.contains(&"device_hash_rates".to_string()));
     }
 
     #[test]
@@ -575,7 +701,7 @@ mod tests {
         let db = ClientStorage::open_in_memory().unwrap();
         // Running migrate again should not fail
         db.migrate().unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2);
+        assert_eq!(db.schema_version().unwrap(), 3);
     }
 
     #[test]
@@ -806,19 +932,48 @@ mod tests {
 
     #[test]
     fn file_mappings() {
+        let dir = tempfile::tempdir().unwrap();
         let db = ClientStorage::open_in_memory().unwrap();
         let f1 = fid(1);
-        let path = PathBuf::from("/anime/Frieren/01.mkv");
+        let path = dir.path().join("01.mkv");
+        std::fs::write(&path, b"test data").unwrap();
 
         assert!(db.get_file_mapping(&f1).unwrap().is_none());
 
         db.set_file_mapping(&f1, &path).unwrap();
         assert_eq!(db.get_file_mapping(&f1).unwrap(), Some(path.clone()));
 
-        // Overwrite
-        let new_path = PathBuf::from("/anime/Frieren/01v2.mkv");
+        // Overwrite with different path for same hash
+        let new_path = dir.path().join("01v2.mkv");
+        std::fs::write(&new_path, b"test data v2").unwrap();
         db.set_file_mapping(&f1, &new_path).unwrap();
-        assert_eq!(db.get_file_mapping(&f1).unwrap(), Some(new_path));
+        // Both entries exist (different paths), get returns one
+        assert!(db.get_file_mapping(&f1).unwrap().is_some());
+    }
+
+    #[test]
+    fn file_mapping_entries_and_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = ClientStorage::open_in_memory().unwrap();
+        let f1 = fid(1);
+        let f2 = fid(2);
+        let path1 = dir.path().join("ep01.mkv");
+        let path2 = dir.path().join("ep02.mkv");
+        std::fs::write(&path1, b"data1").unwrap();
+        std::fs::write(&path2, b"data2").unwrap();
+
+        db.set_file_mapping(&f1, &path1).unwrap();
+        db.set_file_mapping(&f2, &path2).unwrap();
+
+        let entries = db.get_all_file_mapping_entries().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.file_hash == f1 && e.file_size > 0));
+        assert!(entries.iter().any(|e| e.file_hash == f2));
+
+        // Delete by path
+        db.delete_file_mapping_by_path(&path1).unwrap();
+        assert!(db.get_file_mapping(&f1).unwrap().is_none());
+        assert!(db.get_file_mapping(&f2).unwrap().is_some());
     }
 
     #[test]
@@ -867,5 +1022,42 @@ mod tests {
 
         // Different anime_id
         assert!(db.get_series_mapping_dir(99999).unwrap().is_none());
+    }
+
+    #[test]
+    fn device_hash_rates_round_trip() {
+        let db = ClientStorage::open_in_memory().unwrap();
+        let rates = vec![(1, 500_000.0), (2, 1_000_000.0)];
+        db.set_device_hash_rates(&rates).unwrap();
+
+        let loaded = db.get_device_hash_rates().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.iter().any(|(d, r)| *d == 1 && (*r - 500_000.0).abs() < 0.01));
+        assert!(loaded.iter().any(|(d, r)| *d == 2 && (*r - 1_000_000.0).abs() < 0.01));
+    }
+
+    #[test]
+    fn device_hash_rates_overwrite_replaces_all() {
+        let db = ClientStorage::open_in_memory().unwrap();
+        db.set_device_hash_rates(&[(1, 100.0), (2, 200.0)]).unwrap();
+        db.set_device_hash_rates(&[(3, 300.0)]).unwrap();
+
+        let loaded = db.get_device_hash_rates().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0, 3);
+    }
+
+    #[test]
+    fn device_hash_rates_empty_db() {
+        let db = ClientStorage::open_in_memory().unwrap();
+        let loaded = db.get_device_hash_rates().unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn migration_v3_idempotent() {
+        let db = ClientStorage::open_in_memory().unwrap();
+        db.migrate_v3().unwrap(); // should not fail even though already migrated
+        assert_eq!(db.schema_version().unwrap(), 3);
     }
 }
