@@ -631,8 +631,13 @@ fn chat_bindings() -> Vec<Keybinding> {
         kb(KeyCombo::Ctrl(Key::Right), "Word right", Action::CursorWordRight),
         kb(KeyCombo::Plain(Key::Home), "Home", Action::CursorHome),
         kb(KeyCombo::Plain(Key::End), "End", Action::CursorEnd),
+        kb(KeyCombo::Ctrl(Key::Char('w')), "Del word", Action::DeleteWordBack),
         kb(KeyCombo::Plain(Key::Up), "Scroll up", Action::ScrollChatUp),
         kb(KeyCombo::Plain(Key::Down), "Scroll down", Action::ScrollChatDown),
+        kb(KeyCombo::Plain(Key::PageUp), "Page up", Action::ScrollChatPageUp),
+        kb(KeyCombo::Plain(Key::PageDown), "Page dn", Action::ScrollChatPageDown),
+        kb(KeyCombo::Ctrl(Key::Up), "Page up", Action::ScrollChatPageUp),
+        kb(KeyCombo::Ctrl(Key::Down), "Page dn", Action::ScrollChatPageDown),
         // Char input is handled specially by resolve_input, not listed here
     ]
 }
@@ -649,6 +654,10 @@ fn playlist_bindings() -> Vec<Keybinding> {
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
         kb(KeyCombo::Plain(Key::Up), "Up", Action::PlaylistSelectUp),
         kb(KeyCombo::Plain(Key::Down), "Down", Action::PlaylistSelectDown),
+        kb(KeyCombo::Plain(Key::PageUp), "Page up", Action::PlaylistPageUp),
+        kb(KeyCombo::Plain(Key::PageDown), "Page dn", Action::PlaylistPageDown),
+        kb(KeyCombo::Ctrl(Key::Up), "Page up", Action::PlaylistPageUp),
+        kb(KeyCombo::Ctrl(Key::Down), "Page dn", Action::PlaylistPageDown),
         kb(KeyCombo::Ctrl(Key::Char('a')), "Assign meta", Action::AssignMetadata),
         kb(KeyCombo::Ctrl(Key::Char('m')), "Map file", Action::ManualMapFile),
     ]
@@ -662,6 +671,10 @@ fn recent_series_bindings() -> Vec<Keybinding> {
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
         kb(KeyCombo::Plain(Key::Up), "Up", Action::RecentSelectUp),
         kb(KeyCombo::Plain(Key::Down), "Down", Action::RecentSelectDown),
+        kb(KeyCombo::Plain(Key::PageUp), "Page up", Action::RecentPageUp),
+        kb(KeyCombo::Plain(Key::PageDown), "Page dn", Action::RecentPageDown),
+        kb(KeyCombo::Ctrl(Key::Up), "Page up", Action::RecentPageUp),
+        kb(KeyCombo::Ctrl(Key::Down), "Page dn", Action::RecentPageDown),
     ]
 }
 
@@ -678,15 +691,20 @@ fn settings_bindings(focused_field: usize) -> Vec<Keybinding> {
     if focused_field == 4 {
         bindings.push(kb(KeyCombo::Plain(Key::Up), "Up", Action::SettingsMediaRootUp));
         bindings.push(kb(KeyCombo::Plain(Key::Down), "Down", Action::SettingsMediaRootDown));
+        bindings.push(kb(KeyCombo::Plain(Key::PageUp), "Page up", Action::SettingsMediaRootPageUp));
+        bindings.push(kb(KeyCombo::Plain(Key::PageDown), "Page dn", Action::SettingsMediaRootPageDown));
+        bindings.push(kb(KeyCombo::Ctrl(Key::Up), "Page up", Action::SettingsMediaRootPageUp));
+        bindings.push(kb(KeyCombo::Ctrl(Key::Down), "Page dn", Action::SettingsMediaRootPageDown));
     } else {
         bindings.push(kb(KeyCombo::Plain(Key::Up), "Prev field", Action::SettingsPrevField));
         bindings.push(kb(KeyCombo::Plain(Key::Down), "Next field", Action::SettingsNextField));
     }
 
-    // Backspace only on text fields (username=0, server=1, password=3)
+    // Backspace and Ctrl-W only on text fields (username=0, server=1, password=3)
     match focused_field {
         0 | 1 | 3 => {
             bindings.push(kb(KeyCombo::Plain(Key::Backspace), "Delete", Action::SettingsDeleteBack));
+            bindings.push(kb(KeyCombo::Ctrl(Key::Char('w')), "Del word", Action::SettingsDeleteWordBack));
         }
         _ => {}
     }
@@ -716,6 +734,10 @@ fn file_browser_bindings(
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
         kb(KeyCombo::Plain(Key::Up), "Up", Action::FileBrowserUp),
         kb(KeyCombo::Plain(Key::Down), "Down", Action::FileBrowserDown),
+        kb(KeyCombo::Plain(Key::PageUp), "Page up", Action::FileBrowserPageUp),
+        kb(KeyCombo::Plain(Key::PageDown), "Page dn", Action::FileBrowserPageDown),
+        kb(KeyCombo::Ctrl(Key::Up), "Page up", Action::FileBrowserPageUp),
+        kb(KeyCombo::Ctrl(Key::Down), "Page dn", Action::FileBrowserPageDown),
     ];
     if matches!(
         fb.origin,
@@ -745,6 +767,10 @@ fn metadata_select_bindings() -> Vec<Keybinding> {
         kb_bar(KeyCombo::Ctrl(Key::Char('c')), "Quit", Action::Quit),
         kb(KeyCombo::Plain(Key::Up), "Up", Action::MetadataSelectUp),
         kb(KeyCombo::Plain(Key::Down), "Down", Action::MetadataSelectDown),
+        kb(KeyCombo::Plain(Key::PageUp), "Page up", Action::MetadataPageUp),
+        kb(KeyCombo::Plain(Key::PageDown), "Page dn", Action::MetadataPageDown),
+        kb(KeyCombo::Ctrl(Key::Up), "Page up", Action::MetadataPageUp),
+        kb(KeyCombo::Ctrl(Key::Down), "Page dn", Action::MetadataPageDown),
     ]
 }
 
@@ -844,6 +870,8 @@ fn format_key(key: &Key) -> String {
         Key::Right => "Right".to_string(),
         Key::Home => "Home".to_string(),
         Key::End => "End".to_string(),
+        Key::PageUp => "PgUp".to_string(),
+        Key::PageDown => "PgDn".to_string(),
     }
 }
 

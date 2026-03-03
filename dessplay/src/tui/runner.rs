@@ -535,6 +535,25 @@ fn apply_preconnection_settings_action(
                 }
             }
         }
+        Action::SettingsDeleteWordBack => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                let field = match s.focused_field {
+                    0 => Some(&mut s.username),
+                    1 => Some(&mut s.server),
+                    3 => Some(&mut s.password),
+                    _ => None,
+                };
+                if let Some(text) = field {
+                    while text.ends_with(|c: char| c.is_whitespace()) {
+                        text.pop();
+                    }
+                    while text.ends_with(|c: char| !c.is_whitespace()) {
+                        text.pop();
+                    }
+                }
+            }
+        }
         Action::SettingsTogglePlayer => {
             if let Some(ref mut s) = ui.settings {
                 s.alert = None;
@@ -602,6 +621,16 @@ fn apply_preconnection_settings_action(
                 s.media_root_selected = (s.media_root_selected + 1).min(s.media_roots.len());
             }
         }
+        Action::SettingsMediaRootPageUp => {
+            if let Some(ref mut s) = ui.settings {
+                s.media_root_selected = s.media_root_selected.saturating_sub(6);
+            }
+        }
+        Action::SettingsMediaRootPageDown => {
+            if let Some(ref mut s) = ui.settings {
+                s.media_root_selected = (s.media_root_selected + 6).min(s.media_roots.len());
+            }
+        }
         Action::SettingsSave => {
             if let Some(ref s) = ui.settings
                 && s.is_valid()
@@ -635,6 +664,16 @@ fn apply_preconnection_settings_action(
         Action::FileBrowserDown => {
             if let Some(ref mut fb) = ui.file_browser {
                 fb.select_down();
+            }
+        }
+        Action::FileBrowserPageUp => {
+            if let Some(ref mut fb) = ui.file_browser {
+                fb.select_page_up(6);
+            }
+        }
+        Action::FileBrowserPageDown => {
+            if let Some(ref mut fb) = ui.file_browser {
+                fb.select_page_down(6);
             }
         }
         // File selection doesn't happen in settings mode (dirs only)
@@ -1727,6 +1766,7 @@ async fn apply_action(
         Action::InsertChar(c) => ui.input.insert_char(c),
         Action::DeleteBack => ui.input.delete_back(),
         Action::DeleteForward => ui.input.delete_forward(),
+        Action::DeleteWordBack => ui.input.delete_word_back(),
         Action::CursorLeft => ui.input.move_left(),
         Action::CursorRight => ui.input.move_right(),
         Action::CursorWordLeft => ui.input.move_word_left(),
@@ -1739,6 +1779,12 @@ async fn apply_action(
         Action::ScrollChatDown => {
             ui.chat_scroll = ui.chat_scroll.saturating_sub(3);
         }
+        Action::ScrollChatPageUp => {
+            ui.chat_scroll = ui.chat_scroll.saturating_add(18);
+        }
+        Action::ScrollChatPageDown => {
+            ui.chat_scroll = ui.chat_scroll.saturating_sub(18);
+        }
 
         // ---- Playlist ----
         Action::PlaylistSelectUp => {
@@ -1749,6 +1795,14 @@ async fn apply_action(
             // +1 for the [Add New] entry
             let total_items = app.sync_engine.state().playlist.snapshot().len() + 1;
             ui.playlist_selected = (ui.playlist_selected + 1).min(total_items - 1);
+        }
+        Action::PlaylistPageUp => {
+            ui.playlist_selected = ui.playlist_selected.saturating_sub(6);
+        }
+        Action::PlaylistPageDown => {
+            let app = app_state.lock().await;
+            let total_items = app.sync_engine.state().playlist.snapshot().len() + 1;
+            ui.playlist_selected = (ui.playlist_selected + 6).min(total_items - 1);
         }
         Action::PlaylistRemove => {
             let now = rv_client.shared_now().await;
@@ -1948,6 +2002,22 @@ async fn apply_action(
                 ui.recent_selected = (ui.recent_selected + 1).min(count - 1);
             }
         }
+        Action::RecentPageUp => {
+            ui.recent_selected = ui.recent_selected.saturating_sub(6);
+        }
+        Action::RecentPageDown => {
+            let app = app_state.lock().await;
+            let crdt = app.sync_engine.state();
+            let st = storage
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let count = series_browser::build_series_list(crdt, &st).len();
+            drop(st);
+            drop(app);
+            if count > 0 {
+                ui.recent_selected = (ui.recent_selected + 6).min(count - 1);
+            }
+        }
         Action::RecentSeriesSelect => {
             let info = {
                 let app = app_state.lock().await;
@@ -2026,6 +2096,25 @@ async fn apply_action(
                 }
             }
         }
+        Action::SettingsDeleteWordBack => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                let field = match s.focused_field {
+                    0 => Some(&mut s.username),
+                    1 => Some(&mut s.server),
+                    3 => Some(&mut s.password),
+                    _ => None,
+                };
+                if let Some(text) = field {
+                    while text.ends_with(|c: char| c.is_whitespace()) {
+                        text.pop();
+                    }
+                    while text.ends_with(|c: char| !c.is_whitespace()) {
+                        text.pop();
+                    }
+                }
+            }
+        }
         Action::SettingsTogglePlayer => {
             if let Some(ref mut s) = ui.settings {
                 s.alert = None;
@@ -2092,6 +2181,16 @@ async fn apply_action(
                 s.media_root_selected = (s.media_root_selected + 1).min(s.media_roots.len());
             }
         }
+        Action::SettingsMediaRootPageUp => {
+            if let Some(ref mut s) = ui.settings {
+                s.media_root_selected = s.media_root_selected.saturating_sub(6);
+            }
+        }
+        Action::SettingsMediaRootPageDown => {
+            if let Some(ref mut s) = ui.settings {
+                s.media_root_selected = (s.media_root_selected + 6).min(s.media_roots.len());
+            }
+        }
         Action::SettingsSave => {
             if let Some(ref s) = ui.settings
                 && s.is_valid()
@@ -2129,6 +2228,16 @@ async fn apply_action(
         Action::FileBrowserDown => {
             if let Some(ref mut fb) = ui.file_browser {
                 fb.select_down();
+            }
+        }
+        Action::FileBrowserPageUp => {
+            if let Some(ref mut fb) = ui.file_browser {
+                fb.select_page_up(6);
+            }
+        }
+        Action::FileBrowserPageDown => {
+            if let Some(ref mut fb) = ui.file_browser {
+                fb.select_page_down(6);
             }
         }
         Action::FileBrowserSelect => {
@@ -2209,6 +2318,18 @@ async fn apply_action(
                 && !state.series_list.is_empty()
             {
                 state.selected = (state.selected + 1).min(state.series_list.len() - 1);
+            }
+        }
+        Action::MetadataPageUp => {
+            if let Some(ref mut state) = ui.metadata_assign {
+                state.selected = state.selected.saturating_sub(6);
+            }
+        }
+        Action::MetadataPageDown => {
+            if let Some(ref mut state) = ui.metadata_assign
+                && !state.series_list.is_empty()
+            {
+                state.selected = (state.selected + 6).min(state.series_list.len() - 1);
             }
         }
         Action::MetadataConfirmSeries => {

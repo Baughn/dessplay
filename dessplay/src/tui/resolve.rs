@@ -89,6 +89,8 @@ fn key_code_matches(code: KeyCode, key: &Key) -> bool {
         (KeyCode::Right, Key::Right) => true,
         (KeyCode::Home, Key::Home) => true,
         (KeyCode::End, Key::End) => true,
+        (KeyCode::PageUp, Key::PageUp) => true,
+        (KeyCode::PageDown, Key::PageDown) => true,
         _ => false,
     }
 }

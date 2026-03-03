@@ -91,6 +91,30 @@ impl InputState {
         }
     }
 
+    /// Delete the word before the cursor (Ctrl-W).
+    pub fn delete_word_back(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let old_cursor = self.cursor;
+        // Reuse word-left logic to find the target position
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut pos = self.cursor - 1;
+        // Skip whitespace
+        while pos > 0 && chars[pos].is_whitespace() {
+            pos -= 1;
+        }
+        // Skip word chars
+        while pos > 0 && !chars[pos - 1].is_whitespace() {
+            pos -= 1;
+        }
+        self.cursor = pos;
+        // Delete chars between new cursor and old cursor
+        let byte_start = self.char_to_byte(pos);
+        let byte_end = self.char_to_byte(old_cursor);
+        self.text.drain(byte_start..byte_end);
+    }
+
     /// Move cursor one word left.
     pub fn move_word_left(&mut self) {
         if self.cursor == 0 {
@@ -424,6 +448,16 @@ impl FileBrowserState {
     pub fn select_down(&mut self) {
         if !self.entries.is_empty() {
             self.selected = (self.selected + 1).min(self.entries.len() - 1);
+        }
+    }
+
+    pub fn select_page_up(&mut self, count: usize) {
+        self.selected = self.selected.saturating_sub(count);
+    }
+
+    pub fn select_page_down(&mut self, count: usize) {
+        if !self.entries.is_empty() {
+            self.selected = (self.selected + count).min(self.entries.len() - 1);
         }
     }
 }

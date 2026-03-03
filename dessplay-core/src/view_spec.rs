@@ -290,6 +290,8 @@ pub enum Key {
     Right,
     Home,
     End,
+    PageUp,
+    PageDown,
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +317,7 @@ pub enum Action {
     InsertChar(char),
     DeleteBack,
     DeleteForward,
+    DeleteWordBack,
     CursorLeft,
     CursorRight,
     CursorWordLeft,
@@ -323,10 +326,14 @@ pub enum Action {
     CursorEnd,
     ScrollChatUp,
     ScrollChatDown,
+    ScrollChatPageUp,
+    ScrollChatPageDown,
 
     // --- Playlist ---
     PlaylistSelectUp,
     PlaylistSelectDown,
+    PlaylistPageUp,
+    PlaylistPageDown,
     PlaylistMoveUp,
     PlaylistMoveDown,
     PlaylistRemove,
@@ -337,6 +344,8 @@ pub enum Action {
     // --- Recent Series ---
     RecentSelectUp,
     RecentSelectDown,
+    RecentPageUp,
+    RecentPageDown,
     RecentSeriesSelect,
 
     // --- Settings ---
@@ -345,6 +354,7 @@ pub enum Action {
     SettingsSave,
     SettingsInsertChar(char),
     SettingsDeleteBack,
+    SettingsDeleteWordBack,
     SettingsTogglePlayer,
     SettingsAddMediaRoot,
     SettingsRemoveMediaRoot,
@@ -352,11 +362,15 @@ pub enum Action {
     SettingsMoveRootDown,
     SettingsMediaRootUp,
     SettingsMediaRootDown,
+    SettingsMediaRootPageUp,
+    SettingsMediaRootPageDown,
     SettingsCancel,
 
     // --- File Browser ---
     FileBrowserUp,
     FileBrowserDown,
+    FileBrowserPageUp,
+    FileBrowserPageDown,
     FileBrowserSelect,
     FileBrowserBack,
     FileBrowserSelectDir,
@@ -371,6 +385,8 @@ pub enum Action {
     // --- Metadata Assignment ---
     MetadataSelectUp,
     MetadataSelectDown,
+    MetadataPageUp,
+    MetadataPageDown,
     MetadataConfirmSeries,
     MetadataInsertChar(char),
     MetadataDeleteBack,
