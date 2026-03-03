@@ -33,6 +33,8 @@ This section describes the full workflow from a user's perspective.
 The settings screen includes several required settings:
 - Username (Defaults to $USER on Linux/OSX, equivalent on Windows)
 - Server (Defaults to dessplay.brage.info)
+- Ready on startup (Toggle, defaults to off). When off, the user starts as
+  Paused on connection. When on, the user starts as Ready.
 - Media roots (Selected by file browser; at least one must be selected).
   The topmost media directory is listed as "download target" (blue text on the right).
   Media roots can be reordered with ctrl-j/ctrl-k.
@@ -145,7 +147,7 @@ The OSD on the video player shows a summary: Which users are unready (in any for
 
 **How states change:**
 
-- **On join**: User State starts as Ready or Not Watching (depending on settings); File State depends on whether the file was found locally
+- **On join**: User State starts as Ready or Paused (depending on "Ready on startup" setting); File State depends on whether the file was found locally
 - **Missing file (unknown series)**: User State → Not Watching; File State → Missing; placeholder PNG loaded into player
 - **Missing file (known series)**: File State → Missing (blocks playback — you probably should have this file)
 - **Missing file (downloading enabled)**: File State → Downloading; placeholder is updated with download progress

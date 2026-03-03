@@ -217,6 +217,8 @@ pub struct SettingsState {
     pub field_count: usize,
     /// Selected index within the media root display list (0 = [Add New], 1.. = roots).
     pub media_root_selected: usize,
+    /// Whether the user starts as Ready (true) or Paused (false) on connection.
+    pub ready_on_startup: bool,
     /// Error banner shown at the top of the settings screen.
     pub alert: Option<String>,
 }
@@ -239,13 +241,18 @@ impl SettingsState {
             password: String::new(),
             media_roots: Vec::new(),
             focused_field: 0,
-            field_count: 5,
+            field_count: 6,
             media_root_selected: 0,
+            ready_on_startup: false,
             alert: None,
         }
     }
 
-    pub fn from_config(config: &crate::storage::Config, media_roots: Vec<PathBuf>) -> Self {
+    pub fn from_config(
+        config: &crate::storage::Config,
+        media_roots: Vec<PathBuf>,
+        ready_on_startup: bool,
+    ) -> Self {
         Self {
             username: config.username.clone(),
             server: config.server.clone(),
@@ -253,8 +260,9 @@ impl SettingsState {
             password: config.password.clone().unwrap_or_default(),
             media_roots,
             focused_field: 0,
-            field_count: 5,
+            field_count: 6,
             media_root_selected: 0,
+            ready_on_startup,
             alert: None,
         }
     }
@@ -861,9 +869,10 @@ mod tests {
         s.next_field();
         s.next_field();
         s.next_field();
+        s.next_field();
         assert_eq!(s.focused_field, 0); // wraps around
         s.prev_field();
-        assert_eq!(s.focused_field, 4);
+        assert_eq!(s.focused_field, 5);
     }
 
     #[test]

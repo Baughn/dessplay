@@ -337,7 +337,14 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
                 .ok()
                 .and_then(|s| s.get_media_roots().ok())
                 .unwrap_or_default();
-            let mut settings = SettingsState::from_config(&config, media_roots);
+            let ready_on_startup = storage
+                .lock()
+                .ok()
+                .and_then(|s| s.get_setting("ready_on_startup").ok().flatten())
+                .as_deref()
+                == Some("true");
+            let mut settings =
+                SettingsState::from_config(&config, media_roots, ready_on_startup);
             settings.alert = Some("password required".to_string());
             ui.screen = Screen::Settings;
             ui.settings = Some(settings);
@@ -397,7 +404,14 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
                             .ok()
                             .and_then(|s| s.get_media_roots().ok())
                             .unwrap_or_default();
-                        let mut settings = SettingsState::from_config(&config, media_roots);
+                        let ready_on_startup = storage
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.get_setting("ready_on_startup").ok().flatten())
+                            .as_deref()
+                            == Some("true");
+                        let mut settings =
+                            SettingsState::from_config(&config, media_roots, ready_on_startup);
                         settings.alert = Some(format!("{e:#}"));
 
                         ui.screen = Screen::Settings;
@@ -417,7 +431,14 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
                     .ok()
                     .and_then(|s| s.get_media_roots().ok())
                     .unwrap_or_default();
-                let settings = SettingsState::from_config(&config, media_roots);
+                let ready_on_startup = storage
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get_setting("ready_on_startup").ok().flatten())
+                    .as_deref()
+                    == Some("true");
+                let settings =
+                    SettingsState::from_config(&config, media_roots, ready_on_startup);
                 ui.screen = Screen::Settings;
                 ui.settings = Some(settings);
                 run_preconnection_settings(&mut guard.terminal, &mut ui, &storage)
@@ -470,7 +491,14 @@ pub async fn run(storage: Arc<Mutex<ClientStorage>>, args: &[String]) -> Result<
                     .ok()
                     .and_then(|s| s.get_media_roots().ok())
                     .unwrap_or_default();
-                let mut settings = SettingsState::from_config(&config, media_roots);
+                let ready_on_startup = storage
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.get_setting("ready_on_startup").ok().flatten())
+                    .as_deref()
+                    == Some("true");
+                let mut settings =
+                    SettingsState::from_config(&config, media_roots, ready_on_startup);
                 settings.alert = Some(format!("{error:#}"));
 
                 ui.screen = Screen::Settings;
@@ -622,6 +650,12 @@ fn apply_preconnection_settings_action(
                 };
             }
         }
+        Action::SettingsToggleReadyOnStartup => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                s.ready_on_startup = !s.ready_on_startup;
+            }
+        }
         Action::SettingsAddMediaRoot => {
             if let Some(ref s) = ui.settings
                 && s.media_root_selected == 0
@@ -712,9 +746,14 @@ fn apply_preconnection_settings_action(
                     },
                 };
                 let roots: Vec<PathBuf> = s.media_roots.clone();
+                let ready_on_startup = s.ready_on_startup;
                 let st = storage.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
                 st.save_config(&config)?;
                 st.set_media_roots(&roots)?;
+                st.set_setting(
+                    "ready_on_startup",
+                    if ready_on_startup { "true" } else { "false" },
+                )?;
             }
         }
         Action::SettingsCancel => {
@@ -1011,6 +1050,25 @@ async fn run_connected(
         .unwrap_or_default();
     let mut media_index = Arc::new(MediaIndex::scan(&media_roots));
     tracing::info!(files = media_index.file_count(), "Media index built");
+
+    // Set initial user state based on "ready on startup" preference
+    {
+        let ready_on_startup = storage
+            .lock()
+            .ok()
+            .and_then(|s| s.get_setting("ready_on_startup").ok().flatten())
+            .as_deref()
+            == Some("true");
+        let initial_state = if ready_on_startup {
+            UserState::Ready
+        } else {
+            UserState::Paused
+        };
+        let now = rv_client.shared_now().await;
+        let mut app = app_state.lock().await;
+        // Apply locally; sync effects will be dispatched once the event loop starts
+        app.process_event(AppEvent::SetUserState { state: initial_state }, now);
+    }
 
     // Send initial state summary
     {
@@ -2176,15 +2234,23 @@ async fn apply_action(
 
         // ---- Settings ----
         Action::OpenSettings => {
-            let (config, media_roots) = {
+            let (config, media_roots, ready_on_startup) = {
                 let s = storage
                     .lock()
                     .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
                 let config = s.get_config()?.ok_or_else(|| anyhow::anyhow!("no config"))?;
                 let roots = s.get_media_roots().unwrap_or_default();
-                (config, roots)
+                let ros = s
+                    .get_setting("ready_on_startup")?
+                    .as_deref()
+                    == Some("true");
+                (config, roots, ros)
             };
-            ui.settings = Some(SettingsState::from_config(&config, media_roots));
+            ui.settings = Some(SettingsState::from_config(
+                &config,
+                media_roots,
+                ready_on_startup,
+            ));
             ui.screen = Screen::Settings;
         }
         Action::SettingsNextField => {
@@ -2252,6 +2318,12 @@ async fn apply_action(
                 } else {
                     "mpv".to_string()
                 };
+            }
+        }
+        Action::SettingsToggleReadyOnStartup => {
+            if let Some(ref mut s) = ui.settings {
+                s.alert = None;
+                s.ready_on_startup = !s.ready_on_startup;
             }
         }
         Action::SettingsAddMediaRoot => {
@@ -2348,6 +2420,10 @@ async fn apply_action(
                     .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
                 st.save_config(&config)?;
                 st.set_media_roots(&roots)?;
+                st.set_setting(
+                    "ready_on_startup",
+                    if s.ready_on_startup { "true" } else { "false" },
+                )?;
                 // Don't clear ui.settings — run() checks it to detect reconnect
             }
         }

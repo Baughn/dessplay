@@ -443,6 +443,20 @@ fn settings_modal(
         },
     });
 
+    // Ready on startup
+    fields.push(FormField {
+        label: "Ready on startup".to_string(),
+        kind: FormFieldKind::Toggle {
+            value: if settings.ready_on_startup {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            },
+            choices: vec!["off".to_string(), "on".to_string()],
+        },
+        error: None,
+    });
+
     // Media roots — prepend [Add New] pseudo-entry
     let mut paths = vec![PathListEntry {
         path: "[Add New]".into(),
@@ -855,7 +869,7 @@ fn settings_bindings(focused_field: usize) -> Vec<Keybinding> {
     ];
 
     // Up/Down: navigate within media root list when focused, otherwise move between fields
-    if focused_field == 4 {
+    if focused_field == 5 {
         bindings.push(kb(KeyCombo::Plain(Key::Up), "Up", Action::SettingsMediaRootUp));
         bindings.push(kb(KeyCombo::Plain(Key::Down), "Down", Action::SettingsMediaRootDown));
         bindings.push(kb(KeyCombo::Plain(Key::PageUp), "Page up", Action::SettingsMediaRootPageUp));
@@ -879,7 +893,8 @@ fn settings_bindings(focused_field: usize) -> Vec<Keybinding> {
     // Context-dependent Enter and field-specific bindings
     match focused_field {
         2 => bindings.push(kb(KeyCombo::Plain(Key::Enter), "Toggle", Action::SettingsTogglePlayer)),
-        4 => {
+        4 => bindings.push(kb(KeyCombo::Plain(Key::Enter), "Toggle", Action::SettingsToggleReadyOnStartup)),
+        5 => {
             bindings.push(kb_bar(KeyCombo::Plain(Key::Enter), "Select", Action::SettingsAddMediaRoot));
             bindings.push(kb(KeyCombo::Plain(Key::Char('d')), "Remove", Action::SettingsRemoveMediaRoot));
             bindings.push(kb(KeyCombo::Ctrl(Key::Char('j')), "Move dn", Action::SettingsMoveRootDown));

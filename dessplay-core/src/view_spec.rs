@@ -364,6 +364,7 @@ pub enum Action {
     SettingsDeleteBack,
     SettingsDeleteWordBack,
     SettingsTogglePlayer,
+    SettingsToggleReadyOnStartup,
     SettingsAddMediaRoot,
     SettingsRemoveMediaRoot,
     SettingsMoveRootUp,
