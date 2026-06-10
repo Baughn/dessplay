@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-03-04
+Last updated: 2026-06-10
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -13,8 +13,8 @@ transfer. For the replicated data types built on top of this layer, see
 3. [Rendezvous Protocol](#rendezvous-protocol)
 4. [Time Synchronization](#time-synchronization)
 5. [State Sync Wire Protocol](#state-sync-wire-protocol)
-6. [Peer-to-Peer File Transfer](#peer-to-peer-file-transfer)
-7. [File Transfer Relay](#file-transfer-relay)
+6. [File Transfer](#file-transfer)
+7. [Relay Mechanics](#relay-mechanics)
 8. [Reconnection](#reconnection)
 
 ---
@@ -22,30 +22,38 @@ transfer. For the replicated data types built on top of this layer, see
 ## Overview
 
 ```
-                    +------------------+
-                    |  Rendezvous      |
-                    |  Server           |
-                    |  (QUIC endpoint) |
-                    +--+-----+-----+--+
-                       |     |     |
-              QUIC     |     |     |     QUIC
-           (state sync)|     |     | (state sync)
-                       |     |     |
-       +-------+   +---+----+  +--+-----+
-       | Peer A |   | Peer B |  | Peer C |
-       +---+---+   +---+----+  +---+----+
-           |            |          |
-           +--- P2P file transfer -+
-              (direct or relayed)
+              NAS (home server, NixOS)
+        +--------------------------------+
+        |  Rendezvous Server   Seeder    |
+        |  (QUIC endpoint) <-> (loopback)|
+        +--+--------+--------+-----------+
+           |        |        |
+    QUIC   |        |        |   QUIC
+ (state +  |        |        | (state +
+  transfer)|        |        |  transfer)
+           |        |        |
+      +----+---+ +--+-----+ ++-------+
+      | Peer A | | Peer B | | Peer C |
+      +--------+ +--------+ +--------+
 ```
 
-**Hub-and-spoke for state:** Every client maintains a QUIC connection to the
-rendezvous server. All CRDT state sync flows through the server. Clients do
-not sync state with each other directly.
+**Hub-and-spoke for everything:** Every client maintains a single QUIC
+connection to the rendezvous server. All CRDT state sync flows through the
+server, and **all file transfer is relayed through the server** -- there are
+no client-to-client connections in v2.
 
-**Peer-to-peer for files:** File transfers go directly between peers when
-possible. When direct connection fails, file transfer traffic can be relayed
-through the server.
+This is a deliberate simplification. The server runs on a home connection
+with an unmetered 250Mbit uplink and sits on the same machine as the primary
+seeder (which connects over loopback), so relay bandwidth is free in
+practice and the common transfer path (seeder -> peer) crosses the wire
+exactly once. NAT hole punching and direct peer connections were cut: they
+optimized the rare peer-to-peer transfer at the cost of a second
+connection-management path full of untestable NAT-timing behavior. Direct
+peer connections may return as a future optimization.
+
+**Deployment:** the rendezvous server and the NAS seeder are two separate,
+colocated processes (`dessplay-rendezvous` and `dessplay --seeder`). The
+seeder is an ordinary client; anyone can run another one.
 
 ---
 
@@ -55,8 +63,10 @@ through the server.
 
 | Connection | Initiator | Purpose |
 |------------|-----------|---------|
-| Client -> Server | Client | Auth, state sync, time sync, peer discovery, file relay |
-| Client -> Client | Either | File transfer only |
+| Client -> Server | Client | Auth, state sync, time sync, peer discovery, file transfer (relayed) |
+
+There are no client-to-client connections. Both IPv4 and IPv6 are supported
+(the server is dual-stack); `PeerInfo.addresses` carries both families.
 
 ### Channel Usage (Client <-> Server)
 
@@ -68,31 +78,33 @@ Each client-server QUIC connection uses three kinds of channels:
    serialized with postcard.
 
 2. **Datagrams** -- QUIC unreliable datagrams. Used for best-effort eager-push
-   of state ops (lower latency than the control stream). Also used for
-   high-frequency playback position updates.
+   of state ops (lower latency than the control stream), for high-frequency
+   playback position updates (datagram-only -- see below), and for time sync
+   probes (so RTT measurements are not polluted by stream retransmission
+   delays on lossy links).
+
+   **Size rule:** an op whose encoded size exceeds the QUIC datagram limit
+   (typically ~1200 bytes; query `max_datagram_size` at runtime) is sent on
+   the control stream only. Long chat messages and large playlist ops simply
+   skip the eager-push optimization.
 
 3. **On-demand streams** -- short-lived bidirectional streams opened as needed
-   for gap fill (recovering missed state ops) and file transfer relay. Opened
-   by the requesting side, closed when the transfer completes.
+   for gap fill (recovering missed state ops) and relayed file transfer.
+   Opened by the requesting side, closed when the transfer completes.
 
-### Channel Usage (Client <-> Client)
-
-Peer-to-peer connections are used exclusively for file transfer:
-
-1. **On-demand streams** -- short-lived bidirectional streams for chunk
-   transfer. Opened by the downloading peer.
-
-2. **Control stream** -- for file availability announcements (bitfields).
-
-No datagrams are used on peer-to-peer connections.
+**Stream priority:** the control stream is prioritized above transfer
+streams (quinn `set_priority`), so a bulk download never starves state sync.
+QUIC connection-level flow control windows must be sized for bulk transfer
+(the quinn defaults are tuned for request/response traffic, not for pushing
+video files); this is a config item on both client and server endpoints.
 
 ### TLS and Identity
 
-- **Rendezvous server**: Generates a persistent self-signed certificate.
-  Clients use TOFU (Trust On First Use) -- the server's certificate fingerprint
-  is stored locally on first connection and verified on subsequent connections.
-- **Peer-to-peer**: Ephemeral self-signed certificates. Identity is established
-  at the application layer (username in Hello message), not at the TLS layer.
+The rendezvous server generates a persistent self-signed certificate.
+Clients use TOFU (Trust On First Use) -- the server's certificate fingerprint
+is stored locally on first connection and verified on subsequent connections.
+With no client-to-client connections, no other certificates exist; peer
+identity is the username the server authenticated.
 
 ### Serialization
 
@@ -135,8 +147,16 @@ Client                          Rendezvous Server
 ```rust
 enum ServerControl {
     // Client -> Server
-    Auth { password: String },
+    Auth {
+        username: String,
+        password: String,
+        role: Role,        // Interactive | Seeder
+        epoch: u64,        // last known epoch; drives snapshot-vs-merge below
+    },
     TimeSyncRequest { client_send: u64 },
+    /// Player reached end of file. A report, not state -- the server owns
+    /// the EOF -> next-file transition (see sync-state.md, Now Playing).
+    EofReached { file: Ed2kHash },
 
     // Server -> Client
     AuthOk { observed_addr: SocketAddr },
@@ -155,26 +175,59 @@ enum ServerControl {
     StateMerge { epoch: u64, crdts: CrdtSnapshot },
 }
 
+enum Role { Interactive, Seeder }
+
+enum Presence { Present, Lost, Departed }
+
 struct PeerInfo {
     username: String,
-    addresses: Vec<SocketAddr>,  // observed + self-reported
+    role: Role,
+    presence: Presence,
+    addresses: Vec<SocketAddr>,  // observed + self-reported (v4 + v6); informational
     connected_since: u64,
 }
 ```
 
+Time sync requests/responses are sent as datagrams when the path supports
+them, falling back to the control stream otherwise.
+
 ### Peer List Updates
 
-The server pushes an updated `PeerList` whenever a peer joins or leaves.
-Clients use this for file transfer peer discovery. The peer list includes
-addresses for direct connection attempts.
+The server pushes an updated `PeerList` whenever a peer joins, leaves, or
+changes presence state. Clients use it for presence-aware playback gating
+and to know which transfer sources are online. Addresses are informational
+(see Authentication below).
+
+### Presence
+
+The server is the source of truth for presence (it is not CRDT state).
+Clients send QUIC keep-alives every 10s; position updates double as liveness
+while playing.
+
+| Stage | Trigger | Server action |
+|-------|---------|---------------|
+| Present | Normal traffic | -- |
+| Lost | 30s silence (QUIC idle timeout) | Push `PeerList` update; clients pause playback and post a system chat message |
+| Departed | 60s silence | Push `PeerList` update; peer leaves the gating set; playback stays paused (no auto-resume); server takes seek authority if the departed peer held it |
+
+Graceful disconnects (clean control-stream close) skip the Lost stage and go
+straight to removal -- but still pause playback if it was running.
+
+The full presence semantics, including UI treatment, are in
+[design.md](design.md#presence).
 
 ### Authentication
 
 The password is sent as plaintext in the `Auth` message, protected by QUIC's
 TLS 1.3 encryption. The server verifies it against the configured password.
 On success, the server responds with `AuthOk` including the client's observed
-address (useful for peer-to-peer file transfer connections). On failure, the
-server sends `AuthFailed` and closes the connection.
+address (informational -- it costs nothing to report and would be needed if
+direct peer connections ever return). On failure, the server sends
+`AuthFailed` and closes the connection.
+
+`Auth` also carries the client's username, role (seeders are excluded from
+gating and listed separately), and last known epoch (used to choose between
+`StateMerge` and `StateSnapshot` -- see State Sync Flow).
 
 ---
 
@@ -202,11 +255,13 @@ Client                          Server
 ### Usage
 
 - Run on initial connection, then every 30 seconds
+- Probes are sent as datagrams (stream fallback if datagrams are unsupported)
+  so RTT samples are not inflated by stream retransmissions on lossy links
 - Maintain a rolling average of the offset (discard outliers where RTT > 2x
   the median)
 - All CRDT operation timestamps and playback positions use
   `local_clock() + offset` to produce shared-clock timestamps
-- Precision target: <50ms (sufficient for 3s sync tolerance)
+- Precision target: <50ms (sufficient for slew-band drift correction)
 
 ---
 
@@ -225,12 +280,16 @@ type. All ops are serializable via serde/postcard.
 /// Each variant wraps the native crdts Op type for that field.
 enum CrdtOp {
     Playlist(<Map<Ed2kHash, MVReg<Lww<PlaylistFileState>, ActorId>, ActorId> as CmRDT>::Op),
+    WatchedFlag(<Map<Ed2kHash, MVReg<Lww<bool>, ActorId>, ActorId> as CmRDT>::Op),
     NowPlaying(<MVReg<Lww<Option<Ed2kHash>>, ActorId> as CmRDT>::Op),
     SeekAuthority(<MVReg<Lww<ActorId>, ActorId> as CmRDT>::Op),
     SeriesPreference(<Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>, ActorId>, ActorId> as CmRDT>::Op),
     ManualOverride(<Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId> as CmRDT>::Op),
     FileAvailability(<Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>, ActorId>, ActorId> as CmRDT>::Op),
     AniDbMetadata(<Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>, ActorId>, ActorId> as CmRDT>::Op),
+    SeriesRelations(<Map<AniDbSeriesId, MVReg<Lww<SeriesRelations>, ActorId>, ActorId> as CmRDT>::Op),
+    ListEntry(<Map<ListEntryId, MVReg<Lww<SeriesListEntry>, ActorId>, ActorId> as CmRDT>::Op),
+    ListNextEp(<Map<ListEntryId, MVReg<Lww<NextEpState>, ActorId>, ActorId> as CmRDT>::Op),
     PlaybackPosition(<Map<UserId, MVReg<Lww<PlaybackPosition>, ActorId>, ActorId> as CmRDT>::Op),
     Chat(<GList<ChatMessage> as CmRDT>::Op),
     LookupRequest(<GSet<FileHashInfo> as CmRDT>::Op),
@@ -243,70 +302,97 @@ concrete types are determined by the crdts crate -- we just wrap and tag them.
 
 ### Sync Flow
 
-1. **On connect**: Client sends its epoch to the server.
+1. **On connect**: Client sends its epoch to the server (in `Auth`).
 2. **Epoch check**: Server compares epochs.
    - **Same epoch**: Server sends its full CvRDT state. Client merges.
    - **Stale epoch**: Server sends the compacted snapshot with new epoch.
      Client replaces its local state entirely.
 3. **Ongoing**: CmRDT ops are sent on the control stream (reliable) and
-   simultaneously pushed via datagram (best-effort, for lower latency).
+   simultaneously pushed via datagram (best-effort, for lower latency,
+   subject to the datagram size rule).
    The crdts types handle deduplication internally via causality tracking.
+
+**Exception -- playback position:** position ops are datagram-only at the
+100ms cadence, with one reliable send per second as a catch-up baseline.
+Reliable delivery of every stale position is exactly the head-of-line
+blocking we are avoiding; dropped intermediate positions are superseded
+within 100ms anyway.
+
+**Compaction broadcast:** at the daily compaction (see
+[sync-state.md](sync-state.md)), connected clients receive an unsolicited
+`StateSnapshot { new_epoch, ... }` on the control stream and replace local
+state, exactly as in the stale-epoch path.
 
 No custom version vectors or gap-fill protocol is needed. Reconnection
 uses CvRDT merge (idempotent, commutative, associative).
 
 ---
 
-## Peer-to-Peer File Transfer
+## File Transfer
 
-File transfer uses direct peer-to-peer connections when possible. This is
-the only functionality that uses P2P connections -- all state sync goes
-through the server.
+All file transfer flows through the server as relayed peer messages: the
+downloader exchanges messages with the *logical* peer (seeder, or whoever
+has the file), but the bytes always travel downloader <-> server <-> uploader.
+The transfer protocol below is peer-to-peer in its semantics and
+relay-transported in its mechanics; see [Relay Mechanics](#relay-mechanics).
 
-### Peer Discovery for File Transfer
+### Finding Sources
 
 When a client needs a file:
-1. Check the `PeerList` from the server for other connected clients
-2. Check file availability CRDTs to see who has the file
-3. Attempt direct connection to peers who have needed chunks
+1. Check the file availability CRDTs to see who has it (or has chunks of it)
+2. Filter against the `PeerList` for peers that are currently Present
+3. Exchange availability bitfields and request chunks via relay
 
-### Connection Establishment
+### Peer Messages
 
-Peers attempt direct QUIC connections using addresses from the PeerList.
-Since peers may be behind firewalls, both sides attempt connection
-simultaneously (hole punching):
-
-1. Both peers begin sending QUIC Initial packets upon learning each other's
-   addresses
-2. Retry with exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms
-3. If no connection after 5 seconds: fall back to server relay
-4. Continue periodic direct connection attempts (30s) while relaying
-
-### Peer-to-Peer Messages
+Messages addressed to other peers (always wrapped in relay envelopes):
 
 ```rust
-enum PeerControl {
-    Hello { username: String },
+enum PeerMessage {
     FileAvailability { file_id: FileId, bitfield: BitVec },
+    BlockHashRequest { file_id: FileId },
+    BlockHashes { file_id: FileId, hashes: Vec<Md4Hash> },  // ed2k blocks
+    ChunkRequest { file_id: FileId, chunks: Vec<u32> },
+    ChunkData { file_id: FileId, index: u32, data: Vec<u8> },
 }
 ```
+
+No Hello message is needed: the server authenticated every peer, and relay
+envelopes carry the sender's identity.
 
 ### Chunks
 
 - Files are divided into **256 KiB chunks** (last chunk may be smaller)
 - Chunks are identified by `(file_id, chunk_index)`
 - A typical 1.4 GB video file has ~5600 chunks
+- The chunk count is derived from `size_bytes` in the playlist entry
+  (filled in by whoever added the file)
+
+### Verification: ed2k Block Hashes
+
+ed2k is internally a list of MD4 hashes over 9,728,000-byte blocks. Whenever
+a client hashes a file it keeps the **per-block hashes**, not just the root,
+and serves them to downloaders on request (a `BlockHashes` message on the
+control stream). This gives 9.28 MB-granularity verification:
+
+- Each completed block of a download is verified immediately; a bad block is
+  re-fetched (from a different peer) without restarting the file
+- On startup, a client with a partial download verifies the blocks it has on
+  disk and resumes from a trustworthy bitfield -- no separate persistence of
+  download progress is needed beyond the chunk data itself
+- The block hashes themselves are validated against the file's ed2k root
+  (which is the playlist key) before use
+
+### Upload Limiting
+
+Clients may set an upload rate cap (`upload_limit`). A peer seeding while
+also watching should not starve its own playback; when unset, uploads are
+unthrottled. Seeders typically leave this unset.
 
 ### Availability Tracking
 
-Each peer maintains a bitfield per file indicating which chunks it has:
-
-```rust
-FileAvailability {
-    file_id: FileId,
-    bitfield: BitVec,  // 1 = have chunk, 0 = don't
-}
-```
+Each peer maintains a bitfield per file indicating which chunks it has
+(1 = have chunk), exchanged via `PeerMessage::FileAvailability`:
 
 - Sent when a peer begins serving a file (complete bitfield)
 - Updated when a downloading peer completes new chunks
@@ -336,28 +422,21 @@ When a peer has multiple pending chunk requests:
 ### Transfer Stream
 
 ```
-Downloader                         Uploader
-  |                                    |
-  |--- Open stream ------------------>|
-  |--- ChunkRequest { file_id,       >|
-  |        chunks: [idx, idx, ...] }   |
-  |<-- ChunkData { idx, data } -------|
-  |<-- ChunkData { idx, data } -------|
-  |<-- ... ----------------------------|
-  |<-- (stream closed) ---------------|
+Downloader                  Server                    Uploader
+  |                            |                          |
+  |--- Open stream ----------->|                          |
+  |--- Forward{to: U,          |--- Open stream --------->|
+  |      ChunkRequest{...}} -->|--- Forwarded{from: D,    |
+  |                            |      ChunkRequest{...}} >|
+  |<-- Forwarded{from: U,      |<-- Forward{to: D,        |
+  |      ChunkData{idx,data}} -|      ChunkData{...}} ----|
+  |<-- ...  -------------------|<-- ...  -----------------|
+  |<-- (streams closed) -------|                          |
 ```
 
-```rust
-struct ChunkRequest {
-    file_id: FileId,
-    chunks: Vec<u32>,  // chunk indices, in preferred order
-}
-
-struct ChunkData {
-    index: u32,
-    data: Vec<u8>,     // up to 256 KiB
-}
-```
+`ChunkRequest.chunks` lists chunk indices in preferred order; `ChunkData`
+carries up to 256 KiB. The extra server hop roughly doubles request latency,
+which the 16-chunk pipeline depth absorbs.
 
 ### Flow Control
 
@@ -374,18 +453,19 @@ When a file is being downloaded for immediate playback:
 - Rarest-first continues for chunks outside the playback window
 - This ensures smooth playback while still distributing rare chunks
 
-### Temporary Storage
+### Storage
 
-Downloaded chunks are written to a temporary directory. When 50% of the file's
-duration has been watched, the completed file is moved to
-`<download_root>/<series>/<season>/<original_filename>`.
+Downloaded chunks are written into the download cache
+(`$XDG_CACHE_HOME/dessplay/files/`) and the completed file stays there,
+subject to the retention policy. Promotion into a media root happens only
+via the explicit archive action. See design.md,
+[Download Cache and Retention](design.md#download-cache-and-retention).
 
 ---
 
-## File Transfer Relay
+## Relay Mechanics
 
-When direct peer-to-peer connection fails for file transfer, the server
-relays the traffic.
+All peer messages travel through the server as an application-layer proxy.
 
 ### Architecture
 
@@ -394,10 +474,17 @@ Peer A <-- QUIC --> Server <-- QUIC --> Peer B
                     (application-layer proxy)
 ```
 
-The server acts as an application-layer proxy for file transfer:
-- Chunk requests from A addressed to B are forwarded on B's connection
-- Chunk responses from B are forwarded back to A
-- The server does not cache or store file data
+- Messages from A addressed to B are forwarded on B's connection
+- The server does not cache, store, or inspect file data
+- The server drops envelopes addressed to non-Present peers
+
+**Bandwidth:** the server shares the NAS's unmetered 250Mbit uplink and
+5Gbit downlink, and the primary seeder talks to it over loopback -- so the
+dominant transfer pattern (seeder -> peers) costs each transferred byte one
+trip over the uplink, the same as a direct connection would. Peer-to-peer
+transfers (e.g. Kim seeding a file the NAS doesn't have yet) cost one
+downlink trip plus one uplink trip per recipient. Both are well within
+budget for episode-sized files.
 
 ### Relay Envelope
 
@@ -411,14 +498,15 @@ enum RelayEnvelope {
 ```
 
 File transfer messages are wrapped in relay envelopes when sent through the
-server. The inner `message` bytes are decoded by the recipient as normal
-peer-to-peer file transfer messages.
+server. The inner `message` bytes are decoded by the recipient as a
+`PeerMessage`.
 
 ### Transparency
 
-The file transfer layer does not need to know whether a connection is direct
-or relayed. The network layer provides a `send(peer, message)` interface and
-routes through direct connection or relay as appropriate.
+The file transfer layer addresses logical peers through a
+`send(peer, message)` interface and never deals in connections. If direct
+peer connections are ever added back as an optimization, they slot in below
+this interface without touching transfer logic.
 
 ---
 
@@ -437,22 +525,27 @@ routes through direct connection or relay as appropriate.
      and new epoch. Client replaces its local state entirely.
 6. Resume normal CmRDT operation sync
 
-### Client Reconnects to Peer (File Transfer)
+### Transfer Resumption
 
-1. Re-establish QUIC connection (direct or via relay)
-2. Exchange `Hello` and file availability bitfields
-3. Resume chunk transfers
+Transfers have no connection of their own to re-establish. After a server
+reconnect, the downloader re-exchanges availability bitfields with its
+sources and re-requests outstanding chunks; blocks already on disk are
+revalidated against the ed2k block hashes, so nothing is re-fetched
+unnecessarily.
 
 ### Graceful Disconnect
 
 On clean shutdown, a client closes its control stream. QUIC's connection close
 mechanism notifies the server. The server pushes an updated `PeerList` to
-remaining clients.
+remaining clients, and playback pauses if it was running (see
+[Presence](#presence)).
 
 ### Ungraceful Disconnect
 
-QUIC idle timeout (default: 30s) detects dead connections. On timeout:
-- The server removes the client from the peer list and pushes an update
-- The disconnected user's CRDT state remains until overwritten on reconnection
+Handled by the presence stages: Lost at 30s (everyone pauses), Departed at
+60s (removed from gating; playback stays paused pending a human decision).
+Additionally:
+- The disconnected user's CRDT state remains until overwritten on
+  reconnection, but is ignored by playback gating while they are not Present
 - File transfers to/from the disconnected peer are interrupted; other peers
   can pick up the slack

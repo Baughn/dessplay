@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-03-04
+Last updated: 2026-06-10
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -45,8 +45,9 @@ Application
 +-- ChatPane (TextLog + TextInput composite)
 |   +-- ChatLog (scrollable message list)
 |   +-- ChatInput (text input with cursor)
-+-- SeriesPane (SelectableList, dual-mode)
-+-- UsersPane (styled list, non-interactive)
++-- SubtitlePane (rolling sub-text log; optional, splits ChatPane area)
++-- SeriesPane (SelectableList, three modes: Recent / All / The List)
++-- UsersPane (styled list; focusable for the Away action)
 +-- PlaylistPane (SelectableList with actions)
 +-- PlayerStatus (progress bar + info)
 +-- KeybindingBar (derived from active focus)
@@ -87,9 +88,17 @@ enum Msg {
     ChatInputChanged(String),
 
     // Series
-    ToggleSeriesMode,
+    CycleSeriesMode,            // Recent -> All -> The List
     ToggleSeriesSort,
     BrowseFranchise(FranchiseId),
+
+    // The List
+    JumpToNextEp(ListEntryId),  // Enter on a linked Active entry
+    EditListEntry(ListEntryId),
+    LinkListEntry(ListEntryId), // open AniDB search modal
+
+    // Users
+    ToggleAway(UserId),
 
     // Playlist
     PlaySelected(usize),
@@ -97,12 +106,15 @@ enum Msg {
     MoveUp,
     MoveDown,
     RemoveSelected,
+    ArchiveSelected,
+    MapSelected,                // manual file mapping (Ctrl-m)
 
     // Player
     SeekTo(f64),
 
     // Navigation
     FocusNext,
+    ToggleSubtitlePane,
     Quit,
 
     // Modals
@@ -194,14 +206,21 @@ When the UiActor receives a `StateUpdate(CrdtSnapshot)`, it maps the
 snapshot data to component props:
 
 - **ChatPane**: snapshot.chat -> list of formatted message lines
-- **SeriesPane**: snapshot.anidb_metadata + local watch history -> franchise list
+- **SubtitlePane**: rolling log of `SubtitleLine` events from the PlayerActor
+  (local-only; not part of the snapshot)
+- **SeriesPane**: snapshot.anidb_metadata + snapshot.series_relations + local
+  watch history -> franchise list (Recent/All modes);
+  snapshot.list_entries + snapshot.list_next_ep -> grouped List entries
+  (List mode)
 - **UsersPane**: snapshot.series_preferences + snapshot.manual_overrides
-  + snapshot.file_availability -> colored user list
-- **PlaylistPane**: snapshot.playlist (sorted by position) -> list items
-  with colors based on availability
+  + snapshot.file_availability + peer presence/roles -> colored user list,
+  with departed users and seeders on separate dim lines
+- **PlaylistPane**: snapshot.playlist (sorted by position) + watched flags ->
+  list items with colors based on availability, watched entries muted
 - **PlayerStatus**: snapshot.now_playing + player position -> progress bar
 
-This mapping is a pure function, making it testable independently.
+This mapping is a pure function (presence and subtitle data arrive as
+explicit inputs alongside the snapshot), making it testable independently.
 
 ---
 
@@ -239,6 +258,9 @@ Modal types:
 - **FileBrowser**: Navigate media roots, select file
 - **Settings**: First-run and later configuration
 - **EpisodeBrowser**: Browse franchise seasons/episodes
+- **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)
+- **AniDbSearch**: Link a List entry to an AniDB series (search by name,
+  confirm manually; the search runs server-side through the rate limiter)
 
 Unlike the prototype (which used blocking sub-loops for modals), the main
 event loop continues running while modals are open. Network messages, player

@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-03-04
+Last updated: 2026-06-10
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -68,9 +68,13 @@ player.
    +-------v------+               +--------v-------+
    | NetworkActor | (QUIC)        |   FileActor    |
    | (server conn,|               | (hashing, scan,|
-   |  P2P conns)  |               |  transfer mgmt)|
+   |  relay I/O)  |               |  cache, xfer)  |
    +--------------+               +----------------+
 ```
+
+**Seeder composition:** in seeder mode (`--seeder`), only SyncActor,
+NetworkActor, and FileActor are spawned -- no UiActor, no PlayerActor. The
+main loop is the same; the routing arms for absent actors simply never fire.
 
 ### Communication
 
@@ -113,23 +117,26 @@ updates are batched (not persisted on every 100ms tick).
 
 ### NetworkActor
 
-**Owns:** QUIC connection to server, peer-to-peer connections (for file
-transfer), connection state, time sync state.
+**Owns:** QUIC connection to server (the only connection -- all peer traffic
+is relayed through it), connection state, time sync state.
 
 **Receives:**
-- `SendOp(CrdtOp)` -- send operation to server (reliable + datagram)
+- `SendOp(CrdtOp)` -- send operation to server (reliable + datagram, subject
+  to the datagram size rule; playback position ops are datagram-only with a
+  1s reliable fallback)
 - `ConnectToServer(addr, password)` -- initiate server connection
-- `ConnectToPeer(PeerInfo)` -- initiate P2P connection for file transfer
-- `SendChunkRequest(PeerId, ChunkRequest)` -- file transfer
-- `RelayChunkRequest(PeerId, ChunkRequest)` -- file transfer via server relay
+- `ReportEof(Ed2kHash)` -- send `EofReached` to the server
+- `SendPeerMessage(PeerId, PeerMessage)` -- file transfer traffic, wrapped
+  in a relay envelope
 
 **Produces:**
 - `ServerOp(CrdtOp)` -- operation received from server
-- `ServerSnapshot(epoch, CrdtSnapshot)` -- full state from server
+- `ServerSnapshot(epoch, CrdtSnapshot)` -- full state from server (reconnect
+  with stale epoch, or daily compaction broadcast)
 - `ServerMerge(CrdtSnapshot)` -- CvRDT state for merge on reconnection
-- `PeerListUpdate(Vec<PeerInfo>)` -- updated peer list
+- `PeerListUpdate(Vec<PeerInfo>)` -- updated peer list (role + presence)
 - `TimeSyncUpdate(offset)` -- clock offset update
-- `ChunkReceived(FileId, u32, Vec<u8>)` -- file chunk data
+- `PeerMessageReceived(PeerId, PeerMessage)` -- relayed file transfer traffic
 - `ConnectionStateChange(...)` -- connected/disconnected/error
 
 ### UiActor
@@ -140,6 +147,8 @@ transfer), connection state, time sync state.
 - `StateUpdate(CrdtSnapshot)` -- new CRDT state to display
 - `TerminalEvent(Event)` -- keyboard/mouse input from crossterm
 - `PlayerStatus(PlayerState)` -- current player position/state
+- `SubtitleLine(String)` -- appended to the subtitle pane's rolling log
+- `PresenceUpdate(Vec<PeerInfo>)` -- presence/role data for the Users pane
 
 **Produces:**
 - `UserAction(Action)` -- user intent (send chat, add file, seek, pause, etc.)
@@ -160,6 +169,8 @@ position broadcast timer.
 - `LoadFile(path)` -- load a video file
 - `Pause` / `Unpause` -- control playback
 - `Seek(position)` -- seek to position
+- `SyncTo(position)` -- authority position; the actor picks the drift band
+  (ignore / slew via mpv `speed` / hard seek) per design.md Playback Rules
 - `ShowOsd(text)` -- display message on video
 - `SetSeekAuthority(ActorId)` -- who to sync position to
 
@@ -168,7 +179,9 @@ position broadcast timer.
 - `UserUnpaused` -- user unpaused in player
 - `UserSeeked(position)` -- user seeked in player (not an echo)
 - `PositionTick(f64)` -- current position (100ms interval)
-- `Eof` -- file ended
+- `SubtitleLine(String)` -- observed `sub-text` change (feeds subtitle pane)
+- `Eof` -- file ended (main loop forwards as `ReportEof` to NetworkActor;
+  the server owns the transition)
 - `Crashed` -- player process died
 
 **Echo suppression:** The PlayerActor tags commands it sends to mpv. When
@@ -178,16 +191,21 @@ distinguishes user-initiated seeks from programmatic ones, which helps.
 
 ### FileActor
 
-**Owns:** File hash cache, media root index, download state, temporary
-file storage.
+**Owns:** File hash cache (including ed2k per-block hashes), media root
+index, download state, the download cache (retention/eviction), prefetch
+queue.
 
 **Receives:**
 - `ScanMediaRoots(paths)` -- index available files
-- `HashFile(path)` -- compute ed2k hash
+- `HashFile(path)` -- compute ed2k hash (root + block hashes)
 - `MatchFile(filename)` -- find local file for a playlist item
 - `StartDownload(FileId, peers)` -- begin chunk-based download
-- `ChunkReceived(FileId, index, data)` -- store received chunk
+- `ChunkReceived(FileId, index, data)` -- store received chunk (block-verified
+  as blocks complete)
 - `GetAvailability(FileId)` -- query which chunks we have
+- `Archive(FileId)` -- move cached file into the download root
+  (`<series>/<season>/<filename>`)
+- `RunEviction` -- eviction pass (sent at startup and on EOF-advance)
 
 **Produces:**
 - `HashResult(path, Ed2kHash)` -- completed hash
@@ -195,6 +213,10 @@ file storage.
 - `AvailabilityUpdate(FileId, BitVec)` -- our bitfield changed
 - `DownloadComplete(FileId, path)` -- file fully downloaded
 - `ChunkNeeded(FileId, Vec<u32>, PeerId)` -- request chunks from peer
+
+Prefetch (queued playlist entries ahead of now-playing; everything, for
+seeders) is driven by the main loop from playlist state: it sends
+`StartDownload` for entries within the prefetch policy.
 
 ---
 
@@ -236,9 +258,10 @@ NetworkActor            Main Loop               SyncActor           PlayerActor
   |                        |-- RemoteOp  --------->|                     |
   |                        |                       |-- StateChanged  --->|
   |                        |                       |                     |
-  |                        |<- (check authority,   |                     |
-  |                        |   drift > 3s?) ------>|                     |
-  |                        |                       |-- Seek(pos)  ------>|
+  |                        |<- (check authority)   |                     |
+  |                        |                       |-- SyncTo(pos)  ---->|
+  |                        |                       |   (ignore/slew/seek |
+  |                        |                       |    per drift band)  |
 ```
 
 ### File Download
@@ -247,14 +270,30 @@ NetworkActor            Main Loop               SyncActor           PlayerActor
 FileActor               Main Loop               NetworkActor
   |                        |                       |
   |-- ChunkNeeded -------->|                       |
-  |                        |-- SendChunkReq ------>|
-  |                        |                       |-- (P2P or relay)
+  |                        |-- SendPeerMessage --->|
+  |                        |                       |-- (relay via server)
   |                        |                       |
-  |                        |<- ChunkReceived ------|
+  |                        |<- PeerMessageRecv ----|
   |<- ChunkReceived -------|                       |
   |                        |                       |
   |-- AvailUpdate -------->|                       |
   |                        |-- LocalOp(FileAvail)->| (to SyncActor)
+```
+
+### EOF Transition
+
+```
+PlayerActor             Main Loop               NetworkActor          (Server)
+  |                        |                       |
+  |-- Eof ---------------->|                       |
+  |                        |-- ReportEof(hash) --->|
+  |                        |                       |-- EofReached ----> server:
+  |                        |                       |                    mark watched,
+  |                        |                       |                    advance now-playing,
+  |                        |                       |                    take seek authority
+  |                        |                       |<- StateOp(s) ------|
+  |                        |<- ServerOp -----------|
+  |                        |   (now-playing changed -> LoadFile next)   |
 ```
 
 ---
@@ -273,7 +312,7 @@ dessplay-core/                (shared library)
     protocol.rs               (wire message types, CrdtOp wrapper, CrdtSnapshot)
 dessplay/                     (client binary)
   src/
-    main.rs                   (actor creation, main select loop)
+    main.rs                   (actor creation, main select loop, seeder mode)
     actors/
       sync.rs                 (SyncActor)
       network.rs              (NetworkActor)
@@ -287,6 +326,7 @@ dessplay/                     (client binary)
       mpv.rs                  (MpvPlayer implementation)
       echo.rs                 (echo suppression filter)
       mock.rs                 (MockPlayer for tests)
+    import.rs                 (CSV importer for The List)
     storage.rs                (SQLite persistence)
     config.rs                 (local configuration)
 dessplay-rendezvous/          (server binary)

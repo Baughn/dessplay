@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-03-04
+Last updated: 2026-06-10
 
 10 phases, bottom-up. Each phase produces testable artifacts. The first
 user-facing demo (TUI with chat + shared playlist) arrives at Phase 6;
@@ -29,20 +29,26 @@ property tests. No networking -- pure logic.
 - Wire protocol message types (CrdtOp wrapping native crdts Op types,
   postcard serialization)
 - `CrdtState`: combined state container wrapping `crdts` types:
-  - Playlist: `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>>>`
+  - Playlist: `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>>>` (incl. size, duration)
+  - Watched flags: `Map<Ed2kHash, MVReg<Lww<bool>>>` (server-only writes)
   - Now Playing: `MVReg<Lww<Option<Ed2kHash>>>` (standalone)
   - Seek Authority: `MVReg<Lww<ActorId>>` (standalone)
   - Per-user series preference: `Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>>>`
   - Per-user manual override: `Map<UserId, MVReg<Lww<Option<ManualState>>>>`
+    (`Paused | Away { set_by }`)
   - Per-user file availability: `Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>>>`
   - AniDB metadata: `Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>>>`
+  - Series relations: `Map<AniDbSeriesId, MVReg<Lww<SeriesRelations>>>`
+  - The List: `Map<ListEntryId, MVReg<Lww<SeriesListEntry>>>`
+    + `Map<ListEntryId, MVReg<Lww<NextEpState>>>`
   - Chat: `GList<ChatMessage>`
   - Lookup requests: `GSet<FileHashInfo>`
   - Playback position: `Map<UserId, MVReg<Lww<PlaybackPosition>>>`
 - Playlist `Identifier<ActorId>`-based ordering (add, move, rebalance)
 - CvRDT merge support (for reconnection sync)
 - Snapshot generation and restoration
-- ed2k hash computation
+- ed2k hash computation (root + per-block hashes, kept for transfer
+  verification)
 
 ### Key crates
 `crdts`, `serde`, `postcard`, `ed2k`
@@ -69,8 +75,11 @@ round-trip correctly.
 ### What gets built
 - SQLite schema + migrations (rusqlite, bundled)
 - Persist/restore CRDT snapshots and op logs (keyed by epoch)
-- Local config: username, server, media roots, player choice, password
-- Watch history: file hash -> watched, last-watched timestamp
+- Local config: username, server, media roots, player choice, password,
+  role (interactive/seeder), cache retention, upload limit, subtitle pane
+- Watch history: file hash -> watched, last-watched timestamp (keyed by
+  hash/series so it survives cache eviction)
+- Download cache state (last-access times for eviction)
 - Manual file mappings
 - AniDB validation queue
 - TOFU certificate fingerprint store
@@ -94,12 +103,17 @@ No state sync yet -- transport and connection management only.
 
 ### What gets built
 - `Transport` trait (the testability seam)
-- QUIC via quinn: server connection, length-prefixed postcard messages
+- QUIC via quinn: server connection, length-prefixed postcard messages,
+  10s keep-alives, datagram size rule (oversized ops skip eager-push)
+- Stream priorities (control stream above transfer streams) and flow-control
+  window sizing for bulk transfer
 - `SimulatedTransport`: in-process test transport with configurable loss,
   latency, partitions, reordering, bandwidth limits
 - TOFU certificate management
-- Client -> Server: auth flow, peer list, time sync
-- NTP-style time synchronization (rolling average, outlier rejection)
+- Client -> Server: auth flow (username, password, role, epoch), peer list
+  (role + presence), time sync
+- NTP-style time synchronization over datagrams (rolling average, outlier
+  rejection)
 - NetworkActor skeleton
 
 ### Key crates
@@ -124,6 +138,7 @@ synchronized clocks.
 - SyncActor: wraps CrdtState, handles local and remote ops
 - Server-side sync: receive ops from clients, broadcast to others
 - Eager push via datagrams + reliable send on control stream
+- Playback position exception: datagram-only at 100ms, reliable tick at 1s
 - Periodic state summary exchange (1s)
 - Gap detection from version vector comparison
 - Gap fill over on-demand streams
@@ -147,23 +162,36 @@ Multiple clients modify CRDTs through server and converge to identical state.
 
 ### What gets built
 - Main loop: actor creation, channel wiring, `tokio::select!` dispatch
-- Derived playback state (play iff all users Ready/NotWatching, file states
-  permit)
-- User state derivation (series preference + manual override -> derived state)
-- Seek authority logic (last seeker is authoritative, server on file change)
-- Server compaction (5min after last disconnect -> epoch increment, playlist
-  rebalance)
+- Seeder mode: `--seeder` spawns only Sync/Network/File actors
+- Presence tracking on the server (Present -> Lost at 30s -> Departed at
+  60s), `PeerList` pushes, pause-on-lost and pause-on-graceful-quit
+- Derived playback state (play iff all *present* users Ready/Away/NotWatching,
+  file states permit; seeders excluded)
+- User state derivation (series preference + manual override -> derived
+  state), including Away (set by others, cleared by owner activity)
+- Seek authority logic (last seeker is authoritative; server on file change
+  and on authority departure)
+- EOF transition: `EofReached` report handling, watched flag, now-playing
+  advance, idempotency
+- Server compaction: scheduled daily (configurable time) -> pause ops,
+  rebalance playlist, trim+archive chat, clear GSet, epoch increment,
+  snapshot broadcast to connected clients
 - Epoch handling on client reconnection
 - Server ActorId for authoritative actions
 
 ### Testing
-- Unit tests: derived state for all user/file state combinations
-- Compaction round-trip: generate ops -> compact -> reconnect with stale epoch
-- Seek authority transitions: user seek, file change, reconnect
+- Unit tests: derived state for all presence/user/file state combinations
+- Presence transitions with paused tokio time (lost -> pause; departed ->
+  unblock gating but stay paused)
+- Compaction round-trip: generate ops -> compact -> reconnect with stale
+  epoch; compact with clients connected -> snapshot broadcast adopted
+- Seek authority transitions: user seek, file change, authority departure,
+  reconnect
+- EOF idempotency: duplicate reports are no-ops
 
 ### Milestone
-Headless client connects and syncs. Server compacts correctly. Derived state
-logic works.
+Headless client connects and syncs. Seeder mode runs. Server compacts on
+schedule with clients attached. Presence-aware derived state works.
 
 ---
 
@@ -174,15 +202,22 @@ logic works.
 ### What gets built
 - UiActor with tui-realm Application
 - Components:
-  - ChatPane (log + input)
-  - SeriesPane (dual-mode: Recent Series / All Series)
-  - UsersPane (colored ready states)
-  - PlaylistPane (current highlighted, missing in red, played in muted)
+  - ChatPane (log + input; `/afk` command)
+  - SubtitlePane (rolling log component; fed with real data in Phase 7)
+  - SeriesPane (three modes: Recent Series / All Series / The List)
+  - UsersPane (colored ready states incl. Away; departed + seeder lines;
+    focusable, `a` = mark Away)
+  - PlaylistPane (current highlighted, missing in red, watched in muted;
+    `d` remove, `A` archive, `Ctrl-m` manual map)
   - PlayerStatus (progress bar, now-playing)
   - KeybindingBar (derived from focus)
-- State -> Props mapping (CrdtSnapshot -> component data)
-- Tab cycling: Chat -> Series -> Playlist
-- Modal components: FileBrowser, Settings, EpisodeBrowser
+- State -> Props mapping (CrdtSnapshot + presence -> component data)
+- Tab cycling: Chat -> Series -> Users -> Playlist
+- Modal components: FileBrowser, Settings, EpisodeBrowser, ListEntryEdit
+  (AniDbSearch modal lands in Phase 8 with its server support)
+- The List: entry display, editing, status grouping
+- `dessplay import-list` CSV importer (spreadsheet port, watcher-initial
+  mapping)
 - Keybinding bar (auto-derived from active component)
 - `--dump` flag for debugging (print CRDT state, config, etc.)
 
@@ -193,7 +228,8 @@ logic works.
 - insta snapshot tests: render components -> buffer -> assert snapshot
 - Message tests: input event -> correct Msg
 - Update tests: Msg -> correct UserAction
-- Edge cases: empty playlist, no users, long filenames
+- Importer tests against the real exported sheets as fixtures
+- Edge cases: empty playlist, no users, long filenames, unlinked List entries
 
 ### Milestone
 Interactive TUI client: connect, see peers, chat, manage shared playlist.
@@ -210,14 +246,17 @@ Interactive TUI client: connect, see peers, chat, manage shared playlist.
 - PlayerActor: manages mpv process, echo filter, position broadcast
 - Echo suppression: tag commands, filter echoed events, use mpv's
   user-initiated vs programmatic event distinction
-- Play/pause sync (derived from user states)
+- Play/pause sync (derived from presence + user states)
 - Seek authority: user seek -> write SeekAuthority + position, others follow
 - Position broadcast (100ms playing, 1s paused)
-- Seek-on-receipt when drift > 3s from authority's position
+- Drift bands: ignore < 100ms, slew (±2% mpv `speed`) to 3s, hard seek above
 - Content hash verification (ed2k) before unpause
 - OSD messages (chat on video)
+- Subtitle feed: observe mpv `sub-text`, emit `SubtitleLine` to the
+  SubtitlePane
 - Crash handling (relaunch + seek; second crash within 30s -> global pause)
-- Server EOF handling -> next file, server becomes seek authority
+- EOF reporting (`EofReached` to server) -> next file, server becomes seek
+  authority
 
 ### Key crates
 `serde_json` (mpv JSON IPC)
@@ -225,6 +264,7 @@ Interactive TUI client: connect, see peers, chat, manage shared playlist.
 ### Testing
 - MockPlayer unit tests: correct commands for state transitions
 - Echo suppression integration tests (gated behind `mpv-tests`)
+- Drift band tests (boundary values; slew converges, releases speed to 1.0)
 - Seek authority tests with paused tokio time
 - Debounce tests
 
@@ -244,6 +284,10 @@ video playback in mpv, chat on OSD.
 - Rate limiter (4s minimum interval, 5s penalty on throttle)
 - SQLite-backed validation queue with file_size
 - ed2k hash -> file lookup -> series/season/episode
+- Relations graph: ANIME lookups + recursive relation walks per new series
+  ID, cached in server SQLite, replicated as `SeriesRelations`
+- ANIME name search (backs the AniDbSearch modal for List entry linking)
+- List integration: next_ep auto-advance on EOF for linked entries
 - Results written as server-authoritative LWW Register ops
 - Re-validation schedule (30min <1d, 2h <1w, ...; >=3mo skip; known <=1/week)
 - `anidb-probe` binary for manual API testing
@@ -255,30 +299,39 @@ video playback in mpv, chat on OSD.
 - Queue scheduling tests
 
 ### Milestone
-Playlist files enriched with series/season/episode from AniDB.
+Playlist files enriched with series/season/episode from AniDB. Franchise
+grouping works. List entries linkable; next_ep advances automatically.
 
 ---
 
 ## Phase 9: File Management & Transfer
 
-**Goal**: Media scanning, file matching, watch tracking, P2P file transfer.
+**Goal**: Media scanning, file matching, watch tracking, relayed file
+transfer, download cache.
 
 ### What gets built
-- FileActor: hashing, scanning, matching, download coordination
+- FileActor: hashing, scanning, matching, download coordination, cache
+  management
 - Recursive media root scanning
 - Automatic file matching (by filename)
-- Known series vs unknown series detection
+- Known series vs unknown series detection (AniDB series ID against watch
+  history; name-parse fallback pre-metadata)
 - Manual file mapping (file browser, sorted by edit distance)
-- Watch tracking (85% duration = watched)
+- Watch tracking (85% duration = watched; personal vs group levels)
 - Recent Series sorting
 - Placeholder PNG for "not watching" state
 - File mtime tracking for re-hashing
-- P2P file transfer: 256KiB chunks, availability bitfields
+- Relayed file transfer: 256KiB chunks, availability bitfields, relay
+  envelopes over the server connection (no client-to-client connections)
+- ed2k block-hash verification (per-block validation, bad-block re-fetch,
+  resume-after-restart from on-disk chunks)
 - Rarest-first chunk selection (sequential near playback position)
-- Hole punching: simultaneous QUIC opens, exponential backoff, relay fallback
-- Server-side file transfer relay
 - Max 4 concurrent streams, 16 chunks pipeline depth
-- Temp storage -> download root after 50% watched
+- Upload rate cap (`upload_limit`)
+- Download cache: retention policy (0/duration/infinite), eviction passes
+  (startup + EOF-advance), archive action
+- Prefetch: queued entries ahead of now-playing; seeder auto-fetch of
+  everything
 - Download progress in FileAvailability CRDT
 
 ### Key crates
@@ -286,13 +339,15 @@ Playlist files enriched with series/season/episode from AniDB.
 
 ### Testing
 - File matching logic, series detection, sorting
-- SimulatedTransport: file transfer integrity, rarest-first distribution
-- Hole punch / relay fallback
+- Eviction policy (retention boundaries; never evicts now-playing/queued)
+- SimulatedTransport: relayed transfer integrity, rarest-first distribution,
+  block verification and resume
 - Bandwidth throttling
 
 ### Milestone
 Missing files detected and shown in red. Manual mapping works. Files
-downloaded from peers automatically. Works across firewalls.
+downloaded through the relay automatically; the seeder fetches everything;
+the laptop's cache cleans up after itself.
 
 ---
 
@@ -305,10 +360,11 @@ downloaded from peers automatically. Works across firewalls.
 - Graceful shutdown (clean actor teardown)
 - Error handling (no panics -- enforced by clippy lints)
 - Full fuzz target suite
-- System tests: tmux end-to-end
+- System tests: tmux end-to-end (including a seeder instance)
 - Logging/tracing throughout
-- `/exit`, `/quit`, `/q` commands
-- VLC support (v2 scope decision)
+- `/exit`, `/quit`, `/q`, `/afk` commands
+- NixOS deployment for the NAS (rendezvous + seeder services)
+- VLC support (open scope decision: ship in v2 or defer)
 
 ### Testing
 - Fuzz: >=10min per target

@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-03-04
+Last updated: 2026-06-10
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -134,14 +134,18 @@ and the wire protocol uniform.
 | State | CRDT Type | Owner |
 |---|---|---|
 | Playlist | `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>, ActorId>, ActorId>` | Any peer |
+| Watched flags | `Map<Ed2kHash, MVReg<Lww<bool>, ActorId>, ActorId>` | Server only (at EOF) |
 | Now Playing | `MVReg<Lww<Option<Ed2kHash>>, ActorId>` | Any peer; server on EOF |
-| Seek Authority | `MVReg<Lww<ActorId>, ActorId>` | Whoever last seeked; server on file change |
+| Seek Authority | `MVReg<Lww<ActorId>, ActorId>` | Whoever last seeked; server on file change or authority departure |
 | Series preference | `Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>, ActorId>, ActorId>` | Each user writes own |
-| Manual override | `Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId>` | Each user writes own |
+| Manual override | `Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId>` | Owning user; *anyone* may write `Away` |
 | File availability | `Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>, ActorId>, ActorId>` | Each user writes own |
 | AniDB metadata | `Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>, ActorId>, ActorId>` | Server only |
+| Series relations | `Map<AniDbSeriesId, MVReg<Lww<SeriesRelations>, ActorId>, ActorId>` | Server only |
+| The List | `Map<ListEntryId, MVReg<Lww<SeriesListEntry>, ActorId>, ActorId>` | Any peer |
+| List next-ep | `Map<ListEntryId, MVReg<Lww<NextEpState>, ActorId>, ActorId>` | Any peer; server auto-advance |
 | Lookup requests | `GSet<FileHashInfo>` | Any peer inserts; cleared on compaction |
-| Chat | `GList<ChatMessage>` | Any peer appends |
+| Chat | `GList<ChatMessage>` | Any peer appends; trimmed on compaction |
 | Playback position | `Map<UserId, MVReg<Lww<PlaybackPosition>, ActorId>, ActorId>` | Each user writes own |
 
 ### Playlist
@@ -150,9 +154,18 @@ The playlist is a `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>, ActorId>, ActorId
 
 `PlaylistFileState` contains:
 - `position: Identifier<ActorId>` -- dense ordering via `crdts::Identifier`
-- `is_watched: bool` -- whether this file has been played past the threshold
 - `added_by: UserId` -- who added this file
 - `filename: String` -- original filename for display and matching
+- `size_bytes: u64` -- filled by the adder; downloaders need it for chunk counts
+- `duration_millis: Option<u64>` -- filled by the adder; drives the bitrate
+  unpause rule and watched thresholds for files still downloading
+
+**Watched flags live in a separate map** (`Map<Ed2kHash, MVReg<Lww<bool>>>`,
+server-only writes at EOF) rather than inside `PlaylistFileState`. Keeping
+them out of the struct avoids a real LWW race: a user moving an entry
+(rewriting the whole struct with a new position) concurrent with the server
+marking it watched would silently drop one of the two writes. With a single
+writer (the server) on its own map, the race cannot occur.
 
 **Ordering:** To display the playlist, collect all entries, resolve each
 `MVReg` to its LWW winner, sort by `position` (ascending), with `Ed2kHash`
@@ -177,9 +190,14 @@ while preserving order.
 
 **Conflict resolution:** Concurrent writes to the same key's `PlaylistFileState`
 are preserved by `MVReg` and resolved by `Lww` (highest timestamp wins, with
-value-based tiebreaking). With ~4 users and manual playlist management, true
+value-based tiebreaking). With ~5 users and manual playlist management, true
 simultaneous conflicts are rare. When they occur, the playlist converges to
 *some* deterministic order and someone fixes it manually.
+
+**Known limitation:** because the playlist is keyed by `Ed2kHash`, the same
+file cannot appear twice (e.g. a same-session rewatch). Re-select the watched
+entry with Enter instead. This is a deliberate consequence of the key choice,
+not an oversight.
 
 ### Now Playing
 
@@ -187,6 +205,15 @@ simultaneous conflicts are rare. When they occur, the playlist converges to
 
 Any peer can set now-playing by selecting a playlist entry. The server sets
 it on EOF (advancing to next item). Last writer wins via `Lww`.
+
+**EOF transition:** clients report end-of-file to the server via the
+`EofReached { file }` control message (not a CRDT op -- it is a report, not
+state). On the first report matching the current now-playing value from a
+present, watching user, the server: sets the watched flag, advances
+now-playing to the next unwatched playlist entry, takes seek authority, and
+auto-advances the List's `next_ep` if the file's series is linked and
+`next_ep` is numeric. Subsequent reports no longer match now-playing and are
+ignored -- the transition is idempotent without any dedup bookkeeping.
 
 ### Seek Authority
 
@@ -212,6 +239,10 @@ ignore it -- you already performed the seek.
 Everyone resets to position 0. The server's authority prevents spurious seeks
 during the transition.
 
+**Authority departure:** if the current seek authority becomes Departed
+(see presence in [network-design.md](network-design.md)), the server takes
+seek authority so remaining clients never sync to a ghost.
+
 ### Series Preference
 
 `Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>, ActorId>, ActorId>`.
@@ -224,10 +255,17 @@ they're not interested in.
 ### Manual Override
 
 `Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId>`,
-where `ManualState` is `Paused`.
+where `ManualState` is `Paused | Away { set_by: UserId }`.
 
-Set when the user manually pauses. Cleared (set to `None`) when the user
-attempts to unpause. Takes priority over the series preference.
+`Paused` is set when the user manually pauses, cleared (set to `None`) when
+the user attempts to unpause. Takes priority over the series preference.
+
+`Away` is the exception to "each user writes own": *any* user may write
+`Away` into another user's register (for the friend who walked off without
+quitting). `set_by` records who did it, for display. Any input from the
+marked user's client clears the override back to `None` (or `Paused`-then-
+unpause semantics as normal). For playback gating, `Away` behaves like
+NotWatching -- it does not block.
 
 ### File Availability
 
@@ -286,6 +324,39 @@ Code that needs franchise grouping (series browser) checks `series_id`.
 Files without an AniDB series ID are grouped by `series_name` as a fallback
 (less accurate, but functional).
 
+### Series Relations
+
+`Map<AniDbSeriesId, MVReg<Lww<SeriesRelations>, ActorId>, ActorId>`.
+
+Server-only writes. `SeriesRelations` holds the series' related-anime edges
+(relation type + target series ID) plus display data (title, year, episode
+count) fetched via the AniDB ANIME command. The server walks relations
+recursively as new series IDs appear, under the same rate limiter as file
+lookups, caching results in its SQLite. Clients compute franchise groupings
+(connected components over sequel/prequel/side-story edges) locally from this
+map.
+
+### The List
+
+`Map<ListEntryId, MVReg<Lww<SeriesListEntry>, ActorId>, ActorId>` for entry
+data, plus `Map<ListEntryId, MVReg<Lww<NextEpState>, ActorId>, ActorId>` for
+the fast-changing progress fields.
+
+`ListEntryId` is a random 128-bit ID generated at entry creation (or import).
+See design.md, [The List](design.md#the-list-series-tracker), for the full
+`SeriesListEntry` and `NextEpState` schemas and the CSV import rules.
+
+The split into two maps exists because `next_ep` is written both by users
+(weekly "episode 5 is out" updates) and by the server (auto-advance at EOF
+for linked series); keeping it out of `SeriesListEntry` prevents those writes
+from clobbering concurrent edits to notes/status, mirroring the
+watched-flags reasoning above.
+
+Entries are whole-struct LWW -- edit frequency is a few writes per week, and
+losing one concurrent note edit is shrug-worthy. **The List survives
+compaction untouched and is never pruned**: it is a few hundred rows of text
+and the history is the point.
+
 ### Chat
 
 `crdts::GList<ChatMessage>` -- a grow-only ordered list.
@@ -298,6 +369,10 @@ Each `ChatMessage` contains:
 GList handles ordering and deduplication. Messages are displayed sorted by
 the GList's internal ordering (which respects insertion order). Operations
 are the GList's native `Op` type, sent via CmRDT.
+
+Chat is trimmed to the most recent 500 messages at compaction. Before
+trimming, the server archives the full history to its SQLite, so nothing is
+truly lost -- the replicated state just stays bounded.
 
 ### Playback Position
 
@@ -315,6 +390,13 @@ This is a proper CRDT (not ephemeral gossip), which means:
 - Position survives reconnection (the server has the last known value)
 - No special-case code for "ephemeral" vs "persistent" state
 - The CRDT machinery handles deduplication and ordering naturally
+
+**Transport exception:** unlike every other op type, position ops are sent
+via **datagram only** at the 100ms rate, with a 1s reliable-stream fallback
+tick. Sending every position op reliably would queue stale positions behind
+retransmissions on lossy links (head-of-line blocking) -- position is the
+one type where dropping intermediate values is strictly correct. See
+[network-design.md](network-design.md).
 
 ---
 
@@ -363,23 +445,36 @@ any missed operations implicitly.
 
 ### When It Happens
 
-The rendezvous server compacts the state when **no clients have been
-connected for more than 5 minutes**. This is the typical "end of session"
-scenario -- everyone closes their laptops after watching anime.
+**Scheduled daily** at a configured server-local time (default 12:00) --
+chosen to be maximally far from watch-party hours. The old "no clients
+connected for 5 minutes" trigger does not work here: seeders are always
+connected, so quiescence never occurs.
+
+Compaction runs with clients attached. The server briefly stops accepting
+ops, compacts, broadcasts the fresh snapshot, and resumes -- a pause of at
+most a second or two at noon, which nobody will ever notice.
 
 ### How It Works
 
-1. Server takes its current merged CRDT state
-2. **Rebalances playlist `Identifier` positions** -- reassigns fresh
+1. Server stops accepting ops (incoming ops are buffered or rejected;
+   clients retry)
+2. Takes its current merged CRDT state
+3. **Rebalances playlist `Identifier` positions** -- reassigns fresh
    identifiers with small `BigRational` values to prevent size growth
-3. Compacts each user's playback position to a single latest value
-4. **Clears the lookup request GSet** -- all entries have been processed
-5. Increments the epoch counter
-6. Serializes the compacted state as the new baseline
+4. Compacts each user's playback position to a single latest value
+5. **Clears the lookup request GSet** -- all entries have been processed
+6. **Trims chat** to the most recent 500 messages (full history archived to
+   server SQLite first)
+7. **Leaves The List untouched** -- it is permanent state
+8. Increments the epoch counter
+9. Serializes the compacted state as the new baseline
+10. Broadcasts `StateSnapshot { new_epoch, state }` to all connected clients,
+    which replace their local state exactly as in a stale-epoch reconnect,
+    then resumes accepting ops
 
 ### Client Reconnection After Compaction
 
-1. Client connects, sends its last known epoch
+1. Client connects, sends its last known epoch (in the `Auth` message)
 2. If epoch matches: server sends full CvRDT state, client merges
 3. If epoch is stale: server sends the compacted snapshot + new epoch.
    Client replaces its local state entirely.
@@ -408,17 +503,18 @@ If a client is partitioned while the server compacts:
 - On reconnection, it sees a newer epoch and replaces its state with the
   server's compacted snapshot.
 - If the client generated ops *during* the partition that the server never
-  saw: these ops are lost. For this use case (friends watching anime ~1hr/day),
-  this requires being partitioned for the entire session *and* for 5 minutes
-  after everyone else disconnects. Acceptable risk.
+  saw: these ops are lost. With daily compaction at noon, this requires
+  being offline with unsent ops across the noon boundary -- e.g. editing The
+  List on a laptop at 11am, closing it, and reconnecting after noon. Rare
+  and low-stakes (the edit is simply redone), but it is the one real data-loss
+  window in the design. Acceptable risk.
 
 ### Server Unavailable
 
-Without the server, no state sync occurs. Clients cannot:
-- Sync state with each other (hub-and-spoke model)
-- Receive AniDB lookups
-- Discover new peers
+Without the server, nothing works: no state sync, no AniDB lookups, no file
+transfer (all transfer is relayed through the server). For short outages,
+clients buffer local operations and replay them when the server returns.
 
-File transfers that are already in progress via peer-to-peer connections
-continue to work. For short outages, clients can buffer local operations
-and replay them when the server returns.
+The server lives on the host's home connection, so a home internet outage
+takes the whole party down -- accepted, since the host could not watch
+either way, and the others lose nothing but the evening's coordination.

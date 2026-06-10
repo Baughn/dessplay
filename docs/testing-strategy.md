@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-03-04
+Last updated: 2026-06-10
 
 ## Table of Contents
 
@@ -29,7 +29,8 @@ Last updated: 2026-03-04
   it *before* writing the fix.
 - **High-risk areas get extra coverage**: Echo suppression, CRDT convergence,
   Lww tiebreaking, playlist Identifier ordering, reconnection/epoch handling,
-  seek authority transitions.
+  seek authority transitions, presence transitions (lost/departed pause
+  behavior), cache eviction (must never delete the wrong file).
 
 ---
 
@@ -120,11 +121,20 @@ Fast, in-process, no external dependencies. Cover:
 - Playlist `Identifier`-based ordering, rebalancing
 - CvRDT merge correctness (merge is idempotent, commutative, associative)
 - Time sync offset calculation
-- File hash computation
+- File hash computation (ed2k root + per-block hashes)
 - Actor message handling (inject message, check outputs)
 - Chat GList ordering and deduplication
-- Seek authority transitions
-- User state derivation (series preference + manual override -> derived state)
+- Seek authority transitions (user seek, file change, authority departure)
+- User state derivation (series preference + manual override -> derived
+  state, including Away set/cleared by activity)
+- Presence-aware playback gating (every presence x user-state x file-state
+  combination; seeders never gate)
+- Drift band selection (ignore / slew / hard seek, boundary values)
+- Cache eviction policy (retention 0 / finite / infinite; never evicts
+  now-playing or queued unwatched entries)
+- EOF transition idempotency (duplicate `EofReached` reports are no-ops)
+- List importer: CSV section parsing, status heuristics, watcher-initial
+  mapping (tested against the real exported sheets as fixtures)
 
 ### Integration Tests (`cargo test` with real binaries)
 
@@ -132,10 +142,12 @@ Slower, may spawn external processes. Cover:
 
 - Player bridge with real mpv (`-vo null -ao null`)
 - Echo suppression (send command to mpv, verify not re-broadcast)
+- Subtitle text observation (`sub-text` property events)
 - State sync convergence across multiple SyncActors connected via
   SimulatedTransport
-- Reconnection and epoch handling
-- File transfer chunking and reassembly
+- Reconnection and epoch handling (including the daily compaction broadcast)
+- Relayed file transfer: chunking, reassembly, block-hash verification,
+  corrupted-block re-fetch, resume-after-restart from on-disk chunks
 
 ### System Tests (`cargo test --features system-test` or manual)
 
