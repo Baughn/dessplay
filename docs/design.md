@@ -565,7 +565,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>>` | `Identifier`-based ordering; includes size and duration; `None` = removal tombstone (purged at compaction) |
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
-| Seek Authority | `LwwCell<ActorId>` | Standalone register; last seeker is position authority |
+| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Standalone register; last seeker is position authority |
 | Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>` | Compound key |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>>` | Compound key |

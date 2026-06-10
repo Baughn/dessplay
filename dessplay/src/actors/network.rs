@@ -10,14 +10,14 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use dessplay_core::net::timesync::TimeSync;
 use dessplay_core::net::{
     Connector, Role, ServerControl, Transport, TransportError, TransportEvent, WireMessage,
 };
-use dessplay_core::types::Epoch;
-use dessplay_core::types::UserId;
+use dessplay_core::types::{Epoch, UserId};
 use dessplay_core::wire;
 use tokio::sync::mpsc;
 
@@ -28,6 +28,15 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 /// Commands from the main loop.
 #[derive(Debug)]
 pub enum NetworkCommand {
+    /// Send on the control stream only (reliable, ordered).
+    SendReliable(Box<ServerControl>),
+    /// Send on the control stream *and* eagerly as a datagram when it
+    /// fits (the latency optimization for state ops).
+    SendEager(Box<ServerControl>),
+    /// Send as a datagram only; silently dropped if datagrams are
+    /// unavailable (playback positions — the 1s reliable tick covers
+    /// the gap).
+    SendDatagramOnly(Box<ServerControl>),
     /// Close the connection and exit the actor.
     Shutdown,
 }
@@ -44,6 +53,15 @@ pub enum NetworkEvent {
     AuthFailed,
     /// A fresh peer list.
     PeerList(Vec<dessplay_core::net::PeerInfo>),
+    /// A state-sync message from the server (op, merge, snapshot,
+    /// hash). Routed to the sync actor; `via_datagram` selects the
+    /// FIFO-guarded apply path.
+    Server {
+        /// The message.
+        msg: Box<ServerControl>,
+        /// True if it arrived as a datagram (unordered path).
+        via_datagram: bool,
+    },
     /// The clock offset estimate changed.
     ClockSync {
         /// Server-minus-local offset, milliseconds.
@@ -64,8 +82,9 @@ pub struct NetworkConfig {
     pub password: String,
     /// Interactive or seeder.
     pub role: Role,
-    /// Last known epoch (from storage).
-    pub epoch: Epoch,
+    /// Current epoch, shared with the sync actor (it advances on
+    /// snapshot adoption; reconnect auths use the live value).
+    pub epoch: Arc<AtomicU64>,
     /// Local clock, unix millis.
     pub clock: Clock,
     /// Steady-state probe interval (30s in production).
@@ -76,7 +95,13 @@ pub struct NetworkConfig {
 
 impl NetworkConfig {
     /// Production timing defaults.
-    pub fn new(username: UserId, password: String, role: Role, epoch: Epoch, clock: Clock) -> Self {
+    pub fn new(
+        username: UserId,
+        password: String,
+        role: Role,
+        epoch: Arc<AtomicU64>,
+        clock: Clock,
+    ) -> Self {
         Self {
             username,
             password,
@@ -165,6 +190,21 @@ async fn send_datagram_or_control<T: Transport>(
     }
 }
 
+/// Send reliably, plus eagerly as a datagram when it fits (the size
+/// rule): receivers dedup, so the datagram is pure latency win.
+async fn send_eager<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(), TransportError> {
+    let frame = wire::encode(&WireMessage::Control(msg.clone()))
+        .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
+    conn.send_control(&frame).await?;
+    if conn
+        .max_datagram_size()
+        .is_some_and(|max| frame.len() <= max)
+    {
+        let _ = conn.send_datagram(&frame).await;
+    }
+    Ok(())
+}
+
 async fn run_connection<T: Transport>(
     conn: &T,
     config: &NetworkConfig,
@@ -176,7 +216,7 @@ async fn run_connection<T: Transport>(
         username: config.username.clone(),
         password: config.password.clone(),
         role: config.role,
-        epoch: config.epoch,
+        epoch: Epoch(config.epoch.load(Ordering::SeqCst)),
     };
     if let Err(e) = send_control(conn, &auth).await {
         return ConnectionEnd::Lost(e.to_string());
@@ -195,8 +235,9 @@ async fn run_connection<T: Transport>(
                     Ok(event) => event,
                     Err(e) => return ConnectionEnd::Lost(e.to_string()),
                 };
-                let payload = match event {
-                    TransportEvent::Control(bytes) | TransportEvent::Datagram(bytes) => bytes,
+                let (payload, via_datagram) = match event {
+                    TransportEvent::Control(bytes) => (bytes, false),
+                    TransportEvent::Datagram(bytes) => (bytes, true),
                     TransportEvent::IncomingStream(_) => continue, // Phase 9
                     TransportEvent::Closed { reason } => return ConnectionEnd::Lost(reason),
                 };
@@ -229,10 +270,19 @@ async fn run_connection<T: Transport>(
                                 .await;
                         }
                     }
-                    // State sync arrives in Phase 4; EOF and friends are
-                    // client -> server only.
+                    msg @ (ServerControl::StateOp(_)
+                    | ServerControl::StateMerge(_)
+                    | ServerControl::StateSnapshot(_)
+                    | ServerControl::StateHash { .. }) => {
+                        let _ = events
+                            .send(NetworkEvent::Server {
+                                msg: Box::new(msg),
+                                via_datagram,
+                            })
+                            .await;
+                    }
                     other => {
-                        tracing::debug!("ignoring (phase 3): {other:?}");
+                        tracing::debug!("ignoring unexpected server message: {other:?}");
                     }
                 }
             }
@@ -253,6 +303,25 @@ async fn run_connection<T: Transport>(
 
             cmd = commands.recv() => {
                 match cmd {
+                    Some(NetworkCommand::SendReliable(msg)) => {
+                        if let Err(e) = send_control(conn, &msg).await {
+                            return ConnectionEnd::Lost(e.to_string());
+                        }
+                    }
+                    Some(NetworkCommand::SendEager(msg)) => {
+                        if let Err(e) = send_eager(conn, &msg).await {
+                            return ConnectionEnd::Lost(e.to_string());
+                        }
+                    }
+                    Some(NetworkCommand::SendDatagramOnly(msg)) => {
+                        // Best-effort by definition; errors are not lost
+                        // data (the 1s reliable position tick catches up).
+                        if let Ok(frame) =
+                            wire::encode(&WireMessage::Control((*msg).clone()))
+                        {
+                            let _ = conn.send_datagram(&frame).await;
+                        }
+                    }
                     Some(NetworkCommand::Shutdown) | None => return ConnectionEnd::Shutdown,
                 }
             }

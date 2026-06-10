@@ -18,7 +18,7 @@ use crate::lww::{Lww, LwwCell, resolve_value};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
     FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackPosition, PlaylistFileState,
-    SeriesListEntry, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    SeekAuthority, SeriesListEntry, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
@@ -44,7 +44,7 @@ pub struct CrdtState {
     /// The currently playing file, if any.
     pub now_playing: LwwCell<Option<Ed2kHash>>,
     /// Whoever last seeked; everyone syncs to their position.
-    pub seek_authority: LwwCell<ActorId>,
+    pub seek_authority: LwwCell<SeekAuthority>,
     /// Per-user, per-series watch preference.
     pub series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     /// Per-user manual state override. `Away` is writable by anyone.
@@ -88,7 +88,7 @@ pub enum CrdtOp {
     /// Now-playing register write.
     NowPlaying(LwwRegOp<Option<Ed2kHash>>),
     /// Seek-authority register write.
-    SeekAuthority(LwwRegOp<ActorId>),
+    SeekAuthority(LwwRegOp<SeekAuthority>),
     /// Series preference write.
     SeriesPreference(LwwMapOp<(UserId, AniDbSeriesId), SeriesWatchState>),
     /// Manual override write.
@@ -267,7 +267,7 @@ impl CrdtState {
         &mut self,
         actor: ActorId,
         ts: SharedTimestamp,
-        authority: ActorId,
+        authority: SeekAuthority,
     ) -> CrdtOp {
         let _ = actor;
         CrdtOp::SeekAuthority(reg_put(&mut self.seek_authority, ts, authority))
@@ -431,8 +431,82 @@ impl CrdtState {
     }
 }
 
+impl CrdtState {
+    /// Hash of the resolved view **excluding playback positions** (they
+    /// churn every 100ms and would never match between replicas). Used
+    /// by the divergence alarm — see docs/sync-state.md.
+    pub fn view_hash(&self) -> [u8; 32] {
+        use sha2::Digest;
+        let mut view = self.view();
+        view.playback_position.clear();
+        match crate::wire::encode(&view) {
+            Ok(bytes) => sha2::Sha256::digest(&bytes).into(),
+            // Encoding a StateView cannot fail (no maps with non-string
+            // keys at the serde level, no floats); if it somehow does,
+            // return a sentinel that never matches a real hash.
+            Err(_) => [0xFF; 32],
+        }
+    }
+
+    /// Apply an op **received via datagram**, where per-origin FIFO is
+    /// not guaranteed. Map ops are applied only if their dot is exactly
+    /// the next in sequence for that origin (otherwise applying would
+    /// silently mask the gap); register/list/set ops are order-free and
+    /// always applied. Returns whether the op was applied — a dropped
+    /// op is fine, its reliable copy is on the control stream.
+    pub fn apply_if_orderly(&mut self, op: CrdtOp) -> bool {
+        /// The op's dot must be `clock[actor] + 1` on this map.
+        fn next_in_sequence<K, V>(map: &LwwMap<K, V>, op: &LwwMapOp<K, V>) -> bool
+        where
+            K: Ord + Clone + Debug,
+            V: Ord + Clone + Debug,
+        {
+            match op {
+                crdts::map::Op::Up { dot, .. } => {
+                    map.read_ctx().add_clock.get(&dot.actor) + 1 == dot.counter
+                }
+                // We never send Rm; an out-of-band one is dropped.
+                crdts::map::Op::Rm { .. } => false,
+            }
+        }
+
+        macro_rules! guarded {
+            ($field:ident, $op:expr) => {{
+                if next_in_sequence(&self.$field, &$op) {
+                    self.$field.apply($op);
+                    true
+                } else {
+                    false
+                }
+            }};
+        }
+
+        match op {
+            CrdtOp::Playlist(op) => guarded!(playlist, op),
+            CrdtOp::Watched(op) => guarded!(watched, op),
+            CrdtOp::SeriesPreference(op) => guarded!(series_preference, op),
+            CrdtOp::ManualOverride(op) => guarded!(manual_override, op),
+            CrdtOp::FileAvailability(op) => guarded!(file_availability, op),
+            CrdtOp::AniDbMetadata(op) => guarded!(anidb_metadata, op),
+            CrdtOp::SeriesRelations(op) => guarded!(series_relations, op),
+            CrdtOp::ListEntry(op) => guarded!(list_entries, op),
+            CrdtOp::ListNextEp(op) => guarded!(list_next_ep, op),
+            CrdtOp::PlaybackPosition(op) => guarded!(playback_position, op),
+            // Order-free types.
+            op @ (CrdtOp::NowPlaying(_)
+            | CrdtOp::SeekAuthority(_)
+            | CrdtOp::LookupRequest(_)
+            | CrdtOp::Chat(_)) => {
+                self.apply(op);
+                true
+            }
+        }
+    }
+}
+
 /// The fully resolved, plain-data view of a [`CrdtState`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Serializable so [`CrdtState::view_hash`] can hash it canonically.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateView {
     /// Playlist entries in display order.
     pub playlist: Vec<crate::playlist::PlaylistEntry>,
@@ -441,7 +515,7 @@ pub struct StateView {
     /// The currently playing file.
     pub now_playing: Option<Ed2kHash>,
     /// Current seek authority.
-    pub seek_authority: Option<ActorId>,
+    pub seek_authority: Option<SeekAuthority>,
     /// Per-user series preferences.
     pub series_preference: BTreeMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     /// Per-user manual overrides.

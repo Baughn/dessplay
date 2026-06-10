@@ -9,14 +9,18 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dessplay_core::net::{
     Listener, PeerInfo, Presence, ServerControl, Transport, TransportEvent, WireMessage,
 };
-use dessplay_core::types::UserId;
+use dessplay_core::types::{Epoch, UserId};
 use dessplay_core::wire;
+use dessplay_core::{CrdtState, StateSnapshot};
+
+use crate::storage::ServerStorage;
 
 /// How the server reads its clock (unix millis — this *is* the shared
 /// clock everyone syncs to). Injected for paused-time tests.
@@ -60,6 +64,49 @@ struct Registry<T> {
     peers: HashMap<UserId, PeerEntry<T>>,
 }
 
+/// State shared by all connection tasks.
+struct Shared<T> {
+    registry: Mutex<Registry<T>>,
+    state: Mutex<CrdtState>,
+    epoch: AtomicU64,
+    dirty: AtomicBool,
+    storage: Mutex<Option<ServerStorage>>,
+    clock: Clock,
+}
+
+impl<T: Transport> Shared<T> {
+    fn snapshot(&self) -> StateSnapshot {
+        StateSnapshot {
+            epoch: Epoch(self.epoch.load(Ordering::SeqCst)),
+            state: lock(&self.state).clone(),
+        }
+    }
+
+    fn flush(&self) {
+        if !self.dirty.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let snapshot = self.snapshot();
+        let now = (self.clock)() as i64;
+        if let Some(storage) = &*lock(&self.storage)
+            && let Err(e) = storage.save_state(&snapshot, now)
+        {
+            tracing::error!("server state flush failed: {e}");
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// All present connections except `skip`.
+    fn other_conns(&self, skip: u64) -> Vec<Arc<T>> {
+        lock(&self.registry)
+            .peers
+            .values()
+            .filter(|p| p.conn_id != skip)
+            .map(|p| Arc::clone(&p.conn))
+            .collect()
+    }
+}
+
 impl<T: Transport> Registry<T> {
     fn peer_infos(&self) -> Vec<PeerInfo> {
         let mut infos: Vec<PeerInfo> = self.peers.values().map(|p| p.info.clone()).collect();
@@ -68,33 +115,90 @@ impl<T: Transport> Registry<T> {
     }
 }
 
+/// Cadence of StateHash broadcasts and storage flushes.
+const HASH_INTERVAL: Duration = Duration::from_secs(30);
+const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Run the accept loop until the listener fails. Each connection gets
-/// its own task.
-pub async fn run<L: Listener>(listener: L, config: ServerConfig, clock: Clock)
-where
+/// its own task. State is loaded from `storage` if present; a fresh
+/// server starts at epoch 1 (clients persist real epochs, so epoch 0
+/// always reads as stale and gets a snapshot).
+pub async fn run<L: Listener>(
+    listener: L,
+    config: ServerConfig,
+    clock: Clock,
+    storage: Option<ServerStorage>,
+) where
     L::Conn: Transport,
 {
     let config = Arc::new(config);
-    let registry = Arc::new(Mutex::new(Registry::<L::Conn> {
-        peers: HashMap::new(),
-    }));
+    let initial = storage
+        .as_ref()
+        .and_then(|s| s.load_state().ok().flatten())
+        .unwrap_or(StateSnapshot {
+            epoch: Epoch(1),
+            state: CrdtState::new(),
+        });
+    let shared = Arc::new(Shared::<L::Conn> {
+        registry: Mutex::new(Registry {
+            peers: HashMap::new(),
+        }),
+        state: Mutex::new(initial.state),
+        epoch: AtomicU64::new(initial.epoch.0),
+        dirty: AtomicBool::new(false),
+        storage: Mutex::new(storage),
+        clock: Arc::clone(&clock),
+    });
     let mut next_conn_id: u64 = 0;
+
+    // Divergence-alarm hashes.
+    {
+        let shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(HASH_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await; // skip the immediate tick
+            loop {
+                tick.tick().await;
+                let msg = ServerControl::StateHash {
+                    epoch: Epoch(shared.epoch.load(Ordering::SeqCst)),
+                    hash: lock(&shared.state).view_hash(),
+                };
+                for conn in shared.other_conns(u64::MAX) {
+                    send_control(&*conn, &msg).await;
+                }
+            }
+        });
+    }
+    // Periodic persistence.
+    {
+        let shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(FLUSH_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                shared.flush();
+            }
+        });
+    }
 
     loop {
         let (conn, remote) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(e) => {
                 tracing::info!("listener stopped: {e}");
+                shared.flush();
                 return;
             }
         };
         let conn_id = next_conn_id;
         next_conn_id += 1;
         let config = Arc::clone(&config);
-        let registry = Arc::clone(&registry);
-        let clock = Arc::clone(&clock);
+        let shared = Arc::clone(&shared);
         tokio::spawn(async move {
-            serve_connection(Arc::new(conn), conn_id, remote, config, registry, clock).await;
+            serve_connection(Arc::new(conn), conn_id, remote, config, shared).await;
         });
     }
 }
@@ -137,9 +241,9 @@ async fn serve_connection<T: Transport>(
     conn_id: u64,
     remote: SocketAddr,
     config: Arc<ServerConfig>,
-    registry: Arc<Mutex<Registry<T>>>,
-    clock: Clock,
+    shared: Arc<Shared<T>>,
 ) {
+    let clock = Arc::clone(&shared.clock);
     // ---- Await Auth (bounded).
     let auth = tokio::time::timeout(config.auth_timeout, async {
         loop {
@@ -162,7 +266,7 @@ async fn serve_connection<T: Transport>(
     })
     .await;
 
-    let Ok(Some((username, password, role, _epoch))) = auth else {
+    let Ok(Some((username, password, role, client_epoch))) = auth else {
         conn.close("authentication required").await;
         return;
     };
@@ -174,7 +278,7 @@ async fn serve_connection<T: Transport>(
 
     // ---- Register, superseding any existing connection for this user
     // (a reconnecting client whose old connection hasn't timed out yet).
-    let superseded: Option<Arc<T>> = lock(&registry)
+    let superseded: Option<Arc<T>> = lock(&shared.registry)
         .peers
         .insert(
             username.clone(),
@@ -202,16 +306,26 @@ async fn serve_connection<T: Transport>(
         },
     )
     .await;
-    broadcast_peer_list(&registry).await;
+    broadcast_peer_list(&shared.registry).await;
+
+    // ---- Initial state sync: merge for a current epoch, snapshot for
+    // a stale one (see sync-state.md, Sync Flow).
+    let snapshot = shared.snapshot();
+    let initial = if client_epoch == snapshot.epoch {
+        ServerControl::StateMerge(snapshot)
+    } else {
+        ServerControl::StateSnapshot(snapshot)
+    };
+    send_control(&*conn, &initial).await;
     tracing::info!("{username:?} connected from {remote} as {role:?}");
 
     // ---- Serve until the connection ends.
-    let reason = serve_authed(&*conn, &clock).await;
+    let reason = serve_authed(&*conn, conn_id, &shared).await;
     tracing::info!("{username:?} disconnected: {reason}");
 
     // Remove ourselves — unless a newer connection superseded us.
     let removed = {
-        let mut registry = lock(&registry);
+        let mut registry = lock(&shared.registry);
         match registry.peers.get(&username) {
             Some(entry) if entry.conn_id == conn_id => {
                 registry.peers.remove(&username);
@@ -221,12 +335,13 @@ async fn serve_connection<T: Transport>(
         }
     };
     if removed {
-        broadcast_peer_list(&registry).await;
+        broadcast_peer_list(&shared.registry).await;
     }
 }
 
 /// The post-auth message loop. Returns the disconnect reason.
-async fn serve_authed<T: Transport>(conn: &T, clock: &Clock) -> String {
+async fn serve_authed<T: Transport>(conn: &T, conn_id: u64, shared: &Shared<T>) -> String {
+    let clock = &shared.clock;
     loop {
         let event = match conn.recv().await {
             Ok(event) => event,
@@ -268,9 +383,69 @@ async fn serve_authed<T: Transport>(conn: &T, clock: &Clock) -> String {
                     return "send failed".into();
                 }
             }
-            // Phase 4: StateOp/StateMerge handling. Phase 5: EofReached.
+            ServerControl::StateOp(op) => {
+                let applied = {
+                    let mut state = lock(&shared.state);
+                    if via_datagram {
+                        // Unordered path: refuse anything that could
+                        // mask a per-origin gap.
+                        state.apply_if_orderly(op.clone())
+                    } else {
+                        state.apply(op.clone());
+                        true
+                    }
+                };
+                if !applied {
+                    continue;
+                }
+                shared.dirty.store(true, Ordering::SeqCst);
+                // Broadcast to everyone else: reliable, plus an eager
+                // datagram copy when it fits.
+                let msg = ServerControl::StateOp(op);
+                let Ok(frame) = wire::encode(&WireMessage::Control(msg)) else {
+                    continue;
+                };
+                for peer in shared.other_conns(conn_id) {
+                    let _ = peer.send_control(&frame).await;
+                    if peer
+                        .max_datagram_size()
+                        .is_some_and(|max| frame.len() <= max)
+                    {
+                        let _ = peer.send_datagram(&frame).await;
+                    }
+                }
+            }
+            ServerControl::RequestMerge => {
+                tracing::warn!("client requested a divergence-heal merge");
+                send_control(conn, &ServerControl::StateMerge(shared.snapshot())).await;
+            }
+            ServerControl::StateMerge(client_state) => {
+                // The reconnect handshake's upward half: the client
+                // pushes its full state so ops that died with its old
+                // connection still land. If it taught us anything,
+                // everyone gets a merge broadcast.
+                let server_epoch = Epoch(shared.epoch.load(Ordering::SeqCst));
+                if client_state.epoch != server_epoch {
+                    tracing::warn!(
+                        "ignoring client merge with stale epoch {:?}",
+                        client_state.epoch
+                    );
+                    continue;
+                }
+                lock(&shared.state).merge(client_state.state);
+                shared.dirty.store(true, Ordering::SeqCst);
+                // Always rebroadcast: cheap (reconnects are rare), and
+                // any change-detection that ignores playback positions
+                // (as view_hash must) would fail to propagate a
+                // recovered position.
+                let merge = ServerControl::StateMerge(shared.snapshot());
+                for peer in shared.other_conns(u64::MAX) {
+                    send_control(&*peer, &merge).await;
+                }
+            }
+            // Phase 5: EofReached.
             other => {
-                tracing::debug!("ignoring (phase 3): {other:?}");
+                tracing::debug!("ignoring (phase 4): {other:?}");
             }
         }
     }

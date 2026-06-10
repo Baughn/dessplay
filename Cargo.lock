@@ -389,6 +389,7 @@ dependencies = [
  "dessplay",
  "dessplay-core",
  "dirs",
+ "rand 0.9.2",
  "rusqlite",
  "tempfile",
  "tokio",

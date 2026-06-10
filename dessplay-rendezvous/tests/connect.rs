@@ -8,8 +8,9 @@ use std::time::Duration;
 use dessplay::actors::network::{self, NetworkCommand, NetworkConfig, NetworkEvent};
 use dessplay_core::net::sim::{EndpointId, LinkConfig, SimNetwork};
 use dessplay_core::net::{Presence, Role};
-use dessplay_core::types::{Epoch, UserId};
+use dessplay_core::types::UserId;
 use dessplay_rendezvous::server::{self, ServerConfig};
+use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc;
 
 const PASSWORD: &str = "hunter2";
@@ -47,7 +48,7 @@ fn spawn_client(
             UserId::new(name),
             password.into(),
             role,
-            Epoch(0),
+            Arc::new(AtomicU64::new(0)),
             sim_clock(clock_skew),
         )
     };
@@ -85,6 +86,7 @@ fn setup() -> (SimNetwork, EndpointId) {
         listener,
         ServerConfig::new(PASSWORD),
         sim_clock(0),
+        None,
     ));
     (net, server_id)
 }
@@ -204,7 +206,7 @@ async fn duplicate_username_supersedes_old_connection() {
             UserId::new("kim"),
             PASSWORD.into(),
             Role::Interactive,
-            Epoch(0),
+            Arc::new(AtomicU64::new(0)),
             sim_clock(0),
         ),
         cmd_rx,

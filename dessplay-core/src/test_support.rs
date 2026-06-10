@@ -251,9 +251,15 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
         ScriptOp::RemovePlaylist { file: f } => state.remove_playlist_entry(a, ts, file(*f)),
         ScriptOp::SetWatched { file: f, watched } => state.set_watched(a, ts, file(*f), *watched),
         ScriptOp::SetNowPlaying { file: f } => state.set_now_playing(a, ts, f.map(file)),
-        ScriptOp::SetSeekAuthority { authority } => {
-            state.set_seek_authority(a, ts, actor(*authority))
-        }
+        ScriptOp::SetSeekAuthority { authority } => state.set_seek_authority(
+            a,
+            ts,
+            if *authority % ACTORS == 0 {
+                crate::types::SeekAuthority::Server
+            } else {
+                crate::types::SeekAuthority::User(user(*authority))
+            },
+        ),
         ScriptOp::SetSeriesPreference {
             user: u,
             series: s,

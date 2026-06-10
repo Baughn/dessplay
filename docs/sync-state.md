@@ -51,8 +51,18 @@ server's snapshot.
 ### Actor IDs
 
 Every participant in the CRDT system has an `ActorId`:
-- Each client gets a unique ActorId (derived from username or generated)
+- Each client derives a fresh **session-scoped** ActorId at startup
+  (hash of username + random nonce)
 - The server has a well-known ActorId used for authoritative actions
+
+Actors are per-session because Map ops carry per-actor sequence numbers
+(dots): a client restarting from a stale snapshot would re-allocate
+numbers its previous incarnation already spent — double-spent dots,
+i.e. state corruption. Fresh actors make that structurally impossible.
+The cost is one map-clock entry per session, which **compaction must
+collapse by rebuilding the state from its resolved view under the
+server actor** (a Phase 5 requirement; LwwCell values lose nothing in
+a rebuild).
 
 The server ActorId is used when:
 - Advancing now-playing on EOF (only the server does this)
@@ -166,7 +176,7 @@ and the wire protocol uniform.
 | Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>, ActorId>` | Any peer |
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>, ActorId>` | Server only (at EOF) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Any peer; server on EOF |
-| Seek Authority | `LwwCell<ActorId>` | Whoever last seeked; server on file change or authority departure |
+| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Whoever last seeked; server on file change or authority departure |
 | Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>, ActorId>` | Each user writes own |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>` | Each user writes own |
@@ -253,11 +263,13 @@ ignored -- the transition is idempotent without any dedup bookkeeping.
 
 ### Seek Authority
 
-`LwwCell<ActorId>` -- the ActorId of whoever most recently
-initiated a seek.
+`LwwCell<SeekAuthority>` where `SeekAuthority = Server | User(UserId)` --
+whoever most recently initiated a seek. A user identity, not an
+`ActorId`: actors are session-scoped (see Actor IDs), so a raw actor
+could not be mapped to a user across reconnects.
 
 **How it works:**
-1. User A seeks -> their client writes A's ActorId to the seek authority register
+1. User A seeks -> their client writes `User(A)` to the seek authority register
 2. All clients see "A is authoritative" and sync their position to A's
    `PlaybackPosition`
 3. Normal playback continues; small drift between clients is ignored
@@ -470,7 +482,16 @@ When a client reconnects (or detects missed operations):
    with overlapping data is safe.
 3. **Stale epoch:** Server sends the compacted snapshot with the new epoch.
    Client replaces its local state entirely.
-4. Resume normal CmRDT operation broadcast.
+4. **Upward merge:** the client re-applies any ops buffered while
+   offline (playback positions coalesced to the latest) onto the
+   adopted state and pushes its **full state** back as a `StateMerge`.
+   The server merges it and rebroadcasts a merge to everyone. This --
+   not per-op replay -- recovers ops that were sent but undelivered when
+   the previous connection died: they exist only in the client's state,
+   and no replay queue knows about them. (Found by chaos testing;
+   without it such ops diverge permanently -- CvRDT merge is additive,
+   so even the divergence alarm cannot remove a server-side gap.)
+5. Resume normal CmRDT operation broadcast.
 
 No version vectors or gap-fill protocol needed. The CvRDT merge handles
 any missed operations implicitly.

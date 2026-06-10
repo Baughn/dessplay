@@ -173,6 +173,32 @@ impl SimNetwork {
         self.lock().max_datagram = max;
     }
 
+    /// Kill every connection between two endpoints: both ends receive a
+    /// `Closed` event immediately (think middlebox reset, not silence —
+    /// for silence, partition instead). Reconnecting afterward works.
+    pub fn disconnect(&self, a: &EndpointId, b: &EndpointId) {
+        let mut state = self.lock();
+        // A connection involves both endpoints under the same ConnId:
+        // find those, then kill both ends.
+        let conns: Vec<ConnId> = state
+            .senders
+            .keys()
+            .filter(|(conn, endpoint)| {
+                endpoint == a && state.senders.contains_key(&(*conn, b.clone()))
+            })
+            .map(|(conn, _)| *conn)
+            .collect();
+        for conn in conns {
+            for endpoint in [a, b] {
+                if let Some(tx) = state.senders.remove(&(conn, endpoint.clone())) {
+                    let _ = tx.send(TransportEvent::Closed {
+                        reason: "connection killed".into(),
+                    });
+                }
+            }
+        }
+    }
+
     /// Create the listener for an endpoint. One per endpoint.
     pub fn listener(&self, endpoint: &EndpointId) -> SimListener {
         let (tx, rx) = mpsc::unbounded_channel();

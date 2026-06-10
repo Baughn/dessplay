@@ -115,4 +115,17 @@ pub enum ServerControl {
     StateOp(CrdtOp),
     /// Full CvRDT state for merge-based reconnection sync.
     StateMerge(StateSnapshot),
+
+    // ---- Divergence alarm (see sync-state.md)
+    /// Server -> client, every 30s: hash of the server's resolved view
+    /// (excluding playback positions).
+    StateHash {
+        /// The server's current epoch.
+        epoch: Epoch,
+        /// `CrdtState::view_hash()` output.
+        hash: [u8; 32],
+    },
+    /// Client -> server: my view hash mismatched twice in a row; please
+    /// send a `StateMerge`.
+    RequestMerge,
 }

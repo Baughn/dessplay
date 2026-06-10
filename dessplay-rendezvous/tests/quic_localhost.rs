@@ -10,8 +10,9 @@ use dessplay::actors::network::{self, NetworkCommand, NetworkConfig, NetworkEven
 use dessplay_core::net::quic::{QuicConnector, QuicListener};
 use dessplay_core::net::tofu::{fingerprint, load_or_generate_cert};
 use dessplay_core::net::{Connector, Role};
-use dessplay_core::types::{Epoch, UserId};
+use dessplay_core::types::UserId;
 use dessplay_rendezvous::server::{self, ServerConfig, system_clock};
+use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc;
 
 const PASSWORD: &str = "hunter2";
@@ -45,6 +46,7 @@ async fn two_clients_connect_over_real_quic() {
         listener,
         ServerConfig::new(PASSWORD),
         system_clock(),
+        None,
     ));
 
     let mut clients = Vec::new();
@@ -61,7 +63,7 @@ async fn two_clients_connect_over_real_quic() {
                 UserId::new(name),
                 PASSWORD.into(),
                 Role::Interactive,
-                Epoch(0),
+                Arc::new(AtomicU64::new(0)),
                 Arc::new(|| {
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -116,6 +118,7 @@ async fn wrong_pinned_fingerprint_refuses_to_connect() {
         listener,
         ServerConfig::new(PASSWORD),
         system_clock(),
+        None,
     ));
 
     let connector = QuicConnector::new(server_addr, "dessplay", Some(vec![0xAA; 32])).unwrap();

@@ -362,9 +362,10 @@ dessplay-core/                (shared library)
 dessplay/                     (client: lib + thin binary)
   src/
     lib.rs / main.rs
+    client.rs                 (composition: spawns + wires the actors)
     actors/
       network.rs              (NetworkActor)
-      sync.rs                 (SyncActor; Phase 4)
+      sync.rs                 (SyncActor)
       ui.rs                   (UiActor; Phase 6)
       player.rs               (PlayerActor; Phase 7)
       file.rs                 (FileActor; Phase 9)

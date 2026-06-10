@@ -13,7 +13,7 @@ use crate::state::{CrdtOp, CrdtState};
 use crate::types::{ActorId, Ed2kHash, PlaylistFileState, SharedTimestamp, UserId};
 
 /// A resolved playlist entry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlaylistEntry {
     /// The file's id.
     pub hash: Ed2kHash,

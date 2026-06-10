@@ -69,12 +69,23 @@ impl ActorId {
     /// The well-known server actor.
     pub const SERVER: ActorId = ActorId(0);
 
-    /// Derive a client ActorId from a username. Never collides with
+    /// Derive a fresh **session-scoped** ActorId from a username and a
+    /// caller-supplied random nonce. Never collides with
     /// [`ActorId::SERVER`].
-    pub fn from_username(name: &str) -> Self {
+    ///
+    /// Actors are per-session by design: Map ops carry per-actor
+    /// sequence numbers, and a client restarting from a stale snapshot
+    /// would otherwise re-allocate numbers its previous incarnation
+    /// already spent (double-spent dots — state corruption). A fresh
+    /// actor per session makes that structurally impossible. Map clocks
+    /// accumulate one entry per session; compaction collapses them by
+    /// rebuilding state under the server actor (see sync-state.md).
+    pub fn session(name: &str, nonce: u128) -> Self {
         use digest::Digest;
-        let digest = md4::Md4::digest(name.as_bytes());
-        let id = u128::from_le_bytes(digest.into());
+        let mut hasher = md4::Md4::new();
+        hasher.update(name.as_bytes());
+        hasher.update(nonce.to_le_bytes());
+        let id = u128::from_le_bytes(hasher.finalize().into());
         // 0 is reserved for the server; remap the (astronomically
         // unlikely) collision.
         Self(id.max(1))
@@ -183,6 +194,17 @@ pub enum SeriesWatchState {
     Watching,
     /// The user skips this series and never gates playback on it.
     NotWatching,
+}
+
+/// Who is currently the playback-position authority. A user identity
+/// rather than an `ActorId`: actors are session-scoped, so a raw actor
+/// could not be mapped back to a user across reconnects.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub enum SeekAuthority {
+    /// The server holds authority (file changes, authority departure).
+    Server,
+    /// The named user holds authority (they seeked last).
+    User(UserId),
 }
 
 /// A user's manual state override. `None` in the register means no

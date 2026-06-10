@@ -167,6 +167,14 @@ synchronized clocks.
 
 ## Phase 4: State Sync Engine
 
+**Status: complete (2026-06-10).** Design changes, all documented in
+sync-state.md: ActorIds are session-scoped (prevents double-spent dots
+after crash-restore; compaction must rebuild state from the view --
+Phase 5); SeekAuthority became `Server | User(UserId)`; the reconnect
+handshake gained an **upward client->server StateMerge** after chaos
+testing proved per-op replay loses ops that died in flight with the
+old connection. The divergence alarm and FIFO datagram guard are in.
+
 **Goal**: CRDTs sync through server. Op broadcast, version vectors, gap fill.
 
 ### What gets built

@@ -171,7 +171,10 @@ enum ServerControl {
     // Bidirectional (state sync)
     StateSnapshot { epoch: u64, crdts: CrdtSnapshot },
     StateOp { op: CrdtOp },
-    /// Full CvRDT state for merge-based sync on reconnection
+    /// Full CvRDT state for merge-based sync. Server -> client on
+    /// reconnection and divergence healing; client -> server as the
+    /// upward half of the reconnect handshake (recovers ops that died
+    /// in flight with the old connection; the server rebroadcasts).
     StateMerge { epoch: u64, crdts: CrdtSnapshot },
 
     // Divergence alarm (see sync-state.md, Divergence Alarm)
