@@ -9,10 +9,9 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use dessplay_core::net::Connector;
-use dessplay_core::net::Role;
+use dessplay_core::net::{Connector, PeerInfo, Role};
 use dessplay_core::types::{ActorId, UserId};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::actors::network::{self, Clock, NetworkConfig, NetworkEvent};
 use crate::actors::sync::{self, SyncCommand, SyncConfig, SyncEvent};
@@ -34,6 +33,10 @@ pub struct ClientHandle {
     pub network: mpsc::Sender<network::NetworkCommand>,
     /// Everything the client wants you to know.
     pub events: mpsc::Receiver<ClientEvent>,
+    /// The latest peer list (presence included) — one input to the
+    /// derived playback state (`dessplay_core::derive`). Borrow, don't
+    /// consume: `peers.borrow().clone()`.
+    pub peers: watch::Receiver<Vec<PeerInfo>>,
 }
 
 /// Configuration for a headless sync client.
@@ -74,6 +77,7 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
     let (sync_tx, sync_rx) = mpsc::channel(256);
     let (sync_event_tx, mut sync_event_rx) = mpsc::channel(256);
     let (event_tx, event_rx) = mpsc::channel(256);
+    let (peers_tx, peers_rx) = watch::channel(Vec::new());
 
     let mut sync_config = SyncConfig::new(
         config.username.clone(),
@@ -113,6 +117,9 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
     let router_events = event_tx.clone();
     tokio::spawn(async move {
         while let Some(event) = net_event_rx.recv().await {
+            if let NetworkEvent::PeerList(peers) = &event {
+                let _ = peers_tx.send(peers.clone());
+            }
             let to_sync = match &event {
                 NetworkEvent::Server { msg, via_datagram } => Some(SyncCommand::Server {
                     msg: msg.clone(),
@@ -156,5 +163,6 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
         sync: sync_tx,
         network: net_tx,
         events: event_rx,
+        peers: peers_rx,
     }
 }

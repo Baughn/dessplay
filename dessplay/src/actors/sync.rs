@@ -24,8 +24,8 @@ use dessplay_core::net::ServerControl;
 use dessplay_core::playlist::NewPlaylistEntry;
 use dessplay_core::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, FileAvailability, FileHashInfo,
-    ListEntryId, ManualState, NextEpState, PlaybackPosition, SeekAuthority, SeriesListEntry,
-    SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    ListEntryId, ManualState, NextEpState, PlaybackIntent, PlaybackPosition, SeekAuthority,
+    SeriesListEntry, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
 };
 use dessplay_core::{ChatMessage, CrdtOp, CrdtState, StateSnapshot, StateView};
 use tokio::sync::{mpsc, oneshot};
@@ -77,6 +77,13 @@ pub enum Mutation {
     SetSeekAuthority {
         /// The new authority.
         authority: SeekAuthority,
+    },
+    /// Write the play/pause latch. The player layer pairs this with a
+    /// manual-override write (pause sets both; play clears the override
+    /// and writes `Playing`).
+    SetPlaybackIntent {
+        /// The new intent.
+        intent: PlaybackIntent,
     },
     /// Set a per-user series preference.
     SetSeriesPreference {
@@ -271,6 +278,9 @@ pub async fn run(
     config.epoch.store(epoch.0, Ordering::SeqCst);
 
     let storage = std::sync::Mutex::new(config.storage.take());
+    // Lamport floor from stored state: a restart must not re-issue
+    // stamps the previous incarnation already spent.
+    let last_issued = state.max_lww_timestamp().0;
     let mut actor = SyncActor {
         state,
         user: config.user.clone(),
@@ -279,7 +289,7 @@ pub async fn run(
         epoch_cell: Arc::clone(&config.epoch),
         storage,
         offset_millis: 0,
-        last_issued: 0,
+        last_issued,
         link: Link::Down,
         offline_buffer: Vec::new(),
         offline_position: None,
@@ -319,12 +329,25 @@ impl SyncActor {
         self.epoch_cell.store(epoch.0, Ordering::SeqCst);
     }
 
-    /// Monotonic shared-clock stamp.
+    /// Lamport-monotonic shared-clock stamp: above our own previous
+    /// stamps *and* above everything we've observed (see
+    /// [`Self::observe`]).
     fn stamp(&mut self) -> SharedTimestamp {
         let shared = (self.clock)().saturating_add_signed(self.offset_millis);
         let ts = shared.max(self.last_issued + 1);
         self.last_issued = ts;
         SharedTimestamp(ts)
+    }
+
+    /// Raise the Lamport floor to an observed remote timestamp, so our
+    /// next write dominates it. Without this, a write issued in the
+    /// same shared-clock millisecond as a just-received remote write
+    /// would tie and fall to the value tiebreak — and causally-later
+    /// writes must never lose.
+    fn observe(&mut self, ts: Option<SharedTimestamp>) {
+        if let Some(ts) = ts {
+            self.last_issued = self.last_issued.max(ts.0);
+        }
     }
 
     fn flush_to_storage(&mut self) {
@@ -419,6 +442,9 @@ impl SyncActor {
             Mutation::SetSeekAuthority { authority } => {
                 self.state.set_seek_authority(actor, ts, authority)
             }
+            Mutation::SetPlaybackIntent { intent } => {
+                self.state.set_playback_intent(actor, ts, intent)
+            }
             Mutation::SetSeriesPreference { user, series, pref } => self
                 .state
                 .set_series_preference(actor, ts, user, series, pref),
@@ -454,7 +480,10 @@ impl SyncActor {
         };
 
         if self.link == Link::Synced {
-            let msg = Box::new(ServerControl::StateOp(op));
+            let msg = Box::new(ServerControl::StateOp {
+                epoch: self.epoch(),
+                op,
+            });
             if is_position {
                 let now = tokio::time::Instant::now();
                 let due_reliable = self
@@ -517,7 +546,16 @@ impl SyncActor {
 
     async fn remote(&mut self, msg: ServerControl, via_datagram: bool) {
         match msg {
-            ServerControl::StateOp(op) => {
+            ServerControl::StateOp { epoch, op } => {
+                if epoch != self.epoch() {
+                    // Op from across a compaction boundary. The reliable
+                    // copy of a post-compaction op always follows the
+                    // snapshot on the ordered control stream; anything
+                    // mismatching here is a stale datagram or a stale op,
+                    // and applying it would corrupt dot sequences.
+                    return;
+                }
+                self.observe(op.lww_timestamp());
                 if via_datagram {
                     // Unordered path: only apply if it cannot mask a gap.
                     self.state.apply_if_orderly(op);
@@ -538,6 +576,7 @@ impl SyncActor {
                     tracing::warn!("ignoring stale-epoch merge ({:?})", snapshot.epoch);
                     return;
                 }
+                self.observe(Some(self.state.max_lww_timestamp()));
                 self.hash_mismatches = 0;
                 self.synced().await;
                 self.changed().await;
@@ -549,6 +588,7 @@ impl SyncActor {
                 }
                 self.set_epoch(snapshot.epoch);
                 self.state = snapshot.state;
+                self.observe(Some(self.state.max_lww_timestamp()));
                 self.hash_mismatches = 0;
                 self.synced().await;
                 self.changed().await;
@@ -676,6 +716,41 @@ mod tests {
             .await
             .unwrap();
         // The second write must win despite the backward clock step.
+        assert_eq!(view_of(&rig).await.now_playing, Some(hash(2)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stamps_dominate_observed_remote_timestamps() {
+        // The Lamport condition: a local write issued causally after a
+        // remote op must out-stamp it, even when the remote stamp is
+        // far ahead of our clock. Found by the Phase 5 EOF tests: the
+        // server's forced Paused tied with (and lost to) a client's
+        // Playing written in the same simulated millisecond.
+        let mut rig = rig();
+        go_online(&mut rig).await;
+
+        // A remote write stamped way in our future.
+        let mut origin = CrdtState::new();
+        let op = origin.set_now_playing(ActorId::SERVER, SharedTimestamp(5_000_000), Some(hash(1)));
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(ServerControl::StateOp {
+                    epoch: Epoch(0),
+                    op,
+                }),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+
+        // Our causally-later write must win despite our clock reading
+        // 1_000_000.
+        rig.commands
+            .send(SyncCommand::Mutate(Box::new(Mutation::SetNowPlaying {
+                file: Some(hash(2)),
+            })))
+            .await
+            .unwrap();
         assert_eq!(view_of(&rig).await.now_playing, Some(hash(2)));
     }
 

@@ -213,6 +213,21 @@ Multiple clients modify CRDTs through server and converge to identical state.
 
 ## Phase 5: Application Core & Server
 
+**Status: complete (2026-06-10).** Design changes, documented in
+design.md / sync-state.md / network-design.md: the synced
+`playback_intent` register (`Playing | Paused`) — gating alone cannot
+express "stays paused after the blocker departs"; EOF-advance loads
+the next episode paused. `StateOp` became epoch-tagged (an op crossing
+a compaction boundary would pollute the rebuilt state's dot
+sequences). A `Goodbye` message implements graceful quit. Timestamps
+were upgraded from self-monotonic to **Lamport-monotonic** (bumped by
+every observed remote stamp) after the EOF tests caught the server's
+forced Paused losing a same-millisecond tiebreak to a client's
+Playing. The compaction rebuild lives in `dessplay-core::compact` as a
+pure, property-tested function; compaction time is UTC, not
+server-local. The headless harness is
+`dessplay-rendezvous/tests/common/mod.rs`.
+
 **Goal**: Derived state logic, server compaction, actor wiring.
 
 ### What gets built

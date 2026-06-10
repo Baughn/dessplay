@@ -270,7 +270,7 @@ async fn run_connection<T: Transport>(
                                 .await;
                         }
                     }
-                    msg @ (ServerControl::StateOp(_)
+                    msg @ (ServerControl::StateOp { .. }
                     | ServerControl::StateMerge(_)
                     | ServerControl::StateSnapshot(_)
                     | ServerControl::StateHash { .. }) => {
@@ -322,7 +322,27 @@ async fn run_connection<T: Transport>(
                             let _ = conn.send_datagram(&frame).await;
                         }
                     }
-                    Some(NetworkCommand::Shutdown) | None => return ConnectionEnd::Shutdown,
+                    Some(NetworkCommand::Shutdown) | None => {
+                        // Graceful quit: tell the server so it removes
+                        // us immediately (no Lost stage) and pauses
+                        // playback. Wait for the server's close so the
+                        // frame is actually flushed before we tear the
+                        // connection down (closing first could discard
+                        // it). Best-effort throughout — a failure just
+                        // means we go through Lost like a crash.
+                        if send_control(conn, &ServerControl::Goodbye).await.is_ok() {
+                            let _ = tokio::time::timeout(Duration::from_millis(500), async {
+                                loop {
+                                    match conn.recv().await {
+                                        Ok(TransportEvent::Closed { .. }) | Err(_) => break,
+                                        Ok(_) => continue,
+                                    }
+                                }
+                            })
+                            .await;
+                        }
+                        return ConnectionEnd::Shutdown;
+                    }
                 }
             }
         }

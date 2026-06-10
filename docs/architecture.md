@@ -66,7 +66,14 @@ async fn run_client(
 ) -> Result<()>
 ```
 
-(Exact signature to be settled in Phase 5; the *requirement* is fixed now.)
+Phase 5 status: the root exists in two layers.
+`dessplay::client::spawn_client(connector, ClientConfig)` wires the
+network and sync actors plus the event router — it is what the
+multi-client harness calls (`dessplay-rendezvous/tests/common/mod.rs`).
+`dessplay::run::run_headless` wraps it with the production inputs (QUIC
+connector, TOFU pins, stored settings/state, Ctrl-C → Goodbye) and
+serves both the headless client and `--seeder`. Phase 6 grows the
+player/terminal/event parameters into the signature above.
 
 The payoff is the multi-client simulation harness (see
 [testing-strategy.md](testing-strategy.md)): N **complete** clients — every

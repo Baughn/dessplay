@@ -100,11 +100,18 @@ values (Phase 3 — see `dessplay-core/tests/regressions.rs`). Since every
 DessPlay register resolves to an LWW winner anyway, the multi-value
 register bought nothing but the bug surface.
 
-**Timestamp discipline (Phase 4 requirement):** under pure LWW, a
-causally-later write with an *older* timestamp loses. Writers must
-issue monotonic timestamps — `max(shared_now, last_issued + 1)` — so a
-client's own sequential writes always supersede each other even when
-NTP slews the shared clock backward.
+**Timestamp discipline:** under pure LWW, a causally-later write with
+an *older or equal* timestamp can lose (equal stamps fall to the value
+tiebreak). Writers must issue **Lamport-monotonic** timestamps:
+`max(shared_now, last_issued + 1)`, where `last_issued` is raised not
+only by the writer's own stamps (Phase 4) but by every LWW timestamp it
+*observes* — remote ops, merges, snapshots, and state loaded from
+storage at startup (Phase 5). Self-monotonicity alone is not enough:
+two actors writing in the same shared-clock millisecond tie, and the
+causally-later write — the server forcing intent to Paused right after
+applying a client's Playing — could lose the tiebreak. Found by the
+Phase 5 EOF tests; pinned in
+`dessplay/src/actors/sync.rs::stamps_dominate_observed_remote_timestamps`.
 
 ### crdts Crate Integration
 
@@ -177,6 +184,7 @@ and the wire protocol uniform.
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>, ActorId>` | Server only (at EOF) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Any peer; server on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Whoever last seeked; server on file change or authority departure |
+| Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Any user (play/pause); server forces Paused on lost/quit/departure/EOF-advance |
 | Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>, ActorId>` | Each user writes own |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>` | Each user writes own |
@@ -290,6 +298,26 @@ during the transition.
 **Authority departure:** if the current seek authority becomes Departed
 (see presence in [network-design.md](network-design.md)), the server takes
 seek authority so remaining clients never sync to a ghost.
+
+### Playback Intent
+
+`LwwCell<PlaybackIntent>` where `PlaybackIntent = Playing | Paused`.
+Defaults to Paused in a fresh state.
+
+Whether video actually plays is *derived*:
+`intent == Playing && all present users permit && nobody is Lost`.
+The register is the latch that gating alone cannot express: without it,
+playback would silently auto-resume the moment a paused/lost user departs
+(departed users are removed from gating) or returns Ready.
+
+**Writers:**
+- Any user, on play/pause in their player. Pause also sets the user's
+  manual override (so the UI shows *who* blocks resume); play clears
+  their own override and writes `Playing` (if others still block, the
+  local player is re-paused by derivation -- "you tried").
+- The server forces `Paused` when a user becomes Lost, on graceful quit
+  during playback, on departure, and when EOF advances now-playing
+  (the next episode loads paused).
 
 ### Series Preference
 
@@ -472,6 +500,14 @@ When a client generates a new operation:
 3. Also send via datagram (best-effort, for lower latency)
 4. The server deduplicates, applies, and broadcasts to other clients
 
+Every `StateOp` is **epoch-tagged**, and both sides drop ops whose
+epoch is not their current one. This protects compaction: the rebuild
+resets per-actor dot sequences, and an old-epoch op landing on the
+fresh state would advance a dot clock the sender is about to restart
+from 1 — its next ops would be silently deduped as already-seen. Ops
+in flight at the compaction edge are dropped by design (the daily
+schedule keeps that window away from watch-party hours).
+
 ### Reconnection Sync
 
 When a client reconnects (or detects missed operations):
@@ -518,34 +554,39 @@ a logged, self-correcting event rather than a silent one:
 
 ### When It Happens
 
-**Scheduled daily** at a configured server-local time (default 12:00) --
-chosen to be maximally far from watch-party hours. The old "no clients
-connected for 5 minutes" trigger does not work here: seeders are always
-connected, so quiescence never occurs.
+**Scheduled daily** at a configured UTC time (default 12:00,
+`--compact-at HH:MM`, or `never`) -- chosen to be maximally far from
+watch-party hours. The old "no clients connected for 5 minutes" trigger
+does not work here: seeders are always connected, so quiescence never
+occurs. Tests use a fixed-period schedule under paused time instead.
 
-Compaction runs with clients attached. The server briefly stops accepting
-ops, compacts, broadcasts the fresh snapshot, and resumes -- a pause of at
-most a second or two at noon, which nobody will ever notice.
+Compaction runs with clients attached and needs no stop-the-world
+phase: the epoch tag on `StateOp` (see Operation Broadcast) makes the
+boundary safe — old-epoch ops in flight are dropped on both sides, and
+connected clients adopt the broadcast snapshot like a stale-epoch
+reconnect.
 
 ### How It Works
 
-1. Server stops accepting ops (incoming ops are buffered or rejected;
-   clients retry)
-2. Takes its current merged CRDT state
-3. **Rebalances playlist `Identifier` positions** -- reassigns fresh
-   identifiers with small `BigRational` values to prevent size growth,
-   and **purges removal tombstones** (entries whose register resolves to
-   `None` are dropped from the snapshot)
-4. Compacts each user's playback position to a single latest value
-5. **Clears the lookup request GSet** -- all entries have been processed
-6. **Trims chat** to the most recent 500 messages (full history archived to
-   server SQLite first)
-7. **Leaves The List untouched** -- it is permanent state
-8. Increments the epoch counter
-9. Serializes the compacted state as the new baseline
-10. Broadcasts `StateSnapshot { new_epoch, state }` to all connected clients,
-    which replace their local state exactly as in a stale-epoch reconnect,
-    then resumes accepting ops
+The heart is `dessplay_core::compact::rebuild`, a **pure function**
+from a resolved view to a fresh state authored entirely by the server
+actor — property-tested to preserve the view exactly, to be idempotent,
+and to collapse all per-session actor clocks into the server's (the
+debt taken on by session-scoped ActorIds). Around it, the server:
+
+1. Takes its current resolved view (one lock).
+2. Rebuilds: playlist tombstones are purged and `Identifier` positions
+   reassigned small and flat; watched flags for files no longer on the
+   playlist are dropped; the lookup GSet empties; chat keeps its
+   trailing `chat_keep` messages (default 100); playback positions come
+   along already coalesced (the view holds one per user); The List is
+   untouched — permanent state. Stamps come from the server's Lamport
+   clock, so they dominate everything in the old state.
+3. Swaps the rebuilt state in and increments the epoch **while holding
+   the state lock** (snapshots must never see a torn epoch/state pair).
+4. Archives the full pre-compaction chat to SQLite (idempotent insert).
+5. Broadcasts `StateSnapshot { new_epoch, state }` to all live
+   connections and flushes to storage.
 
 ### Client Reconnection After Compaction
 

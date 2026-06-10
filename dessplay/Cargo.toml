@@ -12,6 +12,7 @@ tokio = { workspace = true }
 dirs = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

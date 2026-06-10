@@ -106,6 +106,11 @@ pub enum ScriptOp {
         /// Actor index to install as authority.
         authority: u8,
     },
+    /// Write the playback-intent latch.
+    SetIntent {
+        /// Playing vs Paused.
+        playing: bool,
+    },
     /// Set a series watch preference.
     SetSeriesPreference {
         /// User index.
@@ -258,6 +263,15 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
                 crate::types::SeekAuthority::Server
             } else {
                 crate::types::SeekAuthority::User(user(*authority))
+            },
+        ),
+        ScriptOp::SetIntent { playing } => state.set_playback_intent(
+            a,
+            ts,
+            if *playing {
+                crate::types::PlaybackIntent::Playing
+            } else {
+                crate::types::PlaybackIntent::Paused
             },
         ),
         ScriptOp::SetSeriesPreference {

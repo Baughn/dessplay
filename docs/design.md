@@ -207,13 +207,22 @@ how many users are connected.
 
 ### Playback Rules
 
-1. **Play** only proceeds when every **present** user is Ready, Away, or Not
-   Watching, and their File State permits playback. Presence is defined in
+1. The video plays iff the shared **playback intent** is Playing, **and**
+   every **present** user is Ready, Away, or Not Watching with a File State
+   that permits playback, **and** no user is Lost. Presence is defined in
    [Presence](#presence); departed users and seeders never gate playback.
+   The intent is a synced register (`LwwCell<PlaybackIntent>`,
+   `Playing | Paused`) written by users (play/pause actions) and the server
+   (forced to Paused on Lost, on graceful quit during playback, on
+   departure, and on EOF-advance) -- it is the latch that keeps playback
+   paused after a blocker leaves, instead of silently auto-resuming.
 2. If you press play in your player but someone is Paused or has a Missing file:
    - Your player is immediately re-paused
-   - You are marked Ready (you tried!)
-3. When someone pauses, everyone pauses
+   - You are marked Ready, and intent is set to Playing (you tried!) --
+     playback starts the moment the last blocker clears
+3. When someone pauses, everyone pauses: pausing sets both your manual
+   override (so others see *who* is blocking resume) and intent to Paused.
+   Pressing play clears your own override and sets intent to Playing.
 4. When someone seeks, everyone seeks (via seek authority; see [sync-state.md](sync-state.md))
 5. **Drift correction** relative to the seek authority's position uses three bands
    (thresholds configurable in one place; defaults below):
@@ -226,8 +235,11 @@ how many users are connected.
    The server initiates this (it is the authoritative entity for "file ended"):
    clients whose player reaches end-of-file send an `EofReached { file }` report
    to the server; when the server receives the first report matching the current
-   now-playing file from a present, watching user, it marks the file watched,
-   advances now-playing, and takes seek authority. Later duplicate reports no
+   now-playing file from a present, watching user (not a seeder, and not one
+   whose derived state is Not Watching or Away), it marks the file watched,
+   advances now-playing, sets playback intent to Paused (the next episode
+   loads paused; anyone presses play when ready), and takes seek authority.
+   Later duplicate reports no
    longer match now-playing and are ignored, making the transition idempotent.
    Files are **not** removed from the playlist on EOF -- they remain visible
    in muted colors as play history. Users can select any entry with Enter to
@@ -315,8 +327,8 @@ A user's presence degrades in three stages:
 | Stage | Trigger | Effect |
 |-------|---------|--------|
 | **Present** | Normal operation | Counted in playback gating |
-| **Lost** | 30s without traffic (QUIC idle timeout; clients keep-alive every 10s, and position updates double as liveness) | Everyone pauses; system message in chat |
-| **Departed** | 60s without traffic | Removed from gating and from the active Users list (shown on a dim "departed" line). Playback **stays paused** -- resuming is a human decision; the usual response is to switch shows. No auto-unpause. |
+| **Lost** | 30s without traffic (QUIC idle timeout; clients keep-alive every 10s, and position updates double as liveness) | Everyone pauses (server forces playback intent to Paused); system message in chat |
+| **Departed** | 60s without traffic | Removed from gating and from the active Users list (shown on a dim "departed" line). Playback **stays paused** -- the intent register holds Paused until a human presses play; the usual response is to switch shows. No auto-unpause. |
 
 Additional rules:
 
@@ -324,10 +336,12 @@ Additional rules:
   shared clock keeps players aligned, and slew correction absorbs small drift
   on recovery.
 - **Graceful quit** (`/quit`, Ctrl-C): the user is removed immediately
-  (no Lost stage). If playback was running, it pauses -- leaving mid-episode
-  should not be silent. At session end this is a no-op.
+  (no Lost stage). If playback was running, it pauses (server sets intent
+  to Paused) -- leaving mid-episode should not be silent. At session end
+  this is a no-op.
 - **Return**: a reconnecting user re-enters as Present, syncs state, and is
-  gated normally again. Playback does not auto-resume.
+  gated normally again. Playback does not auto-resume (intent is still
+  Paused from when they were Lost).
 - **Seek authority**: if the current seek authority becomes Departed, the
   server takes seek authority.
 - Departed users' CRDT state (manual override, file availability) persists
@@ -529,7 +543,7 @@ connects over loopback. Responsibilities:
    (see [Presence](#presence))
 4. **Relay**: Forward all file transfer traffic between peers (there are no
    client-to-client connections; see [network-design.md](network-design.md))
-5. **Compaction**: Scheduled daily (default 12:00 server-local time, configurable
+5. **Compaction**: Scheduled daily (default 12:00 UTC, `--compact-at`, configurable
    -- chosen to be far from watch-party hours). Compacts state, increments the
    epoch, and broadcasts the fresh snapshot to all connected clients, which
    adopt it like a stale-epoch reconnect. See [sync-state.md](sync-state.md).
@@ -566,6 +580,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Standalone register; last seeker is position authority |
+| Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/quit/departure/EOF-advance |
 | Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>` | Compound key |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>>` | Compound key |
@@ -583,9 +598,11 @@ All registers are `LwwCell<V>` — DessPlay's own max-merge LWW register
 use `ActorId` as the actor type. See [sync-state.md](sync-state.md) for
 the full `Lww<V>` design.
 
-Playback state (playing vs paused) is **derived**, not synced directly:
-the video plays iff every present user's state is Ready, Away, or Not
-Watching, and their File State permits playback.
+Whether the video actually plays is **derived**: it plays iff playback
+intent is Playing, every present user's state is Ready, Away, or Not
+Watching with a permitting File State, and no user is Lost. The intent
+register exists because gating alone cannot express "stays paused after
+the blocker departs" -- see [Playback Rules](#playback-rules).
 
 ### Chat Protocol
 

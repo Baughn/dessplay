@@ -19,6 +19,7 @@ pub fn arb_script_op() -> impl Strategy<Value = ScriptOp> {
             .prop_map(|(file, watched)| ScriptOp::SetWatched { file, watched }),
         proptest::option::of(any::<u8>()).prop_map(|file| ScriptOp::SetNowPlaying { file }),
         any::<u8>().prop_map(|authority| ScriptOp::SetSeekAuthority { authority }),
+        any::<bool>().prop_map(|playing| ScriptOp::SetIntent { playing }),
         (any::<u8>(), any::<u8>(), any::<bool>()).prop_map(|(user, series, watching)| {
             ScriptOp::SetSeriesPreference {
                 user,

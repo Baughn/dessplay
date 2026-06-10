@@ -11,6 +11,8 @@
 #![deny(clippy::todo)]
 #![deny(clippy::dbg_macro)]
 
+pub mod compact;
+pub mod derive;
 pub mod hash;
 pub mod lww;
 pub mod net;

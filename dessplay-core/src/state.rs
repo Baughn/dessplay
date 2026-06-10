@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::lww::{Lww, LwwCell, resolve_value};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
-    FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackPosition, PlaylistFileState,
-    SeekAuthority, SeriesListEntry, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent, PlaybackPosition,
+    PlaylistFileState, SeekAuthority, SeriesListEntry, SeriesRelations, SeriesWatchState,
+    SharedTimestamp, UserId,
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
@@ -45,6 +46,8 @@ pub struct CrdtState {
     pub now_playing: LwwCell<Option<Ed2kHash>>,
     /// Whoever last seeked; everyone syncs to their position.
     pub seek_authority: LwwCell<SeekAuthority>,
+    /// The group's play/pause latch. Unwritten resolves as `Paused`.
+    pub playback_intent: LwwCell<PlaybackIntent>,
     /// Per-user, per-series watch preference.
     pub series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     /// Per-user manual state override. `Away` is writable by anyone.
@@ -89,6 +92,8 @@ pub enum CrdtOp {
     NowPlaying(LwwRegOp<Option<Ed2kHash>>),
     /// Seek-authority register write.
     SeekAuthority(LwwRegOp<SeekAuthority>),
+    /// Playback-intent register write.
+    PlaybackIntent(LwwRegOp<PlaybackIntent>),
     /// Series preference write.
     SeriesPreference(LwwMapOp<(UserId, AniDbSeriesId), SeriesWatchState>),
     /// Manual override write.
@@ -109,6 +114,42 @@ pub enum CrdtOp {
     Chat(glist::Op<ChatMessage>),
     /// Playback position write.
     PlaybackPosition(LwwMapOp<UserId, PlaybackPosition>),
+}
+
+impl CrdtOp {
+    /// The LWW write timestamp embedded in this op, if it has one
+    /// (chat and lookup-set inserts don't compete in any register).
+    /// Receivers feed this into their Lamport floor so their next
+    /// stamp dominates everything they have seen — see
+    /// [`crate::lww`]'s module docs on timestamp discipline.
+    pub fn lww_timestamp(&self) -> Option<SharedTimestamp> {
+        fn map_ts<K, V>(op: &LwwMapOp<K, V>) -> Option<SharedTimestamp>
+        where
+            K: Ord + Clone + Debug,
+            V: Ord + Clone + Debug,
+        {
+            match op {
+                crdts::map::Op::Up { op, .. } => Some(op.timestamp),
+                crdts::map::Op::Rm { .. } => None,
+            }
+        }
+        match self {
+            CrdtOp::Playlist(op) => map_ts(op),
+            CrdtOp::Watched(op) => map_ts(op),
+            CrdtOp::SeriesPreference(op) => map_ts(op),
+            CrdtOp::ManualOverride(op) => map_ts(op),
+            CrdtOp::FileAvailability(op) => map_ts(op),
+            CrdtOp::AniDbMetadata(op) => map_ts(op),
+            CrdtOp::SeriesRelations(op) => map_ts(op),
+            CrdtOp::ListEntry(op) => map_ts(op),
+            CrdtOp::ListNextEp(op) => map_ts(op),
+            CrdtOp::PlaybackPosition(op) => map_ts(op),
+            CrdtOp::NowPlaying(op) => Some(op.timestamp),
+            CrdtOp::SeekAuthority(op) => Some(op.timestamp),
+            CrdtOp::PlaybackIntent(op) => Some(op.timestamp),
+            CrdtOp::LookupRequest(_) | CrdtOp::Chat(_) => None,
+        }
+    }
 }
 
 /// A full-state snapshot, as sent on reconnection or after compaction.
@@ -178,6 +219,7 @@ impl CrdtState {
             CrdtOp::Watched(op) => self.watched.apply(op),
             CrdtOp::NowPlaying(op) => self.now_playing.apply(op),
             CrdtOp::SeekAuthority(op) => self.seek_authority.apply(op),
+            CrdtOp::PlaybackIntent(op) => self.playback_intent.apply(op),
             CrdtOp::SeriesPreference(op) => self.series_preference.apply(op),
             CrdtOp::ManualOverride(op) => self.manual_override.apply(op),
             CrdtOp::FileAvailability(op) => self.file_availability.apply(op),
@@ -198,6 +240,7 @@ impl CrdtState {
         self.watched.merge(other.watched);
         self.now_playing.merge(other.now_playing);
         self.seek_authority.merge(other.seek_authority);
+        self.playback_intent.merge(other.playback_intent);
         self.series_preference.merge(other.series_preference);
         self.manual_override.merge(other.manual_override);
         self.file_availability.merge(other.file_availability);
@@ -271,6 +314,19 @@ impl CrdtState {
     ) -> CrdtOp {
         let _ = actor;
         CrdtOp::SeekAuthority(reg_put(&mut self.seek_authority, ts, authority))
+    }
+
+    /// Write the playback intent. Users on play/pause; the server on
+    /// Lost, graceful quit, departure, and EOF-advance (always
+    /// `Paused`). (See [`Self::set_now_playing`] on the unused `actor`.)
+    pub fn set_playback_intent(
+        &mut self,
+        actor: ActorId,
+        ts: SharedTimestamp,
+        intent: PlaybackIntent,
+    ) -> CrdtOp {
+        let _ = actor;
+        CrdtOp::PlaybackIntent(reg_put(&mut self.playback_intent, ts, intent))
     }
 
     /// Set a user's watch preference for a series.
@@ -412,6 +468,7 @@ impl CrdtState {
             watched: map_view(&self.watched),
             now_playing: resolve_value(&self.now_playing).flatten(),
             seek_authority: resolve_value(&self.seek_authority),
+            playback_intent: resolve_value(&self.playback_intent).unwrap_or(PlaybackIntent::Paused),
             series_preference: map_view(&self.series_preference),
             manual_override: map_view(&self.manual_override),
             file_availability: map_view(&self.file_availability),
@@ -432,6 +489,41 @@ impl CrdtState {
 }
 
 impl CrdtState {
+    /// The maximum LWW timestamp anywhere in the state: the Lamport
+    /// floor after adopting a merge, snapshot, or stored state. (Chat
+    /// and the lookup set are excluded — they never compete in a
+    /// register.)
+    pub fn max_lww_timestamp(&self) -> SharedTimestamp {
+        fn map_max<K, V>(map: &LwwMap<K, V>) -> SharedTimestamp
+        where
+            K: Ord + Clone + Debug,
+            V: Ord + Clone + Debug,
+        {
+            map.iter()
+                .filter_map(|entry| entry.val.1.timestamp())
+                .max()
+                .unwrap_or_default()
+        }
+        [
+            map_max(&self.playlist),
+            map_max(&self.watched),
+            self.now_playing.timestamp().unwrap_or_default(),
+            self.seek_authority.timestamp().unwrap_or_default(),
+            self.playback_intent.timestamp().unwrap_or_default(),
+            map_max(&self.series_preference),
+            map_max(&self.manual_override),
+            map_max(&self.file_availability),
+            map_max(&self.anidb_metadata),
+            map_max(&self.series_relations),
+            map_max(&self.list_entries),
+            map_max(&self.list_next_ep),
+            map_max(&self.playback_position),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or_default()
+    }
+
     /// Hash of the resolved view **excluding playback positions** (they
     /// churn every 100ms and would never match between replicas). Used
     /// by the divergence alarm — see docs/sync-state.md.
@@ -495,6 +587,7 @@ impl CrdtState {
             // Order-free types.
             op @ (CrdtOp::NowPlaying(_)
             | CrdtOp::SeekAuthority(_)
+            | CrdtOp::PlaybackIntent(_)
             | CrdtOp::LookupRequest(_)
             | CrdtOp::Chat(_)) => {
                 self.apply(op);
@@ -516,6 +609,8 @@ pub struct StateView {
     pub now_playing: Option<Ed2kHash>,
     /// Current seek authority.
     pub seek_authority: Option<SeekAuthority>,
+    /// The play/pause latch (`Paused` when never written).
+    pub playback_intent: PlaybackIntent,
     /// Per-user series preferences.
     pub series_preference: BTreeMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     /// Per-user manual overrides.

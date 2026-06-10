@@ -157,6 +157,11 @@ enum ServerControl {
     /// Player reached end of file. A report, not state -- the server owns
     /// the EOF -> next-file transition (see sync-state.md, Now Playing).
     EofReached { file: Ed2kHash },
+    /// Graceful quit (`/quit`, Ctrl-C): the server removes the user
+    /// immediately (no Lost stage) and forces playback intent to Paused.
+    /// The client waits for the server's close after sending, so the
+    /// frame is flushed before teardown.
+    Goodbye,
 
     // Server -> Client
     AuthOk { observed_addr: SocketAddr },
@@ -170,7 +175,14 @@ enum ServerControl {
 
     // Bidirectional (state sync)
     StateSnapshot { epoch: u64, crdts: CrdtSnapshot },
-    StateOp { op: CrdtOp },
+    /// Epoch-tagged: both sides drop ops generated against another
+    /// epoch. Without the tag, an op in flight across a compaction
+    /// would land on the freshly rebuilt state and pollute its reset
+    /// per-actor dot sequences (the sender's later ops would be
+    /// silently deduped as already-seen). Ops in flight at the
+    /// compaction edge are dropped *by design* -- the daily schedule
+    /// keeps that window away from watch-party hours.
+    StateOp { epoch: u64, op: CrdtOp },
     /// Full CvRDT state for merge-based sync. Server -> client on
     /// reconnection and divergence healing; client -> server as the
     /// upward half of the reconnect handshake (recovers ops that died
@@ -218,11 +230,19 @@ while playing.
 | Stage | Trigger | Server action |
 |-------|---------|---------------|
 | Present | Normal traffic | -- |
-| Lost | 30s silence (QUIC idle timeout) | Push `PeerList` update; clients pause playback and post a system chat message |
-| Departed | 60s silence | Push `PeerList` update; peer leaves the gating set; playback stays paused (no auto-resume); server takes seek authority if the departed peer held it |
+| Lost | 30s silence (QUIC idle timeout) | Push `PeerList` update; force playback intent to Paused (interactive peers only); system chat message |
+| Departed | 60s silence | Push `PeerList` update; peer leaves the gating set; intent forced Paused again (no auto-resume); server takes seek authority if the departed peer held it |
 
-Graceful disconnects (clean control-stream close) skip the Lost stage and go
-straight to removal -- but still pause playback if it was running.
+Implementation note: with 10s keep-alives, "30s without traffic" coincides
+exactly with the QUIC idle timeout killing the connection — so the server
+marks Lost when the connection dies, and a 1s sweeper promotes Lost entries
+to Departed 30s later (60s of silence total). Lost and Departed entries stay
+in the `PeerList` (with their presence) until the user reconnects; a
+reconnecting user's new connection supersedes the old entry.
+
+Graceful disconnects (`Goodbye`) skip the Lost stage and go straight to
+removal -- but still force the intent to Paused, and hand seek authority to
+the server if the quitter held it.
 
 The full presence semantics, including UI treatment, are in
 [design.md](design.md#presence).

@@ -14,3 +14,6 @@ pub mod transport;
 
 pub use message::{PeerInfo, Presence, Role, ServerControl, WireMessage};
 pub use transport::{BiStream, Connector, Listener, Transport, TransportError, TransportEvent};
+
+/// The default rendezvous-server port, used when an address omits one.
+pub const DEFAULT_PORT: u16 = 9876;

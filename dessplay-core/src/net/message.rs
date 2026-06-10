@@ -84,6 +84,10 @@ pub enum ServerControl {
         /// Which file ended.
         file: Ed2kHash,
     },
+    /// Graceful quit (`/quit`, Ctrl-C). The server removes the user
+    /// immediately (no Lost stage) and pauses playback. A connection
+    /// that dies without this goes through Lost -> Departed instead.
+    Goodbye,
 
     // ---- Server -> Client
     /// Auth accepted.
@@ -111,8 +115,18 @@ pub enum ServerControl {
     // ---- Bidirectional state sync (consumed from Phase 4 on)
     /// Full state replacement (stale epoch or compaction broadcast).
     StateSnapshot(StateSnapshot),
-    /// One CmRDT operation.
-    StateOp(CrdtOp),
+    /// One CmRDT operation. Epoch-tagged: ops generated against a
+    /// different epoch are dropped by both sides. Without the tag, an
+    /// op in flight across a compaction would land on the rebuilt state
+    /// and pollute its freshly-reset per-actor dot sequences — the
+    /// sender's next post-adoption ops would then be silently deduped
+    /// as "already seen".
+    StateOp {
+        /// The epoch the op was generated against.
+        epoch: Epoch,
+        /// The operation.
+        op: CrdtOp,
+    },
     /// Full CvRDT state for merge-based reconnection sync.
     StateMerge(StateSnapshot),
 

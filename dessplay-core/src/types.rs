@@ -207,6 +207,25 @@ pub enum SeekAuthority {
     User(UserId),
 }
 
+/// The group's shared play/pause latch. Whether video *actually* plays
+/// is derived (see [`crate::derive`]): intent must be `Playing`, every
+/// present interactive user must permit playback, and nobody may be
+/// Lost. The register exists because gating alone cannot express "stays
+/// paused after the blocker departs" — without it, playback would
+/// silently auto-resume the moment a paused or lost user drops out of
+/// the gating set.
+///
+/// Users write it on play/pause; the server forces `Paused` on Lost, on
+/// graceful quit, on departure, and when EOF advances now-playing.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub enum PlaybackIntent {
+    /// Nobody has pressed play (or something forced a pause). The
+    /// fresh-state default.
+    Paused,
+    /// Someone pressed play; video runs if gating permits.
+    Playing,
+}
+
 /// A user's manual state override. `None` in the register means no
 /// override.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]

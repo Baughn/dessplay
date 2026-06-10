@@ -1,0 +1,433 @@
+//! Derived state: pure functions from (resolved view, peer list) to the
+//! product-level facts the UI, the player layer, and the server all
+//! need — a user's effective state, and whether video actually plays.
+//!
+//! Everything here quantifies over the **peer list** (the server's
+//! presence view), not over the CRDT maps: departed users' replicated
+//! state persists but is ignored, and users with no peer entry don't
+//! exist for gating purposes. Seeders never gate anything.
+//!
+//! See docs/design.md (User States, Playback Rules, Presence).
+
+use crate::net::{PeerInfo, Presence, Role};
+use crate::state::StateView;
+use crate::types::{FileAvailability, ManualState, PlaybackIntent, SeriesWatchState, UserId};
+
+/// A user's effective state, derived from their manual override and
+/// their watch preference for the now-playing file's series.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DerivedUserState {
+    /// No override, watching the current series: gates playback.
+    Ready,
+    /// Manual override: blocks playback.
+    Paused,
+    /// Marked away by someone else: does not block playback.
+    Away {
+        /// Who set it, for display.
+        set_by: UserId,
+    },
+    /// The now-playing file's series is marked NotWatching: does not
+    /// block playback.
+    NotWatching,
+}
+
+/// Why playback is blocked, per blocking user.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BlockReason {
+    /// Manual pause.
+    Paused,
+    /// File absent or hash-mismatched.
+    FileMissing,
+    /// Still downloading, not yet complete enough to play.
+    Downloading,
+    /// Connection lost (30s without traffic); everyone waits.
+    Lost,
+}
+
+/// One user blocking playback, with the reason — feeds the OSD summary
+/// and the Users pane.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Blocker {
+    /// Who.
+    pub user: UserId,
+    /// Why.
+    pub reason: BlockReason,
+}
+
+/// Derive a user's effective state. The manual override wins; otherwise
+/// the now-playing file's series preference decides; default is Ready.
+pub fn user_state(view: &StateView, user: &UserId) -> DerivedUserState {
+    match view.manual_override.get(user) {
+        Some(Some(ManualState::Paused)) => return DerivedUserState::Paused,
+        Some(Some(ManualState::Away { set_by })) => {
+            return DerivedUserState::Away {
+                set_by: set_by.clone(),
+            };
+        }
+        _ => {}
+    }
+    if let Some(file) = view.now_playing
+        && let Some(Some(metadata)) = view.anidb_metadata.get(&file)
+        && let Some(series) = metadata.series_id
+        && view.series_preference.get(&(user.clone(), series))
+            == Some(&SeriesWatchState::NotWatching)
+    {
+        return DerivedUserState::NotWatching;
+    }
+    DerivedUserState::Ready
+}
+
+/// Why this user's file state blocks playback of now-playing, if it
+/// does.
+///
+/// An *unreported* availability permits: until the file actor (Phase 9)
+/// writes `Missing` promptly on a failed match, blocking on absence-of-
+/// data would deadlock every session. `Downloading` permits at >= 20%;
+/// the design's "download speed exceeds bitrate" half of the rule is
+/// only knowable by the downloading client and arrives with the
+/// transfer machinery in Phase 9.
+fn file_block_reason(view: &StateView, user: &UserId) -> Option<BlockReason> {
+    let file = view.now_playing?;
+    match view.file_availability.get(&(user.clone(), file)) {
+        None | Some(FileAvailability::Ready) => None,
+        Some(FileAvailability::Missing) => Some(BlockReason::FileMissing),
+        Some(FileAvailability::Downloading { progress_bps }) => {
+            (*progress_bps < 2_000).then_some(BlockReason::Downloading)
+        }
+    }
+}
+
+/// Does this user's file state permit playback of now-playing?
+/// See [`file_block_reason`] for the rules.
+pub fn file_permits(view: &StateView, user: &UserId) -> bool {
+    file_block_reason(view, user).is_none()
+}
+
+/// Everyone currently blocking playback, with reasons. Empty means
+/// gating permits (intent and now-playing are checked separately by
+/// [`playback_active`]).
+///
+/// Quantifies over interactive peers only (seeders never gate). A Lost
+/// peer blocks regardless of their replicated state; a Departed peer is
+/// skipped entirely; a Present peer blocks if Paused, or if Ready with
+/// a file state that forbids playback. Away and NotWatching users never
+/// block (their file state is irrelevant — they are not watching).
+pub fn playback_blockers(view: &StateView, peers: &[PeerInfo]) -> Vec<Blocker> {
+    let mut blockers = Vec::new();
+    for peer in peers {
+        if peer.role != Role::Interactive {
+            continue;
+        }
+        let reason = match peer.presence {
+            Presence::Departed => continue,
+            Presence::Lost => Some(BlockReason::Lost),
+            Presence::Present => match user_state(view, &peer.username) {
+                DerivedUserState::Paused => Some(BlockReason::Paused),
+                DerivedUserState::Away { .. } | DerivedUserState::NotWatching => None,
+                DerivedUserState::Ready => file_block_reason(view, &peer.username),
+            },
+        };
+        if let Some(reason) = reason {
+            blockers.push(Blocker {
+                user: peer.username.clone(),
+                reason,
+            });
+        }
+    }
+    blockers
+}
+
+/// The derived playback state: video plays iff the intent latch is
+/// `Playing`, something is queued as now-playing, and nobody blocks.
+pub fn playback_active(view: &StateView, peers: &[PeerInfo]) -> bool {
+    view.playback_intent == PlaybackIntent::Playing
+        && view.now_playing.is_some()
+        && playback_blockers(view, peers).is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use crate::state::CrdtState;
+    use crate::types::{
+        ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, MetadataSource, SharedTimestamp,
+    };
+
+    const SERVER: ActorId = ActorId::SERVER;
+
+    fn ts(t: u64) -> SharedTimestamp {
+        SharedTimestamp(t)
+    }
+
+    fn hash(i: u8) -> Ed2kHash {
+        Ed2kHash([i; 16])
+    }
+
+    fn peer(name: &str, role: Role, presence: Presence) -> PeerInfo {
+        PeerInfo {
+            username: UserId::new(name),
+            role,
+            presence,
+            addresses: vec![],
+            connected_since: 0,
+        }
+    }
+
+    fn present(name: &str) -> PeerInfo {
+        peer(name, Role::Interactive, Presence::Present)
+    }
+
+    /// A state with now-playing set and intent Playing: the baseline
+    /// where everything else permits playback.
+    fn playing_state() -> CrdtState {
+        let mut state = CrdtState::new();
+        state.set_now_playing(SERVER, ts(1), Some(hash(1)));
+        state.set_playback_intent(SERVER, ts(2), PlaybackIntent::Playing);
+        state
+    }
+
+    #[test]
+    fn fresh_state_defaults_to_paused() {
+        let view = CrdtState::new().view();
+        assert_eq!(view.playback_intent, PlaybackIntent::Paused);
+        assert!(!playback_active(&view, &[present("kim")]));
+    }
+
+    #[test]
+    fn all_ready_and_intent_playing_plays() {
+        let view = playing_state().view();
+        let peers = [present("kim"), present("baughn")];
+        assert!(playback_blockers(&view, &peers).is_empty());
+        assert!(playback_active(&view, &peers));
+    }
+
+    #[test]
+    fn intent_paused_blocks_even_when_everyone_is_ready() {
+        let mut state = playing_state();
+        state.set_playback_intent(SERVER, ts(3), PlaybackIntent::Paused);
+        let view = state.view();
+        assert!(playback_blockers(&view, &[present("kim")]).is_empty());
+        assert!(!playback_active(&view, &[present("kim")]));
+    }
+
+    #[test]
+    fn nothing_queued_means_nothing_plays() {
+        let mut state = CrdtState::new();
+        state.set_playback_intent(SERVER, ts(1), PlaybackIntent::Playing);
+        assert!(!playback_active(&state.view(), &[present("kim")]));
+    }
+
+    #[test]
+    fn manual_pause_blocks_with_attribution() {
+        let mut state = playing_state();
+        state.set_manual_override(SERVER, ts(3), UserId::new("kim"), Some(ManualState::Paused));
+        let view = state.view();
+        assert_eq!(
+            user_state(&view, &UserId::new("kim")),
+            DerivedUserState::Paused
+        );
+        assert_eq!(
+            playback_blockers(&view, &[present("kim"), present("baughn")]),
+            vec![Blocker {
+                user: UserId::new("kim"),
+                reason: BlockReason::Paused,
+            }]
+        );
+        assert!(!playback_active(
+            &view,
+            &[present("kim"), present("baughn")]
+        ));
+    }
+
+    #[test]
+    fn away_does_not_block_and_carries_attribution() {
+        let mut state = playing_state();
+        state.set_manual_override(
+            SERVER,
+            ts(3),
+            UserId::new("kim"),
+            Some(ManualState::Away {
+                set_by: UserId::new("baughn"),
+            }),
+        );
+        let view = state.view();
+        assert_eq!(
+            user_state(&view, &UserId::new("kim")),
+            DerivedUserState::Away {
+                set_by: UserId::new("baughn")
+            }
+        );
+        assert!(playback_active(&view, &[present("kim"), present("baughn")]));
+    }
+
+    #[test]
+    fn not_watching_series_does_not_block() {
+        let series = AniDbSeriesId(42);
+        let mut state = playing_state();
+        state.set_anidb_metadata(
+            SERVER,
+            ts(3),
+            hash(1),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(series),
+                episode_number: Some("1".into()),
+            }),
+        );
+        state.set_series_preference(
+            SERVER,
+            ts(4),
+            UserId::new("kim"),
+            series,
+            SeriesWatchState::NotWatching,
+        );
+        // Kim is even Missing the file — irrelevant, she isn't watching.
+        state.set_file_availability(
+            SERVER,
+            ts(5),
+            UserId::new("kim"),
+            hash(1),
+            FileAvailability::Missing,
+        );
+        let view = state.view();
+        assert_eq!(
+            user_state(&view, &UserId::new("kim")),
+            DerivedUserState::NotWatching
+        );
+        assert!(playback_active(&view, &[present("kim"), present("baughn")]));
+    }
+
+    #[test]
+    fn manual_pause_overrides_not_watching() {
+        let series = AniDbSeriesId(42);
+        let mut state = playing_state();
+        state.set_anidb_metadata(
+            SERVER,
+            ts(3),
+            hash(1),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(series),
+                episode_number: None,
+            }),
+        );
+        state.set_series_preference(
+            SERVER,
+            ts(4),
+            UserId::new("kim"),
+            series,
+            SeriesWatchState::NotWatching,
+        );
+        state.set_manual_override(SERVER, ts(5), UserId::new("kim"), Some(ManualState::Paused));
+        assert_eq!(
+            user_state(&state.view(), &UserId::new("kim")),
+            DerivedUserState::Paused
+        );
+    }
+
+    #[test]
+    fn file_states_gate_watching_users() {
+        for (availability, expected) in [
+            (FileAvailability::Ready, None),
+            (FileAvailability::Missing, Some(BlockReason::FileMissing)),
+            (
+                FileAvailability::Downloading {
+                    progress_bps: 1_999,
+                },
+                Some(BlockReason::Downloading),
+            ),
+            (
+                FileAvailability::Downloading {
+                    progress_bps: 2_000,
+                },
+                None,
+            ),
+        ] {
+            let mut state = playing_state();
+            state.set_file_availability(SERVER, ts(3), UserId::new("kim"), hash(1), availability);
+            let blockers = playback_blockers(&state.view(), &[present("kim")]);
+            match expected {
+                None => assert!(blockers.is_empty(), "{availability:?} should permit"),
+                Some(reason) => {
+                    assert_eq!(blockers.len(), 1, "{availability:?} should block");
+                    assert_eq!(blockers[0].reason, reason);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unreported_availability_permits() {
+        // Nobody has written availability at all (pre-Phase-9 reality):
+        // playback must not deadlock on absent data.
+        let view = playing_state().view();
+        assert!(file_permits(&view, &UserId::new("kim")));
+        assert!(playback_active(&view, &[present("kim")]));
+    }
+
+    #[test]
+    fn lost_interactive_user_blocks_regardless_of_state() {
+        let view = playing_state().view();
+        let peers = [
+            present("kim"),
+            peer("baughn", Role::Interactive, Presence::Lost),
+        ];
+        assert_eq!(
+            playback_blockers(&view, &peers),
+            vec![Blocker {
+                user: UserId::new("baughn"),
+                reason: BlockReason::Lost,
+            }]
+        );
+    }
+
+    #[test]
+    fn departed_user_is_removed_from_gating() {
+        // A departed user who was Paused no longer blocks — the intent
+        // latch (forced Paused by the server on departure) is what
+        // keeps playback stopped, not their gating entry.
+        let mut state = playing_state();
+        state.set_manual_override(SERVER, ts(3), UserId::new("kim"), Some(ManualState::Paused));
+        let view = state.view();
+        let peers = [
+            present("baughn"),
+            peer("kim", Role::Interactive, Presence::Departed),
+        ];
+        assert!(playback_blockers(&view, &peers).is_empty());
+        assert!(playback_active(&view, &peers));
+    }
+
+    #[test]
+    fn seeders_never_gate() {
+        let mut state = playing_state();
+        // A paused, lost seeder with a missing file: maximally blocked,
+        // if it could block.
+        state.set_manual_override(SERVER, ts(3), UserId::new("nas"), Some(ManualState::Paused));
+        state.set_file_availability(
+            SERVER,
+            ts(4),
+            UserId::new("nas"),
+            hash(1),
+            FileAvailability::Missing,
+        );
+        let peers = [present("kim"), peer("nas", Role::Seeder, Presence::Lost)];
+        assert!(playback_active(&state.view(), &peers));
+    }
+
+    #[test]
+    fn users_absent_from_the_peer_list_are_ignored() {
+        // CRDT state for a user with no peer entry (long gone): no gate.
+        let mut state = playing_state();
+        state.set_manual_override(
+            SERVER,
+            ts(3),
+            UserId::new("ghost"),
+            Some(ManualState::Paused),
+        );
+        assert!(playback_active(&state.view(), &[present("kim")]));
+    }
+}

@@ -21,11 +21,17 @@
 //!
 //! ## Timestamp discipline
 //!
-//! A causally-later write with an *older* timestamp loses under pure
-//! LWW. Writers must therefore issue monotonic timestamps:
-//! `max(shared_now, last_issued + 1)` — required of the op-generation
-//! layer (Phase 4), and the right behavior under NTP clock steps
-//! regardless.
+//! A causally-later write with an *older or equal* timestamp can lose
+//! under pure LWW (equal stamps fall to the value tiebreak). Writers
+//! must therefore issue **Lamport-monotonic** timestamps:
+//! `max(shared_now, last_issued + 1)`, where `last_issued` is bumped
+//! not only by the writer's own stamps but by every LWW timestamp it
+//! *observes* — remote ops, merges, snapshots, and state loaded from
+//! storage. Self-monotonicity alone is not enough: two actors writing
+//! in the same shared-clock millisecond would tie, and the causally
+//! later write (e.g. the server forcing Paused right after seeing a
+//! client's Playing) could lose the tiebreak. Found by the Phase 5
+//! EOF tests.
 
 use std::convert::Infallible;
 
@@ -86,6 +92,12 @@ impl<V: Ord> LwwCell<V> {
     /// The current winning value, if ever written.
     pub fn value(&self) -> Option<&V> {
         self.current.as_ref().map(|lww| &lww.value)
+    }
+
+    /// The current winner's timestamp, if ever written. Feeds the
+    /// Lamport floor for stamp generation (see the module docs).
+    pub fn timestamp(&self) -> Option<SharedTimestamp> {
+        self.current.as_ref().map(|lww| lww.timestamp)
     }
 }
 
