@@ -1,0 +1,72 @@
+[package]
+name = "dessplay-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Excluded from the root workspace (fuzz builds use their own profile).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+dessplay-core = { path = "..", features = ["test-support"] }
+
+[[bin]]
+name = "crdt_op"
+path = "fuzz_targets/crdt_op.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crdt_convergence"
+path = "fuzz_targets/crdt_convergence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot_roundtrip"
+path = "fuzz_targets/snapshot_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "merge_roundtrip"
+path = "fuzz_targets/merge_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "playlist_identifier"
+path = "fuzz_targets/playlist_identifier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mvreg_lww_convergence"
+path = "fuzz_targets/mvreg_lww_convergence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chat_glist"
+path = "fuzz_targets/chat_glist.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "postcard_deserialize"
+path = "fuzz_targets/postcard_deserialize.rs"
+test = false
+doc = false
+bench = false

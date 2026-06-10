@@ -19,6 +19,15 @@ dessplay-rendezvous/          (server binary: coordinator, compaction, AniDB)
 
 ## Phase 1: Foundation & CRDTs
 
+**Status: complete (2026-06-10).** Notable deviations from the original
+sketch, all documented in sync-state.md: playlist removal is an LWW
+tombstone (`Option<PlaylistFileState>`, `None` = removed) because
+`crdts`' `Map::rm` proved non-convergent under concurrent re-add;
+convergence is defined and tested at the resolved-view level through a
+hub-and-spoke cluster model rather than naive op shuffling; ed2k uses the
+eMule/AniDB ("red") variant with per-block MD4 hashes computed via `md4`
+(the `ed2k` crate cross-checks the root in tests).
+
 **Goal**: Workspace, shared types, CRDT state using the `crdts` crate,
 property tests. No networking -- pure logic.
 

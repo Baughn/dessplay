@@ -561,7 +561,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 
 | Data | CRDT Type | Notes |
 |------|-----------|-------|
-| Playlist | `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>>>` | `Identifier`-based ordering; includes size and duration |
+| Playlist | `Map<Ed2kHash, MVReg<Lww<Option<PlaylistFileState>>>>` | `Identifier`-based ordering; includes size and duration; `None` = removal tombstone (purged at compaction) |
 | Watched flags | `Map<Ed2kHash, MVReg<Lww<bool>>>` | Server-only writes (at EOF) |
 | Now Playing | `MVReg<Lww<Option<Ed2kHash>>>` | Standalone register; server writes on EOF |
 | Seek Authority | `MVReg<Lww<ActorId>>` | Standalone register; last seeker is position authority |
@@ -862,7 +862,11 @@ For v1, this is acceptable. Future improvements could include:
 - **FileId**: The ed2k hash of a file's contents. All playlist operations,
   file state tracking, and content verification use this as the unique
   identifier for a file. This means a file must be hashed before it can be
-  added to the playlist.
+  added to the playlist. Computed with the eMule/AniDB ("red") ed2k
+  variant — files whose size is an exact multiple of the 9,728,000-byte
+  block size include a trailing empty-block hash — for compatibility with
+  AniDB FILE lookups. Per-block MD4 hashes are kept alongside the root for
+  transfer verification.
 
 - **Rooms**: A rendezvous server can in theory host multiple rooms. For v1,
   there is a single implicit room per server. Multi-room support is future work.

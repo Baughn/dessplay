@@ -117,6 +117,30 @@ and the wire protocol uniform.
 - **GSet::apply():** Takes the element directly as the op (no separate insert +
   apply pattern).
 - **GList::read():** Returns references (`FromIterator<&T>`), not owned values.
+- **`Map::rm` is banned.** Property testing (Phase 1) found that op-based
+  `Map::Rm` is not view-convergent in `crdts`: the remove op's clock is
+  entry-scoped while nested `MVReg` put clocks are map-global, so a remove
+  racing a concurrent re-add wholesale-drops the entry on some replicas but
+  leaves a resurrected "ghost" value on others — replicas then disagree on
+  the LWW winner until the next write to that key. All removal in DessPlay
+  is therefore expressed as an **LWW tombstone** (the register value is an
+  `Option`, `None` = removed), and the server purges tombstones at
+  compaction. With puts only, every DessPlay CRDT converges at the view
+  level under per-origin FIFO delivery.
+- **Delivery requirements.** `Map` update ops carry per-actor sequence
+  numbers (dots); ops from one origin must be applied in the order that
+  origin generated them, or later dots mask earlier ones and ops are lost
+  silently. The hub-and-spoke topology provides this for free: the server
+  applies ops in arrival order (necessarily causal) and broadcasts that
+  total order, and a client seeing its own ops early is also causal.
+  **Phase 4 constraint:** the datagram fast path must not apply an op ahead
+  of undelivered earlier ops from the same origin — hold (or drop) such
+  datagrams until the reliable stream catches up.
+- **Internal state vs. view equality:** even under causal delivery,
+  replicas applying the same ops in different (valid) orders can end up
+  with differing internal causal metadata while resolving to the same
+  view. Convergence is defined — and tested — on the resolved view, not on
+  raw CRDT equality.
 - **MVReg causality:** MVReg tracks causal history via vector clocks. The same
   *logical* writes applied in different orders to independent replicas produce
   different causal states (and potentially different sets of concurrent values).
@@ -133,7 +157,7 @@ and the wire protocol uniform.
 
 | State | CRDT Type | Owner |
 |---|---|---|
-| Playlist | `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>, ActorId>, ActorId>` | Any peer |
+| Playlist | `Map<Ed2kHash, MVReg<Lww<Option<PlaylistFileState>>, ActorId>, ActorId>` | Any peer |
 | Watched flags | `Map<Ed2kHash, MVReg<Lww<bool>, ActorId>, ActorId>` | Server only (at EOF) |
 | Now Playing | `MVReg<Lww<Option<Ed2kHash>>, ActorId>` | Any peer; server on EOF |
 | Seek Authority | `MVReg<Lww<ActorId>, ActorId>` | Whoever last seeked; server on file change or authority departure |
@@ -150,7 +174,10 @@ and the wire protocol uniform.
 
 ### Playlist
 
-The playlist is a `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>, ActorId>, ActorId>`.
+The playlist is a
+`Map<Ed2kHash, MVReg<Lww<Option<PlaylistFileState>>, ActorId>, ActorId>`.
+The value is an `Option` because removal is a tombstone write (`None`),
+not a `Map::rm` — see the API notes above.
 
 `PlaylistFileState` contains:
 - `position: Identifier<ActorId>` -- dense ordering via `crdts::Identifier`
@@ -179,9 +206,12 @@ If adding at the end, `Identifier::between(Some(&last.position), None, my_actor_
 between the two items it should sit between, write the new `PlaylistFileState`
 with the updated position.
 
-**Removing:** `Map::rm` on the ed2k hash. If there's a concurrent update,
-the item survives (observed-remove semantics). This is acceptable -- the user
-can delete again.
+**Removing:** write a `None` tombstone over the entry (plain LWW write).
+A concurrent update and remove resolve by timestamp — whichever was later
+wins, identically on every replica. (`Map::rm`'s observed-remove semantics
+were the original design, but proved non-convergent in `crdts`; see the
+API notes above.) Tombstones are purged at compaction, so they never
+accumulate beyond one epoch.
 
 **Rebalancing:** After many moves, `Identifier` values grow in size (the
 underlying `BigRational` denominators increase). The server rebalances during
@@ -460,7 +490,9 @@ most a second or two at noon, which nobody will ever notice.
    clients retry)
 2. Takes its current merged CRDT state
 3. **Rebalances playlist `Identifier` positions** -- reassigns fresh
-   identifiers with small `BigRational` values to prevent size growth
+   identifiers with small `BigRational` values to prevent size growth,
+   and **purges removal tombstones** (entries whose register resolves to
+   `None` are dropped from the snapshot)
 4. Compacts each user's playback position to a single latest value
 5. **Clears the lookup request GSet** -- all entries have been processed
 6. **Trims chat** to the most recent 500 messages (full history archived to

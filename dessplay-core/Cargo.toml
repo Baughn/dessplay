@@ -1,0 +1,24 @@
+[package]
+name = "dessplay-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+postcard = { workspace = true }
+crdts = { workspace = true }
+md4 = { workspace = true }
+digest = { workspace = true }
+tracing = { workspace = true }
+arbitrary = { version = "1", features = ["derive"], optional = true }
+
+[features]
+# Structured-input generators shared by the proptest suite and fuzz targets.
+test-support = ["dep:arbitrary"]
+
+[dev-dependencies]
+# Reference implementation to cross-check our md4-based ed2k hashing.
+ed2k = { workspace = true }
+proptest = { workspace = true }
+rand = { workspace = true }
+dessplay-core = { path = ".", features = ["test-support"] }

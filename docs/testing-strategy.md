@@ -241,23 +241,36 @@ Using proptest to verify convergence properties.
 
 For every CRDT type, the fundamental property:
 
-> Given the same set of operations, any application order produces the same
-> snapshot.
+> After all operations are delivered, every replica resolves to the same
+> **view** (LWW winners, sorted playlist, chat order).
+
+Two hard-won qualifications, found by Phase 1 property testing:
+
+1. **A plain shuffle is not a valid replay order.** `Map` ops carry
+   per-actor sequence numbers; arbitrary permutation silently drops ops,
+   and even per-actor-order-preserving permutations can violate causal
+   delivery, which `crdts` does not survive (see sync-state.md, crdts API
+   notes). The delivery orders the real system produces are: the server's
+   total order, with each client's own ops applied early. Convergence is
+   therefore tested through a **cluster model**
+   (`dessplay_core::test_support::Cluster`): per-client states with local
+   echo, a server hub consuming client queues in fuzz-chosen order,
+   in-order log delivery (including duplicate delivery of own ops), and
+   CvRDT-merge reconnects.
+2. **Convergence is view-level.** Replicas that received the same ops in
+   different valid orders can hold different internal causal metadata
+   while agreeing on the resolved view. Tests compare `CrdtState::view()`;
+   raw state equality is only asserted for byte-identical histories.
 
 ```rust
 proptest! {
     #[test]
-    fn playlist_map_converges(
-        ops in vec(arb_playlist_op(), 1..50),
-        permutation_seed in any::<u64>(),
-    ) {
-        let snapshot_a = apply_ops(&ops);
-
-        let mut shuffled = ops.clone();
-        shuffled.shuffle(&mut StdRng::seed_from_u64(permutation_seed));
-        let snapshot_b = apply_ops(&shuffled);
-
-        assert_eq!(snapshot_a, snapshot_b);
+    fn cluster_converges(events in vec(arb_cluster_event(), 1..80)) {
+        let cluster = run_cluster(&events);   // generate, schedule, flush
+        let server_view = cluster.server.view();
+        for client in &cluster.clients {
+            prop_assert_eq!(client.view(), server_view.clone());
+        }
     }
 }
 ```
@@ -267,7 +280,7 @@ proptest! {
 | CRDT | Property | Notes |
 |------|----------|-------|
 | `MVReg<Lww<V>>` | LWW resolution: highest timestamp wins regardless of apply order | Value-based tiebreaking on equal timestamps |
-| Playlist Map | Same ops, any order -> same entries and positions | Test Put/Remove interactions |
+| Playlist Map | Cluster-delivered ops -> same entries and positions everywhere | Put/tombstone interactions (no `Map::rm`; see sync-state.md) |
 | Chat GList | Same inserts, any order -> same message sequence | GList guarantees this |
 | Seek Authority | Last timestamp wins | Same as MVReg+Lww |
 | CvRDT merge | merge(a, b) == merge(b, a); merge(a, merge(b, c)) == merge(merge(a, b), c) | Commutativity and associativity |
@@ -367,45 +380,47 @@ Fuzz for at least 10 minutes per target before release.
 ### Generic Targets
 
 #### CRDT Op Replay (`crdt_op`)
-Applies arbitrary sequences of operations to CrdtState. Asserts no panics.
+Applies arbitrary scripted op sequences to CrdtState, including duplicate
+delivery. Asserts no panics; state stays viewable and serializable.
 
 #### CRDT Convergence (`crdt_convergence`)
-Same ops in two orders -> identical snapshots.
+Arbitrary cluster-event schedules (client ops, server ops, polls, partial
+deliveries, reconnects) through the hub-and-spoke `Cluster` model. After
+flush, every client's view equals the server's.
 
 #### Snapshot Round-Trip (`snapshot_roundtrip`)
-Build state -> snapshot -> load into fresh state -> identical snapshots.
+Build state -> postcard snapshot -> decode -> identical state and view.
 
 #### CvRDT Merge Round-Trip (`merge_roundtrip`)
-Two actors with overlapping ops -> CvRDT merge -> convergence.
+Three independently evolved replicas (one actor each). Merge is
+commutative, associative, idempotent, and agrees with op replay.
 
 ### Targeted Targets
 
 #### Playlist Identifier (`playlist_identifier`)
-Constrained inputs: 5 file IDs, 4 actor IDs, 16 timestamps. Forces meaningful
-add/move/remove interactions on the same files. Verifies `Identifier` ordering
-consistency.
+Constrained inputs (5 file IDs, 4 actors, small timestamps) force
+add/move/remove collisions on the same files. The playlist is always
+strictly sorted by `(position, hash)`; rebalancing preserves order and its
+ops converge on replicas.
 
 #### MVReg+Lww Convergence (`mvreg_lww_convergence`)
-4 keys, 4 timestamps, 3 actors. Forces concurrent writes and same-timestamp
-tiebreaks. Verifies `Lww` resolution produces identical results regardless of
-operation order.
+Pairwise-concurrent register writes. Every delivery rotation and merge
+order resolves to `max((timestamp, value))`.
 
 #### Chat GList (`chat_glist`)
-Constrained inserts. Verifies ordering consistency.
-
-#### CvRDT Merge (`cvmerge`)
-Build state on 3 actors via random ops, then merge in random order. Asserts
-all converge to identical state. Tests idempotency (merge same state twice).
+Concurrent appends from three replicas, delivered in rotated orders with
+duplicates. No losses, no duplicates, identical final order.
 
 ### Network Targets
 
 #### Postcard Deserialize (`postcard_deserialize`)
-Raw bytes -> `postcard::from_bytes` for all wire types. Must not panic.
+Raw bytes -> `wire::decode` for `CrdtOp` and `StateSnapshot`. Must not
+panic.
 
-#### Framing Deserialize (`framing_deserialize`)
+#### Framing Deserialize (`framing_deserialize`) — Phase 3
 Raw bytes -> stream/datagram framing layer. Must not panic.
 
-#### Sync Engine (`sync_engine`)
+#### Sync Engine (`sync_engine`) — Phase 4
 2-4 SyncActors through random event sequences with partitions and loss.
 Mid-run convergence checks.
 
