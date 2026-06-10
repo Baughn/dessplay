@@ -10,19 +10,17 @@
 //!
 //! ## Replay-order rules
 //!
-//! The CRDT layer requires **causal delivery**: an op may only be applied
-//! after every op its clock references. Violating this is not merely
-//! lossy — `crdts::Map`'s deferred-remove handling trims value clocks
-//! when a `Rm` arrives before the `Up`s it observed, which can flip later
-//! MVReg dominance decisions and diverge the *resolved view*. The
-//! hub-and-spoke architecture guarantees causal delivery (the server
-//! applies ops in arrival order — necessarily causal — and broadcasts
-//! that total order; a client additionally sees its own ops early, which
-//! is also causal), so convergence is tested through [`Cluster`], a
-//! faithful model of that topology: per-client states with local echo, a
-//! server hub consuming client queues in arbitrary order, in-order
-//! delivery of the server log, duplicate delivery of own ops, and
-//! CvRDT-merge reconnects.
+//! Register values (`LwwCell`) converge under *any* delivery order —
+//! max-merge needs nothing. `crdts::Map` still requires **per-origin
+//! FIFO**: its `Up` ops carry per-actor sequence dots, and applying a
+//! later dot first masks earlier ones (ops are silently dropped). The
+//! hub-and-spoke architecture provides per-origin FIFO everywhere (QUIC
+//! control streams are ordered; the server broadcasts one total order;
+//! a client seeing its own ops early preserves its own order), so
+//! convergence is tested through [`Cluster`], a faithful model of that
+//! topology: per-client states with local echo, a server hub consuming
+//! client queues in arbitrary order, in-order delivery of the server
+//! log, duplicate delivery of own ops, and CvRDT-merge reconnects.
 
 use crate::playlist::NewPlaylistEntry;
 use crate::state::{CrdtOp, CrdtState};

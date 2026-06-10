@@ -9,9 +9,6 @@
 //! Timestamps are caller-supplied unix milliseconds (`i64`); storage never
 //! reads the clock.
 
-// Consumed by the server actor in Phase 5; only tests use it until then.
-#![allow(dead_code)]
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 

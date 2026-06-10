@@ -11,10 +11,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
-use crdts::{CmRDT, CvRDT, GList, GSet, Map, glist, mvreg};
+use crdts::{CmRDT, CvRDT, GList, GSet, Map, glist};
 use serde::{Deserialize, Serialize};
 
-use crate::lww::{Lww, LwwReg, resolve_value};
+use crate::lww::{Lww, LwwCell, resolve_value};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
     FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackPosition, PlaylistFileState,
@@ -22,13 +22,14 @@ use crate::types::{
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
-pub type LwwMap<K, V> = Map<K, LwwReg<V>, ActorId>;
+pub type LwwMap<K, V> = Map<K, LwwCell<V>, ActorId>;
 
 /// The native op type for an [`LwwMap`].
-pub type LwwMapOp<K, V> = crdts::map::Op<K, LwwReg<V>, ActorId>;
+pub type LwwMapOp<K, V> = crdts::map::Op<K, LwwCell<V>, ActorId>;
 
-/// The native op type for a standalone [`LwwReg`].
-pub type LwwRegOp<V> = mvreg::Op<Lww<V>, ActorId>;
+/// The op type for a standalone [`LwwCell`]: the timestamped value
+/// itself.
+pub type LwwRegOp<V> = Lww<V>;
 
 /// All replicated DessPlay state. See docs/sync-state.md for the full
 /// table of types, owners, and conflict-resolution rationale.
@@ -41,9 +42,9 @@ pub struct CrdtState {
     /// Group watched flags. Server-only writes, at EOF.
     pub watched: LwwMap<Ed2kHash, bool>,
     /// The currently playing file, if any.
-    pub now_playing: LwwReg<Option<Ed2kHash>>,
+    pub now_playing: LwwCell<Option<Ed2kHash>>,
     /// Whoever last seeked; everyone syncs to their position.
-    pub seek_authority: LwwReg<ActorId>,
+    pub seek_authority: LwwCell<ActorId>,
     /// Per-user, per-series watch preference.
     pub series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     /// Per-user manual state override. `Away` is writable by anyone.
@@ -119,8 +120,9 @@ pub struct StateSnapshot {
     pub state: CrdtState,
 }
 
-/// Write the LWW winner for `key`, generating the op from the map's
-/// current causal context and applying it locally.
+/// Write the LWW winner for `key`. The map-level dot (from `actor`)
+/// exists for `Map`'s per-origin dedup; the value op carries only the
+/// timestamped value.
 fn map_put<K, V>(
     map: &mut LwwMap<K, V>,
     actor: ActorId,
@@ -133,18 +135,17 @@ where
     V: Ord + Clone + Debug,
 {
     let add_ctx = map.read_ctx().derive_add_ctx(actor);
-    let op = map.update(key, add_ctx, |reg, ctx| reg.write(Lww::new(ts, value), ctx));
+    let op = map.update(key, add_ctx, |cell, _ctx| cell.write(ts, value));
     map.apply(op.clone());
     op
 }
 
 /// Write a standalone LWW register.
-fn reg_put<V>(reg: &mut LwwReg<V>, actor: ActorId, ts: SharedTimestamp, value: V) -> LwwRegOp<V>
+fn reg_put<V>(reg: &mut LwwCell<V>, ts: SharedTimestamp, value: V) -> LwwRegOp<V>
 where
-    V: Ord + Clone + Debug,
+    V: Ord + Clone,
 {
-    let add_ctx = reg.read_ctx().derive_add_ctx(actor);
-    let op = reg.write(Lww::new(ts, value), add_ctx);
+    let op = reg.write(ts, value);
     reg.apply(op.clone());
     op
 }
@@ -247,24 +248,29 @@ impl CrdtState {
         CrdtOp::Watched(map_put(&mut self.watched, actor, ts, hash, watched))
     }
 
-    /// Set the now-playing file.
+    /// Set the now-playing file. (`actor` is unused — standalone LWW
+    /// registers carry no causal metadata — but kept for mutator-API
+    /// uniformity.)
     pub fn set_now_playing(
         &mut self,
         actor: ActorId,
         ts: SharedTimestamp,
         file: Option<Ed2kHash>,
     ) -> CrdtOp {
-        CrdtOp::NowPlaying(reg_put(&mut self.now_playing, actor, ts, file))
+        let _ = actor;
+        CrdtOp::NowPlaying(reg_put(&mut self.now_playing, ts, file))
     }
 
-    /// Take or hand over seek authority.
+    /// Take or hand over seek authority. (See [`Self::set_now_playing`]
+    /// on the unused `actor`.)
     pub fn set_seek_authority(
         &mut self,
         actor: ActorId,
         ts: SharedTimestamp,
         authority: ActorId,
     ) -> CrdtOp {
-        CrdtOp::SeekAuthority(reg_put(&mut self.seek_authority, actor, ts, authority))
+        let _ = actor;
+        CrdtOp::SeekAuthority(reg_put(&mut self.seek_authority, ts, authority))
     }
 
     /// Set a user's watch preference for a series.
@@ -533,14 +539,15 @@ mod tests {
     }
 
     #[test]
-    fn causally_later_write_beats_older_timestamp() {
-        // A sequential overwrite wins even with a *lower* timestamp: the
-        // MVReg drops dominated values, and LWW only arbitrates between
-        // causally concurrent ones.
+    fn older_timestamp_never_wins_even_sequentially() {
+        // Pure LWW: a later write with a *lower* timestamp loses, even
+        // from the same actor. This is why op generation must issue
+        // monotonic timestamps — max(shared_now, last_issued + 1) —
+        // a Phase 4 requirement (see docs/sync-state.md).
         let mut state = CrdtState::new();
         state.set_now_playing(A1, ts(100), Some(hash(1)));
         state.set_now_playing(A1, ts(50), Some(hash(2)));
-        assert_eq!(state.view().now_playing, Some(hash(2)));
+        assert_eq!(state.view().now_playing, Some(hash(1)));
     }
 
     #[test]

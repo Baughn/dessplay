@@ -13,6 +13,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt"] }
 dessplay-core = { path = "..", features = ["test-support"] }
 
 [[bin]]
@@ -51,8 +52,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "mvreg_lww_convergence"
-path = "fuzz_targets/mvreg_lww_convergence.rs"
+name = "lww_register_convergence"
+path = "fuzz_targets/lww_register_convergence.rs"
 test = false
 doc = false
 bench = false
@@ -67,6 +68,13 @@ bench = false
 [[bin]]
 name = "postcard_deserialize"
 path = "fuzz_targets/postcard_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "framing_deserialize"
+path = "fuzz_targets/framing_deserialize.rs"
 test = false
 doc = false
 bench = false

@@ -1,4 +1,4 @@
-//! Lww resolution over concurrent register writes: every delivery order
+//! LwwCell resolution over concurrent register writes: every delivery
 //! resolves to max((timestamp, value)).
 
 #![no_main]

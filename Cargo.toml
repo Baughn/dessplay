@@ -12,6 +12,10 @@ serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 crdts = "7.3"
 tokio = { version = "1", features = ["full"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+sha2 = "0.10"
 color-eyre = "0.6"
 proptest = "1"
 rand = "0.9"

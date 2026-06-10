@@ -5,9 +5,6 @@
 //! environment variables override these at runtime (wired up in Phase 5)
 //! but are never written back.
 
-// Consumed by the actor wiring in Phase 5; only tests use it until then.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use crate::storage::{Result, Storage, StorageError};

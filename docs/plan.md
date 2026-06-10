@@ -117,6 +117,22 @@ CRDT state and config survive process restarts.
 
 ## Phase 3: Network Layer
 
+**Status: complete (2026-06-10).** Notes: the transport seam lives in
+`dessplay-core::net` (traits + framing + time sync + TOFU + quinn +
+sim); both binaries became lib-with-thin-main so cross-crate tests run
+real clients against the real server in-process (the composition-root
+requirement, cashed in early). Duplicate-username auth supersedes the
+old connection (documented in network-design.md). Sim reordering is
+modeled as per-datagram jitter rather than a shuffle window
+(testing-strategy.md updated).
+
+Also in this phase: the property suite caught a second crdts
+view-divergence (`Map::merge` corrupting nested-register clocks; pinned
+in `dessplay-core/tests/regressions.rs`), and registers were rewritten
+from `MVReg<Lww<V>>` to our own max-merge `LwwCell<V>` — see
+sync-state.md. Consequence for Phase 4: op generation must issue
+monotonic timestamps (`max(shared_now, last_issued + 1)`).
+
 **Goal**: QUIC transport, server connection, time sync.
 No state sync yet -- transport and connection management only.
 

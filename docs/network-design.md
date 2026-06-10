@@ -229,6 +229,13 @@ direct peer connections ever return). On failure, the server sends
 gating and listed separately), and last known epoch (used to choose between
 `StateMerge` and `StateSnapshot` -- see State Sync Flow).
 
+**Duplicate usernames:** a successful `Auth` with a username that already
+has a live connection *supersedes* it -- the server closes the old
+connection ("superseded by a new connection") and registers the new one.
+This is the reconnect-before-timeout path: a client that crashes and
+restarts must not be locked out by its own zombie connection. With five
+trusted friends, impersonation is out of scope (see the threat model).
+
 ---
 
 ## Time Synchronization

@@ -59,51 +59,58 @@ The server ActorId is used when:
 - Becoming seek authority on file change
 - Writing AniDB metadata (server-authoritative)
 
-### LWW Conflict Resolution via `Lww<V>`
+### LWW Conflict Resolution via `LwwCell<V>`
 
-Most state uses last-writer-wins semantics. Since `MVReg` preserves all
-concurrent values rather than choosing one, we wrap values in `Lww<V>`:
-
-```rust
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Lww<V> {
-    timestamp: SharedTimestamp,
-    value: V,
-}
-
-impl<V: Ord> Ord for Lww<V> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.timestamp.cmp(&other.timestamp)
-            .then_with(|| self.value.cmp(&other.value))
-    }
-}
-```
-
-When reading, resolve concurrent values by taking `max()`:
+All register state uses last-writer-wins semantics, implemented by our
+own `LwwCell<V>`: a pure **max-merge register**. The op type *is* the
+timestamped value; applying an op and merging a state are the same
+operation — keep `max((timestamp, value))`:
 
 ```rust
-fn resolve<V: Ord + Clone>(mvreg: &MVReg<Lww<V>, ActorId>) -> Option<Lww<V>> {
-    mvreg.read().val.into_iter().max()
-}
+struct Lww<V> { timestamp: SharedTimestamp, value: V }  // Ord = (ts, value)
+
+struct LwwCell<V> { current: Option<Lww<V>> }
+// CmRDT::apply(op)  = current.max(op)
+// CvRDT::merge(rhs) = current.max(rhs.current)
+// ResetRemove        = no-op (nothing is ever causally retracted)
 ```
 
-This gives deterministic convergence: highest timestamp wins, with value-based
-tiebreaking when timestamps are equal.
+This is commutative, associative, and idempotent under *any* delivery
+order, and carries **no causal metadata** — highest timestamp wins, with
+value-based tiebreaking on equal timestamps.
+
+**Why not `crdts::MVReg<Lww<V>>` (the original design)?** Property
+testing found two view-divergence bugs in the `Map` + nested-`MVReg`
+composition, both from the same impedance mismatch: nested put clocks
+are map-global while the Map's remove/merge machinery reasons
+entry-scoped. `Map::rm` racing a concurrent re-add leaves ghost values
+on some replicas (Phase 1); a plain CvRDT `merge` trims value clocks
+and breaks dominance between sequential writes, resurrecting overwritten
+values (Phase 3 — see `dessplay-core/tests/regressions.rs`). Since every
+DessPlay register resolves to an LWW winner anyway, the multi-value
+register bought nothing but the bug surface.
+
+**Timestamp discipline (Phase 4 requirement):** under pure LWW, a
+causally-later write with an *older* timestamp loses. Writers must
+issue monotonic timestamps — `max(shared_now, last_issued + 1)` — so a
+client's own sequential writes always supersede each other even when
+NTP slews the shared clock backward.
 
 ### crdts Crate Integration
 
 We use the following types from the `crdts` crate:
 
-| `crdts` type | Our usage |
+| Type | Our usage |
 |---|---|
-| `MVReg<V, A>` | Multi-value register; wraps `Lww<V>` for LWW semantics |
-| `Map<K, V, A>` | Keyed collections (playlist, per-user maps, file availability) |
-| `GList<V>` | Grow-only ordered list (chat) |
-| `GSet<V>` | Grow-only set (lookup requests) |
-| `Identifier<T>` | Dense ordering for playlist positions |
+| `LwwCell<V>` (ours) | Max-merge LWW register; the only register type |
+| `Map<K, V, A>` (crdts) | Keyed collections (playlist, per-user maps, file availability) |
+| `GList<V>` (crdts) | Grow-only ordered list (chat) |
+| `GSet<V>` (crdts) | Grow-only set (lookup requests) |
+| `Identifier<T>` (crdts) | Dense ordering for playlist positions |
 
-The `Map` type uses observed-remove semantics for keys and nests `MVReg` as
-values. The full pattern is `Map<K, MVReg<Lww<V>, ActorId>, ActorId>`.
+The standard pattern is `Map<K, LwwCell<V>, ActorId>`. The Map's keys are
+effectively grow-only (we never use `Map::rm`; see below), so its
+observed-remove machinery sits unused.
 
 Per-user state uses **compound keys**: e.g. `Map<(UserId, AniDbSeriesId), ...>`
 rather than separate CRDT instances per user. This keeps the state table flat
@@ -118,36 +125,35 @@ and the wire protocol uniform.
   apply pattern).
 - **GList::read():** Returns references (`FromIterator<&T>`), not owned values.
 - **`Map::rm` is banned.** Property testing (Phase 1) found that op-based
-  `Map::Rm` is not view-convergent in `crdts`: the remove op's clock is
-  entry-scoped while nested `MVReg` put clocks are map-global, so a remove
-  racing a concurrent re-add wholesale-drops the entry on some replicas but
-  leaves a resurrected "ghost" value on others — replicas then disagree on
-  the LWW winner until the next write to that key. All removal in DessPlay
-  is therefore expressed as an **LWW tombstone** (the register value is an
-  `Option`, `None` = removed), and the server purges tombstones at
-  compaction. With puts only, every DessPlay CRDT converges at the view
-  level under per-origin FIFO delivery.
-- **Delivery requirements.** `Map` update ops carry per-actor sequence
+  `Map::Rm` is not view-convergent when nested registers carry map-global
+  put clocks: a remove racing a concurrent re-add wholesale-drops the
+  entry on some replicas but leaves a resurrected "ghost" value on
+  others. All removal in DessPlay is expressed as an **LWW tombstone**
+  (the register value is an `Option`, `None` = removed), and the server
+  purges tombstones at compaction. (With `LwwCell` values there are no
+  put clocks left to corrupt, but the tombstone design stays — it is
+  simpler and compaction wants it anyway.)
+- **Nested `MVReg` is banned.** The second divergence (Phase 3,
+  `tests/regressions.rs`): `Map::merge` computes "information the other
+  side has deleted" against entry-scoped clocks and `reset_remove`s it
+  from value clocks, which are map-global — breaking dominance between
+  sequential writes and resurrecting overwritten values, with no removal
+  involved anywhere. This is why registers are `LwwCell` (no causal
+  metadata at all) rather than `MVReg<Lww<V>>`.
+- **Delivery requirements.** `LwwCell` values converge under any
+  delivery order. `Map` update ops still carry per-actor sequence
   numbers (dots); ops from one origin must be applied in the order that
-  origin generated them, or later dots mask earlier ones and ops are lost
-  silently. The hub-and-spoke topology provides this for free: the server
-  applies ops in arrival order (necessarily causal) and broadcasts that
-  total order, and a client seeing its own ops early is also causal.
-  **Phase 4 constraint:** the datagram fast path must not apply an op ahead
-  of undelivered earlier ops from the same origin — hold (or drop) such
-  datagrams until the reliable stream catches up.
-- **Internal state vs. view equality:** even under causal delivery,
-  replicas applying the same ops in different (valid) orders can end up
-  with differing internal causal metadata while resolving to the same
-  view. Convergence is defined — and tested — on the resolved view, not on
-  raw CRDT equality.
-- **MVReg causality:** MVReg tracks causal history via vector clocks. The same
-  *logical* writes applied in different orders to independent replicas produce
-  different causal states (and potentially different sets of concurrent values).
-  Convergence requires either (a) exchanging the actual generated `Op`s between
-  replicas (CmRDT), or (b) merging full states (CvRDT). You cannot simply
-  replay the same "intentions" on separate replicas and expect convergence --
-  the ops must carry their original causal context.
+  origin generated them, or later dots mask earlier ones and ops are
+  lost silently. The hub-and-spoke topology provides per-origin FIFO
+  for free (ordered control streams; one server broadcast order; own
+  ops applied in own order). **Phase 4 constraint:** the datagram fast
+  path must not apply an op ahead of undelivered earlier ops from the
+  same origin — hold (or drop) such datagrams until the reliable stream
+  catches up.
+- **Internal state vs. view equality:** replicas applying the same ops
+  in different (valid) orders can end up with differing internal Map
+  bookkeeping while resolving to the same view. Convergence is defined —
+  and tested — on the resolved view, not on raw CRDT equality.
 
 ---
 
@@ -157,25 +163,25 @@ and the wire protocol uniform.
 
 | State | CRDT Type | Owner |
 |---|---|---|
-| Playlist | `Map<Ed2kHash, MVReg<Lww<Option<PlaylistFileState>>, ActorId>, ActorId>` | Any peer |
-| Watched flags | `Map<Ed2kHash, MVReg<Lww<bool>, ActorId>, ActorId>` | Server only (at EOF) |
-| Now Playing | `MVReg<Lww<Option<Ed2kHash>>, ActorId>` | Any peer; server on EOF |
-| Seek Authority | `MVReg<Lww<ActorId>, ActorId>` | Whoever last seeked; server on file change or authority departure |
-| Series preference | `Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>, ActorId>, ActorId>` | Each user writes own |
-| Manual override | `Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId>` | Owning user; *anyone* may write `Away` |
-| File availability | `Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>, ActorId>, ActorId>` | Each user writes own |
-| AniDB metadata | `Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>, ActorId>, ActorId>` | Server only |
-| Series relations | `Map<AniDbSeriesId, MVReg<Lww<SeriesRelations>, ActorId>, ActorId>` | Server only |
-| The List | `Map<ListEntryId, MVReg<Lww<SeriesListEntry>, ActorId>, ActorId>` | Any peer |
-| List next-ep | `Map<ListEntryId, MVReg<Lww<NextEpState>, ActorId>, ActorId>` | Any peer; server auto-advance |
+| Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>, ActorId>` | Any peer |
+| Watched flags | `Map<Ed2kHash, LwwCell<bool>, ActorId>` | Server only (at EOF) |
+| Now Playing | `LwwCell<Option<Ed2kHash>>` | Any peer; server on EOF |
+| Seek Authority | `LwwCell<ActorId>` | Whoever last seeked; server on file change or authority departure |
+| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>, ActorId>` | Each user writes own |
+| Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
+| File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>` | Each user writes own |
+| AniDB metadata | `Map<Ed2kHash, LwwCell<Option<AniDbMetadata>>, ActorId>` | Server only |
+| Series relations | `Map<AniDbSeriesId, LwwCell<SeriesRelations>, ActorId>` | Server only |
+| The List | `Map<ListEntryId, LwwCell<SeriesListEntry>, ActorId>` | Any peer |
+| List next-ep | `Map<ListEntryId, LwwCell<NextEpState>, ActorId>` | Any peer; server auto-advance |
 | Lookup requests | `GSet<FileHashInfo>` | Any peer inserts; cleared on compaction |
 | Chat | `GList<ChatMessage>` | Any peer appends; trimmed on compaction |
-| Playback position | `Map<UserId, MVReg<Lww<PlaybackPosition>, ActorId>, ActorId>` | Each user writes own |
+| Playback position | `Map<UserId, LwwCell<PlaybackPosition>, ActorId>` | Each user writes own |
 
 ### Playlist
 
 The playlist is a
-`Map<Ed2kHash, MVReg<Lww<Option<PlaylistFileState>>, ActorId>, ActorId>`.
+`Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>, ActorId>`.
 The value is an `Option` because removal is a tombstone write (`None`),
 not a `Map::rm` — see the API notes above.
 
@@ -187,7 +193,7 @@ not a `Map::rm` — see the API notes above.
 - `duration_millis: Option<u64>` -- filled by the adder; drives the bitrate
   unpause rule and watched thresholds for files still downloading
 
-**Watched flags live in a separate map** (`Map<Ed2kHash, MVReg<Lww<bool>>>`,
+**Watched flags live in a separate map** (`Map<Ed2kHash, LwwCell<bool>>`,
 server-only writes at EOF) rather than inside `PlaylistFileState`. Keeping
 them out of the struct avoids a real LWW race: a user moving an entry
 (rewriting the whole struct with a new position) concurrent with the server
@@ -195,7 +201,7 @@ marking it watched would silently drop one of the two writes. With a single
 writer (the server) on its own map, the race cannot occur.
 
 **Ordering:** To display the playlist, collect all entries, resolve each
-`MVReg` to its LWW winner, sort by `position` (ascending), with `Ed2kHash`
+`LwwCell` to its winner, sort by `position` (ascending), with `Ed2kHash`
 as tiebreaker.
 
 **Adding:** To add a file after item X:
@@ -219,7 +225,7 @@ compaction by reassigning fresh `Identifier` values with simple rationals
 while preserving order.
 
 **Conflict resolution:** Concurrent writes to the same key's `PlaylistFileState`
-are preserved by `MVReg` and resolved by `Lww` (highest timestamp wins, with
+resolve by `LwwCell`'s max-merge (highest timestamp wins, with
 value-based tiebreaking). With ~5 users and manual playlist management, true
 simultaneous conflicts are rare. When they occur, the playlist converges to
 *some* deterministic order and someone fixes it manually.
@@ -231,7 +237,7 @@ not an oversight.
 
 ### Now Playing
 
-`MVReg<Lww<Option<Ed2kHash>>, ActorId>` -- a standalone register.
+`LwwCell<Option<Ed2kHash>>` -- a standalone register.
 
 Any peer can set now-playing by selecting a playlist entry. The server sets
 it on EOF (advancing to next item). Last writer wins via `Lww`.
@@ -247,7 +253,7 @@ ignored -- the transition is idempotent without any dedup bookkeeping.
 
 ### Seek Authority
 
-`MVReg<Lww<ActorId>, ActorId>` -- the ActorId of whoever most recently
+`LwwCell<ActorId>` -- the ActorId of whoever most recently
 initiated a seek.
 
 **How it works:**
@@ -275,7 +281,7 @@ seek authority so remaining clients never sync to a ghost.
 
 ### Series Preference
 
-`Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>, ActorId>, ActorId>`.
+`Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>, ActorId>`.
 
 `SeriesWatchState` is `Watching | NotWatching`. When the currently playing
 file belongs to a series the user has marked NotWatching, their derived user
@@ -284,7 +290,7 @@ they're not interested in.
 
 ### Manual Override
 
-`Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId>`,
+`Map<UserId, LwwCell<Option<ManualState>>, ActorId>`,
 where `ManualState` is `Paused | Away { set_by: UserId }`.
 
 `Paused` is set when the user manually pauses, cleared (set to `None`) when
@@ -299,7 +305,7 @@ NotWatching -- it does not block.
 
 ### File Availability
 
-`Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>, ActorId>, ActorId>`.
+`Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>`.
 
 `FileAvailability` is `Ready | Missing | Downloading { progress_bps: u16 }`
 (basis points 0–10000, avoids float Eq/Ord issues). Each user
@@ -327,7 +333,7 @@ existing metadata and lookup queue.
 
 ### AniDB Metadata
 
-`Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>, ActorId>, ActorId>`.
+`Map<Ed2kHash, LwwCell<Option<AniDbMetadata>>, ActorId>`.
 
 Only the server writes these. `None` means "not yet looked up." The server
 fills in metadata from two sources:
@@ -356,7 +362,7 @@ Files without an AniDB series ID are grouped by `series_name` as a fallback
 
 ### Series Relations
 
-`Map<AniDbSeriesId, MVReg<Lww<SeriesRelations>, ActorId>, ActorId>`.
+`Map<AniDbSeriesId, LwwCell<SeriesRelations>, ActorId>`.
 
 Server-only writes. `SeriesRelations` holds the series' related-anime edges
 (relation type + target series ID) plus display data (title, year, episode
@@ -368,8 +374,8 @@ map.
 
 ### The List
 
-`Map<ListEntryId, MVReg<Lww<SeriesListEntry>, ActorId>, ActorId>` for entry
-data, plus `Map<ListEntryId, MVReg<Lww<NextEpState>, ActorId>, ActorId>` for
+`Map<ListEntryId, LwwCell<SeriesListEntry>, ActorId>` for entry
+data, plus `Map<ListEntryId, LwwCell<NextEpState>, ActorId>` for
 the fast-changing progress fields.
 
 `ListEntryId` is a random 128-bit ID generated at entry creation (or import).
@@ -406,7 +412,7 @@ truly lost -- the replicated state just stays bounded.
 
 ### Playback Position
 
-`Map<UserId, MVReg<Lww<PlaybackPosition>, ActorId>, ActorId>`.
+`Map<UserId, LwwCell<PlaybackPosition>, ActorId>`.
 
 `PlaybackPosition` contains:
 - `position_millis: u64` -- milliseconds as integer (avoids float Eq/Ord issues)

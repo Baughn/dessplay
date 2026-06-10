@@ -333,42 +333,55 @@ PlayerActor             Main Loop               NetworkActor          (Server)
 
 ## Workspace Structure
 
+Both `dessplay` and `dessplay-rendezvous` are **library crates with a
+thin `main.rs`** — required by the composition root, and what lets
+cross-crate tests (and the multi-client harness) run real clients
+against the real server in one process.
+
 ```
 Cargo.toml                    (workspace root)
 dessplay-core/                (shared library)
   src/
     lib.rs
     types.rs                  (FileId, UserId, ActorId, timestamps)
-    crdt/                     (CRDT state, crdts crate wrappers)
-      mod.rs                  (CrdtState: all CRDTs combined, Lww<V>)
-      playlist.rs             (Identifier-based playlist helpers)
-    protocol.rs               (wire message types, CrdtOp wrapper, CrdtSnapshot)
-dessplay/                     (client binary)
+    lww.rs                    (Lww<V>, LWW resolution)
+    state.rs                  (CrdtState, CrdtOp, StateSnapshot)
+    playlist.rs               (Identifier-based playlist helpers)
+    hash.rs                   (ed2k root + block hashes)
+    wire.rs                   (postcard encode/decode)
+    test_support.rs           (script + cluster generators; feature-gated)
+    net/
+      message.rs              (WireMessage, ServerControl, PeerInfo)
+      framing.rs              (length-prefixed stream frames)
+      transport.rs            (Transport/Connector/Listener traits)
+      timesync.rs             (NTP-style offset estimation)
+      tofu.rs                 (TOFU verifier, server cert persistence)
+      quic.rs                 (quinn impls, shared transport config)
+      sim.rs                  (SimulatedTransport; feature-gated)
+  fuzz/                       (cargo-fuzz targets)
+dessplay/                     (client: lib + thin binary)
   src/
-    main.rs                   (actor creation, main select loop, seeder mode)
+    lib.rs / main.rs
     actors/
-      sync.rs                 (SyncActor)
       network.rs              (NetworkActor)
-      ui.rs                   (UiActor)
-      player.rs               (PlayerActor)
-      file.rs                 (FileActor)
-    ui/
-      components/             (tui-realm components)
-      app.rs                  (tui-realm Application setup)
-    player/
-      mpv.rs                  (MpvPlayer implementation)
-      echo.rs                 (echo suppression filter)
-      mock.rs                 (MockPlayer for tests)
-    import.rs                 (CSV importer for The List)
+      sync.rs                 (SyncActor; Phase 4)
+      ui.rs                   (UiActor; Phase 6)
+      player.rs               (PlayerActor; Phase 7)
+      file.rs                 (FileActor; Phase 9)
+    ui/                       (tui-realm components; Phase 6)
+    player/                   (mpv, echo filter, mock; Phase 7)
+    import.rs                 (CSV importer; Phase 6)
     storage.rs                (SQLite persistence)
-    config.rs                 (local configuration)
-dessplay-rendezvous/          (server binary)
+    config.rs                 (typed settings)
+dessplay-rendezvous/          (server: lib + thin binary)
   src/
-    main.rs
-    server.rs                 (server actor: state sync, compaction)
-    anidb.rs                  (AniDB UDP API client)
-    relay.rs                  (file transfer relay)
+    lib.rs / main.rs
+    server.rs                 (accept loop, auth, peer list, time sync;
+                               state sync + compaction in Phases 4-5)
+    anidb.rs                  (AniDB UDP API client; Phase 8)
+    relay.rs                  (file transfer relay; Phase 9)
     storage.rs                (server-side SQLite)
+  tests/                      (sim connection tests + real-QUIC smoke)
 ```
 
 ---

@@ -177,25 +177,29 @@ An in-process transport that simulates network conditions between actors.
 ### Design
 
 ```rust
-struct SimulatedTransport {
-    endpoints: HashMap<EndpointId, Mailbox>,
-    config: SimConfig,
-    rng: StdRng,  // seeded for reproducibility
-}
-
-struct SimConfig {
-    links: HashMap<(EndpointId, EndpointId), LinkConfig>,
-    defaults: LinkConfig,
-}
+struct SimNetwork { /* shared state + seeded StdRng */ }
 
 struct LinkConfig {
-    latency: Duration,
-    packet_loss: f64,
-    reorder_window: usize,
-    bandwidth: Option<u64>,
-    partitioned: bool,
+    latency: Duration,        // one-way propagation delay
+    datagram_loss: f64,       // drop probability, datagrams only
+    datagram_jitter: Duration,// random extra delay -> reordering
+    bandwidth: Option<u64>,   // bytes/sec serialization delay
+    partitioned: bool,        // holds control frames, drops datagrams
 }
 ```
+
+Implemented in `dessplay_core::net::sim` behind the `test-support`
+feature, as `Connector`/`Listener`/`Transport` impls mirroring the QUIC
+shapes. Semantics worth knowing:
+
+- Control frames are reliable and ordered: loss never touches them, and
+  a partition *delays* them (they flush on heal), like a QUIC stream.
+- Reordering is modeled as per-datagram jitter rather than a shuffle
+  window — natural in a latency-scheduled system.
+- `close()` notifies the peer; *dropping* a transport is silent death,
+  which is exactly what presence timeouts must catch.
+- Limitation: bytes inside an open `BiStream` bypass the link simulation
+  (establishment respects it). Revisit for Phase 9 transfer tests.
 
 ### Time Control
 
@@ -351,10 +355,10 @@ proptest! {
 
 | CRDT | Property | Notes |
 |------|----------|-------|
-| `MVReg<Lww<V>>` | LWW resolution: highest timestamp wins regardless of apply order | Value-based tiebreaking on equal timestamps |
+| `LwwCell<V>` | LWW resolution: highest timestamp wins regardless of apply order | Value-based tiebreaking on equal timestamps |
 | Playlist Map | Cluster-delivered ops -> same entries and positions everywhere | Put/tombstone interactions (no `Map::rm`; see sync-state.md) |
 | Chat GList | Same inserts, any order -> same message sequence | GList guarantees this |
-| Seek Authority | Last timestamp wins | Same as MVReg+Lww |
+| Seek Authority | Last timestamp wins | Same as LwwCell |
 | CvRDT merge | merge(a, b) == merge(b, a); merge(a, merge(b, c)) == merge(merge(a, b), c) | Commutativity and associativity |
 
 ### Identifier Ordering Properties
@@ -495,7 +499,7 @@ add/move/remove collisions on the same files. The playlist is always
 strictly sorted by `(position, hash)`; rebalancing preserves order and its
 ops converge on replicas.
 
-#### MVReg+Lww Convergence (`mvreg_lww_convergence`)
+#### LWW Register Convergence (`lww_register_convergence`)
 Pairwise-concurrent register writes. Every delivery rotation and merge
 order resolves to `max((timestamp, value))`.
 

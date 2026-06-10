@@ -134,12 +134,12 @@ can be set on the settings screen.
 
 This state is **derived** from two independent sources:
 
-1. **Per-series watch preference** (`Map<AniDbSeriesId, LWWReg<SeriesWatchState>>`):
+1. **Per-series watch preference** (`Map<AniDbSeriesId, LwwCell<SeriesWatchState>>`):
    Each user can mark themselves as NotWatching for a specific AniDB series.
    When the currently playing file belongs to a series the user has marked as
    NotWatching, their state is derived as NotWatching.
 
-2. **Manual override** (`LWWReg<Option<ManualState>>`): The user can manually
+2. **Manual override** (`LwwCell<Option<ManualState>>`): The user can manually
    pause (stepping away), which overrides the series-based state. The override
    is cleared when the user explicitly resumes. `ManualState` is
    `Paused | Away { set_by: UserId }`.
@@ -562,22 +562,23 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 
 | Data | CRDT Type | Notes |
 |------|-----------|-------|
-| Playlist | `Map<Ed2kHash, MVReg<Lww<Option<PlaylistFileState>>>>` | `Identifier`-based ordering; includes size and duration; `None` = removal tombstone (purged at compaction) |
-| Watched flags | `Map<Ed2kHash, MVReg<Lww<bool>>>` | Server-only writes (at EOF) |
-| Now Playing | `MVReg<Lww<Option<Ed2kHash>>>` | Standalone register; server writes on EOF |
-| Seek Authority | `MVReg<Lww<ActorId>>` | Standalone register; last seeker is position authority |
-| Series preference | `Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>>>` | Compound key |
-| Manual override | `Map<UserId, MVReg<Lww<Option<ManualState>>>>` | Per user; Away writable by anyone |
-| File availability | `Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>>>` | Compound key |
-| AniDB metadata | `Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>>>` | Server-authoritative |
-| Series relations | `Map<AniDbSeriesId, MVReg<Lww<SeriesRelations>>>` | Server-authoritative; franchise graph |
-| The List | `Map<ListEntryId, MVReg<Lww<SeriesListEntry>>>` | Any peer; never pruned |
-| List next-ep | `Map<ListEntryId, MVReg<Lww<NextEpState>>>` | Any peer; server auto-advances |
+| Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>>` | `Identifier`-based ordering; includes size and duration; `None` = removal tombstone (purged at compaction) |
+| Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF) |
+| Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
+| Seek Authority | `LwwCell<ActorId>` | Standalone register; last seeker is position authority |
+| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>` | Compound key |
+| Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
+| File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>>` | Compound key |
+| AniDB metadata | `Map<Ed2kHash, LwwCell<Option<AniDbMetadata>>>` | Server-authoritative |
+| Series relations | `Map<AniDbSeriesId, LwwCell<SeriesRelations>>` | Server-authoritative; franchise graph |
+| The List | `Map<ListEntryId, LwwCell<SeriesListEntry>>` | Any peer; never pruned |
+| List next-ep | `Map<ListEntryId, LwwCell<NextEpState>>` | Any peer; server auto-advances |
 | Lookup requests | `GSet<FileHashInfo>` | Clients insert; cleared on compaction |
 | Chat | `GList<ChatMessage>` | Grow-only ordered list; trimmed on compaction (server archives full history) |
-| Playback position | `Map<UserId, MVReg<Lww<PlaybackPosition>>>` | Per user, high frequency, datagram-only transport |
+| Playback position | `Map<UserId, LwwCell<PlaybackPosition>>` | Per user, high frequency, datagram-only transport |
 
-All `MVReg` values wrap `Lww<V>` for last-writer-wins conflict resolution.
+All registers are `LwwCell<V>` — DessPlay's own max-merge LWW register
+(`crdts::MVReg` proved non-convergent inside `Map`; see sync-state.md).
 `ActorId` type parameters omitted from the table for brevity -- all CRDTs
 use `ActorId` as the actor type. See [sync-state.md](sync-state.md) for
 the full `Lww<V>` design.
@@ -696,7 +697,7 @@ All interaction with AniDB is done by the rendezvous server, not the clients.
 
 CRDT types:
 - Lookup requests: `GSet<FileHashInfo>` (cleared on compaction)
-- Metadata: `LWWReg<Option<AniDbMetadata>>` keyed by ed2k hash (server-only writes)
+- Metadata: `LwwCell<Option<AniDbMetadata>>` keyed by ed2k hash (server-only writes)
 
 See [sync-state.md](sync-state.md) for the full `AniDbMetadata` struct.
 

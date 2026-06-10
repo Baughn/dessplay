@@ -13,6 +13,7 @@
 
 pub mod hash;
 pub mod lww;
+pub mod net;
 pub mod playlist;
 pub mod state;
 #[cfg(feature = "test-support")]
@@ -20,7 +21,7 @@ pub mod test_support;
 pub mod types;
 pub mod wire;
 
-pub use lww::{Lww, LwwReg, resolve, resolve_value};
+pub use lww::{Lww, LwwCell, resolve, resolve_value};
 pub use playlist::{NewPlaylistEntry, PlaylistEntry};
 pub use state::{CrdtOp, CrdtState, LwwMap, StateSnapshot, StateView};
 pub use types::*;

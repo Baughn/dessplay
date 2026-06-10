@@ -9,16 +9,25 @@ postcard = { workspace = true }
 crdts = { workspace = true }
 md4 = { workspace = true }
 digest = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
 tracing = { workspace = true }
 arbitrary = { version = "1", features = ["derive"], optional = true }
+rand = { workspace = true, optional = true }
 
 [features]
-# Structured-input generators shared by the proptest suite and fuzz targets.
-test-support = ["dep:arbitrary"]
+# Structured-input generators and the SimulatedTransport, shared by the
+# proptest suites, fuzz targets, and the multi-client harness.
+test-support = ["dep:arbitrary", "dep:rand"]
 
 [dev-dependencies]
 # Reference implementation to cross-check our md4-based ed2k hashing.
 ed2k = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 dessplay-core = { path = ".", features = ["test-support"] }

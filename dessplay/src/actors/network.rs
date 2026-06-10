@@ -1,0 +1,261 @@
+//! The network actor: owns the connection to the rendezvous server.
+//!
+//! Phase 3 scope: connect, authenticate, keep the clock synced, surface
+//! peer-list updates, reconnect with a fixed backoff. State sync
+//! traffic (ops, snapshots, merges) is surfaced as events from Phase 4.
+//!
+//! The actor is generic over [`Connector`], so the simulation harness
+//! runs it over `SimConnector` and production over `QuicConnector`. The
+//! local clock is injected for the same reason.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use dessplay_core::net::timesync::TimeSync;
+use dessplay_core::net::{
+    Connector, Role, ServerControl, Transport, TransportError, TransportEvent, WireMessage,
+};
+use dessplay_core::types::Epoch;
+use dessplay_core::types::UserId;
+use dessplay_core::wire;
+use tokio::sync::mpsc;
+
+/// How the actor reads the local clock (unix millis). Injected so tests
+/// can drive it from paused tokio time.
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// Commands from the main loop.
+#[derive(Debug)]
+pub enum NetworkCommand {
+    /// Close the connection and exit the actor.
+    Shutdown,
+}
+
+/// Events to the main loop.
+#[derive(Debug)]
+pub enum NetworkEvent {
+    /// Authenticated; the server saw us at this address.
+    Connected {
+        /// Our address as observed by the server.
+        observed_addr: SocketAddr,
+    },
+    /// The server rejected our password. Terminal — the actor exits.
+    AuthFailed,
+    /// A fresh peer list.
+    PeerList(Vec<dessplay_core::net::PeerInfo>),
+    /// The clock offset estimate changed.
+    ClockSync {
+        /// Server-minus-local offset, milliseconds.
+        offset_millis: i64,
+    },
+    /// Connection lost; the actor will retry.
+    Disconnected {
+        /// Human-readable cause.
+        reason: String,
+    },
+}
+
+/// Static actor configuration.
+pub struct NetworkConfig {
+    /// Our username.
+    pub username: UserId,
+    /// The shared room password.
+    pub password: String,
+    /// Interactive or seeder.
+    pub role: Role,
+    /// Last known epoch (from storage).
+    pub epoch: Epoch,
+    /// Local clock, unix millis.
+    pub clock: Clock,
+    /// Steady-state probe interval (30s in production).
+    pub time_sync_interval: Duration,
+    /// Delay between reconnection attempts.
+    pub reconnect_backoff: Duration,
+}
+
+impl NetworkConfig {
+    /// Production timing defaults.
+    pub fn new(username: UserId, password: String, role: Role, epoch: Epoch, clock: Clock) -> Self {
+        Self {
+            username,
+            password,
+            role,
+            epoch,
+            clock,
+            time_sync_interval: Duration::from_secs(30),
+            reconnect_backoff: Duration::from_secs(2),
+        }
+    }
+}
+
+/// Probes sent back-to-back right after connecting, to seed the offset
+/// window before the steady-state cadence takes over.
+const INITIAL_PROBE_BURST: u32 = 5;
+/// Spacing of the initial burst.
+const BURST_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Run the network actor until shutdown or auth failure.
+pub async fn run<C: Connector>(
+    connector: Arc<C>,
+    config: NetworkConfig,
+    mut commands: mpsc::Receiver<NetworkCommand>,
+    events: mpsc::Sender<NetworkEvent>,
+) {
+    loop {
+        match connector.connect().await {
+            Ok(conn) => match run_connection(&conn, &config, &mut commands, &events).await {
+                ConnectionEnd::Shutdown => {
+                    conn.close("shutting down").await;
+                    return;
+                }
+                ConnectionEnd::AuthFailed => {
+                    let _ = events.send(NetworkEvent::AuthFailed).await;
+                    return;
+                }
+                ConnectionEnd::Lost(reason) => {
+                    let _ = events.send(NetworkEvent::Disconnected { reason }).await;
+                }
+            },
+            Err(e) => {
+                let _ = events
+                    .send(NetworkEvent::Disconnected {
+                        reason: e.to_string(),
+                    })
+                    .await;
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(config.reconnect_backoff) => {}
+            cmd = commands.recv() => {
+                if matches!(cmd, Some(NetworkCommand::Shutdown) | None) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+enum ConnectionEnd {
+    Shutdown,
+    AuthFailed,
+    Lost(String),
+}
+
+/// Send a control message, encoding it first.
+async fn send_control<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(), TransportError> {
+    let frame = wire::encode(&WireMessage::Control(msg.clone()))
+        .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
+    conn.send_control(&frame).await
+}
+
+/// Send a small message as a datagram, falling back to the control
+/// stream when datagrams are unavailable.
+async fn send_datagram_or_control<T: Transport>(
+    conn: &T,
+    msg: &ServerControl,
+) -> Result<(), TransportError> {
+    let frame = wire::encode(&WireMessage::Control(msg.clone()))
+        .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
+    match conn.send_datagram(&frame).await {
+        Err(TransportError::DatagramUnsupported | TransportError::DatagramTooLarge { .. }) => {
+            conn.send_control(&frame).await
+        }
+        other => other,
+    }
+}
+
+async fn run_connection<T: Transport>(
+    conn: &T,
+    config: &NetworkConfig,
+    commands: &mut mpsc::Receiver<NetworkCommand>,
+    events: &mpsc::Sender<NetworkEvent>,
+) -> ConnectionEnd {
+    // ---- Authenticate.
+    let auth = ServerControl::Auth {
+        username: config.username.clone(),
+        password: config.password.clone(),
+        role: config.role,
+        epoch: config.epoch,
+    };
+    if let Err(e) = send_control(conn, &auth).await {
+        return ConnectionEnd::Lost(e.to_string());
+    }
+
+    let mut timesync = TimeSync::new();
+    let mut probes_sent: u32 = 0;
+    let mut last_offset: Option<i64> = None;
+    let mut authenticated = false;
+    let mut next_probe = tokio::time::Instant::now(); // first probe right after AuthOk
+
+    loop {
+        tokio::select! {
+            event = conn.recv() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(e) => return ConnectionEnd::Lost(e.to_string()),
+                };
+                let payload = match event {
+                    TransportEvent::Control(bytes) | TransportEvent::Datagram(bytes) => bytes,
+                    TransportEvent::IncomingStream(_) => continue, // Phase 9
+                    TransportEvent::Closed { reason } => return ConnectionEnd::Lost(reason),
+                };
+                let msg: WireMessage = match wire::decode(&payload) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        tracing::warn!("undecodable message from server: {e}");
+                        continue;
+                    }
+                };
+                let WireMessage::Control(msg) = msg;
+                match msg {
+                    ServerControl::AuthOk { observed_addr } => {
+                        authenticated = true;
+                        let _ = events.send(NetworkEvent::Connected { observed_addr }).await;
+                    }
+                    ServerControl::AuthFailed => return ConnectionEnd::AuthFailed,
+                    ServerControl::PeerList { peers } => {
+                        let _ = events.send(NetworkEvent::PeerList(peers)).await;
+                    }
+                    ServerControl::TimeSyncResponse { client_send, server_recv, server_send } => {
+                        let t4 = (config.clock)();
+                        timesync.add_exchange(client_send, server_recv, server_send, t4);
+                        if let Some(offset) = timesync.offset()
+                            && last_offset != Some(offset)
+                        {
+                            last_offset = Some(offset);
+                            let _ = events
+                                .send(NetworkEvent::ClockSync { offset_millis: offset })
+                                .await;
+                        }
+                    }
+                    // State sync arrives in Phase 4; EOF and friends are
+                    // client -> server only.
+                    other => {
+                        tracing::debug!("ignoring (phase 3): {other:?}");
+                    }
+                }
+            }
+
+            _ = tokio::time::sleep_until(next_probe), if authenticated => {
+                let probe = ServerControl::TimeSyncRequest { client_send: (config.clock)() };
+                if let Err(e) = send_datagram_or_control(conn, &probe).await {
+                    return ConnectionEnd::Lost(e.to_string());
+                }
+                probes_sent += 1;
+                let delay = if probes_sent < INITIAL_PROBE_BURST {
+                    BURST_INTERVAL
+                } else {
+                    config.time_sync_interval
+                };
+                next_probe = tokio::time::Instant::now() + delay;
+            }
+
+            cmd = commands.recv() => {
+                match cmd {
+                    Some(NetworkCommand::Shutdown) | None => return ConnectionEnd::Shutdown,
+                }
+            }
+        }
+    }
+}

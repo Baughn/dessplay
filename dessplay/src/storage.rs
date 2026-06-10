@@ -14,9 +14,6 @@
 //! - `Storage` wraps a single `rusqlite::Connection` and is not `Sync`;
 //!   the owning actor is the serialization point.
 
-// Consumed by the actor wiring in Phase 5; only tests use it until then.
-#![allow(dead_code)]
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 
