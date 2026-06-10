@@ -217,10 +217,13 @@ pub enum SeekAuthority {
 ///
 /// Users write it on play/pause; the server forces `Paused` on Lost, on
 /// graceful quit, on departure, and when EOF advances now-playing.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize,
+)]
 pub enum PlaybackIntent {
     /// Nobody has pressed play (or something forced a pause). The
     /// fresh-state default.
+    #[default]
     Paused,
     /// Someone pressed play; video runs if gating permits.
     Playing,

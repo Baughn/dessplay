@@ -35,7 +35,7 @@ use crate::storage::Storage;
 
 /// A state mutation requested by the UI or player layers. The sync
 /// actor supplies identity (actor, user) and timestamps.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Mutation {
     /// Add a file after `anchor` (`None` = front).
     AddPlaylistAfter {
@@ -373,9 +373,14 @@ impl SyncActor {
         }
     }
 
-    async fn changed(&mut self) {
+    fn changed(&mut self) {
         self.dirty = true;
-        let _ = self.events.send(SyncEvent::StateChanged).await;
+        // StateChanged is an edge-triggered "pull a view if you care"
+        // signal, so dropping it when the channel is full is free
+        // coalescing — and crucially, a stalled (or absent) consumer
+        // must never block the sync actor. A blocking send here
+        // deadlocked the whole client once >256 ops arrived unpolled.
+        let _ = self.events.try_send(SyncEvent::StateChanged);
     }
 
     async fn send_out(&self, cmd: NetworkCommand) {
@@ -504,7 +509,7 @@ impl SyncActor {
             self.offline_buffer.push(op);
         }
 
-        self.changed().await;
+        self.changed();
     }
 
     /// The initial sync landed: re-apply anything generated while
@@ -562,7 +567,7 @@ impl SyncActor {
                 } else {
                     self.state.apply(op);
                 }
-                self.changed().await;
+                self.changed();
             }
             ServerControl::StateMerge(snapshot) => {
                 let ours = self.epoch();
@@ -579,7 +584,7 @@ impl SyncActor {
                 self.observe(Some(self.state.max_lww_timestamp()));
                 self.hash_mismatches = 0;
                 self.synced().await;
-                self.changed().await;
+                self.changed();
             }
             ServerControl::StateSnapshot(snapshot) => {
                 if snapshot.epoch < self.epoch() {
@@ -591,7 +596,7 @@ impl SyncActor {
                 self.observe(Some(self.state.max_lww_timestamp()));
                 self.hash_mismatches = 0;
                 self.synced().await;
-                self.changed().await;
+                self.changed();
             }
             ServerControl::StateHash { epoch, hash } => {
                 if epoch != self.epoch() {
@@ -752,6 +757,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(view_of(&rig).await.now_playing, Some(hash(2)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_ui_consumer_never_wedges_the_sync_actor() {
+        // The events receiver is held but never drained (a stalled or
+        // absent UI). A flood of remote ops generates a StateChanged
+        // per op; if those sends block, the actor deadlocks and stops
+        // answering queries — found by the Phase 6 import test, which
+        // was the first to push >256 ops through a handle nobody
+        // polled.
+        let mut rig = rig();
+        go_online(&mut rig).await;
+
+        let mut origin = CrdtState::new();
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            for i in 0..600u64 {
+                let op = origin.append_chat(dessplay_core::ChatMessage {
+                    timestamp: SharedTimestamp(i + 1),
+                    sender: UserId::new("kim"),
+                    text: format!("m{i}"),
+                });
+                rig.commands
+                    .send(SyncCommand::Server {
+                        msg: Box::new(ServerControl::StateOp {
+                            epoch: Epoch(0),
+                            op,
+                        }),
+                        via_datagram: false,
+                    })
+                    .await
+                    .unwrap();
+            }
+            view_of(&rig).await
+        })
+        .await;
+        let view = result.expect("sync actor wedged by an undrained event channel");
+        assert_eq!(view.chat.len(), 600);
     }
 
     #[tokio::test(start_paused = true)]

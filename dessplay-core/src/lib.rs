@@ -13,6 +13,7 @@
 
 pub mod compact;
 pub mod derive;
+pub mod franchise;
 pub mod hash;
 pub mod lww;
 pub mod net;

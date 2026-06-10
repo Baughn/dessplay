@@ -271,6 +271,21 @@ schedule with clients attached. Presence-aware derived state works.
 
 ## Phase 6: TUI
 
+**Status: complete (2026-06-10).** Design deviation, documented in
+ui-architecture.md: we use tui-realm 4.1's component model, stdlib Input,
+and test helpers, but replaced its threaded `Application` event loop
+with a synchronous dispatcher (`ui::app::Ui`) so whole-app tests are
+deterministic and thread-free; production wraps it in two plain threads
+(`ui::shell`). The importer is calibrated against the real exported
+sheets committed in `spreadsheet/` (249 entries, 6 flagged oddities) and
+re-imports update entries by name instead of duplicating. Found and
+fixed by the import test: a sync-actor deadlock when >256 events queued
+against an undrained UI channel — StateChanged is now a lossy
+edge-triggered signal. AniDbSearch modal deferred to Phase 8 (needs the
+server side); playlist `A`/Ctrl-m bindings to Phase 9 (need files);
+Ctrl-arrow word-movement in chat to polish. The interactive client is
+now the binary's default mode (`--headless` opts out).
+
 **Goal**: Full terminal interface using tui-realm.
 
 ### What gets built

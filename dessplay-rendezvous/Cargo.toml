@@ -21,3 +21,4 @@ dessplay-core = { path = "../dessplay-core", features = ["test-support"] }
 # The connection tests drive the real client NetworkActor against this
 # server, in-process.
 dessplay = { path = "../dessplay" }
+tuirealm = { workspace = true }

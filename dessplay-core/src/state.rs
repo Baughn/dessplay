@@ -599,7 +599,7 @@ impl CrdtState {
 
 /// The fully resolved, plain-data view of a [`CrdtState`].
 /// Serializable so [`CrdtState::view_hash`] can hash it canonically.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateView {
     /// Playlist entries in display order.
     pub playlist: Vec<crate::playlist::PlaylistEntry>,

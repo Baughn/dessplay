@@ -24,15 +24,25 @@ message flow, and how the UI integrates with the actor system.
 **tui-realm** provides:
 - **Elm architecture**: Components have Props (input data), State (internal),
   and produce Msg (output). Unidirectional data flow.
-- **Built-in focus management**: Tab cycling, focus routing handled by the
-  framework.
-- **Pre-built components**: `tui-realm-stdlib` includes List, Table, Input,
-  Radio, Progress, and more.
+- **Pre-built components**: `tui-realm-stdlib` (the chat/field `Input`).
 - **ratatui ecosystem**: Can use any ratatui widget inside a tui-realm
   component.
+- **Test helpers**: `tuirealm::testing` renders components to strings for
+  insta snapshots.
 
-This replaces the prototype's hand-rolled event routing, focus management,
-and 2200-line `runner.rs`.
+**Deviation (Phase 6):** we use tui-realm's *component model*
+(`Component`/`AppComponent`, `Event`, `Cmd`) but **not its `Application`
+event loop**. tui-realm's listener routes input through real worker
+threads polling on real-time intervals, which would make whole-app tests
+timing-dependent — and deterministic, zero-thread UI tests are a core
+testing-strategy commitment. Instead, `ui::app::Ui` is a ~100-line
+synchronous dispatcher owning the focus ring, the modal stack,
+event-to-component routing, and `update()`. Tests inject `Event`s and
+read back `UserAction`s and rendered buffers with no threads anywhere;
+production wraps the same `Ui` in two plain threads (`ui::shell`).
+
+This still replaces the prototype's 2200-line `runner.rs` — with less
+framework, not more hand-rolling.
 
 ---
 
@@ -238,9 +248,10 @@ struct KeybindingInfo {
 }
 ```
 
-The `KeybindingBar` component collects these from the focused component
-(plus global bindings like Tab and Ctrl-C) and renders them. When focus
-changes or a modal opens, the bar updates automatically.
+Each pane (and modal) exposes `keybindings()`; the dispatcher rebuilds
+the `KeyBar` items from the focused component (or topmost modal) plus
+global bindings (Tab, Ctrl-C) after every event. When focus changes or a
+modal opens, the bar updates automatically.
 
 ---
 
@@ -266,13 +277,28 @@ Unlike the prototype (which used blocking sub-loops for modals), the main
 event loop continues running while modals are open. Network messages, player
 events, and sync updates are all processed normally.
 
+Modals are a stack (`Vec<Modal>`): the settings screen pushes the
+directory picker on top of itself for adding media roots, and the picked
+directory routes back to the settings modal underneath. The `AniDbSearch`
+modal lands in Phase 8 with its server support.
+
 ---
 
 ## Testing
 
 ### Snapshot Tests (insta)
 
-Components can be rendered to a ratatui `Buffer` and snapshot-tested:
+Components (and the whole `Ui`) render to a ratatui `TestBackend` buffer
+and snapshot-test via `tuirealm::testing::buffer_to_string`. Whole-app
+tests in `dessplay/tests/ui_app.rs` go further: scripted key sequences
+through the real dispatcher, asserting on the produced `UserAction`s and
+locator-style on the rendered buffer (`screen.contains("kim [ready]")`),
+plus full-layout insta snapshots. Cross-client scenarios live in
+`dessplay-rendezvous/tests/ui.rs` on the multi-client harness: keys into
+one client's `Ui` propagate through the real server and render on
+another client's buffer.
+
+Component-level rendering can also be tested directly:
 
 ```rust
 #[test]

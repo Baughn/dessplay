@@ -13,8 +13,13 @@ dirs = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
+csv = { workspace = true }
+tuirealm = { workspace = true }
+crossterm = { workspace = true }
+tui-realm-stdlib = { workspace = true }
 
 [dev-dependencies]
+insta = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 dessplay-core = { path = "../dessplay-core", features = ["test-support"] }

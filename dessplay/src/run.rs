@@ -14,6 +14,7 @@ use std::sync::Arc;
 use dessplay_core::net::quic::QuicConnector;
 use dessplay_core::net::{DEFAULT_PORT, Role};
 use dessplay_core::types::UserId;
+use tokio::sync::mpsc;
 
 use crate::actors::network::{NetworkCommand, NetworkEvent};
 use crate::actors::sync::SyncCommand;
@@ -70,11 +71,27 @@ fn with_default_port(server: &str) -> String {
     }
 }
 
-/// Run the headless client until Ctrl-C. Errors are human-readable —
-/// `main()` just prints them.
-pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
-    // ---- Settings: stored for interactive clients (flags override,
-    // never persisted), flags/env only for seeders.
+/// Everything needed to spawn a client against the configured server:
+/// the resolved connector, identity, and the settings/TOFU storage
+/// handle. Shared by the headless run and the importer.
+pub(crate) struct ClientSetup {
+    pub connector: Arc<QuicConnector>,
+    pub username: String,
+    pub password: String,
+    /// Settings/TOFU handle (interactive only — seeders persist
+    /// nothing).
+    pub storage: Option<Storage>,
+    pub server_addr_str: String,
+    /// No fingerprint was pinned; persist the observed one after the
+    /// first successful connect.
+    pub first_use: bool,
+}
+
+/// Resolve settings (stored < env < flags), the server address, and
+/// the TOFU pin.
+pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> {
+    // Settings: stored for interactive clients (flags override, never
+    // persisted), flags/env only for seeders.
     let storage = if args.seeder {
         None
     } else {
@@ -93,16 +110,18 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
 
     let username = args
         .username
+        .clone()
         .or(settings.username)
         .ok_or("no username configured; pass --username")?;
     let password = args
         .password
+        .clone()
         .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok())
         .or(settings.password)
         .ok_or("no password configured; pass --password or set DESSPLAY_PASSWORD")?;
-    let server = args.server.unwrap_or(settings.server);
+    let server = args.server.clone().unwrap_or(settings.server);
 
-    // ---- Resolve and pin.
+    // Resolve and pin.
     let server_addr_str = with_default_port(&server);
     let addr: SocketAddr = tokio::net::lookup_host(&server_addr_str)
         .await
@@ -133,30 +152,54 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
             .map_err(|e| format!("building QUIC endpoint: {e}"))?,
     );
 
-    // ---- Stored CRDT state, and a second storage handle for the sync
+    Ok(ClientSetup {
+        connector,
+        username,
+        password,
+        storage,
+        server_addr_str,
+        first_use,
+    })
+}
+
+/// Run the headless client until Ctrl-C. Errors are human-readable —
+/// `main()` just prints them.
+pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
+    let seeder = args.seeder;
+    let db_path = args.db_path.clone();
+    let setup = prepare(&args).await?;
+
+    // Stored CRDT state, and a second storage handle for the sync
     // actor (SQLite in WAL mode is fine with two connections; the sync
     // actor owns its handle outright).
-    let (initial, sync_storage) = match (&args.db_path, args.seeder) {
-        (_, true) => (None, None),
-        (path, false) => {
-            let path = match path {
-                Some(path) => path.clone(),
-                None => Storage::default_path().ok_or("cannot determine the data directory")?,
-            };
-            let sync_storage =
-                Storage::open(&path).map_err(|e| format!("opening {}: {e}", path.display()))?;
-            let initial = sync_storage
-                .load_state()
-                .map_err(|e| format!("loading stored state: {e}"))?;
-            (initial, Some(sync_storage))
-        }
+    let (initial, sync_storage) = if seeder {
+        (None, None)
+    } else {
+        let path = match db_path {
+            Some(path) => path,
+            None => Storage::default_path().ok_or("cannot determine the data directory")?,
+        };
+        let sync_storage =
+            Storage::open(&path).map_err(|e| format!("opening {}: {e}", path.display()))?;
+        let initial = sync_storage
+            .load_state()
+            .map_err(|e| format!("loading stored state: {e}"))?;
+        (initial, Some(sync_storage))
     };
 
-    let role = if args.seeder {
+    let role = if seeder {
         Role::Seeder
     } else {
         Role::Interactive
     };
+    let ClientSetup {
+        connector,
+        username,
+        password,
+        storage,
+        server_addr_str,
+        first_use,
+    } = setup;
     let mut handle = spawn_client(
         Arc::clone(&connector),
         ClientConfig {
@@ -175,7 +218,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     tracing::info!("{username} ({role:?}) connecting to {server_addr_str}");
 
     // ---- Event loop until Ctrl-C.
-    let mut pin_pending = first_use && !args.seeder;
+    let mut pin_pending = first_use && !seeder;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -227,6 +270,319 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     // Graceful teardown: Goodbye to the server, flush state to SQLite.
     // Each actor drops its command receiver when it exits, so closed()
     // is the completion signal.
+    let _ = handle.network.send(NetworkCommand::Shutdown).await;
+    let _ = handle.sync.send(SyncCommand::Shutdown).await;
+    handle.network.closed().await;
+    handle.sync.closed().await;
+    Ok(())
+}
+
+/// Run the interactive TUI client until quit.
+pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
+    use crate::actors::sync::{Mutation, SyncCommand};
+    use crate::ui::app::{Ui, UiSnapshot};
+    use crate::ui::msg::UserAction;
+    use crate::ui::shell::{UiInput, run_input_thread, run_ui_thread};
+    use dessplay_core::types::ManualState;
+
+    let db_path = match &args.db_path {
+        Some(path) => path.clone(),
+        None => Storage::default_path().ok_or("cannot determine the data directory")?,
+    };
+    // Interactive mode owns first-run setup, so the username/password
+    // requirement is deferred to the settings screen: pre-fill what we
+    // have and let prepare() run once setup completes.
+    let setup_storage =
+        Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
+    let mut settings: crate::config::Settings = setup_storage
+        .load_settings()
+        .map_err(|e| format!("loading settings: {e}"))?;
+    if settings.username.is_none() {
+        settings.username = args.username.clone().or_else(|| std::env::var("USER").ok());
+    }
+    if settings.password.is_none() {
+        settings.password = args
+            .password
+            .clone()
+            .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok());
+    }
+    let media_roots = setup_storage
+        .media_roots()
+        .map_err(|e| format!("loading media roots: {e}"))?;
+    let me = UserId::new(settings.username.clone().unwrap_or_default());
+
+    // The UI runs on its own threads; this task bridges it to the
+    // actors.
+    let ui = Ui::new(me.clone(), settings.clone(), media_roots);
+    let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
+    let (action_tx, mut action_rx) = mpsc::channel::<UserAction>(64);
+    let ui_thread = std::thread::spawn(move || run_ui_thread(ui, input_rx, action_tx));
+    {
+        let input_tx = input_tx.clone();
+        std::thread::spawn(move || run_input_thread(input_tx));
+    }
+
+    // If setup is incomplete, the settings modal is up; wait for the
+    // save before connecting (the first SaveSettings action).
+    while settings.needs_setup() {
+        match action_rx.recv().await {
+            Some(UserAction::SaveSettings(saved, roots)) => {
+                setup_storage
+                    .save_settings(&saved)
+                    .map_err(|e| format!("saving settings: {e}"))?;
+                let mut storage = setup_storage;
+                storage
+                    .set_media_roots(&roots)
+                    .map_err(|e| format!("saving media roots: {e}"))?;
+                return Box::pin(run_interactive(args)).await; // restart with full config
+            }
+            Some(UserAction::Quit) | None => return Ok(()),
+            Some(_) => continue,
+        }
+    }
+
+    let setup = prepare(&args).await?;
+    let sync_storage =
+        Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
+    let initial = sync_storage
+        .load_state()
+        .map_err(|e| format!("loading stored state: {e}"))?;
+    let mut handle = spawn_client(
+        Arc::clone(&setup.connector),
+        ClientConfig {
+            username: UserId::new(&setup.username),
+            password: setup.password.clone(),
+            role: Role::Interactive,
+            session_nonce: rand::random(),
+            clock: system_clock(),
+            sync: SyncConfigExtras {
+                initial,
+                storage: Some(sync_storage),
+                flush_interval: None,
+            },
+        },
+    );
+
+    /// Build a fresh snapshot for the UI.
+    async fn snapshot_for(
+        handle: &crate::client::ClientHandle,
+        storage: &Storage,
+    ) -> Option<UiSnapshot> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle.sync.send(SyncCommand::GetView(tx)).await.ok()?;
+        let view = rx.await.ok()?;
+        let recency = storage
+            .recent_watched(500)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|record| Some((record.series_id?, record.watched_at as u64)))
+            .collect();
+        Some(UiSnapshot {
+            view,
+            peers: handle.peers.borrow().clone(),
+            recency,
+        })
+    }
+
+    let mut pin_pending = setup.first_use;
+    let mut startup_state_written = false;
+    loop {
+        tokio::select! {
+            action = action_rx.recv() => {
+                match action {
+                    None | Some(UserAction::Quit) => break,
+                    Some(UserAction::Mutate(mutation)) => {
+                        let _ = handle
+                            .sync
+                            .send(SyncCommand::Mutate(Box::new(mutation)))
+                            .await;
+                    }
+                    Some(UserAction::HashAndAdd { path, after }) => {
+                        let filename = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        let hashed = tokio::task::spawn_blocking(move || {
+                            let file = std::fs::File::open(&path)?;
+                            dessplay_core::hash::ed2k_hash_reader(file)
+                        })
+                        .await;
+                        match hashed {
+                            Ok(Ok(hashed)) => {
+                                let _ = handle
+                                    .sync
+                                    .send(SyncCommand::Mutate(Box::new(
+                                        Mutation::AddPlaylistAfter {
+                                            anchor: after,
+                                            new: dessplay_core::playlist::NewPlaylistEntry {
+                                                hash: hashed.root,
+                                                added_by: me.clone(),
+                                                filename,
+                                                size_bytes: hashed.size_bytes,
+                                                // Probed by the player layer in Phase 7.
+                                                duration_millis: None,
+                                            },
+                                        },
+                                    )))
+                                    .await;
+                            }
+                            Ok(Err(e)) => tracing::error!("hashing failed: {e}"),
+                            Err(e) => tracing::error!("hash task died: {e}"),
+                        }
+                    }
+                    Some(UserAction::SaveSettings(saved, roots)) => {
+                        if let Err(e) = setup_storage.save_settings(&saved) {
+                            tracing::error!("saving settings: {e}");
+                        }
+                        // set_media_roots needs &mut; reopen briefly.
+                        match Storage::open(&db_path) {
+                            Ok(mut storage) => {
+                                if let Err(e) = storage.set_media_roots(&roots) {
+                                    tracing::error!("saving media roots: {e}");
+                                }
+                            }
+                            Err(e) => tracing::error!("opening storage: {e}"),
+                        }
+                        settings = *saved;
+                    }
+                }
+            }
+            event = handle.events.recv() => {
+                let Some(event) = event else { break };
+                match &event {
+                    ClientEvent::Network(NetworkEvent::AuthFailed) => {
+                        drop(input_tx);
+                        let _ = ui_thread.join();
+                        return Err("the server rejected the password".into());
+                    }
+                    ClientEvent::Network(NetworkEvent::Connected { .. }) => {
+                        if pin_pending && let Some(fp) = setup.connector.observed_fingerprint() {
+                            let now = (system_clock())() as i64;
+                            if setup_storage
+                                .store_tofu_fingerprint(&setup.server_addr_str, &fp, now)
+                                .is_ok()
+                            {
+                                pin_pending = false;
+                            }
+                        }
+                        // "Ready on startup": write our manual override
+                        // once per session (clears a stale Paused too).
+                        if !startup_state_written {
+                            startup_state_written = true;
+                            let state = if settings.ready_on_startup {
+                                None
+                            } else {
+                                Some(ManualState::Paused)
+                            };
+                            let _ = handle
+                                .sync
+                                .send(SyncCommand::Mutate(Box::new(
+                                    Mutation::SetManualOverride { user: me.clone(), state },
+                                )))
+                                .await;
+                        }
+                    }
+                    _ => {}
+                }
+                // Any event can change what the UI shows.
+                if let Some(snapshot) = snapshot_for(&handle, &setup_storage).await {
+                    let _ = input_tx.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                }
+            }
+        }
+    }
+
+    // Teardown: Goodbye, flush, release the terminal.
+    let _ = handle.network.send(NetworkCommand::Shutdown).await;
+    let _ = handle.sync.send(SyncCommand::Shutdown).await;
+    handle.network.closed().await;
+    handle.sync.closed().await;
+    drop(input_tx);
+    let _ = ui_thread.join();
+    Ok(())
+}
+
+/// `dessplay --dump`: print settings and the stored state, then exit.
+pub fn run_dump(args: &HeadlessArgs) -> Result<(), String> {
+    let path = match &args.db_path {
+        Some(path) => path.clone(),
+        None => Storage::default_path().ok_or("cannot determine the data directory")?,
+    };
+    let storage = Storage::open(&path).map_err(|e| format!("opening {}: {e}", path.display()))?;
+    let settings = storage
+        .load_settings()
+        .map_err(|e| format!("loading settings: {e}"))?;
+    println!("database: {}", path.display());
+    println!("settings: {settings:#?}");
+    println!(
+        "media roots: {:#?}",
+        storage.media_roots().map_err(|e| e.to_string())?
+    );
+    match storage.load_state().map_err(|e| e.to_string())? {
+        None => println!("no stored state"),
+        Some(snapshot) => {
+            println!("epoch: {:?}", snapshot.epoch);
+            println!("state: {:#?}", snapshot.state.view());
+        }
+    }
+    Ok(())
+}
+
+/// `dessplay import-list`: parse the exported sheets, print the report,
+/// and (unless `dry_run`) push the entries through a transient client.
+pub async fn run_import(
+    args: HeadlessArgs,
+    files: Vec<std::path::PathBuf>,
+    watchers: String,
+    dry_run: bool,
+) -> Result<(), String> {
+    let map = crate::import::WatcherMap::parse(&watchers)?;
+    let mut report = crate::import::ImportReport::default();
+    for file in &files {
+        let content = std::fs::read_to_string(file)
+            .map_err(|e| format!("reading {}: {e}", file.display()))?;
+        let label = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.display().to_string());
+        crate::import::import_sheet(&content, &label, &map, &mut report)?;
+    }
+
+    println!("parsed {} entries:", report.entries.len());
+    for (status, count) in report.status_counts() {
+        println!("  {status}: {count}");
+    }
+    if !report.warnings.is_empty() {
+        println!("\n{} rows need a human:", report.warnings.len());
+        for warning in &report.warnings {
+            println!("  {warning}");
+        }
+    }
+    if dry_run {
+        println!("\ndry run; nothing submitted");
+        return Ok(());
+    }
+
+    let setup = prepare(&args).await?;
+    let handle = spawn_client(
+        Arc::clone(&setup.connector),
+        ClientConfig {
+            username: UserId::new(&setup.username),
+            password: setup.password,
+            role: Role::Interactive,
+            session_nonce: rand::random(),
+            clock: system_clock(),
+            // Transient client: no stored state in, none persisted out.
+            sync: SyncConfigExtras::default(),
+        },
+    );
+    println!(
+        "\nconnecting to {} as {}...",
+        setup.server_addr_str, setup.username
+    );
+    let outcome = crate::import::submit(&handle, &report).await?;
+    println!("created {}, updated {}", outcome.created, outcome.updated);
+
     let _ = handle.network.send(NetworkCommand::Shutdown).await;
     let _ = handle.sync.send(SyncCommand::Shutdown).await;
     handle.network.closed().await;
