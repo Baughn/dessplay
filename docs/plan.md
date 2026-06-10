@@ -83,9 +83,12 @@ round-trip correctly.
 
 ### What gets built
 - SQLite schema + migrations (rusqlite, bundled)
-- Persist/restore CRDT snapshots and op logs (keyed by epoch)
-- Local config: username, server, media roots, player choice, password,
-  role (interactive/seeder), cache retention, upload limit, subtitle pane
+- Persist/restore CRDT snapshots, keyed by epoch (no op log: unsent ops
+  are memory-only by design; a crash may lose the latest local edits)
+- Local config in SQLite: username, server, media roots, player choice,
+  password (plaintext, per threat model), cache retention, upload limit,
+  subtitle pane. Flags/env override, never persisted. Seeder & server
+  take flags/env only and persist no settings.
 - Watch history: file hash -> watched, last-watched timestamp (keyed by
   hash/series so it survives cache eviction)
 - Download cache state (last-access times for eviction)

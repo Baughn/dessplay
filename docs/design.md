@@ -54,9 +54,10 @@ Optional settings (sensible defaults, editable later):
 - Upload limit (bytes/sec cap for serving files to peers; default unlimited)
 - Subtitle pane (on/off; default off)
 
-Seeder-specific configuration (role, retention) lives in the config file /
-command-line flags only -- seeders are headless and never show the settings
-screen. See [Client Roles](#client-roles).
+Seeder-specific configuration (role, retention) is provided via
+command-line flags / environment only -- seeders are headless, never show
+the settings screen, and persist no settings (they are run as systemd
+services from a NixOS config). See [Client Roles](#client-roles).
 
 ### Connecting to Friends
 
@@ -271,7 +272,7 @@ Typical evening flow:
 
 ## Client Roles
 
-A client runs in one of two roles, set in the config file or via `--seeder`:
+A client runs in one of two roles, selected via `--seeder`:
 
 - **Interactive** (default): the full experience -- TUI, player, a human.
 - **Seeder**: headless. No TUI, no player, no user states. Runs the sync,
@@ -825,14 +826,28 @@ releases or sub tracks per user are fine. Image-based subtitle formats
 
 Location: `$XDG_DATA_HOME/dessplay/dessplay.db` (typically `~/.local/share/dessplay/`)
 
-Uses `rusqlite` with `bundled` feature. All CRDT state (snapshots and op logs)
-is persisted per-room so it survives full disconnects. On startup, the stored
-state is loaded and passed to the sync engine as initial state. The current
-epoch is also stored so the client can detect stale state on reconnection.
+Uses `rusqlite` with `bundled` feature. CRDT state is persisted per-room as
+periodic **full-state snapshots** (postcard blobs) so it survives full
+disconnects; there is no persisted op log. On startup, the stored state is
+loaded and passed to the sync engine as initial state. The current epoch is
+also stored so the client can detect stale state on reconnection.
+
+**Deliberate non-goal:** local ops the server has not yet seen are buffered
+in memory only. A crash loses the most recent local edits — accepted, since
+crashes should be rare enough not to matter, and an edit that *caused* a
+crash should not be replayed into the next session.
+
+**Settings** (username, server, password, media roots, player choice, cache
+retention, upload limit, subtitle pane) live in the same SQLite database and
+are edited through the settings screen. The password is stored in plaintext
+— consistent with the threat model below. Command-line flags and environment
+variables override stored settings at runtime but are never persisted.
+Seeders and the rendezvous server store no settings at all; they are
+configured purely by flags/environment (systemd services on NixOS).
 
 ### Schema
 
-TBD
+TBD (Phase 2)
 
 ---
 

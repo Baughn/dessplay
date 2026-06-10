@@ -545,7 +545,8 @@ If a client is partitioned while the server compacts:
 
 Without the server, nothing works: no state sync, no AniDB lookups, no file
 transfer (all transfer is relayed through the server). For short outages,
-clients buffer local operations and replay them when the server returns.
+clients buffer local operations (in memory only — a crash during an outage
+drops them, deliberately) and replay them when the server returns.
 
 The server lives on the host's home connection, so a home internet outage
 takes the whole party down -- accepted, since the host could not watch
