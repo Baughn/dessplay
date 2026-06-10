@@ -10,11 +10,12 @@ message flow, and concurrency model. For the external protocol, see
 ## Table of Contents
 
 1. [Design Principles](#design-principles)
-2. [Actor Model](#actor-model)
-3. [Actor Definitions](#actor-definitions)
-4. [Message Flow](#message-flow)
-5. [Workspace Structure](#workspace-structure)
-6. [Key Dependencies](#key-dependencies)
+2. [Composition Root](#composition-root)
+3. [Actor Model](#actor-model)
+4. [Actor Definitions](#actor-definitions)
+5. [Message Flow](#message-flow)
+6. [Workspace Structure](#workspace-structure)
+7. [Key Dependencies](#key-dependencies)
 
 ---
 
@@ -44,6 +45,38 @@ Each actor can be tested in isolation by sending it messages and asserting on
 outputs. The `SyncActor` can be tested without a network. The `UiActor` can
 be tested without a terminal. The `PlayerActor` can be tested with a mock
 player.
+
+Beyond isolation, the *whole client* must be constructible from a test —
+see [Composition Root](#composition-root).
+
+---
+
+## Composition Root
+
+`main()` is a thin shell. All actor creation and channel wiring lives in a
+library-style entry point, roughly:
+
+```rust
+async fn run_client(
+    config: Config,
+    transport: impl Transport,      // quinn in prod, SimulatedTransport in tests
+    player: impl Player,            // mpv in prod, MockPlayer in tests
+    terminal: Backend,              // crossterm in prod, ratatui TestBackend in tests
+    events: EventSource,            // real input in prod, injected events in tests
+) -> Result<()>
+```
+
+(Exact signature to be settled in Phase 5; the *requirement* is fixed now.)
+
+The payoff is the multi-client simulation harness (see
+[testing-strategy.md](testing-strategy.md)): N **complete** clients — every
+actor, UI included — plus a real server actor, all in one
+`current_thread` tokio runtime with paused time. This is the tier where
+cross-client product behavior is tested ("A pauses, B's screen shows it")
+without terminals, processes, or real sockets.
+
+Anything `main()` does beyond argument parsing and constructing these
+inputs is a bug: it would be behavior the harness cannot see.
 
 ---
 

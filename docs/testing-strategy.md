@@ -9,13 +9,14 @@ Last updated: 2026-06-10
 3. [Architecture for Testability](#architecture-for-testability)
 4. [Test Tiers](#test-tiers)
 5. [SimulatedNetwork](#simulatednetwork)
-6. [Player Integration Tests](#player-integration-tests)
-7. [CRDT Property Tests](#crdt-property-tests)
-8. [TUI Testing](#tui-testing)
-9. [Actor Tests](#actor-tests)
-10. [Fuzz Testing](#fuzz-testing)
-11. [System Tests (tmux)](#system-tests-tmux)
-12. [Key Crates](#key-crates)
+6. [Multi-Client Simulation Harness](#multi-client-simulation-harness)
+7. [Player Integration Tests](#player-integration-tests)
+8. [CRDT Property Tests](#crdt-property-tests)
+9. [TUI Testing](#tui-testing)
+10. [Actor Tests](#actor-tests)
+11. [Fuzz Testing](#fuzz-testing)
+12. [System Tests (tmux)](#system-tests-tmux)
+13. [Key Crates](#key-crates)
 
 ---
 
@@ -145,6 +146,8 @@ Slower, may spawn external processes. Cover:
 - Subtitle text observation (`sub-text` property events)
 - State sync convergence across multiple SyncActors connected via
   SimulatedTransport
+- Multi-client simulation harness scenarios (N full clients + server,
+  in-process; see [Multi-Client Simulation Harness](#multi-client-simulation-harness))
 - Reconnection and epoch handling (including the daily compaction broadcast)
 - Relayed file transfer: chunking, reassembly, block-hash verification,
   corrupted-block re-fetch, resume-after-restart from on-disk chunks
@@ -198,6 +201,75 @@ struct LinkConfig {
 
 Uses `tokio::time::pause()` so that time only advances when explicitly
 advanced or when all tasks are idle. Eliminates flaky timing dependencies.
+
+---
+
+## Multi-Client Simulation Harness
+
+The tier between actor tests and tmux: N **complete** clients (every
+actor, UI rendered to ratatui's `TestBackend`, `MockPlayer`) plus a real
+server actor, in one `current_thread` tokio runtime with paused time,
+wired over `SimulatedTransport`. This is where cross-client product
+behavior is tested — pause propagation, presence transitions reaching
+other users' screens, EOF advancing everyone's playlist — headless and
+fast. It exists because of the [composition
+root](architecture.md#composition-root): the harness calls the same
+wiring function `main()` does.
+
+The model is **Playwright, ported to a TUI**. The borrowed ideas:
+
+- **Client handles as contexts.** A test owns handles to N clients and
+  the server; each handle can inject input events, read its rendered
+  buffer, and manipulate its network link (partition, loss, latency).
+- **Auto-waiting assertions, never sleeps.** Assertions poll a predicate
+  while pumping the event loop and advancing *simulated* time, failing
+  only when a simulated-time budget expires:
+  `eventually(&client_b, 5.secs(), |ui| ui.pane("users").contains("Baughn ▌away"))`.
+  Strictly better than Playwright's version — our clock is virtual, so
+  "wait up to 5 seconds" costs microseconds and is deterministic.
+- **Locators over coordinates.** Behavior tests query semantically —
+  "the users pane has a row matching X" — via pane-region helpers over
+  the buffer, not cell coordinates and not full-buffer snapshots.
+  Full-buffer insta snapshots are reserved for *layout* tests, so layout
+  tweaks don't break fifty scenario tests.
+- **Failure artifacts.** On failure the harness dumps every client's
+  final rendered buffer, the server's op log, and the RNG seed — the
+  trace-viewer idea, minus the viewer.
+
+Scenario tests read like screenplays:
+
+```text
+spawn server; spawn clients A, B, C
+A: add file to playlist
+eventually: B and C playlists show the file
+B: press pause in player
+eventually: A's and C's MockPlayers received Pause
+partition C; advance 35s
+eventually: A's chat shows "C lost connection"; everyone paused
+heal C
+eventually: all views converge
+```
+
+The harness is built incrementally: sync-only multi-actor form in Phase
+4, headless full clients in Phase 5, UI handles in Phase 6, player
+handles in Phase 7. Once it exists, the Phase 1 fuzz pattern scales up:
+random input events plus network chaos into full clients, asserting no
+panics and post-quiesce convergence.
+
+### Determinism Stance
+
+One runtime, paused time, and seeded RNG make scenarios *almost*
+deterministic: no wall-clock races are possible. The residual
+nondeterminism is tokio's task-polling order, which is stable on
+`current_thread` in practice but not contractually guaranteed. Policy:
+no test may depend on intra-tick ordering, and an ordering-flake is
+treated as a bug in the code under test (it would be a race in
+production too). If that policy ever proves insufficient, the
+escalation path is a deterministic-simulation runtime (`madsim` /
+`turmoil`) — not adopted now because they fight with quinn, and the
+`Transport` seam already keeps real QUIC out of this tier. Real-QUIC
+coverage comes from a small set of localhost integration tests plus the
+tmux smoke layer.
 
 ---
 
@@ -326,7 +398,27 @@ fn test_playlist_rendering() {
 
 ### What Snapshot Tests Do NOT Cover
 
-Application logic. UI tests verify rendering and input routing only.
+Application logic. Snapshot tests verify rendering only; input routing
+is covered by message/update tests; everything above that belongs to
+whole-app tests.
+
+### Whole-App TUI Tests
+
+Per-component tests can all pass while the *assembly* misbehaves: focus
+cycling, modal open/close stacking, the keybinding bar following focus,
+state→props plumbing across event sequences. Whole-app tests close that
+gap: instantiate the real tui-realm `Application` with all components
+mounted, feed a synthetic event sequence through the UiActor's injected
+event source (a constructor input — there is no separate test path),
+render to `TestBackend`, and assert with the same locator-style queries
+the multi-client harness uses.
+
+> Press Tab twice; press `a`; the file browser modal is visible and the
+> keybinding bar shows browser bindings.
+
+What stays untestable headless — and is deliberately left to the tmux
+tier and manual use: real-terminal resize quirks, color-depth
+differences, mouse protocol variations across emulators.
 
 ---
 
@@ -428,7 +520,13 @@ Mid-run convergence checks.
 
 ## System Tests (tmux)
 
-Full end-to-end test harness in a tmux server.
+Full end-to-end **smoke tests** in a tmux server: real binaries, real
+QUIC on localhost, real terminals. This tier exists to catch what the
+in-process harness *cannot* see — process spawning, real sockets,
+terminal reality — and nothing else. Keep it small: product logic is
+never tested here (the multi-client harness owns that), and assertions
+are poll-for-string with a timeout (`tmux capture-pane` in a retry
+loop), never sleep-then-grep.
 
 ### Setup
 
@@ -447,11 +545,12 @@ tmux -L dessplay send-keys \
 
 ### What System Tests Verify
 
-- End-to-end connectivity via server
-- Chat messages appear on all clients
-- Playlist changes propagate
-- Player sync with real mpv (`-vo null -ao null`)
-- Reconnection: kill and restart a client
+- Binaries start, connect, and authenticate over real QUIC on localhost
+- One happy-path flow as smoke (a chat message crosses clients)
+- Real mpv spawns and is driven (`-vo null -ao null`)
+- Kill -9 and restart a client process; it reconnects
+
+Anything subtler than this belongs in the multi-client harness.
 
 ### When to Run
 

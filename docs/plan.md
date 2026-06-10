@@ -166,6 +166,7 @@ synchronized clocks.
 
 ### Testing
 - SimulatedTransport: N clients with packet loss -> verify convergence
+  (the sync-only embryo of the multi-client harness)
 - Partition/heal: ops on both sides of partition -> heal -> converge
 - Reconnection: client misses ops -> reconnects -> full state recovery
 - Fuzz: multi-actor sync with random partitions
@@ -180,7 +181,11 @@ Multiple clients modify CRDTs through server and converge to identical state.
 **Goal**: Derived state logic, server compaction, actor wiring.
 
 ### What gets built
-- Main loop: actor creation, channel wiring, `tokio::select!` dispatch
+- Main loop: actor creation, channel wiring, `tokio::select!` dispatch —
+  factored as the **composition root** (`main()` is a thin shell; see
+  architecture.md), so the multi-client harness can construct full clients
+- Multi-client simulation harness, headless form (N full clients + server
+  in-process; see testing-strategy.md)
 - Seeder mode: `--seeder` spawns only Sync/Network/File actors
 - Presence tracking on the server (Present -> Lost at 30s -> Departed at
   60s), `PeerList` pushes, pause-on-lost and pause-on-graceful-quit
@@ -245,8 +250,13 @@ schedule with clients attached. Presence-aware derived state works.
 
 ### Testing
 - insta snapshot tests: render components -> buffer -> assert snapshot
+  (layout only)
 - Message tests: input event -> correct Msg
 - Update tests: Msg -> correct UserAction
+- Whole-app TUI tests: scripted event sequences through the real
+  Application on TestBackend, locator-style assertions
+- Multi-client harness gains UI handles (inject input, query rendered
+  buffers per client)
 - Importer tests against the real exported sheets as fixtures
 - Edge cases: empty playlist, no users, long filenames, unlinked List entries
 
@@ -282,6 +292,8 @@ Interactive TUI client: connect, see peers, chat, manage shared playlist.
 
 ### Testing
 - MockPlayer unit tests: correct commands for state transitions
+- Multi-client harness gains player handles (full scenario tests: pause
+  on A reaches B's and C's players)
 - Echo suppression integration tests (gated behind `mpv-tests`)
 - Drift band tests (boundary values; slew converges, releases speed to 1.0)
 - Seek authority tests with paused tokio time
