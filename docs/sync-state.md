@@ -1,0 +1,424 @@
+# Sync State Design
+
+Last updated: 2026-03-04
+
+DessPlay uses the **`crdts`** crate for state synchronization. All shared state
+is expressed as CRDT types from this library, synced through the server as
+central coordinator.
+
+## Table of Contents
+
+1. [Core Concepts](#core-concepts)
+2. [Replicated Data Types](#replicated-data-types)
+3. [Transport](#transport)
+4. [Compaction](#compaction)
+5. [Failure Modes](#failure-modes)
+
+---
+
+## Core Concepts
+
+### Shared Clock
+
+All operation timestamps use a shared clock established via the NTP-style
+protocol with the rendezvous server (see design.md, Time Synchronization).
+This provides a consistent total ordering of operations across all peers.
+
+### Dual-Mode Sync: CmRDT + CvRDT
+
+The `crdts` crate types implement both CmRDT (operation-based) and CvRDT
+(state-based) replication. DessPlay uses both:
+
+- **CmRDT (normal operation):** Clients generate operations locally and send
+  them to the server. The server applies them and broadcasts to other clients.
+  Each operation is the native `Op` type of the underlying CRDT.
+
+- **CvRDT (reconnection / gap recovery):** When a client reconnects or
+  detects it has missed operations, the server sends its full state. The client
+  calls `.merge()` on each CRDT field. This is idempotent, commutative, and
+  associative -- safe to apply at any time.
+
+There is no custom operation log, version vector, or gap-fill protocol. The
+`crdts` types track causality internally via vector clocks.
+
+### Epochs
+
+An **epoch** is a generation counter incremented each time the rendezvous
+server compacts the state (see [Compaction](#compaction)). When a client
+connects with a stale epoch, it replaces its local state entirely with the
+server's snapshot.
+
+### Actor IDs
+
+Every participant in the CRDT system has an `ActorId`:
+- Each client gets a unique ActorId (derived from username or generated)
+- The server has a well-known ActorId used for authoritative actions
+
+The server ActorId is used when:
+- Advancing now-playing on EOF (only the server does this)
+- Becoming seek authority on file change
+- Writing AniDB metadata (server-authoritative)
+
+### LWW Conflict Resolution via `Lww<V>`
+
+Most state uses last-writer-wins semantics. Since `MVReg` preserves all
+concurrent values rather than choosing one, we wrap values in `Lww<V>`:
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Lww<V> {
+    timestamp: SharedTimestamp,
+    value: V,
+}
+
+impl<V: Ord> Ord for Lww<V> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.timestamp.cmp(&other.timestamp)
+            .then_with(|| self.value.cmp(&other.value))
+    }
+}
+```
+
+When reading, resolve concurrent values by taking `max()`:
+
+```rust
+fn resolve<V: Ord + Clone>(mvreg: &MVReg<Lww<V>, ActorId>) -> Option<Lww<V>> {
+    mvreg.read().val.into_iter().max()
+}
+```
+
+This gives deterministic convergence: highest timestamp wins, with value-based
+tiebreaking when timestamps are equal.
+
+### crdts Crate Integration
+
+We use the following types from the `crdts` crate:
+
+| `crdts` type | Our usage |
+|---|---|
+| `MVReg<V, A>` | Multi-value register; wraps `Lww<V>` for LWW semantics |
+| `Map<K, V, A>` | Keyed collections (playlist, per-user maps, file availability) |
+| `GList<V>` | Grow-only ordered list (chat) |
+| `GSet<V>` | Grow-only set (lookup requests) |
+| `Identifier<T>` | Dense ordering for playlist positions |
+
+The `Map` type uses observed-remove semantics for keys and nests `MVReg` as
+values. The full pattern is `Map<K, MVReg<Lww<V>, ActorId>, ActorId>`.
+
+Per-user state uses **compound keys**: e.g. `Map<(UserId, AniDbSeriesId), ...>`
+rather than separate CRDT instances per user. This keeps the state table flat
+and the wire protocol uniform.
+
+#### crdts API Notes
+
+- **Map return types:** `Map::get()` returns `ReadCtx<Option<V>>` (cloned value
+  via `.val`), while `Map::iter()` yields `ReadCtx<(&K, &V)>` (references via
+  `.val`). Always access the `.val` field to get the inner data.
+- **GSet::apply():** Takes the element directly as the op (no separate insert +
+  apply pattern).
+- **GList::read():** Returns references (`FromIterator<&T>`), not owned values.
+- **MVReg causality:** MVReg tracks causal history via vector clocks. The same
+  *logical* writes applied in different orders to independent replicas produce
+  different causal states (and potentially different sets of concurrent values).
+  Convergence requires either (a) exchanging the actual generated `Op`s between
+  replicas (CmRDT), or (b) merging full states (CvRDT). You cannot simply
+  replay the same "intentions" on separate replicas and expect convergence --
+  the ops must carry their original causal context.
+
+---
+
+## Replicated Data Types
+
+### Complete State Table
+
+| State | CRDT Type | Owner |
+|---|---|---|
+| Playlist | `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>, ActorId>, ActorId>` | Any peer |
+| Now Playing | `MVReg<Lww<Option<Ed2kHash>>, ActorId>` | Any peer; server on EOF |
+| Seek Authority | `MVReg<Lww<ActorId>, ActorId>` | Whoever last seeked; server on file change |
+| Series preference | `Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>, ActorId>, ActorId>` | Each user writes own |
+| Manual override | `Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId>` | Each user writes own |
+| File availability | `Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>, ActorId>, ActorId>` | Each user writes own |
+| AniDB metadata | `Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>, ActorId>, ActorId>` | Server only |
+| Lookup requests | `GSet<FileHashInfo>` | Any peer inserts; cleared on compaction |
+| Chat | `GList<ChatMessage>` | Any peer appends |
+| Playback position | `Map<UserId, MVReg<Lww<PlaybackPosition>, ActorId>, ActorId>` | Each user writes own |
+
+### Playlist
+
+The playlist is a `Map<Ed2kHash, MVReg<Lww<PlaylistFileState>, ActorId>, ActorId>`.
+
+`PlaylistFileState` contains:
+- `position: Identifier<ActorId>` -- dense ordering via `crdts::Identifier`
+- `is_watched: bool` -- whether this file has been played past the threshold
+- `added_by: UserId` -- who added this file
+- `filename: String` -- original filename for display and matching
+
+**Ordering:** To display the playlist, collect all entries, resolve each
+`MVReg` to its LWW winner, sort by `position` (ascending), with `Ed2kHash`
+as tiebreaker.
+
+**Adding:** To add a file after item X:
+`Identifier::between(Some(&x.position), next.map(|n| &n.position), my_actor_id)`.
+If adding at the end, `Identifier::between(Some(&last.position), None, my_actor_id)`.
+
+**Moving:** To move a file to a new position: compute a new `Identifier`
+between the two items it should sit between, write the new `PlaylistFileState`
+with the updated position.
+
+**Removing:** `Map::rm` on the ed2k hash. If there's a concurrent update,
+the item survives (observed-remove semantics). This is acceptable -- the user
+can delete again.
+
+**Rebalancing:** After many moves, `Identifier` values grow in size (the
+underlying `BigRational` denominators increase). The server rebalances during
+compaction by reassigning fresh `Identifier` values with simple rationals
+while preserving order.
+
+**Conflict resolution:** Concurrent writes to the same key's `PlaylistFileState`
+are preserved by `MVReg` and resolved by `Lww` (highest timestamp wins, with
+value-based tiebreaking). With ~4 users and manual playlist management, true
+simultaneous conflicts are rare. When they occur, the playlist converges to
+*some* deterministic order and someone fixes it manually.
+
+### Now Playing
+
+`MVReg<Lww<Option<Ed2kHash>>, ActorId>` -- a standalone register.
+
+Any peer can set now-playing by selecting a playlist entry. The server sets
+it on EOF (advancing to next item). Last writer wins via `Lww`.
+
+### Seek Authority
+
+`MVReg<Lww<ActorId>, ActorId>` -- the ActorId of whoever most recently
+initiated a seek.
+
+**How it works:**
+1. User A seeks -> their client writes A's ActorId to the seek authority register
+2. All clients see "A is authoritative" and sync their position to A's
+   `PlaybackPosition`
+3. Normal playback continues; small drift between clients is ignored
+4. User B seeks -> B becomes authoritative; everyone syncs to B's position
+5. Drift threshold: if >3s off from authority's position, trigger a seek
+
+**Debounce:** Seek authority and position writes are debounced at 1500ms in
+the PlayerActor. While the user is scrubbing, no authority change is broadcast.
+Only after scrubbing stops does the PlayerActor write SeekAuthority + position.
+
+**Echo suppression:** When you receive a seek authority change naming *you*,
+ignore it -- you already performed the seek.
+
+**File change:** When now-playing changes, the server becomes seek authority.
+Everyone resets to position 0. The server's authority prevents spurious seeks
+during the transition.
+
+### Series Preference
+
+`Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>, ActorId>, ActorId>`.
+
+`SeriesWatchState` is `Watching | NotWatching`. When the currently playing
+file belongs to a series the user has marked NotWatching, their derived user
+state becomes NotWatching. This means they don't block playback for content
+they're not interested in.
+
+### Manual Override
+
+`Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId>`,
+where `ManualState` is `Paused`.
+
+Set when the user manually pauses. Cleared (set to `None`) when the user
+attempts to unpause. Takes priority over the series preference.
+
+### File Availability
+
+`Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>, ActorId>, ActorId>`.
+
+`FileAvailability` is `Ready | Missing | Downloading { progress_bps: u16 }`
+(basis points 0–10000, avoids float Eq/Ord issues). Each user
+writes their own availability for each file. This determines the file state
+column in the UI and whether the user blocks playback.
+
+### Lookup Requests
+
+`GSet<FileHashInfo>` -- a grow-only set of files that clients want the server
+to look up via AniDB.
+
+`FileHashInfo` contains:
+- `hash: Ed2kHash`
+- `size: u64` -- file size in bytes (AniDB's FILE command requires this)
+- `filename: String` -- for fallback metadata when AniDB doesn't know the file
+
+Clients insert entries as they scan local files. The server drains entries
+into its AniDB lookup queue. On compaction, the GSet is cleared -- all
+entries have been processed or queued.
+
+This happens naturally on reconnect: clients start fresh after a stale epoch,
+re-scan their local files, check each hash against the metadata map, and
+re-insert any that are still `None`. The server deduplicates against its
+existing metadata and lookup queue.
+
+### AniDB Metadata
+
+`Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>, ActorId>, ActorId>`.
+
+Only the server writes these. `None` means "not yet looked up." The server
+fills in metadata from two sources:
+
+1. **AniDB lookup succeeds**: full metadata (series name, ID, episode number)
+2. **AniDB lookup fails**: filename-derived metadata (series name = filename
+   minus extension, no series ID, no episode number). Any smarter parsing
+   (stripping group tags, episode numbers) is done at the display level so
+   it can be updated without re-querying.
+
+Either way, the register becomes `Some(AniDbMetadata)` -- downstream code
+always has a series name to work with.
+
+```rust
+struct AniDbMetadata {
+    source: MetadataSource,           // AniDb | FilenameDerived
+    series_name: String,              // always present
+    series_id: Option<AniDbSeriesId>, // None if filename-derived
+    episode_number: Option<String>,   // None if unknown (AniDB uses "S1", "C1", etc.)
+}
+```
+
+Code that needs franchise grouping (series browser) checks `series_id`.
+Files without an AniDB series ID are grouped by `series_name` as a fallback
+(less accurate, but functional).
+
+### Chat
+
+`crdts::GList<ChatMessage>` -- a grow-only ordered list.
+
+Each `ChatMessage` contains:
+- `sender: UserId`
+- `text: String`
+- `timestamp: SharedTimestamp`
+
+GList handles ordering and deduplication. Messages are displayed sorted by
+the GList's internal ordering (which respects insertion order). Operations
+are the GList's native `Op` type, sent via CmRDT.
+
+### Playback Position
+
+`Map<UserId, MVReg<Lww<PlaybackPosition>, ActorId>, ActorId>`.
+
+`PlaybackPosition` contains:
+- `position_millis: u64` -- milliseconds as integer (avoids float Eq/Ord issues)
+- `timestamp: SharedTimestamp`
+
+Updated at high frequency: every 100ms during playback, every 1s when paused.
+These updates are **not persisted to SQLite on every update**. The server
+compacts them to a single value per user.
+
+This is a proper CRDT (not ephemeral gossip), which means:
+- Position survives reconnection (the server has the last known value)
+- No special-case code for "ephemeral" vs "persistent" state
+- The CRDT machinery handles deduplication and ordering naturally
+
+---
+
+## Transport
+
+### Server as Hub
+
+All state sync flows through the server:
+
+1. Client generates a CmRDT operation -> sends it to the server
+2. Server applies it and broadcasts to all other clients
+3. Clients receive ops from the server and apply locally
+
+This eliminates:
+- Peer-to-peer state reconciliation
+- Clock skew between clients (only client-server offset matters)
+- Complex relay/forwarding logic for state ops
+
+### Operation Broadcast
+
+When a client generates a new operation:
+
+1. Apply it locally (immediate feedback)
+2. Send it to the server via the control stream (reliable)
+3. Also send via datagram (best-effort, for lower latency)
+4. The server deduplicates, applies, and broadcasts to other clients
+
+### Reconnection Sync
+
+When a client reconnects (or detects missed operations):
+
+1. Client sends its epoch to the server
+2. **Same epoch:** Server sends its full CvRDT state. Client calls `.merge()`
+   on each CRDT field. This is idempotent -- applying it multiple times or
+   with overlapping data is safe.
+3. **Stale epoch:** Server sends the compacted snapshot with the new epoch.
+   Client replaces its local state entirely.
+4. Resume normal CmRDT operation broadcast.
+
+No version vectors or gap-fill protocol needed. The CvRDT merge handles
+any missed operations implicitly.
+
+---
+
+## Compaction
+
+### When It Happens
+
+The rendezvous server compacts the state when **no clients have been
+connected for more than 5 minutes**. This is the typical "end of session"
+scenario -- everyone closes their laptops after watching anime.
+
+### How It Works
+
+1. Server takes its current merged CRDT state
+2. **Rebalances playlist `Identifier` positions** -- reassigns fresh
+   identifiers with small `BigRational` values to prevent size growth
+3. Compacts each user's playback position to a single latest value
+4. **Clears the lookup request GSet** -- all entries have been processed
+5. Increments the epoch counter
+6. Serializes the compacted state as the new baseline
+
+### Client Reconnection After Compaction
+
+1. Client connects, sends its last known epoch
+2. If epoch matches: server sends full CvRDT state, client merges
+3. If epoch is stale: server sends the compacted snapshot + new epoch.
+   Client replaces its local state entirely.
+
+---
+
+## Failure Modes
+
+### Lost Datagrams
+
+Normal and expected. Operations are also sent on the reliable control stream,
+so datagrams are purely an optimization for lower latency. No special recovery
+needed.
+
+### Client Crash / Unclean Disconnect
+
+The client persists its CRDT state to SQLite periodically. On restart, it
+loads local state, reconnects, and receives a CvRDT merge from the server
+to catch up on anything missed.
+
+### Network Partition During Compaction
+
+If a client is partitioned while the server compacts:
+
+- The client may hold state that predates the new epoch.
+- On reconnection, it sees a newer epoch and replaces its state with the
+  server's compacted snapshot.
+- If the client generated ops *during* the partition that the server never
+  saw: these ops are lost. For this use case (friends watching anime ~1hr/day),
+  this requires being partitioned for the entire session *and* for 5 minutes
+  after everyone else disconnects. Acceptable risk.
+
+### Server Unavailable
+
+Without the server, no state sync occurs. Clients cannot:
+- Sync state with each other (hub-and-spoke model)
+- Receive AniDB lookups
+- Discover new peers
+
+File transfers that are already in progress via peer-to-peer connections
+continue to work. For short outages, clients can buffer local operations
+and replay them when the server returns.
