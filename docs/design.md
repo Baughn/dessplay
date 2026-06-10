@@ -847,7 +847,31 @@ configured purely by flags/environment (systemd services on NixOS).
 
 ### Schema
 
-TBD (Phase 2)
+Versioned via `PRAGMA user_version`; migrations are append-only. All
+tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
+(storage never reads the clock — keeps tests deterministic).
+
+**Client** (`$XDG_DATA_HOME/dessplay/dessplay.db`):
+
+| Table | Contents |
+|-------|----------|
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_pane) |
+| `media_roots` | Ordered media roots; position 0 is the download target |
+| `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
+| `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
+| `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access |
+| `manual_mappings` | Playlist hash → user-picked local path |
+| `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |
+| `tofu_fingerprints` | Pinned server cert fingerprints; write-once (replacing requires explicit forget) |
+
+**Server** (`$XDG_DATA_HOME/dessplay-rendezvous/rendezvous.db`,
+`--db-path` to override):
+
+| Table | Contents |
+|-------|----------|
+| `crdt_state` | The authoritative snapshot (epoch + postcard blob) |
+| `chat_archive` | Full chat history, archived before compaction trims the replicated GList; unique on (timestamp, sender, text), mirroring GList dedup |
+| `anidb_queue` | Validation queue: hash, size, filename, attempt bookkeeping, `next_attempt` scheduling (logic in Phase 8) |
 
 ---
 

@@ -6,6 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The codec error type, re-exported so downstream crates don't need a
+/// direct postcard dependency.
+pub use postcard::Error as WireError;
+
 /// Serialize a wire value to postcard bytes.
 pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, postcard::Error> {
     postcard::to_allocvec(value)

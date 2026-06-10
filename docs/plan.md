@@ -79,6 +79,13 @@ round-trip correctly.
 
 ## Phase 2: Storage & Configuration
 
+**Status: complete (2026-06-10).** Storage lives in each binary per
+architecture.md (`dessplay/src/storage.rs` + `config.rs`,
+`dessplay-rendezvous/src/storage.rs`); the schema is documented in
+design.md (Data Storage). TOFU pins are write-once (cert replacement
+requires an explicit forget). The server's chat archive and AniDB queue
+tables exist now; their consumers arrive in Phases 5 and 8.
+
 **Goal**: SQLite persistence, config management.
 
 ### What gets built
