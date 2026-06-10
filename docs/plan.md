@@ -170,15 +170,26 @@ synchronized clocks.
 **Goal**: CRDTs sync through server. Op broadcast, version vectors, gap fill.
 
 ### What gets built
-- SyncActor: wraps CrdtState, handles local and remote ops
+- SyncActor: wraps CrdtState, handles local and remote ops, issues
+  monotonic timestamps (`max(shared_now, last_issued + 1)`)
 - Server-side sync: receive ops from clients, broadcast to others
-- Eager push via datagrams + reliable send on control stream
+- Eager push via datagrams + reliable send on control stream; receivers
+  apply a datagram op only if it is order-safe (per-origin FIFO guard:
+  Map ops with out-of-sequence dots are dropped — the reliable copy
+  arrives anyway)
 - Playback position exception: datagram-only at 100ms, reliable tick at 1s
-- Periodic state summary exchange (1s)
-- Gap detection from version vector comparison
-- Gap fill over on-demand streams
-- Op deduplication
-- SQLite persistence integration (periodic flush, not per-op)
+- Op deduplication (Map dots; LwwCell/GList/GSet are naturally idempotent)
+- Divergence alarm: server broadcasts a periodic (30s) hash of its
+  resolved view (excluding playback positions); a client mismatching
+  twice in a row logs loudly and requests a StateMerge to self-heal
+- Reconnection sync: epoch check -> StateMerge (same epoch) or
+  StateSnapshot (stale epoch), per sync-state.md. No version vectors,
+  no gap-fill protocol: mid-connection gaps are impossible (every op
+  also travels the reliable ordered control stream)
+- Offline buffering: ops queued in memory while disconnected (playback
+  positions coalesced to latest), replayed on reconnect
+- SQLite persistence integration (periodic flush ~30s + on shutdown,
+  not per-op)
 
 ### Testing
 - SimulatedTransport: N clients with packet loss -> verify convergence

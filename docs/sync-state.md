@@ -475,6 +475,22 @@ When a client reconnects (or detects missed operations):
 No version vectors or gap-fill protocol needed. The CvRDT merge handles
 any missed operations implicitly.
 
+### Divergence Alarm
+
+A safety net, not a correctness mechanism — property testing has caught
+two real CRDT divergence bugs, and if a third ever ships, it should be
+a logged, self-correcting event rather than a silent one:
+
+- Every 30s the server broadcasts `StateHash { epoch, hash }` on the
+  control stream: a SHA-256 over the postcard encoding of its resolved
+  view **excluding playback positions** (which churn every 100ms and
+  would never match).
+- The client compares against its own view hash on receipt. A single
+  mismatch is expected churn (ops in flight); **two consecutive
+  mismatches** trigger a loud log line and a `RequestMerge`, to which
+  the server replies with a normal `StateMerge`. Merge is idempotent,
+  so a false alarm costs one snapshot transfer.
+
 ---
 
 ## Compaction

@@ -173,6 +173,14 @@ enum ServerControl {
     StateOp { op: CrdtOp },
     /// Full CvRDT state for merge-based sync on reconnection
     StateMerge { epoch: u64, crdts: CrdtSnapshot },
+
+    // Divergence alarm (see sync-state.md, Divergence Alarm)
+    /// Server -> client, every 30s: hash of the server's resolved view
+    /// (excluding playback positions).
+    StateHash { epoch: u64, hash: [u8; 32] },
+    /// Client -> server: view hashes mismatched twice in a row; please
+    /// send a StateMerge.
+    RequestMerge,
 }
 
 enum Role { Interactive, Seeder }
