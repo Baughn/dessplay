@@ -269,11 +269,18 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
 
     // Graceful teardown: Goodbye to the server, flush state to SQLite.
     // Each actor drops its command receiver when it exits, so closed()
-    // is the completion signal.
+    // is the completion signal — bounded, because a wedged actor must
+    // never hold the process hostage.
     let _ = handle.network.send(NetworkCommand::Shutdown).await;
     let _ = handle.sync.send(SyncCommand::Shutdown).await;
-    handle.network.closed().await;
-    handle.sync.closed().await;
+    let done = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        handle.network.closed().await;
+        handle.sync.closed().await;
+    })
+    .await;
+    if done.is_err() {
+        tracing::error!("actors did not shut down within 5s; exiting anyway");
+    }
     Ok(())
 }
 
@@ -344,7 +351,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                     break;
                 }
                 Some(UserAction::Quit) | None => {
-                    drop(input_tx);
+                    let _ = input_tx.try_send(UiInput::Shutdown);
                     let _ = ui_thread.join();
                     return Ok(());
                 }
@@ -469,7 +476,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                 let Some(event) = event else { break };
                 match &event {
                     ClientEvent::Network(NetworkEvent::AuthFailed) => {
-                        drop(input_tx);
+                        let _ = input_tx.try_send(UiInput::Shutdown);
                         let _ = ui_thread.join();
                         return Err("the server rejected the password".into());
                     }
@@ -510,13 +517,21 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         }
     }
 
-    // Teardown: Goodbye, flush, release the terminal.
+    // Teardown: release the terminal immediately (the user asked to
+    // leave), then Goodbye + flush with a bounded wait — a wedged actor
+    // must never hold the process hostage.
+    let _ = input_tx.try_send(UiInput::Shutdown);
+    let _ = ui_thread.join();
     let _ = handle.network.send(NetworkCommand::Shutdown).await;
     let _ = handle.sync.send(SyncCommand::Shutdown).await;
-    handle.network.closed().await;
-    handle.sync.closed().await;
-    drop(input_tx);
-    let _ = ui_thread.join();
+    let done = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        handle.network.closed().await;
+        handle.sync.closed().await;
+    })
+    .await;
+    if done.is_err() {
+        tracing::error!("actors did not shut down within 5s; exiting anyway");
+    }
     Ok(())
 }
 

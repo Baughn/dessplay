@@ -68,21 +68,54 @@ enum Command {
     },
 }
 
+/// Where interactive-mode logs go (the TUI owns the screen).
+fn log_path() -> Option<std::path::PathBuf> {
+    let dir = dirs::data_dir()?.join("dessplay");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("dessplay.log"))
+}
+
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     load_dotenv();
     let cli = Cli::parse();
     let interactive = cli.command.is_none() && !cli.seeder && !cli.headless && !cli.dump;
-    // The TUI owns the screen: route logs away from stdout there.
+    // The TUI owns the screen: route logs to a file there. Without
+    // this, supervisory failures (a crashed thread, a wedged shutdown)
+    // are completely invisible.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let log = if interactive { log_path() } else { None };
     if interactive {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(std::io::sink)
-            .init();
+        match log.as_ref().and_then(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        }) {
+            Some(file) => tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false)
+                .init(),
+            None => tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::io::sink)
+                .init(),
+        }
+        tracing::info!("dessplay {} starting", env!("CARGO_PKG_VERSION"));
     } else {
         tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+    // Panics land in the log before the default hook prints them (the
+    // terminal adapter's own hook restores the screen first).
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            tracing::error!("panic: {info}");
+            default_hook(info);
+        }));
     }
 
     let args = HeadlessArgs {
@@ -112,6 +145,9 @@ fn main() -> color_eyre::Result<()> {
     };
     if let Err(message) = result {
         eprintln!("error: {message}");
+        if let Some(path) = log {
+            eprintln!("(log: {})", path.display());
+        }
         std::process::exit(1);
     }
     Ok(())

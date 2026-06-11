@@ -17,6 +17,11 @@ pub enum UiInput {
     Snapshot(Box<UiSnapshot>),
     /// A terminal input event.
     Event(Event<NoUserEvent>),
+    /// Restore the terminal and exit the UI thread. The explicit
+    /// message exists because channel-closure can't signal it: the
+    /// input thread holds a sender clone forever (it's blocked in
+    /// `crossterm::event::read`), so the channel never closes.
+    Shutdown,
 }
 
 /// Run the UI on the current (dedicated) thread until the input
@@ -50,6 +55,7 @@ pub fn run_ui_thread(
     let _ = adapter.raw_mut().draw(|frame| ui.draw(frame));
     while let Ok(input) = inputs.recv() {
         match input {
+            UiInput::Shutdown => break,
             UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
             UiInput::Event(event) => {
                 for action in ui.handle(event) {

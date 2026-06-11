@@ -128,7 +128,25 @@ pub async fn run<C: Connector>(
     events: mpsc::Sender<NetworkEvent>,
 ) {
     loop {
-        match connector.connect().await {
+        // A connection attempt to an unreachable host can take the full
+        // handshake timeout (30s of QUIC retries) — Shutdown must
+        // interrupt it, or quitting hangs on this actor. Other commands
+        // arriving mid-attempt are discarded, like sends during the
+        // reconnect backoff (the upward merge heals the gap).
+        let attempt = tokio::select! {
+            attempt = connector.connect() => attempt,
+            _ = async {
+                loop {
+                    match commands.recv().await {
+                        Some(NetworkCommand::Shutdown) | None => return,
+                        Some(discarded) => {
+                            tracing::debug!("discarding while connecting: {discarded:?}");
+                        }
+                    }
+                }
+            } => return,
+        };
+        match attempt {
             Ok(conn) => match run_connection(&conn, &config, &mut commands, &events).await {
                 ConnectionEnd::Shutdown => {
                     conn.close("shutting down").await;
@@ -346,5 +364,88 @@ async fn run_connection<T: Transport>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+
+    use dessplay_core::net::Listener;
+    use dessplay_core::net::sim::{EndpointId, SimNetwork, SimTransport};
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    /// A connector whose connect() never resolves — a server that
+    /// blackholes the handshake.
+    struct NeverConnector;
+
+    impl Connector for NeverConnector {
+        type Conn = SimTransport;
+
+        async fn connect(&self) -> Result<Self::Conn, TransportError> {
+            std::future::pending().await
+        }
+    }
+
+    fn config() -> NetworkConfig {
+        NetworkConfig::new(
+            UserId::new("kim"),
+            "pw".into(),
+            Role::Interactive,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(|| 0),
+        )
+    }
+
+    /// Shutdown must interrupt a connection attempt — found by manual
+    /// testing: Ctrl-C during startup left the process hanging on the
+    /// network actor, which only read commands *between* attempts.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_interrupts_a_hung_connect() {
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let actor = tokio::spawn(run(
+            Arc::new(NeverConnector),
+            config(),
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx.send(NetworkCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), actor)
+            .await
+            .expect("network actor hung in connect() across a Shutdown")
+            .unwrap();
+    }
+
+    /// Sanity for the interrupt-capable connect path: a normal connect
+    /// still works and still shuts down cleanly.
+    #[tokio::test(start_paused = true)]
+    async fn connect_still_succeeds_normally() {
+        let net = SimNetwork::new(1);
+        let server = EndpointId::new("server");
+        let listener = net.listener(&server);
+        tokio::spawn(async move {
+            let accepted = listener.accept().await;
+            // Hold the connection open until the test ends.
+            if accepted.is_ok() {
+                std::future::pending::<()>().await;
+            }
+        });
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let connector = Arc::new(net.connector(&EndpointId::new("kim"), &server));
+        let actor = tokio::spawn(run(connector, config(), command_rx, event_tx));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        command_tx.send(NetworkCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), actor)
+            .await
+            .expect("clean shutdown")
+            .unwrap();
     }
 }
