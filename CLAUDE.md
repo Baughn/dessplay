@@ -37,6 +37,13 @@ This is important:
 
 You should ALWAYS strive to leave the code *better* off after bug-fixing.
 
+# Logging
+
+Internal (cross-actor) events should be logged at trace priority. User input should
+be logged at debug priority, though user-visible state changes should be info level.
+
+Other events and logging can be added as you see fit; these rules are flexible.
+
 # Testing
 
 Full details in docs/testing-strategy.md. This section covers the practical essentials.
