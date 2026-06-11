@@ -57,7 +57,13 @@ pub fn run_ui_thread(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "terminal setup complete"
     );
-    let _ = adapter.raw_mut().clear();
+    // Deliberately NO Terminal::clear() here (or anywhere while the
+    // input thread lives): ratatui's clear() queries the cursor
+    // position, and crossterm answers that by reading the terminal's
+    // reply from stdin — which our input thread's event::read() starves,
+    // so the query burns its full 2-second timeout. The alternate
+    // screen is already blank and the first fullscreen draw paints
+    // every cell.
     let _ = adapter.raw_mut().draw(|frame| ui.draw(frame));
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis() as u64,
