@@ -117,6 +117,42 @@ fn first_run_opens_settings_modal() {
 }
 
 #[test]
+fn prefilled_first_run_still_confirms_and_adopts_username() {
+    // Stored settings were empty, but $USER and the .env password are
+    // prefilled: the modal must still open (with the prefills as
+    // defaults), and a username edited there becomes our identity.
+    let prefilled = Settings {
+        username: Some("svein".into()),
+        password: Some("hunter2".into()),
+        ..Settings::default()
+    };
+    let mut ui = Ui::with_setup(UserId::new("svein"), prefilled, vec!["/media".into()], true);
+    assert!(ui.modal_open(), "prefills must not skip first-run setup");
+
+    ui.handle(key(Key::Enter)); // edit Username (prefilled "svein")
+    type_str(&mut ui, "-laptop");
+    ui.handle(key(Key::Enter)); // commit the field
+    let actions = ui.handle(ctrl('s'));
+    let [UserAction::SaveSettings(saved, _)] = actions.as_slice() else {
+        panic!("expected SaveSettings, got {actions:?}");
+    };
+    assert_eq!(saved.username.as_deref(), Some("svein-laptop"));
+    assert!(!ui.modal_open());
+
+    // The Ui adopted the new identity: /afk attributes to it.
+    type_str(&mut ui, "/afk baughn");
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::Mutate(Mutation::SetManualOverride {
+            user: UserId::new("baughn"),
+            state: Some(ManualState::Away {
+                set_by: UserId::new("svein-laptop")
+            }),
+        })]
+    );
+}
+
+#[test]
 fn chat_enter_sends_message() {
     let mut ui = ui();
     assert!(type_str(&mut ui, "hello world").is_empty());

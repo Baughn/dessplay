@@ -105,9 +105,23 @@ pub struct Ui {
 }
 
 impl Ui {
-    /// Build the UI. Opens the settings modal when first-run setup is
-    /// needed.
+    /// Build the UI. Opens the settings modal when the *given* settings
+    /// need setup. Callers that prefill values (the `$USER` username,
+    /// the `.env` password) but still want first-run confirmation use
+    /// [`Ui::with_setup`].
     pub fn new(me: UserId, settings: Settings, media_roots: Vec<PathBuf>) -> Self {
+        let open_settings = settings.needs_setup() || media_roots.is_empty();
+        Self::with_setup(me, settings, media_roots, open_settings)
+    }
+
+    /// Build the UI, opening the settings modal iff `open_settings`
+    /// (prefilled values appear as editable defaults).
+    pub fn with_setup(
+        me: UserId,
+        settings: Settings,
+        media_roots: Vec<PathBuf>,
+        open_settings: bool,
+    ) -> Self {
         let mut ui = Self {
             me,
             chat: ChatPane::default(),
@@ -123,7 +137,7 @@ impl Ui {
             settings: settings.clone(),
             media_roots: media_roots.clone(),
         };
-        if settings.needs_setup() || media_roots.is_empty() {
+        if open_settings {
             ui.modals
                 .push(Modal::Settings(SettingsModal::new(settings, media_roots)));
         }
@@ -349,6 +363,10 @@ impl Ui {
                 self.settings = (*settings).clone();
                 self.subtitle_pane = settings.subtitle_pane;
                 self.media_roots = roots.clone();
+                // First-run setup may have changed who we are.
+                if let Some(name) = &settings.username {
+                    self.me = UserId::new(name.clone());
+                }
                 Some(UserAction::SaveSettings(settings, roots))
             }
             Msg::ListEntrySaved(id, entry) => {

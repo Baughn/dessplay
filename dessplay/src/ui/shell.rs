@@ -34,6 +34,19 @@ pub fn run_ui_thread(
             return;
         }
     };
+    // The adapter enables nothing by itself: raw mode so keys arrive as
+    // events (arrows are escape sequences — line buffering eats them),
+    // the alternate screen so we don't paint over scrollback. restore()
+    // undoes exactly what was enabled.
+    if let Err(e) = adapter
+        .enable_raw_mode()
+        .and_then(|()| adapter.enter_alternate_screen())
+    {
+        tracing::error!("cannot set up the terminal: {e}");
+        let _ = adapter.restore();
+        return;
+    }
+    let _ = adapter.raw_mut().clear();
     let _ = adapter.raw_mut().draw(|frame| ui.draw(frame));
     while let Ok(input) = inputs.recv() {
         match input {

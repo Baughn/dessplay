@@ -289,14 +289,19 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         Some(path) => path.clone(),
         None => Storage::default_path().ok_or("cannot determine the data directory")?,
     };
-    // Interactive mode owns first-run setup, so the username/password
-    // requirement is deferred to the settings screen: pre-fill what we
-    // have and let prepare() run once setup completes.
-    let setup_storage =
+    // Interactive mode owns first-run setup: whether the settings
+    // screen opens is decided by the *stored* settings, before any
+    // prefills. Prefills ($USER, the .env password, flags) only become
+    // the modal's editable defaults.
+    let mut setup_storage =
         Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
     let mut settings: crate::config::Settings = setup_storage
         .load_settings()
         .map_err(|e| format!("loading settings: {e}"))?;
+    let media_roots = setup_storage
+        .media_roots()
+        .map_err(|e| format!("loading media roots: {e}"))?;
+    let needs_setup = settings.needs_setup() || media_roots.is_empty();
     if settings.username.is_none() {
         settings.username = args.username.clone().or_else(|| std::env::var("USER").ok());
     }
@@ -306,14 +311,15 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             .clone()
             .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok());
     }
-    let media_roots = setup_storage
-        .media_roots()
-        .map_err(|e| format!("loading media roots: {e}"))?;
-    let me = UserId::new(settings.username.clone().unwrap_or_default());
 
     // The UI runs on its own threads; this task bridges it to the
     // actors.
-    let ui = Ui::new(me.clone(), settings.clone(), media_roots);
+    let ui = Ui::with_setup(
+        UserId::new(settings.username.clone().unwrap_or_default()),
+        settings.clone(),
+        media_roots,
+        needs_setup,
+    );
     let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
     let (action_tx, mut action_rx) = mpsc::channel::<UserAction>(64);
     let ui_thread = std::thread::spawn(move || run_ui_thread(ui, input_rx, action_tx));
@@ -322,24 +328,36 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         std::thread::spawn(move || run_input_thread(input_tx));
     }
 
-    // If setup is incomplete, the settings modal is up; wait for the
-    // save before connecting (the first SaveSettings action).
-    while settings.needs_setup() {
-        match action_rx.recv().await {
-            Some(UserAction::SaveSettings(saved, roots)) => {
-                setup_storage
-                    .save_settings(&saved)
-                    .map_err(|e| format!("saving settings: {e}"))?;
-                let mut storage = setup_storage;
-                storage
-                    .set_media_roots(&roots)
-                    .map_err(|e| format!("saving media roots: {e}"))?;
-                return Box::pin(run_interactive(args)).await; // restart with full config
+    // First run: wait for the settings save before connecting (the Ui
+    // updates its own identity from the saved username).
+    if needs_setup {
+        loop {
+            match action_rx.recv().await {
+                Some(UserAction::SaveSettings(saved, roots)) => {
+                    setup_storage
+                        .save_settings(&saved)
+                        .map_err(|e| format!("saving settings: {e}"))?;
+                    setup_storage
+                        .set_media_roots(&roots)
+                        .map_err(|e| format!("saving media roots: {e}"))?;
+                    settings = *saved;
+                    break;
+                }
+                Some(UserAction::Quit) | None => {
+                    drop(input_tx);
+                    let _ = ui_thread.join();
+                    return Ok(());
+                }
+                Some(_) => continue,
             }
-            Some(UserAction::Quit) | None => return Ok(()),
-            Some(_) => continue,
         }
     }
+    let me = UserId::new(
+        settings
+            .username
+            .clone()
+            .ok_or("settings saved without a username")?,
+    );
 
     let setup = prepare(&args).await?;
     let sync_storage =
