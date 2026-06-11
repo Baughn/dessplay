@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -202,32 +202,62 @@ tui-realm's focus and routing system, producing `Msg` values that become
 
 ### PlayerActor
 
-**Owns:** mpv process handle, IPC connection, echo suppression filter,
-position broadcast timer.
+**Owns:** the running player (behind the `Player` trait: mpv over JSON
+IPC in production, `MockPlayer` in tests), echo suppression state, the
+drift corrector, the seek debouncer, the position broadcast timer, and
+crash supervision (relaunch via a `PlayerFactory`).
 
-**Receives:**
-- `LoadFile(path)` -- load a video file
-- `Pause` / `Unpause` -- control playback
-- `Seek(position)` -- seek to position
-- `SyncTo(position)` -- authority position; the actor picks the drift band
-  (ignore / slew via mpv `speed` / hard seek) per design.md Playback Rules
+**Receives** (`PlayerCommand`):
+- `Load { file, path }` -- load a video file (opens paused)
+- `SetPlaying(bool)` -- the *derived* group playback state, re-asserted
+  on every state change; the actor dedups against what the player is
+  already doing
+- `SyncTo { position, timestamp, playing }` -- the seek authority's
+  latest sample; the actor extrapolates it via the shared clock and
+  picks the drift band (ignore / slew via mpv `speed` / hard seek) per
+  design.md Playback Rules. Suspended while the local user is scrubbing.
+- `ClockOffset(i64)` -- shared-clock offset updates (for extrapolation)
 - `ShowOsd(text)` -- display message on video
-- `SetSeekAuthority(ActorId)` -- who to sync position to
+- `Shutdown`
 
-**Produces:**
-- `UserPaused` -- user paused in player (not an echo of our command)
-- `UserUnpaused` -- user unpaused in player
-- `UserSeeked(position)` -- user seeked in player (not an echo)
-- `PositionTick(f64)` -- current position (100ms interval)
+**Produces** (`PlayerOutput`):
+- `UserPaused` / `UserUnpaused` -- a pause flip that was *not* an echo
+  of our command
+- `UserSeeked { position }` -- user seek, debounced 1500ms (scrubbing
+  coalesces)
+- `PositionTick { position }` -- current position (100ms playing, 1s
+  paused; extrapolated between player reports)
+- `DurationKnown { file, duration }` -- probed duration (backfills the
+  playlist entry when the adder didn't supply one)
 - `SubtitleLine(String)` -- observed `sub-text` change (feeds subtitle pane)
-- `Eof` -- file ended (main loop forwards as `ReportEof` to NetworkActor;
-  the server owns the transition)
-- `Crashed` -- player process died
+- `Eof { file }` -- file ended, reported once per file (the session
+  layer forwards `EofReached` to the server, which owns the transition)
+- `FatalCrash` -- the player died twice within 30s (the session layer
+  pauses globally and notifies chat)
 
-**Echo suppression:** The PlayerActor tags commands it sends to mpv. When
-mpv reports events, the actor checks whether they're echoes of its own
-commands. Only user-initiated events are forwarded as outputs. mpv
-distinguishes user-initiated seeks from programmatic ones, which helps.
+**Echo suppression:** expected-state tracking, entirely on our side —
+mpv does *not* flag events as user-vs-programmatic. The actor remembers
+what it commanded (a queue of expected pause flips, a counter of
+expected seeks); an observation matching the queue head is an echo and
+is swallowed, anything else is the user. Misattribution self-heals:
+the actor never enforces locally (observe-and-correct), so the next
+`SetPlaying` round trip re-converges the player. The mpv layer
+additionally hides two pieces of pure mechanics: the forced pause
+around `loadfile`, and the pause mpv performs itself when `keep-open`
+hits end of file (which arrives *before* `eof-reached` and is held
+briefly for attribution).
+
+### Session policy (`session.rs`)
+
+Not an actor: the synchronous decision core between synced state and
+the PlayerActor, mirroring how `ui::app::Ui` is synchronous behind the
+UI threads. `PlayerWiring` maps (state view, peer list, player outputs,
+matcher results) to directives — player commands, mutations, EOF
+reports, matcher runs; `SessionShell` executes those directives against
+the real channels and lazily spawns the player actor on the first load.
+`run_interactive` and the multi-client harness drive the same shell, so
+the full pipeline (player → wiring → sync → server → peers → their
+players) is covered in tests without a terminal or a real mpv.
 
 ### FileActor
 
@@ -373,11 +403,16 @@ dessplay/                     (client: lib + thin binary)
     actors/
       network.rs              (NetworkActor)
       sync.rs                 (SyncActor)
-      ui.rs                   (UiActor; Phase 6)
-      player.rs               (PlayerActor; Phase 7)
+      player.rs               (PlayerActor: echo suppression, drift,
+                               debounce, crash supervision)
       file.rs                 (FileActor; Phase 9)
-    ui/                       (tui-realm components; Phase 6)
-    player/                   (mpv, echo filter, mock; Phase 7)
+    ui/                       (components, dispatcher, threads shell)
+    player/                   (Player trait; mpv JSON IPC; MockPlayer)
+    session.rs                (PlayerWiring policy + SessionShell glue)
+    matcher.rs                (minimal filename matcher; absorbed into
+                               the FileActor in Phase 9)
+    run.rs                    (mode entrypoints: interactive, headless,
+                               import, dump)
     import.rs                 (CSV importer; Phase 6)
     storage.rs                (SQLite persistence)
     config.rs                 (typed settings)

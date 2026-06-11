@@ -151,6 +151,14 @@ pub enum Mutation {
         /// Position within the file, milliseconds.
         position_millis: u64,
     },
+    /// Backfill a playlist entry's duration (probed by the player when
+    /// the adder didn't provide one).
+    SetPlaylistDuration {
+        /// The entry.
+        hash: Ed2kHash,
+        /// Probed duration, milliseconds.
+        duration_millis: u64,
+    },
 }
 
 impl Mutation {
@@ -175,6 +183,7 @@ impl Mutation {
             Mutation::RequestLookup { .. } => "RequestLookup",
             Mutation::Chat { .. } => "Chat",
             Mutation::SetPlaybackPosition { .. } => "SetPlaybackPosition",
+            Mutation::SetPlaylistDuration { .. } => "SetPlaylistDuration",
         }
     }
 }
@@ -525,6 +534,27 @@ impl SyncActor {
                     timestamp: ts,
                 },
             ),
+            Mutation::SetPlaylistDuration {
+                hash,
+                duration_millis,
+            } => {
+                // Whole-entry LWW rewrite: read the winning state, fill
+                // in the duration. (A concurrent move loses its position
+                // to this write — rare and self-healing, the next move
+                // rewrites again.)
+                let Some(entry) = self
+                    .state
+                    .view()
+                    .playlist
+                    .into_iter()
+                    .find(|entry| entry.hash == hash)
+                else {
+                    return; // entry vanished; nothing to backfill
+                };
+                let mut updated = entry.state;
+                updated.duration_millis = Some(duration_millis);
+                self.state.set_playlist_entry(actor, ts, hash, updated)
+            }
         };
 
         if self.link == Link::Synced {

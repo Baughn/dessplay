@@ -1,0 +1,109 @@
+//! The player seam: one running media player owned by the
+//! [`crate::actors::player`] actor.
+//!
+//! Implementations: mpv over JSON IPC ([`mpv`]) in production, the
+//! in-process [`mock`] everywhere else. The trait reports **raw**
+//! observations — a `PauseChanged` fires whether the user hit space or
+//! we sent the command. Echo suppression (deciding which observations
+//! are the user's) is the actor's job, above this seam.
+//!
+//! All methods take `&self`: implementations use interior mutability so
+//! the actor can hold a `recv()` future in one `select!` arm while
+//! commanding from another. Exactly one task should call `recv()`.
+
+pub mod mock;
+pub mod mpv;
+
+use std::future::Future;
+use std::path::Path;
+
+/// Player-layer errors.
+#[derive(Debug)]
+pub enum PlayerError {
+    /// The player process is gone (crashed, quit, IPC broken).
+    Gone(String),
+    /// Spawning or connecting to the player failed.
+    Setup(String),
+}
+
+impl std::fmt::Display for PlayerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayerError::Gone(reason) => write!(f, "player gone: {reason}"),
+            PlayerError::Setup(reason) => write!(f, "player setup failed: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for PlayerError {}
+
+/// Something the player observed. Raw and unfiltered: echoes of our own
+/// commands are included, and the actor sorts them out.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerEvent {
+    /// The pause state changed (user keypress *or* our command).
+    PauseChanged(bool),
+    /// A seek completed; the position landed on.
+    Seeked {
+        /// Position after the seek, milliseconds.
+        position_millis: u64,
+    },
+    /// Periodic position report while a file is loaded.
+    Position {
+        /// Current position, milliseconds.
+        position_millis: u64,
+    },
+    /// The file's duration became known after a load.
+    DurationKnown {
+        /// Total duration, milliseconds.
+        duration_millis: u64,
+    },
+    /// A loaded file finished opening and can be controlled.
+    Loaded,
+    /// The displayed subtitle line changed (empty string = cleared).
+    SubtitleLine(String),
+    /// Playback reached end of file. The file stays loaded (mpv runs
+    /// with `keep-open`); the server owns what happens next.
+    Eof,
+    /// The player process exited. Terminal: `recv` returns only errors
+    /// after this.
+    Exited {
+        /// True for a deliberate quit, false for a crash.
+        clean: bool,
+    },
+}
+
+/// One running player instance.
+pub trait Player: Send + Sync + 'static {
+    /// Load a file, replacing whatever is playing. The player starts
+    /// paused; a [`PlayerEvent::Loaded`] follows when it's ready.
+    fn load(&self, path: &Path) -> impl Future<Output = Result<(), PlayerError>> + Send;
+
+    /// Set the pause state.
+    fn set_pause(&self, paused: bool) -> impl Future<Output = Result<(), PlayerError>> + Send;
+
+    /// Seek to an absolute position.
+    fn seek(&self, position_millis: u64) -> impl Future<Output = Result<(), PlayerError>> + Send;
+
+    /// Set the playback speed (drift slew; 1.0 = normal).
+    fn set_speed(&self, speed: f64) -> impl Future<Output = Result<(), PlayerError>> + Send;
+
+    /// Display a message on the video (OSD).
+    fn show_osd(&self, text: &str) -> impl Future<Output = Result<(), PlayerError>> + Send;
+
+    /// Receive the next observation. Cancel-safe; one reader task.
+    fn recv(&self) -> impl Future<Output = Result<PlayerEvent, PlayerError>> + Send;
+
+    /// Quit the player deliberately.
+    fn shutdown(&self) -> impl Future<Output = ()> + Send;
+}
+
+/// Spawns player instances — the actor calls it once at startup and
+/// again on crash relaunch.
+pub trait PlayerFactory: Send + 'static {
+    /// The player type produced.
+    type Player: Player;
+
+    /// Spawn a fresh player instance.
+    fn spawn(&mut self) -> impl Future<Output = Result<Self::Player, PlayerError>> + Send;
+}

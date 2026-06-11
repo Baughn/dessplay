@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -801,13 +801,19 @@ Player choice is per-user configuration.
 
 ### Player Lifecycle
 
-1. **Launch**: When file is selected, spawn player process with file path
+1. **Launch**: One persistent mpv instance per session (`--idle
+   --keep-open`), spawned when the first file loads; later files are
+   swapped in with `loadfile`. Files always open paused; the derived
+   playback state then decides.
 2. **Control**: Send play/pause/seek commands via IPC
 3. **Monitor**: Read current position, playback state
 4. **OSD**: Display chat messages in video window
-5. **Crash handling**:
-   - First crash: Auto-relaunch, seek to last position
-   - Second crash within 30s: Pause globally, notify in chat
+5. **Crash handling** (also covers the user closing mpv by hand):
+   - Always relaunch: reload the file, seek to the last position,
+     restore the desired pause state
+   - Second death within 30s: *additionally* pause globally and notify
+     in chat — the relaunch then comes up paused, the safe state if
+     the file itself is crashing the player
 
 ### Commands Sent to Player
 
@@ -827,6 +833,12 @@ Player choice is per-user configuration.
 - Subtitle text changes (observed `sub-text` property; feeds the subtitle pane)
 - EOF (file ended; reported to the server, which owns the transition)
 - Exit (clean or crash)
+
+The user/programmatic distinction is made on **our** side — mpv does not
+flag event origins. The player actor tracks what it commanded and
+swallows matching observations as echoes (architecture.md, PlayerActor);
+because correction is observe-and-correct rather than locally enforced,
+a misattributed echo self-heals on the next derived-state round trip.
 
 ### Subtitle Pane Feed
 

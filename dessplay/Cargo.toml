@@ -3,6 +3,11 @@ name = "dessplay"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Real-mpv integration tests (require an `mpv` binary; they use lavfi
+# synthetic sources, so no media files are needed).
+mpv-tests = []
+
 [dependencies]
 dessplay-core = { path = "../dessplay-core" }
 color-eyre = { workspace = true }
@@ -14,6 +19,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 csv = { workspace = true }
+serde_json = { workspace = true }
 tuirealm = { workspace = true }
 crossterm = { workspace = true }
 tui-realm-stdlib = { workspace = true }

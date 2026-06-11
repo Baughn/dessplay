@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11
 
 ## Table of Contents
 
@@ -279,33 +279,37 @@ tmux smoke layer.
 
 ## Player Integration Tests
 
-### Setup
+### Layering (as built in Phase 7)
 
-Integration tests that use mpv require the `mpv` binary in `$PATH`. Tests
-are gated behind `#[cfg(feature = "mpv-tests")]`.
+Echo suppression, drift bands, debouncing, position cadence, and crash
+supervision are all **PlayerActor logic**, tested deterministically with
+`MockPlayer` and paused tokio time (`dessplay/src/actors/player.rs`
+tests) — mpv does *not* distinguish user from programmatic events, so
+the distinction is our expected-state tracking and is testable without
+a player process. Cross-client behavior (pause on A pauses B's player,
+seek authority, EOF advance, missing-file gating) lives in the
+multi-client harness's player clients (`dessplay-rendezvous/tests/
+player.rs`), which run the real session shell around mocks. Those
+scenarios touch the real filesystem (tempdir media roots, blocking-pool
+matcher), so they are eventually-style rather than perfectly
+deterministic.
 
-mpv is launched with `-vo null -ao null` to suppress video/audio output.
+### Real-mpv smoke test
 
-### Cleanup
+One end-to-end journey (`dessplay/tests/mpv_real.rs`) proves the JSON
+IPC layer speaks actual mpv: load → duration → unpause echo → position
+flow → speed slew → exact seek → EOF (asserting keep-open's mechanical
+pause does **not** leak as a user pause) → clean shutdown.
 
-A `Drop` handler on the test fixture ensures all spawned mpv processes are
-killed, even on test failure.
+- Requires the `mpv` binary; gated behind `--features mpv-tests`.
+- The test video is encoded on the fly *by mpv itself* from a lavfi
+  source — no committed media, no ffmpeg dependency.
+- mpv runs with `--vo=null --ao=null --force-window=no`.
+- Processes are spawned with tokio's `kill_on_drop`, so failures don't
+  leak mpv instances.
 
-### Echo Suppression Tests
-
-Critical integration tests. The pattern:
-
-1. Connect to mpv via IPC
-2. Send a seek command
-3. Receive the resulting position-change event from mpv
-4. Verify the event is tagged as "echo" and not forwarded
-
-Test cases:
-- Seek echo (send seek, receive position update)
-- Pause echo (send pause, receive pause event)
-- Rapid seeks (debouncing interacts with echo detection)
-- External pause (user pauses in mpv -- this is *not* an echo)
-- User-initiated seek vs programmatic seek (mpv distinguishes these)
+This test earns its keep: it caught mpv emitting the keep-open pause
+*before* `eof-reached`, which no mock would have predicted.
 
 ---
 

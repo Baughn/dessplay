@@ -1,22 +1,33 @@
 //! The headless multi-client harness (testing-strategy.md): N real
 //! clients (network + sync actors) against the real server over the
-//! simulated transport, in one paused-time runtime. Phase 6 adds UI
-//! handles, Phase 7 player handles.
+//! simulated transport, in one paused-time runtime. Phase 6 added UI
+//! handles; Phase 7 adds player clients — a full session shell around a
+//! MockPlayer, so scenarios can press space "in mpv" on one client and
+//! watch everyone's player obey.
+//!
+//! Player clients touch the real filesystem (tempdir media roots, the
+//! blocking-pool matcher), so their timing is not *perfectly*
+//! deterministic the way pure sim tests are; the `eventually` budgets
+//! absorb that.
 
 #![allow(dead_code)] // each test binary uses a subset
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use dessplay::actors::network::{NetworkCommand, NetworkEvent};
 use dessplay::actors::sync::{Mutation, SyncCommand};
-use dessplay::client::{ClientConfig, ClientHandle, SyncConfigExtras, spawn_client};
+use dessplay::client::{ClientConfig, ClientEvent, ClientHandle, SyncConfigExtras, spawn_client};
+use dessplay::player::PlayerEvent;
+use dessplay::player::mock::{MockCommand, MockControl, MockFactory, MockPlayer};
+use dessplay::session::SessionShell;
 use dessplay_core::net::sim::{EndpointId, SimNetwork};
 use dessplay_core::net::{PeerInfo, Role, ServerControl};
 use dessplay_core::playlist::NewPlaylistEntry;
 use dessplay_core::types::{Ed2kHash, Epoch, UserId};
 use dessplay_core::{StateView, derive};
 use dessplay_rendezvous::server::{self, ServerConfig};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot, watch};
 
 pub const PASSWORD: &str = "hunter2";
 
@@ -75,6 +86,73 @@ impl Harness {
         )
     }
 
+    /// Spawn a player client: a full client plus the session shell and
+    /// a MockPlayer, pumped exactly the way `run_interactive` pumps
+    /// them (minus the terminal). The returned control is the "user in
+    /// mpv": inject [`PlayerEvent`]s, observe [`MockCommand`]s.
+    pub fn player_client(&self, name: &str, nonce: u128) -> PlayerClient {
+        let mut handle = self.client(name, nonce);
+        let root = tempfile::tempdir().expect("tempdir");
+        let (player, control) = MockPlayer::auto_pair();
+        let mut shell = SessionShell::new(
+            UserId::new(name),
+            MockFactory::new([player]),
+            sim_clock(0),
+            vec![root.path().to_path_buf()],
+            std::collections::HashMap::new(),
+            handle.sync.clone(),
+            handle.network.clone(),
+        );
+        let sync = handle.sync.clone();
+        let network = handle.network.clone();
+        let peers = handle.peers.clone();
+        let pump_sync = sync.clone();
+        let pump_peers = peers.clone();
+        tokio::spawn(async move {
+            // The run_interactive loop, terminal-free: every client
+            // event refreshes the view and re-derives; player outputs
+            // and resolutions feed back through the shell.
+            let mut last_view = StateView::default();
+            loop {
+                tokio::select! {
+                    event = handle.events.recv() => {
+                        let Some(event) = event else { break };
+                        if let ClientEvent::Network(NetworkEvent::ClockSync { offset_millis }) =
+                            &event
+                        {
+                            shell.set_clock_offset(*offset_millis).await;
+                        }
+                        let (tx, rx) = oneshot::channel();
+                        if pump_sync.send(SyncCommand::GetView(tx)).await.is_err() {
+                            break;
+                        }
+                        let Ok(view) = rx.await else { break };
+                        let peer_list = pump_peers.borrow().clone();
+                        shell.on_state(&view, &peer_list).await;
+                        last_view = view;
+                    }
+                    output = shell.player_outputs.recv() => {
+                        let Some(output) = output else { break };
+                        shell.on_player_output(output, &last_view).await;
+                    }
+                    resolution = shell.resolutions.recv() => {
+                        let Some((file, resolution)) = resolution else { break };
+                        let peer_list = pump_peers.borrow().clone();
+                        shell.on_resolution(file, resolution, &last_view, &peer_list).await;
+                    }
+                }
+            }
+        });
+        PlayerClient {
+            name: name.to_string(),
+            sync,
+            network,
+            peers,
+            control,
+            root,
+        }
+    }
+
     /// Cut a client's connection *and* block reconnection attempts, so
     /// the user actually stays Lost (the network actor retries every
     /// 2s; without the partition it would be back within seconds).
@@ -88,6 +166,131 @@ impl Harness {
     pub fn heal(&self, name: &str) {
         self.net
             .set_partitioned(&EndpointId::new(name), &self.server_id, false);
+    }
+}
+
+/// A player-enabled client: the session shell pumps in the background;
+/// this is what the test holds.
+pub struct PlayerClient {
+    pub name: String,
+    pub sync: mpsc::Sender<SyncCommand>,
+    pub network: mpsc::Sender<NetworkCommand>,
+    pub peers: watch::Receiver<Vec<PeerInfo>>,
+    /// The "user in mpv": inject events, observe commands.
+    pub control: MockControl,
+    /// This client's media root.
+    pub root: tempfile::TempDir,
+}
+
+impl PlayerClient {
+    /// Put a media file into this client's root.
+    pub fn install(&self, file: &MediaFile) {
+        std::fs::write(self.root.path().join(&file.filename), &file.contents)
+            .expect("writing media file");
+    }
+
+    /// The user does something in their player.
+    pub fn user(&self, event: PlayerEvent) {
+        self.control.events.send(event).expect("player pump gone");
+    }
+
+    /// Wait (sim time) for a player command matching `pred`; commands
+    /// before it are discarded.
+    pub async fn expect_player_command<F: FnMut(&MockCommand) -> bool>(
+        &mut self,
+        budget: Duration,
+        mut pred: F,
+    ) -> MockCommand {
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut seen = Vec::new();
+        loop {
+            while let Some(cmd) = self.control.try_command() {
+                if pred(&cmd) {
+                    return cmd;
+                }
+                seen.push(cmd);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "{}: expected player command never arrived; saw {seen:#?}",
+                    self.name
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// A real (tiny) media file: contents on disk, true ed2k hash as the
+/// playlist key — so the matcher and hash verification run for real.
+pub struct MediaFile {
+    pub hash: Ed2kHash,
+    pub filename: String,
+    pub contents: Vec<u8>,
+}
+
+/// A deterministic media file (distinct contents per index).
+pub fn media_file(i: u8) -> MediaFile {
+    let contents = format!("episode {i} contents").into_bytes();
+    MediaFile {
+        hash: dessplay_core::hash::ed2k_hash_bytes(&contents).root,
+        filename: format!("ep{i}.mkv"),
+        contents,
+    }
+}
+
+/// A playlist entry for a [`MediaFile`].
+pub fn file_entry(file: &MediaFile, added_by: &str) -> NewPlaylistEntry {
+    NewPlaylistEntry {
+        hash: file.hash,
+        added_by: UserId::new(added_by),
+        filename: file.filename.clone(),
+        size_bytes: file.contents.len() as u64,
+        duration_millis: Some(1_440_000),
+    }
+}
+
+/// Anything snapshots can be read from ([`ClientHandle`] or
+/// [`PlayerClient`]).
+pub trait SnapshotSource {
+    fn sync_tx(&self) -> &mpsc::Sender<SyncCommand>;
+    fn network_tx(&self) -> &mpsc::Sender<NetworkCommand>;
+    fn peers_rx(&self) -> &watch::Receiver<Vec<PeerInfo>>;
+}
+
+impl<S: SnapshotSource> SnapshotSource for &S {
+    fn sync_tx(&self) -> &mpsc::Sender<SyncCommand> {
+        (*self).sync_tx()
+    }
+    fn network_tx(&self) -> &mpsc::Sender<NetworkCommand> {
+        (*self).network_tx()
+    }
+    fn peers_rx(&self) -> &watch::Receiver<Vec<PeerInfo>> {
+        (*self).peers_rx()
+    }
+}
+
+impl SnapshotSource for ClientHandle {
+    fn sync_tx(&self) -> &mpsc::Sender<SyncCommand> {
+        &self.sync
+    }
+    fn network_tx(&self) -> &mpsc::Sender<NetworkCommand> {
+        &self.network
+    }
+    fn peers_rx(&self) -> &watch::Receiver<Vec<PeerInfo>> {
+        &self.peers
+    }
+}
+
+impl SnapshotSource for PlayerClient {
+    fn sync_tx(&self) -> &mpsc::Sender<SyncCommand> {
+        &self.sync
+    }
+    fn network_tx(&self) -> &mpsc::Sender<NetworkCommand> {
+        &self.network
+    }
+    fn peers_rx(&self) -> &watch::Receiver<Vec<PeerInfo>> {
+        &self.peers
     }
 }
 
@@ -112,58 +315,66 @@ impl ClientSnapshot {
     }
 }
 
-pub async fn view_of(handle: &ClientHandle) -> StateView {
+pub async fn view_of<S: SnapshotSource>(handle: &S) -> StateView {
     let (tx, rx) = oneshot::channel();
-    handle.sync.send(SyncCommand::GetView(tx)).await.unwrap();
+    handle
+        .sync_tx()
+        .send(SyncCommand::GetView(tx))
+        .await
+        .unwrap();
     rx.await.unwrap()
 }
 
-pub async fn epoch_of(handle: &ClientHandle) -> Epoch {
+pub async fn epoch_of<S: SnapshotSource>(handle: &S) -> Epoch {
     let (tx, rx) = oneshot::channel();
-    handle.sync.send(SyncCommand::GetEpoch(tx)).await.unwrap();
+    handle
+        .sync_tx()
+        .send(SyncCommand::GetEpoch(tx))
+        .await
+        .unwrap();
     rx.await.unwrap()
 }
 
-pub async fn snapshot_of(handle: &ClientHandle) -> ClientSnapshot {
+pub async fn snapshot_of<S: SnapshotSource>(handle: &S) -> ClientSnapshot {
     ClientSnapshot {
         view: view_of(handle).await,
-        peers: handle.peers.borrow().clone(),
+        peers: handle.peers_rx().borrow().clone(),
         epoch: epoch_of(handle).await,
     }
 }
 
-pub async fn mutate(handle: &ClientHandle, mutation: Mutation) {
+pub async fn mutate<S: SnapshotSource>(handle: &S, mutation: Mutation) {
     handle
-        .sync
+        .sync_tx()
         .send(SyncCommand::Mutate(Box::new(mutation)))
         .await
         .unwrap();
 }
 
 /// Report end-of-file to the server, as the player layer will.
-pub async fn report_eof(handle: &ClientHandle, file: Ed2kHash) {
+pub async fn report_eof<S: SnapshotSource>(handle: &S, file: Ed2kHash) {
     handle
-        .network
-        .send(dessplay::actors::network::NetworkCommand::SendReliable(
-            Box::new(ServerControl::EofReached { file }),
-        ))
+        .network_tx()
+        .send(NetworkCommand::SendReliable(Box::new(
+            ServerControl::EofReached { file },
+        )))
         .await
         .unwrap();
 }
 
 /// Graceful quit: Goodbye + connection teardown.
-pub async fn quit(handle: &ClientHandle) {
+pub async fn quit<S: SnapshotSource>(handle: &S) {
     handle
-        .network
-        .send(dessplay::actors::network::NetworkCommand::Shutdown)
+        .network_tx()
+        .send(NetworkCommand::Shutdown)
         .await
         .unwrap();
 }
 
 /// Wait (in simulated time) until `pred` holds over all clients'
 /// snapshots. The auto-waiting assertion from testing-strategy.md.
-pub async fn eventually<F: FnMut(&[ClientSnapshot]) -> bool>(
-    clients: &[&ClientHandle],
+pub async fn eventually<S: SnapshotSource, F: FnMut(&[ClientSnapshot]) -> bool>(
+    clients: &[&S],
     budget: Duration,
     mut pred: F,
 ) -> Vec<ClientSnapshot> {
@@ -171,7 +382,7 @@ pub async fn eventually<F: FnMut(&[ClientSnapshot]) -> bool>(
     loop {
         let mut snapshots = Vec::new();
         for client in clients {
-            snapshots.push(snapshot_of(client).await);
+            snapshots.push(snapshot_of(*client).await);
         }
         if pred(&snapshots) {
             return snapshots;
@@ -184,8 +395,8 @@ pub async fn eventually<F: FnMut(&[ClientSnapshot]) -> bool>(
 }
 
 /// Like [`eventually`], but over views only (convergence checks).
-pub async fn eventually_views<F: FnMut(&[StateView]) -> bool>(
-    clients: &[&ClientHandle],
+pub async fn eventually_views<S: SnapshotSource, F: FnMut(&[StateView]) -> bool>(
+    clients: &[&S],
     budget: Duration,
     mut pred: F,
 ) -> Vec<StateView> {

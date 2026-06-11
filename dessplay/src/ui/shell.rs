@@ -17,6 +17,8 @@ pub enum UiInput {
     Snapshot(Box<UiSnapshot>),
     /// A terminal input event.
     Event(Event<NoUserEvent>),
+    /// A subtitle line from the local player (rolling log).
+    Subtitle(String),
     /// Restore the terminal and exit the UI thread. The explicit
     /// message exists because channel-closure can't signal it: the
     /// input thread holds a sender clone forever (it's blocked in
@@ -73,6 +75,7 @@ pub fn run_ui_thread(
         match input {
             UiInput::Shutdown => break,
             UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
+            UiInput::Subtitle(line) => ui.push_subtitle(line),
             UiInput::Event(event) => {
                 for action in ui.handle(event) {
                     let quit = action == UserAction::Quit;

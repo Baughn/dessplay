@@ -125,6 +125,8 @@ pub struct Ui {
     modals: Vec<Modal>,
     focus: Focus,
     subtitle_pane: bool,
+    /// Rolling log of the local player's subtitle lines.
+    subtitles: std::collections::VecDeque<String>,
     snapshot: UiSnapshot,
     settings: Settings,
     media_roots: Vec<PathBuf>,
@@ -159,6 +161,7 @@ impl Ui {
             modals: Vec::new(),
             focus: Focus::Chat,
             subtitle_pane: settings.subtitle_pane,
+            subtitles: std::collections::VecDeque::new(),
             snapshot: UiSnapshot::default(),
             settings: settings.clone(),
             media_roots: media_roots.clone(),
@@ -169,6 +172,22 @@ impl Ui {
         ui.sync_focus_attr();
         ui.refresh_keybar();
         ui
+    }
+
+    /// Append a subtitle line to the rolling log (empty lines are
+    /// clears — the previous line just stopped displaying; skip them).
+    pub fn push_subtitle(&mut self, line: String) {
+        if line.is_empty() {
+            return;
+        }
+        // mpv re-reports multi-line cues; collapse exact repeats.
+        if self.subtitles.back() == Some(&line) {
+            return;
+        }
+        self.subtitles.push_back(line);
+        while self.subtitles.len() > 100 {
+            self.subtitles.pop_front();
+        }
     }
 
     /// Replace the snapshot and recompute every pane's props.
@@ -541,11 +560,23 @@ impl Ui {
                 Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
                     .areas(left);
             self.chat.view(frame, chat_area);
+            // The newest lines that fit, oldest first.
+            let visible = (subs_area.height as usize).saturating_sub(2);
+            let lines: Vec<tuirealm::ratatui::text::Line> = self
+                .subtitles
+                .iter()
+                .rev()
+                .take(visible)
+                .rev()
+                .map(|line| tuirealm::ratatui::text::Line::from(line.as_str()))
+                .collect();
             frame.render_widget(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(super::theme::dim())
-                    .title("Subtitles"),
+                tuirealm::ratatui::widgets::Paragraph::new(lines).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(super::theme::dim())
+                        .title("Subtitles"),
+                ),
                 subs_area,
             );
         } else {

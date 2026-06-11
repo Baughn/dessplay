@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11
 
 10 phases, bottom-up. Each phase produces testable artifacts. The first
 user-facing demo (TUI with chat + shared playlist) arrives at Phase 6;
@@ -331,6 +331,37 @@ Interactive TUI client: connect, see peers, chat, manage shared playlist.
 ---
 
 ## Phase 7: Player Integration & Playback Sync
+
+**Status: complete (2026-06-11).** Notes and deviations:
+
+- **Minimal file matcher pulled forward from Phase 9** (user-approved):
+  exact-filename scan of media roots + ed2k verification, writing
+  `FileAvailability` Ready/Missing (`dessplay/src/matcher.rs`). Without
+  it only the adder could play anything. Phase 9 absorbs it into the
+  FileActor (adding mtime tracking, a hash cache so unwatched playlist
+  entries aren't re-hashed every session, manual-mapping UI, downloads).
+- **Session policy layer** (`dessplay/src/session.rs`): the
+  state↔player translation is a synchronous `PlayerWiring` (same
+  philosophy as `ui::app::Ui`) plus an async `SessionShell` shared by
+  `run_interactive` and the harness's player clients.
+- Echo suppression is expected-state tracking (a queue of commanded
+  pause flips, a counter of commanded seeks) — architecture.md's claim
+  that mpv distinguishes user from programmatic events was wrong and
+  has been corrected.
+- One mpv instance persists per session (`--idle --keep-open`,
+  spawn-on-first-load, `loadfile` to swap). The real-mpv test caught a
+  genuine ordering bug: mpv's keep-open pause arrives *before*
+  `eof-reached`, so the IPC layer holds a `pause=true` briefly to
+  attribute it (user vs mechanics).
+- A crashing player is always relaunched (paused, at the old position);
+  the second crash within 30s *additionally* pauses globally + notifies
+  chat, per design.
+- Real-mpv coverage is one end-to-end journey behind `--features
+  mpv-tests`; the test video is encoded by mpv itself from a lavfi
+  source (no committed media, no ffmpeg dependency).
+- Player harness scenarios touch the real filesystem (tempdir roots,
+  blocking-pool matcher), so they are eventually-style rather than
+  perfectly deterministic.
 
 **Goal**: mpv integration, echo suppression, synchronized playback.
 

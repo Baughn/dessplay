@@ -549,6 +549,26 @@ impl Storage {
             .map(PathBuf::from))
     }
 
+    /// All manual mappings (loaded once at session start; the session
+    /// shell consults them before the matcher).
+    pub fn manual_mappings(&self) -> Result<Vec<(Ed2kHash, PathBuf)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT hash, local_path FROM manual_mappings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut mappings = Vec::new();
+        for row in rows {
+            let (hash, path) = row?;
+            let Ok(hash) = <[u8; 16]>::try_from(hash.as_slice()) else {
+                continue;
+            };
+            mappings.push((Ed2kHash(hash), PathBuf::from(path)));
+        }
+        Ok(mappings)
+    }
+
     /// Drop a manual mapping.
     pub fn clear_manual_mapping(&self, hash: Ed2kHash) -> Result<()> {
         self.conn.execute(

@@ -446,6 +446,28 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         },
     );
 
+    // The player side: policy in `session`, mpv behind it. The player
+    // process itself only spawns when something first loads.
+    let manual_mappings = setup_storage
+        .manual_mappings()
+        .map_err(|e| format!("loading manual mappings: {e}"))?
+        .into_iter()
+        .collect();
+    let mut shell = crate::session::SessionShell::new(
+        me.clone(),
+        crate::player::mpv::MpvFactory::new("mpv"),
+        system_clock(),
+        setup_storage
+            .media_roots()
+            .map_err(|e| format!("loading media roots: {e}"))?,
+        manual_mappings,
+        handle.sync.clone(),
+        handle.network.clone(),
+    );
+    // The view the player layer last saw; refreshed with every UI
+    // snapshot, used between snapshots by player/matcher events.
+    let mut last_view = dessplay_core::StateView::default();
+
     /// Build a fresh snapshot for the UI.
     async fn snapshot_for(
         handle: &crate::client::ClientHandle,
@@ -488,8 +510,9 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_else(|| path.display().to_string());
+                        let hash_path = path.clone();
                         let hashed = tokio::task::spawn_blocking(move || {
-                            let file = std::fs::File::open(&path)?;
+                            let file = std::fs::File::open(&hash_path)?;
                             dessplay_core::hash::ed2k_hash_reader(file)
                         })
                         .await;
@@ -505,12 +528,16 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                                                 added_by: me.clone(),
                                                 filename,
                                                 size_bytes: hashed.size_bytes,
-                                                // Probed by the player layer in Phase 7.
+                                                // Backfilled by the player's
+                                                // duration probe on first load.
                                                 duration_millis: None,
                                             },
                                         },
                                     )))
                                     .await;
+                                // We picked this file: it is its own
+                                // verified local copy.
+                                let _ = shell.note_local_file(hashed.root, path).await;
                             }
                             Ok(Err(e)) => tracing::error!("hashing failed: {e}"),
                             Err(e) => tracing::error!("hash task died: {e}"),
@@ -529,6 +556,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                             }
                             Err(e) => tracing::error!("opening storage: {e}"),
                         }
+                        shell.media_roots = roots;
                         settings = *saved;
                     }
                 }
@@ -582,9 +610,13 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                             "first PeerList"
                         );
                     }
+                    ClientEvent::Network(NetworkEvent::ClockSync { offset_millis }) => {
+                        shell.set_clock_offset(*offset_millis).await;
+                    }
                     _ => {}
                 }
-                // Any event can change what the UI shows.
+                // Any event can change what the UI shows — and what the
+                // player layer should be doing.
                 if let Some(snapshot) = snapshot_for(&handle, &setup_storage).await {
                     if first_snapshot {
                         first_snapshot = false;
@@ -593,8 +625,21 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                             "first state snapshot pushed to the UI"
                         );
                     }
+                    shell.on_state(&snapshot.view, &snapshot.peers).await;
+                    last_view = snapshot.view.clone();
                     let _ = input_tx.try_send(UiInput::Snapshot(Box::new(snapshot)));
                 }
+            }
+            output = shell.player_outputs.recv() => {
+                let Some(output) = output else { continue };
+                for line in shell.on_player_output(output, &last_view).await {
+                    let _ = input_tx.try_send(UiInput::Subtitle(line));
+                }
+            }
+            resolution = shell.resolutions.recv() => {
+                let Some((file, resolution)) = resolution else { continue };
+                let peers = handle.peers.borrow().clone();
+                shell.on_resolution(file, resolution, &last_view, &peers).await;
             }
         }
     }
@@ -604,6 +649,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // must never hold the process hostage.
     let _ = input_tx.try_send(UiInput::Shutdown);
     let _ = ui_thread.join();
+    shell.shutdown().await;
     let _ = handle.network.send(NetworkCommand::Shutdown).await;
     let _ = handle.sync.send(SyncCommand::Shutdown).await;
     let done = tokio::time::timeout(std::time::Duration::from_secs(5), async {

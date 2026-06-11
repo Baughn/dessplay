@@ -1,0 +1,298 @@
+//! Phase 7 milestone scenarios: full player clients (session shell +
+//! MockPlayer) against the real server. The mock control plays the
+//! user's role inside mpv — pressing space, scrubbing, reaching EOF —
+//! and the assertions watch both the synced state and what every
+//! *player* was actually told to do.
+
+mod common;
+
+use std::time::Duration;
+
+use common::*;
+use dessplay::actors::sync::Mutation;
+use dessplay::player::PlayerEvent;
+use dessplay::player::mock::MockCommand;
+use dessplay_core::types::{FileAvailability, ManualState, PlaybackIntent, UserId};
+
+const BUDGET: Duration = Duration::from_secs(20);
+
+/// Both clients have the file, kim adds it and presses play in their
+/// player; both players are told to unpause. Then baughn pauses in
+/// *their* player: everyone's player pauses, and the state shows who.
+#[tokio::test(start_paused = true)]
+async fn pause_in_one_player_pauses_everyone() {
+    let harness = Harness::new(701);
+    let mut kim = harness.player_client("kim", 1);
+    let mut baughn = harness.player_client("baughn", 2);
+    let file = media_file(1);
+    kim.install(&file);
+    baughn.install(&file);
+
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&file, "kim"),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+
+    // Both matchers verify their local copies; both players load.
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .file_availability
+                .values()
+                .filter(|a| **a == FileAvailability::Ready)
+                .count()
+                == 2
+        })
+    })
+    .await;
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+    baughn
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+
+    // Kim presses play in mpv. The auto-mock acked the unpause, so this
+    // arrives as a user unpause: intent latches Playing, gating passes,
+    // and *baughn's* player is told to unpause.
+    kim.user(PlayerEvent::PauseChanged(false));
+    baughn
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::SetPause(false)))
+        .await;
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| s.playing())
+    })
+    .await;
+
+    // Baughn pauses. Kim's player is re-paused, and the override shows
+    // who is blocking.
+    baughn.user(PlayerEvent::PauseChanged(true));
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::SetPause(true)))
+        .await;
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            !s.playing()
+                && s.view.manual_override.get(&UserId::new("baughn"))
+                    == Some(&Some(ManualState::Paused))
+        })
+    })
+    .await;
+}
+
+/// A user seek on kim's player takes seek authority and drags baughn's
+/// player to the position; kim is never told to follow themself.
+#[tokio::test(start_paused = true)]
+async fn seek_follows_the_authority() {
+    let harness = Harness::new(702);
+    let mut kim = harness.player_client("kim", 1);
+    let mut baughn = harness.player_client("baughn", 2);
+    let file = media_file(1);
+    kim.install(&file);
+    baughn.install(&file);
+
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&file, "kim"),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+    baughn
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+    // Baughn's player needs a known position before drift correction
+    // can act (a fresh load has none until the player reports one).
+    baughn.user(PlayerEvent::Position { position_millis: 0 });
+
+    // Kim scrubs to the minute mark; the debounce (1.5s) coalesces it.
+    kim.user(PlayerEvent::Seeked {
+        position_millis: 60_000,
+    });
+
+    // Baughn's player is dragged there (a hard seek: 60s >> the 3s
+    // band). Paused playback means no extrapolation drift beyond the
+    // sim-time delivery lag.
+    let cmd = baughn
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Seek(_)))
+        .await;
+    let MockCommand::Seek(position) = cmd else {
+        unreachable!()
+    };
+    assert!(
+        (60_000..65_000).contains(&position),
+        "baughn dragged to {position}, expected ~60000"
+    );
+
+    // The state agrees about who has authority.
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            s.view.seek_authority
+                == Some(dessplay_core::types::SeekAuthority::User(UserId::new(
+                    "kim",
+                )))
+        })
+    })
+    .await;
+
+    // Kim must never have been told to follow their own authority.
+    let kim_cmds = kim.control.drain_commands();
+    assert!(
+        !kim_cmds.iter().any(|c| matches!(c, MockCommand::Seek(_))),
+        "kim was told to follow themself: {kim_cmds:#?}"
+    );
+}
+
+/// EOF on a watching client: the server marks the file watched,
+/// advances now-playing, and everyone's player loads the next file —
+/// paused, awaiting a human.
+#[tokio::test(start_paused = true)]
+async fn eof_advances_and_everyone_loads_the_next_file() {
+    let harness = Harness::new(703);
+    let mut kim = harness.player_client("kim", 1);
+    let mut baughn = harness.player_client("baughn", 2);
+    let ep1 = media_file(1);
+    let ep2 = media_file(2);
+    for client in [&kim, &baughn] {
+        client.install(&ep1);
+        client.install(&ep2);
+    }
+
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&ep1, "kim"),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&ep2, "kim"),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(ep1.hash),
+        },
+    )
+    .await;
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+    baughn
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+    kim.user(PlayerEvent::PauseChanged(false));
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| s.playing())
+    })
+    .await;
+
+    // Kim's player hits the end of the episode.
+    kim.user(PlayerEvent::Eof);
+
+    // Server owns the transition: ep1 watched, ep2 now-playing, intent
+    // paused. Both players load ep2.
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            s.view.now_playing == Some(ep2.hash)
+                && s.view.watched.get(&ep1.hash) == Some(&true)
+                && s.view.playback_intent == PlaybackIntent::Paused
+        })
+    })
+    .await;
+    let loaded = kim
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+    assert!(
+        matches!(&loaded, MockCommand::Load(path) if path.ends_with("ep2.mkv")),
+        "kim loaded {loaded:?}"
+    );
+    let loaded = baughn
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+    assert!(
+        matches!(&loaded, MockCommand::Load(path) if path.ends_with("ep2.mkv")),
+        "baughn loaded {loaded:?}"
+    );
+}
+
+/// Baughn doesn't have the file: their availability goes Missing, and
+/// kim's attempt to play is immediately re-paused (the observe-and-
+/// correct round trip), with baughn named as the blocker.
+#[tokio::test(start_paused = true)]
+async fn missing_file_blocks_playback_and_repauses_the_optimist() {
+    let harness = Harness::new(704);
+    let mut kim = harness.player_client("kim", 1);
+    let baughn = harness.player_client("baughn", 2);
+    let file = media_file(1);
+    kim.install(&file);
+    // baughn gets nothing.
+
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&file, "kim"),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .file_availability
+                .get(&(UserId::new("baughn"), file.hash))
+                == Some(&FileAvailability::Missing)
+        })
+    })
+    .await;
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+
+    // Kim presses play anyway.
+    kim.user(PlayerEvent::PauseChanged(false));
+
+    // The design's rule 2: kim's player is immediately re-paused, kim
+    // is marked ready (intent latched Playing), and the blocker is
+    // baughn's missing file.
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::SetPause(true)))
+        .await;
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            !s.playing()
+                && s.view.playback_intent == PlaybackIntent::Playing
+                && dessplay_core::derive::playback_blockers(&s.view, &s.peers)
+                    .iter()
+                    .any(|b| {
+                        b.user == UserId::new("baughn")
+                            && b.reason == dessplay_core::derive::BlockReason::FileMissing
+                    })
+        })
+    })
+    .await;
+}
