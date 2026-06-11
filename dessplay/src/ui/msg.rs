@@ -78,6 +78,37 @@ pub enum Msg {
     None,
 }
 
+impl Msg {
+    /// The variant's name, for logging. Deliberately omits payloads:
+    /// `SettingsSaved` carries the password.
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Msg::SendChat(_) => "SendChat",
+            Msg::Command(_) => "Command",
+            Msg::CycleSeriesMode => "CycleSeriesMode",
+            Msg::ToggleSeriesSort => "ToggleSeriesSort",
+            Msg::BrowseFranchise(_) => "BrowseFranchise",
+            Msg::EditListEntry(_) => "EditListEntry",
+            Msg::ToggleAway(_) => "ToggleAway",
+            Msg::PlaySelected(_) => "PlaySelected",
+            Msg::AddFileAfter(_) => "AddFileAfter",
+            Msg::MoveDown(_) => "MoveDown",
+            Msg::MoveUp(_) => "MoveUp",
+            Msg::RemoveEntry(_) => "RemoveEntry",
+            Msg::CloseModal => "CloseModal",
+            Msg::FileChosen { .. } => "FileChosen",
+            Msg::DirChosen(_) => "DirChosen",
+            Msg::OpenDirPicker => "OpenDirPicker",
+            Msg::SettingsSaved(..) => "SettingsSaved",
+            Msg::ListEntrySaved(..) => "ListEntrySaved",
+            Msg::FocusNext => "FocusNext",
+            Msg::ToggleSubtitlePane => "ToggleSubtitlePane",
+            Msg::Quit => "Quit",
+            Msg::None => "None",
+        }
+    }
+}
+
 /// Actions leaving the UI toward the main loop / actors.
 #[derive(Debug, PartialEq)]
 pub enum UserAction {

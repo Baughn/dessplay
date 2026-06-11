@@ -233,16 +233,30 @@ impl Connector for QuicConnector {
     type Conn = QuicTransport;
 
     async fn connect(&self) -> Result<QuicTransport, TransportError> {
+        let started = std::time::Instant::now();
+        tracing::debug!(
+            addr = %self.server_addr,
+            server_name = %self.server_name,
+            "dialing"
+        );
         let connecting = self
             .endpoint
             .connect(self.server_addr, &self.server_name)
             .map_err(setup("dial"))?;
         let conn = connecting.await.map_err(setup("handshake"))?;
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "QUIC handshake complete"
+        );
         let (send, recv) = conn
             .open_bi()
             .await
             .map_err(setup("opening control stream"))?;
         let _ = send.set_priority(CONTROL_PRIORITY);
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "control stream open"
+        );
         Ok(QuicTransport::new(conn, send, recv))
     }
 }
@@ -294,19 +308,27 @@ impl Listener for QuicListener {
                 .accept()
                 .await
                 .ok_or_else(|| TransportError::Setup("endpoint closed".into()))?;
-            let Ok(conn) = incoming.await else {
+            let remote = incoming.remote_address();
+            let conn = match incoming.await {
+                Ok(conn) => conn,
                 // Handshake failure (bad ALPN, TOFU abort...): not fatal
                 // for the listener.
-                continue;
+                Err(e) => {
+                    tracing::debug!(%remote, error = %e, "incoming handshake failed");
+                    continue;
+                }
             };
-            let remote = conn.remote_address();
+            tracing::debug!(%remote, "incoming handshake complete");
             // The client opens the control stream; a peer that never
             // does would block accept, so guard with the idle timeout.
             match conn.accept_bi().await {
                 Ok((send, recv)) => {
                     return Ok((QuicTransport::new(conn, send, recv), remote));
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::debug!(%remote, error = %e, "peer never opened a control stream");
+                    continue;
+                }
             }
         }
     }

@@ -39,6 +39,22 @@ pub struct UiSnapshot {
     pub recency: BTreeMap<AniDbSeriesId, u64>,
 }
 
+/// Log one outgoing [`UserAction`] at debug. Mutations log their
+/// variant name; `SaveSettings` deliberately logs no contents (the
+/// settings carry the password).
+fn log_action(action: &UserAction) {
+    match action {
+        UserAction::Mutate(mutation) => {
+            tracing::debug!(mutation = mutation.name(), "user action: Mutate");
+        }
+        UserAction::HashAndAdd { path, .. } => {
+            tracing::debug!(path = %path.display(), "user action: HashAndAdd");
+        }
+        UserAction::SaveSettings(..) => tracing::debug!("user action: SaveSettings"),
+        UserAction::Quit => tracing::debug!("user action: Quit"),
+    }
+}
+
 /// Pane focus ring: Chat -> Series -> Users -> Playlist.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
@@ -83,6 +99,16 @@ impl Modal {
             Modal::Settings(modal) => modal.keybindings(),
             Modal::Episodes(modal) => modal.keybindings(),
             Modal::ListEdit(modal) => modal.keybindings(),
+        }
+    }
+
+    /// The modal's name, for logging.
+    fn name(&self) -> &'static str {
+        match self {
+            Modal::Files(_) => "Files",
+            Modal::Settings(_) => "Settings",
+            Modal::Episodes(_) => "Episodes",
+            Modal::ListEdit(_) => "ListEdit",
         }
     }
 }
@@ -138,8 +164,7 @@ impl Ui {
             media_roots: media_roots.clone(),
         };
         if open_settings {
-            ui.modals
-                .push(Modal::Settings(SettingsModal::new(settings, media_roots)));
+            ui.push_modal(Modal::Settings(SettingsModal::new(settings, media_roots)));
         }
         ui.sync_focus_attr();
         ui.refresh_keybar();
@@ -225,8 +250,26 @@ impl Ui {
         self.keybar.set_items(items);
     }
 
+    fn push_modal(&mut self, modal: Modal) {
+        tracing::debug!(modal = modal.name(), "modal opened");
+        self.modals.push(modal);
+    }
+
+    fn pop_modal(&mut self) {
+        if let Some(modal) = self.modals.pop() {
+            tracing::debug!(modal = modal.name(), "modal closed");
+        }
+    }
+
     /// Route one input event; returns the actions it produced.
     pub fn handle(&mut self, ev: Event<NoUserEvent>) -> Vec<UserAction> {
+        // SECURITY: never log keystroke contents while the settings
+        // modal is open — the user may be typing the password.
+        if matches!(self.modals.last(), Some(Modal::Settings(_))) {
+            tracing::trace!("ui event (contents redacted: settings modal open)");
+        } else {
+            tracing::trace!(event = ?ev, "ui event");
+        }
         // Globals first.
         if let Event::Keyboard(KeyEvent {
             code: Key::Char('c'),
@@ -234,18 +277,21 @@ impl Ui {
         }) = &ev
             && *modifiers == KeyModifiers::CONTROL
         {
+            tracing::debug!("user action: Quit (Ctrl-C)");
             return vec![UserAction::Quit];
         }
         if self.modals.is_empty() {
             match super::components::plain(&ev) {
                 Some(Key::Tab) => {
                     self.focus = self.focus.next();
+                    tracing::debug!(focus = ?self.focus, "focus changed");
                     self.sync_focus_attr();
                     self.refresh_keybar();
                     return Vec::new();
                 }
                 Some(Key::Function(2)) => {
                     self.subtitle_pane = !self.subtitle_pane;
+                    tracing::debug!(enabled = self.subtitle_pane, "subtitle pane toggled");
                     return Vec::new();
                 }
                 _ => {}
@@ -261,7 +307,13 @@ impl Ui {
                 Focus::Playlist => self.playlist.on(&ev),
             },
         };
+        if let Some(msg) = &msg {
+            tracing::trace!(msg = msg.name(), "msg produced");
+        }
         let action = msg.and_then(|msg| self.update(msg));
+        if let Some(action) = &action {
+            log_action(action);
+        }
         self.refresh_keybar();
         action.into_iter().collect()
     }
@@ -282,8 +334,7 @@ impl Ui {
             }
             Msg::EditListEntry(id) => {
                 let entry = self.snapshot.view.list_entries.get(&id)?.clone();
-                self.modals
-                    .push(Modal::ListEdit(ListEditModal::new(id, entry)));
+                self.push_modal(Modal::ListEdit(ListEditModal::new(id, entry)));
                 None
             }
             Msg::ToggleAway(user) => {
@@ -307,7 +358,7 @@ impl Ui {
                 file: Some(hash),
             })),
             Msg::AddFileAfter(after) => {
-                self.modals.push(Modal::Files(FileBrowser::for_file(
+                self.push_modal(Modal::Files(FileBrowser::for_file(
                     self.media_roots.clone(),
                     after,
                 )));
@@ -334,12 +385,12 @@ impl Ui {
             }
             Msg::RemoveEntry(hash) => Some(UserAction::Mutate(Mutation::RemovePlaylist { hash })),
             Msg::CloseModal => {
-                self.modals.pop();
+                self.pop_modal();
                 self.sync_focus_attr();
                 None
             }
             Msg::FileChosen { path, after } => {
-                self.modals.pop();
+                self.pop_modal();
                 self.sync_focus_attr();
                 // `None` (from [Add New]) appends.
                 let after =
@@ -347,18 +398,18 @@ impl Ui {
                 Some(UserAction::HashAndAdd { path, after })
             }
             Msg::OpenDirPicker => {
-                self.modals.push(Modal::Files(FileBrowser::for_directory()));
+                self.push_modal(Modal::Files(FileBrowser::for_directory()));
                 None
             }
             Msg::DirChosen(path) => {
-                self.modals.pop();
+                self.pop_modal();
                 if let Some(Modal::Settings(settings)) = self.modals.last_mut() {
                     settings.add_root(path);
                 }
                 None
             }
             Msg::SettingsSaved(settings, roots) => {
-                self.modals.pop();
+                self.pop_modal();
                 self.sync_focus_attr();
                 self.settings = (*settings).clone();
                 self.subtitle_pane = settings.subtitle_pane;
@@ -370,7 +421,7 @@ impl Ui {
                 Some(UserAction::SaveSettings(settings, roots))
             }
             Msg::ListEntrySaved(id, entry) => {
-                self.modals.pop();
+                self.pop_modal();
                 self.sync_focus_attr();
                 Some(UserAction::Mutate(Mutation::PutListEntry {
                     id,
@@ -379,6 +430,7 @@ impl Ui {
             }
             Msg::FocusNext => {
                 self.focus = self.focus.next();
+                tracing::debug!(focus = ?self.focus, "focus changed");
                 self.sync_focus_attr();
                 None
             }
@@ -459,7 +511,7 @@ impl Ui {
                 })
                 .collect()
         };
-        self.modals.push(Modal::Episodes(EpisodeBrowser::new(
+        self.push_modal(Modal::Episodes(EpisodeBrowser::new(
             franchise.title,
             seasons,
         )));

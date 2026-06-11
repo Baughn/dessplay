@@ -251,7 +251,11 @@ The full presence semantics, including UI treatment, are in
 
 The password is sent as plaintext in the `Auth` message, protected by QUIC's
 TLS 1.3 encryption. The server verifies it against the configured password.
-On success, the server responds with `AuthOk` including the client's observed
+On a bad password the server sends `AuthFailed`, then waits (up to 2s) for
+the client to close before closing itself — closing immediately would
+discard the unflushed frame, and the client would see only a generic
+connection loss and retry forever. On success, the server responds with
+`AuthOk` including the client's observed
 address (informational -- it costs nothing to report and would be needed if
 direct peer connections ever return). On failure, the server sends
 `AuthFailed` and closes the connection.

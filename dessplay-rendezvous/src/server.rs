@@ -183,10 +183,18 @@ impl<T: Transport> Shared<T> {
     /// Broadcast one message to every live connection: reliable, plus
     /// an eager datagram copy when it fits.
     async fn broadcast_op(&self, msg: ServerControl, skip: Option<u64>) {
+        let name = msg.variant_name();
         let Ok(frame) = wire::encode(&WireMessage::Control(msg)) else {
             return;
         };
-        for conn in self.live_conns(skip) {
+        let conns = self.live_conns(skip);
+        tracing::trace!(
+            msg = name,
+            bytes = frame.len(),
+            recipients = conns.len(),
+            "broadcast"
+        );
+        for conn in conns {
             let _ = conn.send_control(&frame).await;
             if conn
                 .max_datagram_size()
@@ -216,6 +224,7 @@ impl<T: Transport> Shared<T> {
     /// Force the playback-intent latch to Paused (lost connection,
     /// graceful quit, departure, EOF). Idempotent in effect.
     async fn force_pause(&self) {
+        tracing::debug!("forcing playback intent to Paused");
         self.server_write(|state, actor, ts| {
             state.set_playback_intent(actor, ts, PlaybackIntent::Paused)
         })
@@ -231,6 +240,7 @@ impl<T: Transport> Shared<T> {
                 == Some(SeekAuthority::User(user.clone()))
         };
         if holds {
+            tracing::debug!(user = %user.0, "rescuing seek authority from a gone user");
             self.server_write(|state, actor, ts| {
                 state.set_seek_authority(actor, ts, SeekAuthority::Server)
             })
@@ -486,11 +496,26 @@ async fn serve_connection<T: Transport>(
     .await;
 
     let Ok(Some((username, password, role, client_epoch))) = auth else {
+        tracing::debug!(%remote, "connection closed before authenticating");
         conn.close("authentication required").await;
         return;
     };
     if password != config.password {
+        tracing::warn!(user = %username.0, %remote, "auth failed: bad password");
         send_control(&*conn, &ServerControl::AuthFailed).await;
+        // Wait for the client to act on the rejection before closing:
+        // closing immediately can discard the unflushed frame, leaving
+        // the client with a generic connection loss it would retry
+        // forever (the Goodbye pattern, server-side).
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match conn.recv().await {
+                    Ok(TransportEvent::Closed { .. }) | Err(_) => break,
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await;
         conn.close("bad password").await;
         return;
     }
@@ -517,6 +542,7 @@ async fn serve_connection<T: Transport>(
         )
         .and_then(|old| old.conn);
     if let Some(old) = superseded {
+        tracing::debug!(user = %username.0, "superseding the user's old connection");
         old.close("superseded by a new connection").await;
     }
 
@@ -532,11 +558,19 @@ async fn serve_connection<T: Transport>(
     // ---- Initial state sync: merge for a current epoch, snapshot for
     // a stale one (see sync-state.md, Sync Flow).
     let snapshot = shared.snapshot();
+    let server_epoch = snapshot.epoch;
     let initial = if client_epoch == snapshot.epoch {
         ServerControl::StateMerge(snapshot)
     } else {
         ServerControl::StateSnapshot(snapshot)
     };
+    tracing::debug!(
+        user = %username.0,
+        client_epoch = client_epoch.0,
+        server_epoch = server_epoch.0,
+        decision = initial.variant_name(),
+        "initial sync"
+    );
     send_control(&*conn, &initial).await;
     tracing::info!("{username:?} connected from {remote} as {role:?}");
 
@@ -616,6 +650,13 @@ async fn serve_authed<T: Transport>(
             }
         };
         let WireMessage::Control(msg) = msg;
+        tracing::trace!(
+            user = %username.0,
+            msg = msg.variant_name(),
+            bytes = payload.len(),
+            via_datagram,
+            "recv"
+        );
         match msg {
             ServerControl::Goodbye => return AuthedEnd::Goodbye,
             ServerControl::TimeSyncRequest { client_send } => {
@@ -706,6 +747,7 @@ async fn serve_authed<T: Transport>(
                     before != dessplay_core::resolve_value(&state.now_playing).flatten()
                 };
                 shared.dirty.store(true, Ordering::SeqCst);
+                tracing::debug!(user = %username.0, "client merge applied; rebroadcasting");
                 // Always rebroadcast: cheap (reconnects are rare), and
                 // any change-detection that ignores playback positions
                 // (as view_hash must) would fail to propagate a
@@ -778,8 +820,13 @@ async fn handle_eof<T: Transport>(
 /// Compact the state and broadcast the fresh snapshot to every live
 /// connection.
 async fn run_compaction<T: Transport>(shared: &Shared<T>, chat_keep: usize) {
+    let started = std::time::Instant::now();
     let snapshot = compact_state(shared, chat_keep);
-    tracing::info!("compacted state; new epoch {:?}", snapshot.epoch);
+    tracing::info!(
+        epoch = snapshot.epoch.0,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "compacted state"
+    );
     let msg = ServerControl::StateSnapshot(snapshot);
     for conn in shared.live_conns(None) {
         send_control(&*conn, &msg).await;
@@ -804,6 +851,12 @@ fn compact_state<T: Transport>(shared: &Shared<T>, chat_keep: usize) -> StateSna
         shared.epoch.fetch_add(1, Ordering::SeqCst);
         view
     };
+    tracing::debug!(
+        playlist_entries = view.playlist.len(),
+        chat_before = view.chat.len(),
+        chat_after = view.chat.len().min(chat_keep),
+        "compaction rebuilt the state"
+    );
 
     // Archive the full pre-compaction chat (idempotent: the table is
     // unique on (timestamp, sender, text)).

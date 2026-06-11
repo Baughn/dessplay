@@ -92,6 +92,7 @@ pub(crate) struct ClientSetup {
 pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> {
     // Settings: stored for interactive clients (flags override, never
     // persisted), flags/env only for seeders.
+    let phase = std::time::Instant::now();
     let storage = if args.seeder {
         None
     } else {
@@ -107,27 +108,44 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
             .map_err(|e| format!("loading settings: {e}"))?,
         None => crate::config::Settings::default(),
     };
+    tracing::info!(
+        elapsed_ms = phase.elapsed().as_millis() as u64,
+        "storage opened and settings loaded"
+    );
 
     let username = args
         .username
         .clone()
         .or(settings.username)
         .ok_or("no username configured; pass --username")?;
-    let password = args
-        .password
-        .clone()
-        .or_else(|| std::env::var("DESSPLAY_PASSWORD").ok())
-        .or(settings.password)
-        .ok_or("no password configured; pass --password or set DESSPLAY_PASSWORD")?;
+    // Precedence: flag > env > stored settings. Log the source (never
+    // the password) — an auth rejection is usually a precedence
+    // surprise, and the log should settle which password was used.
+    let (password, password_source) = match args.password.clone() {
+        Some(password) => (Some(password), "flag"),
+        None => match std::env::var("DESSPLAY_PASSWORD").ok() {
+            Some(password) => (Some(password), "env"),
+            None => (settings.password, "stored settings"),
+        },
+    };
+    let password =
+        password.ok_or("no password configured; pass --password or set DESSPLAY_PASSWORD")?;
+    tracing::info!(source = password_source, "password resolved");
     let server = args.server.clone().unwrap_or(settings.server);
 
     // Resolve and pin.
+    let phase = std::time::Instant::now();
     let server_addr_str = with_default_port(&server);
     let addr: SocketAddr = tokio::net::lookup_host(&server_addr_str)
         .await
         .map_err(|e| format!("resolving {server_addr_str}: {e}"))?
         .next()
         .ok_or_else(|| format!("{server_addr_str} resolved to no addresses"))?;
+    tracing::info!(
+        resolved = %addr,
+        elapsed_ms = phase.elapsed().as_millis() as u64,
+        "resolved {server_addr_str}"
+    );
     let server_name = server_addr_str
         .rsplit_once(':')
         .map(|(host, _)| host.trim_matches(['[', ']']))
@@ -147,9 +165,14 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
     if first_use {
         tracing::warn!("no pinned fingerprint for {server_addr_str}; trusting on first use");
     }
+    let phase = std::time::Instant::now();
     let connector = Arc::new(
         QuicConnector::new(addr, server_name, pinned)
             .map_err(|e| format!("building QUIC endpoint: {e}"))?,
+    );
+    tracing::info!(
+        elapsed_ms = phase.elapsed().as_millis() as u64,
+        "QUIC endpoint built"
     );
 
     Ok(ClientSetup {
@@ -165,6 +188,7 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
 /// Run the headless client until Ctrl-C. Errors are human-readable —
 /// `main()` just prints them.
 pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
+    let start = std::time::Instant::now();
     let seeder = args.seeder;
     let db_path = args.db_path.clone();
     let setup = prepare(&args).await?;
@@ -219,6 +243,8 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
 
     // ---- Event loop until Ctrl-C.
     let mut pin_pending = first_use && !seeder;
+    let mut first_connected = true;
+    let mut first_peer_list = true;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -229,6 +255,13 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                 let Some(event) = event else { break };
                 match event {
                     ClientEvent::Network(NetworkEvent::Connected { observed_addr }) => {
+                        if first_connected {
+                            first_connected = false;
+                            tracing::info!(
+                                since_start_ms = start.elapsed().as_millis() as u64,
+                                "first Connected event"
+                            );
+                        }
                         tracing::info!("connected (we are {observed_addr})");
                         if pin_pending
                             && let Some(storage) = &storage
@@ -255,6 +288,13 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                         tracing::warn!("disconnected ({reason}); retrying");
                     }
                     ClientEvent::Network(NetworkEvent::PeerList(peers)) => {
+                        if first_peer_list {
+                            first_peer_list = false;
+                            tracing::info!(
+                                since_start_ms = start.elapsed().as_millis() as u64,
+                                "first PeerList"
+                            );
+                        }
                         let listed: Vec<String> = peers
                             .iter()
                             .map(|p| format!("{} [{:?}/{:?}]", p.username, p.role, p.presence))
@@ -292,6 +332,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     use crate::ui::shell::{UiInput, run_input_thread, run_ui_thread};
     use dessplay_core::types::ManualState;
 
+    let start = std::time::Instant::now();
     let db_path = match &args.db_path {
         Some(path) => path.clone(),
         None => Storage::default_path().ok_or("cannot determine the data directory")?,
@@ -300,6 +341,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // screen opens is decided by the *stored* settings, before any
     // prefills. Prefills ($USER, the .env password, flags) only become
     // the modal's editable defaults.
+    let phase = std::time::Instant::now();
     let mut setup_storage =
         Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
     let mut settings: crate::config::Settings = setup_storage
@@ -308,10 +350,26 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     let media_roots = setup_storage
         .media_roots()
         .map_err(|e| format!("loading media roots: {e}"))?;
+    tracing::info!(
+        elapsed_ms = phase.elapsed().as_millis() as u64,
+        "storage opened and settings loaded"
+    );
     let needs_setup = settings.needs_setup() || media_roots.is_empty();
     if settings.username.is_none() {
         settings.username = args.username.clone().or_else(|| std::env::var("USER").ok());
     }
+    // Track (and log) where the settings password came from — never
+    // the password itself.
+    let password_source = if settings.password.is_some() {
+        "stored settings"
+    } else if args.password.is_some() {
+        "flag"
+    } else if std::env::var_os("DESSPLAY_PASSWORD").is_some() {
+        "env"
+    } else {
+        "unset (settings screen)"
+    };
+    tracing::info!(source = password_source, "settings password source");
     if settings.password.is_none() {
         settings.password = args
             .password
@@ -411,6 +469,9 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
 
     let mut pin_pending = setup.first_use;
     let mut startup_state_written = false;
+    let mut first_connected = true;
+    let mut first_peer_list = true;
+    let mut first_snapshot = true;
     loop {
         tokio::select! {
             action = action_rx.recv() => {
@@ -481,6 +542,13 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                         return Err("the server rejected the password".into());
                     }
                     ClientEvent::Network(NetworkEvent::Connected { .. }) => {
+                        if first_connected {
+                            first_connected = false;
+                            tracing::info!(
+                                since_start_ms = start.elapsed().as_millis() as u64,
+                                "first Connected event"
+                            );
+                        }
                         if pin_pending && let Some(fp) = setup.connector.observed_fingerprint() {
                             let now = (system_clock())() as i64;
                             if setup_storage
@@ -507,10 +575,24 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                                 .await;
                         }
                     }
+                    ClientEvent::Network(NetworkEvent::PeerList(_)) if first_peer_list => {
+                        first_peer_list = false;
+                        tracing::info!(
+                            since_start_ms = start.elapsed().as_millis() as u64,
+                            "first PeerList"
+                        );
+                    }
                     _ => {}
                 }
                 // Any event can change what the UI shows.
                 if let Some(snapshot) = snapshot_for(&handle, &setup_storage).await {
+                    if first_snapshot {
+                        first_snapshot = false;
+                        tracing::info!(
+                            since_start_ms = start.elapsed().as_millis() as u64,
+                            "first state snapshot pushed to the UI"
+                        );
+                    }
                     let _ = input_tx.try_send(UiInput::Snapshot(Box::new(snapshot)));
                 }
             }
@@ -637,6 +719,19 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+/// Parse one `.env` line into `(key, value)`. Tolerates an optional
+/// `export ` prefix (users write `.env` files both ways), `#` comments,
+/// and blank lines (both yield `None`).
+fn parse_dotenv_line(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    let (key, value) = line.split_once('=')?;
+    Some((key.trim(), value.trim().trim_matches('"')))
+}
+
 /// Load `./.env` (KEY=VALUE lines; `#` comments) into the environment,
 /// without overriding variables that are already set. The project keeps
 /// `DESSPLAY_PASSWORD` for the default server there.
@@ -645,16 +740,11 @@ pub fn load_dotenv() {
         return;
     };
     for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            let (key, value) = (key.trim(), value.trim().trim_matches('"'));
-            if std::env::var_os(key).is_none() {
-                // Single-threaded startup: set_var is safe here.
-                unsafe { std::env::set_var(key, value) };
-            }
+        if let Some((key, value)) = parse_dotenv_line(line)
+            && std::env::var_os(key).is_none()
+        {
+            // Single-threaded startup: set_var is safe here.
+            unsafe { std::env::set_var(key, value) };
         }
     }
 }
@@ -673,6 +763,27 @@ mod tests {
         assert_eq!(with_default_port("10.0.0.1:7000"), "10.0.0.1:7000");
         assert_eq!(with_default_port("::1"), "[::1]:9876");
         assert_eq!(with_default_port("[::1]:7000"), "[::1]:7000");
+    }
+
+    #[test]
+    fn dotenv_line_parsing() {
+        assert_eq!(parse_dotenv_line("KEY=value"), Some(("KEY", "value")));
+        assert_eq!(
+            parse_dotenv_line("export KEY=value"),
+            Some(("KEY", "value"))
+        );
+        assert_eq!(
+            parse_dotenv_line("  export KEY = \"quoted\"  "),
+            Some(("KEY", "quoted"))
+        );
+        // `export` is only stripped as a prefix keyword, not from keys.
+        assert_eq!(
+            parse_dotenv_line("exported=value"),
+            Some(("exported", "value"))
+        );
+        assert_eq!(parse_dotenv_line("# comment"), None);
+        assert_eq!(parse_dotenv_line(""), None);
+        assert_eq!(parse_dotenv_line("not a kv pair"), None);
     }
 
     #[test]

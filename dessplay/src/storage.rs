@@ -142,6 +142,7 @@ fn migrate(conn: &Connection, migrations: &[&str]) -> Result<()> {
             "BEGIN;\n{migration}\nPRAGMA user_version = {};\nCOMMIT;",
             index + 1
         ))?;
+        tracing::debug!(version = index + 1, "applied schema migration");
     }
     Ok(())
 }
@@ -211,6 +212,7 @@ impl Storage {
     /// Open (creating and migrating as needed) the database at `path`.
     /// Parent directories are created.
     pub fn open(path: &Path) -> Result<Self> {
+        tracing::debug!(path = %path.display(), "opening client database");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| StorageError::Corrupt(format!("creating {parent:?}: {e}")))?;
@@ -309,7 +311,9 @@ impl Storage {
 
     /// Persist the latest full-state snapshot (single implicit room).
     pub fn save_state(&self, snapshot: &StateSnapshot, now: i64) -> Result<()> {
+        let started = std::time::Instant::now();
         let blob = wire::encode(&snapshot.state)?;
+        let bytes = blob.len();
         self.conn.execute(
             "INSERT INTO crdt_state (room, epoch, state, saved_at)
              VALUES ('default', ?1, ?2, ?3)
@@ -318,11 +322,18 @@ impl Storage {
                  saved_at = excluded.saved_at",
             params![snapshot.epoch.0 as i64, blob, now],
         )?;
+        tracing::debug!(
+            epoch = snapshot.epoch.0,
+            bytes,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "state snapshot saved"
+        );
         Ok(())
     }
 
     /// Load the stored snapshot, if any.
     pub fn load_state(&self) -> Result<Option<StateSnapshot>> {
+        let started = std::time::Instant::now();
         let row: Option<(i64, Vec<u8>)> = self
             .conn
             .query_row(
@@ -332,9 +343,16 @@ impl Storage {
             )
             .optional()?;
         let Some((epoch, blob)) = row else {
+            tracing::debug!("no stored state snapshot");
             return Ok(None);
         };
         let state: CrdtState = wire::decode(&blob)?;
+        tracing::debug!(
+            epoch,
+            bytes = blob.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "state snapshot loaded"
+        );
         Ok(Some(StateSnapshot {
             epoch: Epoch(epoch as u64),
             state,

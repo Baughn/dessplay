@@ -143,3 +143,26 @@ pub enum ServerControl {
     /// send a `StateMerge`.
     RequestMerge,
 }
+
+impl ServerControl {
+    /// The variant's name, for logging. Payloads (state snapshots in
+    /// particular) can be huge; log this plus the encoded byte size
+    /// instead of the message contents.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            ServerControl::Auth { .. } => "Auth",
+            ServerControl::TimeSyncRequest { .. } => "TimeSyncRequest",
+            ServerControl::EofReached { .. } => "EofReached",
+            ServerControl::Goodbye => "Goodbye",
+            ServerControl::AuthOk { .. } => "AuthOk",
+            ServerControl::AuthFailed => "AuthFailed",
+            ServerControl::PeerList { .. } => "PeerList",
+            ServerControl::TimeSyncResponse { .. } => "TimeSyncResponse",
+            ServerControl::StateSnapshot(_) => "StateSnapshot",
+            ServerControl::StateOp { .. } => "StateOp",
+            ServerControl::StateMerge(_) => "StateMerge",
+            ServerControl::StateHash { .. } => "StateHash",
+            ServerControl::RequestMerge => "RequestMerge",
+        }
+    }
+}

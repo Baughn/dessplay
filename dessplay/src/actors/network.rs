@@ -41,6 +41,19 @@ pub enum NetworkCommand {
     Shutdown,
 }
 
+impl NetworkCommand {
+    /// Terse description for logs (Debug-formatting a command can dump
+    /// an entire state merge).
+    fn name(&self) -> &'static str {
+        match self {
+            NetworkCommand::SendReliable(msg) => msg.variant_name(),
+            NetworkCommand::SendEager(msg) => msg.variant_name(),
+            NetworkCommand::SendDatagramOnly(msg) => msg.variant_name(),
+            NetworkCommand::Shutdown => "Shutdown",
+        }
+    }
+}
+
 /// Events to the main loop.
 #[derive(Debug)]
 pub enum NetworkEvent {
@@ -127,7 +140,11 @@ pub async fn run<C: Connector>(
     mut commands: mpsc::Receiver<NetworkCommand>,
     events: mpsc::Sender<NetworkEvent>,
 ) {
+    let mut attempt_number: u64 = 0;
     loop {
+        attempt_number += 1;
+        let attempt_started = tokio::time::Instant::now();
+        tracing::info!(attempt = attempt_number, "connecting to server");
         // A connection attempt to an unreachable host can take the full
         // handshake timeout (30s of QUIC retries) — Shutdown must
         // interrupt it, or quitting hangs on this actor. Other commands
@@ -140,27 +157,44 @@ pub async fn run<C: Connector>(
                     match commands.recv().await {
                         Some(NetworkCommand::Shutdown) | None => return,
                         Some(discarded) => {
-                            tracing::debug!("discarding while connecting: {discarded:?}");
+                            tracing::debug!(
+                                cmd = discarded.name(),
+                                "discarding command while connecting"
+                            );
                         }
                     }
                 }
             } => return,
         };
         match attempt {
-            Ok(conn) => match run_connection(&conn, &config, &mut commands, &events).await {
-                ConnectionEnd::Shutdown => {
-                    conn.close("shutting down").await;
-                    return;
+            Ok(conn) => {
+                tracing::info!(
+                    attempt = attempt_number,
+                    elapsed_ms = attempt_started.elapsed().as_millis() as u64,
+                    "transport connected"
+                );
+                match run_connection(&conn, &config, &mut commands, &events).await {
+                    ConnectionEnd::Shutdown => {
+                        conn.close("shutting down").await;
+                        return;
+                    }
+                    ConnectionEnd::AuthFailed => {
+                        tracing::warn!("server rejected our password");
+                        let _ = events.send(NetworkEvent::AuthFailed).await;
+                        return;
+                    }
+                    ConnectionEnd::Lost(reason) => {
+                        let _ = events.send(NetworkEvent::Disconnected { reason }).await;
+                    }
                 }
-                ConnectionEnd::AuthFailed => {
-                    let _ = events.send(NetworkEvent::AuthFailed).await;
-                    return;
-                }
-                ConnectionEnd::Lost(reason) => {
-                    let _ = events.send(NetworkEvent::Disconnected { reason }).await;
-                }
-            },
+            }
             Err(e) => {
+                tracing::warn!(
+                    attempt = attempt_number,
+                    elapsed_ms = attempt_started.elapsed().as_millis() as u64,
+                    error = %e,
+                    "connection attempt failed"
+                );
                 let _ = events
                     .send(NetworkEvent::Disconnected {
                         reason: e.to_string(),
@@ -189,6 +223,16 @@ enum ConnectionEnd {
 async fn send_control<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(), TransportError> {
     let frame = wire::encode(&WireMessage::Control(msg.clone()))
         .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
+    // No size for Auth: its frame length leaks the password length.
+    if matches!(msg, ServerControl::Auth { .. }) {
+        tracing::trace!(msg = "Auth", "send control");
+    } else {
+        tracing::trace!(
+            msg = msg.variant_name(),
+            bytes = frame.len(),
+            "send control"
+        );
+    }
     conn.send_control(&frame).await
 }
 
@@ -200,6 +244,11 @@ async fn send_datagram_or_control<T: Transport>(
 ) -> Result<(), TransportError> {
     let frame = wire::encode(&WireMessage::Control(msg.clone()))
         .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
+    tracing::trace!(
+        msg = msg.variant_name(),
+        bytes = frame.len(),
+        "send datagram"
+    );
     match conn.send_datagram(&frame).await {
         Err(TransportError::DatagramUnsupported | TransportError::DatagramTooLarge { .. }) => {
             conn.send_control(&frame).await
@@ -213,6 +262,7 @@ async fn send_datagram_or_control<T: Transport>(
 async fn send_eager<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(), TransportError> {
     let frame = wire::encode(&WireMessage::Control(msg.clone()))
         .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
+    tracing::trace!(msg = msg.variant_name(), bytes = frame.len(), "send eager");
     conn.send_control(&frame).await?;
     if conn
         .max_datagram_size()
@@ -239,6 +289,7 @@ async fn run_connection<T: Transport>(
     if let Err(e) = send_control(conn, &auth).await {
         return ConnectionEnd::Lost(e.to_string());
     }
+    tracing::debug!(user = %config.username.0, role = ?config.role, "auth sent");
 
     let mut timesync = TimeSync::new();
     let mut probes_sent: u32 = 0;
@@ -267,9 +318,16 @@ async fn run_connection<T: Transport>(
                     }
                 };
                 let WireMessage::Control(msg) = msg;
+                tracing::trace!(
+                    msg = msg.variant_name(),
+                    bytes = payload.len(),
+                    via_datagram,
+                    "recv"
+                );
                 match msg {
                     ServerControl::AuthOk { observed_addr } => {
                         authenticated = true;
+                        tracing::debug!(%observed_addr, "auth accepted");
                         let _ = events.send(NetworkEvent::Connected { observed_addr }).await;
                     }
                     ServerControl::AuthFailed => return ConnectionEnd::AuthFailed,
@@ -283,6 +341,7 @@ async fn run_connection<T: Transport>(
                             && last_offset != Some(offset)
                         {
                             last_offset = Some(offset);
+                            tracing::debug!(offset_millis = offset, "clock offset updated");
                             let _ = events
                                 .send(NetworkEvent::ClockSync { offset_millis: offset })
                                 .await;
@@ -337,6 +396,11 @@ async fn run_connection<T: Transport>(
                         if let Ok(frame) =
                             wire::encode(&WireMessage::Control((*msg).clone()))
                         {
+                            tracing::trace!(
+                                msg = msg.variant_name(),
+                                bytes = frame.len(),
+                                "send datagram-only"
+                            );
                             let _ = conn.send_datagram(&frame).await;
                         }
                     }

@@ -153,6 +153,32 @@ pub enum Mutation {
     },
 }
 
+impl Mutation {
+    /// The variant's name, for logging.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Mutation::AddPlaylistAfter { .. } => "AddPlaylistAfter",
+            Mutation::PushPlaylist { .. } => "PushPlaylist",
+            Mutation::MovePlaylistAfter { .. } => "MovePlaylistAfter",
+            Mutation::RemovePlaylist { .. } => "RemovePlaylist",
+            Mutation::SetWatched { .. } => "SetWatched",
+            Mutation::SetNowPlaying { .. } => "SetNowPlaying",
+            Mutation::SetSeekAuthority { .. } => "SetSeekAuthority",
+            Mutation::SetPlaybackIntent { .. } => "SetPlaybackIntent",
+            Mutation::SetSeriesPreference { .. } => "SetSeriesPreference",
+            Mutation::SetManualOverride { .. } => "SetManualOverride",
+            Mutation::SetFileAvailability { .. } => "SetFileAvailability",
+            Mutation::SetAniDbMetadata { .. } => "SetAniDbMetadata",
+            Mutation::SetSeriesRelations { .. } => "SetSeriesRelations",
+            Mutation::PutListEntry { .. } => "PutListEntry",
+            Mutation::SetNextEp { .. } => "SetNextEp",
+            Mutation::RequestLookup { .. } => "RequestLookup",
+            Mutation::Chat { .. } => "Chat",
+            Mutation::SetPlaybackPosition { .. } => "SetPlaybackPosition",
+        }
+    }
+}
+
 /// Commands into the sync actor.
 #[derive(Debug)]
 pub enum SyncCommand {
@@ -359,13 +385,20 @@ impl SyncActor {
             Err(poisoned) => poisoned.into_inner(),
         };
         if let Some(storage) = &*guard {
+            let started = std::time::Instant::now();
             let snapshot = StateSnapshot {
                 epoch: self.epoch(),
                 state: self.state.clone(),
             };
             let now = (self.clock)() as i64;
             match storage.save_state(&snapshot, now) {
-                Ok(()) => self.dirty = false,
+                Ok(()) => {
+                    self.dirty = false;
+                    tracing::debug!(
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "state flushed to storage"
+                    );
+                }
                 Err(e) => tracing::error!("state flush failed: {e}"),
             }
         } else {
@@ -400,10 +433,19 @@ impl SyncActor {
                 // (a bootstrap snapshot would wipe ops we sent early,
                 // leaving the server with edits we ourselves lack).
                 self.link = Link::AwaitingSync;
+                tracing::debug!(
+                    buffered_ops = self.offline_buffer.len(),
+                    buffered_position = self.offline_position.is_some(),
+                    "link: awaiting initial sync"
+                );
             }
             SyncCommand::Disconnected => {
                 self.link = Link::Down;
                 self.hash_mismatches = 0;
+                tracing::debug!(
+                    buffered_ops = self.offline_buffer.len(),
+                    "link: down; buffering ops locally"
+                );
             }
             SyncCommand::ClockSync { offset_millis } => {
                 self.offset_millis = offset_millis;
@@ -423,6 +465,7 @@ impl SyncActor {
         let user = self.user.clone();
         let ts = self.stamp();
         let is_position = matches!(mutation, Mutation::SetPlaybackPosition { .. });
+        tracing::trace!(mutation = mutation.name(), ts = ts.0, "local mutation");
 
         let op = match mutation {
             Mutation::AddPlaylistAfter { anchor, new } => {
@@ -532,8 +575,14 @@ impl SyncActor {
         let first_sync = self.link == Link::AwaitingSync;
         self.link = Link::Synced;
         if !first_sync {
+            tracing::debug!("link: synced (mid-session heal)");
             return; // mid-session heal: nothing to push
         }
+        tracing::debug!(
+            replayed_ops = self.offline_buffer.len(),
+            replayed_position = self.offline_position.is_some(),
+            "link: synced; replaying offline buffer and pushing upward merge"
+        );
         for op in std::mem::take(&mut self.offline_buffer) {
             self.state.apply(op);
         }
@@ -558,8 +607,15 @@ impl SyncActor {
                     // snapshot on the ordered control stream; anything
                     // mismatching here is a stale datagram or a stale op,
                     // and applying it would corrupt dot sequences.
+                    tracing::debug!(
+                        op = op.variant_name(),
+                        op_epoch = epoch.0,
+                        our_epoch = self.epoch().0,
+                        "dropping cross-epoch op"
+                    );
                     return;
                 }
+                tracing::trace!(op = op.variant_name(), via_datagram, "applying remote op");
                 self.observe(op.lww_timestamp());
                 if via_datagram {
                     // Unordered path: only apply if it cannot mask a gap.
@@ -571,15 +627,31 @@ impl SyncActor {
             }
             ServerControl::StateMerge(snapshot) => {
                 let ours = self.epoch();
+                // The view hash is only worth computing when someone is
+                // listening at debug — merges are rare, but not free.
+                let before =
+                    tracing::enabled!(tracing::Level::DEBUG).then(|| self.state.view_hash());
                 if snapshot.epoch == ours {
                     self.state.merge(snapshot.state);
                 } else if snapshot.epoch > ours {
                     // Compaction raced our merge: adopt wholesale.
+                    tracing::debug!(
+                        from = ours.0,
+                        to = snapshot.epoch.0,
+                        "adopting newer epoch via merge"
+                    );
                     self.set_epoch(snapshot.epoch);
                     self.state = snapshot.state;
                 } else {
                     tracing::warn!("ignoring stale-epoch merge ({:?})", snapshot.epoch);
                     return;
+                }
+                if let Some(before) = before {
+                    tracing::debug!(
+                        epoch = self.epoch().0,
+                        changed_view = before != self.state.view_hash(),
+                        "merge applied"
+                    );
                 }
                 self.observe(Some(self.state.max_lww_timestamp()));
                 self.hash_mismatches = 0;
@@ -591,6 +663,11 @@ impl SyncActor {
                     tracing::warn!("ignoring stale snapshot ({:?})", snapshot.epoch);
                     return;
                 }
+                tracing::debug!(
+                    from = self.epoch().0,
+                    to = snapshot.epoch.0,
+                    "adopting snapshot"
+                );
                 self.set_epoch(snapshot.epoch);
                 self.state = snapshot.state;
                 self.observe(Some(self.state.max_lww_timestamp()));

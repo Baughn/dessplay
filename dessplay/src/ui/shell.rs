@@ -32,6 +32,8 @@ pub fn run_ui_thread(
     inputs: std::sync::mpsc::Receiver<UiInput>,
     actions: mpsc::Sender<UserAction>,
 ) {
+    let started = std::time::Instant::now();
+    tracing::debug!("UI thread started");
     let mut adapter = match CrosstermTerminalAdapter::new() {
         Ok(adapter) => adapter,
         Err(e) => {
@@ -51,8 +53,16 @@ pub fn run_ui_thread(
         let _ = adapter.restore();
         return;
     }
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "terminal setup complete"
+    );
     let _ = adapter.raw_mut().clear();
     let _ = adapter.raw_mut().draw(|frame| ui.draw(frame));
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "first draw complete"
+    );
     while let Ok(input) = inputs.recv() {
         match input {
             UiInput::Shutdown => break,
@@ -62,6 +72,7 @@ pub fn run_ui_thread(
                     let quit = action == UserAction::Quit;
                     if actions.blocking_send(action).is_err() || quit {
                         let _ = adapter.restore();
+                        tracing::debug!("UI thread exiting (quit or actions channel closed)");
                         return;
                     }
                 }
@@ -72,16 +83,40 @@ pub fn run_ui_thread(
         }
     }
     let _ = adapter.restore();
+    tracing::debug!("UI thread exiting");
+}
+
+/// Coarse event description for trace logs. Deliberately omits the
+/// event's contents: keystrokes can include a password being typed
+/// into the settings modal, and this thread cannot see modal state.
+/// [`Ui::handle`] logs full contents with modal-aware redaction.
+fn event_kind(event: &Event<NoUserEvent>) -> &'static str {
+    match event {
+        Event::Keyboard(_) => "keyboard",
+        Event::Mouse(_) => "mouse",
+        Event::WindowResize(..) => "resize",
+        Event::FocusGained => "focus-gained",
+        Event::FocusLost => "focus-lost",
+        Event::Paste(_) => "paste",
+        Event::Tick => "tick",
+        Event::User(_) | Event::None => "other",
+    }
 }
 
 /// Read crossterm events on the current (dedicated) thread, forwarding
 /// them as [`UiInput::Event`]s until the channel closes.
 pub fn run_input_thread(inputs: std::sync::mpsc::SyncSender<UiInput>) {
+    tracing::debug!("input thread started");
     loop {
         match crossterm::event::read() {
             Ok(event) => {
                 let event: Event<NoUserEvent> = event.into();
-                if !matches!(event, Event::None) && inputs.send(UiInput::Event(event)).is_err() {
+                if matches!(event, Event::None) {
+                    continue;
+                }
+                tracing::trace!(kind = event_kind(&event), "input event forwarded");
+                if inputs.send(UiInput::Event(event)).is_err() {
+                    tracing::debug!("input thread exiting (channel closed)");
                     return;
                 }
             }

@@ -150,6 +150,28 @@ impl CrdtOp {
             CrdtOp::LookupRequest(_) | CrdtOp::Chat(_) => None,
         }
     }
+
+    /// The variant's name, for logging (Debug-formatting whole ops is
+    /// too noisy even at trace level).
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            CrdtOp::Playlist(_) => "Playlist",
+            CrdtOp::Watched(_) => "Watched",
+            CrdtOp::NowPlaying(_) => "NowPlaying",
+            CrdtOp::SeekAuthority(_) => "SeekAuthority",
+            CrdtOp::PlaybackIntent(_) => "PlaybackIntent",
+            CrdtOp::SeriesPreference(_) => "SeriesPreference",
+            CrdtOp::ManualOverride(_) => "ManualOverride",
+            CrdtOp::FileAvailability(_) => "FileAvailability",
+            CrdtOp::AniDbMetadata(_) => "AniDbMetadata",
+            CrdtOp::SeriesRelations(_) => "SeriesRelations",
+            CrdtOp::ListEntry(_) => "ListEntry",
+            CrdtOp::ListNextEp(_) => "ListNextEp",
+            CrdtOp::LookupRequest(_) => "LookupRequest",
+            CrdtOp::Chat(_) => "Chat",
+            CrdtOp::PlaybackPosition(_) => "PlaybackPosition",
+        }
+    }
 }
 
 /// A full-state snapshot, as sent on reconnection or after compaction.

@@ -108,6 +108,53 @@ async fn two_clients_connect_over_real_quic() {
     }
 }
 
+/// A wrong password must surface as AuthFailed — a clean, terminal
+/// exit — not as a generic connection loss followed by infinite
+/// retries. Real QUIC only: closing right after sending AuthFailed
+/// discards the unflushed frame, which the simulated transport is too
+/// polite to reproduce.
+#[tokio::test]
+async fn wrong_password_fails_cleanly_over_real_quic() {
+    let cert_dir = tempfile::tempdir().unwrap();
+    let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
+    let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    tokio::spawn(server::run(
+        listener,
+        ServerConfig::new(PASSWORD),
+        system_clock(),
+        None,
+    ));
+
+    let connector = Arc::new(QuicConnector::new(server_addr, "dessplay", None).unwrap());
+    let (_cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
+    let (event_tx, mut events) = mpsc::channel(64);
+    tokio::spawn(network::run(
+        connector,
+        NetworkConfig::new(
+            UserId::new("kim"),
+            "WRONG".into(),
+            Role::Interactive,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(|| 0),
+        ),
+        cmd_rx,
+        event_tx,
+    ));
+
+    // The first terminal-ish event must be AuthFailed; a Disconnected
+    // means the rejection got eaten by the close and the client would
+    // retry forever.
+    expect_event(&mut events, Duration::from_secs(10), |e| match e {
+        NetworkEvent::AuthFailed => Some(()),
+        NetworkEvent::Disconnected { reason } => {
+            panic!("rejection arrived as a generic disconnect: {reason}")
+        }
+        _ => None,
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn wrong_pinned_fingerprint_refuses_to_connect() {
     let cert_dir = tempfile::tempdir().unwrap();

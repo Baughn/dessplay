@@ -43,8 +43,9 @@ struct Cli {
     compact_at: String,
 }
 
-/// Load `./.env` (KEY=VALUE lines; `#` comments) into the environment,
-/// without overriding variables that are already set.
+/// Load `./.env` (KEY=VALUE lines, optionally `export `-prefixed; `#`
+/// comments) into the environment, without overriding variables that
+/// are already set.
 fn load_dotenv() {
     let Ok(contents) = std::fs::read_to_string(".env") else {
         return;
@@ -54,6 +55,7 @@ fn load_dotenv() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        let line = line.strip_prefix("export ").unwrap_or(line);
         if let Some((key, value)) = line.split_once('=') {
             let (key, value) = (key.trim(), value.trim().trim_matches('"'));
             if std::env::var_os(key).is_none() {
