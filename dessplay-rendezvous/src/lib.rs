@@ -9,5 +9,6 @@
 #![deny(clippy::todo)]
 #![deny(clippy::dbg_macro)]
 
+pub mod anidb;
 pub mod server;
 pub mod storage;

@@ -1,0 +1,122 @@
+//! Re-validation scheduling for the AniDB lookup queue (pure functions;
+//! the rules live in docs/design.md, "Parsing files to series/season/
+//! episode").
+//!
+//! All times are shared-clock unix milliseconds, caller-supplied — this
+//! module never reads a clock, which keeps it trivially testable and
+//! the queue deterministic.
+
+/// Milliseconds per minute/hour/day/week, for the ladder below.
+const MINUTE: i64 = 60 * 1000;
+const HOUR: i64 = 60 * MINUTE;
+const DAY: i64 = 24 * HOUR;
+const WEEK: i64 = 7 * DAY;
+
+/// Wait after a missing response before retrying; server throttling is
+/// unpredictable and a retry storm reads as flooding.
+pub const TIMEOUT_RETRY_MILLIS: i64 = 5_000;
+
+/// What an attempt produced, as far as scheduling cares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// AniDB returned data for the file.
+    Data,
+    /// AniDB answered, and doesn't know the file (320 NO SUCH FILE).
+    NoData,
+    /// No response arrived in time.
+    Timeout,
+}
+
+/// When to try this queue entry again. `None` means never — the entry
+/// can be dropped from the queue.
+///
+/// The ladder for unknown files stretches with the entry's age (since
+/// `first_seen`): new files often appear on AniDB within hours, old
+/// ones almost never do. Files AniDB *does* know are re-validated
+/// weekly (the design's hard cap of once per week).
+pub fn next_attempt(now: i64, first_seen: i64, has_data: bool, outcome: Outcome) -> Option<i64> {
+    match outcome {
+        Outcome::Timeout => Some(now + TIMEOUT_RETRY_MILLIS),
+        Outcome::Data => Some(now + WEEK),
+        Outcome::NoData if has_data => Some(now + WEEK),
+        Outcome::NoData => {
+            let age = now.saturating_sub(first_seen);
+            let interval = match age {
+                _ if age < DAY => 30 * MINUTE,
+                _ if age < WEEK => 2 * HOUR,
+                _ if age < 30 * DAY => 12 * HOUR,
+                _ if age < 90 * DAY => 3 * DAY,
+                _ => return None,
+            };
+            Some(now + interval)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn fresh_unknown_files_retry_every_half_hour() {
+        assert_eq!(next_attempt(1000, 0, false, Outcome::NoData), Some(1000 + 30 * MINUTE));
+    }
+
+    #[test]
+    fn the_ladder_stretches_with_age() {
+        let day_old = 2 * DAY;
+        assert_eq!(
+            next_attempt(day_old, 0, false, Outcome::NoData),
+            Some(day_old + 2 * HOUR)
+        );
+        let week_old = 8 * DAY;
+        assert_eq!(
+            next_attempt(week_old, 0, false, Outcome::NoData),
+            Some(week_old + 12 * HOUR)
+        );
+        let month_old = 40 * DAY;
+        assert_eq!(
+            next_attempt(month_old, 0, false, Outcome::NoData),
+            Some(month_old + 3 * DAY)
+        );
+    }
+
+    #[test]
+    fn unknown_files_older_than_three_months_stop() {
+        assert_eq!(next_attempt(91 * DAY, 0, false, Outcome::NoData), None);
+    }
+
+    #[test]
+    fn known_files_revalidate_weekly_at_most() {
+        assert_eq!(next_attempt(1000, 0, false, Outcome::Data), Some(1000 + WEEK));
+        // A file that had data once but is now missing keeps the weekly
+        // cadence — has_data sticks.
+        assert_eq!(
+            next_attempt(91 * DAY, 0, true, Outcome::NoData),
+            Some(91 * DAY + WEEK)
+        );
+    }
+
+    #[test]
+    fn timeouts_retry_after_the_penalty_wait() {
+        assert_eq!(
+            next_attempt(1000, 0, false, Outcome::Timeout),
+            Some(1000 + TIMEOUT_RETRY_MILLIS)
+        );
+        // Age doesn't matter for timeouts; the server never answered.
+        assert_eq!(
+            next_attempt(100 * DAY, 0, false, Outcome::Timeout),
+            Some(100 * DAY + TIMEOUT_RETRY_MILLIS)
+        );
+    }
+
+    #[test]
+    fn boundaries_are_exact() {
+        // At exactly one day, the 2h band applies.
+        assert_eq!(next_attempt(DAY, 0, false, Outcome::NoData), Some(DAY + 2 * HOUR));
+        // At exactly 90 days, re-validation stops.
+        assert_eq!(next_attempt(90 * DAY, 0, false, Outcome::NoData), None);
+    }
+}
