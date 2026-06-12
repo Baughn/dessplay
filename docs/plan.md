@@ -454,7 +454,13 @@ video playback in mpv, chat on OSD.
 - Testing is strictly offline (see testing-strategy.md, AniDB Tests):
   scripted-wire client tests under paused time, an in-memory host for
   the worker, canned-API integration scenarios over the sim transport.
-  `anidb-probe` (ping/file/anime) is the only real-API contact.
+  `anidb-probe` (ping/file/anime/scan) is the only real-API contact.
+- **Record/replay fixtures** (user-proposed): `anidb-probe scan <dir>`
+  hashes a directory, looks everything up through the recording wire
+  (credentials/session keys redacted at write time), and stores the
+  exchanges in `dessplay-rendezvous/testdata/anidb/`; the replay test
+  re-parses them with the real codec forever after. This closes the
+  "parser verified only against the spec" gap.
 
 **Goal**: Server-side metadata lookups.
 

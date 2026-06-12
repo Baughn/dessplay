@@ -113,7 +113,13 @@ fn run(cli: Cli) -> Result<(), String> {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
     // AniDB integration: enabled iff credentials are present. The
     // password is never logged — only its presence.
-    config.anidb = match (cli.anidb_user, cli.anidb_password) {
+    let anidb_user = cli
+        .anidb_user
+        .or_else(|| std::env::var("ANIDB_USER").ok());
+    let anidb_password = cli
+        .anidb_password
+        .or_else(|| std::env::var("ANIDB_PASSWORD").ok());
+    config.anidb = match (anidb_user, anidb_password) {
         (Some(user), Some(password)) => {
             let wire = runtime
                 .block_on(UdpWire::connect(&cli.anidb_server))

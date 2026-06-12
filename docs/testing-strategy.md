@@ -338,8 +338,16 @@ Layering mirrors the player tests:
   flow over the sim transport — client lookup requests through the
   real server and worker into replicated metadata on every client,
   name search over the wire, and the EOF List advance.
-- **Manual**: `anidb-probe` (ping / file / anime) is the only real-API
-  contact, run by a human, one or two packets per invocation.
+- **Replay** (`tests/anidb_replay.rs`): real exchanges recorded by
+  `anidb-probe scan <dir>` (manual, rate-limited, single-threaded) live
+  in `dessplay-rendezvous/testdata/anidb/` and are re-parsed by the
+  real codec on every test run — the parser is pinned to actual server
+  output without touching the API. The recorder redacts credentials
+  and session keys at write time. The replay test also asserts the
+  recorded fmask/amask match the constants we send, so changing the
+  masks forces a re-record.
+- **Manual**: `anidb-probe` (ping / file / anime / scan) is the only
+  real-API contact, run by a human.
 
 ---
 

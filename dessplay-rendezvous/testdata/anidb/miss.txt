@@ -1,0 +1,9 @@
+>>> AUTH user=USER&pass=REDACTED&protover=3&client=dessplay&clientver=1&enc=UTF8&tag=t1
+<<< t1 200 SESSION LOGIN ACCEPTED
+
+>>> FILE size=1048576&ed2k=b0d92d304b7214e5fb51d7ad637bf6ef&fmask=4000000000&amask=00A08000&s=SESSION&tag=t2
+<<< t2 320 NO SUCH FILE
+
+>>> LOGOUT s=SESSION&tag=t3
+<<< t3 203 LOGGED OUT
+
