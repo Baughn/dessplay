@@ -362,6 +362,17 @@ Interactive TUI client: connect, see peers, chat, manage shared playlist.
 - Player harness scenarios touch the real filesystem (tempdir roots,
   blocking-pool matcher), so they are eventually-style rather than
   perfectly deterministic.
+- **Post-milestone bug (2026-06-12), user-reported**: playlist-add
+  hashing ran inline in the bridge loop's select arm, starving the loop
+  for the duration of every multi-GB hash — frozen playlist UI,
+  serialized adds, and a queued Ctrl-C Quit that was never read. Fixed
+  by extracting the loop into a testable `run::SessionLoop` (liveness
+  rule documented in architecture.md) and moving hashing into
+  `SessionShell` background tasks with a completion channel. The
+  supervision regression tests
+  (`dessplay-rendezvous/tests/interactive_loop.rs`) hang a hash on a
+  FIFO and assert quits and other adds still land. A "hashing…"
+  progress indicator in the UI remains a polish item.
 
 **Goal**: mpv integration, echo suppression, synchronized playback.
 

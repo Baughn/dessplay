@@ -326,11 +326,10 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
 
 /// Run the interactive TUI client until quit.
 pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
-    use crate::actors::sync::{Mutation, SyncCommand};
-    use crate::ui::app::{Ui, UiSnapshot};
+    use crate::actors::sync::SyncCommand;
+    use crate::ui::app::Ui;
     use crate::ui::msg::UserAction;
     use crate::ui::shell::{UiInput, run_input_thread, run_ui_thread};
-    use dessplay_core::types::ManualState;
 
     let start = std::time::Instant::now();
     let db_path = match &args.db_path {
@@ -430,7 +429,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     let initial = sync_storage
         .load_state()
         .map_err(|e| format!("loading stored state: {e}"))?;
-    let mut handle = spawn_client(
+    let handle = spawn_client(
         Arc::clone(&setup.connector),
         ClientConfig {
             username: UserId::new(&setup.username),
@@ -453,7 +452,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         .map_err(|e| format!("loading manual mappings: {e}"))?
         .into_iter()
         .collect();
-    let mut shell = crate::session::SessionShell::new(
+    let shell = crate::session::SessionShell::new(
         me.clone(),
         crate::player::mpv::MpvFactory::new("mpv"),
         system_clock(),
@@ -464,203 +463,264 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         handle.sync.clone(),
         handle.network.clone(),
     );
-    // The view the player layer last saw; refreshed with every UI
-    // snapshot, used between snapshots by player/matcher events.
-    let mut last_view = dessplay_core::StateView::default();
 
-    /// Build a fresh snapshot for the UI.
-    async fn snapshot_for(
-        handle: &crate::client::ClientHandle,
-        storage: &Storage,
-    ) -> Option<UiSnapshot> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        handle.sync.send(SyncCommand::GetView(tx)).await.ok()?;
-        let view = rx.await.ok()?;
-        let recency = storage
-            .recent_watched(500)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|record| Some((record.series_id?, record.watched_at as u64)))
-            .collect();
-        Some(UiSnapshot {
-            view,
-            peers: handle.peers.borrow().clone(),
-            recency,
-        })
-    }
-
-    let mut pin_pending = setup.first_use;
-    let mut startup_state_written = false;
-    let mut first_connected = true;
-    let mut first_peer_list = true;
-    let mut first_snapshot = true;
-    loop {
-        tokio::select! {
-            action = action_rx.recv() => {
-                match action {
-                    None | Some(UserAction::Quit) => break,
-                    Some(UserAction::Mutate(mutation)) => {
-                        let _ = handle
-                            .sync
-                            .send(SyncCommand::Mutate(Box::new(mutation)))
-                            .await;
-                    }
-                    Some(UserAction::HashAndAdd { path, after }) => {
-                        let filename = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| path.display().to_string());
-                        let hash_path = path.clone();
-                        let hashed = tokio::task::spawn_blocking(move || {
-                            let file = std::fs::File::open(&hash_path)?;
-                            dessplay_core::hash::ed2k_hash_reader(file)
-                        })
-                        .await;
-                        match hashed {
-                            Ok(Ok(hashed)) => {
-                                let _ = handle
-                                    .sync
-                                    .send(SyncCommand::Mutate(Box::new(
-                                        Mutation::AddPlaylistAfter {
-                                            anchor: after,
-                                            new: dessplay_core::playlist::NewPlaylistEntry {
-                                                hash: hashed.root,
-                                                added_by: me.clone(),
-                                                filename,
-                                                size_bytes: hashed.size_bytes,
-                                                // Backfilled by the player's
-                                                // duration probe on first load.
-                                                duration_millis: None,
-                                            },
-                                        },
-                                    )))
-                                    .await;
-                                // We picked this file: it is its own
-                                // verified local copy.
-                                let _ = shell.note_local_file(hashed.root, path).await;
-                            }
-                            Ok(Err(e)) => tracing::error!("hashing failed: {e}"),
-                            Err(e) => tracing::error!("hash task died: {e}"),
-                        }
-                    }
-                    Some(UserAction::SaveSettings(saved, roots)) => {
-                        if let Err(e) = setup_storage.save_settings(&saved) {
-                            tracing::error!("saving settings: {e}");
-                        }
-                        // set_media_roots needs &mut; reopen briefly.
-                        match Storage::open(&db_path) {
-                            Ok(mut storage) => {
-                                if let Err(e) = storage.set_media_roots(&roots) {
-                                    tracing::error!("saving media roots: {e}");
-                                }
-                            }
-                            Err(e) => tracing::error!("opening storage: {e}"),
-                        }
-                        shell.media_roots = roots;
-                        settings = *saved;
-                    }
-                }
-            }
-            event = handle.events.recv() => {
-                let Some(event) = event else { break };
-                match &event {
-                    ClientEvent::Network(NetworkEvent::AuthFailed) => {
-                        let _ = input_tx.try_send(UiInput::Shutdown);
-                        let _ = ui_thread.join();
-                        return Err("the server rejected the password".into());
-                    }
-                    ClientEvent::Network(NetworkEvent::Connected { .. }) => {
-                        if first_connected {
-                            first_connected = false;
-                            tracing::info!(
-                                since_start_ms = start.elapsed().as_millis() as u64,
-                                "first Connected event"
-                            );
-                        }
-                        if pin_pending && let Some(fp) = setup.connector.observed_fingerprint() {
-                            let now = (system_clock())() as i64;
-                            if setup_storage
-                                .store_tofu_fingerprint(&setup.server_addr_str, &fp, now)
-                                .is_ok()
-                            {
-                                pin_pending = false;
-                            }
-                        }
-                        // "Ready on startup": write our manual override
-                        // once per session (clears a stale Paused too).
-                        if !startup_state_written {
-                            startup_state_written = true;
-                            let state = if settings.ready_on_startup {
-                                None
-                            } else {
-                                Some(ManualState::Paused)
-                            };
-                            let _ = handle
-                                .sync
-                                .send(SyncCommand::Mutate(Box::new(
-                                    Mutation::SetManualOverride { user: me.clone(), state },
-                                )))
-                                .await;
-                        }
-                    }
-                    ClientEvent::Network(NetworkEvent::PeerList(_)) if first_peer_list => {
-                        first_peer_list = false;
-                        tracing::info!(
-                            since_start_ms = start.elapsed().as_millis() as u64,
-                            "first PeerList"
-                        );
-                    }
-                    ClientEvent::Network(NetworkEvent::ClockSync { offset_millis }) => {
-                        shell.set_clock_offset(*offset_millis).await;
-                    }
-                    _ => {}
-                }
-                // Any event can change what the UI shows — and what the
-                // player layer should be doing.
-                if let Some(snapshot) = snapshot_for(&handle, &setup_storage).await {
-                    if first_snapshot {
-                        first_snapshot = false;
-                        tracing::info!(
-                            since_start_ms = start.elapsed().as_millis() as u64,
-                            "first state snapshot pushed to the UI"
-                        );
-                    }
-                    shell.on_state(&snapshot.view, &snapshot.peers).await;
-                    last_view = snapshot.view.clone();
-                    let _ = input_tx.try_send(UiInput::Snapshot(Box::new(snapshot)));
-                }
-            }
-            output = shell.player_outputs.recv() => {
-                let Some(output) = output else { continue };
-                for line in shell.on_player_output(output, &last_view).await {
-                    let _ = input_tx.try_send(UiInput::Subtitle(line));
-                }
-            }
-            resolution = shell.resolutions.recv() => {
-                let Some((file, resolution)) = resolution else { continue };
-                let peers = handle.peers.borrow().clone();
-                shell.on_resolution(file, resolution, &last_view, &peers).await;
-            }
-        }
-    }
+    let connector = Arc::clone(&setup.connector);
+    let mut session = SessionLoop {
+        handle,
+        shell,
+        actions: action_rx,
+        ui: input_tx.clone(),
+        storage: setup_storage,
+        db_path,
+        me,
+        settings,
+        observed_fingerprint: Box::new(move || connector.observed_fingerprint()),
+        pin_pending: setup.first_use,
+        server_addr: setup.server_addr_str.clone(),
+        start,
+    };
+    let end = session.run().await;
 
     // Teardown: release the terminal immediately (the user asked to
     // leave), then Goodbye + flush with a bounded wait — a wedged actor
     // must never hold the process hostage.
     let _ = input_tx.try_send(UiInput::Shutdown);
     let _ = ui_thread.join();
-    shell.shutdown().await;
-    let _ = handle.network.send(NetworkCommand::Shutdown).await;
-    let _ = handle.sync.send(SyncCommand::Shutdown).await;
+    if end == SessionEnd::AuthFailed {
+        return Err("the server rejected the password".into());
+    }
+    let hashes_in_flight = session.shell.hashes_in_flight();
+    if hashes_in_flight > 0 {
+        tracing::warn!(
+            hashes_in_flight,
+            "quitting with playlist-add hashes still running; those adds are dropped"
+        );
+    }
+    session.shell.shutdown().await;
+    let _ = session.handle.network.send(NetworkCommand::Shutdown).await;
+    let _ = session.handle.sync.send(SyncCommand::Shutdown).await;
     let done = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        handle.network.closed().await;
-        handle.sync.closed().await;
+        session.handle.network.closed().await;
+        session.handle.sync.closed().await;
     })
     .await;
     if done.is_err() {
         tracing::error!("actors did not shut down within 5s; exiting anyway");
     }
     Ok(())
+}
+
+/// Why the bridge loop ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SessionEnd {
+    /// The user quit (or a UI/event channel closed underneath us).
+    Quit,
+    /// The server rejected the password — terminal.
+    AuthFailed,
+}
+
+/// The interactive bridge loop: actors on one side, UI channels on the
+/// other. Extracted from [`run_interactive`] so it is testable without
+/// a terminal — supervision bugs ("Ctrl-C doesn't quit") live here, and
+/// they must be reproducible in tests.
+///
+/// **Liveness rule: nothing in this loop may block or run long.** Every
+/// await in an arm body must complete promptly (channel sends to live
+/// actors, oneshot view queries). Long work — hashing, file matching —
+/// is started in the background through [`SessionShell`] and comes back
+/// through its completion channels as new select arms. A user's `Quit`
+/// must be processed even while gigabytes are being hashed.
+pub struct SessionLoop<F: crate::player::PlayerFactory> {
+    /// The running client actors.
+    pub handle: crate::client::ClientHandle,
+    /// The player-side policy shell.
+    pub shell: crate::session::SessionShell<F>,
+    /// Actions from the UI (or a test).
+    pub actions: mpsc::Receiver<crate::ui::msg::UserAction>,
+    /// Inputs to the UI thread (snapshots, subtitles); lossy sends.
+    pub ui: std::sync::mpsc::SyncSender<crate::ui::shell::UiInput>,
+    /// Settings/history/TOFU storage.
+    pub storage: Storage,
+    /// Database path (settings saves reopen for `&mut` access).
+    pub db_path: std::path::PathBuf,
+    /// Our user.
+    pub me: UserId,
+    /// Current settings (updated by in-session saves).
+    pub settings: crate::config::Settings,
+    /// Observed TLS fingerprint for first-use pinning (`None` until a
+    /// connection exists, and always `None` on non-QUIC transports).
+    pub observed_fingerprint: Box<dyn Fn() -> Option<Vec<u8>> + Send>,
+    /// Whether a TOFU pin still needs to be stored.
+    pub pin_pending: bool,
+    /// Server address string, the TOFU pin key.
+    pub server_addr: String,
+    /// Process start, for startup timing logs.
+    pub start: std::time::Instant,
+}
+
+impl<F: crate::player::PlayerFactory> SessionLoop<F> {
+    /// Run until quit or auth failure.
+    pub async fn run(&mut self) -> SessionEnd {
+        use crate::actors::sync::Mutation;
+        use crate::ui::msg::UserAction;
+        use crate::ui::shell::UiInput;
+        use dessplay_core::types::ManualState;
+
+        let mut last_view = dessplay_core::StateView::default();
+        let mut startup_state_written = false;
+        let mut first_connected = true;
+        let mut first_peer_list = true;
+        let mut first_snapshot = true;
+        loop {
+            tokio::select! {
+                action = self.actions.recv() => {
+                    match action {
+                        None | Some(UserAction::Quit) => return SessionEnd::Quit,
+                        Some(UserAction::Mutate(mutation)) => {
+                            let _ = self
+                                .handle
+                                .sync
+                                .send(SyncCommand::Mutate(Box::new(mutation)))
+                                .await;
+                        }
+                        Some(UserAction::HashAndAdd { path, after }) => {
+                            // Hashing is seconds per gigabyte: background
+                            // work, completed in the `hashed` arm below.
+                            // Inline hashing here once starved this loop —
+                            // frozen UI, unprocessable Quit (2026-06-12).
+                            self.shell.hash_and_add(path, after);
+                        }
+                        Some(UserAction::SaveSettings(saved, roots)) => {
+                            if let Err(e) = self.storage.save_settings(&saved) {
+                                tracing::error!("saving settings: {e}");
+                            }
+                            // set_media_roots needs &mut; reopen briefly.
+                            match Storage::open(&self.db_path) {
+                                Ok(mut storage) => {
+                                    if let Err(e) = storage.set_media_roots(&roots) {
+                                        tracing::error!("saving media roots: {e}");
+                                    }
+                                }
+                                Err(e) => tracing::error!("opening storage: {e}"),
+                            }
+                            self.shell.media_roots = roots;
+                            self.settings = *saved;
+                        }
+                    }
+                }
+                event = self.handle.events.recv() => {
+                    let Some(event) = event else { return SessionEnd::Quit };
+                    match &event {
+                        ClientEvent::Network(NetworkEvent::AuthFailed) => {
+                            return SessionEnd::AuthFailed;
+                        }
+                        ClientEvent::Network(NetworkEvent::Connected { .. }) => {
+                            if first_connected {
+                                first_connected = false;
+                                tracing::info!(
+                                    since_start_ms = self.start.elapsed().as_millis() as u64,
+                                    "first Connected event"
+                                );
+                            }
+                            if self.pin_pending && let Some(fp) = (self.observed_fingerprint)() {
+                                let now = (system_clock())() as i64;
+                                if self
+                                    .storage
+                                    .store_tofu_fingerprint(&self.server_addr, &fp, now)
+                                    .is_ok()
+                                {
+                                    self.pin_pending = false;
+                                }
+                            }
+                            // "Ready on startup": write our manual override
+                            // once per session (clears a stale Paused too).
+                            if !startup_state_written {
+                                startup_state_written = true;
+                                let state = if self.settings.ready_on_startup {
+                                    None
+                                } else {
+                                    Some(ManualState::Paused)
+                                };
+                                let _ = self
+                                    .handle
+                                    .sync
+                                    .send(SyncCommand::Mutate(Box::new(
+                                        Mutation::SetManualOverride {
+                                            user: self.me.clone(),
+                                            state,
+                                        },
+                                    )))
+                                    .await;
+                            }
+                        }
+                        ClientEvent::Network(NetworkEvent::PeerList(_)) if first_peer_list => {
+                            first_peer_list = false;
+                            tracing::info!(
+                                since_start_ms = self.start.elapsed().as_millis() as u64,
+                                "first PeerList"
+                            );
+                        }
+                        ClientEvent::Network(NetworkEvent::ClockSync { offset_millis }) => {
+                            self.shell.set_clock_offset(*offset_millis).await;
+                        }
+                        _ => {}
+                    }
+                    // Any event can change what the UI shows — and what
+                    // the player layer should be doing.
+                    if let Some(snapshot) = self.snapshot().await {
+                        if first_snapshot {
+                            first_snapshot = false;
+                            tracing::info!(
+                                since_start_ms = self.start.elapsed().as_millis() as u64,
+                                "first state snapshot pushed to the UI"
+                            );
+                        }
+                        self.shell.on_state(&snapshot.view, &snapshot.peers).await;
+                        last_view = snapshot.view.clone();
+                        let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                    }
+                }
+                output = self.shell.player_outputs.recv() => {
+                    let Some(output) = output else { continue };
+                    for line in self.shell.on_player_output(output, &last_view).await {
+                        let _ = self.ui.try_send(UiInput::Subtitle(line));
+                    }
+                }
+                resolution = self.shell.resolutions.recv() => {
+                    let Some((file, resolution)) = resolution else { continue };
+                    let peers = self.handle.peers.borrow().clone();
+                    self.shell
+                        .on_resolution(file, resolution, &last_view, &peers)
+                        .await;
+                }
+                hashed = self.shell.hashed.recv() => {
+                    let Some(done) = hashed else { continue };
+                    self.shell.on_hashed(done).await;
+                }
+            }
+        }
+    }
+
+    /// Build a fresh snapshot for the UI. (`&mut self` although nothing
+    /// mutates: a `&self` future would demand `Sync` from the SQLite
+    /// connection when the loop is spawned as a task.)
+    async fn snapshot(&mut self) -> Option<crate::ui::app::UiSnapshot> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.handle.sync.send(SyncCommand::GetView(tx)).await.ok()?;
+        let view = rx.await.ok()?;
+        let recency = self
+            .storage
+            .recent_watched(500)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|record| Some((record.series_id?, record.watched_at as u64)))
+            .collect();
+        Some(crate::ui::app::UiSnapshot {
+            view,
+            peers: self.handle.peers.borrow().clone(),
+            recency,
+        })
+    }
 }
 
 /// `dessplay --dump`: print settings and the stored state, then exit.

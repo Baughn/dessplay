@@ -280,11 +280,23 @@ impl PlayerWiring {
     }
 }
 
+/// A finished background hash for a playlist add.
+#[derive(Debug)]
+pub struct HashedAdd {
+    /// The file that was hashed.
+    pub path: PathBuf,
+    /// Playlist anchor for the add.
+    pub after: Option<Ed2kHash>,
+    /// The hash, or why not.
+    pub result: std::io::Result<dessplay_core::hash::Ed2kFileHash>,
+}
+
 /// The async half of the session: owns the channels around
 /// [`PlayerWiring`] and executes its [`Directive`]s. Shared between
 /// `run_interactive` and the multi-client harness — the caller runs the
 /// select loop (it knows about its UI), the shell does everything else.
 pub struct SessionShell<F: crate::player::PlayerFactory> {
+    me: UserId,
     wiring: PlayerWiring,
     /// Taken on the first `Load`, when the player actor spawns.
     factory: Option<F>,
@@ -302,6 +314,11 @@ pub struct SessionShell<F: crate::player::PlayerFactory> {
     /// Manual mappings (hash → user-picked path); checked before the
     /// matcher and exempt from hash verification by design.
     manual: HashMap<Ed2kHash, PathBuf>,
+    hash_tx: tokio::sync::mpsc::Sender<HashedAdd>,
+    /// Finished playlist-add hashes; feed each into [`Self::on_hashed`].
+    pub hashed: tokio::sync::mpsc::Receiver<HashedAdd>,
+    /// Paths currently being hashed (dedupes impatient re-adds).
+    hashing: HashSet<PathBuf>,
     sync: tokio::sync::mpsc::Sender<crate::actors::sync::SyncCommand>,
     network: tokio::sync::mpsc::Sender<crate::actors::network::NetworkCommand>,
 }
@@ -320,7 +337,9 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     ) -> Self {
         let (player_out_tx, player_outputs) = tokio::sync::mpsc::channel(256);
         let (res_tx, resolutions) = tokio::sync::mpsc::channel(64);
+        let (hash_tx, hashed) = tokio::sync::mpsc::channel(64);
         SessionShell {
+            me: me.clone(),
             wiring: PlayerWiring::new(me),
             factory: Some(factory),
             clock,
@@ -332,9 +351,84 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             resolutions,
             media_roots,
             manual,
+            hash_tx,
+            hashed,
+            hashing: HashSet::new(),
             sync,
             network,
         }
+    }
+
+    /// Hash a local file in the background and add it to the playlist
+    /// when done (the result arrives on [`Self::hashed`] →
+    /// [`Self::on_hashed`]). Hashing is seconds per gigabyte, so it must
+    /// never run inline in the bridge loop — a stuck or slow hash must
+    /// not stop the UI updating or a quit being processed. Re-adding a
+    /// path already being hashed is a no-op (the impatient double-add).
+    pub fn hash_and_add(&mut self, path: PathBuf, after: Option<Ed2kHash>) {
+        if !self.hashing.insert(path.clone()) {
+            tracing::debug!(path = %path.display(), "already hashing; ignoring re-add");
+            return;
+        }
+        tracing::info!(path = %path.display(), "hashing for playlist add");
+        let hash_tx = self.hash_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
+            let result = std::fs::File::open(&path).and_then(dessplay_core::hash::ed2k_hash_reader);
+            tracing::info!(
+                path = %path.display(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                ok = result.is_ok(),
+                "hash finished"
+            );
+            let _ = hash_tx.blocking_send(HashedAdd {
+                path,
+                after,
+                result,
+            });
+        });
+    }
+
+    /// A background hash finished: add the file to the playlist.
+    pub async fn on_hashed(&mut self, done: HashedAdd) -> Vec<String> {
+        self.hashing.remove(&done.path);
+        let hashed = match done.result {
+            Ok(hashed) => hashed,
+            Err(e) => {
+                tracing::error!(path = %done.path.display(), "hashing failed: {e}");
+                return Vec::new();
+            }
+        };
+        let filename = done
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| done.path.display().to_string());
+        let _ = self
+            .sync
+            .send(crate::actors::sync::SyncCommand::Mutate(Box::new(
+                Mutation::AddPlaylistAfter {
+                    anchor: done.after,
+                    new: dessplay_core::playlist::NewPlaylistEntry {
+                        hash: hashed.root,
+                        added_by: self.me.clone(),
+                        filename,
+                        size_bytes: hashed.size_bytes,
+                        // Backfilled by the player's duration probe on
+                        // first load.
+                        duration_millis: None,
+                    },
+                },
+            )))
+            .await;
+        // We picked this file: it is its own verified local copy.
+        self.note_local_file(hashed.root, done.path).await
+    }
+
+    /// How many playlist-add hashes are still running (logged at quit —
+    /// their adds are dropped).
+    pub fn hashes_in_flight(&self) -> usize {
+        self.hashing.len()
     }
 
     /// A fresh state view arrived. Returns subtitle lines for the UI.

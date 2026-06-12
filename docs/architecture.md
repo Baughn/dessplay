@@ -259,6 +259,27 @@ the real channels and lazily spawns the player actor on the first load.
 the full pipeline (player → wiring → sync → server → peers → their
 players) is covered in tests without a terminal or a real mpv.
 
+### The bridge loop (`run::SessionLoop`)
+
+The interactive client's select loop — actions from the UI in, snapshots
+and subtitles out, player/matcher/hash completions in between. Extracted
+from `run_interactive` into a struct so it runs (and is tested) without
+a terminal.
+
+**Liveness rule: nothing in the bridge loop may block or run long.**
+Every await in an arm body must complete promptly — channel sends to
+live actors, oneshot view queries, nothing else. Long work (ed2k
+hashing, media-root scans) is started in the background through
+`SessionShell` and returns through its completion channels
+(`resolutions`, `hashed`) as separate select arms. The 2026-06-12 bug
+class: an inline `spawn_blocking(...).await` for playlist-add hashing
+starved the loop for the duration of every multi-gigabyte hash — frozen
+UI, serialized adds, and a queued Quit that was never read (Ctrl-C
+appeared dead). The supervision tests in
+`dessplay-rendezvous/tests/interactive_loop.rs` pin this: a hash pointed
+at a FIFO (blocks forever) must not stop a quit from landing or other
+adds from reaching the playlist.
+
 ### FileActor
 
 **Owns:** File hash cache (including ed2k per-block hashes), media root
