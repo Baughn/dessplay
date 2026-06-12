@@ -19,6 +19,18 @@ pub enum UiInput {
     Event(Event<NoUserEvent>),
     /// A subtitle line from the local player (rolling log).
     Subtitle(String),
+    /// Playlist-add hashing progress (the no-silent-work rule: shown as
+    /// a progress overlay).
+    Hashing {
+        /// File being hashed.
+        filename: String,
+        /// Bytes hashed so far.
+        done_bytes: u64,
+        /// File size (0 = unknown).
+        total_bytes: u64,
+        /// True when this file is done (row removed).
+        finished: bool,
+    },
     /// Restore the terminal and exit the UI thread. The explicit
     /// message exists because channel-closure can't signal it: the
     /// input thread holds a sender clone forever (it's blocked in
@@ -76,6 +88,12 @@ pub fn run_ui_thread(
             UiInput::Shutdown => break,
             UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
             UiInput::Subtitle(line) => ui.push_subtitle(line),
+            UiInput::Hashing {
+                filename,
+                done_bytes,
+                total_bytes,
+                finished,
+            } => ui.set_hash_progress(filename, done_bytes, total_bytes, finished),
             UiInput::Event(event) => {
                 for action in ui.handle(event) {
                     let quit = action == UserAction::Quit;

@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-06-11
+Last updated: 2026-06-12
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see

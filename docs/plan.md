@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-06-11
+Last updated: 2026-06-12
 
 10 phases, bottom-up. Each phase produces testable artifacts. The first
 user-facing demo (TUI with chat + shared playlist) arrives at Phase 6;
@@ -371,8 +371,14 @@ Interactive TUI client: connect, see peers, chat, manage shared playlist.
   `SessionShell` background tasks with a completion channel. The
   supervision regression tests
   (`dessplay-rendezvous/tests/interactive_loop.rs`) hang a hash on a
-  FIFO and assert quits and other adds still land. A "hashing…"
-  progress indicator in the UI remains a polish item.
+  FIFO and assert quits and other adds still land. Follow-ups from the
+  same report: debug-build MD4 hashed at ~70 MiB/s (20s per episode) —
+  fixed with `[profile.dev.package.*] opt-level = 3` for the hash
+  crates (now ~1.2 GiB/s, same as release; per-block parallelization
+  considered and rejected — multiple streams behave badly on HDDs);
+  and a new design rule (design.md, UI Principles): long-running work
+  is never silent — hashing shows a non-input-capturing progress
+  overlay, asserted end-to-end in the loop tests.
 
 **Goal**: mpv integration, echo suppression, synchronized playback.
 

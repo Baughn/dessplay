@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-11
+Last updated: 2026-06-12
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -441,6 +441,17 @@ CSVs:
 ---
 
 ## TUI Layout
+
+### UI Principles
+
+**No silent long-running work.** Any operation that can take more than
+a moment (hashing a file for the playlist, scanning media roots,
+downloading from peers, archiving) must show visible progress in the
+UI while it runs — a user who sees nothing happen assumes nothing is
+happening, and retries. Playlist-add hashing shows a centered progress
+overlay (one bar per in-flight file); it is visually modal but captures
+no input, so chat keeps working underneath. Phase 9's transfers reuse
+the same pattern.
 
 ```
 +----------------------------------+------------------+

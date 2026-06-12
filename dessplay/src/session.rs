@@ -291,6 +291,55 @@ pub struct HashedAdd {
     pub result: std::io::Result<dessplay_core::hash::Ed2kFileHash>,
 }
 
+/// Progress of background playlist-add hashing — the design's
+/// no-silent-work rule: long-running operations always show progress in
+/// the UI (design.md, UI Principles).
+#[derive(Debug)]
+pub enum HashEvent {
+    /// Hashing is under way (sent at start and periodically after).
+    Progress {
+        /// The file being hashed.
+        path: PathBuf,
+        /// Bytes read so far.
+        done_bytes: u64,
+        /// File size (0 when unknowable).
+        total_bytes: u64,
+    },
+    /// Hashing finished (also on error — the UI row goes away either
+    /// way; [`SessionShell::on_hashed`] handles the result).
+    Done(HashedAdd),
+}
+
+/// Emit a progress event at most every this many bytes.
+const HASH_PROGRESS_STRIDE: u64 = 64 * 1024 * 1024;
+
+/// A reader that reports cumulative progress through a lossy channel
+/// (a dropped update is fine; the next one supersedes it).
+struct ProgressReader<R> {
+    inner: R,
+    path: PathBuf,
+    total_bytes: u64,
+    done_bytes: u64,
+    last_reported: u64,
+    events: tokio::sync::mpsc::Sender<HashEvent>,
+}
+
+impl<R: std::io::Read> std::io::Read for ProgressReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.done_bytes += n as u64;
+        if self.done_bytes - self.last_reported >= HASH_PROGRESS_STRIDE {
+            self.last_reported = self.done_bytes;
+            let _ = self.events.try_send(HashEvent::Progress {
+                path: self.path.clone(),
+                done_bytes: self.done_bytes,
+                total_bytes: self.total_bytes,
+            });
+        }
+        Ok(n)
+    }
+}
+
 /// The async half of the session: owns the channels around
 /// [`PlayerWiring`] and executes its [`Directive`]s. Shared between
 /// `run_interactive` and the multi-client harness — the caller runs the
@@ -314,9 +363,10 @@ pub struct SessionShell<F: crate::player::PlayerFactory> {
     /// Manual mappings (hash → user-picked path); checked before the
     /// matcher and exempt from hash verification by design.
     manual: HashMap<Ed2kHash, PathBuf>,
-    hash_tx: tokio::sync::mpsc::Sender<HashedAdd>,
-    /// Finished playlist-add hashes; feed each into [`Self::on_hashed`].
-    pub hashed: tokio::sync::mpsc::Receiver<HashedAdd>,
+    hash_tx: tokio::sync::mpsc::Sender<HashEvent>,
+    /// Playlist-add hash progress and completions; completions feed
+    /// into [`Self::on_hashed`], progress feeds the UI.
+    pub hash_events: tokio::sync::mpsc::Receiver<HashEvent>,
     /// Paths currently being hashed (dedupes impatient re-adds).
     hashing: HashSet<PathBuf>,
     sync: tokio::sync::mpsc::Sender<crate::actors::sync::SyncCommand>,
@@ -337,7 +387,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     ) -> Self {
         let (player_out_tx, player_outputs) = tokio::sync::mpsc::channel(256);
         let (res_tx, resolutions) = tokio::sync::mpsc::channel(64);
-        let (hash_tx, hashed) = tokio::sync::mpsc::channel(64);
+        let (hash_tx, hash_events) = tokio::sync::mpsc::channel(64);
         SessionShell {
             me: me.clone(),
             wiring: PlayerWiring::new(me),
@@ -352,7 +402,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             media_roots,
             manual,
             hash_tx,
-            hashed,
+            hash_events,
             hashing: HashSet::new(),
             sync,
             network,
@@ -360,11 +410,12 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     }
 
     /// Hash a local file in the background and add it to the playlist
-    /// when done (the result arrives on [`Self::hashed`] →
-    /// [`Self::on_hashed`]). Hashing is seconds per gigabyte, so it must
-    /// never run inline in the bridge loop — a stuck or slow hash must
-    /// not stop the UI updating or a quit being processed. Re-adding a
-    /// path already being hashed is a no-op (the impatient double-add).
+    /// when done (progress and the result arrive on
+    /// [`Self::hash_events`]; completions go to [`Self::on_hashed`]).
+    /// Hashing is around a second per gigabyte, so it must never run
+    /// inline in the bridge loop — a stuck or slow hash must not stop
+    /// the UI updating or a quit being processed. Re-adding a path
+    /// already being hashed is a no-op (the impatient double-add).
     pub fn hash_and_add(&mut self, path: PathBuf, after: Option<Ed2kHash>) {
         if !self.hashing.insert(path.clone()) {
             tracing::debug!(path = %path.display(), "already hashing; ignoring re-add");
@@ -374,18 +425,35 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         let hash_tx = self.hash_tx.clone();
         tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            let result = std::fs::File::open(&path).and_then(dessplay_core::hash::ed2k_hash_reader);
+            let total_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            // The opening progress event puts the file on screen
+            // immediately (the no-silent-work rule).
+            let _ = hash_tx.blocking_send(HashEvent::Progress {
+                path: path.clone(),
+                done_bytes: 0,
+                total_bytes,
+            });
+            let result = std::fs::File::open(&path).and_then(|file| {
+                dessplay_core::hash::ed2k_hash_reader(ProgressReader {
+                    inner: file,
+                    path: path.clone(),
+                    total_bytes,
+                    done_bytes: 0,
+                    last_reported: 0,
+                    events: hash_tx.clone(),
+                })
+            });
             tracing::info!(
                 path = %path.display(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 ok = result.is_ok(),
                 "hash finished"
             );
-            let _ = hash_tx.blocking_send(HashedAdd {
+            let _ = hash_tx.blocking_send(HashEvent::Done(HashedAdd {
                 path,
                 after,
                 result,
-            });
+            }));
         });
     }
 

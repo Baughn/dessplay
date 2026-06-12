@@ -127,6 +127,9 @@ pub struct Ui {
     subtitle_pane: bool,
     /// Rolling log of the local player's subtitle lines.
     subtitles: std::collections::VecDeque<String>,
+    /// In-flight playlist-add hashes: (filename, done, total). Drawn as
+    /// a progress overlay while non-empty (the no-silent-work rule).
+    hashing: Vec<(String, u64, u64)>,
     snapshot: UiSnapshot,
     settings: Settings,
     media_roots: Vec<PathBuf>,
@@ -162,6 +165,7 @@ impl Ui {
             focus: Focus::Chat,
             subtitle_pane: settings.subtitle_pane,
             subtitles: std::collections::VecDeque::new(),
+            hashing: Vec::new(),
             snapshot: UiSnapshot::default(),
             settings: settings.clone(),
             media_roots: media_roots.clone(),
@@ -187,6 +191,25 @@ impl Ui {
         self.subtitles.push_back(line);
         while self.subtitles.len() > 100 {
             self.subtitles.pop_front();
+        }
+    }
+
+    /// Track playlist-add hashing progress (drawn as an overlay).
+    pub fn set_hash_progress(&mut self, filename: String, done: u64, total: u64, finished: bool) {
+        if finished {
+            self.hashing.retain(|(name, _, _)| *name != filename);
+            return;
+        }
+        match self
+            .hashing
+            .iter_mut()
+            .find(|(name, _, _)| *name == filename)
+        {
+            Some(row) => {
+                row.1 = done;
+                row.2 = total;
+            }
+            None => self.hashing.push((filename, done, total)),
         }
     }
 
@@ -589,6 +612,68 @@ impl Ui {
         self.keybar.view(frame, keybar_area);
         if let Some(modal) = self.modals.last_mut() {
             modal.as_component().view(frame, frame.area());
+        }
+        self.draw_hash_overlay(frame);
+    }
+
+    /// The hashing progress overlay: visually modal (centered, on top
+    /// of everything), but it captures no input — chat keeps working
+    /// while files hash. Design.md's no-silent-work rule.
+    fn draw_hash_overlay(&self, frame: &mut Frame<'_>) {
+        use tuirealm::ratatui::layout::Rect;
+        use tuirealm::ratatui::widgets::{Clear, LineGauge, Paragraph};
+
+        if self.hashing.is_empty() {
+            return;
+        }
+        let area = frame.area();
+        let height = (self.hashing.len() as u16 * 2 + 2).min(area.height);
+        let width = (area.width * 3 / 5).clamp(20.min(area.width), area.width);
+        let overlay = Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height - height) / 2,
+            width,
+            height,
+        };
+        frame.render_widget(Clear, overlay);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Hashing for playlist"),
+            overlay,
+        );
+        for (i, (filename, done, total)) in self.hashing.iter().enumerate() {
+            let y = overlay.y + 1 + (i as u16) * 2;
+            if y + 1 >= overlay.y + overlay.height {
+                break;
+            }
+            let inner_x = overlay.x + 1;
+            let inner_w = overlay.width.saturating_sub(2);
+            frame.render_widget(
+                Paragraph::new(filename.as_str()),
+                Rect {
+                    x: inner_x,
+                    y,
+                    width: inner_w,
+                    height: 1,
+                },
+            );
+            let ratio = if *total > 0 {
+                (*done as f64 / *total as f64).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            frame.render_widget(
+                LineGauge::default()
+                    .ratio(ratio)
+                    .label(format!("{:3.0}%", ratio * 100.0)),
+                Rect {
+                    x: inner_x,
+                    y: y + 1,
+                    width: inner_w,
+                    height: 1,
+                },
+            );
         }
     }
 

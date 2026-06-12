@@ -406,3 +406,36 @@ fn f2_toggles_subtitle_pane() {
     ui.handle(key(Key::Function(2)));
     assert!(render(&mut ui, 100, 30).contains("Subtitles"));
 }
+
+#[test]
+fn hashing_progress_overlay_appears_and_clears() {
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    assert!(!render(&mut ui, 100, 30).contains("Hashing"));
+
+    // Two files in flight, one halfway.
+    ui.set_hash_progress("ep1.mkv".into(), 0, 1_000, false);
+    ui.set_hash_progress("ep2.mkv".into(), 500, 1_000, false);
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Hashing for playlist"), "{screen}");
+    assert!(screen.contains("ep1.mkv"), "{screen}");
+    assert!(screen.contains("ep2.mkv"), "{screen}");
+    assert!(screen.contains("50%"), "{screen}");
+
+    // The overlay is informational: input still reaches the panes
+    // (you can chat while files hash).
+    let actions = type_str(&mut ui, "hi");
+    assert!(actions.is_empty());
+    let actions = ui.handle(key(Key::Enter));
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, UserAction::Mutate(Mutation::Chat { text }) if text == "hi")),
+        "chat must keep working under the hashing overlay: {actions:?}"
+    );
+
+    // Both finish: the overlay goes away.
+    ui.set_hash_progress("ep1.mkv".into(), 0, 0, true);
+    ui.set_hash_progress("ep2.mkv".into(), 0, 0, true);
+    assert!(!render(&mut ui, 100, 30).contains("Hashing"));
+}

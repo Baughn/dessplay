@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-06-10
+Last updated: 2026-06-12
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -231,6 +231,17 @@ snapshot data to component props:
 
 This mapping is a pure function (presence and subtitle data arrive as
 explicit inputs alongside the snapshot), making it testable independently.
+
+### Non-snapshot inputs and the hashing overlay
+
+Besides snapshots and terminal events, the bridge loop feeds `Ui` two
+local-only inputs through `UiInput`: `Subtitle(String)` (the rolling
+sub-text log) and `Hashing { filename, done_bytes, total_bytes,
+finished }` (playlist-add hash progress). The hashing rows render as a
+centered overlay drawn on top of everything — design.md's no-silent-work
+rule — but the overlay is *not* in the modal stack: it captures no
+input, so chat and navigation keep working while files hash. `finished`
+removes a row; the overlay disappears when no hashes remain.
 
 ---
 

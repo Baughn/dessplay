@@ -35,3 +35,17 @@ tracing-appender = "0.2"
 rusqlite = { version = "0.34", features = ["bundled"] }
 dirs = "6"
 tempfile = "3"
+
+# Debug-build MD4 hashes at ~70 MiB/s — a 1.4GB episode takes 20s and
+# feels broken (release: >1.2 GiB/s). Always optimize the hash inner
+# loops; debug info elsewhere is unaffected.
+[profile.dev.package.md4]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3
+[profile.dev.package.generic-array]
+opt-level = 3
+[profile.dev.package.typenum]
+opt-level = 3

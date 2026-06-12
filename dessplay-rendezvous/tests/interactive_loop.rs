@@ -49,8 +49,9 @@ fn release_fifo(fifo: &Path) {
 
 struct LoopRig {
     actions: mpsc::Sender<UserAction>,
-    /// Keep the UI receiver alive (sends are lossy `try_send`s).
-    _ui_rx: std::sync::mpsc::Receiver<UiInput>,
+    /// UI inputs the loop pushed (kept alive — sends are lossy
+    /// `try_send`s into this).
+    ui_rx: std::sync::mpsc::Receiver<UiInput>,
     sync: mpsc::Sender<dessplay::actors::sync::SyncCommand>,
     task: tokio::task::JoinHandle<SessionEnd>,
 }
@@ -88,7 +89,7 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
     let task = tokio::spawn(async move { session.run().await });
     LoopRig {
         actions: action_tx,
-        _ui_rx: ui_rx,
+        ui_rx,
         sync,
         task,
     }
@@ -181,6 +182,24 @@ async fn adds_keep_flowing_while_a_hash_is_stuck() {
         landed,
         "the add never landed; the loop is starved by the stuck hash"
     );
+
+    // The no-silent-work rule, end to end: the loop must have pushed
+    // hashing progress for the real file to the UI, including its
+    // completion.
+    let mut saw_progress = false;
+    let mut saw_finished = false;
+    while let Ok(input) = rig.ui_rx.try_recv() {
+        if let UiInput::Hashing {
+            filename, finished, ..
+        } = input
+            && filename == "real.mkv"
+        {
+            saw_progress = true;
+            saw_finished |= finished;
+        }
+    }
+    assert!(saw_progress, "no hashing progress reached the UI");
+    assert!(saw_finished, "the hashing row was never cleared");
 
     rig.actions.send(UserAction::Quit).await.expect("loop gone");
     let end = tokio::time::timeout(Duration::from_secs(5), &mut rig.task)

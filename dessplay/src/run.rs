@@ -510,6 +510,13 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// A path's filename for display (full path as fallback).
+fn display_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 /// Why the bridge loop ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SessionEnd {
@@ -693,9 +700,31 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         .on_resolution(file, resolution, &last_view, &peers)
                         .await;
                 }
-                hashed = self.shell.hashed.recv() => {
-                    let Some(done) = hashed else { continue };
-                    self.shell.on_hashed(done).await;
+                hash_event = self.shell.hash_events.recv() => {
+                    let Some(event) = hash_event else { continue };
+                    match event {
+                        crate::session::HashEvent::Progress {
+                            path,
+                            done_bytes,
+                            total_bytes,
+                        } => {
+                            let _ = self.ui.try_send(UiInput::Hashing {
+                                filename: display_name(&path),
+                                done_bytes,
+                                total_bytes,
+                                finished: false,
+                            });
+                        }
+                        crate::session::HashEvent::Done(done) => {
+                            let _ = self.ui.try_send(UiInput::Hashing {
+                                filename: display_name(&done.path),
+                                done_bytes: 0,
+                                total_bytes: 0,
+                                finished: true,
+                            });
+                            self.shell.on_hashed(done).await;
+                        }
+                    }
                 }
             }
         }
