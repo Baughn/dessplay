@@ -621,7 +621,7 @@ impl Ui {
     /// while files hash. Design.md's no-silent-work rule.
     fn draw_hash_overlay(&self, frame: &mut Frame<'_>) {
         use tuirealm::ratatui::layout::Rect;
-        use tuirealm::ratatui::widgets::{Clear, LineGauge, Paragraph};
+        use tuirealm::ratatui::widgets::{Clear, Paragraph};
 
         if self.hashing.is_empty() {
             return;
@@ -663,10 +663,13 @@ impl Ui {
             } else {
                 0.0
             };
+            // A classic [####    ] bar — fill length is easier to track
+            // at a glance than a number.
+            let slots = inner_w.saturating_sub(2) as usize;
+            let filled = (ratio * slots as f64).round() as usize;
+            let bar = format!("[{}{}]", "#".repeat(filled), " ".repeat(slots - filled));
             frame.render_widget(
-                LineGauge::default()
-                    .ratio(ratio)
-                    .label(format!("{:3.0}%", ratio * 100.0)),
+                Paragraph::new(bar),
                 Rect {
                     x: inner_x,
                     y: y + 1,

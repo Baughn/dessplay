@@ -420,7 +420,11 @@ fn hashing_progress_overlay_appears_and_clears() {
     assert!(screen.contains("Hashing for playlist"), "{screen}");
     assert!(screen.contains("ep1.mkv"), "{screen}");
     assert!(screen.contains("ep2.mkv"), "{screen}");
-    assert!(screen.contains("50%"), "{screen}");
+    // The [####    ] style: a part-filled bar has hashes after the
+    // bracket and spaces before the closing one; no percentage.
+    assert!(screen.contains("[#"), "{screen}");
+    assert!(screen.contains("  ]"), "{screen}");
+    assert!(!screen.contains('%'), "{screen}");
 
     // The overlay is informational: input still reaches the panes
     // (you can chat while files hash).
