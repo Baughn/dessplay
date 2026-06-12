@@ -20,3 +20,5 @@
 pub mod client;
 pub mod protocol;
 pub mod schedule;
+pub mod titles;
+pub mod worker;

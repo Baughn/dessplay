@@ -35,6 +35,9 @@ tracing-appender = "0.2"
 rusqlite = { version = "0.34", features = ["bundled"] }
 dirs = "6"
 tempfile = "3"
+# Server-side anime-titles dump fetch (one blocking GET per day).
+ureq = "3"
+flate2 = "1"
 
 # Debug-build MD4 hashes at ~70 MiB/s — a 1.4GB episode takes 20s and
 # feels broken (release: >1.2 GiB/s). Always optimize the hash inner

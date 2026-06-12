@@ -16,14 +16,20 @@ use std::time::Duration;
 
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::{
-    Listener, PeerInfo, Presence, Role, ServerControl, Transport, TransportEvent, WireMessage,
+    AniDbSearchHit, Listener, PeerInfo, Presence, Role, ServerControl, Transport, TransportEvent,
+    WireMessage,
 };
+use dessplay_core::state::StateView;
 use dessplay_core::types::{
-    ActorId, Ed2kHash, Epoch, PlaybackIntent, SeekAuthority, SharedTimestamp, UserId,
+    ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, NextEpState, PlaybackIntent,
+    SeekAuthority, SeriesRelations, SharedTimestamp, UserId,
 };
 use dessplay_core::wire;
 use dessplay_core::{CrdtOp, CrdtState, StateSnapshot};
 
+use crate::anidb::client::AniDbApi;
+use crate::anidb::titles::TitlesSource;
+use crate::anidb::worker::{self, AniDbHost};
 use crate::storage::ServerStorage;
 
 /// How the server reads its clock (unix millis — this *is* the shared
@@ -57,6 +63,17 @@ pub enum CompactionSchedule {
     Disabled,
 }
 
+/// AniDB integration: the (rate-limited) API client and the titles-dump
+/// source. Both are trait objects so tests inject canned data — no test
+/// may ever touch the real API.
+#[derive(Clone)]
+pub struct AniDbConfig {
+    /// FILE/ANIME lookups.
+    pub api: Arc<dyn AniDbApi>,
+    /// The anime-titles dump (name search).
+    pub titles: Arc<dyn TitlesSource>,
+}
+
 /// Server configuration.
 pub struct ServerConfig {
     /// The shared room password.
@@ -68,6 +85,8 @@ pub struct ServerConfig {
     /// How many chat messages survive compaction (the rest are archived
     /// to SQLite first).
     pub chat_keep: usize,
+    /// AniDB integration; `None` disables it (no credentials).
+    pub anidb: Option<AniDbConfig>,
 }
 
 impl ServerConfig {
@@ -82,6 +101,7 @@ impl ServerConfig {
                 minute: 0,
             },
             chat_keep: 100,
+            anidb: None,
         }
     }
 }
@@ -249,6 +269,40 @@ impl<T: Transport> Shared<T> {
     }
 }
 
+/// The AniDB worker's view of the server: the shared clock, the
+/// resolved state, server-authored writes, and the queue storage.
+struct SharedHost<T>(Arc<Shared<T>>);
+
+impl<T: Transport> AniDbHost for SharedHost<T> {
+    fn now(&self) -> u64 {
+        (self.0.clock)()
+    }
+
+    fn view(&self) -> StateView {
+        lock(&self.0.state).view()
+    }
+
+    async fn write_metadata(&self, hash: Ed2kHash, metadata: AniDbMetadata) {
+        self.0
+            .server_write(move |state, actor, ts| {
+                state.set_anidb_metadata(actor, ts, hash, Some(metadata))
+            })
+            .await;
+    }
+
+    async fn write_relations(&self, series: AniDbSeriesId, relations: SeriesRelations) {
+        self.0
+            .server_write(move |state, actor, ts| {
+                state.set_series_relations(actor, ts, series, relations)
+            })
+            .await;
+    }
+
+    fn with_storage<R>(&self, f: impl FnOnce(&mut ServerStorage) -> R) -> Option<R> {
+        lock(&self.0.storage).as_mut().map(f)
+    }
+}
+
 /// Cadence of StateHash broadcasts and storage flushes.
 const HASH_INTERVAL: Duration = Duration::from_secs(30);
 const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
@@ -341,6 +395,15 @@ pub async fn run<L: Listener>(
                 sweep_departed(&shared).await;
             }
         });
+    }
+    // The AniDB worker (needs storage for its queues).
+    if let Some(anidb) = config.anidb.clone() {
+        if lock(&shared.storage).is_some() {
+            let host = SharedHost(Arc::clone(&shared));
+            tokio::spawn(worker::run(host, anidb.api, anidb.titles));
+        } else {
+            tracing::warn!("AniDB configured but the server has no storage; disabled");
+        }
     }
     // Scheduled compaction.
     match config.compaction {
@@ -722,6 +785,29 @@ async fn serve_authed<T: Transport>(
             ServerControl::EofReached { file } => {
                 handle_eof(shared, username, role, file).await;
             }
+            ServerControl::AniDbSearch { query } => {
+                // A LIKE scan over the whole titles table (~1M rows,
+                // tens of ms). Searches are manual and rare; fine to
+                // answer inline.
+                let results = {
+                    let storage = lock(&shared.storage);
+                    storage.as_ref().map_or_else(Vec::new, |storage| {
+                        storage
+                            .search_titles(&query, 20)
+                            .map_err(|e| tracing::error!("title search failed: {e}"))
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|hit| AniDbSearchHit {
+                                series: hit.series,
+                                title: hit.title,
+                                matched: hit.matched,
+                            })
+                            .collect()
+                    })
+                };
+                tracing::debug!(user = %username.0, %query, hits = results.len(), "anidb search");
+                send_control(conn, &ServerControl::AniDbSearchResults { query, results }).await;
+            }
             ServerControl::RequestMerge => {
                 tracing::warn!("client requested a divergence-heal merge");
                 send_control(conn, &ServerControl::StateMerge(shared.snapshot())).await;
@@ -801,20 +887,68 @@ async fn handle_eof<T: Transport>(
             .nth(1)
             .map(|entry| entry.hash);
         let epoch = Epoch(shared.epoch.load(Ordering::SeqCst));
-        [
+        let mut ops = vec![
             state.set_watched(ActorId::SERVER, shared.stamp(), file, true),
             state.set_now_playing(ActorId::SERVER, shared.stamp(), next),
             // The next episode loads paused; anyone presses play.
             state.set_playback_intent(ActorId::SERVER, shared.stamp(), PlaybackIntent::Paused),
             state.set_seek_authority(ActorId::SERVER, shared.stamp(), SeekAuthority::Server),
-        ]
-        .map(|op| ServerControl::StateOp { epoch, op })
+        ];
+        // The List: auto-advance next_ep for linked entries whose
+        // numeric next_ep matches the episode that just finished
+        // (docs/design.md, The List). `available` resets — the new
+        // next episode is presumably not out yet.
+        for (id, new_state) in list_advances(&view, file) {
+            tracing::info!(next_ep = ?new_state.next_ep, "advancing List entry");
+            ops.push(state.set_next_ep(ActorId::SERVER, shared.stamp(), id, new_state));
+        }
+        ops.into_iter()
+            .map(|op| ServerControl::StateOp { epoch, op })
+            .collect::<Vec<_>>()
     };
     shared.dirty.store(true, Ordering::SeqCst);
     tracing::info!("EOF on {file:?} reported by {reporter:?}; advancing");
     for op in ops {
         shared.broadcast_op(op, None).await;
     }
+}
+
+/// List entries to auto-advance when `file` finishes: linked to the
+/// file's series, with a numeric `next_ep` equal to the file's numeric
+/// episode number. Returns the new progress states.
+fn list_advances(
+    view: &StateView,
+    file: Ed2kHash,
+) -> Vec<(dessplay_core::types::ListEntryId, NextEpState)> {
+    let Some(Some(metadata)) = view.anidb_metadata.get(&file) else {
+        return Vec::new();
+    };
+    let (Some(series), Some(episode)) = (
+        metadata.series_id,
+        metadata
+            .episode_number
+            .as_deref()
+            .and_then(|ep| ep.trim().parse::<u32>().ok()),
+    ) else {
+        return Vec::new(); // unlinked file or special episode ("S1")
+    };
+    view.list_entries
+        .iter()
+        .filter(|(_, entry)| entry.anidb_series_id == Some(series))
+        .filter_map(|(id, _)| {
+            let progress = view.list_next_ep.get(id)?;
+            let next: u32 = progress.next_ep.as_deref()?.trim().parse().ok()?;
+            (next == episode).then(|| {
+                (
+                    *id,
+                    NextEpState {
+                        next_ep: Some((episode + 1).to_string()),
+                        available: false,
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 /// Compact the state and broadcast the fresh snapshot to every live

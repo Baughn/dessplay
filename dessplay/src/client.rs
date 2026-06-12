@@ -130,7 +130,9 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
                 NetworkEvent::ClockSync { offset_millis } => Some(SyncCommand::ClockSync {
                     offset_millis: *offset_millis,
                 }),
-                NetworkEvent::PeerList(_) | NetworkEvent::AuthFailed => None,
+                NetworkEvent::PeerList(_)
+                | NetworkEvent::AuthFailed
+                | NetworkEvent::SearchResults { .. } => None,
             };
             if let Some(cmd) = to_sync
                 && router_sync.send(cmd).await.is_err()

@@ -12,7 +12,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use dessplay_core::types::{ChatMessage, Ed2kHash, Epoch, FileHashInfo, SharedTimestamp, UserId};
+use dessplay_core::types::{
+    AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileHashInfo, SharedTimestamp, UserId,
+};
 use dessplay_core::wire::WireError;
 use dessplay_core::{CrdtState, StateSnapshot, wire};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -88,7 +90,38 @@ const MIGRATIONS: &[&str] = &[
     ) STRICT;
     CREATE INDEX anidb_queue_next_attempt ON anidb_queue (next_attempt);
     ",
+    // v2 (Phase 8): the ANIME lookup queue (relations walks survive
+    // restarts — the graph fills in over hours), the anime-titles dump
+    // for name search, and a small kv table for bookkeeping like the
+    // dump's last fetch time.
+    "
+    CREATE TABLE anime_queue (
+        aid          INTEGER PRIMARY KEY,
+        first_seen   INTEGER NOT NULL,
+        last_attempt INTEGER,           -- NULL = never tried
+        next_attempt INTEGER NOT NULL,  -- i64::MAX = settled, never retry
+        attempts     INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE INDEX anime_queue_next_attempt ON anime_queue (next_attempt);
+
+    CREATE TABLE anidb_titles (
+        aid   INTEGER NOT NULL,
+        kind  INTEGER NOT NULL,  -- 1 primary, 2 synonym, 3 short, 4 official
+        lang  TEXT NOT NULL,
+        title TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX anidb_titles_aid ON anidb_titles (aid);
+
+    CREATE TABLE kv (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    ) STRICT;
+    ",
 ];
+
+/// `next_attempt` sentinel for queue entries that are settled and must
+/// never be retried (kept as tombstones so re-discovery is a no-op).
+pub const NEVER: i64 = i64::MAX;
 
 /// Apply any unapplied migrations (slice parameter for upgrade tests).
 fn migrate(conn: &Connection, migrations: &[&str]) -> Result<()> {
@@ -357,6 +390,216 @@ impl ServerStorage {
         )?;
         Ok(())
     }
+
+    // ---- ANIME (relations) queue.
+
+    /// Queue a series for an ANIME lookup if it isn't queued already
+    /// (settled tombstones included — re-discovery is a no-op).
+    pub fn enqueue_anime(&self, series: AniDbSeriesId, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO anime_queue (aid, first_seen, next_attempt)
+             VALUES (?1, ?2, ?2)",
+            params![series.0 as i64, now],
+        )?;
+        Ok(())
+    }
+
+    /// Series lookups due at or before `now`, soonest first.
+    pub fn due_anime(&self, now: i64, limit: usize) -> Result<Vec<AnimeQueueEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT aid, first_seen, last_attempt, next_attempt, attempts
+             FROM anime_queue WHERE next_attempt <= ?1
+             ORDER BY next_attempt, aid LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![now, limit as i64], |row| {
+            Ok(AnimeQueueEntry {
+                series: AniDbSeriesId(row.get::<_, i64>(0)? as u32),
+                first_seen: row.get(1)?,
+                last_attempt: row.get(2)?,
+                next_attempt: row.get(3)?,
+                attempts: row.get::<_, i64>(4)? as u32,
+            })
+        })?;
+        rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Record an ANIME attempt. `next_attempt = NEVER` settles the
+    /// entry (success, or a definitive "no such anime").
+    pub fn record_anime_attempt(
+        &self,
+        series: AniDbSeriesId,
+        attempted_at: i64,
+        next_attempt: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE anime_queue
+             SET last_attempt = ?2, next_attempt = ?3, attempts = attempts + 1
+             WHERE aid = ?1",
+            params![series.0 as i64, attempted_at, next_attempt],
+        )?;
+        Ok(())
+    }
+
+    /// The earliest scheduled attempt across both lookup queues
+    /// (settled [`NEVER`] tombstones excluded). Lets the worker sleep
+    /// until something is actually due.
+    pub fn next_attempt_at(&self) -> Result<Option<i64>> {
+        self.conn
+            .query_row(
+                "SELECT MIN(next) FROM (
+                     SELECT MIN(next_attempt) AS next FROM anidb_queue
+                      WHERE next_attempt < ?1
+                     UNION ALL
+                     SELECT MIN(next_attempt) FROM anime_queue
+                      WHERE next_attempt < ?1
+                 )",
+                params![NEVER],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    // ---- Anime-titles dump (name search).
+
+    /// Replace the whole titles table with a fresh dump.
+    pub fn replace_titles(&mut self, titles: &[TitleRow]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM anidb_titles", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO anidb_titles (aid, kind, lang, title) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for row in titles {
+                stmt.execute(params![row.series.0 as i64, row.kind as i64, row.lang, row.title])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Case-insensitive (ASCII) substring search over all titles and
+    /// synonyms. Ranking: exact match, then prefix, then substring;
+    /// shorter titles first within a rank. One hit per series, showing
+    /// the matched title alongside the series' primary title.
+    pub fn search_titles(&self, query: &str, limit: usize) -> Result<Vec<TitleSearchHit>> {
+        let escaped = query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let mut stmt = self.conn.prepare(
+            "SELECT aid, title,
+                    CASE WHEN title = ?1 COLLATE NOCASE THEN 0
+                         WHEN title LIKE ?2 ESCAPE '\\' THEN 1
+                         ELSE 2 END AS rank
+             FROM anidb_titles
+             WHERE title LIKE ?3 ESCAPE '\\'
+             ORDER BY rank, length(title), aid
+             LIMIT 400",
+        )?;
+        let rows = stmt.query_map(
+            params![query, format!("{escaped}%"), format!("%{escaped}%")],
+            |row| {
+                Ok((
+                    AniDbSeriesId(row.get::<_, i64>(0)? as u32),
+                    row.get::<_, String>(1)?,
+                ))
+            },
+        )?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut hits = Vec::new();
+        for row in rows {
+            let (series, matched) = row?;
+            if !seen.insert(series) {
+                continue;
+            }
+            let primary = self.primary_title(series)?.unwrap_or_else(|| matched.clone());
+            hits.push(TitleSearchHit {
+                series,
+                title: primary,
+                matched,
+            });
+            if hits.len() >= limit {
+                break;
+            }
+        }
+        Ok(hits)
+    }
+
+    /// A series' primary title (kind 1), falling back to any official
+    /// title (kind 4).
+    fn primary_title(&self, series: AniDbSeriesId) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT title FROM anidb_titles
+                 WHERE aid = ?1 AND kind IN (1, 4)
+                 ORDER BY kind, lang LIMIT 1",
+                params![series.0 as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    // ---- Bookkeeping kv.
+
+    /// Read a bookkeeping value.
+    pub fn kv_get(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Write a bookkeeping value.
+    pub fn kv_set(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+}
+
+/// One ANIME (relations) queue row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnimeQueueEntry {
+    /// The series to look up.
+    pub series: AniDbSeriesId,
+    /// When the series was first discovered.
+    pub first_seen: i64,
+    /// Last attempt time; `None` = never tried.
+    pub last_attempt: Option<i64>,
+    /// Earliest time of the next attempt ([`NEVER`] = settled).
+    pub next_attempt: i64,
+    /// How many attempts so far.
+    pub attempts: u32,
+}
+
+/// One row of the anime-titles dump.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleRow {
+    /// The series.
+    pub series: AniDbSeriesId,
+    /// 1 primary, 2 synonym, 3 short, 4 official.
+    pub kind: u8,
+    /// Language tag ("x-jat", "en", "ja", ...).
+    pub lang: String,
+    /// The title.
+    pub title: String,
+}
+
+/// One name-search result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleSearchHit {
+    /// The series.
+    pub series: AniDbSeriesId,
+    /// The series' primary title, for display.
+    pub title: String,
+    /// The title/synonym the query actually matched.
+    pub matched: String,
 }
 
 #[cfg(test)]
@@ -469,5 +712,98 @@ mod tests {
 
         storage.remove_lookup(hash(1)).unwrap();
         assert!(storage.due_lookups(i64::MAX, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn anime_queue_lifecycle() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        let series = AniDbSeriesId(8692);
+        storage.enqueue_anime(series, 100).unwrap();
+        // Re-discovery keeps the existing schedule.
+        storage.enqueue_anime(series, 999).unwrap();
+
+        let due = storage.due_anime(100, 10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].series, series);
+        assert_eq!(due[0].next_attempt, 100);
+
+        // Failed attempt: retry later.
+        storage.record_anime_attempt(series, 100, 200).unwrap();
+        assert!(storage.due_anime(199, 10).unwrap().is_empty());
+        assert_eq!(storage.due_anime(200, 10).unwrap()[0].attempts, 1);
+
+        // Success settles the entry as a tombstone: never due again,
+        // but still present so re-discovery stays a no-op.
+        storage.record_anime_attempt(series, 200, NEVER).unwrap();
+        assert!(storage.due_anime(i64::MAX - 1, 10).unwrap().is_empty());
+        storage.enqueue_anime(series, 300).unwrap();
+        assert!(storage.due_anime(i64::MAX - 1, 10).unwrap().is_empty());
+    }
+
+    fn title(aid: u32, kind: u8, title: &str) -> TitleRow {
+        TitleRow {
+            series: AniDbSeriesId(aid),
+            kind,
+            lang: "x-jat".into(),
+            title: title.into(),
+        }
+    }
+
+    #[test]
+    fn title_search_ranks_and_dedupes() {
+        let mut storage = ServerStorage::open_in_memory().unwrap();
+        storage
+            .replace_titles(&[
+                title(1, 1, "Gochuumon wa Usagi Desu ka?"),
+                title(1, 3, "GochiUsa"),
+                title(2, 1, "Gochuumon wa Usagi Desu ka??"),
+                title(3, 1, "Frieren"),
+                title(4, 1, "Sousou no Frieren"),
+                title(4, 2, "Frieren: Beyond Journey's End"),
+            ])
+            .unwrap();
+
+        // Informal short name finds the series, displayed by its
+        // primary title.
+        let hits = storage.search_titles("gochiusa", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].series, AniDbSeriesId(1));
+        assert_eq!(hits[0].title, "Gochuumon wa Usagi Desu ka?");
+        assert_eq!(hits[0].matched, "GochiUsa");
+
+        // Exact match outranks the longer prefix match; one hit per
+        // series even when several titles match.
+        let hits = storage.search_titles("frieren", 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].series, AniDbSeriesId(3));
+        assert_eq!(hits[1].series, AniDbSeriesId(4));
+
+        // Substring matches work too.
+        let hits = storage.search_titles("usagi", 10).unwrap();
+        assert_eq!(hits.len(), 2);
+
+        // The limit applies after dedup.
+        assert_eq!(storage.search_titles("usagi", 1).unwrap().len(), 1);
+
+        // LIKE wildcards in the query are literal.
+        assert!(storage.search_titles("%", 10).unwrap().is_empty());
+        assert!(storage.search_titles("usagi_desu", 10).unwrap().is_empty());
+
+        // A fresh dump replaces everything.
+        storage.replace_titles(&[title(9, 1, "Other")]).unwrap();
+        assert!(storage.search_titles("frieren", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn kv_round_trips() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        assert_eq!(storage.kv_get("titles_fetched_at").unwrap(), None);
+        storage.kv_set("titles_fetched_at", "12345").unwrap();
+        assert_eq!(
+            storage.kv_get("titles_fetched_at").unwrap().as_deref(),
+            Some("12345")
+        );
+        storage.kv_set("titles_fetched_at", "99").unwrap();
+        assert_eq!(storage.kv_get("titles_fetched_at").unwrap().as_deref(), Some("99"));
     }
 }

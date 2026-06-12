@@ -54,10 +54,20 @@ impl Harness {
 
     /// Server with a custom config (compaction schedules, chat_keep).
     pub fn with_config(seed: u64, config: ServerConfig) -> Self {
+        Self::with_config_and_storage(seed, config, None)
+    }
+
+    /// Server with custom config and storage — needed by anything
+    /// exercising the AniDB worker (its queues live in storage).
+    pub fn with_config_and_storage(
+        seed: u64,
+        config: ServerConfig,
+        storage: Option<dessplay_rendezvous::storage::ServerStorage>,
+    ) -> Self {
         let net = SimNetwork::new(seed);
         let server_id = EndpointId::new("server");
         let listener = net.listener(&server_id);
-        tokio::spawn(server::run(listener, config, sim_clock(0), None));
+        tokio::spawn(server::run(listener, config, sim_clock(0), storage));
         Self { net, server_id }
     }
 

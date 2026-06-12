@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{CrdtOp, StateSnapshot};
-use crate::types::{Ed2kHash, Epoch, UserId};
+use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 
 /// Top-level wire message. Phase 9 adds a `Relay` variant for file
 /// transfer envelopes.
@@ -142,6 +142,34 @@ pub enum ServerControl {
     /// Client -> server: my view hash mismatched twice in a row; please
     /// send a `StateMerge`.
     RequestMerge,
+
+    // ---- AniDB name search (backs the AniDbSearch modal)
+    /// Client -> server: search the anime-titles index by name. The
+    /// search runs locally on the server over the daily titles dump —
+    /// the UDP API has no multi-result search.
+    AniDbSearch {
+        /// The (partial, informal) name to search for.
+        query: String,
+    },
+    /// Server -> client: results, echoing the query so a slow reply to
+    /// a superseded search can be ignored.
+    AniDbSearchResults {
+        /// The query these results answer.
+        query: String,
+        /// Best matches, one per series.
+        results: Vec<AniDbSearchHit>,
+    },
+}
+
+/// One AniDB name-search result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AniDbSearchHit {
+    /// The series id to link.
+    pub series: AniDbSeriesId,
+    /// The series' primary title, for display.
+    pub title: String,
+    /// The title/synonym the query matched (often an informal name).
+    pub matched: String,
 }
 
 impl ServerControl {
@@ -163,6 +191,8 @@ impl ServerControl {
             ServerControl::StateMerge(_) => "StateMerge",
             ServerControl::StateHash { .. } => "StateHash",
             ServerControl::RequestMerge => "RequestMerge",
+            ServerControl::AniDbSearch { .. } => "AniDbSearch",
+            ServerControl::AniDbSearchResults { .. } => "AniDbSearchResults",
         }
     }
 }

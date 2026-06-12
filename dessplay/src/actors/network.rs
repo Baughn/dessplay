@@ -80,6 +80,14 @@ pub enum NetworkEvent {
         /// Server-minus-local offset, milliseconds.
         offset_millis: i64,
     },
+    /// Results for an AniDB name search we sent.
+    SearchResults {
+        /// The query these results answer (stale replies are dropped
+        /// by the UI, which knows the current query).
+        query: String,
+        /// Best matches.
+        results: Vec<dessplay_core::net::AniDbSearchHit>,
+    },
     /// Connection lost; the actor will retry.
     Disconnected {
         /// Human-readable cause.
@@ -346,6 +354,11 @@ async fn run_connection<T: Transport>(
                                 .send(NetworkEvent::ClockSync { offset_millis: offset })
                                 .await;
                         }
+                    }
+                    ServerControl::AniDbSearchResults { query, results } => {
+                        let _ = events
+                            .send(NetworkEvent::SearchResults { query, results })
+                            .await;
                     }
                     msg @ (ServerControl::StateOp { .. }
                     | ServerControl::StateMerge(_)
