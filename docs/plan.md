@@ -420,6 +420,42 @@ video playback in mpv, chat on OSD.
 
 ## Phase 8: AniDB Integration
 
+**Status: complete (2026-06-12).** Notes and deviations:
+
+- **Name search uses the anime-titles dump, not the UDP API**
+  (user-approved): `ANIME aname=` is an exact-title lookup with no
+  candidate list, so the server fetches `anime-titles.dat.gz` daily
+  (ureq + flate2, one blocking GET) into SQLite and searches locally —
+  informal names resolve through synonyms. New wire messages
+  `AniDbSearch`/`AniDbSearchResults`; results are not CRDT state.
+- The fmask/amask bit tables were cross-checked against two independent
+  client implementations (adbb, anidbcli) because the official wiki sits
+  behind an interactive challenge; the mask constants have tests
+  rebuilding them from named bit positions. Residual risk (accepted up
+  front): a field-order or escaping subtlety may only surface on the
+  first manual `anidb-probe` run.
+- Lookup requests are issued by **any** client for playlist entries
+  lacking metadata (hash/size/filename all live in the entry), not just
+  the adder — covers offline adders and the GSet being cleared at
+  compaction.
+- The EOF List auto-advance also resets `available` to false (the new
+  next episode is presumably not out yet) — design.md updated.
+- The List's watchers→NotWatching wiring landed here with two guards:
+  empty watchers sets mean "unrecorded" and write nothing, and existing
+  preferences are never overridden.
+- Queue tombstones: settled entries keep their row with
+  `next_attempt = i64::MAX` instead of being deleted, so re-discovery
+  (GSet re-inserts, relation re-walks) stays a no-op. A second queue
+  table (`anime_queue`) persists the relations walk across restarts.
+- Credentials via `DESSPLAY_ANIDB_USER`/`DESSPLAY_ANIDB_PASSWORD` (env
+  fits the systemd deployment); both-or-neither enforced at startup.
+  Plaintext-UDP AUTH accepted (account used for nothing else); ENCRYPT
+  is future work.
+- Testing is strictly offline (see testing-strategy.md, AniDB Tests):
+  scripted-wire client tests under paused time, an in-memory host for
+  the worker, canned-API integration scenarios over the sim transport.
+  `anidb-probe` (ping/file/anime) is the only real-API contact.
+
 **Goal**: Server-side metadata lookups.
 
 ### What gets built

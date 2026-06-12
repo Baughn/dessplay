@@ -309,6 +309,26 @@ Prefetch (queued playlist entries ahead of now-playing; everything, for
 seeders) is driven by the main loop from playlist state: it sends
 `StartDownload` for entries within the prefetch policy.
 
+### AniDB worker (server-side, Phase 8)
+
+One background task inside the rendezvous server, not a client actor.
+Each pass it refreshes the anime-titles dump when due (daily; one
+blocking GET on the blocking pool), drains the replicated
+`lookup_requests` GSet and newly-seen series ids into the SQLite
+queues, and performs one due lookup — files before series. Results
+land as server-authored LWW writes (`AniDbMetadata`,
+`SeriesRelations`) broadcast like any other server op.
+
+It is doubly abstracted for tests: `AniDbApi` (the rate-limited UDP
+client; canned tables in tests) and `AniDbHost` (clock + state view +
+server writes + storage; the real server or an in-memory mock). No
+test ever touches the real API — the only thing that does is the
+manual `anidb-probe` binary. Pacing lives in the client (2s floor,
+1 per 4s sustained with burst 60, 5s missing-response penalty,
+busy/ban backoff); when idle the worker sleeps until the next
+scheduled attempt, capped at 60s so fresh lookup requests are noticed
+promptly.
+
 ---
 
 ## Message Flow
@@ -442,9 +462,15 @@ dessplay-rendezvous/          (server: lib + thin binary)
     lib.rs / main.rs
     server.rs                 (accept loop, auth, peer list, time sync;
                                state sync + compaction in Phases 4-5)
-    anidb.rs                  (AniDB UDP API client; Phase 8)
+    anidb/                    (AniDB integration; Phase 8)
+      protocol.rs             (pure UDP codec: commands, masks, parsing)
+      schedule.rs             (pure re-validation scheduling rules)
+      client.rs               (rate limiter, sessions, AniDbApi trait)
+      titles.rs               (anime-titles dump fetch/parse; name search)
+      worker.rs               (queue drainer; AniDbHost trait to the server)
     relay.rs                  (file transfer relay; Phase 9)
     storage.rs                (server-side SQLite)
+    bin/anidb-probe.rs        (manual real-API probe; never run by tests)
   tests/                      (sim connection tests + real-QUIC smoke)
 ```
 
@@ -465,6 +491,7 @@ dessplay-rendezvous/          (server: lib + thin binary)
 | `serde` + `serde_json` | Serialization (general + mpv IPC) |
 | `image` | Placeholder PNG generation |
 | `strsim` | Edit distance for file matching |
+| `ureq` + `flate2` | Server-side anime-titles dump fetch (one GET/day) |
 | `proptest` | Property-based testing |
 | `insta` | Snapshot testing |
 | `cargo-fuzz` / `libfuzzer-sys` | Fuzz testing |

@@ -395,9 +395,10 @@ struct NextEpState {
 `next_ep` is free text by necessity -- real entries include season prefixes,
 OVA names, and guesses. When an entry is AniDB-linked and `next_ep` is
 numeric, the server auto-advances it when the group finishes the matching
-episode (same EOF transition that marks the playlist entry watched).
-`available` is maintained by hand for now; automating it (e.g. via AniDB
-episode air dates) is future work.
+episode (same EOF transition that marks the playlist entry watched), and
+resets `available` to false -- the new next episode is presumably not out
+yet. Otherwise `available` is maintained by hand; automating it (e.g. via
+AniDB episode air dates) is future work.
 
 The List is never pruned: it is a few hundred rows of text, and the history
 is the point.
@@ -414,14 +415,18 @@ keypresses.
 
 Entries display name, nero_name, next_ep (with an "out" marker from
 `available`), and watcher initials. Editing fields and adding entries happens
-in a small edit modal; linking an unlinked entry opens an AniDB search modal
-(search by name, confirm manually -- informal names like "GochiUsa" will not
-fuzzy-match reliably).
+in a small edit modal; linking an unlinked entry (`l`) opens the AniDB
+search modal: it pre-searches for the entry's name (informal names like
+"GochiUsa" resolve through the titles dump's synonyms), the user picks
+from the ranked candidates and confirms. Enter on fresh results links;
+editing the query re-arms search.
 
 The `watchers` set wires into the existing per-series watch preference: when
 an entry is linked, users *not* in the watchers set get
 `SeriesWatchState::NotWatching` for that series, so they never gate playback
-on shows they skip.
+on shows they skip. Two guards: an *empty* watchers set means
+"unrecorded", not "nobody", and never writes preferences; and an
+existing preference (a manual choice) is never overridden.
 
 ### Import
 
@@ -713,13 +718,26 @@ Crucially:
 
 All interaction with AniDB is done by the rendezvous server, not the clients.
 
+**Credentials:** the server needs an AniDB account with the "dessplay"
+client registered on it. Credentials arrive via `DESSPLAY_ANIDB_USER` /
+`DESSPLAY_ANIDB_PASSWORD` (or `--anidb-user`/`--anidb-password`), never
+persisted; with no credentials the integration is simply disabled. Note
+the UDP API has no TLS: AUTH sends the password in cleartext UDP. The
+account is used for nothing else, and AniDB's `ENCRYPT` command remains
+future work.
+
 **Lookup flow:**
-1. Clients scan local files, hash them, and insert `FileHashInfo` (hash, size,
-   filename) into a `GSet<FileHashInfo>` -- a "please look these up" set.
+1. Clients insert `FileHashInfo` (hash, size, filename) for playlist
+   entries that lack metadata into a `GSet<FileHashInfo>` -- a "please
+   look these up" set. Any client may request (hash, size, and filename
+   are all in the playlist entry); the server deduplicates, and the
+   GSet absorbs repeated inserts. This also re-arms requests after
+   compaction clears the set.
 2. The server drains entries from this set into its AniDB lookup queue.
 3. On success: server writes full `AniDbMetadata` (series name, ID, episode).
 4. On failure (AniDB doesn't know the file): server writes filename-derived
-   metadata (series name parsed from filename, no series ID, no episode number).
+   metadata (series name parsed from filename, no series ID, no episode number)
+   once -- a later re-validation miss never clobbers real metadata.
 5. Either way, the metadata register becomes `Some(AniDbMetadata)` --
    downstream code always has a series name to work with.
 
@@ -736,7 +754,18 @@ recursively (each hop is another rate-limited request, so the graph fills in
 over hours -- fine, it's needed for browsing, not playback). Results are
 cached in server SQLite and replicated as the server-authoritative
 `SeriesRelations` map. Clients build franchise groupings from this map; files
-without a series ID group by parsed series name as a fallback.
+without a series ID group by parsed series name as a fallback. Manually
+linking a List entry also seeds the walk for its series.
+
+**Name search (the AniDbSearch modal):** the UDP API has no
+multi-result search -- `ANIME aname=` is an exact-title lookup, useless
+for informal names. Instead the server fetches AniDB's daily
+**anime-titles dump** (`anidb.net/api/anime-titles.dat.gz`, the
+sanctioned approach; at most one download per day) into SQLite and
+answers search requests locally: case-insensitive substring over all
+titles and synonyms, ranked exact > prefix > substring, one hit per
+series. Search requests/results are plain wire messages
+(`AniDbSearch`/`AniDbSearchResults`), not CRDT state.
 
 ### Manual File Mapping
 
@@ -912,7 +941,10 @@ tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 |-------|----------|
 | `crdt_state` | The authoritative snapshot (epoch + postcard blob) |
 | `chat_archive` | Full chat history, archived before compaction trims the replicated GList; unique on (timestamp, sender, text), mirroring GList dedup |
-| `anidb_queue` | Validation queue: hash, size, filename, attempt bookkeeping, `next_attempt` scheduling (logic in Phase 8) |
+| `anidb_queue` | FILE validation queue: hash, size, filename, attempt bookkeeping, `next_attempt` scheduling (`i64::MAX` = settled tombstone) |
+| `anime_queue` | ANIME (relations-walk) queue: aid, attempt bookkeeping; the graph fills in over hours and must survive restarts |
+| `anidb_titles` | The anime-titles dump (aid, kind, lang, title); backs local name search |
+| `kv` | Bookkeeping (e.g. the titles dump's last fetch time) |
 
 ---
 

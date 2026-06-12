@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-06-11
+Last updated: 2026-06-12
 
 ## Table of Contents
 
@@ -310,6 +310,36 @@ pause does **not** leak as a user pause) → clean shutdown.
 
 This test earns its keep: it caught mpv emitting the keep-open pause
 *before* `eof-reached`, which no mock would have predicted.
+
+---
+
+## AniDB Tests (Phase 8)
+
+**No automated test may ever touch the real AniDB API.** AniDB bans
+aggressively and bans stick; the accepted trade is that a parser bug
+the spec didn't make obvious surfaces only on a manual probe run.
+
+Layering mirrors the player tests:
+
+- **Codec** (`anidb/protocol.rs`): pure encode/parse tests, including
+  the mask constants rebuilt bit-by-bit from named positions, escaping
+  (backtick apostrophes, `<br />`, the deliberately-unreversed `/`),
+  and special episode numbers.
+- **Rate limiter & sessions** (`anidb/client.rs`): the real client over
+  a scripted `Wire` mock under paused time — exact gap assertions for
+  the 2s floor and the sustained 1-per-4s tail, the 5s timeout penalty,
+  re-auth on expired sessions, busy/ban backoff, stale-reply skipping.
+- **Scheduling** (`anidb/schedule.rs`): pure-function ladder tests.
+- **Worker** (`anidb/worker.rs`): the real worker against an in-memory
+  `AniDbHost` (real `CrdtState`, in-memory SQLite) and a canned
+  `AniDbApi` — metadata writes, fallback-never-clobbers, relations
+  walks, titles refresh cadence, fatal-stops, backoff recovery.
+- **Integration** (`dessplay-rendezvous/tests/anidb.rs`): the whole
+  flow over the sim transport — client lookup requests through the
+  real server and worker into replicated metadata on every client,
+  name search over the wire, and the EOF List advance.
+- **Manual**: `anidb-probe` (ping / file / anime) is the only real-API
+  contact, run by a human, one or two packets per invocation.
 
 ---
 

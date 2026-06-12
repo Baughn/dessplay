@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-06-10
+Last updated: 2026-06-12
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as

@@ -6,10 +6,14 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use clap::Parser;
 use dessplay_core::net::quic::QuicListener;
 use dessplay_core::net::tofu::load_or_generate_cert;
-use dessplay_rendezvous::server::{self, CompactionSchedule, ServerConfig};
+use dessplay_rendezvous::anidb::client::{UdpClient, UdpWire};
+use dessplay_rendezvous::anidb::titles::HttpTitlesSource;
+use dessplay_rendezvous::server::{self, AniDbConfig, CompactionSchedule, ServerConfig};
 use dessplay_rendezvous::storage::ServerStorage;
 
 /// The DessPlay rendezvous server.
@@ -41,29 +45,19 @@ struct Cli {
     /// Daily compaction time, UTC `HH:MM` — or `never`.
     #[arg(long, default_value = "12:00")]
     compact_at: String,
-}
 
-/// Load `./.env` (KEY=VALUE lines, optionally `export `-prefixed; `#`
-/// comments) into the environment, without overriding variables that
-/// are already set.
-fn load_dotenv() {
-    let Ok(contents) = std::fs::read_to_string(".env") else {
-        return;
-    };
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        if let Some((key, value)) = line.split_once('=') {
-            let (key, value) = (key.trim(), value.trim().trim_matches('"'));
-            if std::env::var_os(key).is_none() {
-                // Single-threaded startup: set_var is safe here.
-                unsafe { std::env::set_var(key, value) };
-            }
-        }
-    }
+    /// AniDB account username (enables metadata lookups when set
+    /// together with the password).
+    #[arg(long, env = "DESSPLAY_ANIDB_USER")]
+    anidb_user: Option<String>,
+
+    /// AniDB account password.
+    #[arg(long, env = "DESSPLAY_ANIDB_PASSWORD")]
+    anidb_password: Option<String>,
+
+    /// AniDB UDP API endpoint.
+    #[arg(long, default_value = "api.anidb.net:9000")]
+    anidb_server: String,
 }
 
 fn parse_compact_at(value: &str) -> Result<CompactionSchedule, String> {
@@ -117,6 +111,32 @@ fn run(cli: Cli) -> Result<(), String> {
         ServerStorage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
+    // AniDB integration: enabled iff credentials are present. The
+    // password is never logged — only its presence.
+    config.anidb = match (cli.anidb_user, cli.anidb_password) {
+        (Some(user), Some(password)) => {
+            let wire = runtime
+                .block_on(UdpWire::connect(&cli.anidb_server))
+                .map_err(|e| format!("binding AniDB UDP socket: {e}"))?;
+            tracing::info!(%user, server = %cli.anidb_server, "AniDB integration enabled");
+            Some(AniDbConfig {
+                api: Arc::new(UdpClient::new(wire, user, password)),
+                titles: Arc::new(HttpTitlesSource),
+            })
+        }
+        (None, None) => {
+            tracing::info!(
+                "AniDB integration disabled (set DESSPLAY_ANIDB_USER / DESSPLAY_ANIDB_PASSWORD)"
+            );
+            None
+        }
+        _ => {
+            return Err(
+                "AniDB needs both DESSPLAY_ANIDB_USER and DESSPLAY_ANIDB_PASSWORD (got one)"
+                    .into(),
+            );
+        }
+    };
     // quinn binds sockets through the active async runtime.
     let listener = {
         let _guard = runtime.enter();
@@ -139,7 +159,7 @@ fn run(cli: Cli) -> Result<(), String> {
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    load_dotenv();
+    dessplay_rendezvous::load_dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

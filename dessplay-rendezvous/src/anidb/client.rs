@@ -327,6 +327,23 @@ impl<W: Wire> UdpClient<W> {
         Err(LookupError::Timeout)
     }
 
+    /// PING (no session needed). For the probe binary's connectivity
+    /// check; rate-limited like everything else.
+    pub async fn ping(&self) -> Result<(), LookupError> {
+        let mut inner = self.inner.lock().await;
+        inner.tag_counter += 1;
+        let tag = format!("t{}", inner.tag_counter);
+        let payload = protocol::ping(&tag);
+        let response = self.exchange(&mut inner, &payload, &tag).await?;
+        match response.code {
+            protocol::PONG => Ok(()),
+            other => Err(LookupError::Fatal(format!(
+                "unexpected PING reply {other} {}",
+                response.text
+            ))),
+        }
+    }
+
     /// LOGOUT, dropping the session. Best-effort; used by the probe
     /// binary and clean shutdown.
     pub async fn logout(&self) -> Result<(), LookupError> {

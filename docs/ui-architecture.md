@@ -234,14 +234,17 @@ explicit inputs alongside the snapshot), making it testable independently.
 
 ### Non-snapshot inputs and the hashing overlay
 
-Besides snapshots and terminal events, the bridge loop feeds `Ui` two
+Besides snapshots and terminal events, the bridge loop feeds `Ui`
 local-only inputs through `UiInput`: `Subtitle(String)` (the rolling
-sub-text log) and `Hashing { filename, done_bytes, total_bytes,
-finished }` (playlist-add hash progress). The hashing rows render as a
-centered overlay drawn on top of everything — design.md's no-silent-work
-rule — but the overlay is *not* in the modal stack: it captures no
-input, so chat and navigation keep working while files hash. `finished`
-removes a row; the overlay disappears when no hashes remain.
+sub-text log), `Hashing { filename, done_bytes, total_bytes,
+finished }` (playlist-add hash progress), and `SearchResults { query,
+results }` (AniDB name-search answers, routed to the search modal if
+it is open; the modal drops results for superseded queries). The
+hashing rows render as a centered overlay drawn on top of everything —
+design.md's no-silent-work rule — but the overlay is *not* in the
+modal stack: it captures no input, so chat and navigation keep working
+while files hash. `finished` removes a row; the overlay disappears
+when no hashes remain.
 
 ---
 
@@ -281,8 +284,11 @@ Modal types:
 - **Settings**: First-run and later configuration
 - **EpisodeBrowser**: Browse franchise seasons/episodes
 - **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)
-- **AniDbSearch**: Link a List entry to an AniDB series (search by name,
-  confirm manually; the search runs server-side through the rate limiter)
+- **AniDbSearch**: Link a List entry to an AniDB series (`l` in List
+  mode). Pre-searches for the entry's name; the search runs server-side
+  over the anime-titles dump (not the rate-limited UDP API), results
+  arrive asynchronously as a `UiInput`. Enter on fresh results links;
+  editing the query re-arms search
 
 Unlike the prototype (which used blocking sub-loops for modals), the main
 event loop continues running while modals are open. Network messages, player
@@ -290,8 +296,7 @@ events, and sync updates are all processed normally.
 
 Modals are a stack (`Vec<Modal>`): the settings screen pushes the
 directory picker on top of itself for adding media roots, and the picked
-directory routes back to the settings modal underneath. The `AniDbSearch`
-modal lands in Phase 8 with its server support.
+directory routes back to the settings modal underneath.
 
 ---
 
