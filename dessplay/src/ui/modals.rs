@@ -14,6 +14,7 @@ use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 use tuirealm::state::{State, StateValue};
 
+use dessplay_core::net::AniDbSearchHit;
 use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, SeriesListEntry};
 
 use super::components::{ctrl, plain, typed};
@@ -795,6 +796,153 @@ impl ListEditModal {
             frame.render_widget(Clear, edit_area);
             editor.view(frame, edit_area);
         }
+    }
+}
+
+/// Link a List entry to an AniDB series: type a (partial, informal)
+/// name, Enter searches server-side over the titles dump, pick a
+/// result, Enter links. Editing the query re-arms search.
+pub struct AniDbSearchModal {
+    /// The entry being linked.
+    pub id: ListEntryId,
+    entry_name: String,
+    editor: FieldEditor,
+    /// The query whose results are displayed (`None` = none yet).
+    answered: Option<String>,
+    results: Vec<AniDbSearchHit>,
+    /// A search is in flight.
+    searching: bool,
+    sel: usize,
+}
+
+impl AniDbSearchModal {
+    /// Open for an entry, prefilled with its name (the caller fires
+    /// the initial search for it).
+    pub fn new(id: ListEntryId, entry_name: String) -> Self {
+        Self {
+            id,
+            editor: FieldEditor::new(&entry_name),
+            entry_name,
+            answered: None,
+            results: Vec::new(),
+            searching: true,
+            sel: 0,
+        }
+    }
+
+    /// Deliver search results. Stale replies (for a query that is no
+    /// longer the editor's text) are dropped.
+    pub fn set_results(&mut self, query: &str, results: Vec<AniDbSearchHit>) {
+        if query != self.editor.text() {
+            return;
+        }
+        self.answered = Some(query.to_string());
+        self.results = results;
+        self.searching = false;
+        self.sel = 0;
+    }
+
+    /// Keys for the keybinding bar.
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("Enter", "Search/Link"), ("↑↓", "Pick"), ("Esc", "Cancel")]
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
+        let modal = overlay(area, 60, 60);
+        frame.render_widget(Clear, modal);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_style(true))
+                .title(format!("Link to AniDB — {}", self.entry_name)),
+            modal,
+        );
+        let input_area = Rect {
+            x: modal.x + 2,
+            y: modal.y + 1,
+            width: modal.width.saturating_sub(4),
+            height: 3,
+        };
+        self.editor.view(frame, input_area);
+
+        let list_area = Rect {
+            x: modal.x + 2,
+            y: modal.y + 4,
+            width: modal.width.saturating_sub(4),
+            height: modal.height.saturating_sub(5),
+        };
+        if self.searching {
+            frame.render_widget(
+                tuirealm::ratatui::widgets::Paragraph::new("searching…"),
+                list_area,
+            );
+            return;
+        }
+        if self.answered.is_some() && self.results.is_empty() {
+            frame.render_widget(
+                tuirealm::ratatui::widgets::Paragraph::new("no matches"),
+                list_area,
+            );
+            return;
+        }
+        let items: Vec<ListItem> = self
+            .results
+            .iter()
+            .map(|hit| {
+                let mut spans = vec![Span::raw(hit.title.clone())];
+                if hit.matched != hit.title {
+                    spans.push(Span::styled(format!("  ({})", hit.matched), theme::dim()));
+                }
+                spans.push(Span::styled(format!("  a{}", hit.series.0), theme::dim()));
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+        let mut state = ListState::default();
+        if !self.results.is_empty() {
+            state.select(Some(self.sel));
+        }
+        frame.render_stateful_widget(
+            List::new(items).highlight_style(theme::highlight_style()),
+            list_area,
+            &mut state,
+        );
+    }
+}
+
+passive_modal!(AniDbSearchModal);
+
+impl AppComponent<Msg, NoUserEvent> for AniDbSearchModal {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        match plain(ev) {
+            Some(Key::Esc) => return Some(Msg::CloseModal),
+            Some(Key::Up) => {
+                self.sel = self.sel.saturating_sub(1);
+                return Some(Msg::None);
+            }
+            Some(Key::Down) => {
+                self.sel = (self.sel + 1).min(self.results.len().saturating_sub(1));
+                return Some(Msg::None);
+            }
+            Some(Key::Enter) => {
+                let query = self.editor.text();
+                // Enter on fresh results links; otherwise it searches.
+                if self.answered.as_deref() == Some(query.as_str())
+                    && let Some(hit) = self.results.get(self.sel)
+                {
+                    return Some(Msg::ListEntryLinked(self.id, hit.series));
+                }
+                if query.trim().is_empty() {
+                    return Some(Msg::None);
+                }
+                self.searching = true;
+                self.answered = None;
+                return Some(Msg::AniDbSearchRequested(query));
+            }
+            _ => {}
+        }
+        // Everything else edits the query (which stales any results).
+        self.editor.on(ev);
+        Some(Msg::None)
     }
 }
 

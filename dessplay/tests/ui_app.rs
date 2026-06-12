@@ -385,6 +385,139 @@ fn the_list_renders_and_edits() {
 }
 
 #[test]
+fn linking_a_list_entry_searches_and_links() {
+    use dessplay_core::net::AniDbSearchHit;
+    use dessplay_core::types::AniDbSeriesId;
+
+    let mut state = CrdtState::new();
+    state.put_list_entry(
+        A,
+        ts(1),
+        ListEntryId(7),
+        SeriesListEntry {
+            name: "GochiUsa".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+
+    ui.handle(key(Key::Tab)); // Series
+    ui.handle(key(Key::Char('m'))); // All
+    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Down)); // heading -> entry
+
+    // 'l' opens the search modal and fires a search for the name.
+    let actions = ui.handle(key(Key::Char('l')));
+    assert_eq!(
+        actions,
+        vec![UserAction::AniDbSearch {
+            query: "GochiUsa".into()
+        }]
+    );
+    assert!(ui.modal_open());
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Link to AniDB — GochiUsa"), "{screen}");
+    assert!(screen.contains("searching…"), "{screen}");
+
+    // Results arrive (a stale reply for another query is ignored).
+    ui.set_search_results(
+        "stale query",
+        vec![AniDbSearchHit {
+            series: AniDbSeriesId(1),
+            title: "Wrong".into(),
+            matched: "Wrong".into(),
+        }],
+    );
+    ui.set_search_results(
+        "GochiUsa",
+        vec![
+            AniDbSearchHit {
+                series: AniDbSeriesId(5391),
+                title: "Gochuumon wa Usagi Desu ka?".into(),
+                matched: "GochiUsa".into(),
+            },
+            AniDbSearchHit {
+                series: AniDbSeriesId(9903),
+                title: "Gochuumon wa Usagi Desu ka??".into(),
+                matched: "GochiUsa S2".into(),
+            },
+        ],
+    );
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Gochuumon wa Usagi Desu ka?"), "{screen}");
+    assert!(screen.contains("a5391"), "{screen}");
+    assert!(!screen.contains("Wrong"), "stale results displayed: {screen}");
+
+    // Pick the second result; Enter links it.
+    ui.handle(key(Key::Down));
+    let actions = ui.handle(key(Key::Enter));
+    let [UserAction::Mutate(Mutation::PutListEntry { id, entry })] = actions.as_slice() else {
+        panic!("expected PutListEntry, got {actions:?}");
+    };
+    assert_eq!(*id, ListEntryId(7));
+    assert_eq!(entry.anidb_series_id, Some(AniDbSeriesId(9903)));
+    assert_eq!(entry.name, "GochiUsa", "other fields untouched");
+    assert!(!ui.modal_open());
+}
+
+#[test]
+fn editing_the_search_query_rearms_search() {
+    let mut state = CrdtState::new();
+    state.put_list_entry(
+        A,
+        ts(1),
+        ListEntryId(7),
+        SeriesListEntry {
+            name: "X".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    ui.handle(key(Key::Tab));
+    ui.handle(key(Key::Char('m')));
+    ui.handle(key(Key::Char('m')));
+    ui.handle(key(Key::Down));
+    ui.handle(key(Key::Char('l')));
+
+    // No results for "X"; the user retypes and Enter searches again
+    // (instead of linking nothing).
+    ui.set_search_results("X", vec![]);
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("no matches"), "{screen}");
+    let actions = type_str(&mut ui, "yz");
+    assert!(actions.is_empty());
+    let actions = ui.handle(key(Key::Enter));
+    assert_eq!(
+        actions,
+        vec![UserAction::AniDbSearch {
+            query: "Xyz".into()
+        }]
+    );
+    // Esc closes without linking.
+    let actions = ui.handle(key(Key::Esc));
+    assert!(actions.is_empty());
+    assert!(!ui.modal_open());
+}
+
+#[test]
 fn status_bar_shows_blockers() {
     let mut state = CrdtState::new();
     state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));

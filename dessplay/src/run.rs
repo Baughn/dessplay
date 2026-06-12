@@ -597,6 +597,17 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // frozen UI, unprocessable Quit (2026-06-12).
                             self.shell.hash_and_add(path, after);
                         }
+                        Some(UserAction::AniDbSearch { query }) => {
+                            let _ = self
+                                .handle
+                                .network
+                                .send(crate::actors::network::NetworkCommand::SendReliable(
+                                    Box::new(dessplay_core::net::ServerControl::AniDbSearch {
+                                        query,
+                                    }),
+                                ))
+                                .await;
+                        }
                         Some(UserAction::SaveSettings(saved, roots)) => {
                             if let Err(e) = self.storage.save_settings(&saved) {
                                 tracing::error!("saving settings: {e}");
@@ -669,6 +680,12 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         ClientEvent::Network(NetworkEvent::ClockSync { offset_millis }) => {
                             self.shell.set_clock_offset(*offset_millis).await;
+                        }
+                        ClientEvent::Network(NetworkEvent::SearchResults { query, results }) => {
+                            let _ = self.ui.try_send(UiInput::SearchResults {
+                                query: query.clone(),
+                                results: results.clone(),
+                            });
                         }
                         _ => {}
                     }

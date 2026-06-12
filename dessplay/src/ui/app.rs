@@ -20,7 +20,7 @@ use tuirealm::ratatui::widgets::{Block, Borders};
 use super::components::{
     ChatPane, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
 };
-use super::modals::{EpisodeBrowser, FileBrowser, ListEditModal, Season, SettingsModal};
+use super::modals::{AniDbSearchModal, EpisodeBrowser, FileBrowser, ListEditModal, Season, SettingsModal};
 use super::msg::{Msg, UserAction};
 use super::props;
 use crate::actors::sync::Mutation;
@@ -51,6 +51,9 @@ fn log_action(action: &UserAction) {
             tracing::debug!(path = %path.display(), "user action: HashAndAdd");
         }
         UserAction::SaveSettings(..) => tracing::debug!("user action: SaveSettings"),
+        UserAction::AniDbSearch { query } => {
+            tracing::debug!(%query, "user action: AniDbSearch");
+        }
         UserAction::Quit => tracing::debug!("user action: Quit"),
     }
 }
@@ -81,6 +84,7 @@ enum Modal {
     Settings(SettingsModal),
     Episodes(EpisodeBrowser),
     ListEdit(ListEditModal),
+    AniDbSearch(AniDbSearchModal),
 }
 
 impl Modal {
@@ -90,6 +94,7 @@ impl Modal {
             Modal::Settings(modal) => modal,
             Modal::Episodes(modal) => modal,
             Modal::ListEdit(modal) => modal,
+            Modal::AniDbSearch(modal) => modal,
         }
     }
 
@@ -99,6 +104,7 @@ impl Modal {
             Modal::Settings(modal) => modal.keybindings(),
             Modal::Episodes(modal) => modal.keybindings(),
             Modal::ListEdit(modal) => modal.keybindings(),
+            Modal::AniDbSearch(modal) => modal.keybindings(),
         }
     }
 
@@ -109,6 +115,7 @@ impl Modal {
             Modal::Settings(_) => "Settings",
             Modal::Episodes(_) => "Episodes",
             Modal::ListEdit(_) => "ListEdit",
+            Modal::AniDbSearch(_) => "AniDbSearch",
         }
     }
 }
@@ -210,6 +217,18 @@ impl Ui {
                 row.2 = total;
             }
             None => self.hashing.push((filename, done, total)),
+        }
+    }
+
+    /// Deliver AniDB search results to the search modal, if it's open
+    /// (stale results for a superseded query are dropped by the modal).
+    pub fn set_search_results(
+        &mut self,
+        query: &str,
+        results: Vec<dessplay_core::net::AniDbSearchHit>,
+    ) {
+        if let Some(Modal::AniDbSearch(modal)) = self.modals.last_mut() {
+            modal.set_results(query, results);
         }
     }
 
@@ -378,6 +397,21 @@ impl Ui {
                 let entry = self.snapshot.view.list_entries.get(&id)?.clone();
                 self.push_modal(Modal::ListEdit(ListEditModal::new(id, entry)));
                 None
+            }
+            Msg::LinkListEntry(id) => {
+                let entry = self.snapshot.view.list_entries.get(&id)?;
+                let name = entry.name.clone();
+                self.push_modal(Modal::AniDbSearch(AniDbSearchModal::new(id, name.clone())));
+                // Fire the initial search for the entry's name.
+                Some(UserAction::AniDbSearch { query: name })
+            }
+            Msg::AniDbSearchRequested(query) => Some(UserAction::AniDbSearch { query }),
+            Msg::ListEntryLinked(id, series) => {
+                self.pop_modal();
+                self.sync_focus_attr();
+                let mut entry = self.snapshot.view.list_entries.get(&id)?.clone();
+                entry.anidb_series_id = Some(series);
+                Some(UserAction::Mutate(Mutation::PutListEntry { id, entry }))
             }
             Msg::ToggleAway(user) => {
                 let currently_away = matches!(

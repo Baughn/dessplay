@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use dessplay_core::franchise::FranchiseKey;
-use dessplay_core::types::{Ed2kHash, ListEntryId, SeriesListEntry, UserId};
+use dessplay_core::types::{AniDbSeriesId, Ed2kHash, ListEntryId, SeriesListEntry, UserId};
 
 use crate::config::Settings;
 
@@ -29,6 +29,8 @@ pub enum Msg {
     BrowseFranchise(FranchiseKey),
     /// Edit a List entry.
     EditListEntry(ListEntryId),
+    /// Link a List entry to AniDB (opens the search modal).
+    LinkListEntry(ListEntryId),
 
     // Users pane
     /// Mark a user Away (or clear an Away).
@@ -66,6 +68,10 @@ pub enum Msg {
     SettingsSaved(Box<Settings>, Vec<PathBuf>),
     /// List edit modal: save this entry.
     ListEntrySaved(ListEntryId, Box<SeriesListEntry>),
+    /// AniDB search modal: run this search.
+    AniDbSearchRequested(String),
+    /// AniDB search modal: link the entry to this series.
+    ListEntryLinked(ListEntryId, AniDbSeriesId),
 
     // Navigation / global
     /// Cycle pane focus.
@@ -89,6 +95,9 @@ impl Msg {
             Msg::ToggleSeriesSort => "ToggleSeriesSort",
             Msg::BrowseFranchise(_) => "BrowseFranchise",
             Msg::EditListEntry(_) => "EditListEntry",
+            Msg::LinkListEntry(_) => "LinkListEntry",
+            Msg::AniDbSearchRequested(_) => "AniDbSearchRequested",
+            Msg::ListEntryLinked(..) => "ListEntryLinked",
             Msg::ToggleAway(_) => "ToggleAway",
             Msg::PlaySelected(_) => "PlaySelected",
             Msg::AddFileAfter(_) => "AddFileAfter",
@@ -124,6 +133,12 @@ pub enum UserAction {
     },
     /// Persist settings + media roots.
     SaveSettings(Box<Settings>, Vec<PathBuf>),
+    /// Ask the server for an AniDB name search (results come back as a
+    /// UI input).
+    AniDbSearch {
+        /// The query.
+        query: String,
+    },
     /// Quit the application.
     Quit,
 }

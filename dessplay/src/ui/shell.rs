@@ -31,6 +31,13 @@ pub enum UiInput {
         /// True when this file is done (row removed).
         finished: bool,
     },
+    /// AniDB name-search results (delivered to the search modal).
+    SearchResults {
+        /// The query these results answer.
+        query: String,
+        /// The hits.
+        results: Vec<dessplay_core::net::AniDbSearchHit>,
+    },
     /// Restore the terminal and exit the UI thread. The explicit
     /// message exists because channel-closure can't signal it: the
     /// input thread holds a sender clone forever (it's blocked in
@@ -94,6 +101,7 @@ pub fn run_ui_thread(
                 total_bytes,
                 finished,
             } => ui.set_hash_progress(filename, done_bytes, total_bytes, finished),
+            UiInput::SearchResults { query, results } => ui.set_search_results(&query, results),
             UiInput::Event(event) => {
                 for action in ui.handle(event) {
                     let quit = action == UserAction::Quit;

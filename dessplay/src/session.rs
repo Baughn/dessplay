@@ -71,6 +71,11 @@ pub struct PlayerWiring {
     last_synced: Option<(UserId, dessplay_core::types::PlaybackPosition)>,
     /// Chat messages already shown as OSD.
     chat_seen: Option<usize>,
+    /// AniDB lookups already requested this session (the request is a
+    /// GSet insert; this just avoids re-sending every snapshot).
+    lookups_requested: HashSet<Ed2kHash>,
+    /// Series preferences already written from List watchers sets.
+    watcher_prefs_written: HashSet<dessplay_core::types::AniDbSeriesId>,
 }
 
 impl PlayerWiring {
@@ -83,6 +88,8 @@ impl PlayerWiring {
             loaded: None,
             last_synced: None,
             chat_seen: None,
+            lookups_requested: HashSet::new(),
+            watcher_prefs_written: HashSet::new(),
         }
     }
 
@@ -118,6 +125,57 @@ impl PlayerWiring {
                 file: entry.hash,
                 filename: entry.state.filename.clone(),
             });
+        }
+
+        // Ask the server to look up entries with no AniDB metadata yet.
+        // Hash, size, and filename all live in the entry, so any client
+        // can request; the server dedups, and the GSet dedups the
+        // replicated insert. Covers the adder going offline and the
+        // request set being cleared at compaction.
+        for entry in &view.playlist {
+            let missing = view
+                .anidb_metadata
+                .get(&entry.hash)
+                .is_none_or(|meta| meta.is_none());
+            if missing && self.lookups_requested.insert(entry.hash) {
+                out.push(Directive::Mutate(Mutation::RequestLookup {
+                    info: dessplay_core::types::FileHashInfo {
+                        hash: entry.hash,
+                        size: entry.state.size_bytes,
+                        filename: entry.state.filename.clone(),
+                    },
+                }));
+            }
+        }
+
+        // The List's watchers sets: a linked series we're *not* watching
+        // gets a NotWatching preference, so we never gate playback on a
+        // show we skip (docs/design.md, The List). Written once per
+        // series per session, and only when no preference exists — a
+        // manual choice always wins.
+        for entry in view.list_entries.values() {
+            let Some(series) = entry.anidb_series_id else {
+                continue;
+            };
+            // An empty watchers set means "unrecorded", not "nobody".
+            if entry.watchers.is_empty() {
+                continue;
+            }
+            let has_pref = view
+                .series_preference
+                .contains_key(&(self.me.clone(), series));
+            if entry.watchers.contains(&self.me)
+                || has_pref
+                || !self.watcher_prefs_written.insert(series)
+            {
+                continue;
+            }
+            tracing::info!(aid = series.0, name = %entry.name, "not in watchers; marking series NotWatching");
+            out.push(Directive::Mutate(Mutation::SetSeriesPreference {
+                user: self.me.clone(),
+                series,
+                pref: dessplay_core::types::SeriesWatchState::NotWatching,
+            }));
         }
 
         // Load now-playing once it has a verified local copy.
@@ -639,7 +697,7 @@ mod tests {
     use dessplay_core::net::{Presence, Role};
     use dessplay_core::playlist::NewPlaylistEntry;
     use dessplay_core::state::CrdtState;
-    use dessplay_core::types::{ActorId, PlaybackPosition, SharedTimestamp};
+    use dessplay_core::types::{ActorId, PlaybackPosition, SeriesWatchState, SharedTimestamp};
 
     use super::*;
 
@@ -1048,6 +1106,122 @@ mod tests {
             player_cmds(&on_state)
                 .iter()
                 .any(|cmd| matches!(cmd, PlayerCommand::Load { .. }))
+        );
+    }
+
+    fn lookup_requests(directives: &[Directive]) -> Vec<Ed2kHash> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::Mutate(Mutation::RequestLookup { info }) => Some(info.hash),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn entries_without_metadata_get_one_lookup_request() {
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        let first = wiring.on_state(&view, &[peer("kim")]);
+        assert_eq!(lookup_requests(&first), vec![hash(1)]);
+        // Not re-requested on the next snapshot.
+        let second = wiring.on_state(&view, &[peer("kim")]);
+        assert!(lookup_requests(&second).is_empty());
+    }
+
+    #[test]
+    fn entries_with_metadata_are_not_looked_up() {
+        let mut state = playing_state();
+        state.set_anidb_metadata(
+            A,
+            ts(4),
+            hash(1),
+            Some(dessplay_core::types::AniDbMetadata {
+                source: dessplay_core::types::MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(dessplay_core::types::AniDbSeriesId(1)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_state(&state.view(), &[peer("kim")]);
+        assert!(lookup_requests(&directives).is_empty());
+    }
+
+    fn list_entry(series: Option<u32>, watchers: &[&str]) -> dessplay_core::types::SeriesListEntry {
+        dessplay_core::types::SeriesListEntry {
+            name: "Some Show".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: dessplay_core::types::ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: watchers.iter().map(|w| UserId::new(*w)).collect(),
+            anidb_series_id: series.map(dessplay_core::types::AniDbSeriesId),
+        }
+    }
+
+    fn preference_writes(
+        directives: &[Directive],
+    ) -> Vec<(dessplay_core::types::AniDbSeriesId, SeriesWatchState)> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::Mutate(Mutation::SetSeriesPreference { series, pref, .. }) => {
+                    Some((*series, *pref))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn non_watchers_of_a_linked_entry_become_not_watching_once() {
+        use dessplay_core::types::{AniDbSeriesId, ListEntryId};
+        let mut state = CrdtState::new();
+        // kim is not in the watchers set.
+        state.put_list_entry(A, ts(1), ListEntryId(1), list_entry(Some(7), &["baughn", "nero"]));
+        let mut wiring = PlayerWiring::new(me());
+        let view = state.view();
+        let first = wiring.on_state(&view, &[peer("kim")]);
+        assert_eq!(
+            preference_writes(&first),
+            vec![(AniDbSeriesId(7), SeriesWatchState::NotWatching)]
+        );
+        // Once per session, not per snapshot.
+        let second = wiring.on_state(&view, &[peer("kim")]);
+        assert!(preference_writes(&second).is_empty());
+    }
+
+    #[test]
+    fn watcher_membership_and_manual_choices_are_respected() {
+        use dessplay_core::types::ListEntryId;
+        let mut state = CrdtState::new();
+        // kim watches this one: no write.
+        state.put_list_entry(A, ts(1), ListEntryId(1), list_entry(Some(7), &["kim", "nero"]));
+        // Unlinked: no write.
+        state.put_list_entry(A, ts(2), ListEntryId(2), list_entry(None, &["nero"]));
+        // Empty watchers means "unrecorded", not "nobody": no write.
+        state.put_list_entry(A, ts(3), ListEntryId(3), list_entry(Some(8), &[]));
+        // kim already chose to watch series 9 despite not being listed:
+        // the manual preference wins.
+        state.put_list_entry(A, ts(4), ListEntryId(4), list_entry(Some(9), &["nero"]));
+        state.set_series_preference(
+            A,
+            ts(5),
+            me(),
+            dessplay_core::types::AniDbSeriesId(9),
+            SeriesWatchState::Watching,
+        );
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_state(&state.view(), &[peer("kim")]);
+        assert!(
+            preference_writes(&directives).is_empty(),
+            "got: {:?}",
+            preference_writes(&directives)
         );
     }
 }

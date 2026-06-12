@@ -489,7 +489,9 @@ impl SeriesPane {
         match self.mode {
             SeriesMode::Recent => vec![("m", "Mode"), ("Enter", "Browse")],
             SeriesMode::All => vec![("m", "Mode"), ("s", "Sort"), ("Enter", "Browse")],
-            SeriesMode::TheList => vec![("m", "Mode"), ("Enter", "Open"), ("e", "Edit")],
+            SeriesMode::TheList => {
+                vec![("m", "Mode"), ("Enter", "Open"), ("e", "Edit"), ("l", "Link")]
+            }
         }
     }
 
@@ -620,6 +622,14 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                 match self.nav_rows().get(self.sel)? {
                     ListNavRow::Entry(g, e) => {
                         Some(Msg::EditListEntry(self.groups[*g].rows[*e].id))
+                    }
+                    ListNavRow::Heading(_) => None,
+                }
+            }
+            Key::Char('l') if self.mode == SeriesMode::TheList => {
+                match self.nav_rows().get(self.sel)? {
+                    ListNavRow::Entry(g, e) => {
+                        Some(Msg::LinkListEntry(self.groups[*g].rows[*e].id))
                     }
                     ListNavRow::Heading(_) => None,
                 }
