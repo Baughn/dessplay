@@ -323,9 +323,17 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
 - `PlaceholderReady { file, path }` -- the PNG is on disk
 - `Archived { file, result }` / `Evicted { files }`
 
-Phase 9B will add `StartDownload`, `ChunkReceived`, availability
-bitfields, and prefetch (queued entries ahead of now-playing; everything
-for seeders), driven by the main loop from playlist state.
+Phase 9B added the transfer side: `StartDownload` / `PeerMessage`
+commands and `SendPeer` / `Availability` / `DownloadComplete` outputs.
+The scheduling brain is `download.rs` (`Downloads` — pipeline, rarest-
+first + sequential window, source snub, endgame; synchronous and
+unit-testable); on-disk assembly + ed2k block verification is
+`chunkstore.rs`. The actor also **serves**: a serve queue drained within
+an upload-rate token bucket, answering `ChunkRequest`/`BlockHashRequest`
+from `local_files` (verified resolutions, manual mappings, completed
+downloads). The session (`PlayerWiring::plan_download`) drives downloads
+for the now-playing file plus a prefetch window. Seeder auto-fetch
+(headless, fetch everything) is the remaining 9B piece.
 
 ### AniDB worker (server-side, Phase 8)
 
@@ -448,6 +456,8 @@ dessplay-core/                (shared library)
     test_support.rs           (script + cluster generators; feature-gated)
     net/
       message.rs              (WireMessage, ServerControl, PeerInfo)
+      transfer.rs             (PeerMessage, RelayEnvelope, Bitfield,
+                               chunk geometry; Phase 9B)
       framing.rs              (length-prefixed stream frames)
       transport.rs            (Transport/Connector/Listener traits)
       timesync.rs             (NTP-style offset estimation)
@@ -470,6 +480,10 @@ dessplay/                     (client: lib + thin binary)
     player/                   (Player trait; mpv JSON IPC; MockPlayer)
     session.rs                (PlayerWiring policy + SessionShell glue;
                                drives the FileActor)
+    download.rs               (Downloads: chunk scheduling — pipeline,
+                               rarest-first, snub, endgame; Phase 9B)
+    chunkstore.rs             (on-disk chunk assembly + ed2k block
+                               verification + resume; Phase 9B)
     placeholder.rs            (not-watching PNG; image + ab_glyph + the
                                embedded DejaVu Sans in assets/)
     run.rs                    (mode entrypoints: interactive, headless,
@@ -481,8 +495,10 @@ dessplay/                     (client: lib + thin binary)
 dessplay-rendezvous/          (server: lib + thin binary)
   src/
     lib.rs / main.rs
-    server.rs                 (accept loop, auth, peer list, time sync;
-                               state sync + compaction in Phases 4-5)
+    server.rs                 (accept loop, auth, peer list, time sync,
+                               state sync, compaction, and the file-
+                               transfer relay — one relay BiStream per
+                               peer, forwarded by username; Phase 9B)
     anidb/                    (AniDB integration; Phase 8)
       protocol.rs             (pure UDP codec: commands, masks, parsing)
       schedule.rs             (pure re-validation scheduling rules)
@@ -490,7 +506,6 @@ dessplay-rendezvous/          (server: lib + thin binary)
       titles.rs               (anime-titles dump fetch/parse; name search)
       record.rs               (sanitized record/replay of real exchanges)
       worker.rs               (queue drainer; AniDbHost trait to the server)
-    relay.rs                  (file transfer relay; Phase 9)
     storage.rs                (server-side SQLite)
     bin/anidb-probe.rs        (manual real-API probe; never run by tests)
   tests/                      (sim connection tests + real-QUIC smoke)

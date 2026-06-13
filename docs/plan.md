@@ -529,6 +529,30 @@ block verification/resume, rarest-first, prefetch, seeder auto-fetch).
 - **Deferred to 9B / later:** manual not-watching keybinding, the
   per-series mapping start directory, and everything transfer-related.
 
+**9B status: mostly complete (2026-06-13).** Relayed file transfer:
+
+- **9B-1 relay**: `PeerMessage`/`RelayEnvelope`/`Bitfield` wire types; one
+  dedicated relay QUIC stream per peer (separate from control, so bulk
+  transfer doesn't head-of-line-block state sync — QUIC isolates
+  streams); server forwards by username; client surfaces `NetworkEvent::Peer`.
+- **9B-2 chunk store**: single-file assembly, ed2k per-block
+  verification, sidecar-free resume. Chunks are **256,000 B (250 KiB) =
+  block / 38**, aligned to ed2k blocks (no straddling) — the chunk size
+  is ours, the block size fixed by the root hash.
+- **9B-3 scheduling + serving**: `Downloads` coordinator (pipeline depth
+  `--pipeline-depth` flag default 16 × ≤4 sources, sequential window +
+  rarest-first, **source snub instead of per-chunk timeout**, endgame +
+  `Cancel`); FileActor serves chunks/block-hashes from local copies
+  within an upload-rate token bucket; wired into the live session
+  (missing now-playing file → download). End-to-end tests report
+  **100% goodput / 0% retransmit**.
+- **9B-4 prefetch**: a lookahead window of queued entries is fetched
+  ahead of now-playing.
+- **Remaining**: **seeder auto-fetch** (headless transfer driver — a
+  seeder fetches every playlist entry and serves it). Future:
+  disk/retention-aware prefetch depth, seek-aware download window,
+  rarest-aware upload prioritization.
+
 ### What gets built
 - FileActor: hashing, scanning, matching, download coordination, cache
   management
