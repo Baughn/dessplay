@@ -13,6 +13,7 @@ use std::io::{self, Read};
 
 use digest::Digest;
 use md4::Md4;
+use serde::{Deserialize, Serialize};
 
 use crate::types::Ed2kHash;
 
@@ -20,7 +21,7 @@ use crate::types::Ed2kHash;
 pub const ED2K_BLOCK_SIZE: u64 = 9_728_000;
 
 /// MD4 hash of one ed2k block, used for per-block transfer verification.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct Ed2kBlockHash(pub [u8; 16]);
 
 /// The full hashing result for one file.

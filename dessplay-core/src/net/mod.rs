@@ -10,9 +10,13 @@ pub mod quic;
 pub mod sim;
 pub mod timesync;
 pub mod tofu;
+pub mod transfer;
 pub mod transport;
 
 pub use message::{AniDbSearchHit, PeerInfo, Presence, Role, ServerControl, WireMessage};
+pub use transfer::{
+    Bitfield, CHUNK_SIZE, PeerId, PeerMessage, RelayEnvelope, chunk_count, chunk_range,
+};
 pub use transport::{BiStream, Connector, Listener, Transport, TransportError, TransportEvent};
 
 /// The default rendezvous-server port, used when an address omits one.

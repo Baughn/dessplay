@@ -132,7 +132,8 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
                 }),
                 NetworkEvent::PeerList(_)
                 | NetworkEvent::AuthFailed
-                | NetworkEvent::SearchResults { .. } => None,
+                | NetworkEvent::SearchResults { .. }
+                | NetworkEvent::Peer { .. } => None,
             };
             if let Some(cmd) = to_sync
                 && router_sync.send(cmd).await.is_err()

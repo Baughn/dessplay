@@ -15,9 +15,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dessplay_core::derive::{self, DerivedUserState};
+use dessplay_core::net::framing::{read_frame, write_frame};
 use dessplay_core::net::{
-    AniDbSearchHit, Listener, PeerInfo, Presence, Role, ServerControl, Transport, TransportEvent,
-    WireMessage,
+    AniDbSearchHit, BiStream, Listener, PeerInfo, Presence, RelayEnvelope, Role, ServerControl,
+    Transport, TransportEvent, WireMessage,
 };
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
@@ -106,11 +107,19 @@ impl ServerConfig {
     }
 }
 
+/// The write half of a peer's relay stream, shared so any forwarder can
+/// deliver to it. A `tokio::sync::Mutex` because writes are `.await`ed
+/// (a frame can span several poll-writes) and held across them.
+type RelayTx = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>;
+
 struct PeerEntry<T> {
     /// Id of the connection backing this entry (live or last).
     conn_id: u64,
     /// The live connection; `None` once Lost or Departed.
     conn: Option<Arc<T>>,
+    /// Write half of the peer's relay stream (file transfer), if it has
+    /// opened one. Cleared with `conn` on disconnect.
+    relay_tx: Option<RelayTx>,
     info: PeerInfo,
     /// Shared-clock millis when the connection died (drives the
     /// Lost -> Departed promotion).
@@ -221,6 +230,36 @@ impl<T: Transport> Shared<T> {
                 .is_some_and(|max| frame.len() <= max)
             {
                 let _ = conn.send_datagram(&frame).await;
+            }
+        }
+    }
+
+    /// Forward a peer message to `to`, wrapped as `Forwarded { from }`.
+    /// Dropped silently if the target has no live relay stream (absent
+    /// or not yet opened) — the design's "drop envelopes addressed to
+    /// non-Present peers". Returns whether it was delivered.
+    async fn forward(&self, from: &UserId, to: &UserId, message: Vec<u8>) -> bool {
+        let relay_tx = {
+            let registry = lock(&self.registry);
+            registry.peers.get(to).and_then(|p| p.relay_tx.clone())
+        };
+        let Some(relay_tx) = relay_tx else {
+            tracing::trace!(%from, %to, "relay: target has no stream; dropping");
+            return false;
+        };
+        let envelope = RelayEnvelope::Forwarded {
+            from: from.clone(),
+            message,
+        };
+        let Ok(frame) = wire::encode(&envelope) else {
+            return false;
+        };
+        let mut guard = relay_tx.lock().await;
+        match write_frame(&mut *guard, &frame).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::debug!(%to, "relay write failed: {e}");
+                false
             }
         }
     }
@@ -593,6 +632,7 @@ async fn serve_connection<T: Transport>(
             PeerEntry {
                 conn_id,
                 conn: Some(Arc::clone(&conn)),
+                relay_tx: None,
                 info: PeerInfo {
                     username: username.clone(),
                     role,
@@ -652,6 +692,7 @@ async fn serve_connection<T: Transport>(
                     }
                     AuthedEnd::Lost(_) => {
                         entry.conn = None;
+                        entry.relay_tx = None;
                         entry.info.presence = Presence::Lost;
                         entry.lost_at = Some(clock());
                     }
@@ -685,13 +726,40 @@ async fn serve_connection<T: Transport>(
     }
 }
 
+/// Read a peer's relay stream, forwarding each `Forward` envelope to its
+/// target. Exits when the stream closes (connection gone). Lives as a
+/// task for the connection's lifetime; clients only send `Forward`, so
+/// a stray `Forwarded` is ignored.
+async fn relay_reader<T: Transport>(
+    mut recv: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+    from: UserId,
+    shared: Arc<Shared<T>>,
+) {
+    loop {
+        let frame = match read_frame(&mut recv).await {
+            Ok(frame) => frame,
+            Err(_) => break,
+        };
+        match wire::decode::<RelayEnvelope>(&frame) {
+            Ok(RelayEnvelope::Forward { to, message }) => {
+                shared.forward(&from, &to, message).await;
+            }
+            Ok(RelayEnvelope::Forwarded { .. }) => {
+                tracing::warn!(%from, "client sent a Forwarded envelope; ignoring");
+            }
+            Err(e) => tracing::warn!(%from, "undecodable relay envelope: {e}"),
+        }
+    }
+    tracing::trace!(%from, "relay reader exiting");
+}
+
 /// The post-auth message loop.
 async fn serve_authed<T: Transport>(
     conn: &T,
     conn_id: u64,
     username: &UserId,
     role: Role,
-    shared: &Shared<T>,
+    shared: &Arc<Shared<T>>,
 ) -> AuthedEnd {
     let clock = &shared.clock;
     loop {
@@ -702,7 +770,24 @@ async fn serve_authed<T: Transport>(
         let (payload, via_datagram) = match event {
             TransportEvent::Control(bytes) => (bytes, false),
             TransportEvent::Datagram(bytes) => (bytes, true),
-            TransportEvent::IncomingStream(_) => continue, // Phase 9
+            TransportEvent::IncomingStream(stream) => {
+                // The peer's relay stream (file transfer). Register the
+                // write half so other peers can forward to it, and read
+                // its Forward envelopes in a task.
+                let BiStream { send, recv } = stream;
+                let relay_tx: RelayTx = Arc::new(tokio::sync::Mutex::new(send));
+                {
+                    let mut registry = lock(&shared.registry);
+                    if let Some(entry) = registry.peers.get_mut(username)
+                        && entry.conn_id == conn_id
+                    {
+                        entry.relay_tx = Some(Arc::clone(&relay_tx));
+                    }
+                }
+                tracing::debug!(user = %username.0, "relay stream opened");
+                tokio::spawn(relay_reader(recv, username.clone(), Arc::clone(shared)));
+                continue;
+            }
             TransportEvent::Closed { reason } => return AuthedEnd::Lost(reason),
         };
         let msg: WireMessage = match wire::decode(&payload) {

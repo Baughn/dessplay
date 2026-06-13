@@ -13,9 +13,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use dessplay_core::net::framing::{read_frame, write_frame};
 use dessplay_core::net::timesync::TimeSync;
 use dessplay_core::net::{
-    Connector, Role, ServerControl, Transport, TransportError, TransportEvent, WireMessage,
+    Connector, PeerId, PeerMessage, RelayEnvelope, Role, ServerControl, Transport, TransportError,
+    TransportEvent, WireMessage,
 };
 use dessplay_core::types::{Epoch, UserId};
 use dessplay_core::wire;
@@ -37,6 +39,15 @@ pub enum NetworkCommand {
     /// unavailable (playback positions — the 1s reliable tick covers
     /// the gap).
     SendDatagramOnly(Box<ServerControl>),
+    /// Send a file-transfer message to a peer, relayed through the
+    /// server on the dedicated relay stream. Dropped if the relay
+    /// stream isn't up yet (pre-auth) — transfer logic retries.
+    SendPeer {
+        /// The destination peer.
+        to: PeerId,
+        /// The message.
+        message: Box<PeerMessage>,
+    },
     /// Close the connection and exit the actor.
     Shutdown,
 }
@@ -49,6 +60,7 @@ impl NetworkCommand {
             NetworkCommand::SendReliable(msg) => msg.variant_name(),
             NetworkCommand::SendEager(msg) => msg.variant_name(),
             NetworkCommand::SendDatagramOnly(msg) => msg.variant_name(),
+            NetworkCommand::SendPeer { .. } => "SendPeer",
             NetworkCommand::Shutdown => "Shutdown",
         }
     }
@@ -87,6 +99,13 @@ pub enum NetworkEvent {
         query: String,
         /// Best matches.
         results: Vec<dessplay_core::net::AniDbSearchHit>,
+    },
+    /// A file-transfer message relayed from a peer.
+    Peer {
+        /// The originating peer.
+        from: PeerId,
+        /// The message.
+        message: Box<PeerMessage>,
     },
     /// Connection lost; the actor will retry.
     Disconnected {
@@ -281,6 +300,37 @@ async fn send_eager<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(), T
     Ok(())
 }
 
+/// Read the relay stream, surfacing each `Forwarded` peer message as a
+/// [`NetworkEvent::Peer`]. Exits when the stream closes (connection
+/// gone); a fresh connection opens a new relay stream and reader.
+async fn run_relay_reader(
+    mut recv: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+    events: mpsc::Sender<NetworkEvent>,
+) {
+    loop {
+        let frame = match read_frame(&mut recv).await {
+            Ok(frame) => frame,
+            Err(_) => break,
+        };
+        match wire::decode::<RelayEnvelope>(&frame) {
+            Ok(RelayEnvelope::Forwarded { from, message }) => match wire::decode(&message) {
+                Ok(message) => {
+                    let _ = events
+                        .send(NetworkEvent::Peer {
+                            from,
+                            message: Box::new(message),
+                        })
+                        .await;
+                }
+                Err(e) => tracing::warn!("undecodable peer message: {e}"),
+            },
+            Ok(RelayEnvelope::Forward { .. }) => {} // server only sends Forwarded
+            Err(e) => tracing::warn!("undecodable relay envelope: {e}"),
+        }
+    }
+    tracing::trace!("relay reader exiting");
+}
+
 async fn run_connection<T: Transport>(
     conn: &T,
     config: &NetworkConfig,
@@ -304,6 +354,9 @@ async fn run_connection<T: Transport>(
     let mut last_offset: Option<i64> = None;
     let mut authenticated = false;
     let mut next_probe = tokio::time::Instant::now(); // first probe right after AuthOk
+    // The relay stream's write half; opened after AuthOk (the server
+    // drops pre-auth streams). `None` until then / after a relay error.
+    let mut relay_send: Option<Box<dyn tokio::io::AsyncWrite + Send + Unpin>> = None;
 
     loop {
         tokio::select! {
@@ -337,6 +390,19 @@ async fn run_connection<T: Transport>(
                         authenticated = true;
                         tracing::debug!(%observed_addr, "auth accepted");
                         let _ = events.send(NetworkEvent::Connected { observed_addr }).await;
+                        // Open the dedicated relay stream for file
+                        // transfer (the server accepts streams only
+                        // post-auth). A failure here just leaves relay
+                        // unavailable until the next connection.
+                        match conn.open_stream().await {
+                            Ok(stream) => {
+                                let dessplay_core::net::BiStream { send, recv } = stream;
+                                relay_send = Some(send);
+                                tokio::spawn(run_relay_reader(recv, events.clone()));
+                                tracing::debug!("relay stream opened");
+                            }
+                            Err(e) => tracing::warn!("opening relay stream: {e}"),
+                        }
                     }
                     ServerControl::AuthFailed => return ConnectionEnd::AuthFailed,
                     ServerControl::PeerList { peers } => {
@@ -415,6 +481,29 @@ async fn run_connection<T: Transport>(
                                 "send datagram-only"
                             );
                             let _ = conn.send_datagram(&frame).await;
+                        }
+                    }
+                    Some(NetworkCommand::SendPeer { to, message }) => {
+                        let Some(send) = relay_send.as_mut() else {
+                            tracing::debug!("relay stream not up; dropping SendPeer");
+                            continue;
+                        };
+                        let Ok(inner) = wire::encode(&*message) else {
+                            continue;
+                        };
+                        let envelope = RelayEnvelope::Forward { to, message: inner };
+                        let Ok(frame) = wire::encode(&envelope) else {
+                            continue;
+                        };
+                        // A relay write error almost always means the
+                        // whole QUIC connection is dying; drop the relay
+                        // half and let the recv() arm drive reconnect
+                        // (which reopens the stream) rather than tearing
+                        // down here on what might be a transient stream
+                        // fault.
+                        if let Err(e) = write_frame(send, &frame).await {
+                            tracing::debug!("relay write failed: {e}");
+                            relay_send = None;
                         }
                     }
                     Some(NetworkCommand::Shutdown) | None => {
