@@ -9,13 +9,13 @@
 //!   peer-supplied block-hash list (which is itself validated against
 //!   the file's ed2k root, the playlist key, before use).
 //!
-//! Blocks and chunks don't align — a block spans ~37.1 chunks and a
-//! chunk can straddle two blocks — so verification is at block (byte
-//! range) granularity: a block is verified once every chunk overlapping
-//! its range is written and the range hashes correctly. A mismatched
-//! block clears its chunks' `written` bits so they're re-fetched; the
-//! bytes of an already-verified neighbour on disk are never wrong (a
-//! re-fetch rewrites identical bytes for the shared chunk).
+//! Chunks align to ed2k blocks: [`CHUNK_SIZE`] divides the block size
+//! exactly ([`CHUNKS_PER_BLOCK`] = 38), so each block is a contiguous
+//! group of whole chunks and no chunk straddles a boundary.
+//! Verification is per block: once all of a block's chunks are written,
+//! the block's byte range is hashed and compared. A mismatch clears
+//! exactly that block's chunks for re-fetch — no shared-chunk
+//! bookkeeping.
 //!
 //! **Resume** needs no sidecar: re-open the partial file, mark every
 //! chunk `written` (the bytes are there), and call [`ChunkStore::verify`]
@@ -26,8 +26,11 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use dessplay_core::hash::{Ed2kBlockHash, ED2K_BLOCK_SIZE, block_hash, root_from_blocks};
-use dessplay_core::net::{Bitfield, CHUNK_SIZE, chunk_count, chunk_range};
+use dessplay_core::net::{Bitfield, CHUNKS_PER_BLOCK, chunk_count, chunk_range};
 use dessplay_core::types::Ed2kHash;
+
+/// Chunks per ed2k block (the alignment invariant; `u32` for indexing).
+const CPB: u32 = CHUNKS_PER_BLOCK as u32;
 
 /// Number of ed2k blocks covering `size_bytes`.
 fn block_count(size_bytes: u64) -> u32 {
@@ -41,20 +44,17 @@ fn block_byte_range(b: u32, size_bytes: u64) -> std::ops::Range<u64> {
     start..end
 }
 
-/// Inclusive chunk-index range overlapping block `b`'s byte range.
-fn chunks_in_block(b: u32, size_bytes: u64) -> std::ops::RangeInclusive<u32> {
-    let bytes = block_byte_range(b, size_bytes);
-    let first = (bytes.start / CHUNK_SIZE) as u32;
-    let last = ((bytes.end.saturating_sub(1)) / CHUNK_SIZE) as u32;
-    first..=last
+/// The chunk indices making up block `b` (contiguous, since chunks align
+/// to blocks): `[b*38, (b+1)*38)`, clamped to the file's chunk count.
+fn chunks_in_block(b: u32, total_chunks: u32) -> std::ops::Range<u32> {
+    let first = b * CPB;
+    let last = (first + CPB).min(total_chunks);
+    first..last
 }
 
-/// Inclusive block-index range overlapping chunk `index`'s byte range.
-fn blocks_of_chunk(index: u32, size_bytes: u64) -> std::ops::RangeInclusive<u32> {
-    let bytes = chunk_range(index, size_bytes);
-    let first = (bytes.start / ED2K_BLOCK_SIZE) as u32;
-    let last = ((bytes.end.saturating_sub(1)) / ED2K_BLOCK_SIZE) as u32;
-    first..=last
+/// The single block a chunk belongs to (no straddling under alignment).
+fn block_of_chunk(index: u32) -> u32 {
+    index / CPB
 }
 
 /// What a [`ChunkStore::verify`] pass changed.
@@ -193,7 +193,7 @@ impl ChunkStore {
             if self.verified[b as usize] {
                 continue;
             }
-            let chunks = chunks_in_block(b, self.size_bytes);
+            let chunks = chunks_in_block(b, self.chunks);
             if !chunks.clone().all(|c| self.written.get(c)) {
                 continue;
             }
@@ -235,26 +235,23 @@ impl ChunkStore {
         ((verified.saturating_mul(10_000)) / self.size_bytes.max(1)) as u16
     }
 
-    /// The bitfield to advertise: a chunk is available iff every block
-    /// overlapping it is verified (we never serve unverified bytes).
+    /// The bitfield to advertise: a chunk is available iff its block is
+    /// verified (we never serve unverified bytes).
     pub fn available(&self) -> Bitfield {
         let mut bf = Bitfield::new(self.chunks);
         for i in 0..self.chunks {
-            if blocks_of_chunk(i, self.size_bytes).all(|b| self.verified[b as usize]) {
+            if self.verified[block_of_chunk(i) as usize] {
                 bf.set(i);
             }
         }
         bf
     }
 
-    /// Chunks still needed: those overlapping an unverified block and
-    /// not currently written. The download scheduler requests these.
+    /// Chunks still needed: those in an unverified block and not
+    /// currently written. The download scheduler requests these.
     pub fn needed_chunks(&self) -> Vec<u32> {
         (0..self.chunks)
-            .filter(|&i| {
-                !self.written.get(i)
-                    && blocks_of_chunk(i, self.size_bytes).any(|b| !self.verified[b as usize])
-            })
+            .filter(|&i| !self.written.get(i) && !self.verified[block_of_chunk(i) as usize])
             .collect()
     }
 }
@@ -287,27 +284,24 @@ mod tests {
     }
 
     #[test]
-    fn geometry_overlaps_are_consistent() {
-        // A chunk that straddles the first block boundary exists, since
-        // BLOCK is not a multiple of CHUNK.
+    fn geometry_is_aligned_no_straddling() {
         let size = 3 * ED2K_BLOCK_SIZE + 12345;
-        // Every chunk's blocks, and every block's chunks, agree.
+        let total = chunk_count(size);
+        // Every block's chunks map back to that block, and the groups
+        // partition the chunk space (no overlap, no gaps).
+        let mut seen = 0u32;
         for b in 0..block_count(size) {
-            for c in chunks_in_block(b, size) {
-                assert!(
-                    blocks_of_chunk(c, size).contains(&b),
-                    "chunk {c} should list block {b}"
-                );
+            let chunks = chunks_in_block(b, total);
+            for c in chunks.clone() {
+                assert_eq!(block_of_chunk(c), b, "chunk {c} should belong to block {b}");
             }
+            seen += chunks.end - chunks.start;
         }
-        // The straddling chunk at the first block boundary maps to two
-        // blocks.
-        let boundary_chunk = (ED2K_BLOCK_SIZE / CHUNK_SIZE) as u32;
-        assert_eq!(
-            blocks_of_chunk(boundary_chunk, size).count(),
-            2,
-            "the chunk crossing BLOCK should overlap two blocks"
-        );
+        assert_eq!(seen, total, "blocks must partition all chunks exactly");
+        // The chunk at the first block boundary belongs to exactly one
+        // block (alignment): chunk 38 starts block 1.
+        assert_eq!(block_of_chunk(CPB), 1);
+        assert_eq!(block_of_chunk(CPB - 1), 0);
     }
 
     #[test]
@@ -409,7 +403,7 @@ mod tests {
         // Write only block 0's chunks (truncated download).
         {
             let mut store = ChunkStore::create(&path, size).unwrap();
-            for c in chunks_in_block(0, size) {
+            for c in chunks_in_block(0, chunk_count(size)) {
                 let r = chunk_range(c, size);
                 store
                     .write_chunk(c, &bytes[r.start as usize..r.end as usize])

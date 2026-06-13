@@ -18,9 +18,21 @@ use crate::types::{Ed2kHash, UserId};
 /// server forwards to the live connection registered under this name.
 pub type PeerId = UserId;
 
-/// A file's chunk size: 256 KiB. The last chunk of a file may be
-/// smaller. Chunk count is derived from the file's `size_bytes`.
-pub const CHUNK_SIZE: u64 = 256 * 1024;
+/// Transfer chunks per ed2k block. 38 divides the 9,728,000-byte ed2k
+/// block exactly, so a chunk never straddles a block boundary — block
+/// verification maps to a contiguous group of whole chunks, with no
+/// shared-chunk bookkeeping.
+pub const CHUNKS_PER_BLOCK: u64 = 38;
+
+/// A file's chunk size: 256,000 bytes (250 KiB), chosen as
+/// `ED2K_BLOCK_SIZE / 38` so chunks align to ed2k block boundaries (the
+/// block size is fixed by the AniDB-compatible root hash; the chunk
+/// size is ours). The last chunk of a file may be smaller. Chunk count
+/// is derived from the file's `size_bytes`.
+pub const CHUNK_SIZE: u64 = crate::hash::ED2K_BLOCK_SIZE / CHUNKS_PER_BLOCK;
+
+// The alignment the rest of transfer relies on.
+const _: () = assert!(crate::hash::ED2K_BLOCK_SIZE.is_multiple_of(CHUNK_SIZE));
 
 /// Number of 256 KiB chunks covering `size_bytes` (the last is short).
 pub fn chunk_count(size_bytes: u64) -> u32 {
@@ -211,8 +223,11 @@ mod tests {
         assert_eq!(chunk_count(1), 1);
         assert_eq!(chunk_count(CHUNK_SIZE), 1);
         assert_eq!(chunk_count(CHUNK_SIZE + 1), 2);
-        // A typical ~1.4 GB file is ~5600 chunks.
-        assert_eq!(chunk_count(1_400_000_000), 5341);
+        // A typical ~1.4 GB file is ~5500 chunks of 250 KiB.
+        assert_eq!(chunk_count(1_400_000_000), 5469);
+        // Chunks divide the ed2k block exactly (no straddling).
+        assert_eq!(crate::hash::ED2K_BLOCK_SIZE / CHUNK_SIZE, CHUNKS_PER_BLOCK);
+        assert_eq!(CHUNK_SIZE, 256_000);
 
         assert_eq!(chunk_range(0, CHUNK_SIZE + 10), 0..CHUNK_SIZE);
         // The last chunk is clamped to the file size.
