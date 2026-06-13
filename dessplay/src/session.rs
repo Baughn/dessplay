@@ -131,6 +131,11 @@ pub struct PlayerWiring {
 /// Watch Tracking).
 const WATCHED_FRACTION: f64 = 0.85;
 
+/// How many queued playlist entries past now-playing an interactive
+/// client prefetches (design.md, Pre-fetching). A small fixed lookahead;
+/// disk/retention-aware depth is future work. Seeders fetch everything.
+const PREFETCH_AHEAD: usize = 2;
+
 /// Text for the not-watching placeholder image (design.md, Placeholder
 /// Image): the filename, the explanation, and who *is* watching.
 fn placeholder_lines(view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> Vec<String> {
@@ -208,42 +213,52 @@ impl PlayerWiring {
         }]
     }
 
-    /// If the now-playing file is missing locally (resolved NotFound /
-    /// HashMismatch) and present peers advertise it, start/refresh a
-    /// download from them. Sources are present peers (interactive or
-    /// seeder) whose `FileAvailability` for the file is Ready.
+    /// Start/refresh downloads for missing files we want: the now-playing
+    /// file plus a small **prefetch** window of queued entries ahead of
+    /// it (design.md, Pre-fetching), so next episodes arrive before they
+    /// are needed. Each download is idempotent in the file actor; sources
+    /// are present peers (interactive or seeder) advertising the file
+    /// Ready. Watched/already-local entries are skipped.
     fn plan_download(&self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
-        let Some(file) = view.now_playing else {
+        let Some(now) = view.now_playing else {
             return vec![];
         };
-        // Already have it (or will, once a resolve lands) — don't fetch.
-        if matches!(self.resolved.get(&file), Some(Resolution::Verified(_)) | None) {
-            return vec![];
-        }
-        let Some(entry) = view.playlist.iter().find(|e| e.hash == file) else {
+        let Some(start) = view.playlist.iter().position(|e| e.hash == now) else {
             return vec![];
         };
-        let sources: Vec<dessplay_core::net::PeerId> = peers
-            .iter()
-            .filter(|p| {
-                p.username != self.me
-                    && p.presence == dessplay_core::net::Presence::Present
-                    && view.file_availability.get(&(p.username.clone(), file))
-                        == Some(&FileAvailability::Ready)
-            })
-            .map(|p| p.username.clone())
-            .collect();
-        if sources.is_empty() {
-            return vec![];
+        let mut out = Vec::new();
+        // Now-playing, then the next PREFETCH_AHEAD queued entries.
+        for entry in view.playlist.iter().skip(start).take(1 + PREFETCH_AHEAD) {
+            let file = entry.hash;
+            // Have it (or not resolved yet), or already watched: skip.
+            if matches!(self.resolved.get(&file), Some(Resolution::Verified(_)) | None)
+                || view.watched.get(&file) == Some(&true)
+            {
+                continue;
+            }
+            let sources: Vec<dessplay_core::net::PeerId> = peers
+                .iter()
+                .filter(|p| {
+                    p.username != self.me
+                        && p.presence == dessplay_core::net::Presence::Present
+                        && view.file_availability.get(&(p.username.clone(), file))
+                            == Some(&FileAvailability::Ready)
+                })
+                .map(|p| p.username.clone())
+                .collect();
+            if sources.is_empty() {
+                continue;
+            }
+            out.push(Directive::StartDownload {
+                file,
+                size_bytes: entry.state.size_bytes,
+                sources,
+                // Sequential from the start; seek-aware windowing is
+                // future work (downloads still prioritise early chunks).
+                play_chunk: 0,
+            });
         }
-        vec![Directive::StartDownload {
-            file,
-            size_bytes: entry.state.size_bytes,
-            sources,
-            // Sequential from the start; seek-aware windowing is future
-            // work (the download still prioritises early chunks).
-            play_chunk: 0,
-        }]
+        out
     }
 
     /// React to the file actor's known-series answer (design.md, File

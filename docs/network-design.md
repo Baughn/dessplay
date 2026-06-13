@@ -391,22 +391,32 @@ Messages addressed to other peers (always wrapped in relay envelopes):
 
 ```rust
 enum PeerMessage {
-    FileAvailability { file_id: FileId, bitfield: BitVec },
+    FileAvailability { file_id: FileId, bitfield: Bitfield },
     BlockHashRequest { file_id: FileId },
-    BlockHashes { file_id: FileId, hashes: Vec<Md4Hash> },  // ed2k blocks
+    BlockHashes { file_id: FileId, hashes: Vec<Ed2kBlockHash> },  // ed2k blocks
     ChunkRequest { file_id: FileId, chunks: Vec<u32> },
     ChunkData { file_id: FileId, index: u32, data: Vec<u8> },
+    Cancel { file_id: FileId, chunks: Vec<u32> },  // retract requests
 }
 ```
 
 No Hello message is needed: the server authenticated every peer, and relay
-envelopes carry the sender's identity.
+envelopes carry the sender's identity. `Bitfield` is a compact `Vec<u8>`
+newtype (LSB-first bits + a length), not a `bitvec` dependency. `Cancel`
+retracts outstanding requests — used by endgame and when dropping a
+silent source (see [Chunk Selection](#chunk-selection-rarest-first)).
 
 ### Chunks
 
-- Files are divided into **256 KiB chunks** (last chunk may be smaller)
+- Files are divided into **256,000-byte chunks** (250 KiB; the last chunk
+  may be smaller). **Chosen as `ED2K_BLOCK_SIZE / 38`** so chunks align
+  exactly to ed2k block boundaries: the block size (9,728,000) is fixed
+  by the AniDB-compatible root hash, but the chunk size is ours, and
+  9,728,000 = 2¹²·5³·19 has 256,000 as a divisor (38 chunks/block). A
+  chunk therefore never straddles a block, so block verification maps to
+  a contiguous chunk group with no shared-chunk bookkeeping.
 - Chunks are identified by `(file_id, chunk_index)`
-- A typical 1.4 GB video file has ~5600 chunks
+- A typical 1.4 GB video file has ~5500 chunks
 - The chunk count is derived from `size_bytes` in the playlist entry
   (filled in by whoever added the file)
 
@@ -442,49 +452,83 @@ Each peer maintains a bitfield per file indicating which chunks it has
 
 ### Chunk Selection: Rarest First
 
-When a downloader decides which chunk to request next:
+The download scheduler (`dessplay/src/download.rs`) is a synchronous,
+deterministic policy core (events in, actions out — like the player
+wiring), so it is unit-testable without async or real time. Chunk order:
 
-1. Collect availability bitfields from all peers
-2. For each missing chunk, count how many peers have it
-3. Request the chunk available from the **fewest** peers
-4. Break ties randomly
+1. A **sequential window** of the next ~20% of the file ahead of the
+   playback position is requested first, in order, so playback can start.
+2. Outside the window, **rarest-first**: count how many sources advertise
+   each missing chunk and request the rarest; ties break by index
+   (deterministic, not random — reproducible tests).
 
 This maximizes the rate at which rare chunks propagate. With 1 seeder and 3
 leechers, the seeder sends different chunks to each leecher; those leechers
 can then serve each other.
 
+### Scheduling: pipeline, snub, endgame
+
+Informed by BitTorrent — and notably, there is **no per-chunk timeout**:
+
+- **Pipeline depth** outstanding chunk requests *per source* (the
+  `--pipeline-depth` flag, default 16), across up to **4 concurrent
+  sources**. The depth is the queue: the N+1th chunk isn't requested
+  until one completes, so no request queue piles up behind the in-flight
+  set.
+- **Snub, not timeout.** A source that sends *nothing* for 30s is dropped
+  and its outstanding chunks are `Cancel`led and requeued to other
+  sources. A chunk in transit is never re-requested — only a silent
+  *source* is — which avoids both spurious duplicate fetches (too-short
+  timeout) and stalled playback (too-long timeout). Real chunk loss is
+  rare and surfaces as a snub.
+- **Endgame.** When the remaining work fits in one pipeline, a chunk may
+  be requested from *several* sources at once; whichever arrives first
+  wins and the losers are `Cancel`led — so the tail isn't stuck behind
+  one slow source.
+- Block hashes are fetched and validated against the file's ed2k root
+  before any chunk can verify; an invalid list is rejected and re-asked
+  from another source.
+
 ### Upload Prioritization
 
-When a peer has multiple pending chunk requests:
-
-- Prioritize chunks that the requester is the only one missing
-- Otherwise, prioritize rarest chunks
-- Round-robin between requesting peers for fairness
+Serving is a FIFO queue drained within the [upload limit](#upload-limiting);
+`Cancel` removes queued chunks. (Rarest-aware upload prioritization across
+competing requesters is future work — for the 5-friends-and-a-seeder scale,
+the seeder's uplink is the bottleneck and FIFO suffices.)
 
 ### Transfer Stream
 
+Each peer opens **one dedicated relay `BiStream`** to the server on
+connect (a QUIC stream separate from the control stream). All of that
+peer's transfer envelopes ride it:
+
 ```
 Downloader                  Server                    Uploader
-  |                            |                          |
-  |--- Open stream ----------->|                          |
-  |--- Forward{to: U,          |--- Open stream --------->|
-  |      ChunkRequest{...}} -->|--- Forwarded{from: D,    |
-  |                            |      ChunkRequest{...}} >|
-  |<-- Forwarded{from: U,      |<-- Forward{to: D,        |
-  |      ChunkData{idx,data}} -|      ChunkData{...}} ----|
-  |<-- ...  -------------------|<-- ...  -----------------|
-  |<-- (streams closed) -------|                          |
+  |--- Forward{to: U,        |                          |
+  |      ChunkRequest} ----->|--- Forwarded{from: D,    |
+  |                          |      ChunkRequest} ----->| (U's relay stream)
+  |<-- Forwarded{from: U,    |<-- Forward{to: D,        |
+  |      ChunkData} ---------|      ChunkData} ---------|
 ```
 
-`ChunkRequest.chunks` lists chunk indices in preferred order; `ChunkData`
-carries up to 256 KiB. The extra server hop roughly doubles request latency,
-which the 16-chunk pipeline depth absorbs.
+**Why a separate QUIC stream, not the control stream:** QUIC multiplexes
+streams with independent per-stream flow control, so bulk transfer on the
+relay stream never head-of-line-blocks state sync on the control stream
+(unlike TCP). The server doesn't correlate per-transfer streams — one
+relay stream per peer suffices, since send and recv on a `BiStream` are
+independent directions, so inbound `ChunkData` never blocks outbound
+`ChunkRequest`s. `ChunkData` carries up to 250 KiB. The extra server hop
+roughly doubles request latency, which the pipeline depth absorbs.
 
 ### Flow Control
 
-- Maximum **4 concurrent transfer streams** per downloading peer
-- Maximum **16 chunks** per request (pipeline depth)
-- QUIC flow control handles backpressure naturally
+- **Pipeline depth** (`--pipeline-depth`, default 16) chunk requests per
+  source, across up to **4 concurrent sources** (so up to 64 in flight)
+- The transfer stream's QUIC flow-control window is sized ≥ the
+  bandwidth-delay product, so the app-level pipeline depth is the limiter,
+  not QUIC backpressure
+- The relay stream is a distinct QUIC stream from control, so QUIC handles
+  backpressure per-stream without starving control traffic
 
 ### Integration with Playback
 

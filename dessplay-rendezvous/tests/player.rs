@@ -340,6 +340,47 @@ async fn a_missing_file_is_downloaded_from_a_peer() {
     .await;
 }
 
+/// Prefetch: the leecher fetches not just the now-playing file but the
+/// next queued entry too, so it's local before it's needed (design.md,
+/// Pre-fetching).
+#[tokio::test(start_paused = true)]
+async fn queued_entries_are_prefetched_ahead_of_now_playing() {
+    let harness = Harness::new(707);
+    let seed = harness.player_client("seed", 1);
+    let leech = harness.player_client("leech", 2);
+    let ep1 = media_file(1);
+    let ep2 = media_file(2);
+    seed.install(&ep1);
+    seed.install(&ep2);
+
+    for ep in [&ep1, &ep2] {
+        mutate(
+            &seed,
+            Mutation::PushPlaylist {
+                new: file_entry(ep, "seed"),
+            },
+        )
+        .await;
+    }
+    mutate(
+        &seed,
+        Mutation::SetNowPlaying {
+            file: Some(ep1.hash),
+        },
+    )
+    .await;
+
+    // The leecher ends up Ready for BOTH — ep1 (now-playing) and ep2
+    // (prefetched, never now-playing).
+    eventually(&[&leech], BUDGET, |snaps| {
+        let ready = |s: &ClientSnapshot, h| {
+            s.view.file_availability.get(&(UserId::new("leech"), h)) == Some(&FileAvailability::Ready)
+        };
+        snaps.iter().all(|s| ready(s, ep1.hash) && ready(s, ep2.hash))
+    })
+    .await;
+}
+
 /// Baughn lacks a missing file whose series is *unknown* to them (empty
 /// watch history) but carries an AniDB series id: baughn is auto-marked
 /// NotWatching, sees the placeholder, and stops gating — so kim's play
