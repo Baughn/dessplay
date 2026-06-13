@@ -38,6 +38,12 @@ tempfile = "3"
 # Server-side anime-titles dump fetch (one blocking GET per day).
 ureq = "3"
 flate2 = "1"
+# Placeholder PNG generation (Phase 9): rasterize status text with the
+# embedded DejaVu Sans into a PNG mpv can display.
+image = { version = "0.25", default-features = false, features = ["png"] }
+ab_glyph = "0.2"
+# Manual-mapping browser: candidate files sorted by edit distance.
+strsim = "0.11"
 
 # Debug-build MD4 hashes at ~70 MiB/s — a 1.4GB episode takes 20s and
 # feels broken (release: >1.2 GiB/s). Always optimize the hash inner

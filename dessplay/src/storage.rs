@@ -17,6 +17,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use dessplay_core::hash::Ed2kFileHash;
 use dessplay_core::types::{AniDbSeriesId, Ed2kHash, Epoch};
 use dessplay_core::wire::WireError;
 use dessplay_core::{CrdtState, StateSnapshot, wire};
@@ -121,6 +122,20 @@ const MIGRATIONS: &[&str] = &[
         first_seen  INTEGER NOT NULL
     ) STRICT;
     ",
+    // v2 (Phase 9): the hash cache. A file's ed2k root + per-block
+    // hashes, keyed by path and validated by (mtime, size) — so
+    // unwatched playlist entries aren't re-hashed every session, and a
+    // touched file is re-hashed exactly once (design.md, Content Hash).
+    "
+    CREATE TABLE hash_cache (
+        path        TEXT PRIMARY KEY,
+        mtime       INTEGER NOT NULL,  -- unix millis of the file's mtime
+        size_bytes  INTEGER NOT NULL,
+        root        BLOB NOT NULL,     -- 16-byte ed2k root
+        blocks      BLOB NOT NULL,     -- concatenated 16-byte block MD4s
+        hashed_at   INTEGER NOT NULL
+    ) STRICT;
+    ",
 ];
 
 /// Apply any unapplied migrations. Exposed shape (a slice parameter) so
@@ -194,6 +209,18 @@ pub struct CacheEntry {
     pub size_bytes: u64,
     /// Unix millis of last access; drives retention-based eviction.
     pub last_access: i64,
+}
+
+/// One hash-cache row: a path's full ed2k hash, valid while the file's
+/// (mtime, size) both still match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedHash {
+    /// Absolute path that was hashed.
+    pub path: PathBuf,
+    /// File mtime at hash time, unix millis.
+    pub mtime: i64,
+    /// Root + per-block hashes + size.
+    pub hash: dessplay_core::hash::Ed2kFileHash,
 }
 
 fn hash_from_blob(blob: Vec<u8>) -> Result<Ed2kHash> {
@@ -522,6 +549,83 @@ impl Storage {
         Ok(entries)
     }
 
+    // ---- Hash cache.
+
+    /// Insert or refresh a hash-cache row.
+    pub fn upsert_hash_cache(&self, path: &Path, mtime: i64, hash: &Ed2kFileHash, now: i64) -> Result<()> {
+        let blocks: Vec<u8> = hash.blocks.iter().flat_map(|b| b.0).collect();
+        self.conn.execute(
+            "INSERT INTO hash_cache (path, mtime, size_bytes, root, blocks, hashed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (path) DO UPDATE
+             SET mtime = excluded.mtime, size_bytes = excluded.size_bytes,
+                 root = excluded.root, blocks = excluded.blocks,
+                 hashed_at = excluded.hashed_at",
+            params![
+                path.to_string_lossy(),
+                mtime,
+                hash.size_bytes as i64,
+                hash.root.0.as_slice(),
+                blocks,
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every hash-cache row (loaded into memory at session start; the
+    /// table is one row per known media file).
+    pub fn hash_cache(&self) -> Result<Vec<CachedHash>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, mtime, size_bytes, root, blocks FROM hash_cache",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+            ))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (path, mtime, size_bytes, root, blocks) = row?;
+            if !blocks.len().is_multiple_of(16) {
+                return Err(StorageError::Corrupt(format!(
+                    "hash_cache blocks blob len {} for {path}",
+                    blocks.len()
+                )));
+            }
+            entries.push(CachedHash {
+                path: PathBuf::from(path),
+                mtime,
+                hash: Ed2kFileHash {
+                    root: hash_from_blob(root)?,
+                    blocks: blocks
+                        .chunks_exact(16)
+                        .map(|chunk| {
+                            let mut bytes = [0u8; 16];
+                            bytes.copy_from_slice(chunk);
+                            dessplay_core::hash::Ed2kBlockHash(bytes)
+                        })
+                        .collect(),
+                    size_bytes: size_bytes as u64,
+                },
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Drop a hash-cache row (the file moved or vanished).
+    pub fn remove_hash_cache(&self, path: &Path) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM hash_cache WHERE path = ?1",
+            params![path.to_string_lossy()],
+        )?;
+        Ok(())
+    }
+
     // ---- Manual file mappings.
 
     /// Map a playlist entry to a local file the user picked.
@@ -834,6 +938,39 @@ mod tests {
 
         storage.remove_cache_entry(hash(1)).unwrap();
         assert_eq!(storage.cache_entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hash_cache_round_trips_and_replaces() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert!(storage.hash_cache().unwrap().is_empty());
+
+        let hashed = dessplay_core::hash::ed2k_hash_bytes(b"episode contents");
+        storage
+            .upsert_hash_cache(Path::new("/anime/ep1.mkv"), 1_000, &hashed, 50)
+            .unwrap();
+        let rows = storage.hash_cache().unwrap();
+        assert_eq!(
+            rows,
+            vec![CachedHash {
+                path: PathBuf::from("/anime/ep1.mkv"),
+                mtime: 1_000,
+                hash: hashed.clone(),
+            }]
+        );
+
+        // A touched file re-hashes: same path, new mtime replaces.
+        let rehashed = dessplay_core::hash::ed2k_hash_bytes(b"new contents");
+        storage
+            .upsert_hash_cache(Path::new("/anime/ep1.mkv"), 2_000, &rehashed, 60)
+            .unwrap();
+        let rows = storage.hash_cache().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].mtime, 2_000);
+        assert_eq!(rows[0].hash, rehashed);
+
+        storage.remove_hash_cache(Path::new("/anime/ep1.mkv")).unwrap();
+        assert!(storage.hash_cache().unwrap().is_empty());
     }
 
     #[test]
