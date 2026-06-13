@@ -186,6 +186,15 @@ pub enum PeerMessage {
         /// The chunk's bytes.
         data: Vec<u8>,
     },
+    /// "Drop these outstanding requests for `file`." Sent when a chunk
+    /// arrived from another source (endgame) or a source is being
+    /// dropped, so the uploader doesn't waste bandwidth on it.
+    Cancel {
+        /// The file.
+        file: Ed2kHash,
+        /// Chunk indices to cancel.
+        chunks: Vec<u32>,
+    },
 }
 
 /// The relay wrapper. Carried as length-prefixed frames on a dedicated

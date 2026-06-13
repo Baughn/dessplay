@@ -143,6 +143,17 @@ impl ChunkStore {
         self.chunks
     }
 
+    /// Whether a chunk's bytes are on disk (not necessarily verified).
+    pub fn is_written(&self, index: u32) -> bool {
+        self.written.get(index)
+    }
+
+    /// Byte length of block `b` (the last block is short).
+    pub fn block_size(&self, b: u32) -> u64 {
+        let r = block_byte_range(b, self.size_bytes);
+        r.end - r.start
+    }
+
     /// Validate a peer-supplied block-hash list against `root` (the file
     /// id) and the expected block count. Hashes must be trusted before
     /// they can verify chunks.

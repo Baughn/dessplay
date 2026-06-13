@@ -14,6 +14,7 @@ pub mod actors;
 pub mod chunkstore;
 pub mod client;
 pub mod config;
+pub mod download;
 pub mod import;
 pub mod placeholder;
 pub mod player;
