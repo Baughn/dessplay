@@ -529,7 +529,7 @@ block verification/resume, rarest-first, prefetch, seeder auto-fetch).
 - **Deferred to 9B / later:** manual not-watching keybinding, the
   per-series mapping start directory, and everything transfer-related.
 
-**9B status: mostly complete (2026-06-13).** Relayed file transfer:
+**9B status: complete (2026-06-13).** Relayed file transfer:
 
 - **9B-1 relay**: `PeerMessage`/`RelayEnvelope`/`Bitfield` wire types; one
   dedicated relay QUIC stream per peer (separate from control, so bulk
@@ -546,12 +546,14 @@ block verification/resume, rarest-first, prefetch, seeder auto-fetch).
   within an upload-rate token bucket; wired into the live session
   (missing now-playing file → download). End-to-end tests report
   **100% goodput / 0% retransmit**.
-- **9B-4 prefetch**: a lookahead window of queued entries is fetched
-  ahead of now-playing.
-- **Remaining**: **seeder auto-fetch** (headless transfer driver — a
-  seeder fetches every playlist entry and serves it). Future:
-  disk/retention-aware prefetch depth, seek-aware download window,
-  rarest-aware upload prioritization.
+- **9B-4 prefetch + seeder auto-fetch**: interactive clients fetch a
+  lookahead window of queued entries ahead of now-playing; a seeder
+  (`SeederTransfer`, headless) fetches and serves the *whole* playlist,
+  persisting its hash cache (no re-hash on restart) with its download
+  cache added as a media root.
+- **Future**: disk/retention-aware prefetch depth, seek-aware download
+  window, rarest-aware upload prioritization, choking for many-peer
+  scale.
 
 ### What gets built
 - FileActor: hashing, scanning, matching, download coordination, cache
