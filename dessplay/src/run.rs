@@ -42,6 +42,11 @@ pub struct HeadlessArgs {
     /// Outstanding chunk requests per source for downloads (default 16).
     /// A flag so transfer behaviour can be tuned in testing.
     pub pipeline_depth: Option<u32>,
+    /// Seeder media roots (existing library to serve from). The cache
+    /// dir is always added as a root automatically.
+    pub media_roots: Vec<PathBuf>,
+    /// Seeder download-cache directory (defaults to the standard cache).
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// The wall clock in unix millis — the client-side equivalent of the
@@ -255,6 +260,38 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     );
     tracing::info!("{username} ({role:?}) connecting to {server_addr_str}");
 
+    // A seeder auto-fetches the playlist and serves it: spin up its
+    // transfer driver (persistent hash cache so a TB-scale store isn't
+    // re-hashed on restart; the cache dir is added as a media root, so
+    // prior downloads are re-discovered, not re-fetched).
+    let (mut seeder_transfer, mut seeder_outputs) = if seeder {
+        let cache_dir = match &args.cache_dir {
+            Some(dir) => dir.clone(),
+            None => download_cache_dir()?,
+        };
+        let file_db_path = match &args.db_path {
+            Some(path) => path.clone(),
+            None => Storage::default_path().ok_or("cannot determine the data directory")?,
+        };
+        let file_storage = Storage::open(&file_db_path)
+            .map_err(|e| format!("opening {}: {e}", file_db_path.display()))?;
+        let (transfer, outputs) = crate::seeder::SeederTransfer::new(
+            UserId::new(&username),
+            crate::seeder::seeder_file_config(
+                file_storage,
+                args.media_roots.clone(),
+                cache_dir,
+                system_clock(),
+                None,
+            ),
+            handle.sync.clone(),
+            handle.network.clone(),
+        );
+        (Some(transfer), Some(outputs))
+    } else {
+        (None, None)
+    };
+
     // ---- Event loop until Ctrl-C.
     let mut pin_pending = first_use && !seeder;
     let mut first_connected = true;
@@ -265,8 +302,35 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                 tracing::info!("shutting down");
                 break;
             }
+            // Seeder file-actor outputs (relay sends, availability,
+            // completions). `seeder_outputs` is held separately from the
+            // driver so this arm doesn't alias `on_state` below.
+            output = async {
+                match &mut seeder_outputs {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let (Some(output), Some(transfer)) = (output, seeder_transfer.as_mut()) {
+                    transfer.on_file_output(output).await;
+                }
+            }
             event = handle.events.recv() => {
                 let Some(event) = event else { break };
+                // Drive the seeder's transfer from each event: route
+                // relayed peer messages, then re-plan from fresh state.
+                if let Some(transfer) = seeder_transfer.as_mut() {
+                    if let ClientEvent::Network(NetworkEvent::Peer { from, message }) = &event {
+                        transfer.on_peer(from.clone(), message.clone()).await;
+                    }
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    if handle.sync.send(SyncCommand::GetView(tx)).await.is_ok()
+                        && let Ok(view) = rx.await
+                    {
+                        let peers = handle.peers.borrow().clone();
+                        transfer.on_state(&view, &peers).await;
+                    }
+                }
                 match event {
                     ClientEvent::Network(NetworkEvent::Connected { observed_addr }) => {
                         if first_connected {

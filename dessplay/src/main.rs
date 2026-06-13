@@ -42,6 +42,15 @@ struct Cli {
     #[arg(long)]
     pipeline_depth: Option<u32>,
 
+    /// Seeder: an existing media library to serve from (repeatable). The
+    /// download cache is always served too.
+    #[arg(long = "media-root")]
+    media_root: Vec<std::path::PathBuf>,
+
+    /// Seeder: download cache directory (defaults to the standard cache).
+    #[arg(long)]
+    cache_dir: Option<std::path::PathBuf>,
+
     /// Run headless (no TUI) even as an interactive user.
     #[arg(long)]
     headless: bool,
@@ -130,6 +139,8 @@ fn main() -> color_eyre::Result<()> {
         fingerprint: cli.fingerprint,
         db_path: cli.db,
         pipeline_depth: cli.pipeline_depth,
+        media_roots: cli.media_root,
+        cache_dir: cli.cache_dir,
     };
     if cli.dump {
         if let Err(message) = run_dump(&args) {

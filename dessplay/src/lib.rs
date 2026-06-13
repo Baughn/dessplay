@@ -19,6 +19,7 @@ pub mod import;
 pub mod placeholder;
 pub mod player;
 pub mod run;
+pub mod seeder;
 pub mod session;
 pub mod storage;
 pub mod ui;

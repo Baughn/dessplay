@@ -318,6 +318,12 @@ which clients are seeders.
   retention to `infinite`; "should this be archived into the media library?"
   remains a manual, human decision via the archive action on any interactive
   client that shares the filesystem -- or simply by moving the file.
+  A seeder persists no *settings* (it is configured by flags/env), but it
+  **does** persist operational state — the hash cache and cache
+  bookkeeping — in a database: a seeder may hold terabytes, so re-hashing
+  its store on every startup is a nonstarter. Its **download cache dir is
+  added as a media root**, so on restart it re-discovers (cache-hit, no
+  re-hash) everything it already has rather than re-downloading.
 
 Multiple seeders are fine; they are ordinary peers in the file transfer
 protocol. There is no special pairing between a seeder and its owner.

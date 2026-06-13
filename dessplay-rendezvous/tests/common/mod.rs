@@ -175,6 +175,65 @@ impl Harness {
         }
     }
 
+    /// Spawn a seeder: a headless client (Role::Seeder) plus a
+    /// `SeederTransfer` driver, pumped the way `run_headless` pumps it.
+    /// It auto-fetches every playlist entry and serves it. `media`
+    /// pre-seeds files into its (persistent) store via the cache dir.
+    pub fn seeder_client(&self, name: &str, nonce: u128) -> SeederClient {
+        use dessplay::seeder::{SeederTransfer, seeder_file_config};
+        let handle = self.seeder(name, nonce);
+        let media = tempfile::tempdir().expect("media tempdir");
+        let cache = tempfile::tempdir().expect("cache tempdir");
+        let (mut transfer, mut file_outputs) = SeederTransfer::new(
+            UserId::new(name),
+            seeder_file_config(
+                dessplay::storage::Storage::open_in_memory().expect("storage"),
+                vec![media.path().to_path_buf()],
+                cache.path().to_path_buf(),
+                sim_clock(0),
+                None,
+            ),
+            handle.sync.clone(),
+            handle.network.clone(),
+        );
+        let sync = handle.sync.clone();
+        let network = handle.network.clone();
+        let peers = handle.peers.clone();
+        let pump_sync = sync.clone();
+        let pump_peers = peers.clone();
+        tokio::spawn(async move {
+            let mut handle = handle;
+            loop {
+                tokio::select! {
+                    event = handle.events.recv() => {
+                        let Some(event) = event else { break };
+                        if let ClientEvent::Network(NetworkEvent::Peer { from, message }) = &event {
+                            transfer.on_peer(from.clone(), message.clone()).await;
+                        }
+                        let (tx, rx) = oneshot::channel();
+                        if pump_sync.send(SyncCommand::GetView(tx)).await.is_err() {
+                            break;
+                        }
+                        let Ok(view) = rx.await else { break };
+                        let peer_list = pump_peers.borrow().clone();
+                        transfer.on_state(&view, &peer_list).await;
+                    }
+                    output = file_outputs.recv() => {
+                        let Some(output) = output else { break };
+                        transfer.on_file_output(output).await;
+                    }
+                }
+            }
+        });
+        SeederClient {
+            sync,
+            network,
+            peers,
+            _media: media,
+            _cache: cache,
+        }
+    }
+
     /// Cut a client's connection *and* block reconnection attempts, so
     /// the user actually stays Lost (the network actor retries every
     /// 2s; without the partition it would be back within seconds).
@@ -188,6 +247,28 @@ impl Harness {
     pub fn heal(&self, name: &str) {
         self.net
             .set_partitioned(&EndpointId::new(name), &self.server_id, false);
+    }
+}
+
+/// A seeder: the `SeederTransfer` driver pumps in the background. Holds
+/// the channels for snapshots/mutations and keeps its tempdirs alive.
+pub struct SeederClient {
+    pub sync: mpsc::Sender<SyncCommand>,
+    pub network: mpsc::Sender<NetworkCommand>,
+    pub peers: watch::Receiver<Vec<PeerInfo>>,
+    _media: tempfile::TempDir,
+    _cache: tempfile::TempDir,
+}
+
+impl SnapshotSource for SeederClient {
+    fn sync_tx(&self) -> &mpsc::Sender<SyncCommand> {
+        &self.sync
+    }
+    fn network_tx(&self) -> &mpsc::Sender<NetworkCommand> {
+        &self.network
+    }
+    fn peers_rx(&self) -> &watch::Receiver<Vec<PeerInfo>> {
+        &self.peers
     }
 }
 
