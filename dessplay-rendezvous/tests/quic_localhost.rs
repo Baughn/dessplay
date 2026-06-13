@@ -155,6 +155,107 @@ async fn wrong_password_fails_cleanly_over_real_quic() {
     .await;
 }
 
+/// Regression: a relayed peer message reaches a peer that has only ever
+/// *received* — never sent — over real QUIC. QUIC opens bidirectional
+/// streams lazily (the peer learns of the stream only when bytes are
+/// first written), so an idle receiver's relay stream would never
+/// register on the server and its messages would be dropped. The sim
+/// transport establishes streams eagerly, so this only bites on real
+/// QUIC. (Symptom in the field: a seeder's downloads stalled because the
+/// uploader, which only serves, never registered its relay stream.)
+#[tokio::test]
+async fn a_relayed_message_reaches_a_receive_only_peer_over_real_quic() {
+    use dessplay_core::net::{Bitfield, PeerId, PeerMessage};
+
+    let cert_dir = tempfile::tempdir().unwrap();
+    let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
+    let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    tokio::spawn(server::run(
+        listener,
+        ServerConfig::new(PASSWORD),
+        system_clock(),
+        None,
+    ));
+
+    let clock = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    };
+    let mut ends = Vec::new();
+    for name in ["sender", "receiver"] {
+        let connector = Arc::new(QuicConnector::new(server_addr, "dessplay", None).unwrap());
+        let (cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
+        let (event_tx, event_rx) = mpsc::channel(64);
+        tokio::spawn(network::run(
+            connector,
+            NetworkConfig::new(
+                UserId::new(name),
+                PASSWORD.into(),
+                Role::Interactive,
+                Arc::new(AtomicU64::new(0)),
+                Arc::new(clock),
+            ),
+            cmd_rx,
+            event_tx,
+        ));
+        ends.push((cmd_tx, event_rx));
+    }
+    let (receiver_cmd, mut receiver_events) = ends.pop().unwrap();
+    let (sender_cmd, mut sender_events) = ends.pop().unwrap();
+    // Keep the receiver's command channel alive so it stays connected
+    // (dropping it is read as Shutdown); it simply never *sends*.
+    let _receiver_cmd = receiver_cmd;
+
+    // Wait until both clients see each other (both authed, relay streams
+    // opened + — with the fix — announced).
+    for events in [&mut sender_events, &mut receiver_events] {
+        expect_event(events, Duration::from_secs(10), |e| {
+            matches!(e, NetworkEvent::PeerList(peers) if peers.len() == 2).then_some(())
+        })
+        .await;
+    }
+
+    // The sender relays a peer message to the receive-only peer, retried
+    // (an early send before registration is dropped). With the bug the
+    // receiver's stream never registers, so this never arrives.
+    let message = PeerMessage::FileAvailability {
+        file: dessplay_core::types::Ed2kHash([5; 16]),
+        bitfield: Bitfield::new(8),
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        sender_cmd
+            .send(NetworkCommand::SendPeer {
+                to: PeerId::new("receiver"),
+                message: Box::new(message.clone()),
+            })
+            .await
+            .unwrap();
+        let got = tokio::time::timeout(Duration::from_millis(300), async {
+            loop {
+                match receiver_events.recv().await {
+                    Some(NetworkEvent::Peer { from, message }) => break Some((from, *message)),
+                    Some(_) => continue,
+                    None => break None,
+                }
+            }
+        })
+        .await;
+        if let Ok(Some((from, got))) = got {
+            assert_eq!(from, PeerId::new("sender"));
+            assert_eq!(got, message);
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "receive-only peer never got the relayed message (its relay stream never registered)"
+        );
+    }
+}
+
 #[tokio::test]
 async fn wrong_pinned_fingerprint_refuses_to_connect() {
     let cert_dir = tempfile::tempdir().unwrap();

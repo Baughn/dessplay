@@ -204,6 +204,13 @@ pub enum PeerMessage {
 /// server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelayEnvelope {
+    /// Client -> server: the first frame a client writes on its relay
+    /// stream, sent immediately on open. QUIC reveals a bidirectional
+    /// stream to the peer only when bytes are first written, so a peer
+    /// that only ever *receives* (an idle source/seeder) would never
+    /// register its relay stream on the server. `Hello` forces that
+    /// registration; the server reads and ignores it.
+    Hello,
     /// Client -> server: forward `message` to peer `to`.
     Forward {
         /// The destination peer.

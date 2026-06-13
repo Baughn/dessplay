@@ -324,7 +324,8 @@ async fn run_relay_reader(
                 }
                 Err(e) => tracing::warn!("undecodable peer message: {e}"),
             },
-            Ok(RelayEnvelope::Forward { .. }) => {} // server only sends Forwarded
+            // The server only ever sends Forwarded; ignore the rest.
+            Ok(RelayEnvelope::Forward { .. } | RelayEnvelope::Hello) => {}
             Err(e) => tracing::warn!("undecodable relay envelope: {e}"),
         }
     }
@@ -396,7 +397,18 @@ async fn run_connection<T: Transport>(
                         // unavailable until the next connection.
                         match conn.open_stream().await {
                             Ok(stream) => {
-                                let dessplay_core::net::BiStream { send, recv } = stream;
+                                let dessplay_core::net::BiStream { mut send, recv } = stream;
+                                // Announce the stream immediately: QUIC
+                                // reveals a bi-stream to the peer only on
+                                // first write, so without this a peer
+                                // that only receives never registers its
+                                // relay stream and its messages are
+                                // dropped server-side.
+                                if let Ok(frame) = wire::encode(&RelayEnvelope::Hello)
+                                    && let Err(e) = write_frame(&mut send, &frame).await
+                                {
+                                    tracing::warn!("announcing relay stream: {e}");
+                                }
                                 relay_send = Some(send);
                                 tokio::spawn(run_relay_reader(recv, events.clone()));
                                 tracing::debug!("relay stream opened");

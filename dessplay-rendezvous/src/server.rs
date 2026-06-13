@@ -741,6 +741,9 @@ async fn relay_reader<T: Transport>(
             Err(_) => break,
         };
         match wire::decode::<RelayEnvelope>(&frame) {
+            // The stream registered on accept_bi before this reader even
+            // started; Hello exists only to trigger that, so ignore it.
+            Ok(RelayEnvelope::Hello) => {}
             Ok(RelayEnvelope::Forward { to, message }) => {
                 shared.forward(&from, &to, message).await;
             }
