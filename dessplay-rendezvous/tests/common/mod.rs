@@ -166,6 +166,7 @@ impl Harness {
             peers,
             control,
             root,
+            _cache_dir: cache_dir,
         }
     }
 
@@ -196,6 +197,9 @@ pub struct PlayerClient {
     pub control: MockControl,
     /// This client's media root.
     pub root: tempfile::TempDir,
+    /// The file actor's download cache (placeholder PNG home); kept
+    /// alive so it isn't deleted out from under the actor.
+    _cache_dir: tempfile::TempDir,
 }
 
 impl PlayerClient {

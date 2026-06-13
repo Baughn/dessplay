@@ -296,3 +296,73 @@ async fn missing_file_blocks_playback_and_repauses_the_optimist() {
     })
     .await;
 }
+
+/// Baughn lacks a missing file whose series is *unknown* to them (empty
+/// watch history) but carries an AniDB series id: baughn is auto-marked
+/// NotWatching, sees the placeholder, and stops gating — so kim's play
+/// actually starts (design.md, File State, unknown-series branch).
+#[tokio::test(start_paused = true)]
+async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
+    use dessplay_core::types::{AniDbMetadata, AniDbSeriesId, MetadataSource, SeriesWatchState};
+
+    let harness = Harness::new(705);
+    let kim = harness.player_client("kim", 1);
+    let mut baughn = harness.player_client("baughn", 2);
+    let file = media_file(1);
+    kim.install(&file);
+    // baughn gets nothing — and has no watch history for the series.
+
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&file, "kim"),
+        },
+    )
+    .await;
+    // Metadata with a real series id (as the AniDB worker would write).
+    mutate(
+        &kim,
+        Mutation::SetAniDbMetadata {
+            hash: file.hash,
+            metadata: Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Some Obscure Show".into(),
+                series_id: Some(AniDbSeriesId(4242)),
+                episode_number: Some("1".into()),
+            }),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+
+    // Baughn auto-marks NotWatching for the unknown series.
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .series_preference
+                .get(&(UserId::new("baughn"), AniDbSeriesId(4242)))
+                == Some(&SeriesWatchState::NotWatching)
+        })
+    })
+    .await;
+
+    // Baughn's player is handed the placeholder (a Load), not the real
+    // file (which they don't have).
+    baughn
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .await;
+
+    // Kim presses play. Baughn no longer gates, so playback actually
+    // starts and kim's player is told to unpause.
+    kim.user(PlayerEvent::PauseChanged(false));
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| s.playing())
+    })
+    .await;
+}

@@ -72,6 +72,24 @@ pub enum Directive {
         /// Filename, for display in history.
         filename: String,
     },
+    /// Ask the file actor whether the now-playing missing file's series
+    /// is personally known (watch history). The answer drives the
+    /// missing-file branch (design.md, File State).
+    CheckSeriesKnown {
+        /// The missing now-playing file.
+        file: Ed2kHash,
+        /// Series id, if metadata has one.
+        series_id: Option<dessplay_core::types::AniDbSeriesId>,
+        /// Series name, for the history-by-name lookup.
+        series_name: String,
+    },
+    /// Render the not-watching placeholder PNG for `file`.
+    RenderPlaceholder {
+        /// The file the placeholder stands in for.
+        file: Ed2kHash,
+        /// Lines to draw (filename, explanation, session status).
+        lines: Vec<String>,
+    },
 }
 
 /// The session's player-side policy state.
@@ -93,11 +111,47 @@ pub struct PlayerWiring {
     /// Files already recorded as personally watched this session (the
     /// 85% rule fires once per file).
     watched_recorded: HashSet<Ed2kHash>,
+    /// Missing now-playing files we've already asked known-series about
+    /// (the round trip fires once per file).
+    series_known_checked: HashSet<Ed2kHash>,
 }
 
 /// Fraction of a file's duration that counts as "watched" (design.md,
 /// Watch Tracking).
 const WATCHED_FRACTION: f64 = 0.85;
+
+/// Text for the not-watching placeholder image (design.md, Placeholder
+/// Image): the filename, the explanation, and who *is* watching.
+fn placeholder_lines(view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> Vec<String> {
+    let filename = view
+        .playlist
+        .iter()
+        .find(|e| e.hash == file)
+        .map(|e| e.state.filename.clone())
+        .unwrap_or_else(|| file.to_string());
+    let watching: Vec<String> = peers
+        .iter()
+        .filter(|p| {
+            p.role == dessplay_core::net::Role::Interactive
+                && !matches!(
+                    derive::user_state(view, &p.username),
+                    derive::DerivedUserState::NotWatching
+                )
+        })
+        .map(|p| p.username.to_string())
+        .collect();
+    let status = if watching.is_empty() {
+        "Nobody is watching this".to_string()
+    } else {
+        format!("Watching: {}", watching.join(", "))
+    };
+    vec![
+        filename,
+        "You don't have this file".to_string(),
+        String::new(),
+        status,
+    ]
+}
 
 impl PlayerWiring {
     /// A fresh wiring for `me`.
@@ -112,7 +166,83 @@ impl PlayerWiring {
             lookups_requested: HashSet::new(),
             watcher_prefs_written: HashSet::new(),
             watched_recorded: HashSet::new(),
+            series_known_checked: HashSet::new(),
         }
+    }
+
+    /// If the now-playing file is missing and has metadata, ask the file
+    /// actor whether its series is personally known (once per file).
+    /// The answer drives the missing-file branch in [`Self::on_series_known`].
+    fn maybe_check_series_known(&mut self, view: &StateView) -> Vec<Directive> {
+        let Some(file) = view.now_playing else {
+            return vec![];
+        };
+        let missing = matches!(
+            self.resolved.get(&file),
+            Some(Resolution::NotFound) | Some(Resolution::HashMismatch(_))
+        );
+        if !missing || self.series_known_checked.contains(&file) {
+            return vec![];
+        }
+        // Need metadata to identify the series; before it arrives we
+        // simply block (a Missing file gates), and re-check when it does.
+        let Some(Some(metadata)) = view.anidb_metadata.get(&file) else {
+            return vec![];
+        };
+        self.series_known_checked.insert(file);
+        vec![Directive::CheckSeriesKnown {
+            file,
+            series_id: metadata.series_id,
+            series_name: metadata.series_name.clone(),
+        }]
+    }
+
+    /// React to the file actor's known-series answer (design.md, File
+    /// State, missing-file branch). Known series stay Missing (you
+    /// should have the file). For an *unknown* series we auto-mark
+    /// NotWatching — but only when there is an AniDB series id to key
+    /// the preference on; a no-id file keeps blocking, with the manual
+    /// not-watching action as the escape hatch. A pre-existing
+    /// preference (a manual choice) is never overridden.
+    pub fn on_series_known(
+        &mut self,
+        file: Ed2kHash,
+        series: Option<dessplay_core::types::AniDbSeriesId>,
+        known: bool,
+        view: &StateView,
+        peers: &[PeerInfo],
+    ) -> Vec<Directive> {
+        if known {
+            return vec![];
+        }
+        let Some(series) = series else {
+            // No series id: stays Missing/blocking (option B). The
+            // placeholder would contradict the blocking state, so none.
+            return vec![];
+        };
+        // A pre-existing preference is a manual choice and wins: if the
+        // user chose to watch this series, they block legitimately on
+        // the missing file (no auto-NotWatching, no placeholder).
+        if view
+            .series_preference
+            .contains_key(&(self.me.clone(), series))
+        {
+            return vec![];
+        }
+        tracing::info!(aid = series.0, "missing file from an unknown series; marking NotWatching");
+        let mut out = vec![Directive::Mutate(Mutation::SetSeriesPreference {
+            user: self.me.clone(),
+            series,
+            pref: dessplay_core::types::SeriesWatchState::NotWatching,
+        })];
+        // Show the placeholder instead of a stale frame / blank window.
+        if view.now_playing == Some(file) {
+            out.push(Directive::RenderPlaceholder {
+                file,
+                lines: placeholder_lines(view, peers, file),
+            });
+        }
+        out
     }
 
     /// If the now-playing file has crossed the 85% watched threshold and
@@ -228,6 +358,10 @@ impl PlayerWiring {
                 pref: dessplay_core::types::SeriesWatchState::NotWatching,
             }));
         }
+
+        // A missing now-playing file with metadata: ask whether its
+        // series is personally known (drives the missing-file branch).
+        out.extend(self.maybe_check_series_known(view));
 
         // Load now-playing once it has a verified local copy.
         if let Some(file) = view.now_playing
@@ -641,6 +775,30 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         }))
                         .await;
                 }
+                Directive::CheckSeriesKnown {
+                    file,
+                    series_id,
+                    series_name,
+                } => {
+                    let key = match series_id {
+                        Some(id) => crate::storage::SeriesKey::AniDb(id),
+                        None => crate::storage::SeriesKey::Name(series_name),
+                    };
+                    let _ = self
+                        .file
+                        .send(FileCommand::CheckSeriesKnown {
+                            file,
+                            series: series_id,
+                            key,
+                        })
+                        .await;
+                }
+                Directive::RenderPlaceholder { file, lines } => {
+                    let _ = self
+                        .file
+                        .send(FileCommand::RenderPlaceholder { file, lines })
+                        .await;
+                }
                 Directive::Subtitle(line) => subtitles.push(line),
             }
         }
@@ -694,9 +852,28 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 self.on_hashed(done).await;
                 FileEffect::HashDone { path }
             }
-            // The remaining outputs are consumed by the bridge loop /
-            // wiring as those features land (placeholder load, watched
-            // recording). Returned verbatim for the caller to route.
+            FileOutput::SeriesKnown {
+                file,
+                series,
+                known,
+            } => {
+                let directives = self.wiring.on_series_known(file, series, known, view, peers);
+                self.execute(directives).await;
+                FileEffect::None
+            }
+            FileOutput::PlaceholderReady { file, path } => {
+                // Show the placeholder only if it's still the
+                // now-playing file. This is a direct Load that does not
+                // touch the wiring's `loaded` state, so the real video
+                // still loads if the file later becomes available.
+                if view.now_playing == Some(file) {
+                    self.execute(vec![Directive::Player(PlayerCommand::Load { file, path })])
+                        .await;
+                }
+                FileEffect::None
+            }
+            // The remaining outputs are consumed by the bridge loop as
+            // those features land (eviction notices, archive results).
             other => FileEffect::Other(other),
         }
     }
@@ -1197,6 +1374,144 @@ mod tests {
             &view,
         );
         assert!(watched_records(&directives).is_empty());
+    }
+
+    fn series_pref_writes(
+        directives: &[Directive],
+    ) -> Vec<(dessplay_core::types::AniDbSeriesId, SeriesWatchState)> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::Mutate(Mutation::SetSeriesPreference { series, pref, .. }) => {
+                    Some((*series, *pref))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn has_placeholder(directives: &[Directive]) -> bool {
+        directives
+            .iter()
+            .any(|d| matches!(d, Directive::RenderPlaceholder { .. }))
+    }
+
+    fn with_metadata(state: &mut CrdtState, file: Ed2kHash, series_id: Option<u32>) {
+        state.set_anidb_metadata(
+            A,
+            ts(50),
+            file,
+            Some(dessplay_core::types::AniDbMetadata {
+                source: dessplay_core::types::MetadataSource::AniDb,
+                series_name: "Some Show".into(),
+                series_id: series_id.map(dessplay_core::types::AniDbSeriesId),
+                episode_number: Some("1".into()),
+            }),
+        );
+    }
+
+    #[test]
+    fn missing_now_playing_with_metadata_triggers_a_known_series_check() {
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&view, &[peer("kim")]);
+        // The file resolves Missing (not found).
+        let on_missing = wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        assert!(on_missing.iter().any(|d| matches!(
+            d,
+            Directive::Mutate(Mutation::SetFileAvailability {
+                availability: FileAvailability::Missing,
+                ..
+            })
+        )));
+        // The next snapshot asks whether the series is known (once).
+        let next = wiring.on_state(&view, &[peer("kim")]);
+        let checks: Vec<_> = next
+            .iter()
+            .filter(|d| matches!(d, Directive::CheckSeriesKnown { .. }))
+            .collect();
+        assert_eq!(checks.len(), 1);
+        // Not re-asked on the following snapshot.
+        let again = wiring.on_state(&view, &[peer("kim")]);
+        assert!(
+            !again
+                .iter()
+                .any(|d| matches!(d, Directive::CheckSeriesKnown { .. }))
+        );
+    }
+
+    #[test]
+    fn unknown_series_with_id_marks_not_watching_and_shows_placeholder() {
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_series_known(
+            hash(1),
+            Some(dessplay_core::types::AniDbSeriesId(7)),
+            false, // unknown
+            &view,
+            &[peer("kim")],
+        );
+        assert_eq!(
+            series_pref_writes(&directives),
+            vec![(
+                dessplay_core::types::AniDbSeriesId(7),
+                SeriesWatchState::NotWatching
+            )]
+        );
+        assert!(has_placeholder(&directives));
+    }
+
+    #[test]
+    fn known_series_keeps_blocking_no_placeholder() {
+        let view = playing_state().view();
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_series_known(
+            hash(1),
+            Some(dessplay_core::types::AniDbSeriesId(7)),
+            true, // known: you should have it
+            &view,
+            &[peer("kim")],
+        );
+        assert!(directives.is_empty());
+    }
+
+    #[test]
+    fn unknown_series_without_id_blocks_with_no_auto_not_watching() {
+        // Option B: a no-series-id missing file stays blocking; the
+        // manual not-watching action is the escape hatch.
+        let view = playing_state().view();
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_series_known(hash(1), None, false, &view, &[peer("kim")]);
+        assert!(directives.is_empty());
+    }
+
+    #[test]
+    fn a_manual_watch_choice_is_never_overridden_by_the_missing_branch() {
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        state.set_series_preference(
+            A,
+            ts(60),
+            me(),
+            dessplay_core::types::AniDbSeriesId(7),
+            SeriesWatchState::Watching,
+        );
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_series_known(
+            hash(1),
+            Some(dessplay_core::types::AniDbSeriesId(7)),
+            false,
+            &view,
+            &[peer("kim")],
+        );
+        // They chose to watch: no auto-NotWatching, and no placeholder
+        // (they block legitimately on the missing file).
+        assert!(directives.is_empty());
     }
 
     #[test]
