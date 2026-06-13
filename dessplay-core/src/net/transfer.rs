@@ -91,6 +91,15 @@ impl Bitfield {
         self.bits[byte] |= 1 << bit;
     }
 
+    /// Mark chunk `index` absent. Out-of-range is ignored.
+    pub fn unset(&mut self, index: u32) {
+        if index >= self.len {
+            return;
+        }
+        let (byte, bit) = (index as usize / 8, index % 8);
+        self.bits[byte] &= !(1 << bit);
+    }
+
     /// How many chunks are present.
     pub fn count_ones(&self) -> u32 {
         self.bits.iter().map(|b| b.count_ones()).sum()

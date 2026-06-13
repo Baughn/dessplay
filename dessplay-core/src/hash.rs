@@ -81,7 +81,28 @@ pub fn ed2k_hash_reader<R: Read>(mut reader: R) -> io::Result<Ed2kFileHash> {
         blocks.push(Ed2kBlockHash(block_hasher.finalize_reset().into()));
     }
 
-    let root = match blocks.as_slice() {
+    let root = root_from_blocks(&blocks, size_bytes);
+    Ok(Ed2kFileHash {
+        root,
+        blocks,
+        size_bytes,
+    })
+}
+
+/// The MD4 of one ed2k block's bytes (≤ [`ED2K_BLOCK_SIZE`]). Used to
+/// verify a downloaded block against a peer-supplied block-hash list.
+pub fn block_hash(bytes: &[u8]) -> Ed2kBlockHash {
+    let mut hasher = Md4::new();
+    hasher.update(bytes);
+    Ed2kBlockHash(hasher.finalize().into())
+}
+
+/// Recompute the ed2k root from a per-block hash list and the file size.
+/// Validates block hashes received from a peer against the file's known
+/// root (the playlist key / [`Ed2kHash`]) before trusting them for
+/// chunk verification (network-design.md, Verification).
+pub fn root_from_blocks(blocks: &[Ed2kBlockHash], size_bytes: u64) -> Ed2kHash {
+    match blocks {
         [single] if size_bytes < ED2K_BLOCK_SIZE => Ed2kHash(single.0),
         all => {
             let mut root_hasher = Md4::new();
@@ -94,13 +115,7 @@ pub fn ed2k_hash_reader<R: Read>(mut reader: R) -> io::Result<Ed2kFileHash> {
             }
             Ed2kHash(root_hasher.finalize().into())
         }
-    };
-
-    Ok(Ed2kFileHash {
-        root,
-        blocks,
-        size_bytes,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -170,6 +185,26 @@ mod tests {
             ours.blocks[1].0,
             <[u8; 16]>::from(md4::Md4::digest(&bytes[block..]))
         );
+    }
+
+    #[test]
+    fn root_from_blocks_reproduces_the_root_and_block_hash_matches() {
+        let block = ED2K_BLOCK_SIZE as usize;
+        for len in [0, 1, 1000, block - 1, block, block + 1, 2 * block, 2 * block + 7] {
+            let bytes = data(len);
+            let full = ed2k_hash_bytes(&bytes);
+            assert_eq!(
+                root_from_blocks(&full.blocks, full.size_bytes),
+                full.root,
+                "root_from_blocks mismatch at len {len}"
+            );
+            // block_hash of each block's slice equals the stored hash.
+            for (i, expected) in full.blocks.iter().enumerate() {
+                let start = i * block;
+                let end = ((i + 1) * block).min(bytes.len());
+                assert_eq!(block_hash(&bytes[start..end]), *expected, "block {i} at len {len}");
+            }
+        }
     }
 
     #[test]
