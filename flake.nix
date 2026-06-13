@@ -28,7 +28,8 @@
         src = lib.cleanSourceWith {
           src = ./.;
           filter = path: type:
-            (craneLib.filterCargoSources path type);
+            (lib.hasSuffix ".ttf" path)
+            || (craneLib.filterCargoSources path type);
           name = "dessplay-source";
         };
 
