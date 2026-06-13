@@ -113,12 +113,19 @@ fn draw_line(
     color: Rgb<u8>,
 ) {
     let scaled = font.as_scaled(scale);
+    // The text region; nothing is ever drawn into the margins (a
+    // pathological filename that overflows even the minimum scale is
+    // clipped, not splattered across the edge).
+    let right_limit = WIDTH as f32 - MARGIN;
     let mut caret = x;
     let mut previous: Option<ab_glyph::GlyphId> = None;
     for c in line.chars() {
         let id = scaled.glyph_id(c);
         if let Some(prev) = previous {
             caret += scaled.kern(prev, id);
+        }
+        if caret >= right_limit {
+            break; // overflowed the text region; stop.
         }
         let glyph = id.with_scale_and_position(scale, ab_glyph::point(caret, baseline));
         caret += scaled.h_advance(id);
@@ -130,7 +137,11 @@ fn draw_line(
         outlined.draw(|gx, gy, coverage| {
             let px = bounds.min.x as i32 + gx as i32;
             let py = bounds.min.y as i32 + gy as i32;
-            if px < 0 || py < 0 || px >= WIDTH as i32 || py >= HEIGHT as i32 {
+            if (px as f32) < MARGIN
+                || (px as f32) >= right_limit
+                || py < 0
+                || py >= HEIGHT as i32
+            {
                 return;
             }
             let pixel = image.get_pixel_mut(px as u32, py as u32);

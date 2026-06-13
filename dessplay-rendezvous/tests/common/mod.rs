@@ -103,13 +103,19 @@ impl Harness {
     pub fn player_client(&self, name: &str, nonce: u128) -> PlayerClient {
         let mut handle = self.client(name, nonce);
         let root = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tempfile::tempdir().expect("cache tempdir");
         let (player, control) = MockPlayer::auto_pair();
         let mut shell = SessionShell::new(
             UserId::new(name),
             MockFactory::new([player]),
             sim_clock(0),
-            vec![root.path().to_path_buf()],
-            std::collections::HashMap::new(),
+            dessplay::actors::file::FileConfig {
+                storage: dessplay::storage::Storage::open_in_memory().expect("in-memory storage"),
+                media_roots: vec![root.path().to_path_buf()],
+                retention: dessplay::config::CacheRetention::default(),
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: sim_clock(0),
+            },
             handle.sync.clone(),
             handle.network.clone(),
         );
@@ -145,10 +151,10 @@ impl Harness {
                         let Some(output) = output else { break };
                         shell.on_player_output(output, &last_view).await;
                     }
-                    resolution = shell.resolutions.recv() => {
-                        let Some((file, resolution)) = resolution else { break };
+                    output = shell.file_outputs.recv() => {
+                        let Some(output) = output else { break };
                         let peer_list = pump_peers.borrow().clone();
-                        shell.on_resolution(file, resolution, &last_view, &peer_list).await;
+                        shell.on_file_output(output, &last_view, &peer_list).await;
                     }
                 }
             }

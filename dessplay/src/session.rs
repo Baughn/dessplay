@@ -32,9 +32,9 @@ use dessplay_core::types::{
     Ed2kHash, FileAvailability, ManualState, PlaybackIntent, SeekAuthority, UserId,
 };
 
+use crate::actors::file::{FileCommand, FileConfig, FileOutput, HashEvent, HashedAdd, Resolution};
 use crate::actors::player::{PlayerCommand, PlayerOutput};
 use crate::actors::sync::Mutation;
-use crate::matcher::Resolution;
 
 /// One instruction to the async shell around the wiring.
 #[derive(Debug)]
@@ -338,66 +338,6 @@ impl PlayerWiring {
     }
 }
 
-/// A finished background hash for a playlist add.
-#[derive(Debug)]
-pub struct HashedAdd {
-    /// The file that was hashed.
-    pub path: PathBuf,
-    /// Playlist anchor for the add.
-    pub after: Option<Ed2kHash>,
-    /// The hash, or why not.
-    pub result: std::io::Result<dessplay_core::hash::Ed2kFileHash>,
-}
-
-/// Progress of background playlist-add hashing — the design's
-/// no-silent-work rule: long-running operations always show progress in
-/// the UI (design.md, UI Principles).
-#[derive(Debug)]
-pub enum HashEvent {
-    /// Hashing is under way (sent at start and periodically after).
-    Progress {
-        /// The file being hashed.
-        path: PathBuf,
-        /// Bytes read so far.
-        done_bytes: u64,
-        /// File size (0 when unknowable).
-        total_bytes: u64,
-    },
-    /// Hashing finished (also on error — the UI row goes away either
-    /// way; [`SessionShell::on_hashed`] handles the result).
-    Done(HashedAdd),
-}
-
-/// Emit a progress event at most every this many bytes.
-const HASH_PROGRESS_STRIDE: u64 = 64 * 1024 * 1024;
-
-/// A reader that reports cumulative progress through a lossy channel
-/// (a dropped update is fine; the next one supersedes it).
-struct ProgressReader<R> {
-    inner: R,
-    path: PathBuf,
-    total_bytes: u64,
-    done_bytes: u64,
-    last_reported: u64,
-    events: tokio::sync::mpsc::Sender<HashEvent>,
-}
-
-impl<R: std::io::Read> std::io::Read for ProgressReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        self.done_bytes += n as u64;
-        if self.done_bytes - self.last_reported >= HASH_PROGRESS_STRIDE {
-            self.last_reported = self.done_bytes;
-            let _ = self.events.try_send(HashEvent::Progress {
-                path: self.path.clone(),
-                done_bytes: self.done_bytes,
-                total_bytes: self.total_bytes,
-            });
-        }
-        Ok(n)
-    }
-}
-
 /// The async half of the session: owns the channels around
 /// [`PlayerWiring`] and executes its [`Directive`]s. Shared between
 /// `run_interactive` and the multi-client harness — the caller runs the
@@ -413,39 +353,32 @@ pub struct SessionShell<F: crate::player::PlayerFactory> {
     player_out_tx: tokio::sync::mpsc::Sender<PlayerOutput>,
     /// Player actor outputs; feed each into [`Self::on_player_output`].
     pub player_outputs: tokio::sync::mpsc::Receiver<PlayerOutput>,
-    res_tx: tokio::sync::mpsc::Sender<(Ed2kHash, Resolution)>,
-    /// Finished matcher runs; feed each into [`Self::on_resolution`].
-    pub resolutions: tokio::sync::mpsc::Receiver<(Ed2kHash, Resolution)>,
-    /// Media roots for the matcher (update when settings change).
-    pub media_roots: Vec<PathBuf>,
-    /// Manual mappings (hash → user-picked path); checked before the
-    /// matcher and exempt from hash verification by design.
-    manual: HashMap<Ed2kHash, PathBuf>,
-    hash_tx: tokio::sync::mpsc::Sender<HashEvent>,
-    /// Playlist-add hash progress and completions; completions feed
-    /// into [`Self::on_hashed`], progress feeds the UI.
-    pub hash_events: tokio::sync::mpsc::Receiver<HashEvent>,
-    /// Paths currently being hashed (dedupes impatient re-adds).
+    /// Commands to the file actor (resolve, hash, mapping, eviction…).
+    file: tokio::sync::mpsc::Sender<FileCommand>,
+    /// File-actor outputs; feed each into [`Self::on_file_output`].
+    pub file_outputs: tokio::sync::mpsc::Receiver<FileOutput>,
+    /// Paths whose playlist-add hash is still running (the quit-time
+    /// warning; the file actor does its own re-add dedup).
     hashing: HashSet<PathBuf>,
     sync: tokio::sync::mpsc::Sender<crate::actors::sync::SyncCommand>,
     network: tokio::sync::mpsc::Sender<crate::actors::network::NetworkCommand>,
 }
 
 impl<F: crate::player::PlayerFactory> SessionShell<F> {
-    /// Build a shell. Nothing runs until directives start flowing.
-    #[allow(clippy::too_many_arguments)]
+    /// Build a shell, spawning the file actor with `file_config`.
+    /// Nothing else runs until directives start flowing.
     pub fn new(
         me: UserId,
         factory: F,
         clock: crate::actors::network::Clock,
-        media_roots: Vec<PathBuf>,
-        manual: HashMap<Ed2kHash, PathBuf>,
+        file_config: FileConfig,
         sync: tokio::sync::mpsc::Sender<crate::actors::sync::SyncCommand>,
         network: tokio::sync::mpsc::Sender<crate::actors::network::NetworkCommand>,
     ) -> Self {
         let (player_out_tx, player_outputs) = tokio::sync::mpsc::channel(256);
-        let (res_tx, resolutions) = tokio::sync::mpsc::channel(64);
-        let (hash_tx, hash_events) = tokio::sync::mpsc::channel(64);
+        let (file_tx, file_rx) = tokio::sync::mpsc::channel(64);
+        let (file_out_tx, file_outputs) = tokio::sync::mpsc::channel(128);
+        tokio::spawn(crate::actors::file::run(file_config, file_rx, file_out_tx));
         SessionShell {
             me: me.clone(),
             wiring: PlayerWiring::new(me),
@@ -455,64 +388,26 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             player: None,
             player_out_tx,
             player_outputs,
-            res_tx,
-            resolutions,
-            media_roots,
-            manual,
-            hash_tx,
-            hash_events,
+            file: file_tx,
+            file_outputs,
             hashing: HashSet::new(),
             sync,
             network,
         }
     }
 
-    /// Hash a local file in the background and add it to the playlist
-    /// when done (progress and the result arrive on
-    /// [`Self::hash_events`]; completions go to [`Self::on_hashed`]).
-    /// Hashing is around a second per gigabyte, so it must never run
-    /// inline in the bridge loop — a stuck or slow hash must not stop
-    /// the UI updating or a quit being processed. Re-adding a path
-    /// already being hashed is a no-op (the impatient double-add).
-    pub fn hash_and_add(&mut self, path: PathBuf, after: Option<Ed2kHash>) {
+    /// Hash a local file (in the file actor) and add it to the playlist
+    /// when done. Progress and completion arrive on
+    /// [`Self::file_outputs`] as [`FileOutput::Hash`] events. Hashing is
+    /// around a second per gigabyte, so it must never run inline in the
+    /// bridge loop — a stuck hash must not stop the UI or a quit. The
+    /// file actor dedups re-adds; this just tracks the in-flight count.
+    pub async fn hash_and_add(&mut self, path: PathBuf, after: Option<Ed2kHash>) {
         if !self.hashing.insert(path.clone()) {
             tracing::debug!(path = %path.display(), "already hashing; ignoring re-add");
             return;
         }
-        tracing::info!(path = %path.display(), "hashing for playlist add");
-        let hash_tx = self.hash_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let started = std::time::Instant::now();
-            let total_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            // The opening progress event puts the file on screen
-            // immediately (the no-silent-work rule).
-            let _ = hash_tx.blocking_send(HashEvent::Progress {
-                path: path.clone(),
-                done_bytes: 0,
-                total_bytes,
-            });
-            let result = std::fs::File::open(&path).and_then(|file| {
-                dessplay_core::hash::ed2k_hash_reader(ProgressReader {
-                    inner: file,
-                    path: path.clone(),
-                    total_bytes,
-                    done_bytes: 0,
-                    last_reported: 0,
-                    events: hash_tx.clone(),
-                })
-            });
-            tracing::info!(
-                path = %path.display(),
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                ok = result.is_ok(),
-                "hash finished"
-            );
-            let _ = hash_tx.blocking_send(HashEvent::Done(HashedAdd {
-                path,
-                after,
-                result,
-            }));
-        });
+        let _ = self.file.send(FileCommand::HashAdd { path, after }).await;
     }
 
     /// A background hash finished: add the file to the playlist.
@@ -549,6 +444,29 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             .await;
         // We picked this file: it is its own verified local copy.
         self.note_local_file(hashed.root, done.path).await
+    }
+
+    /// Tell the file actor the media roots changed (settings save).
+    pub async fn set_media_roots(&self, roots: Vec<PathBuf>) {
+        let _ = self.file.send(FileCommand::SetMediaRoots(roots)).await;
+    }
+
+    /// Tell the file actor the retention policy changed (settings save).
+    pub async fn set_retention(&self, retention: crate::config::CacheRetention) {
+        let _ = self.file.send(FileCommand::SetRetention(retention)).await;
+    }
+
+    /// Persist a manual mapping (and resolve it Verified at once).
+    pub async fn set_manual_mapping(
+        &self,
+        file: Ed2kHash,
+        path: PathBuf,
+        series: Option<crate::storage::SeriesKey>,
+    ) {
+        let _ = self
+            .file
+            .send(FileCommand::SetManualMapping { file, path, series })
+            .await;
     }
 
     /// How many playlist-add hashes are still running (logged at quit —
@@ -639,7 +557,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         .await;
                 }
                 Directive::Resolve { file, filename } => {
-                    self.spawn_resolve(file, filename);
+                    let _ = self.file.send(FileCommand::Resolve { file, filename }).await;
                 }
                 Directive::Subtitle(line) => subtitles.push(line),
             }
@@ -662,32 +580,69 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.player = Some(tx);
     }
 
-    fn spawn_resolve(&self, file: Ed2kHash, filename: String) {
-        // Manual mappings skip the matcher *and* hash verification —
-        // the user explicitly chose that file (design.md).
-        if let Some(path) = self.manual.get(&file) {
-            if path.is_file() {
-                let _ = self
-                    .res_tx
-                    .try_send((file, Resolution::Verified(path.clone())));
-                return;
+    /// Dispatch one file-actor output. Returns subtitle lines (always
+    /// empty here, for a uniform shape with the other `on_*` methods)
+    /// plus, for a hash-progress event, the [`HashEvent`] the caller
+    /// forwards to the UI overlay. Resolution completions are applied
+    /// through [`PlayerWiring::on_resolved`], so the caller passes the
+    /// current view and peer list.
+    pub async fn on_file_output(
+        &mut self,
+        output: FileOutput,
+        view: &StateView,
+        peers: &[PeerInfo],
+    ) -> FileEffect {
+        match output {
+            FileOutput::Resolved { file, resolution } => {
+                let directives = self.wiring.on_resolved(file, resolution, view, peers);
+                self.execute(directives).await;
+                FileEffect::None
             }
-            tracing::info!(path = %path.display(), "manual mapping points at nothing; re-matching");
+            FileOutput::Hash(HashEvent::Progress {
+                path,
+                done_bytes,
+                total_bytes,
+            }) => FileEffect::HashProgress {
+                path,
+                done_bytes,
+                total_bytes,
+            },
+            FileOutput::Hash(HashEvent::Done(done)) => {
+                let path = done.path.clone();
+                self.on_hashed(done).await;
+                FileEffect::HashDone { path }
+            }
+            // The remaining outputs are consumed by the bridge loop /
+            // wiring as those features land (placeholder load, watched
+            // recording). Returned verbatim for the caller to route.
+            other => FileEffect::Other(other),
         }
-        let roots = self.media_roots.clone();
-        let res_tx = self.res_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let started = std::time::Instant::now();
-            let resolution = crate::matcher::resolve(&filename, &roots, file);
-            tracing::debug!(
-                filename,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                ?resolution,
-                "file resolution finished"
-            );
-            let _ = res_tx.blocking_send((file, resolution));
-        });
     }
+}
+
+/// What a [`FileOutput`] means to the bridge loop after the shell has
+/// applied its own side effects: a hashing-overlay update, or an output
+/// the loop still needs to route (placeholder, eviction, …).
+#[derive(Debug)]
+pub enum FileEffect {
+    /// Nothing further for the caller to do.
+    None,
+    /// Update the hashing progress overlay.
+    HashProgress {
+        /// File being hashed.
+        path: PathBuf,
+        /// Bytes read.
+        done_bytes: u64,
+        /// Total size (0 when unknowable).
+        total_bytes: u64,
+    },
+    /// A hash finished; clear its overlay row.
+    HashDone {
+        /// The file that finished.
+        path: PathBuf,
+    },
+    /// An output not yet consumed by the shell.
+    Other(FileOutput),
 }
 
 #[cfg(test)]

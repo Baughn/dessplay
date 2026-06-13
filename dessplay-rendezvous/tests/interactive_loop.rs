@@ -60,12 +60,20 @@ struct LoopRig {
 fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRig {
     let handle = harness.client(name, nonce);
     let sync = handle.sync.clone();
+    let cache_dir = db_dir.join(format!("{name}-cache"));
+    std::fs::create_dir_all(&cache_dir).expect("cache dir");
     let shell = SessionShell::new(
         UserId::new(name),
         MockFactory::new([]),
         sim_clock(0),
-        vec![],
-        std::collections::HashMap::new(),
+        dessplay::actors::file::FileConfig {
+            storage: Storage::open(&db_dir.join(format!("{name}-file.db")))
+                .expect("opening file storage"),
+            media_roots: vec![],
+            retention: dessplay::config::CacheRetention::default(),
+            cache_dir,
+            clock: sim_clock(0),
+        },
         handle.sync.clone(),
         handle.network.clone(),
     );

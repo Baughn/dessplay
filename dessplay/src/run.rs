@@ -52,6 +52,17 @@ fn system_clock() -> Arc<dyn Fn() -> u64 + Send + Sync> {
     })
 }
 
+/// The download cache directory: `$XDG_CACHE_HOME/dessplay/files/`
+/// (design.md, Download Cache). Created if absent.
+fn download_cache_dir() -> Result<PathBuf, String> {
+    let dir = dirs::cache_dir()
+        .ok_or("cannot determine the cache directory")?
+        .join("dessplay")
+        .join("files");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
 /// Append the default port unless the address already has one. A
 /// `host:port` has exactly one colon; a bracketed IPv6 literal carries
 /// its port after `]:`; multiple colons without brackets is a bare
@@ -446,20 +457,25 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     );
 
     // The player side: policy in `session`, mpv behind it. The player
-    // process itself only spawns when something first loads.
-    let manual_mappings = setup_storage
-        .manual_mappings()
-        .map_err(|e| format!("loading manual mappings: {e}"))?
-        .into_iter()
-        .collect();
+    // process itself only spawns when something first loads; the file
+    // actor (its own storage handle — WAL handles concurrency) runs
+    // from the start.
+    let media_roots = setup_storage
+        .media_roots()
+        .map_err(|e| format!("loading media roots: {e}"))?;
+    let file_storage =
+        Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
     let shell = crate::session::SessionShell::new(
         me.clone(),
         crate::player::mpv::MpvFactory::new("mpv"),
         system_clock(),
-        setup_storage
-            .media_roots()
-            .map_err(|e| format!("loading media roots: {e}"))?,
-        manual_mappings,
+        crate::actors::file::FileConfig {
+            storage: file_storage,
+            media_roots,
+            retention: settings.cache_retention,
+            cache_dir: download_cache_dir()?,
+            clock: system_clock(),
+        },
         handle.sync.clone(),
         handle.network.clone(),
     );
@@ -592,10 +608,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         Some(UserAction::HashAndAdd { path, after }) => {
                             // Hashing is seconds per gigabyte: background
-                            // work, completed in the `hashed` arm below.
-                            // Inline hashing here once starved this loop —
-                            // frozen UI, unprocessable Quit (2026-06-12).
-                            self.shell.hash_and_add(path, after);
+                            // work in the file actor, completed in the
+                            // `file_outputs` arm below. Inline hashing
+                            // here once starved this loop — frozen UI,
+                            // unprocessable Quit (2026-06-12).
+                            self.shell.hash_and_add(path, after).await;
                         }
                         Some(UserAction::AniDbSearch { query }) => {
                             let _ = self
@@ -621,7 +638,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 }
                                 Err(e) => tracing::error!("opening storage: {e}"),
                             }
-                            self.shell.media_roots = roots;
+                            self.shell.set_media_roots(roots).await;
+                            self.shell.set_retention(saved.cache_retention).await;
                             self.settings = *saved;
                         }
                     }
@@ -710,17 +728,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         let _ = self.ui.try_send(UiInput::Subtitle(line));
                     }
                 }
-                resolution = self.shell.resolutions.recv() => {
-                    let Some((file, resolution)) = resolution else { continue };
+                output = self.shell.file_outputs.recv() => {
+                    let Some(output) = output else { continue };
                     let peers = self.handle.peers.borrow().clone();
-                    self.shell
-                        .on_resolution(file, resolution, &last_view, &peers)
-                        .await;
-                }
-                hash_event = self.shell.hash_events.recv() => {
-                    let Some(event) = hash_event else { continue };
-                    match event {
-                        crate::session::HashEvent::Progress {
+                    match self.shell.on_file_output(output, &last_view, &peers).await {
+                        crate::session::FileEffect::HashProgress {
                             path,
                             done_bytes,
                             total_bytes,
@@ -732,15 +744,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 finished: false,
                             });
                         }
-                        crate::session::HashEvent::Done(done) => {
+                        crate::session::FileEffect::HashDone { path } => {
                             let _ = self.ui.try_send(UiInput::Hashing {
-                                filename: display_name(&done.path),
+                                filename: display_name(&path),
                                 done_bytes: 0,
                                 total_bytes: 0,
                                 finished: true,
                             });
-                            self.shell.on_hashed(done).await;
                         }
+                        crate::session::FileEffect::None
+                        | crate::session::FileEffect::Other(_) => {}
                     }
                 }
             }
