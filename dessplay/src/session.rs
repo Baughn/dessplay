@@ -58,6 +58,20 @@ pub enum Directive {
     },
     /// A subtitle line for the UI's subtitle pane.
     Subtitle(String),
+    /// Record a personally-watched file (the 85% rule crossed). The
+    /// shell stamps `watched_at` with its clock and forwards it to the
+    /// file actor; this feeds known-series detection and Recent Series
+    /// sorting (design.md, Watch Tracking).
+    RecordWatched {
+        /// The watched file.
+        file: Ed2kHash,
+        /// Series id, if metadata has one.
+        series_id: Option<dessplay_core::types::AniDbSeriesId>,
+        /// Series name (always present once metadata arrives).
+        series_name: Option<String>,
+        /// Filename, for display in history.
+        filename: String,
+    },
 }
 
 /// The session's player-side policy state.
@@ -76,7 +90,14 @@ pub struct PlayerWiring {
     lookups_requested: HashSet<Ed2kHash>,
     /// Series preferences already written from List watchers sets.
     watcher_prefs_written: HashSet<dessplay_core::types::AniDbSeriesId>,
+    /// Files already recorded as personally watched this session (the
+    /// 85% rule fires once per file).
+    watched_recorded: HashSet<Ed2kHash>,
 }
+
+/// Fraction of a file's duration that counts as "watched" (design.md,
+/// Watch Tracking).
+const WATCHED_FRACTION: f64 = 0.85;
 
 impl PlayerWiring {
     /// A fresh wiring for `me`.
@@ -90,7 +111,37 @@ impl PlayerWiring {
             chat_seen: None,
             lookups_requested: HashSet::new(),
             watcher_prefs_written: HashSet::new(),
+            watched_recorded: HashSet::new(),
         }
+    }
+
+    /// If the now-playing file has crossed the 85% watched threshold and
+    /// hasn't been recorded yet, emit a [`Directive::RecordWatched`].
+    /// Driven by position ticks; idempotent per file per session.
+    fn maybe_record_watched(&mut self, view: &StateView, position_millis: u64) -> Vec<Directive> {
+        let Some(file) = view.now_playing else {
+            return vec![];
+        };
+        if self.watched_recorded.contains(&file) {
+            return vec![];
+        }
+        let Some(entry) = view.playlist.iter().find(|e| e.hash == file) else {
+            return vec![];
+        };
+        let Some(duration) = entry.state.duration_millis else {
+            return vec![]; // can't judge the threshold without a duration
+        };
+        if duration == 0 || (position_millis as f64) < WATCHED_FRACTION * duration as f64 {
+            return vec![];
+        }
+        self.watched_recorded.insert(file);
+        let metadata = view.anidb_metadata.get(&file).and_then(|m| m.as_ref());
+        vec![Directive::RecordWatched {
+            file,
+            series_id: metadata.and_then(|m| m.series_id),
+            series_name: metadata.map(|m| m.series_name.clone()),
+            filename: entry.state.filename.clone(),
+        }]
     }
 
     /// We just hashed and added this local file ourselves: skip the
@@ -302,9 +353,11 @@ impl PlayerWiring {
                 Directive::Mutate(Mutation::SetPlaybackPosition { position_millis }),
             ],
             PlayerOutput::PositionTick { position_millis } => {
-                vec![Directive::Mutate(Mutation::SetPlaybackPosition {
+                let mut out = vec![Directive::Mutate(Mutation::SetPlaybackPosition {
                     position_millis,
-                })]
+                })];
+                out.extend(self.maybe_record_watched(view, position_millis));
+                out
             }
             PlayerOutput::DurationKnown {
                 file,
@@ -469,6 +522,18 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             .await;
     }
 
+    /// Archive a cached file into the library under the download root.
+    pub async fn archive(&self, file: Ed2kHash, series_name: Option<String>, filename: String) {
+        let _ = self
+            .file
+            .send(FileCommand::Archive {
+                file,
+                series_name,
+                filename,
+            })
+            .await;
+    }
+
     /// How many playlist-add hashes are still running (logged at quit —
     /// their adds are dropped).
     pub fn hashes_in_flight(&self) -> usize {
@@ -558,6 +623,23 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 }
                 Directive::Resolve { file, filename } => {
                     let _ = self.file.send(FileCommand::Resolve { file, filename }).await;
+                }
+                Directive::RecordWatched {
+                    file,
+                    series_id,
+                    series_name,
+                    filename,
+                } => {
+                    let _ = self
+                        .file
+                        .send(FileCommand::RecordWatched(crate::storage::WatchRecord {
+                            hash: file,
+                            series_id,
+                            series_name,
+                            filename,
+                            watched_at: (self.clock)() as i64,
+                        }))
+                        .await;
                 }
                 Directive::Subtitle(line) => subtitles.push(line),
             }
@@ -1010,6 +1092,111 @@ mod tests {
             &state.view(),
         );
         assert!(directives.is_empty());
+    }
+
+    fn watched_records(directives: &[Directive]) -> Vec<Ed2kHash> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::RecordWatched { file, .. } => Some(*file),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A playing_state whose entry has a known duration, so the 85%
+    /// threshold is computable.
+    fn timed_state(duration_millis: u64) -> CrdtState {
+        let mut state = CrdtState::new();
+        let mut e = entry(1, "ep1.mkv");
+        e.duration_millis = Some(duration_millis);
+        state.push_playlist_entry(A, ts(1), e);
+        state.set_now_playing(A, ts(2), Some(hash(1)));
+        state.set_playback_intent(A, ts(3), dessplay_core::types::PlaybackIntent::Playing);
+        state
+    }
+
+    #[test]
+    fn crossing_85_percent_records_watched_once() {
+        let mut wiring = PlayerWiring::new(me());
+        let view = timed_state(100_000).view();
+        // Below threshold: nothing.
+        let before = wiring.on_player(
+            PlayerOutput::PositionTick {
+                position_millis: 80_000,
+            },
+            &view,
+        );
+        assert!(watched_records(&before).is_empty());
+        // At 85%: recorded.
+        let at = wiring.on_player(
+            PlayerOutput::PositionTick {
+                position_millis: 85_000,
+            },
+            &view,
+        );
+        assert_eq!(watched_records(&at), vec![hash(1)]);
+        // Later ticks: not re-recorded.
+        let after = wiring.on_player(
+            PlayerOutput::PositionTick {
+                position_millis: 95_000,
+            },
+            &view,
+        );
+        assert!(watched_records(&after).is_empty());
+    }
+
+    #[test]
+    fn watched_record_carries_series_metadata() {
+        let mut state = timed_state(100_000);
+        state.set_anidb_metadata(
+            A,
+            ts(4),
+            hash(1),
+            Some(dessplay_core::types::AniDbMetadata {
+                source: dessplay_core::types::MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(dessplay_core::types::AniDbSeriesId(42)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_player(
+            PlayerOutput::PositionTick {
+                position_millis: 90_000,
+            },
+            &state.view(),
+        );
+        match directives.iter().find_map(|d| match d {
+            Directive::RecordWatched {
+                series_id,
+                series_name,
+                ..
+            } => Some((series_id, series_name)),
+            _ => None,
+        }) {
+            Some((series_id, series_name)) => {
+                assert_eq!(*series_id, Some(dessplay_core::types::AniDbSeriesId(42)));
+                assert_eq!(series_name.as_deref(), Some("Frieren"));
+            }
+            None => panic!("expected a RecordWatched directive"),
+        }
+    }
+
+    #[test]
+    fn no_duration_means_no_watched_record() {
+        // Entry without a duration: the threshold is uncomputable, so
+        // the 85% rule never fires (the EOF report still marks group
+        // progress separately).
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view(); // entry(1) has duration None
+        let directives = wiring.on_player(
+            PlayerOutput::PositionTick {
+                position_millis: 9_999_999,
+            },
+            &view,
+        );
+        assert!(watched_records(&directives).is_empty());
     }
 
     #[test]

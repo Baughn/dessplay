@@ -54,6 +54,12 @@ fn log_action(action: &UserAction) {
         UserAction::AniDbSearch { query } => {
             tracing::debug!(%query, "user action: AniDbSearch");
         }
+        UserAction::MapFile { path, .. } => {
+            tracing::debug!(path = %path.display(), "user action: MapFile");
+        }
+        UserAction::Archive { filename, .. } => {
+            tracing::debug!(%filename, "user action: Archive");
+        }
         UserAction::Quit => tracing::debug!("user action: Quit"),
     }
 }
@@ -460,6 +466,46 @@ impl Ui {
                 }))
             }
             Msg::RemoveEntry(hash) => Some(UserAction::Mutate(Mutation::RemovePlaylist { hash })),
+            Msg::MapFile(hash) => {
+                // Open the mapping browser at the media roots (the
+                // per-series last-used directory is FileActor state, not
+                // in the snapshot yet — edit-distance ranking surfaces
+                // the right file regardless).
+                let entry = self.snapshot.view.playlist.iter().find(|e| e.hash == hash)?;
+                let target = entry.state.filename.clone();
+                self.push_modal(Modal::Files(FileBrowser::for_mapping(
+                    self.media_roots.clone(),
+                    hash,
+                    target,
+                    None,
+                )));
+                None
+            }
+            Msg::FileMapped { file, path } => {
+                self.pop_modal();
+                self.sync_focus_attr();
+                Some(UserAction::MapFile {
+                    file,
+                    path,
+                    series: self.series_key_of(file),
+                })
+            }
+            Msg::ArchiveFile(hash) => {
+                let entry = self.snapshot.view.playlist.iter().find(|e| e.hash == hash)?;
+                let filename = entry.state.filename.clone();
+                let series_name = self
+                    .snapshot
+                    .view
+                    .anidb_metadata
+                    .get(&hash)
+                    .and_then(|m| m.as_ref())
+                    .map(|m| m.series_name.clone());
+                Some(UserAction::Archive {
+                    file: hash,
+                    series_name,
+                    filename,
+                })
+            }
             Msg::CloseModal => {
                 self.pop_modal();
                 self.sync_focus_attr();
@@ -524,6 +570,17 @@ impl Ui {
             .playlist
             .iter()
             .position(|entry| entry.hash == hash)
+    }
+
+    /// The series key for a file, for remembering its mapping directory:
+    /// AniDB id when metadata has one, else the parsed series name, else
+    /// `None` (no metadata yet).
+    fn series_key_of(&self, hash: Ed2kHash) -> Option<crate::storage::SeriesKey> {
+        let metadata = self.snapshot.view.anidb_metadata.get(&hash)?.as_ref()?;
+        Some(match metadata.series_id {
+            Some(id) => crate::storage::SeriesKey::AniDb(id),
+            None => crate::storage::SeriesKey::Name(metadata.series_name.clone()),
+        })
     }
 
     /// `/commands` from the chat input.

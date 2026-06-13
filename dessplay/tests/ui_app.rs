@@ -46,6 +46,13 @@ fn ctrl(c: char) -> Event<NoUserEvent> {
     })
 }
 
+fn shift(c: char) -> Event<NoUserEvent> {
+    Event::Keyboard(KeyEvent {
+        code: Key::Char(c),
+        modifiers: KeyModifiers::SHIFT,
+    })
+}
+
 /// Type a string into the focused component.
 fn type_str(ui: &mut Ui, text: &str) -> Vec<UserAction> {
     text.chars()
@@ -286,6 +293,94 @@ fn add_file_via_browser_produces_hash_and_add() {
         vec![UserAction::HashAndAdd {
             path: dir.path().join("ep1.mkv"),
             after: None,
+        }]
+    );
+    assert!(!ui.modal_open());
+}
+
+#[test]
+fn archive_action_emits_archive_with_series_and_filename() {
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    state.set_anidb_metadata(
+        A,
+        ts(2),
+        hash(1),
+        Some(dessplay_core::types::AniDbMetadata {
+            source: dessplay_core::types::MetadataSource::AniDb,
+            series_name: "Frieren".into(),
+            series_id: Some(dessplay_core::types::AniDbSeriesId(42)),
+            episode_number: Some("1".into()),
+        }),
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab)); // focus Playlist
+    }
+    assert_eq!(
+        ui.handle(shift('A')),
+        vec![UserAction::Archive {
+            file: hash(1),
+            series_name: Some("Frieren".into()),
+            filename: "ep1.mkv".into(),
+        }]
+    );
+}
+
+#[test]
+fn map_file_opens_browser_ranked_by_edit_distance_and_maps() {
+    // A directory of candidates; the target is "ep1.mkv". By edit
+    // distance "ep2.mkv" (one substitution) ranks above the long
+    // unrelated name, so it lands at row 0.
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["a-completely-unrelated-movie.avi", "ep2.mkv"] {
+        std::fs::write(dir.path().join(name), b"x").unwrap();
+    }
+    let mut state = CrdtState::new();
+    // A missing entry linked to series metadata (so the mapping carries
+    // a SeriesKey).
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    state.set_anidb_metadata(
+        A,
+        ts(2),
+        hash(1),
+        Some(dessplay_core::types::AniDbMetadata {
+            source: dessplay_core::types::MetadataSource::AniDb,
+            series_name: "Frieren".into(),
+            series_id: Some(dessplay_core::types::AniDbSeriesId(42)),
+            episode_number: Some("1".into()),
+        }),
+    );
+    let mut ui = Ui::new(
+        UserId::new("kim"),
+        Settings {
+            username: Some("kim".into()),
+            password: Some("x".into()),
+            ..Settings::default()
+        },
+        vec![dir.path().to_path_buf()],
+    );
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab)); // focus Playlist
+    }
+    // Ctrl-m opens the mapping browser (at the media roots).
+    assert!(ui.handle(ctrl('m')).is_empty());
+    assert!(ui.modal_open());
+    // Enter the only root directory.
+    assert!(ui.handle(key(Key::Enter)).is_empty());
+    // The closest filename to "ep1.mkv" is ranked first; selecting it
+    // maps the entry and carries the series key.
+    let actions = ui.handle(key(Key::Enter));
+    assert_eq!(
+        actions,
+        vec![UserAction::MapFile {
+            file: hash(1),
+            path: dir.path().join("ep2.mkv"),
+            series: Some(dessplay::storage::SeriesKey::AniDb(
+                dessplay_core::types::AniDbSeriesId(42)
+            )),
         }]
     );
     assert!(!ui.modal_open());

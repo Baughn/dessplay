@@ -625,6 +625,12 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 ))
                                 .await;
                         }
+                        Some(UserAction::MapFile { file, path, series }) => {
+                            self.shell.set_manual_mapping(file, path, series).await;
+                        }
+                        Some(UserAction::Archive { file, series_name, filename }) => {
+                            self.shell.archive(file, series_name, filename).await;
+                        }
                         Some(UserAction::SaveSettings(saved, roots)) => {
                             if let Err(e) = self.storage.save_settings(&saved) {
                                 tracing::error!("saving settings: {e}");

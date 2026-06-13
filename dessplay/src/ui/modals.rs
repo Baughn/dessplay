@@ -144,12 +144,21 @@ fn render_modal_list(frame: &mut Frame, area: Rect, title: &str, items: Vec<List
 // ---- File browser ------------------------------------------------------
 
 /// What the browser selects.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum BrowseFor {
     /// A media file (playlist add). Carries the playlist anchor.
     File,
     /// A directory (settings media root).
     Directory,
+    /// A replacement file for a missing playlist entry (manual map).
+    /// Files in each directory are sorted by edit distance to the
+    /// target filename (design.md, Manual File Mapping).
+    Map {
+        /// The playlist entry being mapped.
+        file: Ed2kHash,
+        /// The target filename, for the edit-distance sort.
+        target: String,
+    },
 }
 
 struct DirRow {
@@ -179,6 +188,27 @@ impl FileBrowser {
             after,
             roots,
             cwd: None,
+            entries: Vec::new(),
+            sel: 0,
+        };
+        browser.refresh();
+        browser
+    }
+
+    /// Browse for a replacement file to map a missing entry to. Opens
+    /// at `start` (the series' last-used directory if known, else the
+    /// media roots); files are ranked by edit distance to `target`.
+    pub fn for_mapping(
+        roots: Vec<PathBuf>,
+        file: Ed2kHash,
+        target: String,
+        start: Option<PathBuf>,
+    ) -> Self {
+        let mut browser = Self {
+            purpose: BrowseFor::Map { file, target },
+            after: None,
+            roots,
+            cwd: start,
             entries: Vec::new(),
             sel: 0,
         };
@@ -225,7 +255,7 @@ impl FileBrowser {
                             return None;
                         }
                         let is_dir = entry.file_type().ok()?.is_dir();
-                        if self.purpose == BrowseFor::Directory && !is_dir {
+                        if matches!(self.purpose, BrowseFor::Directory) && !is_dir {
                             return None;
                         }
                         Some(DirRow {
@@ -235,7 +265,30 @@ impl FileBrowser {
                         })
                     })
                     .collect();
-                rows.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+                // Directories first, then by name — except in mapping
+                // mode, where files are ranked by edit distance to the
+                // target so the likely match floats to the top.
+                match &self.purpose {
+                    BrowseFor::Map { target, .. } => {
+                        let target = target.clone();
+                        rows.sort_by(|a, b| {
+                            b.is_dir.cmp(&a.is_dir).then_with(|| {
+                                if a.is_dir {
+                                    a.name.cmp(&b.name)
+                                } else {
+                                    strsim::levenshtein(&a.name, &target)
+                                        .cmp(&strsim::levenshtein(&b.name, &target))
+                                        .then_with(|| a.name.cmp(&b.name))
+                                }
+                            })
+                        });
+                    }
+                    _ => {
+                        rows.sort_by(|a, b| {
+                            b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name))
+                        });
+                    }
+                }
                 self.entries = rows;
             }
         }
@@ -261,6 +314,9 @@ impl FileBrowser {
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
         match self.purpose {
             BrowseFor::File => vec![("Enter", "Open/Add"), ("Bksp", "Up"), ("Esc", "Cancel")],
+            BrowseFor::Map { .. } => {
+                vec![("Enter", "Open/Map"), ("Bksp", "Up"), ("Esc", "Cancel")]
+            }
             BrowseFor::Directory => {
                 vec![
                     ("Enter", "Open"),
@@ -273,10 +329,13 @@ impl FileBrowser {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let title = match (&self.cwd, self.purpose) {
+        let title = match (&self.cwd, &self.purpose) {
             (None, _) => "Media roots".to_string(),
             (Some(dir), BrowseFor::File) => format!("Add file — {}", dir.display()),
             (Some(dir), BrowseFor::Directory) => format!("Pick directory — {}", dir.display()),
+            (Some(dir), BrowseFor::Map { target, .. }) => {
+                format!("Map “{target}” — {}", dir.display())
+            }
         };
         let items: Vec<ListItem> = self
             .entries
@@ -308,15 +367,20 @@ impl AppComponent<Msg, NoUserEvent> for FileBrowser {
                 if row.is_dir {
                     self.cwd = Some(row.path.clone());
                     self.refresh();
-                    Some(Msg::None)
-                } else {
-                    Some(Msg::FileChosen {
+                    return Some(Msg::None);
+                }
+                match &self.purpose {
+                    BrowseFor::Map { file, .. } => Some(Msg::FileMapped {
+                        file: *file,
+                        path: row.path.clone(),
+                    }),
+                    _ => Some(Msg::FileChosen {
                         path: row.path.clone(),
                         after: self.after,
-                    })
+                    }),
                 }
             }
-            Key::Char('s') if self.purpose == BrowseFor::Directory => {
+            Key::Char('s') if matches!(self.purpose, BrowseFor::Directory) => {
                 self.cwd.clone().map(Msg::DirChosen)
             }
             Key::Backspace => {

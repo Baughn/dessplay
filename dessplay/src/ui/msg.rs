@@ -48,6 +48,10 @@ pub enum Msg {
     MoveUp(Ed2kHash),
     /// Tombstone an entry.
     RemoveEntry(Ed2kHash),
+    /// Open the manual-mapping browser for a playlist entry (Ctrl-m).
+    MapFile(Ed2kHash),
+    /// Archive the selected cached file into the library (`A`).
+    ArchiveFile(Ed2kHash),
 
     // Modals
     /// Close the topmost modal.
@@ -72,6 +76,13 @@ pub enum Msg {
     AniDbSearchRequested(String),
     /// AniDB search modal: link the entry to this series.
     ListEntryLinked(ListEntryId, AniDbSeriesId),
+    /// Mapping browser: the user picked a local file for an entry.
+    FileMapped {
+        /// The playlist entry being mapped.
+        file: Ed2kHash,
+        /// The chosen local file.
+        path: PathBuf,
+    },
 
     // Navigation / global
     /// Cycle pane focus.
@@ -104,6 +115,9 @@ impl Msg {
             Msg::MoveDown(_) => "MoveDown",
             Msg::MoveUp(_) => "MoveUp",
             Msg::RemoveEntry(_) => "RemoveEntry",
+            Msg::MapFile(_) => "MapFile",
+            Msg::ArchiveFile(_) => "ArchiveFile",
+            Msg::FileMapped { .. } => "FileMapped",
             Msg::CloseModal => "CloseModal",
             Msg::FileChosen { .. } => "FileChosen",
             Msg::DirChosen(_) => "DirChosen",
@@ -138,6 +152,26 @@ pub enum UserAction {
     AniDbSearch {
         /// The query.
         query: String,
+    },
+    /// Persist a manual mapping (playlist entry → local file the user
+    /// picked) and resolve it.
+    MapFile {
+        /// The playlist entry.
+        file: Ed2kHash,
+        /// The chosen local file.
+        path: PathBuf,
+        /// Series key for remembering this directory; `None` when the
+        /// entry has no metadata yet.
+        series: Option<crate::storage::SeriesKey>,
+    },
+    /// Archive a cached file into the library under the download root.
+    Archive {
+        /// The cached file.
+        file: Ed2kHash,
+        /// Series name for the subdirectory (from metadata).
+        series_name: Option<String>,
+        /// Original filename.
+        filename: String,
     },
     /// Quit the application.
     Quit,

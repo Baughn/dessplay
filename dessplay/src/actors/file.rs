@@ -119,13 +119,18 @@ pub enum FileCommand {
         /// Text lines (filename, explanation, session status).
         lines: Vec<String>,
     },
-    /// Move a cached download into the library at `dest`.
+    /// Move a cached download into the library under the download root
+    /// (the first media root). The actor builds the destination —
+    /// `<download root>/<series>/<filename>` — since it owns the media
+    /// roots (design.md, Archive).
     Archive {
         /// The cached file.
         file: Ed2kHash,
-        /// Full destination path (download root / series / season /
-        /// filename, computed by the caller from synced metadata).
-        dest: PathBuf,
+        /// Series name for the subdirectory (synced metadata always has
+        /// one); `None` falls back to an "Unsorted" folder.
+        series_name: Option<String>,
+        /// Original filename to archive under.
+        filename: String,
     },
     /// Eviction pass (startup and EOF-advance).
     RunEviction {
@@ -349,7 +354,11 @@ impl Actor {
                     let _ = done_tx.blocking_send(Done::Placeholder { file, result });
                 });
             }
-            FileCommand::Archive { file, dest } => self.archive(file, dest).await,
+            FileCommand::Archive {
+                file,
+                series_name,
+                filename,
+            } => self.archive(file, series_name, filename).await,
             FileCommand::RunEviction {
                 protected,
                 group_watched,
@@ -537,15 +546,32 @@ impl Actor {
             .await;
     }
 
-    async fn archive(&mut self, file: Ed2kHash, dest: PathBuf) {
-        let result = self.archive_inner(file, &dest);
+    async fn archive(
+        &mut self,
+        file: Ed2kHash,
+        series_name: Option<String>,
+        filename: String,
+    ) {
+        let result = self.archive_inner(file, series_name, &filename);
         if let Ok(new_path) = &result {
             tracing::info!(path = %new_path.display(), "archived cached file into the library");
         }
         let _ = self.out.send(FileOutput::Archived { file, result }).await;
     }
 
-    fn archive_inner(&mut self, file: Ed2kHash, dest: &Path) -> Result<PathBuf, String> {
+    fn archive_inner(
+        &mut self,
+        file: Ed2kHash,
+        series_name: Option<String>,
+        filename: &str,
+    ) -> Result<PathBuf, String> {
+        // `[Series name]/[Original filename]` under the download root.
+        // AniDB models each season as its own anime, so a single series
+        // name is effectively one season's folder; the explicit
+        // "Season #" the design mentions is deferred with that note.
+        let download_root = self.media_roots.first().ok_or("no download root configured")?;
+        let folder = sanitize_component(series_name.as_deref().unwrap_or("Unsorted"));
+        let dest = download_root.join(folder).join(sanitize_component(filename));
         let entries = self.storage.cache_entries().map_err(|e| e.to_string())?;
         let entry = entries
             .iter()
@@ -554,7 +580,7 @@ impl Actor {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
         }
-        move_file(&entry.path, dest).map_err(|e| e.to_string())?;
+        move_file(&entry.path, &dest).map_err(|e| e.to_string())?;
         self.storage
             .remove_cache_entry(file)
             .map_err(|e| e.to_string())?;
@@ -567,10 +593,10 @@ impl Actor {
         let mut cache = (*self.hash_cache).clone();
         if let Some((_, hash)) = cache.remove(&entry.path) {
             let now = (self.clock)() as i64;
-            if let Ok(metadata) = std::fs::metadata(dest)
+            if let Ok(metadata) = std::fs::metadata(&dest)
                 && let Some(mtime) = mtime_millis(&metadata)
             {
-                if let Err(e) = self.storage.upsert_hash_cache(dest, mtime, &hash, now) {
+                if let Err(e) = self.storage.upsert_hash_cache(&dest, mtime, &hash, now) {
                     tracing::error!("hash-cache re-key after archive: {e}");
                 }
                 cache.insert(dest.to_path_buf(), (mtime, hash));
@@ -647,6 +673,25 @@ pub fn evictable(
             now.saturating_sub(entry.last_access) >= window.as_millis() as i64
         }
         CacheRetention::Infinite => false,
+    }
+}
+
+/// Make a string safe as a single path component: replace separators
+/// and characters that would escape the directory or upset Windows.
+/// Empty input becomes `"Unsorted"`.
+fn sanitize_component(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        "Unsorted".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -928,6 +973,22 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_component_contains_path_separators() {
+        // A normal name is untouched.
+        assert_eq!(sanitize_component("Frieren"), "Frieren");
+        assert_eq!(sanitize_component("Fate/stay night"), "Fate_stay night");
+        assert_eq!(sanitize_component(""), "Unsorted");
+        assert_eq!(sanitize_component("   "), "Unsorted");
+        // The security property: no separator survives and the result
+        // can never be a traversal component.
+        for evil in ["../../etc/passwd", "..\\..\\windows", "/abs/path", "."] {
+            let s = sanitize_component(evil);
+            assert!(!s.contains('/') && !s.contains('\\'), "{s:?}");
+            assert!(s != "." && s != "..", "{s:?}");
+        }
+    }
+
+    #[test]
     fn eviction_rule_boundaries() {
         let week = Duration::from_secs(7 * 24 * 3600);
         let entry = cache_entry(1, 1_000);
@@ -1185,12 +1246,19 @@ mod tests {
             .upsert_hash_cache(&cached_path, mtime_millis(&metadata).unwrap(), &hashed, 1)
             .unwrap();
 
-        let dest = library.path().join("Frieren/Season 1/ep1.mkv");
-        let mut rig = spawn_rig(storage, vec![], CacheRetention::default());
+        // Download root is the first media root; the actor builds
+        // <root>/<series>/<filename>.
+        let dest = library.path().join("Frieren/ep1.mkv");
+        let mut rig = spawn_rig(
+            storage,
+            vec![library.path().to_path_buf()],
+            CacheRetention::default(),
+        );
         rig.commands
             .send(FileCommand::Archive {
                 file: hashed.root,
-                dest: dest.clone(),
+                series_name: Some("Frieren".into()),
+                filename: "ep1.mkv".into(),
             })
             .await
             .unwrap();
@@ -1211,7 +1279,8 @@ mod tests {
         rig.commands
             .send(FileCommand::Archive {
                 file: hash(7),
-                dest: library.path().join("nope.mkv"),
+                series_name: None,
+                filename: "nope.mkv".into(),
             })
             .await
             .unwrap();

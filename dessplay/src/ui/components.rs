@@ -327,6 +327,8 @@ impl PlaylistPane {
             ("a", "Add"),
             ("d", "Remove"),
             ("C-j/k", "Move"),
+            ("C-m", "Map"),
+            ("A", "Archive"),
         ]
     }
 
@@ -372,8 +374,14 @@ impl AppComponent<Msg, NoUserEvent> for PlaylistPane {
             return match code {
                 Key::Char('j') => Some(Msg::MoveDown(hash)),
                 Key::Char('k') => Some(Msg::MoveUp(hash)),
+                Key::Char('m') => Some(Msg::MapFile(hash)),
                 _ => None,
             };
+        }
+        // `A` (shift) archives; lowercase `a` adds. `typed` is the only
+        // helper that sees a shifted char.
+        if typed(ev) == Some('A') {
+            return self.selected_hash().map(Msg::ArchiveFile);
         }
         match plain(ev)? {
             Key::Up => {
