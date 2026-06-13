@@ -21,11 +21,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dessplay_core::hash::{Ed2kFileHash, ed2k_hash_reader};
-use dessplay_core::types::{AniDbSeriesId, Ed2kHash};
+use dessplay_core::net::{PeerId, PeerMessage, chunk_range};
+use dessplay_core::types::{AniDbSeriesId, Ed2kHash, FileAvailability};
 use tokio::sync::mpsc;
 
 use crate::actors::network::Clock;
 use crate::config::CacheRetention;
+use crate::download::{DownloadAction, DownloadConfig, Downloads};
 use crate::storage::{CacheEntry, SeriesKey, Storage, WatchRecord};
 
 /// What resolving a playlist entry against the media roots found.
@@ -144,6 +146,27 @@ pub enum FileCommand {
     SetMediaRoots(Vec<PathBuf>),
     /// Retention policy changed (settings save).
     SetRetention(CacheRetention),
+
+    // ---- File transfer (Phase 9B).
+    /// Begin (or refresh) downloading `file` from `sources`. Idempotent;
+    /// the session re-issues it as peers/availability/playback change.
+    StartDownload {
+        /// The file (its root is the playlist key / id).
+        file: Ed2kHash,
+        /// File size, for chunk/block geometry.
+        size_bytes: u64,
+        /// Candidate source peers (present peers that have it).
+        sources: Vec<dessplay_core::net::PeerId>,
+        /// Playback chunk anchor for the sequential window.
+        play_chunk: u32,
+    },
+    /// A file-transfer message relayed from a peer (download or serve).
+    PeerMessage {
+        /// The sender.
+        from: dessplay_core::net::PeerId,
+        /// The message.
+        message: Box<dessplay_core::net::PeerMessage>,
+    },
 }
 
 /// Events out of the actor.
@@ -186,6 +209,32 @@ pub enum FileOutput {
         /// The evicted files.
         files: Vec<Ed2kHash>,
     },
+
+    // ---- File transfer (Phase 9B).
+    /// Relay a file-transfer message to a peer (chunk request/data,
+    /// block hashes, availability, cancel). The bridge loop turns this
+    /// into a `NetworkCommand::SendPeer`.
+    SendPeer {
+        /// Destination peer.
+        to: dessplay_core::net::PeerId,
+        /// The message.
+        message: Box<dessplay_core::net::PeerMessage>,
+    },
+    /// Our availability for a file changed (download progress / Ready).
+    /// The bridge loop writes it to the synced `FileAvailability`.
+    Availability {
+        /// The file.
+        file: Ed2kHash,
+        /// New availability.
+        availability: FileAvailability,
+    },
+    /// A download finished and verified at `path` (now a local copy).
+    DownloadComplete {
+        /// The file.
+        file: Ed2kHash,
+        /// The complete file in the cache.
+        path: PathBuf,
+    },
 }
 
 /// Everything the actor needs at spawn.
@@ -201,6 +250,10 @@ pub struct FileConfig {
     pub cache_dir: PathBuf,
     /// Unix-millis clock (timestamps for bookkeeping rows).
     pub clock: Clock,
+    /// Download scheduler tuning (pipeline depth etc.).
+    pub download: DownloadConfig,
+    /// Upload rate cap, bytes/sec (`None` = unlimited).
+    pub upload_limit: Option<u64>,
 }
 
 /// Completions from blocking subtasks.
@@ -236,6 +289,9 @@ pub async fn run(
             return;
         }
     };
+    // Drives snub detection, pipeline refill, and serve-queue draining.
+    let mut tick = tokio::time::interval(DOWNLOAD_TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             cmd = commands.recv() => {
@@ -247,6 +303,9 @@ pub async fn run(
                 // drop it — i.e. never before the loop breaks.
                 let Some(done) = done else { break };
                 actor.on_done(done).await;
+            }
+            _ = tick.tick() => {
+                actor.on_tick().await;
             }
         }
     }
@@ -268,6 +327,18 @@ struct Actor {
     manual: HashMap<Ed2kHash, PathBuf>,
     /// Paths currently being hashed (dedupes impatient re-adds).
     hashing: HashSet<PathBuf>,
+    /// Local complete copies we can serve from (hash → path): verified
+    /// resolutions, manual mappings, and completed downloads.
+    local_files: HashMap<Ed2kHash, PathBuf>,
+    /// Active downloads (the scheduling brain).
+    downloads: Downloads,
+    /// Pending chunks to serve to peers: (requester, file, chunk).
+    serve_queue: std::collections::VecDeque<(PeerId, Ed2kHash, u32)>,
+    /// Upload pacing for serving chunks (`None` = unlimited).
+    upload: UploadLimiter,
+    /// Last shared-clock millis we wrote a `Downloading` progress
+    /// update, per file (≤1/s throttle).
+    last_progress_at: HashMap<Ed2kHash, u64>,
     out: mpsc::Sender<FileOutput>,
     done_tx: mpsc::Sender<Done>,
 }
@@ -303,6 +374,8 @@ impl Actor {
             elapsed_ms = started.elapsed().as_millis() as u64,
             "file actor ready"
         );
+        // Manual mappings are servable local copies too.
+        let local_files = manual.clone();
         Ok(Actor {
             storage: config.storage,
             media_roots: config.media_roots,
@@ -312,6 +385,11 @@ impl Actor {
             hash_cache: Arc::new(hash_cache),
             manual,
             hashing: HashSet::new(),
+            local_files,
+            downloads: Downloads::new(config.download),
+            serve_queue: std::collections::VecDeque::new(),
+            upload: UploadLimiter::new(config.upload_limit),
+            last_progress_at: HashMap::new(),
             out,
             done_tx,
         })
@@ -365,7 +443,246 @@ impl Actor {
             } => self.run_eviction(&protected, &group_watched).await,
             FileCommand::SetMediaRoots(roots) => self.media_roots = roots,
             FileCommand::SetRetention(retention) => self.retention = retention,
+            FileCommand::StartDownload {
+                file,
+                size_bytes,
+                sources,
+                play_chunk,
+            } => {
+                let path = self.download_path(file);
+                let actions = self.downloads.start(
+                    file,
+                    size_bytes,
+                    file, // root == playlist key
+                    path,
+                    sources,
+                    play_chunk,
+                    (self.clock)(),
+                );
+                self.run_download_actions(actions).await;
+            }
+            FileCommand::PeerMessage { from, message } => {
+                self.on_peer_message(from, *message).await;
+            }
         }
+    }
+
+    /// Periodic maintenance: snub/refill the downloads, drain the serve
+    /// queue within the upload budget.
+    async fn on_tick(&mut self) {
+        let actions = self.downloads.tick((self.clock)());
+        self.run_download_actions(actions).await;
+        self.drain_serve_queue().await;
+    }
+
+    /// The cache path a download assembles into.
+    fn download_path(&self, file: Ed2kHash) -> PathBuf {
+        self.cache_dir.join(file.to_string())
+    }
+
+    /// Route an incoming peer message: serve-side requests are answered
+    /// from our local copies; the rest feed the download scheduler.
+    async fn on_peer_message(&mut self, from: PeerId, message: PeerMessage) {
+        match message {
+            PeerMessage::BlockHashRequest { file } => self.serve_block_hashes(from, file).await,
+            PeerMessage::ChunkRequest { file, chunks } => {
+                self.enqueue_serve(from, file, chunks);
+                self.drain_serve_queue().await;
+            }
+            PeerMessage::Cancel { file, chunks } => {
+                let cancelled: HashSet<u32> = chunks.into_iter().collect();
+                self.serve_queue
+                    .retain(|job| !(job.0 == from && job.1 == file && cancelled.contains(&job.2)));
+            }
+            download_msg => {
+                let actions = self.downloads.on_peer_message(from, download_msg, (self.clock)());
+                self.run_download_actions(actions).await;
+            }
+        }
+    }
+
+    /// Apply the scheduler's actions: relay messages, write progress
+    /// (≤1/s), and record completions as servable local copies.
+    async fn run_download_actions(&mut self, actions: Vec<DownloadAction>) {
+        for action in actions {
+            match action {
+                DownloadAction::Send { to, message } => {
+                    let _ = self
+                        .out
+                        .send(FileOutput::SendPeer {
+                            to,
+                            message: Box::new(message),
+                        })
+                        .await;
+                }
+                DownloadAction::Progress { file, progress_bps } => {
+                    // Throttle progress writes to at most once a second
+                    // (a fast download crosses a block — a progress
+                    // step — several times a second).
+                    let now = (self.clock)();
+                    if now.saturating_sub(*self.last_progress_at.get(&file).unwrap_or(&0)) >= 1000 {
+                        self.last_progress_at.insert(file, now);
+                        let _ = self
+                            .out
+                            .send(FileOutput::Availability {
+                                file,
+                                availability: FileAvailability::Downloading { progress_bps },
+                            })
+                            .await;
+                    }
+                }
+                DownloadAction::Complete {
+                    file,
+                    path,
+                    block_hashes,
+                } => self.on_download_complete(file, path, block_hashes).await,
+                DownloadAction::Abandon { file, reason } => {
+                    tracing::warn!(%file, "download abandoned: {reason}");
+                    let _ = self
+                        .out
+                        .send(FileOutput::Availability {
+                            file,
+                            availability: FileAvailability::Missing,
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+
+    /// A download finished: record it as a servable local copy, cache
+    /// its block hashes (so we can re-serve them) and cache bookkeeping,
+    /// and surface Ready + DownloadComplete.
+    async fn on_download_complete(
+        &mut self,
+        file: Ed2kHash,
+        path: PathBuf,
+        block_hashes: Vec<dessplay_core::hash::Ed2kBlockHash>,
+    ) {
+        self.local_files.insert(file, path.clone());
+        self.last_progress_at.remove(&file);
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            let size = metadata.len();
+            let now = (self.clock)() as i64;
+            if let Err(e) = self.storage.upsert_cache_entry(&CacheEntry {
+                hash: file,
+                path: path.clone(),
+                size_bytes: size,
+                last_access: now,
+            }) {
+                tracing::error!("cache bookkeeping after download: {e}");
+            }
+            // Cache the validated block hashes so we can serve them on.
+            if let Some(mtime) = mtime_millis(&metadata) {
+                let hashed = Ed2kFileHash {
+                    root: file,
+                    blocks: block_hashes,
+                    size_bytes: size,
+                };
+                self.commit_fresh_hashes(vec![(path.clone(), mtime, hashed)]);
+            }
+        }
+        let _ = self
+            .out
+            .send(FileOutput::Availability {
+                file,
+                availability: FileAvailability::Ready,
+            })
+            .await;
+        let _ = self
+            .out
+            .send(FileOutput::DownloadComplete { file, path })
+            .await;
+    }
+
+    /// Serve a peer the per-block hashes of a file we hold (from the
+    /// hash cache). Silently ignored if we don't have the file or its
+    /// hashes cached.
+    async fn serve_block_hashes(&mut self, to: PeerId, file: Ed2kHash) {
+        let Some(path) = self.local_files.get(&file) else {
+            return;
+        };
+        let Some((_, hashed)) = self.hash_cache.get(path) else {
+            // We have the file but not its block hashes cached; skip
+            // (a re-hash-on-demand path is possible future work).
+            tracing::debug!(%file, "asked for block hashes we haven't cached");
+            return;
+        };
+        let blocks = hashed.blocks.clone();
+        let size = hashed.size_bytes;
+        let _ = self
+            .out
+            .send(FileOutput::SendPeer {
+                to: to.clone(),
+                message: Box::new(PeerMessage::BlockHashes {
+                    file,
+                    hashes: blocks,
+                }),
+            })
+            .await;
+        // Bootstrap the downloader's source bitfield: we hold the whole
+        // file, so advertise a complete bitfield. (BlockHashRequest is
+        // only sent by downloaders, so this can't loop.)
+        let mut bitfield = dessplay_core::net::Bitfield::new(dessplay_core::net::chunk_count(size));
+        for i in 0..bitfield.len() {
+            bitfield.set(i);
+        }
+        let _ = self
+            .out
+            .send(FileOutput::SendPeer {
+                to,
+                message: Box::new(PeerMessage::FileAvailability { file, bitfield }),
+            })
+            .await;
+    }
+
+    /// Queue a peer's chunk requests for serving (deduping re-requests).
+    fn enqueue_serve(&mut self, to: PeerId, file: Ed2kHash, chunks: Vec<u32>) {
+        if !self.local_files.contains_key(&file) {
+            return; // we don't have it
+        }
+        for chunk in chunks {
+            let job = (to.clone(), file, chunk);
+            if !self.serve_queue.contains(&job) {
+                self.serve_queue.push_back(job);
+            }
+        }
+    }
+
+    /// Send queued chunks within the upload budget. Reads are small
+    /// (250 KiB) and done inline; the budget paces how many go per tick.
+    async fn drain_serve_queue(&mut self) {
+        let now = (self.clock)();
+        while let Some((to, file, chunk)) = self.serve_queue.front().cloned() {
+            let Some(path) = self.local_files.get(&file).cloned() else {
+                self.serve_queue.pop_front();
+                continue;
+            };
+            let range = chunk_range(chunk, self.file_size(&path));
+            let len = range.end - range.start;
+            if !self.upload.try_take(len, now) {
+                break; // out of budget this tick
+            }
+            self.serve_queue.pop_front();
+            match read_range(&path, range) {
+                Ok(data) => {
+                    let _ = self
+                        .out
+                        .send(FileOutput::SendPeer {
+                            to,
+                            message: Box::new(PeerMessage::ChunkData { file, index: chunk, data }),
+                        })
+                        .await;
+                }
+                Err(e) => tracing::debug!(%file, chunk, "serving chunk failed: {e}"),
+            }
+        }
+    }
+
+    /// Size of a local file (0 if unstattable — the chunk-range math
+    /// then yields an empty range and the read is skipped).
+    fn file_size(&self, path: &Path) -> u64 {
+        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
     }
 
     async fn on_done(&mut self, done: Done) {
@@ -376,6 +693,10 @@ impl Actor {
                 fresh,
             } => {
                 self.commit_fresh_hashes(fresh);
+                // A verified local copy can be served to peers.
+                if let Resolution::Verified(path) = &resolution {
+                    self.local_files.insert(file, path.clone());
+                }
                 let _ = self
                     .out
                     .send(FileOutput::Resolved { file, resolution })
@@ -537,6 +858,7 @@ impl Actor {
         }
         tracing::info!(path = %path.display(), "manual mapping set");
         self.manual.insert(file, path.clone());
+        self.local_files.insert(file, path.clone());
         let _ = self
             .out
             .send(FileOutput::Resolved {
@@ -693,6 +1015,63 @@ fn sanitize_component(name: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// How often the actor runs snub/refill maintenance and drains the
+/// serve queue (a safety net; data arrival drives refill directly).
+const DOWNLOAD_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A token-bucket upload pacer (bytes). Unlimited when no cap is set —
+/// the seeder default. A burst of up to one second is allowed.
+struct UploadLimiter {
+    /// Bytes/sec cap; `None` = unlimited.
+    limit: Option<u64>,
+    /// Available bytes.
+    tokens: f64,
+    /// Last refill, shared-clock millis.
+    last: u64,
+}
+
+impl UploadLimiter {
+    fn new(limit: Option<u64>) -> Self {
+        UploadLimiter {
+            limit,
+            tokens: limit.unwrap_or(0) as f64,
+            last: 0,
+        }
+    }
+
+    /// Try to spend `bytes` at `now`. `true` (and spends) if the budget
+    /// allows; `false` to defer. Always `true` when unlimited.
+    fn try_take(&mut self, bytes: u64, now: u64) -> bool {
+        let Some(limit) = self.limit else {
+            return true;
+        };
+        let limit = limit as f64;
+        let elapsed = now.saturating_sub(self.last) as f64 / 1000.0;
+        self.tokens = (self.tokens + elapsed * limit).min(limit);
+        self.last = now;
+        // A chunk larger than a full second's budget (an absurdly low
+        // cap) is allowed when the bucket is full, so a download never
+        // wedges; the debt is bounded by the refill clamp above.
+        let need = (bytes as f64).min(limit);
+        if self.tokens >= need {
+            self.tokens -= bytes as f64;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Read a byte range from a file (for serving a chunk).
+fn read_range(path: &Path, range: std::ops::Range<u64>) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(range.start))?;
+    let mut buf = vec![0u8; (range.end - range.start) as usize];
+    file.read_exact(&mut buf)?;
+    Ok(buf)
 }
 
 /// Move a file, falling back to copy+delete across filesystems (the
@@ -1057,6 +1436,8 @@ mod tests {
                 retention,
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
             },
             cmd_rx,
             out_tx,

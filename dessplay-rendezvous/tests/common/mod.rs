@@ -115,6 +115,8 @@ impl Harness {
                 retention: dessplay::config::CacheRetention::default(),
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock: sim_clock(0),
+                download: dessplay::download::DownloadConfig::default(),
+                upload_limit: None,
             },
             handle.sync.clone(),
             handle.network.clone(),

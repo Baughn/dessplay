@@ -39,6 +39,9 @@ pub struct HeadlessArgs {
     pub fingerprint: Option<String>,
     /// Settings database override (interactive only).
     pub db_path: Option<PathBuf>,
+    /// Outstanding chunk requests per source for downloads (default 16).
+    /// A flag so transfer behaviour can be tuned in testing.
+    pub pipeline_depth: Option<u32>,
 }
 
 /// The wall clock in unix millis — the client-side equivalent of the
@@ -475,6 +478,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             retention: settings.cache_retention,
             cache_dir: download_cache_dir()?,
             clock: system_clock(),
+            download: crate::download::DownloadConfig {
+                pipeline_depth: args.pipeline_depth.unwrap_or(16),
+                ..crate::download::DownloadConfig::default()
+            },
+            upload_limit: settings.upload_limit,
         },
         handle.sync.clone(),
         handle.network.clone(),

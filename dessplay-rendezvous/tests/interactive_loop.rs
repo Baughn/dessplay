@@ -73,6 +73,8 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
             retention: dessplay::config::CacheRetention::default(),
             cache_dir,
             clock: sim_clock(0),
+            download: dessplay::download::DownloadConfig::default(),
+            upload_limit: None,
         },
         handle.sync.clone(),
         handle.network.clone(),

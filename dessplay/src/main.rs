@@ -38,6 +38,10 @@ struct Cli {
     #[arg(long)]
     db: Option<std::path::PathBuf>,
 
+    /// Outstanding chunk requests per source for downloads (default 16).
+    #[arg(long)]
+    pipeline_depth: Option<u32>,
+
     /// Run headless (no TUI) even as an interactive user.
     #[arg(long)]
     headless: bool,
@@ -125,6 +129,7 @@ fn main() -> color_eyre::Result<()> {
         password: cli.password,
         fingerprint: cli.fingerprint,
         db_path: cli.db,
+        pipeline_depth: cli.pipeline_depth,
     };
     if cli.dump {
         if let Err(message) = run_dump(&args) {

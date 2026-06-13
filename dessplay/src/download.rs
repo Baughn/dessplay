@@ -118,6 +118,9 @@ pub enum DownloadAction {
         file: Ed2kHash,
         /// Where the complete file is.
         path: PathBuf,
+        /// The validated per-block hashes, so the finished file can
+        /// re-serve them (and they can be cached) without re-hashing.
+        block_hashes: Vec<Ed2kBlockHash>,
     },
     /// The download was abandoned (e.g. no source could supply valid
     /// block hashes).
@@ -470,8 +473,16 @@ impl Downloads {
         // Complete?
         if d.store.is_complete() {
             let path = d.store.path().to_path_buf();
+            let block_hashes = match &d.block_hashes {
+                BlockHashes::Have(hashes) => hashes.clone(),
+                BlockHashes::Pending { .. } => Vec::new(),
+            };
             self.files.remove(&file);
-            actions.push(DownloadAction::Complete { file, path });
+            actions.push(DownloadAction::Complete {
+                file,
+                path,
+                block_hashes,
+            });
             return actions;
         }
 
