@@ -16,6 +16,10 @@ If anything is unclear, ALWAYS ask the user to clarify.
 
 A `.env` file (gitignored) contains `DESSPLAY_PASSWORD` for the default rendezvous server. This is loaded automatically at startup.
 
+# Deployment
+
+The rendezvous server and the primary seeder run on **tsugumi.local** as systemd services **`dessplay-rendezvous`** and **`dessplay-seeder`**. Their NixOS configuration lives in `~/nixos/machines/tsugumi`.
+
 # Revision Control
 
 This project uses **jujutsu** (`jj`) for revision control, not raw git. Use `jj` commands for commits, branches, and history operations.
