@@ -236,17 +236,20 @@ async fn eof_advances_and_everyone_loads_the_next_file() {
     );
 }
 
-/// Baughn doesn't have the file: their availability goes Missing, and
-/// kim's attempt to play is immediately re-paused (the observe-and-
-/// correct round trip), with baughn named as the blocker.
+/// The optimist re-pause (design rule 2): a peer blocks (here, Paused),
+/// and kim's attempt to play is immediately re-paused via the observe-
+/// and-correct round trip, with the intent latched Playing so playback
+/// resumes the moment the blocker clears. (Pre-9B this used a
+/// permanently-missing file; with downloading as the default a missing
+/// file is now fetched instead — see `a_missing_file_is_downloaded_from_a_peer`.)
 #[tokio::test(start_paused = true)]
-async fn missing_file_blocks_playback_and_repauses_the_optimist() {
+async fn optimist_is_repaused_while_a_peer_blocks() {
     let harness = Harness::new(704);
     let mut kim = harness.player_client("kim", 1);
     let baughn = harness.player_client("baughn", 2);
     let file = media_file(1);
     kim.install(&file);
-    // baughn gets nothing.
+    baughn.install(&file); // both have it, so nothing downloads
 
     mutate(
         &kim,
@@ -262,14 +265,14 @@ async fn missing_file_blocks_playback_and_repauses_the_optimist() {
         },
     )
     .await;
-    eventually(&[&kim, &baughn], BUDGET, |snaps| {
-        snaps.iter().all(|s| {
-            s.view
-                .file_availability
-                .get(&(UserId::new("baughn"), file.hash))
-                == Some(&FileAvailability::Missing)
-        })
-    })
+    // Baughn is paused (stepped away): a deterministic blocker.
+    mutate(
+        &baughn,
+        Mutation::SetManualOverride {
+            user: UserId::new("baughn"),
+            state: Some(ManualState::Paused),
+        },
+    )
     .await;
     kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
         .await;
@@ -277,9 +280,8 @@ async fn missing_file_blocks_playback_and_repauses_the_optimist() {
     // Kim presses play anyway.
     kim.user(PlayerEvent::PauseChanged(false));
 
-    // The design's rule 2: kim's player is immediately re-paused, kim
-    // is marked ready (intent latched Playing), and the blocker is
-    // baughn's missing file.
+    // Rule 2: kim's player is immediately re-paused, kim is marked ready
+    // (intent latched Playing), and baughn is named as the blocker.
     kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::SetPause(true)))
         .await;
     eventually(&[&kim, &baughn], BUDGET, |snaps| {
@@ -290,9 +292,50 @@ async fn missing_file_blocks_playback_and_repauses_the_optimist() {
                     .iter()
                     .any(|b| {
                         b.user == UserId::new("baughn")
-                            && b.reason == dessplay_core::derive::BlockReason::FileMissing
+                            && b.reason == dessplay_core::derive::BlockReason::Paused
                     })
         })
+    })
+    .await;
+}
+
+/// A peer without the file downloads it from a peer who has it, through
+/// the real relay, and ends up Ready — the full Phase 9B path wired
+/// through the session (resolve Missing -> StartDownload -> relayed
+/// chunk transfer -> verified -> Ready).
+#[tokio::test(start_paused = true)]
+async fn a_missing_file_is_downloaded_from_a_peer() {
+    let harness = Harness::new(706);
+    let seed = harness.player_client("seed", 1);
+    let leech = harness.player_client("leech", 2);
+    let file = media_file(1);
+    seed.install(&file); // only the seed has it
+
+    mutate(
+        &seed,
+        Mutation::PushPlaylist {
+            new: file_entry(&file, "seed"),
+        },
+    )
+    .await;
+    mutate(
+        &seed,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+
+    // The seed verifies its copy (Ready); the leech finds it missing,
+    // downloads it from the seed through the relay, and becomes Ready.
+    eventually(&[&seed, &leech], BUDGET, |snaps| {
+        let ready = |s: &ClientSnapshot, who: &str| {
+            s.view
+                .file_availability
+                .get(&(UserId::new(who), file.hash))
+                == Some(&FileAvailability::Ready)
+        };
+        snaps.iter().all(|s| ready(s, "seed") && ready(s, "leech"))
     })
     .await;
 }

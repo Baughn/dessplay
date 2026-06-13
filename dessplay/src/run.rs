@@ -719,6 +719,9 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 results: results.clone(),
                             });
                         }
+                        ClientEvent::Network(NetworkEvent::Peer { from, message }) => {
+                            self.shell.on_network_peer(from.clone(), message.clone()).await;
+                        }
                         _ => {}
                     }
                     // Any event can change what the UI shows — and what

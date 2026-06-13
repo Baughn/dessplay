@@ -90,6 +90,17 @@ pub enum Directive {
         /// Lines to draw (filename, explanation, session status).
         lines: Vec<String>,
     },
+    /// Begin/refresh downloading a missing file from peers that have it.
+    StartDownload {
+        /// The file.
+        file: Ed2kHash,
+        /// File size, for chunk geometry.
+        size_bytes: u64,
+        /// Present peers advertising the file (Ready).
+        sources: Vec<dessplay_core::net::PeerId>,
+        /// Playback chunk anchor for the sequential window.
+        play_chunk: u32,
+    },
 }
 
 /// The session's player-side policy state.
@@ -194,6 +205,44 @@ impl PlayerWiring {
             file,
             series_id: metadata.series_id,
             series_name: metadata.series_name.clone(),
+        }]
+    }
+
+    /// If the now-playing file is missing locally (resolved NotFound /
+    /// HashMismatch) and present peers advertise it, start/refresh a
+    /// download from them. Sources are present peers (interactive or
+    /// seeder) whose `FileAvailability` for the file is Ready.
+    fn plan_download(&self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
+        let Some(file) = view.now_playing else {
+            return vec![];
+        };
+        // Already have it (or will, once a resolve lands) — don't fetch.
+        if matches!(self.resolved.get(&file), Some(Resolution::Verified(_)) | None) {
+            return vec![];
+        }
+        let Some(entry) = view.playlist.iter().find(|e| e.hash == file) else {
+            return vec![];
+        };
+        let sources: Vec<dessplay_core::net::PeerId> = peers
+            .iter()
+            .filter(|p| {
+                p.username != self.me
+                    && p.presence == dessplay_core::net::Presence::Present
+                    && view.file_availability.get(&(p.username.clone(), file))
+                        == Some(&FileAvailability::Ready)
+            })
+            .map(|p| p.username.clone())
+            .collect();
+        if sources.is_empty() {
+            return vec![];
+        }
+        vec![Directive::StartDownload {
+            file,
+            size_bytes: entry.state.size_bytes,
+            sources,
+            // Sequential from the start; seek-aware windowing is future
+            // work (the download still prioritises early chunks).
+            play_chunk: 0,
         }]
     }
 
@@ -362,6 +411,12 @@ impl PlayerWiring {
         // A missing now-playing file with metadata: ask whether its
         // series is personally known (drives the missing-file branch).
         out.extend(self.maybe_check_series_known(view));
+
+        // Retrieve a missing now-playing file from peers (design.md:
+        // downloading is the default). The file actor's download start
+        // is idempotent, so re-emitting on each snapshot just refreshes
+        // the source set as peers/availability change.
+        out.extend(self.plan_download(view, peers));
 
         // Load now-playing once it has a verified local copy.
         if let Some(file) = view.now_playing
@@ -799,10 +854,39 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         .send(FileCommand::RenderPlaceholder { file, lines })
                         .await;
                 }
+                Directive::StartDownload {
+                    file,
+                    size_bytes,
+                    sources,
+                    play_chunk,
+                } => {
+                    let _ = self
+                        .file
+                        .send(FileCommand::StartDownload {
+                            file,
+                            size_bytes,
+                            sources,
+                            play_chunk,
+                        })
+                        .await;
+                }
                 Directive::Subtitle(line) => subtitles.push(line),
             }
         }
         subtitles
+    }
+
+    /// A file-transfer message relayed from a peer: hand it to the file
+    /// actor (download scheduling or serving).
+    pub async fn on_network_peer(
+        &self,
+        from: dessplay_core::net::PeerId,
+        message: Box<dessplay_core::net::PeerMessage>,
+    ) {
+        let _ = self
+            .file
+            .send(FileCommand::PeerMessage { from, message })
+            .await;
     }
 
     async fn spawn_player(&mut self) {
@@ -870,6 +954,29 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                     self.execute(vec![Directive::Player(PlayerCommand::Load { file, path })])
                         .await;
                 }
+                FileEffect::None
+            }
+            FileOutput::SendPeer { to, message } => {
+                let _ = self
+                    .network
+                    .send(crate::actors::network::NetworkCommand::SendPeer { to, message })
+                    .await;
+                FileEffect::None
+            }
+            FileOutput::Availability { file, availability } => {
+                let _ = self
+                    .sync
+                    .send(crate::actors::sync::SyncCommand::Mutate(Box::new(
+                        Mutation::SetFileAvailability { file, availability },
+                    )))
+                    .await;
+                FileEffect::None
+            }
+            FileOutput::DownloadComplete { file, path } => {
+                // A finished download is now a verified local copy:
+                // resolve it (loads now-playing if we were waiting).
+                let directives = self.wiring.note_local_file(file, path);
+                self.execute(directives).await;
                 FileEffect::None
             }
             // The remaining outputs are consumed by the bridge loop as

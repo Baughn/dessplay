@@ -140,6 +140,9 @@ impl Harness {
                         {
                             shell.set_clock_offset(*offset_millis).await;
                         }
+                        if let ClientEvent::Network(NetworkEvent::Peer { from, message }) = &event {
+                            shell.on_network_peer(from.clone(), message.clone()).await;
+                        }
                         let (tx, rx) = oneshot::channel();
                         if pump_sync.send(SyncCommand::GetView(tx)).await.is_err() {
                             break;
