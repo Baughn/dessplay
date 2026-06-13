@@ -495,6 +495,40 @@ grouping works. List entries linkable; next_ep advances automatically.
 **Goal**: Media scanning, file matching, watch tracking, relayed file
 transfer, download cache.
 
+Split into two halves: **9A — local file management** (file actor,
+matching, watch tracking, manual mapping, placeholder, cache
+eviction/archive) and **9B — relayed transfer** (chunks, bitfields,
+block verification/resume, rarest-first, prefetch, seeder auto-fetch).
+
+**9A status: complete (2026-06-13).** Notes and deviations:
+
+- **`matcher` absorbed into a `FileActor`** (`dessplay/src/actors/file.rs`),
+  driven by the `SessionShell` over one `FileCommand`/`FileOutput`
+  channel pair. Resolution is hash-cache-aware (client schema v2
+  `hash_cache`, keyed by `(mtime, size)`): unwatched playlist entries no
+  longer re-hash every session, and a touched file re-hashes exactly
+  once. The two old resolution/hash channels collapsed into
+  `file_outputs`.
+- **85% watch tracking** in `PlayerWiring` (needs a known duration; the
+  EOF report still marks group progress separately). Recent Series
+  sorting was already reading `recent_watched`; populating watch history
+  completes it.
+- **Manual mapping** (Ctrl-m): a `FileBrowser` mapping mode that ranks
+  files by `strsim` edit distance to the target. Opens at the media
+  roots, not the series' last-used directory (that dir is file-actor
+  state not yet in the UI snapshot) — noted in design.md. **Archive**
+  (`A`) → `<download root>/<series>/<filename>`; the design's `Season #`
+  level is collapsed (AniDB models each season as its own anime).
+- **Placeholder PNG** via `image` + `ab_glyph` + an embedded DejaVu Sans
+  (`dessplay/assets/`, license included).
+- **Missing-file branch**: a known series stays Missing (blocks); an
+  unknown series with an AniDB **series id** auto-marks NotWatching +
+  shows the placeholder. **User-approved design decision:** a missing
+  file whose series has no id keeps blocking, with the manual
+  not-watching action as the escape hatch — no new CRDT state.
+- **Deferred to 9B / later:** manual not-watching keybinding, the
+  per-series mapping start directory, and everything transfer-related.
+
 ### What gets built
 - FileActor: hashing, scanning, matching, download coordination, cache
   management

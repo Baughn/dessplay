@@ -282,32 +282,50 @@ adds from reaching the playlist.
 
 ### FileActor
 
-**Owns:** File hash cache (including ed2k per-block hashes), media root
-index, download state, the download cache (retention/eviction), prefetch
-queue.
+**Owns (Phase 9A):** the hash cache (ed2k root + per-block hashes,
+validated by `(mtime, size)`), manual mappings, download-cache
+bookkeeping (retention/eviction), watch-history writes, and the
+placeholder renderer. Its own `Storage` connection (WAL handles
+concurrency with the sync actor's). Phase 9B adds download coordination
+(chunks, bitfields, prefetch).
 
-**Receives:**
-- `ScanMediaRoots(paths)` -- index available files
-- `HashFile(path)` -- compute ed2k hash (root + block hashes)
-- `MatchFile(filename)` -- find local file for a playlist item
-- `StartDownload(FileId, peers)` -- begin chunk-based download
-- `ChunkReceived(FileId, index, data)` -- store received chunk (block-verified
-  as blocks complete)
-- `GetAvailability(FileId)` -- query which chunks we have
-- `Archive(FileId)` -- move cached file into the download root
-  (`<series>/<season>/<filename>`)
-- `RunEviction` -- eviction pass (sent at startup and on EOF-advance)
+Spawned and driven by the `SessionShell` (Phase 7's session policy
+layer): the shell sends `FileCommand`s and receives `FileOutput`s on one
+channel pair, replacing the ad-hoc `spawn_blocking` resolves and hashes
+the shell did before Phase 9. Heavy IO (scans, hashing, PNG rendering)
+runs in `spawn_blocking` subtasks whose completions return through an
+internal channel, so the inbox stays live — a stuck hash never starves a
+resolve or an eviction pass (the bridge loop's liveness rule again).
 
-**Produces:**
-- `HashResult(path, Ed2kHash)` -- completed hash
-- `MatchResult(filename, Option<path>)` -- file match result
-- `AvailabilityUpdate(FileId, BitVec)` -- our bitfield changed
-- `DownloadComplete(FileId, path)` -- file fully downloaded
-- `ChunkNeeded(FileId, Vec<u32>, PeerId)` -- request chunks from peer
+**Receives (`FileCommand`):**
+- `Resolve { file, filename }` -- find a local copy: manual mapping
+  first, then a media-root scan with hash-cache-backed verification (a
+  candidate whose `(mtime, size)` match a cache row is trusted without
+  re-reading; anything else is hashed once and the hash cached)
+- `HashAdd { path, after }` -- hash a file for a playlist add (cache hits
+  return instantly; misses stream progress for the overlay)
+- `SetManualMapping { file, path, series }` -- persist a user-picked file
+  (and the series' last-used directory) and resolve it Verified
+- `RecordWatched(record)` -- personal watch history (the 85% rule)
+- `CheckSeriesKnown { file, series, key }` -- is the series in watch
+  history? (drives the missing-file branch)
+- `RenderPlaceholder { file, lines }` -- render the not-watching PNG
+- `Archive { file, series_name, filename }` -- move a cached download to
+  `<download root>/<series>/<filename>`
+- `RunEviction { protected, group_watched }` -- eviction pass (startup and
+  EOF-advance; never evicts now-playing/queued/protected)
+- `SetMediaRoots` / `SetRetention` -- settings changes
 
-Prefetch (queued playlist entries ahead of now-playing; everything, for
-seeders) is driven by the main loop from playlist state: it sends
-`StartDownload` for entries within the prefetch policy.
+**Produces (`FileOutput`):**
+- `Resolved { file, resolution }` -- `Verified | HashMismatch | NotFound`
+- `Hash(HashEvent)` -- playlist-add hash progress/completion
+- `SeriesKnown { file, series, known }` -- answer to `CheckSeriesKnown`
+- `PlaceholderReady { file, path }` -- the PNG is on disk
+- `Archived { file, result }` / `Evicted { files }`
+
+Phase 9B will add `StartDownload`, `ChunkReceived`, availability
+bitfields, and prefetch (queued entries ahead of now-playing; everything
+for seeders), driven by the main loop from playlist state.
 
 ### AniDB worker (server-side, Phase 8)
 
@@ -446,17 +464,20 @@ dessplay/                     (client: lib + thin binary)
       sync.rs                 (SyncActor)
       player.rs               (PlayerActor: echo suppression, drift,
                                debounce, crash supervision)
-      file.rs                 (FileActor; Phase 9)
+      file.rs                 (FileActor: hash cache, matching, watch
+                               history, cache eviction/archive; Phase 9)
     ui/                       (components, dispatcher, threads shell)
     player/                   (Player trait; mpv JSON IPC; MockPlayer)
-    session.rs                (PlayerWiring policy + SessionShell glue)
-    matcher.rs                (minimal filename matcher; absorbed into
-                               the FileActor in Phase 9)
+    session.rs                (PlayerWiring policy + SessionShell glue;
+                               drives the FileActor)
+    placeholder.rs            (not-watching PNG; image + ab_glyph + the
+                               embedded DejaVu Sans in assets/)
     run.rs                    (mode entrypoints: interactive, headless,
                                import, dump)
     import.rs                 (CSV importer; Phase 6)
-    storage.rs                (SQLite persistence)
+    storage.rs                (SQLite persistence; hash_cache added in 9A)
     config.rs                 (typed settings)
+  assets/                     (DejaVuSans.ttf for the placeholder + license)
 dessplay-rendezvous/          (server: lib + thin binary)
   src/
     lib.rs / main.rs

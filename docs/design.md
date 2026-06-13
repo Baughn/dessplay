@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-12
+Last updated: 2026-06-13
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -112,10 +112,19 @@ When someone adds a file, everyone needs to find their local copy:
      this file
    - **Unknown series** (no watch history for that series): you are set to
      **Not Watching** — a generated placeholder PNG is loaded into your player
-     showing the current state.
+     showing the current state. *Implementation note (Phase 9A):* the
+     automatic Not-Watching set requires an AniDB **series id** to key the
+     synced preference on; a missing file whose series has no id (AniDB
+     didn't know it, only a filename-derived series name exists) keeps
+     blocking, and the manual not-watching action (4b) is the escape
+     hatch. The "known series" detection itself uses the series id when
+     present and the series name otherwise.
 4a. You can manually map to a different file:
    - Select the red entry, press a key (ctrl-m) to open browser
-   - Browser opens to the directory most recently used for files from that series
+   - Browser opens to the directory most recently used for files from that
+     series (Phase 9A: opens at the media roots for now — that per-series
+     directory is file-actor state not yet surfaced to the UI; the
+     edit-distance ranking surfaces the right file regardless)
    - Files are sorted by edit distance to the target filename
 4b. You can manually set yourself to "not watching" on a file that's Missing
    (e.g. a known series but you don't have this episode yet). This clears the
@@ -684,7 +693,11 @@ queued unwatched playlist entries are never evicted, regardless of retention.
 file into `[Series name]/[Season #]/[Original filename]` under the download
 root (the topmost media root). This is the deliberate "keep this in the
 library" decision; retention is the default "it was just for the watch party"
-path.
+path. *Implementation note (Phase 9A):* the destination is
+`[Series name]/[Original filename]` — the `Season #` level is collapsed,
+since AniDB models each season as its own anime (a franchise member), so a
+single series name is already one season's folder. The series-name component
+is sanitized to a safe path component.
 
 **Pre-fetching**: clients with downloading enabled fetch playlist entries
 *ahead* of now-playing (in playlist order) in the background, so next week's
@@ -930,6 +943,7 @@ tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access |
+| `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size); skips re-hashing unchanged files (Phase 9A) |
 | `manual_mappings` | Playlist hash → user-picked local path |
 | `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |
 | `tofu_fingerprints` | Pinned server cert fingerprints; write-once (replacing requires explicit forget) |
