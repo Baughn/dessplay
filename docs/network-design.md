@@ -511,6 +511,16 @@ Downloader                  Server                    Uploader
   |      ChunkData} ---------|      ChunkData} ---------|
 ```
 
+On open, a client writes a `RelayEnvelope::Hello` first. QUIC reveals a
+bidirectional stream to the peer only when bytes are first written, so a
+peer that only ever *receives* on its relay stream (an idle source/seeder
+waiting to serve) would otherwise never have its stream `accept_bi`'d by
+the server, and every message addressed to it would be dropped. `Hello`
+forces registration; the server reads and ignores it. (The simulated
+transport establishes streams eagerly, so this real-QUIC-only failure was
+caught in the field, not in tests — there is now a real-QUIC regression
+test, `quic_localhost::a_relayed_message_reaches_a_receive_only_peer`.)
+
 **Why a separate QUIC stream, not the control stream:** QUIC multiplexes
 streams with independent per-stream flow control, so bulk transfer on the
 relay stream never head-of-line-blocks state sync on the control stream
