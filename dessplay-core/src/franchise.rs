@@ -98,9 +98,24 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
         components.entry(root).or_default().insert(id);
     }
 
+    // Series that actually have a known file (via metadata). The
+    // relations walk pulls in the whole graph -- sequels you don't have,
+    // standalone shows reached through crossovers -- so a series with no
+    // file exists only as a relation target. Such series are dropped
+    // from the members list, and a franchise with no files at all does
+    // not appear. (Title/year are still computed from the full
+    // component, so "Overlord" stays the name even when only a later
+    // season is held.)
+    let series_with_files: BTreeSet<AniDbSeriesId> = view
+        .anidb_metadata
+        .values()
+        .flatten()
+        .filter_map(|metadata| metadata.series_id)
+        .collect();
+
     let mut result: Vec<Franchise> = components
         .into_iter()
-        .map(|(root, members)| {
+        .filter_map(|(root, members)| {
             // Title/year from the earliest-year member with relations
             // data; fall back to the lowest id's title, then a stub.
             let mut best: Option<(&str, Option<u16>)> = None;
@@ -133,17 +148,7 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
                     })
                 })
                 .unwrap_or_else(|| format!("anidb:{}", root.0));
-            let mut series: Vec<AniDbSeriesId> = members.iter().copied().collect();
-            series.sort_by_key(|id| {
-                (
-                    view.series_relations
-                        .get(id)
-                        .and_then(|r| r.year)
-                        .unwrap_or(u16::MAX),
-                    id.0,
-                )
-            });
-            let files = view
+            let files: Vec<Ed2kHash> = view
                 .anidb_metadata
                 .iter()
                 .filter_map(|(hash, metadata)| {
@@ -154,13 +159,31 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
                         .then_some(*hash)
                 })
                 .collect();
-            Franchise {
+            // A franchise reached only through relations holds no files.
+            if files.is_empty() {
+                return None;
+            }
+            let mut series: Vec<AniDbSeriesId> = members
+                .iter()
+                .copied()
+                .filter(|id| series_with_files.contains(id))
+                .collect();
+            series.sort_by_key(|id| {
+                (
+                    view.series_relations
+                        .get(id)
+                        .and_then(|r| r.year)
+                        .unwrap_or(u16::MAX),
+                    id.0,
+                )
+            });
+            Some(Franchise {
                 key: FranchiseKey::Series(root),
                 title,
                 series,
                 year: year_min,
                 files,
-            }
+            })
         })
         .collect();
 
@@ -274,10 +297,13 @@ mod tests {
         );
 
         let groups = franchises(&state.view());
-        assert_eq!(groups.len(), 3, "{groups:#?}");
+        // Lain has no file -> dropped (relation-only). Two remain.
+        assert_eq!(groups.len(), 2, "{groups:#?}");
 
         let frieren = groups.iter().find(|f| f.title == "Frieren").unwrap();
-        assert_eq!(frieren.series, vec![AniDbSeriesId(1), AniDbSeriesId(2)]);
+        // Only S2 is held; S1 is filtered out as a file-less member, but
+        // the franchise title/year still come from the full component.
+        assert_eq!(frieren.series, vec![AniDbSeriesId(2)]);
         assert_eq!(frieren.year, Some(2020));
         assert_eq!(frieren.files, vec![Ed2kHash([1; 16])]);
 
@@ -326,6 +352,13 @@ mod tests {
                 AniDbSeriesId(id),
                 relations(name, Some(year), &[]),
             );
+            // A held file per show, so each survives the file-less filter.
+            state.set_anidb_metadata(
+                a,
+                ts(i as u64 + 20),
+                Ed2kHash([i as u8 + 1; 16]),
+                Some(metadata(name, Some(id))),
+            );
         }
         // The crossover, linked to all four via the crossover code (100).
         state.set_series_relations(
@@ -343,6 +376,12 @@ mod tests {
                 ],
             ),
         );
+        state.set_anidb_metadata(
+            a,
+            ts(30),
+            Ed2kHash([42; 16]),
+            Some(metadata("Isekai Quartet", Some(14435))),
+        );
 
         let groups = franchises(&state.view());
         // Four standalone shows + the crossover, all separate.
@@ -350,6 +389,54 @@ mod tests {
         for f in &groups {
             assert_eq!(f.series.len(), 1, "no franchise should absorb others: {f:#?}");
         }
+    }
+
+    /// The relations walk pulls in the whole graph -- sequels you don't
+    /// have, standalone shows reached via crossovers -- so series that
+    /// exist *only* as relation targets carry no files. The browser must
+    /// show only series the group has actually touched: a file-bearing
+    /// franchise keeps only its file-bearing members, and a franchise
+    /// with no files at all does not appear.
+    #[test]
+    fn relation_only_series_are_filtered_out() {
+        let mut state = CrdtState::new();
+        let a = ActorId::SERVER;
+        // Overlord I (no file) -> ... -> Overlord IV (the only file).
+        state.set_series_relations(
+            a,
+            ts(1),
+            AniDbSeriesId(10816),
+            relations("Overlord", Some(2015), &[(RelationKind::Sequel, 16296)]),
+        );
+        state.set_series_relations(
+            a,
+            ts(2),
+            AniDbSeriesId(16296),
+            relations("Overlord IV", Some(2022), &[(RelationKind::Prequel, 10816)]),
+        );
+        // KonoSuba: known only through the relations walk, no files.
+        state.set_series_relations(
+            a,
+            ts(3),
+            AniDbSeriesId(11261),
+            relations("KonoSuba", Some(2016), &[]),
+        );
+        state.set_anidb_metadata(
+            a,
+            ts(4),
+            Ed2kHash([1; 16]),
+            Some(metadata("Overlord IV", Some(16296))),
+        );
+
+        let groups = franchises(&state.view());
+        // KonoSuba (no files) is gone; only the Overlord franchise remains.
+        assert_eq!(groups.len(), 1, "{groups:#?}");
+        let overlord = &groups[0];
+        // Title still reflects the franchise root, not just the season held.
+        assert_eq!(overlord.title, "Overlord");
+        // The file-less Overlord I season is filtered from the members.
+        assert_eq!(overlord.series, vec![AniDbSeriesId(16296)]);
+        assert_eq!(overlord.files, vec![Ed2kHash([1; 16])]);
     }
 
     /// Spec: only *structural* relation kinds (sequel/prequel chains,
@@ -385,6 +472,9 @@ mod tests {
                 relations("A", Some(2000), &[(kind, 2)]),
             );
             state.set_series_relations(a, ts(2), AniDbSeriesId(2), relations("B", Some(2001), &[]));
+            // A held file for each, so neither is filtered as file-less.
+            state.set_anidb_metadata(a, ts(3), Ed2kHash([1; 16]), Some(metadata("A", Some(1))));
+            state.set_anidb_metadata(a, ts(4), Ed2kHash([2; 16]), Some(metadata("B", Some(2))));
             let groups = franchises(&state.view());
             let expected = if grouped { 1 } else { 2 };
             assert_eq!(

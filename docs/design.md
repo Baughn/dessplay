@@ -810,6 +810,14 @@ works and are deliberately ignored. Without this filter a single crossover
 like *Isekai Quartet* (which relates to Overlord, KonoSuba, Re:Zero and Youjo
 Senki) would collapse every show it touches into one giant component.
 
+The relations walk pulls in the whole graph -- sequels you don't have,
+standalone shows reached through a crossover -- so a series can exist purely
+as a relation target with no associated file. Those are filtered from the
+view: a franchise member with no known file is dropped from its season list,
+and a franchise with no files at all does not appear. Title and year are still
+derived from the full component, so "Overlord" stays the franchise name even
+when only a later season is held.
+
 **Name search (the AniDbSearch modal):** the UDP API has no
 multi-result search -- `ANIME aname=` is an exact-title lookup, useless
 for informal names. Instead the server fetches AniDB's daily
