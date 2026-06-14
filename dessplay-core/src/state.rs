@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::lww::{Lww, LwwCell, resolve_value};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
-    FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent, PlaybackPosition,
-    PlaylistFileState, SeekAuthority, SeriesListEntry, SeriesRelations, SeriesWatchState,
-    SharedTimestamp, UserId,
+    FileCatalogEntry, FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent,
+    PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry, SeriesRelations,
+    SeriesWatchState, SharedTimestamp, UserId,
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
@@ -58,6 +58,9 @@ pub struct CrdtState {
     pub anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
     /// Server-authoritative franchise relations graph.
     pub series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
+    /// Server-authoritative file identities, recorded from lookup requests
+    /// so a client can add a file it doesn't hold. Survives compaction.
+    pub file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
     /// The List: the group's permanent series tracker.
     pub list_entries: LwwMap<ListEntryId, SeriesListEntry>,
     /// Fast-changing progress fields for List entries.
@@ -104,6 +107,8 @@ pub enum CrdtOp {
     AniDbMetadata(LwwMapOp<Ed2kHash, Option<AniDbMetadata>>),
     /// Series relations write (server).
     SeriesRelations(LwwMapOp<AniDbSeriesId, SeriesRelations>),
+    /// File catalog write (server).
+    FileCatalog(LwwMapOp<Ed2kHash, FileCatalogEntry>),
     /// List entry put/remove.
     ListEntry(LwwMapOp<ListEntryId, SeriesListEntry>),
     /// List next-episode write.
@@ -141,6 +146,7 @@ impl CrdtOp {
             CrdtOp::FileAvailability(op) => map_ts(op),
             CrdtOp::AniDbMetadata(op) => map_ts(op),
             CrdtOp::SeriesRelations(op) => map_ts(op),
+            CrdtOp::FileCatalog(op) => map_ts(op),
             CrdtOp::ListEntry(op) => map_ts(op),
             CrdtOp::ListNextEp(op) => map_ts(op),
             CrdtOp::PlaybackPosition(op) => map_ts(op),
@@ -165,6 +171,7 @@ impl CrdtOp {
             CrdtOp::FileAvailability(_) => "FileAvailability",
             CrdtOp::AniDbMetadata(_) => "AniDbMetadata",
             CrdtOp::SeriesRelations(_) => "SeriesRelations",
+            CrdtOp::FileCatalog(_) => "FileCatalog",
             CrdtOp::ListEntry(_) => "ListEntry",
             CrdtOp::ListNextEp(_) => "ListNextEp",
             CrdtOp::LookupRequest(_) => "LookupRequest",
@@ -247,6 +254,7 @@ impl CrdtState {
             CrdtOp::FileAvailability(op) => self.file_availability.apply(op),
             CrdtOp::AniDbMetadata(op) => self.anidb_metadata.apply(op),
             CrdtOp::SeriesRelations(op) => self.series_relations.apply(op),
+            CrdtOp::FileCatalog(op) => self.file_catalog.apply(op),
             CrdtOp::ListEntry(op) => self.list_entries.apply(op),
             CrdtOp::ListNextEp(op) => self.list_next_ep.apply(op),
             CrdtOp::LookupRequest(info) => self.lookup_requests.apply(info),
@@ -268,6 +276,7 @@ impl CrdtState {
         self.file_availability.merge(other.file_availability);
         self.anidb_metadata.merge(other.anidb_metadata);
         self.series_relations.merge(other.series_relations);
+        self.file_catalog.merge(other.file_catalog);
         self.list_entries.merge(other.list_entries);
         self.list_next_ep.merge(other.list_next_ep);
         self.lookup_requests.merge(other.lookup_requests);
@@ -427,6 +436,17 @@ impl CrdtState {
         ))
     }
 
+    /// Write a file's catalog identity. Server-only by convention.
+    pub fn set_file_catalog(
+        &mut self,
+        actor: ActorId,
+        ts: SharedTimestamp,
+        hash: Ed2kHash,
+        entry: FileCatalogEntry,
+    ) -> CrdtOp {
+        CrdtOp::FileCatalog(map_put(&mut self.file_catalog, actor, ts, hash, entry))
+    }
+
     /// Create or edit a List entry (whole-struct LWW).
     pub fn put_list_entry(
         &mut self,
@@ -496,6 +516,7 @@ impl CrdtState {
             file_availability: map_view(&self.file_availability),
             anidb_metadata: map_view(&self.anidb_metadata),
             series_relations: map_view(&self.series_relations),
+            file_catalog: map_view(&self.file_catalog),
             list_entries: map_view(&self.list_entries),
             list_next_ep: map_view(&self.list_next_ep),
             lookup_requests: self.lookup_requests.read(),
@@ -537,6 +558,7 @@ impl CrdtState {
             map_max(&self.file_availability),
             map_max(&self.anidb_metadata),
             map_max(&self.series_relations),
+            map_max(&self.file_catalog),
             map_max(&self.list_entries),
             map_max(&self.list_next_ep),
             map_max(&self.playback_position),
@@ -603,6 +625,7 @@ impl CrdtState {
             CrdtOp::FileAvailability(op) => guarded!(file_availability, op),
             CrdtOp::AniDbMetadata(op) => guarded!(anidb_metadata, op),
             CrdtOp::SeriesRelations(op) => guarded!(series_relations, op),
+            CrdtOp::FileCatalog(op) => guarded!(file_catalog, op),
             CrdtOp::ListEntry(op) => guarded!(list_entries, op),
             CrdtOp::ListNextEp(op) => guarded!(list_next_ep, op),
             CrdtOp::PlaybackPosition(op) => guarded!(playback_position, op),
@@ -643,6 +666,8 @@ pub struct StateView {
     pub anidb_metadata: BTreeMap<Ed2kHash, Option<AniDbMetadata>>,
     /// Franchise relations.
     pub series_relations: BTreeMap<AniDbSeriesId, SeriesRelations>,
+    /// File identities for the collective library (server-written).
+    pub file_catalog: BTreeMap<Ed2kHash, FileCatalogEntry>,
     /// The List.
     pub list_entries: BTreeMap<ListEntryId, SeriesListEntry>,
     /// List progress fields.
@@ -812,6 +837,28 @@ mod tests {
         let decoded: StateSnapshot = crate::wire::decode(&bytes).unwrap();
         assert_eq!(decoded, snapshot);
         assert_eq!(decoded.state.view(), state.view());
+    }
+
+    #[test]
+    fn file_catalog_resolves_by_lww_and_views() {
+        use crate::types::FileCatalogEntry;
+        let entry = |name: &str, size: u64| FileCatalogEntry {
+            filename: name.into(),
+            size_bytes: size,
+            duration_millis: None,
+        };
+        let mut r1 = CrdtState::new();
+        let mut r2 = CrdtState::new();
+        let op1 = r1.set_file_catalog(A1, ts(10), hash(1), entry("old.mkv", 1));
+        let op2 = r2.set_file_catalog(A2, ts(20), hash(1), entry("new.mkv", 2));
+        r1.apply(op2);
+        r2.apply(op1);
+        // Later timestamp wins, on both replicas.
+        assert_eq!(
+            r1.view().file_catalog.get(&hash(1)),
+            Some(&entry("new.mkv", 2))
+        );
+        assert_eq!(r1.view(), r2.view());
     }
 
     #[test]

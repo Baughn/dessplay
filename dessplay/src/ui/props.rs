@@ -377,9 +377,9 @@ pub fn franchise_rows(
 /// A human-readable label for a file in the episode browser. Prefers the
 /// playlist entry's filename (the real on-disk name); falls back to the
 /// AniDB metadata's "series — episode" when the file is known to AniDB
-/// but no longer in the playlist; only then to the raw hash. Without the
-/// metadata fallback, a looked-up-but-removed file renders as its bare
-/// ed2k hash.
+/// but not in the playlist; then to the file catalog's filename (a
+/// library file we don't hold, before metadata arrives); only then to the
+/// raw hash.
 pub fn episode_label(view: &StateView, hash: &Ed2kHash) -> String {
     if let Some(entry) = view.playlist.iter().find(|entry| entry.hash == *hash) {
         return entry.state.filename.clone();
@@ -389,6 +389,9 @@ pub fn episode_label(view: &StateView, hash: &Ed2kHash) -> String {
             Some(ep) => format!("{} — {}", metadata.series_name, ep),
             None => metadata.series_name.clone(),
         };
+    }
+    if let Some(entry) = view.file_catalog.get(hash) {
+        return entry.filename.clone();
     }
     hash.to_string()
 }

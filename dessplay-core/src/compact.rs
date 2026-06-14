@@ -76,6 +76,9 @@ pub fn rebuild(
     for (series, relations) in &view.series_relations {
         fresh.set_series_relations(actor, stamp(), *series, relations.clone());
     }
+    for (hash, entry) in &view.file_catalog {
+        fresh.set_file_catalog(actor, stamp(), *hash, entry.clone());
+    }
     for (id, entry) in &view.list_entries {
         fresh.put_list_entry(actor, stamp(), *id, entry.clone());
     }

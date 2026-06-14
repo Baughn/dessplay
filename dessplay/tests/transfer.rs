@@ -56,6 +56,7 @@ fn spawn_actor(name: &str, media_files: &[(&str, &[u8])]) -> Actor {
             clock: clock(),
             download: DownloadConfig::default(),
             upload_limit: None,
+            scan_interval: None,
         },
         cmd_rx,
         out_tx,

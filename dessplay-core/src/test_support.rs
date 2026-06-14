@@ -156,6 +156,11 @@ pub enum ScriptOp {
         /// Related series index.
         target: u8,
     },
+    /// Write a file catalog entry (server-style).
+    SetFileCatalog {
+        /// File index.
+        file: u8,
+    },
     /// Create or rewrite a List entry.
     PutListEntry {
         /// Entry index.
@@ -349,6 +354,16 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
             };
             state.set_series_relations(a, ts, series(*s), relations)
         }
+        ScriptOp::SetFileCatalog { file: f } => state.set_file_catalog(
+            a,
+            ts,
+            file(*f),
+            crate::types::FileCatalogEntry {
+                filename: format!("file{}.mkv", f % FILES),
+                size_bytes: 1_000_000 + (*f as u64),
+                duration_millis: None,
+            },
+        ),
         ScriptOp::PutListEntry {
             entry,
             status,

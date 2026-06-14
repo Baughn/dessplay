@@ -349,6 +349,49 @@ impl PlayerWiring {
         })]
     }
 
+    /// Request an AniDB lookup for `hash` if it still lacks metadata and
+    /// we haven't requested it this session. The server records the
+    /// file's identity (filename + size) in the broadcast file catalog
+    /// when it drains the request, so the file becomes addable group-wide.
+    fn maybe_request_lookup(
+        &mut self,
+        hash: Ed2kHash,
+        size: u64,
+        filename: &str,
+        view: &StateView,
+        out: &mut Vec<Directive>,
+    ) {
+        let missing = view
+            .anidb_metadata
+            .get(&hash)
+            .is_none_or(|meta| meta.is_none());
+        if missing && self.lookups_requested.insert(hash) {
+            out.push(Directive::Mutate(Mutation::RequestLookup {
+                info: dessplay_core::types::FileHashInfo {
+                    hash,
+                    size,
+                    filename: filename.to_string(),
+                },
+            }));
+        }
+    }
+
+    /// The media-library scan reported indexed files: request AniDB
+    /// lookups for any still lacking metadata. The scan re-reports
+    /// cache-hit files every pass, so this naturally re-arms; the
+    /// `lookups_requested` set keeps it from re-sending within a session.
+    pub fn on_library_indexed(
+        &mut self,
+        files: Vec<(Ed2kHash, u64, String)>,
+        view: &StateView,
+    ) -> Vec<Directive> {
+        let mut out = Vec::new();
+        for (hash, size, filename) in files {
+            self.maybe_request_lookup(hash, size, &filename, view, &mut out);
+        }
+        out
+    }
+
     /// React to a fresh state view + peer list.
     pub fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
         let mut out = Vec::new();
@@ -378,19 +421,13 @@ impl PlayerWiring {
         // replicated insert. Covers the adder going offline and the
         // request set being cleared at compaction.
         for entry in &view.playlist {
-            let missing = view
-                .anidb_metadata
-                .get(&entry.hash)
-                .is_none_or(|meta| meta.is_none());
-            if missing && self.lookups_requested.insert(entry.hash) {
-                out.push(Directive::Mutate(Mutation::RequestLookup {
-                    info: dessplay_core::types::FileHashInfo {
-                        hash: entry.hash,
-                        size: entry.state.size_bytes,
-                        filename: entry.state.filename.clone(),
-                    },
-                }));
-            }
+            self.maybe_request_lookup(
+                entry.hash,
+                entry.state.size_bytes,
+                &entry.state.filename,
+                view,
+                &mut out,
+            );
         }
 
         // The List's watchers sets: a linked series we're *not* watching
@@ -724,6 +761,33 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.note_local_file(hashed.root, done.path).await
     }
 
+    /// Add a file to the playlist by hash, taking its identity from the
+    /// synced file catalog. Unlike [`Self::hash_and_add`] the user need
+    /// not hold the file: the normal snapshot-driven resolve then marks
+    /// it Ready (we have it) or Missing → download (we don't). Returns a
+    /// local chat notice on failure (the catalog entry hasn't arrived —
+    /// no client has requested a lookup for this hash yet).
+    pub async fn add_by_hash(
+        &self,
+        hash: Ed2kHash,
+        after: Option<Ed2kHash>,
+        view: &StateView,
+    ) -> Option<String> {
+        match add_by_hash_mutation(&self.me, hash, after, view) {
+            Ok(mutation) => {
+                let _ = self
+                    .sync
+                    .send(crate::actors::sync::SyncCommand::Mutate(Box::new(mutation)))
+                    .await;
+                None
+            }
+            Err(notice) => {
+                tracing::info!(%hash, "add-by-hash: not in the file catalog yet");
+                Some(notice)
+            }
+        }
+    }
+
     /// Tell the file actor the media roots changed (settings save).
     pub async fn set_media_roots(&self, roots: Vec<PathBuf>) {
         let _ = self.file.send(FileCommand::SetMediaRoots(roots)).await;
@@ -1025,11 +1089,47 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                     text: archive_notice(view, file, &result),
                 }
             }
+            FileOutput::LibraryIndexed { files } => {
+                let directives = self.wiring.on_library_indexed(files, view);
+                self.execute(directives).await;
+                FileEffect::None
+            }
+            FileOutput::ScanProgress { done, total } => {
+                FileEffect::ScanProgress { done, total }
+            }
             // The remaining outputs are consumed by the bridge loop as
             // those features land (eviction notices).
             other => FileEffect::Other(other),
         }
     }
+}
+
+/// Build the playlist-add mutation for an add-by-hash, taking the file's
+/// identity from the synced catalog. `Err` (with a user notice) when the
+/// catalog has no entry yet — no client has requested a lookup for this
+/// hash, so we don't know its filename/size.
+fn add_by_hash_mutation(
+    me: &UserId,
+    hash: Ed2kHash,
+    after: Option<Ed2kHash>,
+    view: &StateView,
+) -> Result<Mutation, String> {
+    let entry = view
+        .file_catalog
+        .get(&hash)
+        .ok_or_else(|| "Can't add that yet — its file info hasn't synced.".to_string())?;
+    Ok(Mutation::AddPlaylistAfter {
+        anchor: after,
+        new: dessplay_core::playlist::NewPlaylistEntry {
+            hash,
+            added_by: me.clone(),
+            filename: entry.filename.clone(),
+            size_bytes: entry.size_bytes,
+            // Backfilled by the player's duration probe on first load (or
+            // carried by the catalog later).
+            duration_millis: entry.duration_millis,
+        },
+    })
 }
 
 /// The user-facing chat line for an archive result. Uses the playlist
@@ -1076,6 +1176,14 @@ pub enum FileEffect {
         timestamp: u64,
         /// Human-readable result ("Archived …" / "Archive failed …").
         text: String,
+    },
+    /// Media-library scan hashing progress (the no-silent-work rule):
+    /// the UI shows a transient one-line status while files are hashing.
+    ScanProgress {
+        /// Files hashed so far this scan.
+        done: usize,
+        /// Files needing a hash this scan.
+        total: usize,
     },
     /// An output not yet consumed by the shell.
     Other(FileOutput),
@@ -1159,6 +1267,80 @@ mod tests {
         // Unknown file (not in the playlist) falls back to the hash.
         let notice = archive_notice(&view, hash(9), &Ok("/x".into()));
         assert!(notice.starts_with("Archived "), "{notice}");
+    }
+
+    #[test]
+    fn add_by_hash_builds_from_catalog_and_fails_without_it() {
+        let mut state = CrdtState::new();
+        state.set_file_catalog(
+            A,
+            ts(1),
+            hash(5),
+            dessplay_core::types::FileCatalogEntry {
+                filename: "Frieren - 05.mkv".into(),
+                size_bytes: 700_000_000,
+                duration_millis: None,
+            },
+        );
+        let view = state.view();
+
+        // In the catalog: builds an AddPlaylistAfter with its identity.
+        match add_by_hash_mutation(&me(), hash(5), None, &view) {
+            Ok(Mutation::AddPlaylistAfter { anchor, new }) => {
+                assert_eq!(anchor, None);
+                assert_eq!(new.hash, hash(5));
+                assert_eq!(new.filename, "Frieren - 05.mkv");
+                assert_eq!(new.size_bytes, 700_000_000);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // Not in the catalog yet: a user-facing notice, no mutation.
+        assert!(add_by_hash_mutation(&me(), hash(9), None, &view).is_err());
+    }
+
+    /// The hashes a directive list asks the server to look up.
+    fn lookup_hashes(directives: &[Directive]) -> Vec<Ed2kHash> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::Mutate(Mutation::RequestLookup { info }) => Some(info.hash),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn library_index_requests_lookups_for_unknown_files_only() {
+        let mut state = CrdtState::new();
+        // hash(2) already has metadata; hash(1) and hash(3) don't.
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            hash(2),
+            Some(dessplay_core::types::AniDbMetadata {
+                source: dessplay_core::types::MetadataSource::AniDb,
+                series_name: "Known".into(),
+                series_id: Some(dessplay_core::types::AniDbSeriesId(7)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+
+        let files = vec![
+            (hash(1), 100, "a.mkv".to_string()),
+            (hash(2), 200, "b.mkv".to_string()),
+            (hash(3), 300, "c.mkv".to_string()),
+        ];
+        let out = wiring.on_library_indexed(files.clone(), &view);
+        // hash(2) is skipped (already has metadata); the rest are requested.
+        assert_eq!(lookup_hashes(&out), vec![hash(1), hash(3)]);
+
+        // Re-reporting the same batch (every scan does) requests nothing
+        // new — the per-session dedup holds.
+        let again = wiring.on_library_indexed(files, &view);
+        assert!(lookup_hashes(&again).is_empty());
     }
 
     #[test]

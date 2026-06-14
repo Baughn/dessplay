@@ -54,6 +54,9 @@ fn log_action(action: &UserAction) {
         UserAction::HashAndAdd { path, .. } => {
             tracing::debug!(path = %path.display(), "user action: HashAndAdd");
         }
+        UserAction::AddByHash { hash, .. } => {
+            tracing::debug!(%hash, "user action: AddByHash");
+        }
         UserAction::SaveSettings(..) => tracing::debug!("user action: SaveSettings"),
         UserAction::AniDbSearch { query } => {
             tracing::debug!(%query, "user action: AniDbSearch");
@@ -551,6 +554,16 @@ impl Ui {
                 let after =
                     after.or_else(|| self.snapshot.view.playlist.last().map(|entry| entry.hash));
                 Some(UserAction::HashAndAdd { path, after })
+            }
+            Msg::EpisodeChosen { hash } => {
+                self.pop_modal();
+                self.sync_focus_attr();
+                // Already queued? Don't re-add (it would just reorder).
+                if self.snapshot.view.playlist.iter().any(|e| e.hash == hash) {
+                    return None;
+                }
+                let after = self.snapshot.view.playlist.last().map(|entry| entry.hash);
+                Some(UserAction::AddByHash { hash, after })
             }
             Msg::OpenDirPicker => {
                 self.push_modal(Modal::Files(FileBrowser::for_directory()));

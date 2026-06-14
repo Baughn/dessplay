@@ -47,6 +47,7 @@ pub fn arb_script_op() -> impl Strategy<Value = ScriptOp> {
         }),
         (any::<u8>(), any::<u8>())
             .prop_map(|(series, target)| ScriptOp::SetRelations { series, target }),
+        any::<u8>().prop_map(|file| ScriptOp::SetFileCatalog { file }),
         (any::<u8>(), any::<u8>(), any::<u8>()).prop_map(|(entry, status, note)| {
             ScriptOp::PutListEntry {
                 entry,

@@ -42,6 +42,12 @@ pub enum Msg {
     /// Open the file browser to add after this entry (`None` = append
     /// from the [Add New] row, which anchors to the end).
     AddFileAfter(Option<Ed2kHash>),
+    /// Episode browser: add this file (by hash) to the playlist. The file
+    /// may or may not be held locally; if not, it downloads.
+    EpisodeChosen {
+        /// The chosen file's ed2k hash.
+        hash: Ed2kHash,
+    },
     /// Move the selected entry after its successor (down).
     MoveDown(Ed2kHash),
     /// Move the selected entry before its predecessor (up).
@@ -112,6 +118,7 @@ impl Msg {
             Msg::ToggleAway(_) => "ToggleAway",
             Msg::PlaySelected(_) => "PlaySelected",
             Msg::AddFileAfter(_) => "AddFileAfter",
+            Msg::EpisodeChosen { .. } => "EpisodeChosen",
             Msg::MoveDown(_) => "MoveDown",
             Msg::MoveUp(_) => "MoveUp",
             Msg::RemoveEntry(_) => "RemoveEntry",
@@ -142,6 +149,14 @@ pub enum UserAction {
     HashAndAdd {
         /// File path.
         path: PathBuf,
+        /// Anchor entry; `None` = append at the end.
+        after: Option<Ed2kHash>,
+    },
+    /// Add a file to the playlist by hash, using the synced file catalog
+    /// for its identity (the user may not hold it locally).
+    AddByHash {
+        /// The file's ed2k hash.
+        hash: Ed2kHash,
         /// Anchor entry; `None` = append at the end.
         after: Option<Ed2kHash>,
     },

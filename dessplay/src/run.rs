@@ -204,6 +204,24 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
     })
 }
 
+/// Load the persisted CRDT snapshot, tolerating a codec failure. The
+/// local snapshot is only a startup optimisation — the client adopts the
+/// authoritative server snapshot on connect — so a blob we can no longer
+/// decode (e.g. a CRDT schema change between versions) must never brick
+/// startup: drop it and re-sync. Non-codec storage errors still propagate.
+fn load_state_tolerant(
+    storage: &Storage,
+) -> Result<Option<dessplay_core::StateSnapshot>, String> {
+    match storage.load_state() {
+        Ok(snapshot) => Ok(snapshot),
+        Err(crate::storage::StorageError::Codec(e)) => {
+            tracing::warn!("discarding unreadable stored state ({e}); re-syncing from server");
+            Ok(None)
+        }
+        Err(e) => Err(format!("loading stored state: {e}")),
+    }
+}
+
 /// Run the headless client until Ctrl-C. Errors are human-readable —
 /// `main()` just prints them.
 pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
@@ -224,9 +242,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
         };
         let sync_storage =
             Storage::open(&path).map_err(|e| format!("opening {}: {e}", path.display()))?;
-        let initial = sync_storage
-            .load_state()
-            .map_err(|e| format!("loading stored state: {e}"))?;
+        let initial = load_state_tolerant(&sync_storage)?;
         (initial, Some(sync_storage))
     };
 
@@ -511,9 +527,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     let setup = prepare(&args).await?;
     let sync_storage =
         Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
-    let initial = sync_storage
-        .load_state()
-        .map_err(|e| format!("loading stored state: {e}"))?;
+    let initial = load_state_tolerant(&sync_storage)?;
     let handle = spawn_client(
         Arc::clone(&setup.connector),
         ClientConfig {
@@ -554,6 +568,8 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                 ..crate::download::DownloadConfig::default()
             },
             upload_limit: settings.upload_limit,
+            // Interactive clients re-scan the library about once a minute.
+            scan_interval: Some(std::time::Duration::from_secs(60)),
         },
         handle.sync.clone(),
         handle.network.clone(),
@@ -692,6 +708,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // here once starved this loop — frozen UI,
                             // unprocessable Quit (2026-06-12).
                             self.shell.hash_and_add(path, after).await;
+                        }
+                        Some(UserAction::AddByHash { hash, after }) => {
+                            if let Some(text) =
+                                self.shell.add_by_hash(hash, after, &last_view).await
+                            {
+                                let _ = self.ui.try_send(UiInput::System {
+                                    timestamp: (system_clock())(),
+                                    text,
+                                });
+                            }
                         }
                         Some(UserAction::AniDbSearch { query }) => {
                             let _ = self
@@ -848,6 +874,24 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             if let Some(snapshot) = self.snapshot().await {
                                 last_view = snapshot.view.clone();
                                 let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                            }
+                        }
+                        crate::session::FileEffect::ScanProgress { done, total } => {
+                            // No-silent-work: a one-line notice at the
+                            // start and end of a scan that has work to do
+                            // (a quiet, all-cache-hit rescan emits nothing).
+                            let text = if done == 0 {
+                                format!("Indexing media library ({total} new file(s))…")
+                            } else if done == total {
+                                format!("Library indexed ({total} file(s)).")
+                            } else {
+                                String::new()
+                            };
+                            if !text.is_empty() {
+                                let _ = self.ui.try_send(UiInput::System {
+                                    timestamp: (system_clock())(),
+                                    text,
+                                });
                             }
                         }
                         crate::session::FileEffect::None

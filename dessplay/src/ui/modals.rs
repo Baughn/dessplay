@@ -715,13 +715,23 @@ impl AppComponent<Msg, NoUserEvent> for EpisodeBrowser {
                 Some(Msg::None)
             }
             Key::Enter => {
-                if self.open.is_none() && !self.seasons.is_empty() {
-                    self.open = Some(self.sel);
-                    self.sel = 0;
+                match self.open {
+                    // On the season list: open the selected season.
+                    None => {
+                        if !self.seasons.is_empty() {
+                            self.open = Some(self.sel);
+                            self.sel = 0;
+                        }
+                        Some(Msg::None)
+                    }
+                    // On an episode: add it to the playlist by hash. If we
+                    // hold the file it resolves Ready; if not, it's added
+                    // from the file catalog and downloads.
+                    Some(index) => match self.seasons[index].episodes.get(self.sel) {
+                        Some((hash, _)) => Some(Msg::EpisodeChosen { hash: *hash }),
+                        None => Some(Msg::None),
+                    },
                 }
-                // Enter on an episode adds it once local-file knowledge
-                // exists (Phase 9).
-                Some(Msg::None)
             }
             Key::Backspace => {
                 if self.open.take().is_some() {
@@ -1046,5 +1056,61 @@ impl AppComponent<Msg, NoUserEvent> for ListEditModal {
             Key::Esc => Some(Msg::CloseModal),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use tuirealm::event::{KeyEvent, KeyModifiers};
+
+    use super::*;
+
+    fn enter() -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code: Key::Enter,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn hash(i: u8) -> Ed2kHash {
+        Ed2kHash([i; 16])
+    }
+
+    #[test]
+    fn enter_opens_season_then_chooses_episode() {
+        let seasons = vec![
+            Season {
+                title: "S1".into(),
+                episodes: vec![(hash(1), "ep1".into())],
+            },
+            Season {
+                title: "S2".into(),
+                episodes: vec![(hash(2), "ep2".into())],
+            },
+        ];
+        let mut browser = EpisodeBrowser::new("Frieren".into(), seasons);
+        // Two seasons: starts on the season list; Enter opens season 0.
+        assert_eq!(browser.on(&enter()), Some(Msg::None));
+        // Now on the episode list; Enter chooses the selected episode.
+        assert_eq!(
+            browser.on(&enter()),
+            Some(Msg::EpisodeChosen { hash: hash(1) })
+        );
+    }
+
+    #[test]
+    fn single_season_chooses_episode_directly() {
+        let seasons = vec![Season {
+            title: "S1".into(),
+            episodes: vec![(hash(7), "ep".into())],
+        }];
+        let mut browser = EpisodeBrowser::new("X".into(), seasons);
+        // Single-season shortcut opens episodes immediately; Enter chooses.
+        assert_eq!(
+            browser.on(&enter()),
+            Some(Msg::EpisodeChosen { hash: hash(7) })
+        );
     }
 }

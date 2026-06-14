@@ -20,7 +20,8 @@ use std::time::Duration;
 
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
-    AniDbMetadata, AniDbSeriesId, Ed2kHash, MetadataSource, SeriesRelation, SeriesRelations,
+    AniDbMetadata, AniDbSeriesId, Ed2kHash, FileCatalogEntry, MetadataSource, SeriesRelation,
+    SeriesRelations,
 };
 
 use super::client::{AniDbApi, LookupError};
@@ -56,6 +57,13 @@ pub trait AniDbHost: Send + Sync + 'static {
         series: AniDbSeriesId,
         relations: SeriesRelations,
     ) -> impl Future<Output = ()> + Send;
+    /// Server-authored file-catalog write (file identity for the
+    /// collective library).
+    fn write_catalog(
+        &self,
+        hash: Ed2kHash,
+        entry: FileCatalogEntry,
+    ) -> impl Future<Output = ()> + Send;
     /// Run a closure over the server storage; `None` if the server is
     /// running storageless (the worker then has no queue and idles).
     fn with_storage<R>(&self, f: impl FnOnce(&mut ServerStorage) -> R) -> Option<R>;
@@ -73,6 +81,7 @@ pub async fn run<H: AniDbHost>(host: H, api: Arc<dyn AniDbApi>, titles: Arc<dyn 
         let now = host.now();
         refresh_titles_if_due(&host, &titles, now, &mut titles_due).await;
         seed_queues(&host, now);
+        populate_catalog(&host).await;
         match step(&host, &*api, now).await {
             Ok(true) => {} // did work; the client paces the next send
             Ok(false) => {
@@ -134,6 +143,29 @@ fn seed_queues<H: AniDbHost>(host: &H, now: u64) {
         }
         Ok(())
     });
+}
+
+/// Record file identity (filename + size) for every lookup request not
+/// yet in the catalog, so a client that has never held the file can add
+/// it to the playlist and download it. Write-if-absent: requests re-arm
+/// after compaction, but the catalog persists, so we never rewrite an
+/// existing entry (which would spam ops and clobber a filled duration).
+async fn populate_catalog<H: AniDbHost>(host: &H) {
+    let view = host.view();
+    for info in &view.lookup_requests {
+        if view.file_catalog.contains_key(&info.hash) {
+            continue;
+        }
+        host.write_catalog(
+            info.hash,
+            FileCatalogEntry {
+                filename: info.filename.clone(),
+                size_bytes: info.size,
+                duration_millis: None,
+            },
+        )
+        .await;
+    }
 }
 
 /// Series ids referenced anywhere that don't have relations yet.
@@ -423,6 +455,12 @@ mod tests {
             });
         }
 
+        async fn write_catalog(&self, hash: Ed2kHash, entry: FileCatalogEntry) {
+            self.mutate(|state, ts| {
+                state.set_file_catalog(ActorId::SERVER, ts, hash, entry);
+            });
+        }
+
         fn with_storage<R>(&self, f: impl FnOnce(&mut ServerStorage) -> R) -> Option<R> {
             self.storage.lock().unwrap().as_mut().map(f)
         }
@@ -559,6 +597,52 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         let api: Arc<dyn AniDbApi> = Arc::new(Arc::clone(api));
         tokio::spawn(run(Arc::clone(host), api, titles))
+    }
+
+    #[tokio::test]
+    async fn lookup_request_populates_catalog() {
+        // Draining a lookup request records the file's identity in the
+        // catalog, so a client without the file can still add it.
+        let host = MockHost::new();
+        request(&host, 1, "Frieren - 01.mkv");
+        populate_catalog(&host).await;
+        let entry = host.view().file_catalog.get(&hash(1)).cloned();
+        assert_eq!(
+            entry,
+            Some(FileCatalogEntry {
+                filename: "Frieren - 01.mkv".into(),
+                size_bytes: 1001,
+                duration_millis: None,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn populate_catalog_is_write_if_absent() {
+        // Requests re-arm after compaction, but the catalog persists; a
+        // re-arm must not rewrite an existing entry (which would clobber
+        // a filled duration and spam ops).
+        let host = MockHost::new();
+        request(&host, 1, "Frieren - 01.mkv");
+        populate_catalog(&host).await;
+        // Simulate a later duration fill.
+        host.mutate(|state, ts| {
+            state.set_file_catalog(
+                ActorId::SERVER,
+                ts,
+                hash(1),
+                FileCatalogEntry {
+                    filename: "Frieren - 01.mkv".into(),
+                    size_bytes: 1001,
+                    duration_millis: Some(1_440_000),
+                },
+            );
+        });
+        // Re-arm the request and populate again.
+        request(&host, 1, "Frieren - 01.mkv");
+        populate_catalog(&host).await;
+        let entry = host.view().file_catalog.get(&hash(1)).cloned().unwrap();
+        assert_eq!(entry.duration_millis, Some(1_440_000));
     }
 
     #[tokio::test(start_paused = true)]

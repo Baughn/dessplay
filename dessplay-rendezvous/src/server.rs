@@ -22,8 +22,8 @@ use dessplay_core::net::{
 };
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
-    ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, NextEpState, PlaybackIntent,
-    SeekAuthority, SeriesRelations, SharedTimestamp, UserId,
+    ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, FileCatalogEntry, NextEpState,
+    PlaybackIntent, SeekAuthority, SeriesRelations, SharedTimestamp, UserId,
 };
 use dessplay_core::wire;
 use dessplay_core::{CrdtOp, CrdtState, StateSnapshot};
@@ -334,6 +334,12 @@ impl<T: Transport> AniDbHost for SharedHost<T> {
             .server_write(move |state, actor, ts| {
                 state.set_series_relations(actor, ts, series, relations)
             })
+            .await;
+    }
+
+    async fn write_catalog(&self, hash: Ed2kHash, entry: FileCatalogEntry) {
+        self.0
+            .server_write(move |state, actor, ts| state.set_file_catalog(actor, ts, hash, entry))
             .await;
     }
 

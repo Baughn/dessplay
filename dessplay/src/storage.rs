@@ -840,6 +840,27 @@ mod tests {
     }
 
     #[test]
+    fn undecodable_snapshot_blob_is_a_codec_error() {
+        // A blob the current CrdtState can't decode (e.g. a CRDT schema
+        // change between versions) must surface as a Codec error, so the
+        // client's tolerant loader can drop it and re-sync rather than
+        // brick startup. We simulate it with a garbage blob.
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO crdt_state (room, epoch, state, saved_at)
+                 VALUES ('default', 1, ?1, 0)",
+                [&b"not a valid postcard CrdtState"[..]],
+            )
+            .unwrap();
+        assert!(matches!(
+            storage.load_state(),
+            Err(StorageError::Codec(_))
+        ));
+    }
+
+    #[test]
     fn media_roots_keep_order() {
         let mut storage = Storage::open_in_memory().unwrap();
         assert!(storage.media_roots().unwrap().is_empty());

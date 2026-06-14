@@ -23,9 +23,9 @@ use std::time::Duration;
 use dessplay_core::net::ServerControl;
 use dessplay_core::playlist::NewPlaylistEntry;
 use dessplay_core::types::{
-    ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, FileAvailability, FileHashInfo,
-    ListEntryId, ManualState, NextEpState, PlaybackIntent, PlaybackPosition, SeekAuthority,
-    SeriesListEntry, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, FileAvailability, FileCatalogEntry,
+    FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent, PlaybackPosition,
+    SeekAuthority, SeriesListEntry, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
 };
 use dessplay_core::{ChatMessage, CrdtOp, CrdtState, StateSnapshot, StateView};
 use tokio::sync::{mpsc, oneshot};
@@ -122,6 +122,13 @@ pub enum Mutation {
         /// Its relations.
         relations: SeriesRelations,
     },
+    /// Write a file's catalog identity (server-side use).
+    SetFileCatalog {
+        /// The file.
+        hash: Ed2kHash,
+        /// Its identity.
+        entry: FileCatalogEntry,
+    },
     /// Create or edit a List entry.
     PutListEntry {
         /// Entry id.
@@ -178,6 +185,7 @@ impl Mutation {
             Mutation::SetFileAvailability { .. } => "SetFileAvailability",
             Mutation::SetAniDbMetadata { .. } => "SetAniDbMetadata",
             Mutation::SetSeriesRelations { .. } => "SetSeriesRelations",
+            Mutation::SetFileCatalog { .. } => "SetFileCatalog",
             Mutation::PutListEntry { .. } => "PutListEntry",
             Mutation::SetNextEp { .. } => "SetNextEp",
             Mutation::RequestLookup { .. } => "RequestLookup",
@@ -517,6 +525,9 @@ impl SyncActor {
             Mutation::SetSeriesRelations { series, relations } => self
                 .state
                 .set_series_relations(actor, ts, series, relations),
+            Mutation::SetFileCatalog { hash, entry } => {
+                self.state.set_file_catalog(actor, ts, hash, entry)
+            }
             Mutation::PutListEntry { id, entry } => self.state.put_list_entry(actor, ts, id, entry),
             Mutation::SetNextEp { id, next_ep } => self.state.set_next_ep(actor, ts, id, next_ep),
             Mutation::RequestLookup { info } => self.state.request_lookup(info),

@@ -33,6 +33,10 @@ pub struct SeederTransfer {
     resolve_kicked: HashSet<Ed2kHash>,
     /// Resolution outcome per entry: `true` = have it (servable).
     have: HashMap<Ed2kHash, bool>,
+    /// Library hashes we've already requested AniDB lookups for (the
+    /// seeder contributes its library to the group's catalog; dedup so
+    /// each hash is requested once per session).
+    lookups_requested: HashSet<Ed2kHash>,
 }
 
 impl SeederTransfer {
@@ -56,6 +60,7 @@ impl SeederTransfer {
             network,
             resolve_kicked: HashSet::new(),
             have: HashMap::new(),
+            lookups_requested: HashSet::new(),
         };
         (transfer, file_outputs)
     }
@@ -125,8 +130,28 @@ impl SeederTransfer {
                 // The actor already emits Availability::Ready; nothing
                 // more to do (no player to load into).
             }
-            // Hashing/series/placeholder/archive/eviction outputs don't
-            // arise for a seeder's resolve-and-fetch flow.
+            FileOutput::LibraryIndexed { files } => {
+                // The seeder contributes its library to the group's
+                // browsable catalog: request a lookup for each new hash
+                // (the server dedups against existing metadata/queue and
+                // records the file's identity).
+                for (hash, size, filename) in files {
+                    if self.lookups_requested.insert(hash) {
+                        let _ = self
+                            .sync
+                            .send(SyncCommand::Mutate(Box::new(Mutation::RequestLookup {
+                                info: dessplay_core::types::FileHashInfo {
+                                    hash,
+                                    size,
+                                    filename,
+                                },
+                            })))
+                            .await;
+                    }
+                }
+            }
+            // Hashing/series/placeholder/archive/eviction/scan-progress
+            // outputs don't drive a seeder's resolve-and-fetch flow.
             _ => {}
         }
     }
@@ -166,7 +191,9 @@ impl SeederTransfer {
 /// Build the seeder's [`FileConfig`]: retention is `infinite` and the
 /// hash cache persists in `storage`. Prior downloads are re-discovered
 /// at startup by the file actor's cache reconciliation (the cache is
-/// hash-addressed and resolved by hash) — no media-root scan needed.
+/// hash-addressed and resolved by hash). It also scans its media roots
+/// once a day, contributing its (large, stable) library to the group's
+/// browsable catalog (design.md, Seeder Behavior).
 pub fn seeder_file_config(
     storage: crate::storage::Storage,
     media_roots: Vec<PathBuf>,
@@ -182,5 +209,7 @@ pub fn seeder_file_config(
         clock,
         download: crate::download::DownloadConfig::default(),
         upload_limit,
+        // A seeder's store is large and stable: scan daily, not minutely.
+        scan_interval: Some(std::time::Duration::from_secs(24 * 60 * 60)),
     }
 }

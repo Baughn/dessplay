@@ -279,6 +279,22 @@ pub struct AniDbMetadata {
     pub episode_number: Option<String>,
 }
 
+/// Server-written file identity, recorded from a lookup request so a client
+/// that has never held the file can still construct a playlist entry for it
+/// (and download it). Distinct from [`AniDbMetadata`], which is AniDB's
+/// classification of the file; this is just what the file *is*.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct FileCatalogEntry {
+    /// Original filename, from the lookup request.
+    pub filename: String,
+    /// File size in bytes, from the lookup request.
+    pub size_bytes: u64,
+    /// `None` until an owner reports it or it downloads; the playlist entry's
+    /// own duration backfill on first load is what currently drives the
+    /// bitrate unpause rule, so this stays reserved for now.
+    pub duration_millis: Option<u64>,
+}
+
 /// AniDB relation edge types (see the UDP API's ANIME relation codes).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub enum RelationKind {

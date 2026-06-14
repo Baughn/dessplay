@@ -146,6 +146,10 @@ pub enum FileCommand {
     SetMediaRoots(Vec<PathBuf>),
     /// Retention policy changed (settings save).
     SetRetention(CacheRetention),
+    /// Scan the media library now (new/changed files → hashes → index).
+    /// Fired internally at startup and on a timer; also exposed for a
+    /// manual refresh and for tests.
+    RescanLibrary,
 
     // ---- File transfer (Phase 9B).
     /// Begin (or refresh) downloading `file` from `sources`. Idempotent;
@@ -209,6 +213,22 @@ pub enum FileOutput {
         /// The evicted files.
         files: Vec<Ed2kHash>,
     },
+    /// A batch of indexed library files (hash, size, filename), from the
+    /// media-library scan. The session inserts AniDB lookup requests for
+    /// any that still lack metadata. Emitted incrementally: cache hits
+    /// up front, then one per file as it finishes hashing.
+    LibraryIndexed {
+        /// Newly-known files: (ed2k root, size in bytes, filename).
+        files: Vec<(Ed2kHash, u64, String)>,
+    },
+    /// Library-scan hashing progress (the no-silent-work rule). Emitted
+    /// while files are being hashed; `done == total` marks the end.
+    ScanProgress {
+        /// Files hashed so far this scan.
+        done: usize,
+        /// Files needing a hash this scan.
+        total: usize,
+    },
 
     // ---- File transfer (Phase 9B).
     /// Relay a file-transfer message to a peer (chunk request/data,
@@ -254,6 +274,10 @@ pub struct FileConfig {
     pub download: DownloadConfig,
     /// Upload rate cap, bytes/sec (`None` = unlimited).
     pub upload_limit: Option<u64>,
+    /// How often to scan the media library for new/changed files (and
+    /// at startup). `None` disables scanning entirely (tests). Interactive
+    /// clients use ~60s; a seeder, whose store is large and stable, ~24h.
+    pub scan_interval: Option<std::time::Duration>,
 }
 
 /// Completions from blocking subtasks.
@@ -273,6 +297,32 @@ enum Done {
         file: Ed2kHash,
         result: std::io::Result<PathBuf>,
     },
+    /// A media-library walk finished: files already in the hash cache
+    /// (known hashes) plus a worklist of files needing a hash.
+    LibraryWalk {
+        /// Cache hits: (root, size, filename) — known immediately.
+        hits: Vec<(Ed2kHash, u64, String)>,
+        /// Files to hash (new or changed since last scan).
+        worklist: std::collections::VecDeque<ScanItem>,
+    },
+    /// One library-scan file finished hashing.
+    LibraryHashed {
+        /// The file that was hashed.
+        item: ScanItem,
+        /// Its hash, or why not.
+        result: std::io::Result<Ed2kFileHash>,
+    },
+}
+
+/// A media-root file the scan needs to hash (cache miss or changed).
+#[derive(Clone, Debug)]
+pub struct ScanItem {
+    /// Absolute path.
+    path: PathBuf,
+    /// Modification time in unix millis (hash-cache validity key).
+    mtime: i64,
+    /// Display/match filename (the path's final component).
+    filename: String,
 }
 
 /// Run the actor until the command channel closes.
@@ -282,6 +332,9 @@ pub async fn run(
     out: mpsc::Sender<FileOutput>,
 ) {
     let (done_tx, mut done_rx) = mpsc::channel::<Done>(64);
+    // Captured before `config` moves into the actor.
+    let scan_interval = config.scan_interval;
+    let scan_enabled = scan_interval.is_some();
     let mut actor = match Actor::new(config, out, done_tx) {
         Ok(actor) => actor,
         Err(e) => {
@@ -292,6 +345,11 @@ pub async fn run(
     // Drives snub detection, pipeline refill, and serve-queue draining.
     let mut tick = tokio::time::interval(DOWNLOAD_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Media-library scan: the first tick fires immediately (startup scan),
+    // then every `scan_interval`. Disabled (guarded off) when `None`.
+    let mut scan_tick =
+        tokio::time::interval(scan_interval.unwrap_or(std::time::Duration::from_secs(3600)));
+    scan_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             cmd = commands.recv() => {
@@ -306,6 +364,9 @@ pub async fn run(
             }
             _ = tick.tick() => {
                 actor.on_tick().await;
+            }
+            _ = scan_tick.tick(), if scan_enabled => {
+                actor.start_library_scan();
             }
         }
     }
@@ -339,6 +400,17 @@ struct Actor {
     /// Last shared-clock millis we wrote a `Downloading` progress
     /// update, per file (≤1/s throttle).
     last_progress_at: HashMap<Ed2kHash, u64>,
+    /// Library-scan files still awaiting a hash (FIFO, one at a time).
+    scan_worklist: std::collections::VecDeque<ScanItem>,
+    /// Whether a scan-hash is currently running (caps scan hashing at one
+    /// at a time so the initial whole-library hash is a background trickle
+    /// that never starves interactive resolves/adds on the blocking pool).
+    scan_hashing: bool,
+    /// Whether a library walk is queued/running (avoids overlapping walks).
+    scan_walking: bool,
+    /// Files hashed / total this scan, for `ScanProgress`.
+    scan_done: usize,
+    scan_total: usize,
     out: mpsc::Sender<FileOutput>,
     done_tx: mpsc::Sender<Done>,
 }
@@ -422,6 +494,11 @@ impl Actor {
             serve_queue: std::collections::VecDeque::new(),
             upload: UploadLimiter::new(config.upload_limit),
             last_progress_at: HashMap::new(),
+            scan_worklist: std::collections::VecDeque::new(),
+            scan_hashing: false,
+            scan_walking: false,
+            scan_done: 0,
+            scan_total: 0,
             out,
             done_tx,
         })
@@ -473,8 +550,13 @@ impl Actor {
                 protected,
                 group_watched,
             } => self.run_eviction(&protected, &group_watched).await,
-            FileCommand::SetMediaRoots(roots) => self.media_roots = roots,
+            FileCommand::SetMediaRoots(roots) => {
+                self.media_roots = roots;
+                // New roots may hold files we've never indexed.
+                self.start_library_scan();
+            }
             FileCommand::SetRetention(retention) => self.retention = retention,
+            FileCommand::RescanLibrary => self.start_library_scan(),
             FileCommand::StartDownload {
                 file,
                 size_bytes,
@@ -510,6 +592,48 @@ impl Actor {
     /// The cache path a download assembles into.
     fn download_path(&self, file: Ed2kHash) -> PathBuf {
         self.cache_dir.join(file.to_string())
+    }
+
+    /// Kick off a media-library scan: walk the roots in the background,
+    /// turning up new/changed video files to hash. Skips if a walk is
+    /// already queued/running (overlapping walks would duplicate work).
+    fn start_library_scan(&mut self) {
+        if self.scan_walking {
+            return;
+        }
+        self.scan_walking = true;
+        let roots = self.media_roots.clone();
+        let cache = Arc::clone(&self.hash_cache);
+        let done_tx = self.done_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
+            let (hits, worklist) = scan_library(&roots, &cache);
+            tracing::debug!(
+                hits = hits.len(),
+                to_hash = worklist.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "library walk finished"
+            );
+            let _ = done_tx.blocking_send(Done::LibraryWalk { hits, worklist });
+        });
+    }
+
+    /// Hash the next worklist file, if any and none is already in flight.
+    /// One at a time, so the initial whole-library hash is a background
+    /// trickle that never floods the blocking pool.
+    fn pump_library_scan(&mut self) {
+        if self.scan_hashing {
+            return;
+        }
+        let Some(item) = self.scan_worklist.pop_front() else {
+            return;
+        };
+        self.scan_hashing = true;
+        let done_tx = self.done_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = std::fs::File::open(&item.path).and_then(ed2k_hash_reader);
+            let _ = done_tx.blocking_send(Done::LibraryHashed { item, result });
+        });
     }
 
     /// Route an incoming peer message: serve-side requests are answered
@@ -789,6 +913,58 @@ impl Actor {
                 }
                 Err(e) => tracing::error!("placeholder render failed: {e}"),
             },
+            Done::LibraryWalk { hits, worklist } => {
+                self.scan_walking = false;
+                // Cache hits are known immediately.
+                if !hits.is_empty() {
+                    let _ = self
+                        .out
+                        .send(FileOutput::LibraryIndexed { files: hits })
+                        .await;
+                }
+                self.scan_worklist = worklist;
+                self.scan_total = self.scan_worklist.len();
+                self.scan_done = 0;
+                if self.scan_total > 0 {
+                    tracing::info!(to_hash = self.scan_total, "indexing media library");
+                    let _ = self
+                        .out
+                        .send(FileOutput::ScanProgress {
+                            done: 0,
+                            total: self.scan_total,
+                        })
+                        .await;
+                    self.pump_library_scan();
+                }
+            }
+            Done::LibraryHashed { item, result } => {
+                self.scan_hashing = false;
+                self.scan_done += 1;
+                match result {
+                    Ok(hashed) => {
+                        let root = hashed.root;
+                        let size = hashed.size_bytes;
+                        self.commit_fresh_hashes(vec![(item.path.clone(), item.mtime, hashed)]);
+                        let _ = self
+                            .out
+                            .send(FileOutput::LibraryIndexed {
+                                files: vec![(root, size, item.filename)],
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::debug!(path = %item.path.display(), "library scan hash failed: {e}");
+                    }
+                }
+                let _ = self
+                    .out
+                    .send(FileOutput::ScanProgress {
+                        done: self.scan_done,
+                        total: self.scan_total,
+                    })
+                    .await;
+                self.pump_library_scan();
+            }
         }
     }
 
@@ -1244,6 +1420,83 @@ fn candidate_root(
     }
 }
 
+/// Video container extensions the library scan considers. A whole-library
+/// scan must not hash `.nfo`/`.jpg`/subtitle files: they'd waste IO and
+/// pollute the catalog and AniDB lookup set with junk.
+const VIDEO_EXTENSIONS: &[&str] = &[
+    "mkv", "mp4", "avi", "mov", "webm", "ts", "m4v", "wmv", "flv", "mpg", "mpeg", "ogm", "m2ts",
+];
+
+/// Whether `path` looks like a video file (case-insensitive extension).
+fn is_video_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .is_some_and(|ext| VIDEO_EXTENSIONS.contains(&ext.as_str()))
+}
+
+/// Walk every media root, classifying each video file as a hash-cache hit
+/// (a known root, returned immediately) or a worklist item (new or
+/// changed since the last scan, needing a hash). Mirrors `find_by_name`'s
+/// breadth-first, symlink-skipping walk, but visits every video file.
+fn scan_library(
+    roots: &[PathBuf],
+    cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>,
+) -> (
+    Vec<(Ed2kHash, u64, String)>,
+    std::collections::VecDeque<ScanItem>,
+) {
+    let mut hits = Vec::new();
+    let mut worklist = std::collections::VecDeque::new();
+    for root in roots {
+        let mut queue = std::collections::VecDeque::from([root.clone()]);
+        while let Some(dir) = queue.pop_front() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::debug!(dir = %dir.display(), "unreadable directory: {e}");
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    queue.push_back(path);
+                    continue;
+                }
+                if !file_type.is_file() || !is_video_file(&path) {
+                    continue;
+                }
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                let Some(mtime) = mtime_millis(&metadata) else {
+                    continue;
+                };
+                let filename = entry.file_name().to_string_lossy().into_owned();
+                match cache.get(&path) {
+                    // Unchanged since we hashed it: trust the cache.
+                    Some((cached_mtime, hash))
+                        if *cached_mtime == mtime && hash.size_bytes == metadata.len() =>
+                    {
+                        hits.push((hash.root, hash.size_bytes, filename));
+                    }
+                    // New or changed: needs a (re)hash.
+                    _ => worklist.push_back(ScanItem {
+                        path,
+                        mtime,
+                        filename,
+                    }),
+                }
+            }
+        }
+    }
+    (hits, worklist)
+}
+
 /// Every file named exactly `filename` under the roots, in breadth-first
 /// root order. Symlinked directories are skipped (cycle safety).
 fn find_by_name(filename: &str, roots: &[PathBuf]) -> Vec<PathBuf> {
@@ -1545,6 +1798,8 @@ mod tests {
                 clock: test_clock(),
                 download: DownloadConfig::default(),
                 upload_limit: None,
+                // No timer-driven scan in tests; drive via RescanLibrary.
+                scan_interval: None,
             },
             cmd_rx,
             out_tx,
@@ -2094,5 +2349,96 @@ mod tests {
             other => panic!("unexpected output: {other:?}"),
         }
         assert!(!behind_path.exists());
+    }
+
+    // ---- media-library scan.
+
+    /// Build an in-memory hash-cache map keyed by `path`, trusting the
+    /// file's current mtime (so the entry counts as a cache hit).
+    fn cache_of(path: &Path, contents: &[u8]) -> HashMap<PathBuf, (i64, Ed2kFileHash)> {
+        let mtime = mtime_millis(&std::fs::metadata(path).unwrap()).unwrap();
+        HashMap::from([(path.to_path_buf(), (mtime, ed2k_hash_bytes(contents)))])
+    }
+
+    #[test]
+    fn scan_library_classifies_hits_worklist_and_skips_non_video() {
+        let root = tempfile::tempdir().unwrap();
+        let video = write(root.path(), "Frieren/ep1.mkv", b"episode one");
+        // Junk files must never be hashed or indexed.
+        write(root.path(), "Frieren/poster.jpg", b"jpeg");
+        write(root.path(), "Frieren/ep1.nfo", b"<nfo/>");
+
+        // Empty cache: the video needs hashing, the junk is ignored.
+        let (hits, worklist) = scan_library(&[root.path().to_path_buf()], &HashMap::new());
+        assert!(hits.is_empty());
+        assert_eq!(worklist.len(), 1);
+        assert_eq!(worklist[0].path, video);
+        assert_eq!(worklist[0].filename, "ep1.mkv");
+
+        // With the video already cached (matching mtime/size) it's a hit,
+        // not re-hashed.
+        let cache = cache_of(&video, b"episode one");
+        let (hits, worklist) = scan_library(&[root.path().to_path_buf()], &cache);
+        assert!(worklist.is_empty());
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, ed2k_hash_bytes(b"episode one").root);
+        assert_eq!(hits[0].2, "ep1.mkv");
+    }
+
+    #[test]
+    fn scan_library_rehashes_a_changed_file() {
+        let root = tempfile::tempdir().unwrap();
+        let video = write(root.path(), "ep1.mkv", b"episode one");
+        // Cache row records a *different* mtime than the file now has.
+        let stale_mtime = mtime_millis(&std::fs::metadata(&video).unwrap()).unwrap() - 5_000;
+        let cache = HashMap::from([(video.clone(), (stale_mtime, ed2k_hash_bytes(b"episode one")))]);
+        let (hits, worklist) = scan_library(&[root.path().to_path_buf()], &cache);
+        assert!(hits.is_empty(), "stale mtime must not count as a hit");
+        assert_eq!(worklist.len(), 1);
+        assert_eq!(worklist[0].path, video);
+    }
+
+    /// Drain outputs until a `LibraryIndexed` carrying `wanted` arrives.
+    async fn await_indexed(rig: &mut Rig, wanted: Ed2kHash) {
+        for _ in 0..50 {
+            if let FileOutput::LibraryIndexed { files } = next_output(rig).await
+                && files.iter().any(|(h, _, _)| *h == wanted)
+            {
+                return;
+            }
+        }
+        panic!("never saw {wanted} indexed");
+    }
+
+    #[tokio::test]
+    async fn rescan_indexes_video_files_end_to_end() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"episode one".as_slice();
+        write(root.path(), "Frieren/ep1.mkv", contents);
+        write(root.path(), "Frieren/ep1.nfo", b"junk");
+        let expected = ed2k_hash_bytes(contents).root;
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+
+        rig.commands
+            .send(FileCommand::RescanLibrary)
+            .await
+            .unwrap();
+        await_indexed(&mut rig, expected).await;
+
+        // The scan persisted the hash; a fresh connection sees it (so the
+        // next scan is a cache hit, not a re-hash).
+        let check = Storage::open(&db_path).unwrap();
+        let cached = check.hash_cache().unwrap();
+        assert!(cached.iter().any(|row| row.hash.root == expected));
+        // The .nfo was never hashed.
+        assert!(cached.iter().all(|row| row.path.extension().unwrap() == "mkv"));
     }
 }
