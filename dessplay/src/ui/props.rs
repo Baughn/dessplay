@@ -958,7 +958,7 @@ mod tests {
     /// the labels in order.
     fn sorted_labels(items: &[(Option<&str>, &str)]) -> Vec<String> {
         let mut items = items.to_vec();
-        items.sort_by(|a, b| episode_sort_key(a.0, a.1).cmp(&episode_sort_key(b.0, b.1)));
+        items.sort_by_key(|a| episode_sort_key(a.0, a.1));
         items.into_iter().map(|(_, label)| label.to_string()).collect()
     }
 
