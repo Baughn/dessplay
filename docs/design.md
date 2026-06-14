@@ -197,6 +197,12 @@ Their ready state is decided by a combination of the above; this only exists in 
 | Downloading | Green | Ready & Downloading [complete enough to play] |
 | Downloading | Blue | Any & Downloading |
 
+An in-progress download is the salient fact: a peer actively downloading
+the now-playing file reads as **Downloading** even if their derived state
+is Not Watching (it must not be shadowed by a settled "not watching"
+label). Paused and Away still win -- a blocker, or a deliberate choice,
+is what the others need to see.
+
 Departed users (see [Presence](#presence)) are shown on a dim "departed" line.
 Seeders are not listed as users; they appear on a separate dim "seeders:" line.
 
@@ -208,12 +214,23 @@ how many users are connected.
 - **On join**: User State starts as Ready or Paused (depending on "Ready on startup"
   setting); File State depends on whether the file was found locally
 - **Missing file (unknown series)**: User State -> Not Watching; File State -> Missing;
-  placeholder text loaded into player
+  placeholder text loaded into player. *Suppressed when the file is
+  obtainable* -- if a present peer (typically the seeder) advertises the
+  file Ready, it downloads instead of writing a sticky Not Watching, and
+  the placeholder shows while it arrives. (A residual race -- the source's
+  Ready not yet synced when the decision fires -- can still set Not
+  Watching once; the Downloading display masks it and Ctrl-R clears it.)
 - **Missing file (known series)**: File State -> Missing (blocks playback)
 - **Missing file (downloading enabled)**: File State -> Downloading; placeholder is
   updated with download progress
 - **Manual pause** (in player): Manual override -> Paused
 - **Attempt unpause** (in player): Manual override -> None; unpauses if all users permit
+- **Mark ready / unready** (`Ctrl-R`, global): toggles your own readiness
+  without touching the Users pane. Marking ready clears your manual
+  override, latches playback intent Playing, **and** flips the
+  now-playing series back to Watching if it was marked Not Watching --
+  the only path to undo an auto- (or self-) Not Watching. Marking unready
+  pauses (manual override Paused, intent Paused).
 - **Marked Away** (by another user): Manual override -> Away; cleared by any
   input from the marked user's client
 - **Mark "not watching"** on series: Series preference updated; clears "missing from
@@ -533,6 +550,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | Key | Context | Action |
 |-----|---------|--------|
 | `Ctrl-C` | Any | Quit |
+| `Ctrl-R` | Any | Toggle your own ready/unready (and mark yourself watching the current series) |
 | `Tab` | Any | Cycle focus: Chat -> Series -> Users -> Playlist -> Chat |
 | `F2` | Any | Toggle subtitle pane |
 | `Enter` | Chat | Send message (or execute `/command`) |

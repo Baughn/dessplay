@@ -7,9 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use dessplay_core::StateView;
+use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::franchise::{self, FranchiseKey};
 use dessplay_core::net::PeerInfo;
-use dessplay_core::types::{AniDbSeriesId, Ed2kHash, ManualState, UserId};
+use dessplay_core::types::{
+    AniDbSeriesId, Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId,
+};
 use tuirealm::component::AppComponent;
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute};
@@ -383,6 +386,19 @@ impl Ui {
             tracing::debug!("user action: Quit (Ctrl-C)");
             return vec![UserAction::Quit];
         }
+        if let Event::Keyboard(KeyEvent {
+            code: Key::Char('r'),
+            modifiers,
+        }) = &ev
+            && *modifiers == KeyModifiers::CONTROL
+        {
+            tracing::debug!("user action: ToggleSelfReady (Ctrl-R)");
+            let actions = self.toggle_self_ready();
+            for action in &actions {
+                log_action(action);
+            }
+            return actions;
+        }
         if self.modals.is_empty() {
             match super::components::plain(&ev) {
                 Some(Key::Tab) => {
@@ -419,6 +435,54 @@ impl Ui {
         }
         self.refresh_keybar();
         action.into_iter().collect()
+    }
+
+    /// Ctrl-R: toggle our own readiness. Mirrors the player's
+    /// pause/unpause writes (session.rs `on_player`) and doubles as the
+    /// only way to mark yourself *watching* again — clearing a series
+    /// NotWatching that was auto-set (or chosen) for the now-playing
+    /// show, which has no other UI path.
+    fn toggle_self_ready(&self) -> Vec<UserAction> {
+        let view = &self.snapshot.view;
+        let me = self.me.clone();
+        if derive::user_state(view, &me) == DerivedUserState::Ready {
+            // Become unready: like pressing pause.
+            return vec![
+                UserAction::Mutate(Mutation::SetManualOverride {
+                    user: me,
+                    state: Some(ManualState::Paused),
+                }),
+                UserAction::Mutate(Mutation::SetPlaybackIntent {
+                    intent: PlaybackIntent::Paused,
+                }),
+            ];
+        }
+        // Become ready: like pressing play ("I'm ready, go"). Clear any
+        // manual override and latch Playing.
+        let mut actions = vec![
+            UserAction::Mutate(Mutation::SetManualOverride {
+                user: me.clone(),
+                state: None,
+            }),
+            UserAction::Mutate(Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Playing,
+            }),
+        ];
+        // If the now-playing series is marked NotWatching for us, flip it
+        // back to Watching so the derived state actually reaches Ready.
+        if let Some(file) = view.now_playing
+            && let Some(Some(metadata)) = view.anidb_metadata.get(&file)
+            && let Some(series) = metadata.series_id
+            && view.series_preference.get(&(me.clone(), series))
+                == Some(&SeriesWatchState::NotWatching)
+        {
+            actions.push(UserAction::Mutate(Mutation::SetSeriesPreference {
+                user: me,
+                series,
+                pref: SeriesWatchState::Watching,
+            }));
+        }
+        actions
     }
 
     /// The Elm update: messages become internal changes or actions.
@@ -836,5 +900,132 @@ impl Ui {
     /// Current settings (the shell persists them on save).
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use dessplay_core::state::CrdtState;
+    use dessplay_core::types::{ActorId, AniDbMetadata, MetadataSource, SharedTimestamp};
+
+    const A: ActorId = ActorId::SERVER;
+
+    fn me() -> UserId {
+        UserId::new("kim")
+    }
+
+    fn ui_with_view(view: StateView) -> Ui {
+        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
+        ui.snapshot.view = view;
+        ui
+    }
+
+    fn mutations(actions: &[UserAction]) -> Vec<&Mutation> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                UserAction::Mutate(m) => Some(m),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A now-playing file whose series (id 7) the given user marked
+    /// NotWatching — the auto-set state with no other UI escape hatch.
+    fn not_watching_state(user: &UserId) -> StateView {
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(
+            A,
+            SharedTimestamp(1),
+            dessplay_core::playlist::NewPlaylistEntry {
+                hash: Ed2kHash([1; 16]),
+                added_by: UserId::new("baughn"),
+                filename: "ep1.mkv".into(),
+                size_bytes: 1,
+                duration_millis: None,
+            },
+        );
+        state.set_now_playing(A, SharedTimestamp(2), Some(Ed2kHash([1; 16])));
+        state.set_playback_intent(A, SharedTimestamp(3), PlaybackIntent::Paused);
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(4),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show".into(),
+                series_id: Some(AniDbSeriesId(7)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        state.set_series_preference(
+            A,
+            SharedTimestamp(5),
+            user.clone(),
+            AniDbSeriesId(7),
+            SeriesWatchState::NotWatching,
+        );
+        state.view()
+    }
+
+    #[test]
+    fn ctrl_r_marks_watching_and_readies_when_not_watching() {
+        let ui = ui_with_view(not_watching_state(&me()));
+        let actions = ui.toggle_self_ready();
+        let muts = mutations(&actions);
+        // Clears the manual override...
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetManualOverride { state: None, .. }
+        )));
+        // ...latches Playing...
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Playing
+            }
+        )));
+        // ...and flips the series back to Watching (the escape hatch).
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetSeriesPreference {
+                series: AniDbSeriesId(7),
+                pref: SeriesWatchState::Watching,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn ctrl_r_pauses_when_ready() {
+        // No override and no NotWatching pref -> derived state is Ready.
+        let mut state = CrdtState::new();
+        state.set_now_playing(A, SharedTimestamp(1), Some(Ed2kHash([1; 16])));
+        state.set_playback_intent(A, SharedTimestamp(2), PlaybackIntent::Playing);
+        let ui = ui_with_view(state.view());
+        let actions = ui.toggle_self_ready();
+        let muts = mutations(&actions);
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetManualOverride {
+                state: Some(ManualState::Paused),
+                ..
+            }
+        )));
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Paused
+            }
+        )));
+        // Ready -> unready never touches series preferences.
+        assert!(
+            !muts
+                .iter()
+                .any(|m| matches!(m, Mutation::SetSeriesPreference { .. }))
+        );
     }
 }

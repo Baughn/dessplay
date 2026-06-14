@@ -219,6 +219,28 @@ impl PlayerWiring {
     /// are needed. Each download is idempotent in the file actor; sources
     /// are present peers (interactive or seeder) advertising the file
     /// Ready. Watched/already-local entries are skipped.
+    /// Present peers (not us) advertising `file` Ready — the sources a
+    /// download can pull from. Used both to start downloads and to
+    /// decide a missing file is obtainable (so it downloads rather than
+    /// flipping us to NotWatching).
+    fn download_sources(
+        &self,
+        view: &StateView,
+        peers: &[PeerInfo],
+        file: Ed2kHash,
+    ) -> Vec<dessplay_core::net::PeerId> {
+        peers
+            .iter()
+            .filter(|p| {
+                p.username != self.me
+                    && p.presence == dessplay_core::net::Presence::Present
+                    && view.file_availability.get(&(p.username.clone(), file))
+                        == Some(&FileAvailability::Ready)
+            })
+            .map(|p| p.username.clone())
+            .collect()
+    }
+
     fn plan_download(&self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
         let Some(now) = view.now_playing else {
             return vec![];
@@ -236,16 +258,7 @@ impl PlayerWiring {
             {
                 continue;
             }
-            let sources: Vec<dessplay_core::net::PeerId> = peers
-                .iter()
-                .filter(|p| {
-                    p.username != self.me
-                        && p.presence == dessplay_core::net::Presence::Present
-                        && view.file_availability.get(&(p.username.clone(), file))
-                            == Some(&FileAvailability::Ready)
-                })
-                .map(|p| p.username.clone())
-                .collect();
+            let sources = self.download_sources(view, peers, file);
             if sources.is_empty() {
                 continue;
             }
@@ -292,6 +305,23 @@ impl PlayerWiring {
             .contains_key(&(self.me.clone(), series))
         {
             return vec![];
+        }
+        // Obtainable from a peer (e.g. the seeder)? Then it will
+        // download — don't write a sticky NotWatching; just show the
+        // placeholder while it arrives. (Residual race: if the source's
+        // Ready hasn't synced when this fires we may still write
+        // NotWatching once; the Users-pane downloading display masks it
+        // and Ctrl-r clears it.)
+        if !self.download_sources(view, peers, file).is_empty() {
+            tracing::debug!(aid = series.0, "missing file is downloadable; not marking NotWatching");
+            let mut out = vec![];
+            if view.now_playing == Some(file) {
+                out.push(Directive::RenderPlaceholder {
+                    file,
+                    lines: placeholder_lines(view, peers, file),
+                });
+            }
+            return out;
         }
         tracing::info!(aid = series.0, "missing file from an unknown series; marking NotWatching");
         let mut out = vec![Directive::Mutate(Mutation::SetSeriesPreference {
@@ -483,13 +513,23 @@ impl PlayerWiring {
         }
 
         // Re-assert the derived playback state; the actor dedups.
+        // `self.loaded` only ever names the real verified now-playing
+        // video — a placeholder is never "now-playing" by this measure,
+        // which is exactly why it must not be told to play. When the
+        // loaded file is *not* the now-playing one (now-playing switched
+        // to something we don't hold, so a stale frame or placeholder is
+        // on screen), force pause: never resume the wrong file.
         let active = derive::playback_active(view, peers);
+        let showing_now_playing = self.loaded.is_some() && self.loaded == view.now_playing;
         if self.loaded.is_some() {
-            out.push(Directive::Player(PlayerCommand::SetPlaying(active)));
+            out.push(Directive::Player(PlayerCommand::SetPlaying(
+                showing_now_playing && active,
+            )));
         }
 
-        // Follow the seek authority's position (never our own).
-        if self.loaded.is_some()
+        // Follow the seek authority's position (never our own). Only when
+        // the real now-playing video is what's loaded.
+        if showing_now_playing
             && let Some(SeekAuthority::User(authority)) = &view.seek_authority
             && *authority != self.me
             && let Some(position) = view.playback_position.get(authority)
@@ -1919,6 +1959,71 @@ mod tests {
         // They chose to watch: no auto-NotWatching, and no placeholder
         // (they block legitimately on the missing file).
         assert!(directives.is_empty());
+    }
+
+    #[test]
+    fn downloadable_missing_file_is_not_auto_not_watching() {
+        // Bug 1b: a missing/unknown-series file that a present peer (the
+        // seeder) advertises Ready is obtainable — it should download,
+        // not flip us to a sticky NotWatching. We still show a
+        // placeholder while it arrives.
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        state.set_file_availability(
+            A,
+            ts(40),
+            UserId::new("nas"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_series_known(
+            hash(1),
+            Some(dessplay_core::types::AniDbSeriesId(7)),
+            false, // unknown
+            &view,
+            &[peer("kim"), peer("nas")],
+        );
+        assert!(
+            series_pref_writes(&directives).is_empty(),
+            "a downloadable file must not be auto-NotWatching: {directives:?}"
+        );
+        assert!(has_placeholder(&directives));
+    }
+
+    #[test]
+    fn unpause_does_not_resume_a_stale_file_after_now_playing_changes() {
+        // Bug 2: once now-playing switches to a file we don't hold, the
+        // previously-loaded real video must be held paused — not resumed
+        // when the group unpauses.
+        let mut state = playing_state();
+        state.push_playlist_entry(A, ts(4), entry(2, "ep2.mkv"));
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        // ep1 resolves and loads as the real video.
+        wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            &view,
+            &[peer("kim")],
+        );
+        // Now-playing switches to ep2, which we don't have.
+        state.set_now_playing(A, ts(5), Some(hash(2)));
+        let view = state.view();
+        let directives = wiring.on_state(&view, &[peer("kim")]);
+        let cmds = player_cmds(&directives);
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, PlayerCommand::SetPlaying(false))),
+            "the stale ep1 must be held paused: {cmds:?}"
+        );
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| matches!(c, PlayerCommand::SetPlaying(true))),
+            "must not resume stale ep1 while ep2 is now-playing: {cmds:?}"
+        );
     }
 
     #[test]

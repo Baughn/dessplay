@@ -73,26 +73,38 @@ pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
                 tone: Tone::Blocked,
             }),
             Presence::Present => {
-                let (label, tone) = match derive::user_state(view, &peer.username) {
+                let state = derive::user_state(view, &peer.username);
+                // An in-progress download is the salient fact even for a
+                // NotWatching peer (design.md Ready States: "Downloading
+                // | Any & Downloading") — it must not read as a settled
+                // "not watching". Paused/Away are explicit states that
+                // win (a blocker / a deliberate choice is what matters).
+                let (label, tone) = match state {
                     DerivedUserState::Paused => ("paused".to_string(), Tone::Blocked),
                     DerivedUserState::Away { set_by } => {
                         (format!("away, set by {set_by}"), Tone::Idle)
                     }
-                    DerivedUserState::NotWatching => ("not watching".to_string(), Tone::Idle),
-                    DerivedUserState::Ready => match availability(view, &peer.username) {
-                        None | Some(FileAvailability::Ready) => ("ready".to_string(), Tone::Good),
-                        Some(FileAvailability::Missing) => {
-                            ("missing file".to_string(), Tone::Blocked)
-                        }
-                        Some(FileAvailability::Downloading { progress_bps }) => {
-                            let label = format!("downloading {}%", progress_bps / 100);
-                            if progress_bps >= 2_000 {
-                                (label, Tone::Good)
-                            } else {
-                                (label, Tone::Transfer)
+                    DerivedUserState::Ready | DerivedUserState::NotWatching => {
+                        match availability(view, &peer.username) {
+                            Some(FileAvailability::Downloading { progress_bps }) => {
+                                let label = format!("downloading {}%", progress_bps / 100);
+                                if progress_bps >= 2_000 {
+                                    (label, Tone::Good)
+                                } else {
+                                    (label, Tone::Transfer)
+                                }
+                            }
+                            _ if state == DerivedUserState::NotWatching => {
+                                ("not watching".to_string(), Tone::Idle)
+                            }
+                            None | Some(FileAvailability::Ready) => {
+                                ("ready".to_string(), Tone::Good)
+                            }
+                            Some(FileAvailability::Missing) => {
+                                ("missing file".to_string(), Tone::Blocked)
                             }
                         }
-                    },
+                    }
                 };
                 props.rows.push(UserRow { name, label, tone });
             }
@@ -575,7 +587,8 @@ mod tests {
     use dessplay_core::CrdtState;
     use dessplay_core::playlist::NewPlaylistEntry;
     use dessplay_core::types::{
-        ActorId, ManualState, PlaybackIntent, SeriesListEntry, SharedTimestamp,
+        ActorId, AniDbMetadata, AniDbSeriesId, ManualState, MetadataSource, PlaybackIntent,
+        SeriesListEntry, SeriesWatchState, SharedTimestamp,
     };
 
     const A: ActorId = ActorId::SERVER;
@@ -664,6 +677,47 @@ mod tests {
         assert_eq!(by_name["ghost"].label, "lost");
         assert_eq!(props.departed, vec!["gone"]);
         assert_eq!(props.seeders, vec!["nas"]);
+    }
+
+    #[test]
+    fn downloading_peer_reads_as_downloading_even_when_not_watching() {
+        // Bug 1a: an in-progress download must not be shadowed by a
+        // NotWatching state (design.md Ready States: "Downloading |
+        // Any & Downloading").
+        let mut state = CrdtState::new();
+        state.set_now_playing(A, ts(1), Some(hash(1)));
+        state.set_anidb_metadata(
+            A,
+            ts(2),
+            hash(1),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show".into(),
+                series_id: Some(AniDbSeriesId(7)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        state.set_series_preference(
+            A,
+            ts(3),
+            UserId::new("ndl"),
+            AniDbSeriesId(7),
+            SeriesWatchState::NotWatching,
+        );
+        state.set_file_availability(
+            A,
+            ts(4),
+            UserId::new("ndl"),
+            hash(1),
+            FileAvailability::Downloading {
+                progress_bps: 1_500,
+            },
+        );
+        let peers = [peer("ndl", Role::Interactive, Presence::Present)];
+        let props = users_props(&state.view(), &peers);
+        let row = &props.rows[0];
+        assert_eq!(row.label, "downloading 15%");
+        assert_eq!(row.tone, Tone::Transfer);
     }
 
     #[test]
