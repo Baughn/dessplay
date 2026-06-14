@@ -964,13 +964,14 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.handle.sync.send(SyncCommand::GetView(tx)).await.ok()?;
         let view = rx.await.ok()?;
-        let recency = self
-            .storage
-            .recent_watched(500)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|record| Some((record.series_id?, record.watched_at as u64)))
-            .collect();
+        // Recency map for Recent Series: series id -> newest watch time,
+        // with the series id taken from the *current* metadata view (a file
+        // is often watched before its AniDB metadata arrives). See
+        // [`crate::ui::props::watch_recency`].
+        let recency = crate::ui::props::watch_recency(
+            &self.storage.recent_watched(500).unwrap_or_default(),
+            &view,
+        );
         let cache_hashes = self
             .storage
             .cache_entries()

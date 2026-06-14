@@ -349,6 +349,39 @@ pub struct ListGroup {
     pub collapsed: bool,
 }
 
+/// Recent Series recency: AniDB series id -> newest local watch time
+/// (shared-clock millis), built from personal watch history.
+///
+/// The series id is resolved from the *current* metadata `view` (keyed by
+/// file hash), **not** the id frozen into the watch record: a file is
+/// often watched (85%) before its AniDB metadata arrives, so the stored id
+/// is null. Without this live join the just-watched series never appears
+/// in Recent Series. The stored id is used only as a fallback (e.g. the
+/// view has since dropped the metadata entry). Files whose series is still
+/// unknown — no id anywhere — are skipped; Recent is franchise-keyed and
+/// franchises are series-id based.
+pub fn watch_recency(
+    records: &[crate::storage::WatchRecord],
+    view: &StateView,
+) -> BTreeMap<AniDbSeriesId, u64> {
+    let mut recency: BTreeMap<AniDbSeriesId, u64> = BTreeMap::new();
+    for record in records {
+        let series_id = view
+            .anidb_metadata
+            .get(&record.hash)
+            .and_then(|m| m.as_ref())
+            .and_then(|m| m.series_id)
+            .or(record.series_id);
+        let Some(series_id) = series_id else { continue };
+        let watched_at = record.watched_at as u64;
+        recency
+            .entry(series_id)
+            .and_modify(|t| *t = (*t).max(watched_at))
+            .or_insert(watched_at);
+    }
+    recency
+}
+
 /// Franchise rows for the Recent / All modes. `recency` is `Some` only in
 /// Recent mode and maps series to last-watched shared-clock millis (from
 /// local watch history); a franchise's recency is the newest watch among
@@ -1050,6 +1083,63 @@ mod tests {
         assert_eq!(titles(&all), vec!["Akira", "Monogatari", "Monster"]);
         let mono = franchise_rows(&state.view(), SeriesSort::Title, None, "mon");
         assert_eq!(titles(&mono), vec!["Monogatari", "Monster"]);
+    }
+
+    fn watched_meta(state: &mut CrdtState, h: u8, id: u32) {
+        use dessplay_core::types::{AniDbMetadata, MetadataSource};
+        state.set_anidb_metadata(
+            A,
+            ts(h as u64),
+            hash(h),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: format!("series-{id}"),
+                series_id: Some(AniDbSeriesId(id)),
+                episode_number: Some("1".into()),
+            }),
+        );
+    }
+
+    fn watch_record(h: u8, watched_at: i64) -> crate::storage::WatchRecord {
+        crate::storage::WatchRecord {
+            hash: hash(h),
+            // Frozen null: the file was watched before metadata arrived.
+            series_id: None,
+            series_name: None,
+            filename: format!("ep{h}.mkv"),
+            watched_at,
+        }
+    }
+
+    /// Regression: a file watched *before* its AniDB metadata arrived is
+    /// stored with a null series id. Recency must recover the series from
+    /// the current metadata view (by hash), or Recent Series stays empty
+    /// even though the episode is clearly watched (2026-06-14).
+    #[test]
+    fn watch_recency_resolves_series_from_live_metadata() {
+        let mut state = CrdtState::new();
+        watched_meta(&mut state, 1, 7);
+        let recency = watch_recency(&[watch_record(1, 100)], &state.view());
+        assert_eq!(recency.get(&AniDbSeriesId(7)), Some(&100));
+    }
+
+    /// Multiple episodes of one series collapse to the newest watch time.
+    #[test]
+    fn watch_recency_keeps_newest_per_series() {
+        let mut state = CrdtState::new();
+        watched_meta(&mut state, 1, 7);
+        watched_meta(&mut state, 2, 7);
+        // recent_watched yields newest-first; order must not matter.
+        let recency = watch_recency(&[watch_record(2, 250), watch_record(1, 100)], &state.view());
+        assert_eq!(recency.get(&AniDbSeriesId(7)), Some(&250));
+    }
+
+    /// Still no series id anywhere (metadata absent) -> skipped, not panic.
+    #[test]
+    fn watch_recency_skips_files_with_no_known_series() {
+        let state = CrdtState::new();
+        let recency = watch_recency(&[watch_record(1, 100)], &state.view());
+        assert!(recency.is_empty());
     }
 
     proptest::proptest! {
