@@ -308,6 +308,35 @@ pub enum RelationKind {
     Other(u16),
 }
 
+impl RelationKind {
+    /// Whether this edge places both series in the *same franchise*.
+    ///
+    /// Structural edges describe one continuous work — a sequel/prequel
+    /// chain, a remake, or a spin-off/recap that branches off the main
+    /// story. Non-structural edges (shared setting, shared characters,
+    /// music videos, and AniDB's catch-all crossover code) link
+    /// *related but separate* works: e.g. Isekai Quartet relates to
+    /// Overlord, KonoSuba and Re:Zero via the crossover code, but those
+    /// are four distinct franchises. Grouping on those edges collapses
+    /// every crossover-linked show into one giant component.
+    pub fn groups_franchise(self) -> bool {
+        match self {
+            RelationKind::Sequel
+            | RelationKind::Prequel
+            | RelationKind::AlternativeVersion
+            | RelationKind::SideStory
+            | RelationKind::ParentStory
+            | RelationKind::Summary
+            | RelationKind::FullStory => true,
+            RelationKind::SameSetting
+            | RelationKind::AlternativeSetting
+            | RelationKind::MusicVideo
+            | RelationKind::Character
+            | RelationKind::Other(_) => false,
+        }
+    }
+}
+
 /// One related-anime edge.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct SeriesRelation {

@@ -374,6 +374,25 @@ pub fn franchise_rows(
     rows.into_iter().map(|(_, row)| row).collect()
 }
 
+/// A human-readable label for a file in the episode browser. Prefers the
+/// playlist entry's filename (the real on-disk name); falls back to the
+/// AniDB metadata's "series — episode" when the file is known to AniDB
+/// but no longer in the playlist; only then to the raw hash. Without the
+/// metadata fallback, a looked-up-but-removed file renders as its bare
+/// ed2k hash.
+pub fn episode_label(view: &StateView, hash: &Ed2kHash) -> String {
+    if let Some(entry) = view.playlist.iter().find(|entry| entry.hash == *hash) {
+        return entry.state.filename.clone();
+    }
+    if let Some(Some(metadata)) = view.anidb_metadata.get(hash) {
+        return match &metadata.episode_number {
+            Some(ep) => format!("{} — {}", metadata.series_name, ep),
+            None => metadata.series_name.clone(),
+        };
+    }
+    hash.to_string()
+}
+
 /// The List, grouped per design: Watching (CurrentSeason + Active)
 /// first, then ShortList, Planned, Waiting, Hiatus, and a collapsed
 /// Finished / Dropped tail.
@@ -657,5 +676,49 @@ mod tests {
     fn hhmm_is_utc() {
         assert_eq!(hhmm(0), "00:00");
         assert_eq!(hhmm(13 * 3_600_000 + 37 * 60_000 + 12_345), "13:37");
+    }
+
+    /// The episode browser must not show a bare ed2k hash. A file in the
+    /// playlist shows its filename; a file known to AniDB but no longer
+    /// in the playlist (its metadata register persists) shows
+    /// "series — episode"; only a truly unknown file falls back to the
+    /// hash. Regression for the "Niwatori Fighter, named by hash" report.
+    #[test]
+    fn episode_label_prefers_filename_then_metadata_then_hash() {
+        use dessplay_core::types::{AniDbMetadata, AniDbSeriesId, MetadataSource};
+
+        let mut state = CrdtState::new();
+        // hash(1): in the playlist -> its on-disk filename.
+        state.push_playlist_entry(A, ts(1), entry(1, "Niwatori - 01.mkv"));
+        // hash(2): known to AniDB, absent from the playlist -> "name — ep".
+        state.set_anidb_metadata(
+            A,
+            ts(2),
+            hash(2),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Niwatori Fighter".into(),
+                series_id: Some(AniDbSeriesId(18772)),
+                episode_number: Some("01".into()),
+            }),
+        );
+        // hash(3): metadata with no episode number -> just the name.
+        state.set_anidb_metadata(
+            A,
+            ts(3),
+            hash(3),
+            Some(AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: "Mystery Show".into(),
+                series_id: None,
+                episode_number: None,
+            }),
+        );
+        let view = state.view();
+        assert_eq!(episode_label(&view, &hash(1)), "Niwatori - 01.mkv");
+        assert_eq!(episode_label(&view, &hash(2)), "Niwatori Fighter — 01");
+        assert_eq!(episode_label(&view, &hash(3)), "Mystery Show");
+        // hash(4): totally unknown -> the raw hash is the only fallback.
+        assert_eq!(episode_label(&view, &hash(4)), hash(4).to_string());
     }
 }

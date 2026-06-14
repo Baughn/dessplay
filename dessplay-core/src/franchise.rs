@@ -72,7 +72,14 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
     for (series, relations) in &view.series_relations {
         find(&mut parent, *series);
         for relation in &relations.relations {
-            union(&mut parent, *series, relation.target);
+            // Only structural edges (sequel chains, remakes, spin-offs)
+            // merge franchises; crossover/shared-universe edges link
+            // separate works and would otherwise collapse them all into
+            // one component (e.g. Isekai Quartet -> every show it crosses
+            // over). See `RelationKind::groups_franchise`.
+            if relation.kind.groups_franchise() {
+                union(&mut parent, *series, relation.target);
+            }
         }
     }
     // Series known only through file metadata still form (singleton)
@@ -292,5 +299,99 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].title, "Lonely");
         assert_eq!(groups[0].key, FranchiseKey::Series(AniDbSeriesId(7)));
+    }
+
+    /// Regression (real AniDB data): a crossover anime like Isekai
+    /// Quartet relates to Overlord, KonoSuba, Re:Zero and Youjo Senki via
+    /// the "Other"/crossover relation code. Those are four independent
+    /// franchises; the crossover must not collapse them into one giant
+    /// component. Before the structural-only filter this merged all four.
+    #[test]
+    fn crossover_does_not_merge_franchises() {
+        let mut state = CrdtState::new();
+        let a = ActorId::SERVER;
+        // Four standalone shows, each its own franchise.
+        for (i, (id, name, year)) in [
+            (10816, "Overlord", 2015),
+            (11261, "KonoSuba", 2016),
+            (11370, "Re:Zero", 2016),
+            (11905, "Youjo Senki", 2017),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            state.set_series_relations(
+                a,
+                ts(i as u64 + 1),
+                AniDbSeriesId(id),
+                relations(name, Some(year), &[]),
+            );
+        }
+        // The crossover, linked to all four via the crossover code (100).
+        state.set_series_relations(
+            a,
+            ts(10),
+            AniDbSeriesId(14435),
+            relations(
+                "Isekai Quartet",
+                Some(2019),
+                &[
+                    (RelationKind::Other(100), 10816),
+                    (RelationKind::Other(100), 11261),
+                    (RelationKind::Other(100), 11370),
+                    (RelationKind::Other(100), 11905),
+                ],
+            ),
+        );
+
+        let groups = franchises(&state.view());
+        // Four standalone shows + the crossover, all separate.
+        assert_eq!(groups.len(), 5, "{groups:#?}");
+        for f in &groups {
+            assert_eq!(f.series.len(), 1, "no franchise should absorb others: {f:#?}");
+        }
+    }
+
+    /// Spec: only *structural* relation kinds (sequel/prequel chains,
+    /// alternative versions, side/parent/summary/full stories) place two
+    /// series in the same franchise. Setting/character/music-video and
+    /// the catch-all crossover code link related-but-separate works and
+    /// must not group. One edge of each kind, between two otherwise
+    /// disconnected series, is the cleanest probe.
+    #[test]
+    fn only_structural_relations_group() {
+        let cases = [
+            (RelationKind::Sequel, true),
+            (RelationKind::Prequel, true),
+            (RelationKind::AlternativeVersion, true),
+            (RelationKind::SideStory, true),
+            (RelationKind::ParentStory, true),
+            (RelationKind::Summary, true),
+            (RelationKind::FullStory, true),
+            (RelationKind::SameSetting, false),
+            (RelationKind::AlternativeSetting, false),
+            (RelationKind::MusicVideo, false),
+            (RelationKind::Character, false),
+            (RelationKind::Other(100), false),
+            (RelationKind::Other(0), false),
+        ];
+        for (kind, grouped) in cases {
+            let mut state = CrdtState::new();
+            let a = ActorId::SERVER;
+            state.set_series_relations(
+                a,
+                ts(1),
+                AniDbSeriesId(1),
+                relations("A", Some(2000), &[(kind, 2)]),
+            );
+            state.set_series_relations(a, ts(2), AniDbSeriesId(2), relations("B", Some(2001), &[]));
+            let groups = franchises(&state.view());
+            let expected = if grouped { 1 } else { 2 };
+            assert_eq!(
+                groups.len(),
+                expected,
+                "kind {kind:?}: expected {expected} franchise(s), got {groups:#?}"
+            );
+        }
     }
 }

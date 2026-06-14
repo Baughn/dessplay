@@ -640,13 +640,7 @@ impl Ui {
             .into_iter()
             .find(|franchise| franchise.key == key);
         let Some(franchise) = franchise else { return };
-        let filename = |hash: &Ed2kHash| {
-            view.playlist
-                .iter()
-                .find(|entry| entry.hash == *hash)
-                .map(|entry| entry.state.filename.clone())
-                .unwrap_or_else(|| hash.to_string())
-        };
+        let filename = |hash: &Ed2kHash| super::props::episode_label(view, hash);
         let seasons: Vec<Season> = if franchise.series.is_empty() {
             vec![Season {
                 title: franchise.title.clone(),

@@ -796,9 +796,19 @@ series ID, the server queues ANIME lookups for it and walks its relations
 recursively (each hop is another rate-limited request, so the graph fills in
 over hours -- fine, it's needed for browsing, not playback). Results are
 cached in server SQLite and replicated as the server-authoritative
-`SeriesRelations` map. Clients build franchise groupings from this map; files
-without a series ID group by parsed series name as a fallback. Manually
-linking a List entry also seeds the walk for its series.
+`SeriesRelations` map. Clients build franchise groupings from this map
+(connected components over the relations graph); files without a series ID
+group by parsed series name as a fallback. Manually linking a List entry also
+seeds the walk for its series.
+
+Only **structural** relation edges merge two series into one franchise:
+sequel/prequel chains, alternative versions (remakes), and
+side/parent/summary/full-story spin-offs (`RelationKind::groups_franchise`).
+Crossover and shared-universe edges -- same setting, shared characters, music
+videos, and AniDB's catch-all crossover code -- link *related but separate*
+works and are deliberately ignored. Without this filter a single crossover
+like *Isekai Quartet* (which relates to Overlord, KonoSuba, Re:Zero and Youjo
+Senki) would collapse every show it touches into one giant component.
 
 **Name search (the AniDbSearch modal):** the UDP API has no
 multi-result search -- `ANIME aname=` is an exact-title lookup, useless
