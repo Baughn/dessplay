@@ -90,6 +90,19 @@ fn with_default_port(server: &str) -> String {
     }
 }
 
+/// Resolve the client's single identity: the `--username` flag wins,
+/// then the stored setting, then `$USER`. The UI, the session, and auth
+/// all derive from this one value — if they disagree, your own writes
+/// (manual override) are keyed under a name your PeerList row doesn't
+/// carry, so your readiness never shows on your own screen.
+fn resolve_username(
+    flag: Option<String>,
+    stored: Option<String>,
+    env_user: Option<String>,
+) -> Option<String> {
+    flag.or(stored).or(env_user)
+}
+
 /// Everything needed to spawn a client against the configured server:
 /// the resolved connector, identity, and the settings/TOFU storage
 /// handle. Shared by the headless run and the importer.
@@ -455,9 +468,16 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         "storage opened and settings loaded"
     );
     let needs_setup = settings.needs_setup() || media_roots.is_empty();
-    if settings.username.is_none() {
-        settings.username = args.username.clone().or_else(|| std::env::var("USER").ok());
-    }
+    // Resolve the one identity used for the UI, the session, and auth.
+    // These MUST agree: the UI keys your own manual-override write by
+    // this name, while the Users pane derives your row from the server's
+    // PeerList (the auth name) — if they diverge your own readiness
+    // never shows (2026-06-14).
+    settings.username = resolve_username(
+        args.username.clone(),
+        settings.username.clone(),
+        std::env::var("USER").ok(),
+    );
     // Track (and log) where the settings password came from — never
     // the password itself.
     let password_source = if settings.password.is_some() {
@@ -531,7 +551,9 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     let handle = spawn_client(
         Arc::clone(&setup.connector),
         ClientConfig {
-            username: UserId::new(&setup.username),
+            // Same identity the UI and session use (`me`), so our own
+            // writes are keyed under the name our PeerList row carries.
+            username: me.clone(),
             password: setup.password.clone(),
             role: Role::Interactive,
             session_nonce: rand::random(),
@@ -1101,6 +1123,19 @@ mod tests {
         assert_eq!(with_default_port("10.0.0.1:7000"), "10.0.0.1:7000");
         assert_eq!(with_default_port("::1"), "[::1]:9876");
         assert_eq!(with_default_port("[::1]:7000"), "[::1]:7000");
+    }
+
+    #[test]
+    fn username_precedence_flag_then_stored_then_env() {
+        let s = |x: &str| Some(x.to_string());
+        // Flag wins over everything.
+        assert_eq!(resolve_username(s("flag"), s("stored"), s("env")), s("flag"));
+        // No flag: stored wins over env.
+        assert_eq!(resolve_username(None, s("stored"), s("env")), s("stored"));
+        // Neither flag nor stored: fall back to $USER.
+        assert_eq!(resolve_username(None, None, s("env")), s("env"));
+        // Nothing at all.
+        assert_eq!(resolve_username(None, None, None), None);
     }
 
     #[test]
