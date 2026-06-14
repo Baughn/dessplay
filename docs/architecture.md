@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-06-12
+Last updated: 2026-06-14
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -289,6 +289,13 @@ placeholder renderer. Its own `Storage` connection (WAL handles
 concurrency with the sync actor's). Phase 9B adds download coordination
 (chunks, bitfields, prefetch).
 
+It also runs the **media-library scan**: at startup and on a timer (about a
+minute interactive, a day for a seeder) it walks the media roots, `stat`s each
+file, re-hashes only those whose `(mtime, size)` changed, and reports the
+indexed hashes so the session can insert `lookup_requests` for any that still
+lack metadata (see "Media Library Scanning" in design.md). The hash cache
+doubles as the library index, so this also pre-warms playlist-add resolves.
+
 Spawned and driven by the `SessionShell` (Phase 7's session policy
 layer): the shell sends `FileCommand`s and receives `FileOutput`s on one
 channel pair, replacing the ad-hoc `spawn_blocking` resolves and hashes
@@ -341,9 +348,14 @@ One background task inside the rendezvous server, not a client actor.
 Each pass it refreshes the anime-titles dump when due (daily; one
 blocking GET on the blocking pool), drains the replicated
 `lookup_requests` GSet and newly-seen series ids into the SQLite
-queues, and performs one due lookup — files before series. Results
-land as server-authored LWW writes (`AniDbMetadata`,
-`SeriesRelations`) broadcast like any other server op.
+queues, and performs one due lookup — files before series. As it drains
+each request it also records the file's identity (filename + size) into
+the broadcast `FileCatalogEntry`, so clients can add files they don't
+hold. Results land as server-authored LWW writes (`AniDbMetadata`,
+`FileCatalogEntry`, `SeriesRelations`) broadcast like any other server
+op. The `lookup_requests` set now carries each client's whole indexed
+library, not just playlist entries, so the per-hash `anidb_queue`
+de-duplication is what keeps the rate-limited lookup load bounded.
 
 It is doubly abstracted for tests: `AniDbApi` (the rate-limited UDP
 client; canned tables in tests) and `AniDbHost` (clock + state view +

@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-06-12
+Last updated: 2026-06-14
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -189,6 +189,7 @@ and the wire protocol uniform.
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>` | Each user writes own |
 | AniDB metadata | `Map<Ed2kHash, LwwCell<Option<AniDbMetadata>>, ActorId>` | Server only |
+| File catalog | `Map<Ed2kHash, LwwCell<FileCatalogEntry>, ActorId>` | Server only |
 | Series relations | `Map<AniDbSeriesId, LwwCell<SeriesRelations>, ActorId>` | Server only |
 | The List | `Map<ListEntryId, LwwCell<SeriesListEntry>, ActorId>` | Any peer |
 | List next-ep | `Map<ListEntryId, LwwCell<NextEpState>, ActorId>` | Any peer; server auto-advance |
@@ -362,14 +363,42 @@ to look up via AniDB.
 - `size: u64` -- file size in bytes (AniDB's FILE command requires this)
 - `filename: String` -- for fallback metadata when AniDB doesn't know the file
 
-Clients insert entries as they scan local files. The server drains entries
-into its AniDB lookup queue. On compaction, the GSet is cleared -- all
-entries have been processed or queued.
+Clients insert entries for **every** file their media-root scan finds that
+still lacks metadata -- not just playlist entries (see "Media Library
+Scanning" in design.md). The scan runs at startup and periodically (about once
+a minute interactive, once a day for a seeder), re-hashing only files whose
+`(mtime, size)` changed. The server drains entries into its AniDB lookup
+queue. On compaction, the GSet is cleared -- all entries have been processed or
+queued.
 
-This happens naturally on reconnect: clients start fresh after a stale epoch,
+This re-arms naturally on reconnect and after compaction: clients start fresh,
 re-scan their local files, check each hash against the metadata map, and
 re-insert any that are still `None`. The server deduplicates against its
 existing metadata and lookup queue.
+
+### File Catalog
+
+`Map<Ed2kHash, LwwCell<FileCatalogEntry>, ActorId>`.
+
+Only the server writes these. When the server drains a lookup request it
+records the file's identity, taken straight from the `FileHashInfo`, so any
+client -- even one that has never held the file -- can construct a playlist
+entry for it and download it. This is what lets the franchise browser add files
+from the group's collective library rather than only locally-present ones.
+
+```rust
+struct FileCatalogEntry {
+    filename: String,             // from the lookup request
+    size_bytes: u64,              // from the lookup request
+    duration_millis: Option<u64>, // None until an owner reports it / it downloads
+}
+```
+
+`duration_millis` is absent from the lookup request, so it is filled lazily --
+by an owner once the file is held, or at download time. Until then the
+bitrate-based unpause rule can't be computed and the 20%-downloaded rule
+governs alone. The catalog persists across compaction (unlike the lookup GSet),
+so the browsable library does not evaporate at the daily compaction.
 
 ### AniDB Metadata
 

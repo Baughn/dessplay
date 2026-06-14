@@ -78,14 +78,19 @@ sync state with each other. See [network-design.md](network-design.md).
    - **Recent Series** (default): franchises sorted by unwatched > recency > alphabetical
    - **All Series**: same data, sorted by title or year (toggle with `s`)
 3. Related anime are grouped into **franchises** using AniDB's relations graph
-   (sequel, prequel, side story, etc.). Each franchise shows as one entry.
+   (sequel, prequel, side story, etc.). Each franchise shows as one entry. The
+   browser spans the group's **collective library** -- every file any client
+   has indexed (see [Media Library Scanning](#media-library-scanning)), not
+   just files already in the playlist.
 4. Press `Enter` on a franchise:
    - **Single-season franchise**: opens the file browser in the series directory,
      cursor on the next unwatched episode
    - **Multi-season franchise**: opens the **Episode Browser** modal showing
      seasons (franchise members). Select a season to see its episodes.
-5. In the Episode Browser, press `Enter` on an episode with a local file to add
-   it to the playlist. Press `Esc`/`Backspace` to go back.
+5. In the Episode Browser, press `Enter` on an episode to add it to the
+   playlist. If you have the file locally it resolves Ready; if you don't, it
+   is added anyway (using the file catalog's identity) and downloads like any
+   other missing file. Press `Esc`/`Backspace` to go back.
 6. Sort mode for All Series is persisted across sessions.
 
 **From scratch:**
@@ -313,6 +318,11 @@ which clients are seeders.
   it. The primary seeder is colocated with the rendezvous server, so serving
   a file costs one trip over the NAS uplink per recipient -- the relay-only
   transfer design depends on this arrangement being the common case.
+- **Indexes its library daily.** Like every client the seeder maintains a hash
+  index of its media roots (see [Media Library Scanning](#media-library-scanning))
+  and feeds new hashes into the `lookup_requests` set, contributing its (often
+  large) collection to the group's browsable library. Because its store is big
+  and stable it rescans once a day, not once a minute.
 - **Storage** follows the same cache-retention setting as interactive clients
   (see [Download Cache](#download-cache-and-retention)). A NAS seeder sets
   retention to `infinite`; "should this be archived into the media library?"
@@ -617,11 +627,12 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>` | Compound key |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>>` | Compound key |
-| AniDB metadata | `Map<Ed2kHash, LwwCell<Option<AniDbMetadata>>>` | Server-authoritative |
+| AniDB metadata | `Map<Ed2kHash, LwwCell<Option<AniDbMetadata>>>` | Server-authoritative; spans every file any client has indexed, not just playlist entries |
+| File catalog | `Map<Ed2kHash, LwwCell<FileCatalogEntry>>` | Server-authoritative; filename + size from the lookup request, duration filled lazily; lets a client add a file it doesn't hold |
 | Series relations | `Map<AniDbSeriesId, LwwCell<SeriesRelations>>` | Server-authoritative; franchise graph |
 | The List | `Map<ListEntryId, LwwCell<SeriesListEntry>>` | Any peer; never pruned |
 | List next-ep | `Map<ListEntryId, LwwCell<NextEpState>>` | Any peer; server auto-advances |
-| Lookup requests | `GSet<FileHashInfo>` | Clients insert; cleared on compaction |
+| Lookup requests | `GSet<FileHashInfo>` | Clients insert (playlist + library scan); cleared on compaction |
 | Chat | `GList<ChatMessage>` | Grow-only ordered list; trimmed on compaction (server archives full history) |
 | Playback position | `Map<UserId, LwwCell<PlaybackPosition>>` | Per user, high frequency, datagram-only transport |
 
@@ -664,6 +675,39 @@ media_roots = [
 ```
 
 Stored in local SQLite database, editable via settings screen.
+
+### Media Library Scanning
+
+Clients keep a **library index** of every file under their media roots, so the
+franchise browser can show the group's collective collection and add any of it
+-- not just files already in the playlist. The index reuses the `hash_cache`
+table (path -> ed2k root + per-block hashes, keyed by `(mtime, size)`); it is
+no longer filled only on demand.
+
+- **At startup** the client walks every media root, `stat`s each file, and
+  hashes anything new or changed (a path missing from `hash_cache`, or whose
+  `(mtime, size)` disagrees). Unchanged files are a cache hit -- no re-read.
+- **Periodically** the client re-walks the roots and re-hashes only changed
+  files. Interactive clients rescan about once a minute; a seeder, whose store
+  is large and stable, rescans once a day.
+- For every indexed hash that lacks metadata in the synced state, the client
+  inserts a `FileHashInfo` (hash, size, filename) into the `lookup_requests`
+  GSet -- the same "please look this up" set the playlist uses, now fed by the
+  whole library. Server-side per-hash de-duplication and the cross-client
+  "already checked" bookkeeping (the `anidb_queue` table) keep AniDB load
+  bounded even when several clients index overlapping collections.
+
+Active hashing surfaces progress like any other long-running work (see
+[UI Principles](#ui-principles)); a quiet rescan that finds nothing new is
+silent. Since this populates `hash_cache` ahead of time, resolving a file on
+playlist-add is usually an instant cache hit rather than a fresh hash.
+
+This is what makes "add a file you don't have" possible: the server records
+each looked-up file's identity (filename + size, from the lookup request) in
+the broadcast **file catalog**, so a client that has never held the file can
+still construct a playlist entry for it and download it. See
+[Lookup flow](#parsing-files-to-seriesseasonepisode) and the file catalog in
+the [State Sync](#state-sync-protocol) table.
 
 ### File Matching
 
@@ -770,22 +814,35 @@ account is used for nothing else, and AniDB's `ENCRYPT` command remains
 future work.
 
 **Lookup flow:**
-1. Clients insert `FileHashInfo` (hash, size, filename) for playlist
-   entries that lack metadata into a `GSet<FileHashInfo>` -- a "please
-   look these up" set. Any client may request (hash, size, and filename
-   are all in the playlist entry); the server deduplicates, and the
-   GSet absorbs repeated inserts. This also re-arms requests after
-   compaction clears the set.
-2. The server drains entries from this set into its AniDB lookup queue.
+1. Clients insert `FileHashInfo` (hash, size, filename) into a
+   `GSet<FileHashInfo>` -- a "please look these up" set -- for every file that
+   lacks metadata, whether it is a playlist entry or just a file the
+   [library scan](#media-library-scanning) found in a media root. Any client
+   may request; the server deduplicates, and the GSet absorbs repeated inserts.
+   This also re-arms requests after compaction clears the set.
+2. The server drains entries from this set into its AniDB lookup queue, and
+   **records each file's identity** (filename + size, taken from the request)
+   in the server-authoritative **file catalog** (see the
+   [State Sync](#state-sync-protocol) table). The catalog is broadcast like any
+   other server write and persists across compaction, so every client -- even
+   one that has never held the file -- has enough to build a playlist entry for
+   it. Duration is not in the request; it is filled lazily (by an owner once
+   the file is held, or at download time) and only gates the bitrate-based
+   unpause rule until then.
 3. On success: server writes full `AniDbMetadata` (series name, ID, episode).
 4. On failure (AniDB doesn't know the file): server writes filename-derived
    metadata (series name parsed from filename, no series ID, no episode number)
-   once -- a later re-validation miss never clobbers real metadata.
+   once -- a later re-validation miss never clobbers real metadata. The
+   re-validation cadence is unchanged: an age-based ladder for never-seen files
+   (30 min if < 1 day old, 2 h if < 1 week, 12 h if < 30 days, 3 days if
+   < 90 days, then never) and weekly for files AniDB knows.
 5. Either way, the metadata register becomes `Some(AniDbMetadata)` --
    downstream code always has a series name to work with.
 
 CRDT types:
 - Lookup requests: `GSet<FileHashInfo>` (cleared on compaction)
+- File catalog: `LwwCell<FileCatalogEntry>` keyed by ed2k hash (server-only
+  writes; filename + size from the request, duration filled lazily)
 - Metadata: `LwwCell<Option<AniDbMetadata>>` keyed by ed2k hash (server-only writes)
 
 See [sync-state.md](sync-state.md) for the full `AniDbMetadata` struct.
@@ -991,7 +1048,7 @@ tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned) |
-| `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size); skips re-hashing unchanged files (Phase 9A); pruned alongside a removed cache entry |
+| `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size); skips re-hashing unchanged files (Phase 9A); doubles as the **library index** populated by the periodic media-root scan; pruned alongside a removed cache entry |
 | `manual_mappings` | Playlist hash → user-picked local path |
 | `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |
 | `tofu_fingerprints` | Pinned server cert fingerprints; write-once (replacing requires explicit forget) |
