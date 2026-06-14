@@ -162,9 +162,10 @@ fn migrate(conn: &Connection, migrations: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Identifies a series for "known series" checks and map-dir memory:
-/// by AniDB id when metadata exists, by parsed name before it does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifies a series for "known series" checks, map-dir memory, and
+/// Recent-Series recency: by AniDB id when metadata exists, by parsed
+/// name before it does.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SeriesKey {
     /// An AniDB-linked series.
     AniDb(AniDbSeriesId),

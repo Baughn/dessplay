@@ -11,7 +11,7 @@ use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::franchise::{self, FranchiseKey};
 use dessplay_core::net::PeerInfo;
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId,
+    Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId,
 };
 use tuirealm::component::AppComponent;
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
@@ -37,9 +37,9 @@ pub struct UiSnapshot {
     pub view: StateView,
     /// The latest peer list.
     pub peers: Vec<PeerInfo>,
-    /// Local watch history: series -> last-watched millis (drives the
-    /// Recent mode sort).
-    pub recency: BTreeMap<AniDbSeriesId, u64>,
+    /// Local watch history: series (by AniDB id or filename-parsed name)
+    /// -> last-watched millis (drives the Recent mode sort).
+    pub recency: BTreeMap<crate::storage::SeriesKey, u64>,
     /// Hashes that live only in the local download cache (not in a media
     /// root). These render a dim "temporary" marker and are the only
     /// rows the archive action operates on. Local, not synced.
@@ -915,7 +915,9 @@ mod tests {
 
     use super::*;
     use dessplay_core::state::CrdtState;
-    use dessplay_core::types::{ActorId, AniDbMetadata, MetadataSource, SharedTimestamp};
+    use dessplay_core::types::{
+        ActorId, AniDbMetadata, AniDbSeriesId, MetadataSource, SharedTimestamp,
+    };
 
     const A: ActorId = ActorId::SERVER;
 

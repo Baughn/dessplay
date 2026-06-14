@@ -12,6 +12,8 @@ use dessplay_core::types::{
 };
 use dessplay_core::{StateView, franchise};
 
+use crate::storage::SeriesKey;
+
 /// Semantic display tone; the theme maps these to colors.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tone {
@@ -349,33 +351,37 @@ pub struct ListGroup {
     pub collapsed: bool,
 }
 
-/// Recent Series recency: AniDB series id -> newest local watch time
+/// Recent Series recency: [`SeriesKey`] -> newest local watch time
 /// (shared-clock millis), built from personal watch history.
 ///
-/// The series id is resolved from the *current* metadata `view` (keyed by
-/// file hash), **not** the id frozen into the watch record: a file is
-/// often watched (85%) before its AniDB metadata arrives, so the stored id
-/// is null. Without this live join the just-watched series never appears
-/// in Recent Series. The stored id is used only as a fallback (e.g. the
-/// view has since dropped the metadata entry). Files whose series is still
-/// unknown — no id anywhere — are skipped; Recent is franchise-keyed and
-/// franchises are series-id based.
+/// The series is resolved from the *current* metadata `view` (keyed by
+/// file hash), **not** the values frozen into the watch record: a file is
+/// often watched (85%) before its AniDB metadata arrives. An AniDB id keys
+/// the entry when known; otherwise the filename-derived series *name*
+/// does, so files AniDB doesn't recognise still surface (matching the
+/// name-keyed franchises in [`franchise::franchises`]). The record's own
+/// frozen id/name is the last-ditch fallback. A file with no series
+/// identity anywhere is skipped.
 pub fn watch_recency(
     records: &[crate::storage::WatchRecord],
     view: &StateView,
-) -> BTreeMap<AniDbSeriesId, u64> {
-    let mut recency: BTreeMap<AniDbSeriesId, u64> = BTreeMap::new();
+) -> BTreeMap<SeriesKey, u64> {
+    let mut recency: BTreeMap<SeriesKey, u64> = BTreeMap::new();
     for record in records {
-        let series_id = view
-            .anidb_metadata
-            .get(&record.hash)
-            .and_then(|m| m.as_ref())
+        let meta = view.anidb_metadata.get(&record.hash).and_then(|m| m.as_ref());
+        let key = meta
             .and_then(|m| m.series_id)
-            .or(record.series_id);
-        let Some(series_id) = series_id else { continue };
+            .or(record.series_id)
+            .map(SeriesKey::AniDb)
+            .or_else(|| {
+                meta.map(|m| m.series_name.clone())
+                    .or_else(|| record.series_name.clone())
+                    .map(SeriesKey::Name)
+            });
+        let Some(key) = key else { continue };
         let watched_at = record.watched_at as u64;
         recency
-            .entry(series_id)
+            .entry(key)
             .and_modify(|t| *t = (*t).max(watched_at))
             .or_insert(watched_at);
     }
@@ -397,18 +403,21 @@ pub fn watch_recency(
 pub fn franchise_rows(
     view: &StateView,
     sort: SeriesSort,
-    recency: Option<&BTreeMap<AniDbSeriesId, u64>>,
+    recency: Option<&BTreeMap<SeriesKey, u64>>,
     filter: &str,
 ) -> Vec<FranchiseRow> {
     let mut rows: Vec<(Option<u64>, FranchiseRow)> = franchise::franchises(view)
         .into_iter()
         .map(|franchise| {
             let last_watched = recency.and_then(|map| {
-                franchise
+                // Match by any AniDB id the franchise spans, and — for a
+                // name-keyed (filename-derived) franchise — by its title.
+                let by_id = franchise
                     .series
                     .iter()
-                    .filter_map(|id| map.get(id).copied())
-                    .max()
+                    .filter_map(|id| map.get(&SeriesKey::AniDb(*id)).copied());
+                let by_name = map.get(&SeriesKey::Name(franchise.title.clone())).copied();
+                by_id.chain(by_name).max()
             });
             (
                 last_watched,
@@ -1013,7 +1022,7 @@ mod tests {
     /// register the watch timestamp into a recency map if `watched_at` is set.
     fn add_series(
         state: &mut CrdtState,
-        recency: &mut BTreeMap<AniDbSeriesId, u64>,
+        recency: &mut BTreeMap<SeriesKey, u64>,
         id: u32,
         title: &str,
         watched_at: Option<u64>,
@@ -1032,7 +1041,7 @@ mod tests {
             }),
         );
         if let Some(t) = watched_at {
-            recency.insert(AniDbSeriesId(id), t);
+            recency.insert(SeriesKey::AniDb(AniDbSeriesId(id)), t);
         }
     }
 
@@ -1120,7 +1129,7 @@ mod tests {
         let mut state = CrdtState::new();
         watched_meta(&mut state, 1, 7);
         let recency = watch_recency(&[watch_record(1, 100)], &state.view());
-        assert_eq!(recency.get(&AniDbSeriesId(7)), Some(&100));
+        assert_eq!(recency.get(&SeriesKey::AniDb(AniDbSeriesId(7))), Some(&100));
     }
 
     /// Multiple episodes of one series collapse to the newest watch time.
@@ -1131,7 +1140,7 @@ mod tests {
         watched_meta(&mut state, 2, 7);
         // recent_watched yields newest-first; order must not matter.
         let recency = watch_recency(&[watch_record(2, 250), watch_record(1, 100)], &state.view());
-        assert_eq!(recency.get(&AniDbSeriesId(7)), Some(&250));
+        assert_eq!(recency.get(&SeriesKey::AniDb(AniDbSeriesId(7))), Some(&250));
     }
 
     /// Still no series id anywhere (metadata absent) -> skipped, not panic.
@@ -1140,6 +1149,35 @@ mod tests {
         let state = CrdtState::new();
         let recency = watch_recency(&[watch_record(1, 100)], &state.view());
         assert!(recency.is_empty());
+    }
+
+    /// A show AniDB doesn't recognise gets filename-derived metadata (a
+    /// series name, no id). Recency must key it by *name* so it matches the
+    /// name-keyed franchise, and Recent must then list it. Regression for
+    /// Recent staying empty for not-in-AniDB shows (2026-06-15).
+    #[test]
+    fn recent_shows_name_keyed_franchise_from_filename_derived_metadata() {
+        use dessplay_core::types::{AniDbMetadata, MetadataSource};
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            hash(1),
+            Some(AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: "Niwatori Fighter".into(),
+                series_id: None,
+                episode_number: None,
+            }),
+        );
+        let recency = watch_recency(&[watch_record(1, 100)], &state.view());
+        assert_eq!(
+            recency.get(&SeriesKey::Name("Niwatori Fighter".into())),
+            Some(&100)
+        );
+        // It surfaces in Recent (watched-only) as a name-keyed franchise.
+        let rows = franchise_rows(&state.view(), SeriesSort::Title, Some(&recency), "");
+        assert_eq!(titles(&rows), vec!["Niwatori Fighter"]);
     }
 
     proptest::proptest! {
