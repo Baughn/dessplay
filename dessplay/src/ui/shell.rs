@@ -31,6 +31,14 @@ pub enum UiInput {
         /// True when this file is done (row removed).
         finished: bool,
     },
+    /// A local-only system message for the chat log (e.g. an archive
+    /// result). Not synced — it appears only in this client's chat.
+    System {
+        /// Shared-clock millis (orders the line within the chat log).
+        timestamp: u64,
+        /// The message body.
+        text: String,
+    },
     /// AniDB name-search results (delivered to the search modal).
     SearchResults {
         /// The query these results answer.
@@ -101,6 +109,7 @@ pub fn run_ui_thread(
                 total_bytes,
                 finished,
             } => ui.set_hash_progress(filename, done_bytes, total_bytes, finished),
+            UiInput::System { timestamp, text } => ui.push_system(timestamp, text),
             UiInput::SearchResults { query, results } => ui.set_search_results(&query, results),
             UiInput::Event(event) => {
                 for action in ui.handle(event) {

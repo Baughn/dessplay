@@ -360,7 +360,7 @@ impl Actor {
         done_tx: mpsc::Sender<Done>,
     ) -> Result<Self, crate::storage::StorageError> {
         let started = std::time::Instant::now();
-        let hash_cache: HashMap<PathBuf, (i64, Ed2kFileHash)> = config
+        let mut hash_cache: HashMap<PathBuf, (i64, Ed2kFileHash)> = config
             .storage
             .hash_cache()?
             .into_iter()
@@ -368,14 +368,46 @@ impl Actor {
             .collect();
         let manual: HashMap<Ed2kHash, PathBuf> =
             config.storage.manual_mappings()?.into_iter().collect();
+        // Manual mappings are servable local copies too.
+        let mut local_files = manual.clone();
+        // Reconcile the download cache against the filesystem: the DB is
+        // an index, the disk is the truth. A row whose file the user
+        // deleted or truncated is pruned (so the entry re-resolves to
+        // Missing and re-downloads); a survivor is registered as a
+        // servable, hash-addressed copy so restarts re-recognize it
+        // (the cache is hash-named and the filename search can't find it).
+        let mut reconciled = 0usize;
+        let mut pruned = 0usize;
+        for entry in config.storage.cache_entries().unwrap_or_default() {
+            let live = std::fs::metadata(&entry.path)
+                .map(|m| m.len() == entry.size_bytes)
+                .unwrap_or(false);
+            if live {
+                local_files.insert(entry.hash, entry.path);
+                reconciled += 1;
+            } else {
+                tracing::warn!(
+                    path = %entry.path.display(),
+                    "cached file missing or wrong size; pruning stale bookkeeping"
+                );
+                if let Err(e) = config.storage.remove_cache_entry(entry.hash) {
+                    tracing::error!("pruning cache entry: {e}");
+                }
+                if let Err(e) = config.storage.remove_hash_cache(&entry.path) {
+                    tracing::error!("pruning hash cache: {e}");
+                }
+                hash_cache.remove(&entry.path);
+                pruned += 1;
+            }
+        }
         tracing::debug!(
             cached_hashes = hash_cache.len(),
             manual_mappings = manual.len(),
+            cache_reconciled = reconciled,
+            cache_pruned = pruned,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "file actor ready"
         );
-        // Manual mappings are servable local copies too.
-        let local_files = manual.clone();
         Ok(Actor {
             storage: config.storage,
             media_roots: config.media_roots,
@@ -599,10 +631,16 @@ impl Actor {
     /// hash cache). Silently ignored if we don't have the file or its
     /// hashes cached.
     async fn serve_block_hashes(&mut self, to: PeerId, file: Ed2kHash) {
-        let Some(path) = self.local_files.get(&file) else {
+        let Some(path) = self.local_files.get(&file).cloned() else {
             return;
         };
-        let Some((_, hashed)) = self.hash_cache.get(path) else {
+        // Don't advertise a file the user deleted under us: drop it and
+        // flip our own availability to Missing (which re-resolves).
+        if !path.exists() {
+            self.lost_local_file(file).await;
+            return;
+        }
+        let Some((_, hashed)) = self.hash_cache.get(&path) else {
             // We have the file but not its block hashes cached; skip
             // (a re-hash-on-demand path is possible future work).
             tracing::debug!(%file, "asked for block hashes we haven't cached");
@@ -636,6 +674,33 @@ impl Actor {
             .await;
     }
 
+    /// A local copy we believed we held has vanished from disk. Drop it
+    /// from the servable set, prune any cache bookkeeping (a no-op for
+    /// media-root files), and flip our own availability to Missing so the
+    /// entry re-resolves (and re-downloads if enabled). The disk is the
+    /// truth; the DB follows it.
+    async fn lost_local_file(&mut self, file: Ed2kHash) {
+        if let Some(path) = self.local_files.remove(&file) {
+            tracing::warn!(path = %path.display(), %file, "local copy vanished; dropping");
+            if let Err(e) = self.storage.remove_cache_entry(file) {
+                tracing::error!("pruning cache entry: {e}");
+            }
+            if let Err(e) = self.storage.remove_hash_cache(&path) {
+                tracing::error!("pruning hash cache: {e}");
+            }
+            let mut cache = (*self.hash_cache).clone();
+            cache.remove(&path);
+            self.hash_cache = Arc::new(cache);
+        }
+        let _ = self
+            .out
+            .send(FileOutput::Availability {
+                file,
+                availability: FileAvailability::Missing,
+            })
+            .await;
+    }
+
     /// Queue a peer's chunk requests for serving (deduping re-requests).
     fn enqueue_serve(&mut self, to: PeerId, file: Ed2kHash, chunks: Vec<u32>) {
         if !self.local_files.contains_key(&file) {
@@ -658,6 +723,12 @@ impl Actor {
                 self.serve_queue.pop_front();
                 continue;
             };
+            if !path.exists() {
+                // Deleted under us: stop serving it and re-resolve.
+                self.serve_queue.retain(|job| job.1 != file);
+                self.lost_local_file(file).await;
+                continue;
+            }
             let range = chunk_range(chunk, self.file_size(&path));
             let len = range.end - range.start;
             if !self.upload.try_take(len, now) {
@@ -755,10 +826,14 @@ impl Actor {
         }
         let roots = self.media_roots.clone();
         let cache = Arc::clone(&self.hash_cache);
+        // A completed download lives hash-named in the cache; offer it as
+        // a by-hash candidate (the filename search can't find it).
+        let cache_candidate = Some(self.download_path(file));
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            let (resolution, fresh) = resolve_with_cache(&filename, file, &roots, &cache);
+            let (resolution, fresh) =
+                resolve_with_cache(&filename, file, &roots, &cache, cache_candidate);
             tracing::debug!(
                 filename,
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -1097,42 +1172,22 @@ fn resolve_with_cache(
     expected: Ed2kHash,
     roots: &[PathBuf],
     cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>,
+    cache_candidate: Option<PathBuf>,
 ) -> (Resolution, Vec<(PathBuf, i64, Ed2kFileHash)>) {
     let mut fresh = Vec::new();
     let mut mismatch = None;
+    // A completed download is hash-named in the cache dir; check it by
+    // hash first (the filename search below can never match it). A
+    // content-addressed hit is the strongest possible verification.
+    if let Some(candidate) = cache_candidate
+        && let Some(root) = candidate_root(&candidate, cache, &mut fresh)
+        && root == expected
+    {
+        return (Resolution::Verified(candidate), fresh);
+    }
     for candidate in find_by_name(filename, roots) {
-        let metadata = match std::fs::metadata(&candidate) {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                tracing::debug!(path = %candidate.display(), "unreadable candidate: {e}");
-                continue;
-            }
-        };
-        let mtime = mtime_millis(&metadata);
-        let cached_root = mtime.and_then(|mtime| {
-            cache.get(&candidate).and_then(|(cached_mtime, hash)| {
-                (*cached_mtime == mtime && hash.size_bytes == metadata.len())
-                    .then_some(hash.root)
-            })
-        });
-        let root = match cached_root {
-            Some(root) => root,
-            None => {
-                // Cache miss or stale mtime: hash for real, once.
-                match std::fs::File::open(&candidate).and_then(ed2k_hash_reader) {
-                    Ok(hashed) => {
-                        let root = hashed.root;
-                        if let Some(mtime) = mtime {
-                            fresh.push((candidate.clone(), mtime, hashed));
-                        }
-                        root
-                    }
-                    Err(e) => {
-                        tracing::debug!(path = %candidate.display(), "unreadable candidate: {e}");
-                        continue;
-                    }
-                }
-            }
+        let Some(root) = candidate_root(&candidate, cache, &mut fresh) else {
+            continue;
         };
         if root == expected {
             return (Resolution::Verified(candidate), fresh);
@@ -1145,6 +1200,48 @@ fn resolve_with_cache(
         None => Resolution::NotFound,
     };
     (resolution, fresh)
+}
+
+/// The ed2k root of `candidate`: trusted from the hash cache when
+/// (mtime, size) match, otherwise hashed for real exactly once (the
+/// fresh hash is pushed to `fresh` for caching). `None` if unreadable.
+fn candidate_root(
+    candidate: &Path,
+    cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>,
+    fresh: &mut Vec<(PathBuf, i64, Ed2kFileHash)>,
+) -> Option<Ed2kHash> {
+    let metadata = match std::fs::metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            tracing::debug!(path = %candidate.display(), "unreadable candidate: {e}");
+            return None;
+        }
+    };
+    let mtime = mtime_millis(&metadata);
+    let cached_root = mtime.and_then(|mtime| {
+        cache.get(candidate).and_then(|(cached_mtime, hash)| {
+            (*cached_mtime == mtime && hash.size_bytes == metadata.len()).then_some(hash.root)
+        })
+    });
+    match cached_root {
+        Some(root) => Some(root),
+        None => {
+            // Cache miss or stale mtime: hash for real, once.
+            match std::fs::File::open(candidate).and_then(ed2k_hash_reader) {
+                Ok(hashed) => {
+                    let root = hashed.root;
+                    if let Some(mtime) = mtime {
+                        fresh.push((candidate.to_path_buf(), mtime, hashed));
+                    }
+                    Some(root)
+                }
+                Err(e) => {
+                    tracing::debug!(path = %candidate.display(), "unreadable candidate: {e}");
+                    None
+                }
+            }
+        }
+    }
 }
 
 /// Every file named exactly `filename` under the roots, in breadth-first
@@ -1241,6 +1338,7 @@ mod tests {
             expected,
             &[root.path().to_path_buf()],
             &HashMap::new(),
+            None,
         );
         assert_eq!(resolution, Resolution::Verified(path.clone()));
         // The hash it computed comes back for caching.
@@ -1259,6 +1357,7 @@ mod tests {
             expected,
             &[root.path().to_path_buf()],
             &HashMap::new(),
+            None,
         );
         assert_eq!(resolution, Resolution::HashMismatch(path));
         // Mismatched contents still got hashed; cache the truth.
@@ -1277,6 +1376,7 @@ mod tests {
             expected,
             &[root.path().to_path_buf()],
             &HashMap::new(),
+            None,
         );
         assert_eq!(resolution, Resolution::Verified(good));
     }
@@ -1292,6 +1392,7 @@ mod tests {
             hash(0),
             &[root.path().to_path_buf()],
             &HashMap::new(),
+            None,
         );
         assert_eq!(resolution, Resolution::NotFound);
         assert!(fresh.is_empty());
@@ -1314,7 +1415,7 @@ mod tests {
         let cache = HashMap::from([(path.clone(), (mtime, poisoned))]);
 
         let (resolution, fresh) =
-            resolve_with_cache("ep1.mkv", expected, &[root.path().to_path_buf()], &cache);
+            resolve_with_cache("ep1.mkv", expected, &[root.path().to_path_buf()], &cache, None);
         // The poisoned root doesn't match and wasn't re-read: mismatch.
         assert_eq!(resolution, Resolution::HashMismatch(path));
         assert!(fresh.is_empty(), "a cache hit must not re-hash");
@@ -1335,7 +1436,7 @@ mod tests {
         let cache = HashMap::from([(path.clone(), (-1, poisoned))]);
 
         let (resolution, fresh) =
-            resolve_with_cache("ep1.mkv", expected, &[root.path().to_path_buf()], &cache);
+            resolve_with_cache("ep1.mkv", expected, &[root.path().to_path_buf()], &cache, None);
         assert_eq!(resolution, Resolution::Verified(path));
         assert_eq!(fresh.len(), 1, "the re-hash must be reported for caching");
     }
@@ -1422,11 +1523,17 @@ mod tests {
     struct Rig {
         commands: mpsc::Sender<FileCommand>,
         outputs: mpsc::Receiver<FileOutput>,
-        _cache_dir: tempfile::TempDir,
+        _cache_dir: Option<tempfile::TempDir>,
     }
 
-    fn spawn_rig(storage: Storage, roots: Vec<PathBuf>, retention: CacheRetention) -> Rig {
-        let cache_dir = tempfile::tempdir().unwrap();
+    /// Spawn the actor against a caller-supplied cache dir (so a test can
+    /// pre-populate it before startup reconciliation runs).
+    fn spawn_rig_at(
+        storage: Storage,
+        roots: Vec<PathBuf>,
+        retention: CacheRetention,
+        cache_dir: PathBuf,
+    ) -> Rig {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (out_tx, out_rx) = mpsc::channel(64);
         tokio::spawn(run(
@@ -1434,7 +1541,7 @@ mod tests {
                 storage,
                 media_roots: roots,
                 retention,
-                cache_dir: cache_dir.path().to_path_buf(),
+                cache_dir,
                 clock: test_clock(),
                 download: DownloadConfig::default(),
                 upload_limit: None,
@@ -1445,8 +1552,15 @@ mod tests {
         Rig {
             commands: cmd_tx,
             outputs: out_rx,
-            _cache_dir: cache_dir,
+            _cache_dir: None,
         }
+    }
+
+    fn spawn_rig(storage: Storage, roots: Vec<PathBuf>, retention: CacheRetention) -> Rig {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut rig = spawn_rig_at(storage, roots, retention, cache_dir.path().to_path_buf());
+        rig._cache_dir = Some(cache_dir);
+        rig
     }
 
     async fn next_output(rig: &mut Rig) -> FileOutput {
@@ -1688,7 +1802,9 @@ mod tests {
                 .upsert_cache_entry(&CacheEntry {
                     hash: hash(i),
                     path: path.clone(),
-                    size_bytes: 10,
+                    // Real size: reconciliation prunes rows whose size
+                    // disagrees with the file on disk.
+                    size_bytes: std::fs::metadata(path).unwrap().len(),
                     last_access: 0,
                 })
                 .unwrap();
@@ -1723,6 +1839,234 @@ mod tests {
         assert!(unwatched_path.exists());
     }
 
+    // ---- DB-vs-filesystem reconciliation (Phase 9A hardening).
+
+    /// A completed download is stored hash-named in the cache dir, with
+    /// its filename in *no* media root. After a restart it must still
+    /// resolve — by hash, not by the (non-matching) filename search.
+    #[tokio::test]
+    async fn cached_download_resolves_by_hash_after_restart() {
+        let cache = tempfile::tempdir().unwrap();
+        let contents = b"a cached episode".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        // The download cache names files after the hash.
+        let cached_path = cache.path().join(hashed.root.to_string());
+        std::fs::write(&cached_path, contents).unwrap();
+
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hashed.root,
+                path: cached_path.clone(),
+                size_bytes: contents.len() as u64,
+                last_access: 1,
+            })
+            .unwrap();
+        let metadata = std::fs::metadata(&cached_path).unwrap();
+        storage
+            .upsert_hash_cache(&cached_path, mtime_millis(&metadata).unwrap(), &hashed, 1)
+            .unwrap();
+
+        // No media roots at all: the filename can only ever be found in
+        // the cache, and only by hash.
+        let mut rig = spawn_rig_at(storage, vec![], CacheRetention::default(), cache.path().into());
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hashed.root,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { file, resolution } => {
+                assert_eq!(file, hashed.root);
+                assert_eq!(resolution, Resolution::Verified(cached_path));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+
+    /// Startup reconciliation prunes cache rows whose file the user
+    /// deleted (or truncated) out from under us, so the entry re-resolves
+    /// to Missing and re-downloads; live rows are kept.
+    #[tokio::test]
+    async fn reconcile_prunes_dead_cache_rows_and_keeps_live() {
+        let cache = tempfile::tempdir().unwrap();
+        let contents = b"still here".as_slice();
+        let live = cache.path().join(hash(1).to_string());
+        std::fs::write(&live, contents).unwrap();
+        let gone = cache.path().join(hash(2).to_string()); // never created
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hash(1),
+                path: live.clone(),
+                size_bytes: contents.len() as u64,
+                last_access: 1,
+            })
+            .unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hash(2),
+                path: gone.clone(),
+                size_bytes: 10,
+                last_access: 1,
+            })
+            .unwrap();
+
+        let mut rig =
+            spawn_rig_at(storage, vec![], CacheRetention::default(), cache.path().into());
+        // A resolve round-trip guarantees startup (and thus reconcile)
+        // completed before we inspect the DB.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hash(99),
+                filename: "absent.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { resolution, .. } => {
+                assert_eq!(resolution, Resolution::NotFound);
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        let check = Storage::open(&db_path).unwrap();
+        let rows = check.cache_entries().unwrap();
+        assert_eq!(rows.len(), 1, "the dead row must be pruned");
+        assert_eq!(rows[0].hash, hash(1));
+    }
+
+    /// Property: after reconciliation, every surviving `cache_entries`
+    /// row points at an existing file of the recorded size. Deterministic
+    /// over present / absent / wrong-size states.
+    #[tokio::test]
+    async fn reconcile_invariant_over_mixed_states() {
+        let cache = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+
+        let mut expected_survivors = Vec::new();
+        for i in 0u8..9 {
+            let path = cache.path().join(hash(i).to_string());
+            let body = vec![i; 32];
+            let size = match i % 3 {
+                0 => {
+                    // present, correct size
+                    std::fs::write(&path, &body).unwrap();
+                    expected_survivors.push(hash(i));
+                    body.len() as u64
+                }
+                1 => 32, // absent: file never written
+                _ => {
+                    // present, but the row lies about the size
+                    std::fs::write(&path, &body).unwrap();
+                    body.len() as u64 + 1
+                }
+            };
+            storage
+                .upsert_cache_entry(&CacheEntry {
+                    hash: hash(i),
+                    path,
+                    size_bytes: size,
+                    last_access: 1,
+                })
+                .unwrap();
+        }
+
+        let mut rig =
+            spawn_rig_at(storage, vec![], CacheRetention::default(), cache.path().into());
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hash(200),
+                filename: "absent.mkv".into(),
+            })
+            .await
+            .unwrap();
+        let _ = next_output(&mut rig).await;
+
+        let check = Storage::open(&db_path).unwrap();
+        let mut survivors: Vec<_> = check.cache_entries().unwrap();
+        survivors.sort_by_key(|e| e.hash.0);
+        expected_survivors.sort_by_key(|h| h.0);
+        assert_eq!(
+            survivors.iter().map(|e| e.hash).collect::<Vec<_>>(),
+            expected_survivors
+        );
+        for entry in survivors {
+            let metadata = std::fs::metadata(&entry.path).expect("survivor must exist");
+            assert_eq!(metadata.len(), entry.size_bytes, "survivor size must match");
+        }
+    }
+
+    /// Guard: if a file we still claim to hold has been deleted, a peer's
+    /// block-hash request must not falsely advertise it; instead we drop
+    /// it locally and flip our own availability to Missing.
+    #[tokio::test]
+    async fn serving_a_deleted_file_flips_to_missing() {
+        let cache = tempfile::tempdir().unwrap();
+        let contents = b"servable then gone".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        let cached_path = cache.path().join(hashed.root.to_string());
+        std::fs::write(&cached_path, contents).unwrap();
+
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hashed.root,
+                path: cached_path.clone(),
+                size_bytes: contents.len() as u64,
+                last_access: 1,
+            })
+            .unwrap();
+        let metadata = std::fs::metadata(&cached_path).unwrap();
+        storage
+            .upsert_hash_cache(&cached_path, mtime_millis(&metadata).unwrap(), &hashed, 1)
+            .unwrap();
+
+        let mut rig =
+            spawn_rig_at(storage, vec![], CacheRetention::default(), cache.path().into());
+        // Round-trip a resolve so startup reconciliation (which registers
+        // the cached file as servable) has definitely run before we
+        // delete it — otherwise the race makes the test flaky.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hash(123),
+                filename: "absent.mkv".into(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_output(&mut rig).await,
+            FileOutput::Resolved {
+                resolution: Resolution::NotFound,
+                ..
+            }
+        ));
+        // The user nukes the cached file behind our back.
+        std::fs::remove_file(&cached_path).unwrap();
+
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file: hashed.root }),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Availability { file, availability } => {
+                assert_eq!(file, hashed.root);
+                assert_eq!(availability, FileAvailability::Missing);
+            }
+            other => panic!("expected Missing, not a peer advertisement: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn group_watched_flag_makes_behind_the_group_evictable() {
         let cache = tempfile::tempdir().unwrap();
@@ -1732,7 +2076,7 @@ mod tests {
             .upsert_cache_entry(&CacheEntry {
                 hash: hash(1),
                 path: behind_path.clone(),
-                size_bytes: 10,
+                size_bytes: std::fs::metadata(&behind_path).unwrap().len(),
                 last_access: 0,
             })
             .unwrap();

@@ -71,26 +71,35 @@ pub struct MockPlayer {
     events: Mutex<mpsc::UnboundedReceiver<PlayerEvent>>,
     /// Loopback for auto-acks; `None` in manual mode.
     auto_ack: Option<mpsc::UnboundedSender<PlayerEvent>>,
+    /// When true, `load` returns an error (simulates a gone/unreadable
+    /// file) instead of succeeding.
+    load_fails: bool,
 }
 
 impl MockPlayer {
     /// A fully manual mock: commands produce no events.
     pub fn pair() -> (MockPlayer, MockControl) {
-        Self::build(false)
+        Self::build(false, false)
     }
 
     /// A mock that acks commands the way mpv would.
     pub fn auto_pair() -> (MockPlayer, MockControl) {
-        Self::build(true)
+        Self::build(true, false)
     }
 
-    fn build(auto: bool) -> (MockPlayer, MockControl) {
+    /// A manual mock whose `load` always fails (the file is gone).
+    pub fn pair_failing_load() -> (MockPlayer, MockControl) {
+        Self::build(false, true)
+    }
+
+    fn build(auto: bool, load_fails: bool) -> (MockPlayer, MockControl) {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let player = MockPlayer {
             commands: cmd_tx,
             events: Mutex::new(event_rx),
             auto_ack: auto.then(|| event_tx.clone()),
+            load_fails,
         };
         let control = MockControl {
             commands: cmd_rx,
@@ -115,6 +124,9 @@ impl MockPlayer {
 impl Player for MockPlayer {
     async fn load(&self, path: &Path) -> Result<(), PlayerError> {
         self.send(MockCommand::Load(path.to_path_buf()))?;
+        if self.load_fails {
+            return Err(PlayerError::Gone("mock load failure".into()));
+        }
         self.ack(PlayerEvent::Loaded);
         self.ack(PlayerEvent::DurationKnown {
             duration_millis: AUTO_DURATION_MILLIS,

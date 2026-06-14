@@ -149,14 +149,22 @@ impl ChatPane {
         let items: Vec<ListItem> = self.lines[start..]
             .iter()
             .map(|line| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{} ", line.time), theme::dim()),
-                    Span::styled(
-                        format!("{}: ", line.sender),
-                        Style::default().add_modifier(tuirealm::ratatui::style::Modifier::BOLD),
-                    ),
-                    Span::raw(line.text.clone()),
-                ]))
+                if line.system {
+                    // Local system notice: dim, no sender, "*" marker.
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{} ", line.time), theme::dim()),
+                        Span::styled(format!("* {}", line.text), theme::dim()),
+                    ]))
+                } else {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{} ", line.time), theme::dim()),
+                        Span::styled(
+                            format!("{}: ", line.sender),
+                            Style::default().add_modifier(tuirealm::ratatui::style::Modifier::BOLD),
+                        ),
+                        Span::raw(line.text.clone()),
+                    ]))
+                }
             })
             .collect();
         frame.render_widget(
@@ -339,10 +347,24 @@ impl PlaylistPane {
             .iter()
             .map(|row| {
                 let marker = if row.is_now { "▶ " } else { "  " };
-                ListItem::new(Span::styled(
-                    format!("{marker}{}", row.title),
-                    theme::tone_style(row.tone),
-                ))
+                let style = theme::tone_style(row.tone);
+                let left = format!("{marker}{}", row.title);
+                if row.temporary {
+                    // Cache-only file: dim "temporary" pushed to the right
+                    // edge. Title clips before the tag when space is tight.
+                    const TAG: &str = "temporary";
+                    let inner = area.width.saturating_sub(2) as usize;
+                    let pad = inner
+                        .saturating_sub(left.chars().count() + TAG.len() + 1)
+                        .max(1);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(left, style),
+                        Span::raw(" ".repeat(pad)),
+                        Span::styled(TAG, theme::dim()),
+                    ]))
+                } else {
+                    ListItem::new(Span::styled(left, style))
+                }
             })
             .collect();
         items.push(ListItem::new(Span::styled("  [Add New]", theme::dim())));
@@ -379,9 +401,11 @@ impl AppComponent<Msg, NoUserEvent> for PlaylistPane {
             };
         }
         // `A` (shift) archives; lowercase `a` adds. `typed` is the only
-        // helper that sees a shifted char.
+        // helper that sees a shifted char. Only cache-only ("temporary")
+        // rows can be archived — anything else is a no-op.
         if typed(ev) == Some('A') {
-            return self.selected_hash().map(Msg::ArchiveFile);
+            let row = self.props.rows.get(self.sel)?;
+            return row.temporary.then_some(Msg::ArchiveFile(row.hash));
         }
         match plain(ev)? {
             Key::Up => {

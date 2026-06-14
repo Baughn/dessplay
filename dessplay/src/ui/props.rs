@@ -3,7 +3,7 @@
 //! verbatim; keeping the mapping pure makes the display rules testable
 //! without a terminal (ui-architecture.md, State to Props Mapping).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::{PeerInfo, Presence, Role};
@@ -119,6 +119,9 @@ pub struct PlaylistRow {
     pub tone: Tone,
     /// This row is now-playing.
     pub is_now: bool,
+    /// The local copy lives only in the download cache, not a media root
+    /// (drives the dim "temporary" marker and gates the archive action).
+    pub temporary: bool,
 }
 
 /// Playlist pane props.
@@ -131,14 +134,21 @@ pub struct PlaylistProps {
 }
 
 /// Build the playlist pane: now-playing highlighted, group-watched
-/// entries muted (play history), files *we* lack in red.
-pub fn playlist_props(view: &StateView, me: &UserId) -> PlaylistProps {
+/// entries muted (play history), files *we* lack in red. `cache_hashes`
+/// are the files we hold only in the download cache (rendered with a
+/// dim "temporary" marker).
+pub fn playlist_props(
+    view: &StateView,
+    me: &UserId,
+    cache_hashes: &BTreeSet<Ed2kHash>,
+) -> PlaylistProps {
     let mut props = PlaylistProps::default();
     for (index, entry) in view.playlist.iter().enumerate() {
         let is_now = view.now_playing == Some(entry.hash);
         let missing = view.file_availability.get(&(me.clone(), entry.hash))
             == Some(&FileAvailability::Missing);
         let watched = view.watched.get(&entry.hash) == Some(&true);
+        let temporary = cache_hashes.contains(&entry.hash) && !missing;
         let tone = if missing {
             Tone::Blocked
         } else if is_now {
@@ -156,6 +166,7 @@ pub fn playlist_props(view: &StateView, me: &UserId) -> PlaylistProps {
             title: entry.state.filename.clone(),
             tone,
             is_now,
+            temporary,
         });
     }
     props
@@ -168,10 +179,16 @@ pub fn playlist_props(view: &StateView, me: &UserId) -> PlaylistProps {
 pub struct ChatLine {
     /// "HH:MM" on the shared clock (UTC).
     pub time: String,
-    /// Sender name.
+    /// Sender name (empty for system lines).
     pub sender: String,
     /// Message body.
     pub text: String,
+    /// A local system line (archive result, etc.): rendered dim with no
+    /// sender, never synced.
+    pub system: bool,
+    /// Shared-clock millis, used only to interleave local system lines
+    /// with synced messages.
+    pub millis: u64,
 }
 
 /// Format the chat log.
@@ -182,8 +199,21 @@ pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
             time: hhmm(message.timestamp.0),
             sender: message.sender.to_string(),
             text: message.text.clone(),
+            system: false,
+            millis: message.timestamp.0,
         })
         .collect()
+}
+
+/// Build a local system chat line (dim, no sender).
+pub fn system_line(timestamp: u64, text: String) -> ChatLine {
+    ChatLine {
+        time: hhmm(timestamp),
+        sender: String::new(),
+        text,
+        system: true,
+        millis: timestamp,
+    }
 }
 
 /// Unix millis -> "HH:MM" (UTC; good enough until a tz dependency is
@@ -524,11 +554,34 @@ mod tests {
             hash(3),
             FileAvailability::Missing,
         );
-        let props = playlist_props(&state.view(), &UserId::new("kim"));
+        let props = playlist_props(&state.view(), &UserId::new("kim"), &BTreeSet::new());
         assert_eq!(props.now_index, Some(1));
         assert_eq!(
             props.rows.iter().map(|r| r.tone).collect::<Vec<_>>(),
             vec![Tone::Muted, Tone::Good, Tone::Blocked]
+        );
+    }
+
+    #[test]
+    fn playlist_props_marks_temporary() {
+        // ep2 in cache only -> temporary; ep1 in a media root (absent
+        // from the set) -> not; ep3 missing despite a cache row -> not.
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+        state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
+        state.push_playlist_entry(A, ts(3), entry(3, "ep3.mkv"));
+        state.set_file_availability(
+            A,
+            ts(4),
+            UserId::new("kim"),
+            hash(3),
+            FileAvailability::Missing,
+        );
+        let cache: BTreeSet<Ed2kHash> = [hash(2), hash(3)].into_iter().collect();
+        let props = playlist_props(&state.view(), &UserId::new("kim"), &cache);
+        assert_eq!(
+            props.rows.iter().map(|r| r.temporary).collect::<Vec<_>>(),
+            vec![false, true, false]
         );
     }
 

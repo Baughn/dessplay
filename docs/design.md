@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-13
+Last updated: 2026-06-14
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -321,9 +321,11 @@ which clients are seeders.
   A seeder persists no *settings* (it is configured by flags/env), but it
   **does** persist operational state — the hash cache and cache
   bookkeeping — in a database: a seeder may hold terabytes, so re-hashing
-  its store on every startup is a nonstarter. Its **download cache dir is
-  added as a media root**, so on restart it re-discovers (cache-hit, no
-  re-hash) everything it already has rather than re-downloading.
+  its store on every startup is a nonstarter. On restart it re-discovers
+  everything it already has (cache-hit, no re-hash) via the same
+  **download-cache reconciliation** every client runs (see [Download
+  Cache](#download-cache-and-retention)): the cache is hash-addressed, so
+  prior downloads are resolved by hash, not by a media-root filename scan.
 
 Multiple seeders are fine; they are ordinary peers in the file transfer
 protocol. There is no special pairing between a seeder and its owner.
@@ -680,8 +682,23 @@ threshold for files still downloading.
 ### Download Cache and Retention
 
 Files retrieved from peers are written to the **download cache**
-(`$XDG_CACHE_HOME/dessplay/files/`). They are never automatically promoted
-into a media root.
+(`$XDG_CACHE_HOME/dessplay/files/`), **hash-named** (`<cache>/<ed2k-root>`).
+They are never automatically promoted into a media root.
+
+**The cache is hash-addressed, and the filesystem is the source of truth.**
+The `cache_entries` table is an index over the cache, not an authority: a
+user may delete, move, or truncate files behind the app's back. So at
+**startup the file actor reconciles `cache_entries` against disk** — a row
+whose file is gone or whose size disagrees is pruned (along with its
+`hash_cache` row), which makes the playlist entry re-resolve to Missing and
+re-download; a surviving row is re-registered as a servable copy. Resolution
+then finds a cached download **by hash** (it checks `<cache>/<hash>`
+directly), because the cache is hash-named and the media-root *filename*
+search can never match it. Two **runtime guards** cover deletions that
+happen mid-session rather than between runs: a player load failure
+(file gone under us) and a serve-time absence (a peer asks for a file we no
+longer hold) both drop the local copy, prune its bookkeeping, and flip the
+file to Missing so it re-resolves.
 
 **Retention** (`cache_retention`, per client): a cached file becomes
 *evictable* once it has been watched (85% rule) or sits behind the group's
@@ -704,6 +721,13 @@ path. *Implementation note (Phase 9A):* the destination is
 since AniDB models each season as its own anime (a franchise member), so a
 single series name is already one season's folder. The series-name component
 is sanitized to a safe path component.
+
+Cache-only files (those with a download-cache row, i.e. not yet in a media
+root) are flagged in the playlist pane with a dim right-aligned **`temporary`**
+marker; `A` only acts on such rows. Archiving moves the file into the library,
+so the marker clears — that is the success feedback. Both success and failure
+also post a local-only system line to the chat pane ("Archived …" / "Archive
+failed (…): …"); these notices are local, not synced.
 
 **Pre-fetching**: clients with downloading enabled fetch playlist entries
 *ahead* of now-playing (in playlist order) in the background, so next week's
@@ -948,8 +972,8 @@ tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
-| `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access |
-| `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size); skips re-hashing unchanged files (Phase 9A) |
+| `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned) |
+| `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size); skips re-hashing unchanged files (Phase 9A); pruned alongside a removed cache entry |
 | `manual_mappings` | Playlist hash → user-picked local path |
 | `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |
 | `tofu_fingerprints` | Pinned server cert fingerprints; write-once (replacing requires explicit forget) |

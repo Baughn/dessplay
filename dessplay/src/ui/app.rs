@@ -3,7 +3,7 @@
 //! with synchronous code so whole-app tests are deterministic
 //! (ui-architecture.md, Framework Choice).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use dessplay_core::StateView;
@@ -37,6 +37,10 @@ pub struct UiSnapshot {
     /// Local watch history: series -> last-watched millis (drives the
     /// Recent mode sort).
     pub recency: BTreeMap<AniDbSeriesId, u64>,
+    /// Hashes that live only in the local download cache (not in a media
+    /// root). These render a dim "temporary" marker and are the only
+    /// rows the archive action operates on. Local, not synced.
+    pub cache_hashes: BTreeSet<Ed2kHash>,
 }
 
 /// Log one outgoing [`UserAction`] at debug. Mutations log their
@@ -143,6 +147,9 @@ pub struct Ui {
     /// In-flight playlist-add hashes: (filename, done, total). Drawn as
     /// a progress overlay while non-empty (the no-silent-work rule).
     hashing: Vec<(String, u64, u64)>,
+    /// Local-only system chat lines (archive results, etc.), merged into
+    /// the chat log by timestamp. Never synced.
+    system_log: Vec<props::ChatLine>,
     snapshot: UiSnapshot,
     settings: Settings,
     media_roots: Vec<PathBuf>,
@@ -179,6 +186,7 @@ impl Ui {
             subtitle_pane: settings.subtitle_pane,
             subtitles: std::collections::VecDeque::new(),
             hashing: Vec::new(),
+            system_log: Vec::new(),
             snapshot: UiSnapshot::default(),
             settings: settings.clone(),
             media_roots: media_roots.clone(),
@@ -205,6 +213,27 @@ impl Ui {
         while self.subtitles.len() > 100 {
             self.subtitles.pop_front();
         }
+    }
+
+    /// Append a local system chat line (e.g. an archive result) and
+    /// refresh the chat pane. Not synced — local to this client.
+    pub fn push_system(&mut self, timestamp: u64, text: String) {
+        self.system_log.push(props::system_line(timestamp, text));
+        while self.system_log.len() > 100 {
+            self.system_log.remove(0);
+        }
+        let chat = self.merged_chat(&self.snapshot.view);
+        self.chat.set_lines(chat);
+    }
+
+    /// The synced chat log merged with local system lines, ordered by
+    /// shared-clock millis (stable: synced messages sort before a system
+    /// line stamped at the same millisecond).
+    fn merged_chat(&self, view: &StateView) -> Vec<props::ChatLine> {
+        let mut lines = props::chat_lines(view);
+        lines.extend(self.system_log.iter().cloned());
+        lines.sort_by_key(|line| line.millis);
+        lines
     }
 
     /// Track playlist-add hashing progress (drawn as an overlay).
@@ -240,11 +269,15 @@ impl Ui {
 
     /// Replace the snapshot and recompute every pane's props.
     pub fn apply_snapshot(&mut self, snapshot: UiSnapshot) {
-        self.chat.set_lines(props::chat_lines(&snapshot.view));
+        let chat = self.merged_chat(&snapshot.view);
+        self.chat.set_lines(chat);
         self.users
             .set_props(props::users_props(&snapshot.view, &snapshot.peers));
-        self.playlist
-            .set_props(props::playlist_props(&snapshot.view, &self.me));
+        self.playlist.set_props(props::playlist_props(
+            &snapshot.view,
+            &self.me,
+            &snapshot.cache_hashes,
+        ));
         self.status.set_props(props::status_props(
             &snapshot.view,
             &snapshot.peers,

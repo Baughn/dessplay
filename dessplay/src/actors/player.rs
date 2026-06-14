@@ -125,6 +125,12 @@ pub enum PlayerOutput {
         /// Which file ended.
         file: Ed2kHash,
     },
+    /// The player could not load the file (e.g. the path is gone or
+    /// unreadable). The session flips it to Missing and re-resolves.
+    LoadFailed {
+        /// The file that failed to load.
+        file: Ed2kHash,
+    },
     /// The player died twice within [`CRASH_FATAL_WINDOW`]. The main
     /// loop should pause globally and say so in chat.
     FatalCrash,
@@ -283,7 +289,11 @@ impl<F: PlayerFactory> Actor<F> {
                 if let Some(player) = &self.player
                     && let Err(e) = player.load(&path).await
                 {
-                    tracing::warn!("load failed: {e}");
+                    // A failed load is not silent: tell the session so it
+                    // flips the file to Missing and re-resolves (the file
+                    // may have been deleted under us).
+                    tracing::warn!(path = %path.display(), "load failed: {e}");
+                    let _ = self.outputs.send(PlayerOutput::LoadFailed { file }).await;
                 }
             }
             PlayerCommand::SetPlaying(playing) => {
@@ -656,6 +666,23 @@ mod tests {
             .unwrap();
         settle().await;
         (commands, outputs, control)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn load_failure_is_reported_upstream() {
+        let (player, _control) = MockPlayer::pair_failing_load();
+        let (commands, mut outputs) = start(vec![player], fixed_clock(1_000_000));
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE,
+                path: "/gone/ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::LoadFailed { file: FILE }
+        );
     }
 
     #[tokio::test(start_paused = true)]

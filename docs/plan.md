@@ -549,8 +549,9 @@ block verification/resume, rarest-first, prefetch, seeder auto-fetch).
 - **9B-4 prefetch + seeder auto-fetch**: interactive clients fetch a
   lookahead window of queued entries ahead of now-playing; a seeder
   (`SeederTransfer`, headless) fetches and serves the *whole* playlist,
-  persisting its hash cache (no re-hash on restart) with its download
-  cache added as a media root.
+  persisting its hash cache (no re-hash on restart); prior downloads are
+  re-discovered by the hash-addressed download-cache reconciliation every
+  client runs at startup (not via a media-root scan).
 - **Future**: disk/retention-aware prefetch depth, seek-aware download
   window, rarest-aware upload prioritization, choking for many-peer
   scale.

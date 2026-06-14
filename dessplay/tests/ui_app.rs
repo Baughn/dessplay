@@ -85,6 +85,16 @@ fn snapshot(view: StateView, peers: Vec<PeerInfo>) -> UiSnapshot {
         view,
         peers,
         recency: BTreeMap::new(),
+        cache_hashes: Default::default(),
+    }
+}
+
+fn snapshot_with_cache(view: StateView, peers: Vec<PeerInfo>, cache: &[Ed2kHash]) -> UiSnapshot {
+    UiSnapshot {
+        view,
+        peers,
+        recency: BTreeMap::new(),
+        cache_hashes: cache.iter().copied().collect(),
     }
 }
 
@@ -314,7 +324,12 @@ fn archive_action_emits_archive_with_series_and_filename() {
         }),
     );
     let mut ui = ui();
-    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    // The file is cache-only ("temporary"), so archive is offered.
+    ui.apply_snapshot(snapshot_with_cache(
+        state.view(),
+        vec![peer("kim")],
+        &[hash(1)],
+    ));
     for _ in 0..3 {
         ui.handle(key(Key::Tab)); // focus Playlist
     }
@@ -326,6 +341,42 @@ fn archive_action_emits_archive_with_series_and_filename() {
             filename: "ep1.mkv".into(),
         }]
     );
+}
+
+#[test]
+fn temporary_marker_renders_for_cache_only_files() {
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot_with_cache(
+        state.view(),
+        vec![peer("kim")],
+        &[hash(1)],
+    ));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("temporary"), "{screen}");
+}
+
+#[test]
+fn system_chat_line_renders() {
+    let mut ui = ui();
+    ui.push_system(0, "Archived ep1.mkv".into());
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Archived ep1.mkv"), "{screen}");
+}
+
+#[test]
+fn archive_action_ignored_for_non_temporary_file() {
+    // A file already in a media root (not in the cache set) shows no
+    // "temporary" marker, so `A` is a no-op.
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab)); // focus Playlist
+    }
+    assert_eq!(ui.handle(shift('A')), vec![]);
 }
 
 #[test]

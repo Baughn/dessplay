@@ -163,19 +163,17 @@ impl SeederTransfer {
     }
 }
 
-/// Build the seeder's [`FileConfig`]: its cache dir is added as a media
-/// root (so a restart re-discovers prior downloads without re-hashing),
-/// retention is `infinite`, and the hash cache persists in `storage`.
+/// Build the seeder's [`FileConfig`]: retention is `infinite` and the
+/// hash cache persists in `storage`. Prior downloads are re-discovered
+/// at startup by the file actor's cache reconciliation (the cache is
+/// hash-addressed and resolved by hash) — no media-root scan needed.
 pub fn seeder_file_config(
     storage: crate::storage::Storage,
-    mut media_roots: Vec<PathBuf>,
+    media_roots: Vec<PathBuf>,
     cache_dir: PathBuf,
     clock: crate::actors::network::Clock,
     upload_limit: Option<u64>,
 ) -> FileConfig {
-    if !media_roots.contains(&cache_dir) {
-        media_roots.push(cache_dir.clone());
-    }
     FileConfig {
         storage,
         media_roots,

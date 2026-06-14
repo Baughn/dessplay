@@ -583,6 +583,27 @@ impl PlayerWiring {
             }
             PlayerOutput::SubtitleLine(line) => vec![Directive::Subtitle(line)],
             PlayerOutput::Eof { file } => vec![Directive::ReportEof(file)],
+            PlayerOutput::LoadFailed { file } => {
+                // The path we loaded is gone/unreadable. Forget it, flip
+                // to Missing, and re-resolve so a re-download (or a
+                // re-appeared file) can recover. Next derive re-loads.
+                if self.loaded == Some(file) {
+                    self.loaded = None;
+                }
+                self.resolved.remove(&file);
+                let mut out = vec![Directive::Mutate(Mutation::SetFileAvailability {
+                    file,
+                    availability: FileAvailability::Missing,
+                })];
+                if let Some(entry) = view.playlist.iter().find(|entry| entry.hash == file) {
+                    self.pending_resolve.insert(file);
+                    out.push(Directive::Resolve {
+                        file,
+                        filename: entry.state.filename.clone(),
+                    });
+                }
+                out
+            }
             PlayerOutput::FatalCrash => vec![
                 Directive::Mutate(Mutation::SetPlaybackIntent {
                     intent: PlaybackIntent::Paused,
@@ -994,10 +1015,35 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 self.execute(directives).await;
                 FileEffect::None
             }
+            FileOutput::Archived { file, result } => {
+                // The archive moved the file out of the cache (or failed).
+                // Either way, tell the user via a local chat notice; on
+                // success the bridge also refreshes the snapshot so the
+                // "temporary" marker clears.
+                FileEffect::Archived {
+                    timestamp: (self.clock)(),
+                    text: archive_notice(view, file, &result),
+                }
+            }
             // The remaining outputs are consumed by the bridge loop as
-            // those features land (eviction notices, archive results).
+            // those features land (eviction notices).
             other => FileEffect::Other(other),
         }
+    }
+}
+
+/// The user-facing chat line for an archive result. Uses the playlist
+/// entry's filename (falling back to the hash if the entry is gone).
+fn archive_notice(view: &StateView, file: Ed2kHash, result: &Result<PathBuf, String>) -> String {
+    let name = view
+        .playlist
+        .iter()
+        .find(|entry| entry.hash == file)
+        .map(|entry| entry.state.filename.clone())
+        .unwrap_or_else(|| file.to_string());
+    match result {
+        Ok(_) => format!("Archived {name}"),
+        Err(error) => format!("Archive failed ({name}): {error}"),
     }
 }
 
@@ -1021,6 +1067,15 @@ pub enum FileEffect {
     HashDone {
         /// The file that finished.
         path: PathBuf,
+    },
+    /// An archive attempt finished (success or failure): show a local
+    /// system chat line, and refresh the snapshot so a now-archived
+    /// file loses its "temporary" marker.
+    Archived {
+        /// Shared-clock millis for the chat line.
+        timestamp: u64,
+        /// Human-readable result ("Archived …" / "Archive failed …").
+        text: String,
     },
     /// An output not yet consumed by the shell.
     Other(FileOutput),
@@ -1088,6 +1143,54 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn archive_notice_uses_filename_and_reports_outcome() {
+        let view = playing_state().view();
+        assert_eq!(
+            archive_notice(&view, hash(1), &Ok("/media/Frieren/ep1.mkv".into())),
+            "Archived ep1.mkv"
+        );
+        assert_eq!(
+            archive_notice(&view, hash(1), &Err("disk full".into())),
+            "Archive failed (ep1.mkv): disk full"
+        );
+        // Unknown file (not in the playlist) falls back to the hash.
+        let notice = archive_notice(&view, hash(9), &Ok("/x".into()));
+        assert!(notice.starts_with("Archived "), "{notice}");
+    }
+
+    #[test]
+    fn load_failure_flips_to_missing_and_re_resolves() {
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        // Pretend the now-playing file resolved and loaded.
+        wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            &view,
+            &[peer("kim")],
+        );
+
+        let out = wiring.on_player(PlayerOutput::LoadFailed { file: hash(1) }, &view);
+        assert!(
+            out.iter().any(|d| matches!(
+                d,
+                Directive::Mutate(Mutation::SetFileAvailability {
+                    file,
+                    availability: FileAvailability::Missing,
+                }) if *file == hash(1)
+            )),
+            "load failure must flip the file to Missing: {out:?}"
+        );
+        assert!(
+            out.iter().any(|d| matches!(
+                d,
+                Directive::Resolve { file, filename } if *file == hash(1) && filename == "ep1.mkv"
+            )),
+            "load failure must re-resolve the file: {out:?}"
+        );
     }
 
     #[test]

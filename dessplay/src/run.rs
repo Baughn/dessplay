@@ -840,6 +840,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 finished: true,
                             });
                         }
+                        crate::session::FileEffect::Archived { timestamp, text } => {
+                            let _ = self.ui.try_send(UiInput::System { timestamp, text });
+                            // Archive doesn't emit a sync event, so push a
+                            // fresh snapshot to clear the "temporary" marker
+                            // (cache_hashes is recomputed from storage).
+                            if let Some(snapshot) = self.snapshot().await {
+                                last_view = snapshot.view.clone();
+                                let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                            }
+                        }
                         crate::session::FileEffect::None
                         | crate::session::FileEffect::Other(_) => {}
                     }
@@ -862,10 +872,18 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             .into_iter()
             .filter_map(|record| Some((record.series_id?, record.watched_at as u64)))
             .collect();
+        let cache_hashes = self
+            .storage
+            .cache_entries()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.hash)
+            .collect();
         Some(crate::ui::app::UiSnapshot {
             view,
             peers: self.handle.peers.borrow().clone(),
             recency,
+            cache_hashes,
         })
     }
 }
