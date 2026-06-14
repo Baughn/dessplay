@@ -447,7 +447,9 @@ impl Ui {
     fn toggle_self_ready(&self) -> Vec<UserAction> {
         let view = &self.snapshot.view;
         let me = self.me.clone();
-        if derive::user_state(view, &me) == DerivedUserState::Ready {
+        let current = derive::user_state(view, &me);
+        tracing::debug!(?current, "Ctrl-R: toggling self readiness");
+        if current == DerivedUserState::Ready {
             // Become unready: like pressing pause.
             return vec![
                 UserAction::Mutate(Mutation::SetManualOverride {

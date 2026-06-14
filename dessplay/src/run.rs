@@ -700,6 +700,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 .sync
                                 .send(SyncCommand::Mutate(Box::new(mutation)))
                                 .await;
+                            // Reflect our own write immediately: pull a
+                            // fresh snapshot (FIFO after the mutation, so
+                            // it includes it) and push it to the UI and
+                            // player layer. Without this a local mutation
+                            // only became visible on the next network
+                            // event -- and the sync actor's StateChanged
+                            // signal is best-effort (dropped under load),
+                            // so a Ctrl-R toggle could read its own stale
+                            // state and never flip (2026-06-14).
+                            self.refresh_ui(&mut last_view).await;
                         }
                         Some(UserAction::HashAndAdd { path, after }) => {
                             // Hashing is seconds per gigabyte: background
@@ -905,6 +915,19 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
     /// Build a fresh snapshot for the UI. (`&mut self` although nothing
     /// mutates: a `&self` future would demand `Sync` from the SQLite
     /// connection when the loop is spawned as a task.)
+    /// Pull a fresh snapshot and push it to the UI + player layer.
+    /// Called after a local mutation so the user's own actions take
+    /// effect at once, independent of network-event timing.
+    async fn refresh_ui(&mut self, last_view: &mut dessplay_core::StateView) {
+        if let Some(snapshot) = self.snapshot().await {
+            self.shell.on_state(&snapshot.view, &snapshot.peers).await;
+            *last_view = snapshot.view.clone();
+            let _ = self
+                .ui
+                .try_send(crate::ui::shell::UiInput::Snapshot(Box::new(snapshot)));
+        }
+    }
+
     async fn snapshot(&mut self) -> Option<crate::ui::app::UiSnapshot> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.handle.sync.send(SyncCommand::GetView(tx)).await.ok()?;
