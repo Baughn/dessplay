@@ -631,6 +631,10 @@ pub struct SeriesPane {
     groups: Vec<ListGroup>,
     /// Expanded-state override per group heading.
     expanded: std::collections::BTreeMap<&'static str, bool>,
+    /// Type-to-filter text for Recent / All modes (case-insensitive
+    /// substring on title). A non-empty filter also drops Recent's
+    /// watched-only default. Empty in The List mode.
+    filter: String,
     sel: usize,
     focused: bool,
 }
@@ -644,6 +648,11 @@ impl SeriesPane {
     /// Current sort.
     pub fn sort(&self) -> SeriesSort {
         self.sort
+    }
+
+    /// Current type-to-filter text (Recent / All modes).
+    pub fn filter(&self) -> &str {
+        &self.filter
     }
 
     /// Replace franchise rows (Recent / All modes).
@@ -693,19 +702,33 @@ impl SeriesPane {
     /// Keys shown in the keybinding bar.
     pub fn keybindings(&self) -> Vec<Keybinding> {
         match self.mode {
-            SeriesMode::Recent => vec![("m", "Mode"), ("Enter", "Browse")],
-            SeriesMode::All => vec![("m", "Mode"), ("s", "Sort"), ("Enter", "Browse")],
-            SeriesMode::TheList => {
-                vec![("m", "Mode"), ("Enter", "Open"), ("e", "Edit"), ("l", "Link")]
-            }
+            SeriesMode::Recent => vec![("Ctrl-m", "Mode"), ("type", "Filter"), ("Enter", "Browse")],
+            SeriesMode::All => vec![
+                ("Ctrl-m", "Mode"),
+                ("Ctrl-s", "Sort"),
+                ("type", "Filter"),
+                ("Enter", "Browse"),
+            ],
+            SeriesMode::TheList => vec![
+                ("Ctrl-m", "Mode"),
+                ("Enter", "Open"),
+                ("e", "Edit"),
+                ("l", "Link"),
+            ],
         }
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let title = match self.mode {
+        let base = match self.mode {
             SeriesMode::Recent => "Recent Series",
             SeriesMode::All => "All Series",
             SeriesMode::TheList => "The List",
+        };
+        // Surface the active filter so typing is visible (no silent state).
+        let title = if self.mode != SeriesMode::TheList && !self.filter.is_empty() {
+            format!("{base}  /{}", self.filter)
+        } else {
+            base.to_string()
         };
         let items: Vec<ListItem> = match self.mode {
             SeriesMode::Recent | SeriesMode::All => self
@@ -776,6 +799,40 @@ passive_component!(SeriesPane);
 
 impl AppComponent<Msg, NoUserEvent> for SeriesPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        // Ctrl-modified keys first (like PlaylistPane): mode cycle in any
+        // mode, sort toggle in All mode. These stay on Ctrl so the bare
+        // letters are free for the type-to-filter below.
+        if let Some(code) = ctrl(ev) {
+            return match code {
+                Key::Char('m') => {
+                    self.mode = match self.mode {
+                        SeriesMode::Recent => SeriesMode::All,
+                        SeriesMode::All => SeriesMode::TheList,
+                        SeriesMode::TheList => SeriesMode::Recent,
+                    };
+                    self.filter.clear();
+                    self.sel = 0;
+                    Some(Msg::CycleSeriesMode)
+                }
+                Key::Char('s') if self.mode == SeriesMode::All => {
+                    self.sort = match self.sort {
+                        SeriesSort::Title => SeriesSort::Year,
+                        SeriesSort::Year => SeriesSort::Title,
+                    };
+                    Some(Msg::ToggleSeriesSort)
+                }
+                _ => None,
+            };
+        }
+        // Recent / All: any printable key types into the filter. The List
+        // keeps its bare-letter bindings (e / l) and does not filter.
+        if self.mode != SeriesMode::TheList
+            && let Some(c) = typed(ev)
+        {
+            self.filter.push(c);
+            self.sel = 0;
+            return Some(Msg::SeriesFilterChanged);
+        }
         match plain(ev)? {
             Key::Up => {
                 self.sel = step(self.sel, self.len(), false);
@@ -785,21 +842,15 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                 self.sel = step(self.sel, self.len(), true);
                 Some(Msg::None)
             }
-            Key::Char('m') => {
-                self.mode = match self.mode {
-                    SeriesMode::Recent => SeriesMode::All,
-                    SeriesMode::All => SeriesMode::TheList,
-                    SeriesMode::TheList => SeriesMode::Recent,
-                };
+            Key::Backspace if self.mode != SeriesMode::TheList => {
+                self.filter.pop();
                 self.sel = 0;
-                Some(Msg::CycleSeriesMode)
+                Some(Msg::SeriesFilterChanged)
             }
-            Key::Char('s') if self.mode == SeriesMode::All => {
-                self.sort = match self.sort {
-                    SeriesSort::Title => SeriesSort::Year,
-                    SeriesSort::Year => SeriesSort::Title,
-                };
-                Some(Msg::ToggleSeriesSort)
+            Key::Esc if self.mode != SeriesMode::TheList && !self.filter.is_empty() => {
+                self.filter.clear();
+                self.sel = 0;
+                Some(Msg::SeriesFilterChanged)
             }
             Key::Enter => match self.mode {
                 SeriesMode::Recent | SeriesMode::All => {

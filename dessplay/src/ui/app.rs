@@ -299,11 +299,13 @@ impl Ui {
                 &self.snapshot.view,
                 self.series.sort(),
                 Some(&self.snapshot.recency),
+                self.series.filter(),
             )),
             SeriesMode::All => self.series.set_franchises(props::franchise_rows(
                 &self.snapshot.view,
                 self.series.sort(),
                 None,
+                self.series.filter(),
             )),
             SeriesMode::TheList => self
                 .series
@@ -495,7 +497,7 @@ impl Ui {
             Msg::None => None,
             Msg::SendChat(text) => Some(UserAction::Mutate(Mutation::Chat { text })),
             Msg::Command(command) => self.command(&command),
-            Msg::CycleSeriesMode | Msg::ToggleSeriesSort => {
+            Msg::CycleSeriesMode | Msg::ToggleSeriesSort | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
             }

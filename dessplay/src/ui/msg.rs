@@ -25,6 +25,8 @@ pub enum Msg {
     CycleSeriesMode,
     /// Toggle title/year sort (All mode).
     ToggleSeriesSort,
+    /// The Recent/All filter text changed (typed/backspace/clear).
+    SeriesFilterChanged,
     /// Open a franchise (episode browser).
     BrowseFranchise(FranchiseKey),
     /// Edit a List entry.
@@ -110,6 +112,7 @@ impl Msg {
             Msg::Command(_) => "Command",
             Msg::CycleSeriesMode => "CycleSeriesMode",
             Msg::ToggleSeriesSort => "ToggleSeriesSort",
+            Msg::SeriesFilterChanged => "SeriesFilterChanged",
             Msg::BrowseFranchise(_) => "BrowseFranchise",
             Msg::EditListEntry(_) => "EditListEntry",
             Msg::LinkListEntry(_) => "LinkListEntry",

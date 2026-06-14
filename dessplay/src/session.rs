@@ -1137,6 +1137,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             FileOutput::ScanProgress { done, total } => {
                 FileEffect::ScanProgress { done, total }
             }
+            FileOutput::WatchRecorded => FileEffect::WatchRecorded,
             // The remaining outputs are consumed by the bridge loop as
             // those features land (eviction notices).
             other => FileEffect::Other(other),
@@ -1225,6 +1226,10 @@ pub enum FileEffect {
         /// Files needing a hash this scan.
         total: usize,
     },
+    /// A watch was just recorded: refresh the snapshot so Recent Series
+    /// re-reads watch history and reflects the new recency. Carries no
+    /// data — watch recording produces no sync event of its own.
+    WatchRecorded,
     /// An output not yet consumed by the shell.
     Other(FileOutput),
 }

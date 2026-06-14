@@ -213,6 +213,13 @@ pub enum FileOutput {
         /// The evicted files.
         files: Vec<Ed2kHash>,
     },
+    /// A watch record was just written to local watch history. Carries no
+    /// payload: it exists only to prompt a fresh UI snapshot, so the
+    /// Recent Series pane (which reads `watch_history` at snapshot time)
+    /// reflects the new recency immediately. Watch recording produces no
+    /// sync event, so without this the pane wouldn't update until an
+    /// unrelated network event happened along.
+    WatchRecorded,
     /// A batch of indexed library files (hash, size, filename), from the
     /// media-library scan. The session inserts AniDB lookup requests for
     /// any that still lack metadata. Emitted incrementally: cache hits
@@ -525,6 +532,9 @@ impl Actor {
                 if let Err(e) = self.storage.record_watched(&record) {
                     tracing::error!("recording watch history: {e}");
                 }
+                // Prompt a fresh UI snapshot so Recent Series re-reads
+                // watch history and reflects the new recency at once.
+                let _ = self.out.send(FileOutput::WatchRecorded).await;
             }
             FileCommand::CheckSeriesKnown { file, series, key } => {
                 let known = self.storage.series_known(&key).unwrap_or_else(|e| {
@@ -1972,6 +1982,38 @@ mod tests {
                 .unwrap(),
             path.parent().unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn record_watched_writes_history_and_emits_refresh() {
+        // Regression: recording a watch must emit FileOutput::WatchRecorded
+        // so the bridge pushes a fresh snapshot — otherwise Recent Series
+        // never reflects the just-watched episode (2026-06-14).
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        let mut rig = spawn_rig(storage, vec![], CacheRetention::default());
+
+        rig.commands
+            .send(FileCommand::RecordWatched(WatchRecord {
+                hash: hash(9),
+                series_id: Some(AniDbSeriesId(5)),
+                series_name: Some("Frieren".into()),
+                filename: "frieren-01.mkv".into(),
+                watched_at: 42,
+            }))
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::WatchRecorded => {}
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        // The record actually landed in watch history.
+        let verify = Storage::open(&db_path).unwrap();
+        let record = verify.watched(hash(9)).unwrap().expect("watch recorded");
+        assert_eq!(record.series_id, Some(AniDbSeriesId(5)));
+        assert_eq!(record.watched_at, 42);
     }
 
     #[tokio::test]

@@ -74,9 +74,15 @@ sync state with each other. See [network-design.md](network-design.md).
 
 **From the Series pane:**
 1. Press `Tab` to focus the **Series** pane (top-right)
-2. The pane has two modes, toggled with `m`:
-   - **Recent Series** (default): franchises sorted by unwatched > recency > alphabetical
-   - **All Series**: same data, sorted by title or year (toggle with `s`)
+2. The pane has three modes, cycled with `Ctrl-m`:
+   - **Recent Series** (default): only franchises the user has *watched*, most
+     recently watched first (then title). Unwatched series are hidden. Typing
+     into the pane filters by title substring (case-insensitive) and *removes*
+     the watched-only restriction, so any series can be found; `Esc` clears the
+     filter.
+   - **All Series**: every franchise, sorted by title or year (toggle with
+     `Ctrl-s`). Typing filters the same way.
+   - **The List**: see [The List](#the-list-series-tracker).
 3. Related anime are grouped into **franchises** using AniDB's relations graph
    (sequel, prequel, side story, etc.). Each franchise shows as one entry. The
    browser spans the group's **collective library** -- every file any client
@@ -563,8 +569,11 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Left` / `Right` | Chat | Move cursor |
 | `Ctrl-Left` / `Ctrl-Right` | Chat | Move cursor by word |
 | `Home` / `End` | Chat | Move cursor to start/end |
-| `m` | Series | Cycle mode: Recent Series -> All Series -> The List |
-| `s` | Series (All mode) | Toggle sort: by title <-> by year |
+| `Ctrl-m` | Series | Cycle mode: Recent Series -> All Series -> The List |
+| `Ctrl-s` | Series (All mode) | Toggle sort: by title <-> by year |
+| _printable_ | Series (Recent / All) | Type to filter franchises by title (removes Recent's watched-only default) |
+| `Backspace` | Series (Recent / All) | Delete a filter character |
+| `Esc` | Series (Recent / All) | Clear the filter |
 | `Enter` | Series | Browse franchise (episode browser or file browser) |
 | `Enter` | Series (List mode) | Jump to next episode / open entry |
 | `e` | Series (List mode) | Edit entry (modal) |

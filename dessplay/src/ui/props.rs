@@ -349,15 +349,23 @@ pub struct ListGroup {
     pub collapsed: bool,
 }
 
-/// Franchise rows for the Recent / All modes. `recency` maps series to
-/// last-watched shared-clock millis (from local watch history); Recent
-/// sorts unwatched-franchise-first... — for Phase 6, most recently
-/// watched first, then title (unwatched-first needs Phase 9's local
-/// file knowledge).
+/// Franchise rows for the Recent / All modes. `recency` is `Some` only in
+/// Recent mode and maps series to last-watched shared-clock millis (from
+/// local watch history); a franchise's recency is the newest watch among
+/// its members.
+///
+/// Visibility:
+/// - **Recent mode, no filter**: only *watched* franchises (those with a
+///   recency entry), newest first then title. Unwatched shows are hidden.
+/// - **A non-empty `filter`** (either mode): case-insensitive substring on
+///   the title, which *removes* the watched-only restriction so any series
+///   can be found by typing. Recent still orders watched matches first.
+/// - **All mode, no filter**: every franchise, by title or year-then-title.
 pub fn franchise_rows(
     view: &StateView,
     sort: SeriesSort,
     recency: Option<&BTreeMap<AniDbSeriesId, u64>>,
+    filter: &str,
 ) -> Vec<FranchiseRow> {
     let mut rows: Vec<(Option<u64>, FranchiseRow)> = franchise::franchises(view)
         .into_iter()
@@ -379,6 +387,15 @@ pub fn franchise_rows(
             )
         })
         .collect();
+
+    let needle = filter.trim().to_lowercase();
+    if !needle.is_empty() {
+        rows.retain(|(_, row)| row.title.to_lowercase().contains(&needle));
+    } else if recency.is_some() {
+        // Recent mode default: watched franchises only.
+        rows.retain(|(watched, _)| watched.is_some());
+    }
+
     match (recency, sort) {
         (Some(_), _) => rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title))),
         (None, SeriesSort::Title) => rows.sort_by(|a, b| a.1.title.cmp(&b.1.title)),
@@ -955,6 +972,123 @@ mod tests {
     fn numbered_episodes_precede_unnumbered() {
         let items = [(None, "extra"), (Some("01"), "ep01")];
         assert_eq!(sorted_labels(&items), vec!["ep01", "extra"]);
+    }
+
+    // ---- franchise_rows: recency / watched-only / filter ----------------
+
+    /// Build a one-file franchise named `title` for series id `id`, then
+    /// register the watch timestamp into a recency map if `watched_at` is set.
+    fn add_series(
+        state: &mut CrdtState,
+        recency: &mut BTreeMap<AniDbSeriesId, u64>,
+        id: u32,
+        title: &str,
+        watched_at: Option<u64>,
+    ) {
+        use dessplay_core::types::{AniDbMetadata, MetadataSource};
+        // A distinct file hash per series (id fits in a byte for our tests).
+        state.set_anidb_metadata(
+            A,
+            ts(id as u64),
+            hash(id as u8),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: title.into(),
+                series_id: Some(AniDbSeriesId(id)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        if let Some(t) = watched_at {
+            recency.insert(AniDbSeriesId(id), t);
+        }
+    }
+
+    fn titles(rows: &[FranchiseRow]) -> Vec<String> {
+        rows.iter().map(|r| r.title.clone()).collect()
+    }
+
+    /// Recent mode, no filter: only watched franchises, newest first;
+    /// unwatched ones are hidden entirely. Regression for the pane rendering
+    /// alphabetically and never reflecting a just-watched episode.
+    #[test]
+    fn recent_shows_only_watched_newest_first() {
+        let mut state = CrdtState::new();
+        let mut recency = BTreeMap::new();
+        add_series(&mut state, &mut recency, 1, "Zelda", Some(300)); // newest
+        add_series(&mut state, &mut recency, 2, "Akira", Some(100)); // oldest
+        add_series(&mut state, &mut recency, 3, "Monster", Some(200));
+        add_series(&mut state, &mut recency, 4, "Berserk", None); // unwatched
+        let rows = franchise_rows(&state.view(), SeriesSort::Title, Some(&recency), "");
+        assert_eq!(titles(&rows), vec!["Zelda", "Monster", "Akira"]);
+    }
+
+    /// A non-empty filter removes the watched-only default and matches
+    /// titles case-insensitively, so an unwatched series can be found by
+    /// typing. Watched matches still sort ahead of unwatched ones.
+    #[test]
+    fn recent_filter_reveals_unwatched_case_insensitive() {
+        let mut state = CrdtState::new();
+        let mut recency = BTreeMap::new();
+        add_series(&mut state, &mut recency, 1, "Berserk", None); // unwatched
+        add_series(&mut state, &mut recency, 2, "Bersaga", Some(50)); // watched
+        add_series(&mut state, &mut recency, 3, "Akira", Some(99)); // no match
+        let rows = franchise_rows(&state.view(), SeriesSort::Title, Some(&recency), "BERS");
+        // Both "Bers…" match; watched (Bersaga) first, then unwatched Berserk.
+        assert_eq!(titles(&rows), vec!["Bersaga", "Berserk"]);
+    }
+
+    /// All mode (recency `None`) shows every franchise; a filter narrows by
+    /// substring while the title sort is preserved.
+    #[test]
+    fn all_mode_filter_narrows_and_keeps_sort() {
+        let mut state = CrdtState::new();
+        let mut recency = BTreeMap::new();
+        add_series(&mut state, &mut recency, 1, "Monster", None);
+        add_series(&mut state, &mut recency, 2, "Monogatari", None);
+        add_series(&mut state, &mut recency, 3, "Akira", None);
+        let all = franchise_rows(&state.view(), SeriesSort::Title, None, "");
+        assert_eq!(titles(&all), vec!["Akira", "Monogatari", "Monster"]);
+        let mono = franchise_rows(&state.view(), SeriesSort::Title, None, "mon");
+        assert_eq!(titles(&mono), vec!["Monogatari", "Monster"]);
+    }
+
+    proptest::proptest! {
+        /// For any recency assignment, the unfiltered Recent view is exactly
+        /// the watched franchises, ordered by descending watch time.
+        #[test]
+        fn recent_unfiltered_is_watched_set_newest_first(
+            // (series id, watched_at?) for a handful of distinct series.
+            specs in proptest::collection::vec(
+                (1u32..200, proptest::option::of(0u64..10_000)),
+                1..12,
+            )
+        ) {
+            let mut state = CrdtState::new();
+            let mut recency = BTreeMap::new();
+            // Deduplicate ids; each surviving series gets a unique title.
+            let mut seen = std::collections::BTreeSet::new();
+            let mut watched_count = 0usize;
+            let mut title_time: BTreeMap<String, u64> = BTreeMap::new();
+            for (i, (id, w)) in specs.iter().enumerate() {
+                if !seen.insert(*id) {
+                    continue;
+                }
+                let title = format!("S{i:03}");
+                add_series(&mut state, &mut recency, *id, &title, *w);
+                if let Some(t) = w {
+                    watched_count += 1;
+                    title_time.insert(title, *t);
+                }
+            }
+            let rows = franchise_rows(&state.view(), SeriesSort::Title, Some(&recency), "");
+            // Exactly the watched franchises appear, none of the unwatched.
+            proptest::prop_assert_eq!(rows.len(), watched_count);
+            // …in non-increasing watch-time order (title tiebreak aside).
+            let times: Vec<u64> = rows.iter().map(|r| title_time[&r.title]).collect();
+            for win in times.windows(2) {
+                proptest::prop_assert!(win[0] >= win[1]);
+            }
+        }
     }
 
     proptest::proptest! {

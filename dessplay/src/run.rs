@@ -926,6 +926,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 });
                             }
                         }
+                        crate::session::FileEffect::WatchRecorded => {
+                            // Recording a watch emits no sync event, so push
+                            // a fresh snapshot — its recency map is rebuilt
+                            // from storage, moving the just-watched series to
+                            // the top of Recent Series at once.
+                            if let Some(snapshot) = self.snapshot().await {
+                                last_view = snapshot.view.clone();
+                                let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                            }
+                        }
                         crate::session::FileEffect::None
                         | crate::session::FileEffect::Other(_) => {}
                     }

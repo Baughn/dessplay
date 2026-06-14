@@ -98,8 +98,9 @@ enum Msg {
     ChatInputChanged(String),
 
     // Series
-    CycleSeriesMode,            // Recent -> All -> The List
-    ToggleSeriesSort,
+    CycleSeriesMode,            // Recent -> All -> The List (Ctrl-m)
+    ToggleSeriesSort,           // All mode (Ctrl-s)
+    SeriesFilterChanged,        // type-to-filter text changed (Recent / All)
     BrowseFranchise(FranchiseId),
 
     // The List
@@ -219,8 +220,11 @@ snapshot data to component props:
 - **SubtitlePane**: rolling log of `SubtitleLine` events from the PlayerActor
   (local-only; not part of the snapshot)
 - **SeriesPane**: snapshot.anidb_metadata + snapshot.series_relations + local
-  watch history -> franchise list (Recent/All modes);
-  snapshot.list_entries + snapshot.list_next_ep -> grouped List entries
+  watch history -> franchise list (Recent/All modes). Recent shows only
+  *watched* franchises (recency-keyed), newest first; a type-to-filter string
+  (held in the component, applied in `props::franchise_rows`) narrows by title
+  and lifts the watched-only default. snapshot.list_entries +
+  snapshot.list_next_ep -> grouped List entries
   (List mode)
 - **UsersPane**: snapshot.series_preferences + snapshot.manual_overrides
   + snapshot.file_availability + peer presence/roles -> colored user list,
