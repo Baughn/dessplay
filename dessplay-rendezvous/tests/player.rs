@@ -381,10 +381,19 @@ async fn queued_entries_are_prefetched_ahead_of_now_playing() {
     .await;
 }
 
-/// Baughn lacks a missing file whose series is *unknown* to them (empty
-/// watch history) but carries an AniDB series id: baughn is auto-marked
-/// NotWatching, sees the placeholder, and stops gating — so kim's play
-/// actually starts (design.md, File State, unknown-series branch).
+/// A now-playing file whose series is *unknown* to a user (empty watch
+/// history) but carries an AniDB series id, that **no present peer holds**:
+/// the missing user is auto-marked NotWatching, sees the placeholder, and
+/// stops gating — so an `unpause` actually starts playback rather than
+/// deadlocking on a file nobody can supply (design.md, File State,
+/// unknown-series branch).
+///
+/// "No present peer holds it" is load-bearing: the auto-NotWatch is
+/// deliberately *suppressed* when the file is obtainable (a present peer
+/// advertises it Ready), because then it just downloads — that path is
+/// covered by `a_missing_file_is_downloaded_from_a_peer`. So here nobody
+/// installs the file: kim adds it by identity (as the catalog allows) and
+/// both clients, lacking it and not knowing the series, opt out.
 #[tokio::test(start_paused = true)]
 async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
     use dessplay_core::types::{AniDbMetadata, AniDbSeriesId, MetadataSource, SeriesWatchState};
@@ -393,8 +402,9 @@ async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
     let kim = harness.player_client("kim", 1);
     let mut baughn = harness.player_client("baughn", 2);
     let file = media_file(1);
-    kim.install(&file);
-    // baughn gets nothing — and has no watch history for the series.
+    // Nobody installs `file`: no present peer can serve it, so the
+    // auto-NotWatch path is exercised instead of a download. Neither client
+    // has watch history for the series, so it is "unknown" to both.
 
     mutate(
         &kim,
@@ -425,25 +435,27 @@ async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
     )
     .await;
 
-    // Baughn auto-marks NotWatching for the unknown series.
-    eventually(&[&kim, &baughn], BUDGET, |snaps| {
-        snaps.iter().all(|s| {
-            s.view
-                .series_preference
-                .get(&(UserId::new("baughn"), AniDbSeriesId(4242)))
-                == Some(&SeriesWatchState::NotWatching)
+    // Both users auto-mark NotWatching for the unknown, unobtainable series.
+    for who in ["kim", "baughn"] {
+        eventually(&[&kim, &baughn], BUDGET, |snaps| {
+            snaps.iter().all(|s| {
+                s.view
+                    .series_preference
+                    .get(&(UserId::new(who), AniDbSeriesId(4242)))
+                    == Some(&SeriesWatchState::NotWatching)
+            })
         })
-    })
-    .await;
+        .await;
+    }
 
     // Baughn's player is handed the placeholder (a Load), not the real
-    // file (which they don't have).
+    // file (which nobody has).
     baughn
         .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
         .await;
 
-    // Kim presses play. Baughn no longer gates, so playback actually
-    // starts and kim's player is told to unpause.
+    // An unpause now starts playback: nobody gates (all NotWatching), so
+    // the group plays on placeholders instead of deadlocking.
     kim.user(PlayerEvent::PauseChanged(false));
     eventually(&[&kim, &baughn], BUDGET, |snaps| {
         snaps.iter().all(|s| s.playing())
