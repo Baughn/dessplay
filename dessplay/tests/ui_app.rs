@@ -506,8 +506,8 @@ fn the_list_renders_and_edits() {
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
 
     ui.handle(key(Key::Tab)); // Series
-    ui.handle(ctrl('m')); // All
-    ui.handle(ctrl('m')); // The List
+    ui.handle(key(Key::Char('m'))); // All
+    ui.handle(key(Key::Char('m'))); // The List
     let screen = render(&mut ui, 100, 30);
     assert!(screen.contains("Watching (1)"), "{screen}");
     assert!(screen.contains("Frieren"), "{screen}");
@@ -557,8 +557,8 @@ fn linking_a_list_entry_searches_and_links() {
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
 
     ui.handle(key(Key::Tab)); // Series
-    ui.handle(ctrl('m')); // All
-    ui.handle(ctrl('m')); // The List
+    ui.handle(key(Key::Char('m'))); // All
+    ui.handle(key(Key::Char('m'))); // The List
     ui.handle(key(Key::Down)); // heading -> entry
 
     // 'l' opens the search modal and fires a search for the name.
@@ -638,8 +638,8 @@ fn editing_the_search_query_rearms_search() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
     ui.handle(key(Key::Tab));
-    ui.handle(ctrl('m'));
-    ui.handle(ctrl('m'));
+    ui.handle(key(Key::Char('m')));
+    ui.handle(key(Key::Char('m')));
     ui.handle(key(Key::Down));
     ui.handle(key(Key::Char('l')));
 

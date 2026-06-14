@@ -98,9 +98,9 @@ enum Msg {
     ChatInputChanged(String),
 
     // Series
-    CycleSeriesMode,            // Recent -> All -> The List (Ctrl-m)
-    ToggleSeriesSort,           // All mode (Ctrl-s)
-    SeriesFilterChanged,        // type-to-filter text changed (Recent / All)
+    CycleSeriesMode,            // Recent -> All -> The List (m)
+    ToggleSeriesSort,           // All mode (s)
+    SeriesFilterChanged,        // filter text changed (/ to start, Recent / All)
     BrowseFranchise(FranchiseId),
 
     // The List
@@ -221,9 +221,9 @@ snapshot data to component props:
   (local-only; not part of the snapshot)
 - **SeriesPane**: snapshot.anidb_metadata + snapshot.series_relations + local
   watch history -> franchise list (Recent/All modes). Recent shows only
-  *watched* franchises (recency-keyed), newest first; a type-to-filter string
-  (held in the component, applied in `props::franchise_rows`) narrows by title
-  and lifts the watched-only default. snapshot.list_entries +
+  *watched* franchises (recency-keyed), newest first; a `/`-initiated filter
+  string (held in the component, applied in `props::franchise_rows`) narrows
+  by title and lifts the watched-only default. snapshot.list_entries +
   snapshot.list_next_ep -> grouped List entries
   (List mode)
 - **UsersPane**: snapshot.series_preferences + snapshot.manual_overrides

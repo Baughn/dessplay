@@ -631,10 +631,16 @@ pub struct SeriesPane {
     groups: Vec<ListGroup>,
     /// Expanded-state override per group heading.
     expanded: std::collections::BTreeMap<&'static str, bool>,
-    /// Type-to-filter text for Recent / All modes (case-insensitive
-    /// substring on title). A non-empty filter also drops Recent's
-    /// watched-only default. Empty in The List mode.
+    /// Filter text for Recent / All modes (case-insensitive substring on
+    /// title). A non-empty filter also drops Recent's watched-only
+    /// default. Empty in The List mode.
     filter: String,
+    /// Whether we're editing the filter. Gated behind `/` (rather than
+    /// typing directly) so the bare `m` / `s` mode/sort keys stay live —
+    /// and reliable: Ctrl-modified letters collide with control codes
+    /// (Ctrl-M == Enter) in terminals without the enhanced keyboard
+    /// protocol, so they can't be used for the binding.
+    filtering: bool,
     sel: usize,
     focused: bool,
 }
@@ -701,20 +707,22 @@ impl SeriesPane {
 
     /// Keys shown in the keybinding bar.
     pub fn keybindings(&self) -> Vec<Keybinding> {
+        // While editing the filter, printable keys go to the filter; only
+        // navigation / Esc / Enter act.
+        if self.filtering {
+            return vec![("type", "Filter"), ("Esc", "Clear"), ("Enter", "Browse")];
+        }
         match self.mode {
-            SeriesMode::Recent => vec![("Ctrl-m", "Mode"), ("type", "Filter"), ("Enter", "Browse")],
+            SeriesMode::Recent => vec![("m", "Mode"), ("/", "Filter"), ("Enter", "Browse")],
             SeriesMode::All => vec![
-                ("Ctrl-m", "Mode"),
-                ("Ctrl-s", "Sort"),
-                ("type", "Filter"),
+                ("m", "Mode"),
+                ("s", "Sort"),
+                ("/", "Filter"),
                 ("Enter", "Browse"),
             ],
-            SeriesMode::TheList => vec![
-                ("Ctrl-m", "Mode"),
-                ("Enter", "Open"),
-                ("e", "Edit"),
-                ("l", "Link"),
-            ],
+            SeriesMode::TheList => {
+                vec![("m", "Mode"), ("Enter", "Open"), ("e", "Edit"), ("l", "Link")]
+            }
         }
     }
 
@@ -724,8 +732,10 @@ impl SeriesPane {
             SeriesMode::All => "All Series",
             SeriesMode::TheList => "The List",
         };
-        // Surface the active filter so typing is visible (no silent state).
-        let title = if self.mode != SeriesMode::TheList && !self.filter.is_empty() {
+        // Surface the filter so typing is visible (no silent state); show
+        // the `/` cue the moment filtering starts, even before any text.
+        let title = if self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty())
+        {
             format!("{base}  /{}", self.filter)
         } else {
             base.to_string()
@@ -799,39 +809,42 @@ passive_component!(SeriesPane);
 
 impl AppComponent<Msg, NoUserEvent> for SeriesPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        // Ctrl-modified keys first (like PlaylistPane): mode cycle in any
-        // mode, sort toggle in All mode. These stay on Ctrl so the bare
-        // letters are free for the type-to-filter below.
-        if let Some(code) = ctrl(ev) {
-            return match code {
-                Key::Char('m') => {
-                    self.mode = match self.mode {
-                        SeriesMode::Recent => SeriesMode::All,
-                        SeriesMode::All => SeriesMode::TheList,
-                        SeriesMode::TheList => SeriesMode::Recent,
-                    };
-                    self.filter.clear();
+        // Filter editing (entered with `/`): printable keys narrow the
+        // list, Backspace deletes, Esc clears and exits. Up/Down and Enter
+        // still navigate / select the filtered list. Mode and sort keys
+        // are intentionally inert here so any letter can be typed.
+        if self.filtering {
+            if let Some(c) = typed(ev) {
+                self.filter.push(c);
+                self.sel = 0;
+                return Some(Msg::SeriesFilterChanged);
+            }
+            return match plain(ev)? {
+                Key::Backspace => {
+                    self.filter.pop();
                     self.sel = 0;
-                    Some(Msg::CycleSeriesMode)
+                    Some(Msg::SeriesFilterChanged)
                 }
-                Key::Char('s') if self.mode == SeriesMode::All => {
-                    self.sort = match self.sort {
-                        SeriesSort::Title => SeriesSort::Year,
-                        SeriesSort::Year => SeriesSort::Title,
-                    };
-                    Some(Msg::ToggleSeriesSort)
+                Key::Esc => {
+                    self.filter.clear();
+                    self.filtering = false;
+                    self.sel = 0;
+                    Some(Msg::SeriesFilterChanged)
+                }
+                Key::Up => {
+                    self.sel = step(self.sel, self.len(), false);
+                    Some(Msg::None)
+                }
+                Key::Down => {
+                    self.sel = step(self.sel, self.len(), true);
+                    Some(Msg::None)
+                }
+                Key::Enter => {
+                    let row = self.franchises.get(self.sel)?;
+                    Some(Msg::BrowseFranchise(row.key.clone()))
                 }
                 _ => None,
             };
-        }
-        // Recent / All: any printable key types into the filter. The List
-        // keeps its bare-letter bindings (e / l) and does not filter.
-        if self.mode != SeriesMode::TheList
-            && let Some(c) = typed(ev)
-        {
-            self.filter.push(c);
-            self.sel = 0;
-            return Some(Msg::SeriesFilterChanged);
         }
         match plain(ev)? {
             Key::Up => {
@@ -842,11 +855,29 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                 self.sel = step(self.sel, self.len(), true);
                 Some(Msg::None)
             }
-            Key::Backspace if self.mode != SeriesMode::TheList => {
-                self.filter.pop();
+            Key::Char('m') => {
+                self.mode = match self.mode {
+                    SeriesMode::Recent => SeriesMode::All,
+                    SeriesMode::All => SeriesMode::TheList,
+                    SeriesMode::TheList => SeriesMode::Recent,
+                };
+                self.filter.clear();
                 self.sel = 0;
-                Some(Msg::SeriesFilterChanged)
+                Some(Msg::CycleSeriesMode)
             }
+            Key::Char('s') if self.mode == SeriesMode::All => {
+                self.sort = match self.sort {
+                    SeriesSort::Title => SeriesSort::Year,
+                    SeriesSort::Year => SeriesSort::Title,
+                };
+                Some(Msg::ToggleSeriesSort)
+            }
+            // `/` begins filtering (Recent / All only).
+            Key::Char('/') if self.mode != SeriesMode::TheList => {
+                self.filtering = true;
+                Some(Msg::None)
+            }
+            // A set-but-not-editing filter: Esc clears it.
             Key::Esc if self.mode != SeriesMode::TheList && !self.filter.is_empty() => {
                 self.filter.clear();
                 self.sel = 0;
@@ -1003,6 +1034,66 @@ passive_component!(KeyBar);
 impl AppComponent<Msg, NoUserEvent> for KeyBar {
     fn on(&mut self, _ev: &Event<NoUserEvent>) -> Option<Msg> {
         None
+    }
+}
+
+#[cfg(test)]
+mod series_pane_tests {
+    use super::*;
+
+    fn key(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// Mode/sort live on the bare `m` / `s` keys (reliable across
+    /// terminals); filtering is gated behind `/` so those letters can be
+    /// typed into the filter without cycling the mode. Regression for
+    /// Ctrl-m being indistinguishable from Enter in konsole (2026-06-14).
+    #[test]
+    fn slash_gated_filter_leaves_mode_keys_live() {
+        let mut p = SeriesPane::default();
+        assert_eq!(p.mode(), SeriesMode::Recent);
+
+        // Bare `m` cycles mode when not filtering.
+        p.on(&key(Key::Char('m')));
+        assert_eq!(p.mode(), SeriesMode::All);
+
+        // `/` starts filtering; now letters — including `m` and `s` —
+        // build the filter instead of cycling/sorting.
+        p.on(&key(Key::Char('/')));
+        for c in ['m', 'o', 'n'] {
+            p.on(&key(Key::Char(c)));
+        }
+        assert_eq!(p.filter(), "mon");
+        assert_eq!(p.mode(), SeriesMode::All, "mode must not change while filtering");
+
+        // Backspace edits; Esc clears and exits filtering.
+        p.on(&key(Key::Backspace));
+        assert_eq!(p.filter(), "mo");
+        p.on(&key(Key::Esc));
+        assert_eq!(p.filter(), "");
+
+        // After Esc, `m` cycles again.
+        p.on(&key(Key::Char('m')));
+        assert_eq!(p.mode(), SeriesMode::TheList);
+    }
+
+    /// The List mode has no filter: `/` is inert and the bare letters keep
+    /// their List bindings.
+    #[test]
+    fn the_list_mode_does_not_filter() {
+        let mut p = SeriesPane::default();
+        p.on(&key(Key::Char('m'))); // All
+        p.on(&key(Key::Char('m'))); // The List
+        assert_eq!(p.mode(), SeriesMode::TheList);
+        p.on(&key(Key::Char('/')));
+        assert_eq!(p.filter(), "");
+        // `m` still cycles (back to Recent), proving `/` didn't start a filter.
+        p.on(&key(Key::Char('m')));
+        assert_eq!(p.mode(), SeriesMode::Recent);
     }
 }
 
