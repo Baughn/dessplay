@@ -411,6 +411,12 @@ struct Actor {
     /// Files hashed / total this scan, for `ScanProgress`.
     scan_done: usize,
     scan_total: usize,
+    /// When the current scan's hashing started, for the completion summary.
+    scan_started: Option<std::time::Instant>,
+    /// Hash failures seen this scan, reported in the completion summary.
+    scan_failed: usize,
+    /// Files between info-level progress checkpoints (~20 over the scan).
+    scan_log_step: usize,
     out: mpsc::Sender<FileOutput>,
     done_tx: mpsc::Sender<Done>,
 }
@@ -499,6 +505,9 @@ impl Actor {
             scan_walking: false,
             scan_done: 0,
             scan_total: 0,
+            scan_started: None,
+            scan_failed: 0,
+            scan_log_step: 1,
             out,
             done_tx,
         })
@@ -927,6 +936,11 @@ impl Actor {
                 self.scan_done = 0;
                 if self.scan_total > 0 {
                     tracing::info!(to_hash = self.scan_total, "indexing media library");
+                    self.scan_started = Some(std::time::Instant::now());
+                    self.scan_failed = 0;
+                    // ~20 info-level checkpoints regardless of library size;
+                    // small libraries log every file.
+                    self.scan_log_step = (self.scan_total / 20).max(1);
                     let _ = self
                         .out
                         .send(FileOutput::ScanProgress {
@@ -945,6 +959,12 @@ impl Actor {
                         let root = hashed.root;
                         let size = hashed.size_bytes;
                         self.commit_fresh_hashes(vec![(item.path.clone(), item.mtime, hashed)]);
+                        tracing::trace!(
+                            done = self.scan_done,
+                            total = self.scan_total,
+                            path = %item.path.display(),
+                            "hashed library file"
+                        );
                         let _ = self
                             .out
                             .send(FileOutput::LibraryIndexed {
@@ -953,8 +973,31 @@ impl Actor {
                             .await;
                     }
                     Err(e) => {
+                        self.scan_failed += 1;
                         tracing::debug!(path = %item.path.display(), "library scan hash failed: {e}");
                     }
+                }
+                // Operator-visible progress for the headless seeder (info, so
+                // it shows without RUST_LOG): a periodic checkpoint plus a
+                // completion summary with timing and failure count.
+                if self.scan_done == self.scan_total {
+                    tracing::info!(
+                        hashed = self.scan_done - self.scan_failed,
+                        failed = self.scan_failed,
+                        elapsed_ms = self
+                            .scan_started
+                            .map(|t| t.elapsed().as_millis() as u64)
+                            .unwrap_or(0),
+                        "media library scan complete"
+                    );
+                    self.scan_started = None;
+                } else if self.scan_done.is_multiple_of(self.scan_log_step) {
+                    tracing::info!(
+                        done = self.scan_done,
+                        total = self.scan_total,
+                        percent = self.scan_done * 100 / self.scan_total,
+                        "indexing media library"
+                    );
                 }
                 let _ = self
                     .out
