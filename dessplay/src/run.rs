@@ -379,7 +379,14 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                             .collect();
                         tracing::info!("peers: {}", listed.join(", "));
                     }
-                    other => tracing::debug!("{other:?}"),
+                    // Relayed peer traffic is internal cross-actor flow
+                    // (and high-volume during a transfer) — trace, not
+                    // debug; it's already handled by the seeder driver
+                    // above. State-sync and clock events are also internal.
+                    ClientEvent::Network(NetworkEvent::Peer { .. }) => {
+                        tracing::trace!("relayed peer message");
+                    }
+                    other => tracing::trace!("{other:?}"),
                 }
             }
         }

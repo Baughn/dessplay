@@ -450,7 +450,12 @@ async fn run_connection<T: Transport>(
                             .await;
                     }
                     other => {
-                        tracing::debug!("ignoring unexpected server message: {other:?}");
+                        // Terse: a Debug of `other` could dump a whole
+                        // state snapshot.
+                        tracing::debug!(
+                            msg = other.variant_name(),
+                            "ignoring unexpected server message"
+                        );
                     }
                 }
             }

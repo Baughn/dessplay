@@ -146,7 +146,12 @@ impl Bitfield {
 /// Messages exchanged between peers (always wrapped in a
 /// [`RelayEnvelope`] on the wire). The server forwards these without
 /// decoding them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Debug` is hand-written to **elide chunk and block-hash payloads** —
+/// a derived `Debug` of `ChunkData` dumps 250 KiB of file bytes into any
+/// log that formats the message (e.g. an event logged at debug). It
+/// shows lengths instead.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMessage {
     /// "Here is which chunks of `file` I have." Sent when a peer begins
     /// serving a file (complete bitfield) and as it completes more.
@@ -195,6 +200,44 @@ pub enum PeerMessage {
         /// Chunk indices to cancel.
         chunks: Vec<u32>,
     },
+}
+
+impl std::fmt::Debug for PeerMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerMessage::FileAvailability { file, bitfield } => f
+                .debug_struct("FileAvailability")
+                .field("file", file)
+                .field("bitfield", bitfield)
+                .finish(),
+            PeerMessage::BlockHashRequest { file } => {
+                f.debug_struct("BlockHashRequest").field("file", file).finish()
+            }
+            // Elide the hashes themselves — show how many.
+            PeerMessage::BlockHashes { file, hashes } => f
+                .debug_struct("BlockHashes")
+                .field("file", file)
+                .field("hashes", &format_args!("{} blocks", hashes.len()))
+                .finish(),
+            PeerMessage::ChunkRequest { file, chunks } => f
+                .debug_struct("ChunkRequest")
+                .field("file", file)
+                .field("chunks", chunks)
+                .finish(),
+            // Elide the bytes — show the length.
+            PeerMessage::ChunkData { file, index, data } => f
+                .debug_struct("ChunkData")
+                .field("file", file)
+                .field("index", index)
+                .field("data", &format_args!("{} bytes", data.len()))
+                .finish(),
+            PeerMessage::Cancel { file, chunks } => f
+                .debug_struct("Cancel")
+                .field("file", file)
+                .field("chunks", chunks)
+                .finish(),
+        }
+    }
 }
 
 /// The relay wrapper. Carried as length-prefixed frames on a dedicated
@@ -296,6 +339,28 @@ mod tests {
         let bytes = crate::wire::encode(&bf).unwrap();
         let back: Bitfield = crate::wire::decode(&bytes).unwrap();
         assert_eq!(bf, back);
+    }
+
+    #[test]
+    fn debug_elides_chunk_and_block_payloads() {
+        // ChunkData's bytes must never appear in a Debug string (they
+        // would leak file content into any log that formats the message).
+        let chunk = PeerMessage::ChunkData {
+            file: Ed2kHash([0; 16]),
+            index: 5,
+            data: vec![123u8; 4096],
+        };
+        let s = format!("{chunk:?}");
+        assert!(s.contains("4096 bytes"), "should show length: {s}");
+        assert!(!s.contains("123, 123"), "must not dump raw bytes: {s}");
+
+        let hashes = PeerMessage::BlockHashes {
+            file: Ed2kHash([0; 16]),
+            hashes: vec![Ed2kBlockHash([7; 16]); 12],
+        };
+        let s = format!("{hashes:?}");
+        assert!(s.contains("12 blocks"), "{s}");
+        assert!(!s.contains("[7, 7, 7"), "must not dump hash bytes: {s}");
     }
 
     #[test]
