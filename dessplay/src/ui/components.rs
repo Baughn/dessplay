@@ -97,11 +97,23 @@ fn step(sel: usize, len: usize, down: bool) -> usize {
 
 // ---- Chat pane ---------------------------------------------------------
 
+/// How many visual lines PgUp/PgDown move the chat view.
+const CHAT_PAGE_STEP: usize = 5;
+/// Indent applied to wrapped continuation lines in the chat log.
+const CHAT_WRAP_INDENT: usize = 2;
+
 /// Chat log + always-visible input line.
 pub struct ChatPane {
     lines: Vec<ChatLine>,
     input: tui_realm_stdlib::components::Input,
     focused: bool,
+    /// Visual lines scrolled up from the bottom (0 = pinned to newest).
+    scroll_offset: usize,
+    /// Text of every message this client has sent this session, for
+    /// shell-style Up/Down recall. Never touches the synced chat.
+    sent_history: Vec<String>,
+    /// Position while walking `sent_history` (None = editing a fresh draft).
+    history_pos: Option<usize>,
 }
 
 impl Default for ChatPane {
@@ -112,6 +124,9 @@ impl Default for ChatPane {
                 .borders(tuirealm::props::Borders::default())
                 .placeholder("say something…"),
             focused: false,
+            scroll_offset: 0,
+            sent_history: Vec::new(),
+            history_pos: None,
         }
     }
 }
@@ -138,35 +153,38 @@ impl ChatPane {
 
     /// Keys shown in the keybinding bar.
     pub fn keybindings(&self) -> Vec<Keybinding> {
-        vec![("Enter", "Send"), ("Esc", "Clear")]
+        vec![
+            ("Enter", "Send"),
+            ("PgUp/Dn", "Scroll"),
+            ("↑↓", "History"),
+            ("Esc", "Clear"),
+        ]
+    }
+
+    /// Load `text` into the input and park the cursor at its end.
+    fn set_input(&mut self, text: String) {
+        self.input
+            .attr(Attribute::Value, AttrValue::String(text));
+        let _ = self.input.perform(Cmd::GoTo(Position::End));
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         let [log_area, input_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);
-        let visible = log_area.height.saturating_sub(2) as usize;
-        let start = self.lines.len().saturating_sub(visible);
-        let items: Vec<ListItem> = self.lines[start..]
+        let width = log_area.width.saturating_sub(2) as usize;
+        // Flatten every message into wrapped visual lines.
+        let lines: Vec<Line> = self
+            .lines
             .iter()
-            .map(|line| {
-                if line.system {
-                    // Local system notice: dim, no sender, "*" marker.
-                    ListItem::new(Line::from(vec![
-                        Span::styled(format!("{} ", line.time), theme::dim()),
-                        Span::styled(format!("* {}", line.text), theme::dim()),
-                    ]))
-                } else {
-                    ListItem::new(Line::from(vec![
-                        Span::styled(format!("{} ", line.time), theme::dim()),
-                        Span::styled(
-                            format!("{}: ", line.sender),
-                            Style::default().add_modifier(tuirealm::ratatui::style::Modifier::BOLD),
-                        ),
-                        Span::raw(line.text.clone()),
-                    ]))
-                }
-            })
+            .flat_map(|line| wrap_chat_line(line, width))
             .collect();
+        let visible = log_area.height.saturating_sub(2) as usize;
+        // Clamp the scroll so it can never run past the top of the log.
+        let max_offset = lines.len().saturating_sub(visible);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+        let end = lines.len().saturating_sub(self.scroll_offset);
+        let start = end.saturating_sub(visible);
+        let items: Vec<ListItem> = lines[start..end].iter().cloned().map(ListItem::new).collect();
         frame.render_widget(
             List::new(items).block(
                 Block::default()
@@ -176,7 +194,122 @@ impl ChatPane {
             ),
             log_area,
         );
+        // Match the input border to the rest of the pane's focus color. The
+        // stdlib Input uses its `Borders` color only when active and its
+        // `UnfocusedBorderStyle` otherwise, so set both and forward focus
+        // (which also makes the text cursor visible while typing).
+        self.input.attr(
+            Attribute::Borders,
+            AttrValue::Borders(
+                tuirealm::props::Borders::default().color(theme::border_color(true)),
+            ),
+        );
+        self.input.attr(
+            Attribute::UnfocusedBorderStyle,
+            AttrValue::Style(Style::default().fg(theme::border_color(false))),
+        );
+        self.input
+            .attr(Attribute::Focus, AttrValue::Flag(self.focused));
         self.input.view(frame, input_area);
+    }
+}
+
+/// Greedy word-wrap. The first visual line gets `first_width` (the chat
+/// prefix eats into it); later lines get `rest_width`. Breaks at spaces
+/// where possible, hard-breaks any word longer than the available width.
+fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
+    let width_for = |idx: usize| if idx == 0 { first_width } else { rest_width }.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut width = width_for(0);
+    for mut word in text.split(' ') {
+        loop {
+            let cur_len = cur.chars().count();
+            let space = usize::from(!cur.is_empty());
+            let wlen = word.chars().count();
+            if cur_len + space + wlen <= width {
+                if space == 1 {
+                    cur.push(' ');
+                }
+                cur.push_str(word);
+                break;
+            }
+            if cur.is_empty() {
+                // Word alone exceeds the line: hard-break it.
+                let split_at = word
+                    .char_indices()
+                    .nth(width)
+                    .map(|(i, _)| i)
+                    .unwrap_or(word.len());
+                let (head, tail) = word.split_at(split_at);
+                cur.push_str(head);
+                lines.push(std::mem::take(&mut cur));
+                width = width_for(lines.len());
+                word = tail;
+            } else {
+                // Flush and retry the word on a fresh line.
+                lines.push(std::mem::take(&mut cur));
+                width = width_for(lines.len());
+            }
+        }
+    }
+    lines.push(cur);
+    lines
+}
+
+/// Render one chat message as one or more wrapped visual lines.
+fn wrap_chat_line(line: &ChatLine, width: usize) -> Vec<Line<'static>> {
+    use tuirealm::ratatui::style::Modifier;
+    let indent: String = " ".repeat(CHAT_WRAP_INDENT);
+    if line.system {
+        // Local system notice: dim, no sender, "*" marker.
+        let time = format!("{} ", line.time);
+        let prefix_width = time.chars().count();
+        let body = format!("* {}", line.text);
+        let chunks = wrap_body(
+            &body,
+            width.saturating_sub(prefix_width),
+            width.saturating_sub(CHAT_WRAP_INDENT),
+        );
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                if i == 0 {
+                    Line::from(vec![
+                        Span::styled(time.clone(), theme::dim()),
+                        Span::styled(chunk, theme::dim()),
+                    ])
+                } else {
+                    Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim()))
+                }
+            })
+            .collect()
+    } else {
+        let time = format!("{} ", line.time);
+        let sender = format!("{}: ", line.sender);
+        let prefix_width = time.chars().count() + sender.chars().count();
+        let chunks = wrap_body(
+            &line.text,
+            width.saturating_sub(prefix_width),
+            width.saturating_sub(CHAT_WRAP_INDENT),
+        );
+        let sender_style = theme::user_style(&line.sender).add_modifier(Modifier::BOLD);
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                if i == 0 {
+                    Line::from(vec![
+                        Span::styled(time.clone(), theme::dim()),
+                        Span::styled(sender.clone(), sender_style),
+                        Span::raw(chunk),
+                    ])
+                } else {
+                    Line::from(Span::raw(format!("{indent}{chunk}")))
+                }
+            })
+            .collect()
     }
 }
 
@@ -185,7 +318,11 @@ passive_component!(ChatPane);
 impl AppComponent<Msg, NoUserEvent> for ChatPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         let cmd = match typed(ev) {
-            Some(c) => Cmd::Type(c),
+            Some(c) => {
+                // Editing detaches from history recall (shell behavior).
+                self.history_pos = None;
+                Cmd::Type(c)
+            }
             None => match plain(ev)? {
                 Key::Enter => {
                     let text = self.text().trim().to_string();
@@ -193,6 +330,9 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
                         return None;
                     }
                     self.clear();
+                    self.sent_history.push(text.clone());
+                    self.history_pos = None;
+                    self.scroll_offset = 0; // jump to newest so you see it
                     return Some(if text.starts_with('/') {
                         Msg::Command(text)
                     } else {
@@ -201,6 +341,40 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
                 }
                 Key::Esc => {
                     self.clear();
+                    self.history_pos = None;
+                    return Some(Msg::None);
+                }
+                Key::PageUp => {
+                    self.scroll_offset += CHAT_PAGE_STEP;
+                    return Some(Msg::None);
+                }
+                Key::PageDown => {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_PAGE_STEP);
+                    return Some(Msg::None);
+                }
+                Key::Up => {
+                    // Recall an older message I sent into the input.
+                    if self.sent_history.is_empty() {
+                        return None;
+                    }
+                    let pos = match self.history_pos {
+                        None => self.sent_history.len() - 1,
+                        Some(p) => p.saturating_sub(1),
+                    };
+                    self.history_pos = Some(pos);
+                    self.set_input(self.sent_history[pos].clone());
+                    return Some(Msg::None);
+                }
+                Key::Down => {
+                    // Walk back toward the newest, then to an empty draft.
+                    let pos = self.history_pos?;
+                    if pos + 1 < self.sent_history.len() {
+                        self.history_pos = Some(pos + 1);
+                        self.set_input(self.sent_history[pos + 1].clone());
+                    } else {
+                        self.history_pos = None;
+                        self.clear();
+                    }
                     return Some(Msg::None);
                 }
                 Key::Backspace => Cmd::Delete, // stdlib: Delete = backspace
@@ -246,7 +420,7 @@ impl UsersPane {
             .iter()
             .map(|row| {
                 ListItem::new(Line::from(vec![
-                    Span::raw(format!("{} ", row.name)),
+                    Span::styled(format!("{} ", row.name), theme::user_style(&row.name)),
                     Span::styled(format!("[{}]", row.label), theme::tone_style(row.tone)),
                 ]))
             })
@@ -778,5 +952,54 @@ passive_component!(KeyBar);
 impl AppComponent<Msg, NoUserEvent> for KeyBar {
     fn on(&mut self, _ev: &Event<NoUserEvent>) -> Option<Msg> {
         None
+    }
+}
+
+#[cfg(test)]
+mod chat_wrap_tests {
+    use super::wrap_body;
+
+    #[test]
+    fn breaks_at_spaces() {
+        // first_width and rest_width both 10.
+        let lines = wrap_body("the quick brown fox", 10, 10);
+        for line in &lines {
+            assert!(line.chars().count() <= 10, "line too wide: {line:?}");
+        }
+        // Reassembling with single spaces recovers the words in order.
+        assert_eq!(lines.join(" ").split_whitespace().collect::<Vec<_>>(), [
+            "the", "quick", "brown", "fox"
+        ]);
+    }
+
+    #[test]
+    fn hard_breaks_overlong_word() {
+        let lines = wrap_body("supercalifragilistic", 5, 5);
+        assert!(lines.len() > 1, "long word should be split");
+        for line in &lines {
+            assert!(line.chars().count() <= 5, "chunk too wide: {line:?}");
+        }
+        assert_eq!(lines.concat(), "supercalifragilistic");
+    }
+
+    #[test]
+    fn respects_narrower_first_line() {
+        // First line only fits "ab"; the rest get width 10.
+        let lines = wrap_body("ab cdefghij", 2, 10);
+        assert_eq!(lines[0], "ab");
+        assert_eq!(lines[1], "cdefghij");
+    }
+
+    #[test]
+    fn exact_width_stays_on_one_line() {
+        let lines = wrap_body("abcde", 5, 5);
+        assert_eq!(lines, vec!["abcde".to_string()]);
+    }
+
+    #[test]
+    fn zero_width_does_not_loop() {
+        // Degenerate width is clamped to 1 internally; must terminate.
+        let lines = wrap_body("hi there", 0, 0);
+        assert!(!lines.is_empty());
     }
 }
