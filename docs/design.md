@@ -195,13 +195,16 @@ Their ready state is decided by a combination of the above; this only exists in 
 | Away | Gray | Away & Any (shows who set it) |
 | Not watching | Gray | Not watching & Any |
 | Downloading | Green | Ready & Downloading [complete enough to play] |
-| Downloading | Blue | Any & Downloading |
+| Downloading | Blue | Ready & Downloading [still fetching] |
+| Downloading | Red | Paused / Away / Not watching & Downloading |
 
-An in-progress download is the salient fact: a peer actively downloading
-the now-playing file reads as **Downloading** even if their derived state
-is Not Watching (it must not be shadowed by a settled "not watching"
-label). Paused and Away still win -- a blocker, or a deliberate choice,
-is what the others need to see.
+An in-progress download is **always** shown: a peer actively downloading
+the now-playing file reads as Downloading even if their derived state is
+Paused, Away, or Not Watching -- it must never be shadowed by those
+labels. The colour carries the rest of the story: green once it can play
+and they are Ready, blue while a Ready peer is still fetching, and red
+otherwise (the download is visible; the red says they still won't be
+watching right now).
 
 Departed users (see [Presence](#presence)) are shown on a dim "departed" line.
 Seeders are not listed as users; they appear on a separate dim "seeders:" line.

@@ -352,6 +352,8 @@ impl Ui {
                 items
             }
         };
+        // Globals, always available (handled before pane/modal routing).
+        items.push(("C-r", "Ready"));
         items.push(("C-c", "Quit"));
         self.keybar.set_items(items);
     }
