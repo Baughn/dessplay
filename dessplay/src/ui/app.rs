@@ -653,15 +653,31 @@ impl Ui {
             .into_iter()
             .find(|franchise| franchise.key == key);
         let Some(franchise) = franchise else { return };
-        let filename = |hash: &Ed2kHash| super::props::episode_label(view, hash);
+        // Build a season's episode list, ordered topologically by AniDB
+        // episode number (falling back to a natural parse of the label) --
+        // the metadata map is keyed by ed2k hash, so it arrives unordered.
+        let season_episodes = |hashes: Vec<Ed2kHash>| -> Vec<(Ed2kHash, String)> {
+            let mut episodes: Vec<(Ed2kHash, String)> = hashes
+                .into_iter()
+                .map(|hash| (hash, super::props::episode_label(view, &hash)))
+                .collect();
+            episodes.sort_by(|a, b| {
+                let key = |hash: &Ed2kHash, label: &str| {
+                    let epno = view
+                        .anidb_metadata
+                        .get(hash)
+                        .and_then(|metadata| metadata.as_ref())
+                        .and_then(|metadata| metadata.episode_number.as_deref());
+                    super::props::episode_sort_key(epno, label)
+                };
+                key(&a.0, &a.1).cmp(&key(&b.0, &b.1))
+            });
+            episodes
+        };
         let seasons: Vec<Season> = if franchise.series.is_empty() {
             vec![Season {
                 title: franchise.title.clone(),
-                episodes: franchise
-                    .files
-                    .iter()
-                    .map(|hash| (*hash, filename(hash)))
-                    .collect(),
+                episodes: season_episodes(franchise.files.clone()),
             }]
         } else {
             franchise
@@ -673,14 +689,15 @@ impl Ui {
                         .get(series)
                         .map(|relations| relations.title.clone())
                         .unwrap_or_else(|| format!("anidb:{}", series.0)),
-                    episodes: view
-                        .anidb_metadata
-                        .iter()
-                        .filter_map(|(hash, metadata)| {
-                            let metadata = metadata.as_ref()?;
-                            (metadata.series_id == Some(*series)).then(|| (*hash, filename(hash)))
-                        })
-                        .collect(),
+                    episodes: season_episodes(
+                        view.anidb_metadata
+                            .iter()
+                            .filter_map(|(hash, metadata)| {
+                                let metadata = metadata.as_ref()?;
+                                (metadata.series_id == Some(*series)).then_some(*hash)
+                            })
+                            .collect(),
+                    ),
                 })
                 .collect()
         };

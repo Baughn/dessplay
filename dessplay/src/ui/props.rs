@@ -396,6 +396,111 @@ pub fn episode_label(view: &StateView, hash: &Ed2kHash) -> String {
     hash.to_string()
 }
 
+/// One token of a natural-order parse: numeric runs compare as numbers, text
+/// runs case-insensitively. Deriving `Ord` puts `Num` before `Text`, the
+/// conventional "numbers sort first" behaviour.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum NatToken {
+    Num(u64),
+    Text(String),
+}
+
+/// Split a string into natural-order tokens: maximal ASCII-digit runs become
+/// `Num` (saturating on overflow), everything else lowercased `Text`. This is
+/// what makes "ep 2" sort before "ep 10".
+fn natural_tokens(s: &str) -> Vec<NatToken> {
+    let mut tokens = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            let mut n: u64 = 0;
+            while let Some(&d) = chars.peek() {
+                let Some(digit) = d.to_digit(10) else { break };
+                n = n.saturating_mul(10).saturating_add(u64::from(digit));
+                chars.next();
+            }
+            tokens.push(NatToken::Num(n));
+        } else {
+            let mut text = String::new();
+            while let Some(&t) = chars.peek() {
+                if t.is_ascii_digit() {
+                    break;
+                }
+                text.extend(t.to_lowercase());
+                chars.next();
+            }
+            tokens.push(NatToken::Text(text));
+        }
+    }
+    tokens
+}
+
+/// Sort key for ordering episodes within a season. Compared field by field
+/// in declaration order (derived `Ord`).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct EpisodeSortKey {
+    /// `false` (a number was parsed) sorts before `true`.
+    unnumbered: bool,
+    /// Regular=0, special "S"=1, credit "C"=2, trailer "T"=3, parody/promo
+    /// "P"=4, anything else=5.
+    category: u8,
+    /// The numeric part of the episode number.
+    number: u64,
+    /// Natural-order parse of the display label; final tiebreak, and the sole
+    /// ordering for unnumbered episodes.
+    fallback: Vec<NatToken>,
+}
+
+/// Sort key for ordering episodes within a season.
+///
+/// Topological by AniDB episode number when known: regular episodes (numeric,
+/// no prefix) first in numeric order, then specials (`S`), credits (`C`),
+/// trailers (`T`), parodies/promos (`P`), then anything else -- each group in
+/// numeric order. Episodes with no parseable number sort after the numbered
+/// ones, ordered by a natural-order parse of the display label (so "ep 2"
+/// precedes "ep 10").
+pub fn episode_sort_key(episode_number: Option<&str>, label: &str) -> EpisodeSortKey {
+    let fallback = natural_tokens(label);
+    let parsed = episode_number.and_then(|epno| {
+        let epno = epno.trim();
+        let digits_at = epno.find(|c: char| c.is_ascii_digit())?;
+        let (prefix, digits) = epno.split_at(digits_at);
+        // Only an alphabetic (or empty) prefix is a recognised episode form;
+        // a leading digit means prefix is empty (regular episode).
+        if !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        let number: u64 = digits
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .filter_map(|c| c.to_digit(10))
+            .fold(0u64, |n, d| n.saturating_mul(10).saturating_add(u64::from(d)));
+        let category = match prefix.to_ascii_uppercase().as_str() {
+            "" => 0,
+            "S" => 1,
+            "C" => 2,
+            "T" => 3,
+            "P" => 4,
+            _ => 5,
+        };
+        Some((category, number))
+    });
+    match parsed {
+        Some((category, number)) => EpisodeSortKey {
+            unnumbered: false,
+            category,
+            number,
+            fallback,
+        },
+        None => EpisodeSortKey {
+            unnumbered: true,
+            category: 0,
+            number: 0,
+            fallback,
+        },
+    }
+}
+
 /// The List, grouped per design: Watching (CurrentSeason + Active)
 /// first, then ShortList, Planned, Waiting, Hiatus, and a collapsed
 /// Finished / Dropped tail.
@@ -723,5 +828,79 @@ mod tests {
         assert_eq!(episode_label(&view, &hash(3)), "Mystery Show");
         // hash(4): totally unknown -> the raw hash is the only fallback.
         assert_eq!(episode_label(&view, &hash(4)), hash(4).to_string());
+    }
+
+    /// Sort a list of (episode_number, label) by the episode key and return
+    /// the labels in order.
+    fn sorted_labels(items: &[(Option<&str>, &str)]) -> Vec<String> {
+        let mut items = items.to_vec();
+        items.sort_by(|a, b| episode_sort_key(a.0, a.1).cmp(&episode_sort_key(b.0, b.1)));
+        items.into_iter().map(|(_, label)| label.to_string()).collect()
+    }
+
+    /// Episodes within a season must order by AniDB episode *number*, not by
+    /// lexical string or hash order. Regression for the episode browser
+    /// listing files in (effectively random) ed2k-hash order.
+    #[test]
+    fn episodes_sort_numerically_not_lexically() {
+        let items = [
+            (Some("10"), "ep10"),
+            (Some("2"), "ep2"),
+            (Some("01"), "ep01"),
+        ];
+        assert_eq!(sorted_labels(&items), vec!["ep01", "ep2", "ep10"]);
+    }
+
+    /// Regular episodes precede specials, which precede credits; each
+    /// category orders numerically within itself.
+    #[test]
+    fn regular_episodes_precede_specials_and_credits() {
+        let items = [
+            (Some("C1"), "credit1"),
+            (Some("S2"), "special2"),
+            (Some("3"), "regular3"),
+            (Some("S1"), "special1"),
+            (Some("1"), "regular1"),
+        ];
+        assert_eq!(
+            sorted_labels(&items),
+            vec!["regular1", "regular3", "special1", "special2", "credit1"]
+        );
+    }
+
+    /// With no episode numbers, ordering falls back to a natural-order parse
+    /// of the label: "ep 2" before "ep 10".
+    #[test]
+    fn unnumbered_episodes_fall_back_to_natural_label_order() {
+        let items = [(None, "ep 10"), (None, "ep 2")];
+        assert_eq!(sorted_labels(&items), vec!["ep 2", "ep 10"]);
+    }
+
+    /// Numbered episodes sort ahead of unnumbered ones in the same season.
+    #[test]
+    fn numbered_episodes_precede_unnumbered() {
+        let items = [(None, "extra"), (Some("01"), "ep01")];
+        assert_eq!(sorted_labels(&items), vec!["ep01", "extra"]);
+    }
+
+    proptest::proptest! {
+        /// For any permutation of distinct non-negative integers rendered as
+        /// zero-padded episode strings, sorting by the episode key yields
+        /// ascending numeric order.
+        #[test]
+        fn numeric_episodes_always_sort_ascending(
+            nums in proptest::collection::hash_set(0u64..10_000, 1..30)
+        ) {
+            let mut nums: Vec<u64> = nums.into_iter().collect();
+            // Start from a shuffled-ish order (reverse) to ensure the sort works.
+            nums.reverse();
+            let labels: Vec<String> = nums.iter().map(|n| format!("{n:05}")).collect();
+            let items: Vec<(Option<&str>, &str)> =
+                labels.iter().map(|l| (Some(l.as_str()), l.as_str())).collect();
+            let mut sorted = nums.clone();
+            sorted.sort_unstable();
+            let expected: Vec<String> = sorted.iter().map(|n| format!("{n:05}")).collect();
+            proptest::prop_assert_eq!(sorted_labels(&items), expected);
+        }
     }
 }
