@@ -135,7 +135,7 @@ impl SeederTransfer {
                 // browsable catalog: request a lookup for each new hash
                 // (the server dedups against existing metadata/queue and
                 // records the file's identity).
-                for (hash, size, filename) in files {
+                for (hash, size, filename, mtime) in files {
                     if self.lookups_requested.insert(hash) {
                         let _ = self
                             .sync
@@ -144,6 +144,7 @@ impl SeederTransfer {
                                     hash,
                                     size,
                                     filename,
+                                    mtime: Some(mtime),
                                 },
                             })))
                             .await;

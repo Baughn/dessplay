@@ -457,6 +457,12 @@ pub struct FileHashInfo {
     pub size: u64,
     /// For fallback metadata when AniDB doesn't know the file.
     pub filename: String,
+    /// File mtime in unix millis when the requester held it locally;
+    /// `None` when unknown (e.g. a playlist entry the client doesn't hold).
+    /// The server anchors the re-validation backoff on the *older* of this
+    /// and when it first saw the file, so files owned for years aren't
+    /// re-polled on the aggressive new-file ladder after a queue reset.
+    pub mtime: Option<i64>,
 }
 
 /// A user's playback position report.

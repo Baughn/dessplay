@@ -117,6 +117,12 @@ const MIGRATIONS: &[&str] = &[
         value TEXT NOT NULL
     ) STRICT;
     ",
+    // v3: the file's mtime (unix millis), supplied by clients in the
+    // lookup request. The NoData re-validation ladder anchors on the
+    // *older* of mtime and first_seen, so long-owned files AniDB doesn't
+    // know aren't re-polled on the aggressive new-file cadence after a
+    // queue reset. NULL = unknown (e.g. a playlist-only request).
+    "ALTER TABLE anidb_queue ADD COLUMN mtime INTEGER;",
 ];
 
 /// `next_attempt` sentinel for queue entries that are settled and must
@@ -308,12 +314,30 @@ impl ServerStorage {
 
     /// Add a lookup request if it isn't already queued. New entries are
     /// due immediately (`next_attempt = now`).
+    ///
+    /// A request for an already-queued hash does **not** reset the
+    /// schedule (`first_seen`, `next_attempt`, `has_data` are left alone),
+    /// but it *does* lower the stored `mtime` toward the oldest value
+    /// seen, so an existing row learns the file's real age the first time
+    /// a client reports it (and never loses a more-aged value).
     pub fn enqueue_lookup(&self, info: &FileHashInfo, now: i64) -> Result<()> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO anidb_queue
-             (hash, size_bytes, filename, first_seen, next_attempt)
-             VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![info.hash.0.as_slice(), info.size as i64, info.filename, now],
+            "INSERT INTO anidb_queue
+             (hash, size_bytes, filename, first_seen, next_attempt, mtime)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5)
+             ON CONFLICT(hash) DO UPDATE SET
+                 mtime = CASE
+                     WHEN excluded.mtime IS NULL THEN mtime
+                     WHEN mtime IS NULL THEN excluded.mtime
+                     ELSE min(mtime, excluded.mtime)
+                 END",
+            params![
+                info.hash.0.as_slice(),
+                info.size as i64,
+                info.filename,
+                now,
+                info.mtime,
+            ],
         )?;
         Ok(())
     }
@@ -322,7 +346,7 @@ impl ServerStorage {
     pub fn due_lookups(&self, now: i64, limit: usize) -> Result<Vec<QueueEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT hash, size_bytes, filename, first_seen, last_attempt,
-                    next_attempt, attempts, has_data
+                    next_attempt, attempts, has_data, mtime
              FROM anidb_queue WHERE next_attempt <= ?1
              ORDER BY next_attempt, hash LIMIT ?2",
         )?;
@@ -336,17 +360,28 @@ impl ServerStorage {
                 row.get::<_, i64>(5)?,
                 row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
+                row.get::<_, Option<i64>>(8)?,
             ))
         })?;
         let mut entries = Vec::new();
         for row in rows {
-            let (blob, size, filename, first_seen, last_attempt, next_attempt, attempts, has_data) =
-                row?;
+            let (
+                blob,
+                size,
+                filename,
+                first_seen,
+                last_attempt,
+                next_attempt,
+                attempts,
+                has_data,
+                mtime,
+            ) = row?;
             entries.push(QueueEntry {
                 info: FileHashInfo {
                     hash: hash_from_blob(blob)?,
                     size: size as u64,
                     filename,
+                    mtime,
                 },
                 first_seen,
                 last_attempt,
@@ -723,6 +758,7 @@ mod tests {
             hash: hash(1),
             size: 1234,
             filename: "ep1.mkv".into(),
+            mtime: None,
         };
         storage.enqueue_lookup(&info, 100).unwrap();
         // Duplicate enqueue (clients re-insert after reconnect): ignored,
@@ -760,6 +796,60 @@ mod tests {
         assert!(storage.due_lookups(i64::MAX, 10).unwrap().is_empty());
     }
 
+    /// An enqueue learns the file's mtime, and a later enqueue only ever
+    /// lowers it toward the oldest reported value (a `None` never clobbers
+    /// a known one). `first_seen` is never reset by a re-enqueue.
+    #[test]
+    fn enqueue_learns_and_minimises_mtime() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        let info = |mtime| FileHashInfo {
+            hash: hash(1),
+            size: 1,
+            filename: "ep1.mkv".into(),
+            mtime,
+        };
+        let read_mtime = |s: &ServerStorage| s.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime;
+
+        // First sighting carries an mtime; first_seen is pinned to 100.
+        storage.enqueue_lookup(&info(Some(5_000)), 100).unwrap();
+        assert_eq!(read_mtime(&storage), Some(5_000));
+        assert_eq!(storage.due_lookups(i64::MAX, 10).unwrap()[0].first_seen, 100);
+
+        // A re-enqueue with no mtime must not wipe the known one.
+        storage.enqueue_lookup(&info(None), 200).unwrap();
+        assert_eq!(read_mtime(&storage), Some(5_000));
+
+        // An older mtime wins (min); first_seen stays put.
+        storage.enqueue_lookup(&info(Some(1_000)), 300).unwrap();
+        assert_eq!(read_mtime(&storage), Some(1_000));
+        assert_eq!(storage.due_lookups(i64::MAX, 10).unwrap()[0].first_seen, 100);
+
+        // A newer mtime does not raise it back up.
+        storage.enqueue_lookup(&info(Some(9_000)), 400).unwrap();
+        assert_eq!(read_mtime(&storage), Some(1_000));
+    }
+
+    /// A row created before the mtime column existed (NULL mtime) learns
+    /// its mtime when a client re-reports the file post-upgrade. This is
+    /// the path by which the existing queue settles after deploy.
+    #[test]
+    fn enqueue_fills_mtime_for_a_preexisting_null_row() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        let info = |mtime| FileHashInfo {
+            hash: hash(7),
+            size: 1,
+            filename: "old.mkv".into(),
+            mtime,
+        };
+        storage.enqueue_lookup(&info(None), 100).unwrap();
+        assert_eq!(storage.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime, None);
+        storage.enqueue_lookup(&info(Some(42)), 200).unwrap();
+        assert_eq!(
+            storage.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime,
+            Some(42)
+        );
+    }
+
     /// Regression: a successful lookup marks the queue settled (has_data,
     /// recheck in a week) durably, but its metadata write can be lost to a
     /// restart before the CRDT snapshot persists. Such an orphan — settled
@@ -773,6 +863,7 @@ mod tests {
             hash: hash(i),
             size: 1,
             filename: name.into(),
+            mtime: None,
         };
         // hash(1): settled with data but metadata lost (the orphan).
         // hash(2): settled with data and metadata present (healthy).

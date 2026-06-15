@@ -266,6 +266,10 @@ async fn lookup_file<H: AniDbHost>(
     let hash = entry.info.hash;
     let result = api.file_by_hash(entry.info.size, hash).await;
     let now_i = now as i64;
+    // The unknown-file backoff is anchored on the older of when we first
+    // saw the file and its own mtime, so long-owned files AniDB doesn't
+    // know aren't re-polled on the new-file ladder after a queue reset.
+    let anchor = schedule::effective_anchor(entry.first_seen, entry.info.mtime);
     match result {
         Ok(Some(file)) => {
             tracing::info!(
@@ -281,7 +285,7 @@ async fn lookup_file<H: AniDbHost>(
                 episode_number: Some(file.epno.clone()),
             };
             host.write_metadata(hash, metadata).await;
-            let next = schedule::next_attempt(now_i, entry.first_seen, true, Outcome::Data)
+            let next = schedule::next_attempt(now_i, anchor, true, Outcome::Data)
                 .unwrap_or(NEVER);
             store(host, "file hit", |s| {
                 s.record_lookup_attempt(hash, now_i, next, true)
@@ -302,7 +306,7 @@ async fn lookup_file<H: AniDbHost>(
                     .await;
             }
             let next =
-                schedule::next_attempt(now_i, entry.first_seen, entry.has_data, Outcome::NoData)
+                schedule::next_attempt(now_i, anchor, entry.has_data, Outcome::NoData)
                     .unwrap_or(NEVER);
             store(host, "file miss", |s| {
                 s.record_lookup_attempt(hash, now_i, next, false)
@@ -310,7 +314,7 @@ async fn lookup_file<H: AniDbHost>(
             Ok(())
         }
         Err(LookupError::Timeout) => {
-            let next = schedule::next_attempt(now_i, entry.first_seen, entry.has_data, Outcome::Timeout)
+            let next = schedule::next_attempt(now_i, anchor, entry.has_data, Outcome::Timeout)
                 .unwrap_or(NEVER);
             store(host, "file timeout", |s| {
                 s.record_lookup_attempt(hash, now_i, next, false)
@@ -574,10 +578,15 @@ mod tests {
     }
 
     fn request(host: &Arc<MockHost>, i: u8, filename: &str) {
+        request_with_mtime(host, i, filename, None);
+    }
+
+    fn request_with_mtime(host: &Arc<MockHost>, i: u8, filename: &str, mtime: Option<i64>) {
         let info = FileHashInfo {
             hash: hash(i),
             size: 1000 + i as u64,
             filename: filename.to_string(),
+            mtime,
         };
         host.mutate(|state, _| {
             state.request_lookup(info);
@@ -666,6 +675,7 @@ mod tests {
                     hash: hash(i),
                     size: 1,
                     filename: name.into(),
+                    mtime: None,
                 };
                 s.enqueue_lookup(&info, now).unwrap();
                 s.record_lookup_attempt(hash(i), now, now + week, true).unwrap();
@@ -829,6 +839,45 @@ mod tests {
             })
         })
         .await;
+        worker.abort();
+    }
+
+    /// Regression: a long-owned file AniDB doesn't know (old mtime) but
+    /// only just enqueued (first_seen ~ now, e.g. after a queue reset)
+    /// must settle to "never re-validate", not the aggressive 30-min
+    /// new-file ladder. The mtime anchors the backoff past the 90-day
+    /// cutoff. Before the mtime anchor this entry was re-polled every
+    /// half hour forever.
+    #[tokio::test(start_paused = true)]
+    async fn old_mtime_unknown_file_settles_despite_recent_first_seen() {
+        let host = MockHost::new();
+        let api = Arc::new(MockApi::default());
+        // Owned for 200 days; first_seen is "now" (just enqueued).
+        let old_mtime = host.now() as i64 - 200 * 24 * 60 * 60 * 1000;
+        request_with_mtime(&host, 2, "Ancient Show - 05.mkv", Some(old_mtime));
+        let (titles, _) = titles_source("", false);
+        let worker = spawn_worker(&host, &api, titles);
+
+        // The miss still writes the filename fallback (so the file is
+        // browsable), exactly as for any unknown file.
+        eventually(&host, "fallback metadata", |view| {
+            view.anidb_metadata
+                .get(&hash(2))
+                .is_some_and(|m| m.as_ref().is_some_and(|m| m.series_id.is_none()))
+        })
+        .await;
+
+        // ...but the queue is settled: nothing is due, ever (NEVER).
+        let due_ever = host
+            .with_storage(|s| s.due_lookups(i64::MAX, 10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(due_ever.len(), 1, "row kept as a tombstone");
+        assert_eq!(
+            due_ever[0].next_attempt,
+            crate::storage::NEVER,
+            "old-mtime unknown file must not be re-polled on the new-file ladder"
+        );
         worker.abort();
     }
 

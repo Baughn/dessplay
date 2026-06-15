@@ -102,6 +102,7 @@ fn lookup_request(i: u8, filename: &str) -> Mutation {
             hash: hash(i),
             size: 1_000_000,
             filename: filename.into(),
+            mtime: None,
         },
     }
 }

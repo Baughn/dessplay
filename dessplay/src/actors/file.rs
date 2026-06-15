@@ -173,6 +173,11 @@ pub enum FileCommand {
     },
 }
 
+/// A file the library scan has identified: (ed2k root, size in bytes,
+/// filename, mtime in unix millis). The mtime rides to the server's
+/// lookup queue so re-validation backoff reflects the file's real age.
+pub type IndexedFile = (Ed2kHash, u64, String, i64);
+
 /// Events out of the actor.
 #[derive(Debug)]
 pub enum FileOutput {
@@ -225,8 +230,8 @@ pub enum FileOutput {
     /// any that still lack metadata. Emitted incrementally: cache hits
     /// up front, then one per file as it finishes hashing.
     LibraryIndexed {
-        /// Newly-known files: (ed2k root, size in bytes, filename).
-        files: Vec<(Ed2kHash, u64, String)>,
+        /// Newly-known files from the media-library scan.
+        files: Vec<IndexedFile>,
     },
     /// Library-scan hashing progress (the no-silent-work rule). Emitted
     /// while files are being hashed; `done == total` marks the end.
@@ -307,8 +312,8 @@ enum Done {
     /// A media-library walk finished: files already in the hash cache
     /// (known hashes) plus a worklist of files needing a hash.
     LibraryWalk {
-        /// Cache hits: (root, size, filename) — known immediately.
-        hits: Vec<(Ed2kHash, u64, String)>,
+        /// Cache hits — known immediately.
+        hits: Vec<IndexedFile>,
         /// Files to hash (new or changed since last scan).
         worklist: std::collections::VecDeque<ScanItem>,
     },
@@ -978,7 +983,7 @@ impl Actor {
                         let _ = self
                             .out
                             .send(FileOutput::LibraryIndexed {
-                                files: vec![(root, size, item.filename)],
+                                files: vec![(root, size, item.filename, item.mtime)],
                             })
                             .await;
                     }
@@ -1495,10 +1500,7 @@ fn is_video_file(path: &Path) -> bool {
 fn scan_library(
     roots: &[PathBuf],
     cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>,
-) -> (
-    Vec<(Ed2kHash, u64, String)>,
-    std::collections::VecDeque<ScanItem>,
-) {
+) -> (Vec<IndexedFile>, std::collections::VecDeque<ScanItem>) {
     let mut hits = Vec::new();
     let mut worklist = std::collections::VecDeque::new();
     for root in roots {
@@ -1535,7 +1537,7 @@ fn scan_library(
                     Some((cached_mtime, hash))
                         if *cached_mtime == mtime && hash.size_bytes == metadata.len() =>
                     {
-                        hits.push((hash.root, hash.size_bytes, filename));
+                        hits.push((hash.root, hash.size_bytes, filename, *cached_mtime));
                     }
                     // New or changed: needs a (re)hash.
                     _ => worklist.push_back(ScanItem {
@@ -2487,7 +2489,7 @@ mod tests {
     async fn await_indexed(rig: &mut Rig, wanted: Ed2kHash) {
         for _ in 0..50 {
             if let FileOutput::LibraryIndexed { files } = next_output(rig).await
-                && files.iter().any(|(h, _, _)| *h == wanted)
+                && files.iter().any(|(h, _, _, _)| *h == wanted)
             {
                 return;
             }

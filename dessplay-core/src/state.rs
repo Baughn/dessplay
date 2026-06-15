@@ -827,6 +827,7 @@ mod tests {
             hash: hash(1),
             size: 123,
             filename: "ep1.mkv".into(),
+            mtime: Some(456),
         });
 
         let snapshot = StateSnapshot {

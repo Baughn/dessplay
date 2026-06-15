@@ -400,6 +400,9 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
             hash: file(*f),
             size: 1_000_000 + (*f as u64),
             filename: format!("file{}.mkv", f % FILES),
+            // Vary mtime by file index so distinct files stay distinct GSet
+            // elements; deterministic, no clock read.
+            mtime: Some(*f as i64 * 1000),
         }),
         ScriptOp::Chat { text } => state.append_chat(ChatMessage {
             timestamp: ts,

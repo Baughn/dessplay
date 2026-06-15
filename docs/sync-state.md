@@ -362,6 +362,12 @@ to look up via AniDB.
 - `hash: Ed2kHash`
 - `size: u64` -- file size in bytes (AniDB's FILE command requires this)
 - `filename: String` -- for fallback metadata when AniDB doesn't know the file
+- `mtime: Option<i64>` -- the file's mtime (unix millis) when the requester
+  holds it locally; `None` for a playlist entry the client doesn't have. The
+  server anchors the re-validation backoff on the *older* of this and when it
+  first queued the file, so long-owned files AniDB doesn't know aren't
+  re-polled on the aggressive new-file ladder after a queue reset (see
+  "Parsing files" in design.md)
 
 Clients insert entries for **every** file their media-root scan finds that
 still lacks metadata -- not just playlist entries (see "Media Library

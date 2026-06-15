@@ -32,7 +32,9 @@ use dessplay_core::types::{
     Ed2kHash, FileAvailability, ManualState, PlaybackIntent, SeekAuthority, UserId,
 };
 
-use crate::actors::file::{FileCommand, FileConfig, FileOutput, HashEvent, HashedAdd, Resolution};
+use crate::actors::file::{
+    FileCommand, FileConfig, FileOutput, HashEvent, HashedAdd, IndexedFile, Resolution,
+};
 use crate::actors::player::{PlayerCommand, PlayerOutput};
 use crate::actors::sync::Mutation;
 
@@ -388,6 +390,7 @@ impl PlayerWiring {
         hash: Ed2kHash,
         size: u64,
         filename: &str,
+        mtime: Option<i64>,
         view: &StateView,
         out: &mut Vec<Directive>,
     ) {
@@ -401,6 +404,7 @@ impl PlayerWiring {
                     hash,
                     size,
                     filename: filename.to_string(),
+                    mtime,
                 },
             }));
         }
@@ -412,12 +416,12 @@ impl PlayerWiring {
     /// `lookups_requested` set keeps it from re-sending within a session.
     pub fn on_library_indexed(
         &mut self,
-        files: Vec<(Ed2kHash, u64, String)>,
+        files: Vec<IndexedFile>,
         view: &StateView,
     ) -> Vec<Directive> {
         let mut out = Vec::new();
-        for (hash, size, filename) in files {
-            self.maybe_request_lookup(hash, size, &filename, view, &mut out);
+        for (hash, size, filename, mtime) in files {
+            self.maybe_request_lookup(hash, size, &filename, Some(mtime), view, &mut out);
         }
         out
     }
@@ -455,6 +459,9 @@ impl PlayerWiring {
                 entry.hash,
                 entry.state.size_bytes,
                 &entry.state.filename,
+                // Playlist entries carry no mtime (a client may not even
+                // hold the file); the server then anchors on first-seen.
+                None,
                 view,
                 &mut out,
             );
@@ -1374,9 +1381,9 @@ mod tests {
         let mut wiring = PlayerWiring::new(me());
 
         let files = vec![
-            (hash(1), 100, "a.mkv".to_string()),
-            (hash(2), 200, "b.mkv".to_string()),
-            (hash(3), 300, "c.mkv".to_string()),
+            (hash(1), 100, "a.mkv".to_string(), 1_000),
+            (hash(2), 200, "b.mkv".to_string(), 2_000),
+            (hash(3), 300, "c.mkv".to_string(), 3_000),
         ];
         let out = wiring.on_library_indexed(files.clone(), &view);
         // hash(2) is skipped (already has metadata); the rest are requested.

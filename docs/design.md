@@ -725,9 +725,10 @@ no longer filled only on demand.
   files. Interactive clients rescan about once a minute; a seeder, whose store
   is large and stable, rescans once a day.
 - For every indexed hash that lacks metadata in the synced state, the client
-  inserts a `FileHashInfo` (hash, size, filename) into the `lookup_requests`
-  GSet -- the same "please look this up" set the playlist uses, now fed by the
-  whole library. Server-side per-hash de-duplication and the cross-client
+  inserts a `FileHashInfo` (hash, size, filename, mtime) into the
+  `lookup_requests` GSet -- the same "please look this up" set the playlist
+  uses, now fed by the whole library. The scan has each file's mtime in hand
+  (it keys the `hash_cache`), so library requests always carry it. Server-side per-hash de-duplication and the cross-client
   "already checked" bookkeeping (the `anidb_queue` table) keep AniDB load
   bounded even when several clients index overlapping collections.
 
@@ -848,12 +849,14 @@ account is used for nothing else, and AniDB's `ENCRYPT` command remains
 future work.
 
 **Lookup flow:**
-1. Clients insert `FileHashInfo` (hash, size, filename) into a
+1. Clients insert `FileHashInfo` (hash, size, filename, and the file's
+   mtime when the requester holds it locally) into a
    `GSet<FileHashInfo>` -- a "please look these up" set -- for every file that
    lacks metadata, whether it is a playlist entry or just a file the
    [library scan](#media-library-scanning) found in a media root. Any client
    may request; the server deduplicates, and the GSet absorbs repeated inserts.
-   This also re-arms requests after compaction clears the set.
+   This also re-arms requests after compaction clears the set. (A playlist
+   entry a client doesn't hold has no mtime; the request omits it.)
 2. The server drains entries from this set into its AniDB lookup queue, and
    **records each file's identity** (filename + size, taken from the request)
    in the server-authoritative **file catalog** (see the
@@ -867,9 +870,17 @@ future work.
 4. On failure (AniDB doesn't know the file): server writes filename-derived
    metadata (series name parsed from filename, no series ID, no episode number)
    once -- a later re-validation miss never clobbers real metadata. The
-   re-validation cadence is unchanged: an age-based ladder for never-seen files
+   re-validation cadence is an age-based ladder for never-seen files
    (30 min if < 1 day old, 2 h if < 1 week, 12 h if < 30 days, 3 days if
-   < 90 days, then never) and weekly for files AniDB knows.
+   < 90 days, then never) and weekly for files AniDB knows. **The ladder's
+   age is anchored on the *older* of when the server first queued the file
+   (`first_seen`) and the file's mtime** (the minimum of the two; mtime
+   absent falls back to `first_seen`). This keeps files owned for years off
+   the aggressive new-file cadence: without it, a queue reset stamps every
+   long-owned unknown file with a fresh `first_seen` and re-polls it every
+   30 min indefinitely. Clients supply the mtime in the lookup request; the
+   server stores it on the `anidb_queue` row, lowering it toward the oldest
+   value reported (a request without an mtime never raises it).
 5. Either way, the metadata register becomes `Some(AniDbMetadata)` --
    downstream code always has a series name to work with.
 
@@ -1103,7 +1114,7 @@ tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 |-------|----------|
 | `crdt_state` | The authoritative snapshot (epoch + postcard blob) |
 | `chat_archive` | Full chat history, archived before compaction trims the replicated GList; unique on (timestamp, sender, text), mirroring GList dedup |
-| `anidb_queue` | FILE validation queue: hash, size, filename, attempt bookkeeping, `next_attempt` scheduling (`i64::MAX` = settled tombstone) |
+| `anidb_queue` | FILE validation queue: hash, size, filename, mtime (anchors the re-validation ladder on the file's real age), attempt bookkeeping, `next_attempt` scheduling (`i64::MAX` = settled tombstone) |
 | `anime_queue` | ANIME (relations-walk) queue: aid, attempt bookkeeping; the graph fills in over hours and must survive restarts |
 | `anidb_titles` | The anime-titles dump (aid, kind, lang, title); backs local name search |
 | `kv` | Bookkeeping (e.g. the titles dump's last fetch time) |

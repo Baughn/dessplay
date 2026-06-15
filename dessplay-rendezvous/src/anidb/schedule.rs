@@ -27,20 +27,33 @@ pub enum Outcome {
     Timeout,
 }
 
+/// The age anchor for the unknown-file ladder: the *older* of when we
+/// first saw the file (`first_seen`) and the file's own mtime, when the
+/// client supplied one.
+///
+/// Using the minimum is the safe choice. It survives a missing mtime
+/// (falls back to `first_seen`), a `first_seen` reset after a queue wipe
+/// (mtime keeps a long-owned file looking old, so it isn't re-polled on
+/// the aggressive new-file cadence), and a touched file (`first_seen`
+/// keeps it from looking newer than it really is to us).
+pub fn effective_anchor(first_seen: i64, mtime: Option<i64>) -> i64 {
+    mtime.map_or(first_seen, |m| first_seen.min(m))
+}
+
 /// When to try this queue entry again. `None` means never — the entry
 /// can be dropped from the queue.
 ///
 /// The ladder for unknown files stretches with the entry's age (since
-/// `first_seen`): new files often appear on AniDB within hours, old
-/// ones almost never do. Files AniDB *does* know are re-validated
-/// weekly (the design's hard cap of once per week).
-pub fn next_attempt(now: i64, first_seen: i64, has_data: bool, outcome: Outcome) -> Option<i64> {
+/// `anchor`, see [`effective_anchor`]): new files often appear on AniDB
+/// within hours, old ones almost never do. Files AniDB *does* know are
+/// re-validated weekly (the design's hard cap of once per week).
+pub fn next_attempt(now: i64, anchor: i64, has_data: bool, outcome: Outcome) -> Option<i64> {
     match outcome {
         Outcome::Timeout => Some(now + TIMEOUT_RETRY_MILLIS),
         Outcome::Data => Some(now + WEEK),
         Outcome::NoData if has_data => Some(now + WEEK),
         Outcome::NoData => {
-            let age = now.saturating_sub(first_seen);
+            let age = now.saturating_sub(anchor);
             let interval = match age {
                 _ if age < DAY => 30 * MINUTE,
                 _ if age < WEEK => 2 * HOUR,
@@ -118,5 +131,64 @@ mod tests {
         assert_eq!(next_attempt(DAY, 0, false, Outcome::NoData), Some(DAY + 2 * HOUR));
         // At exactly 90 days, re-validation stops.
         assert_eq!(next_attempt(90 * DAY, 0, false, Outcome::NoData), None);
+    }
+
+    #[test]
+    fn effective_anchor_is_the_minimum() {
+        // No mtime: fall back to first_seen (today's behaviour).
+        assert_eq!(effective_anchor(1000, None), 1000);
+        // mtime older than first_seen wins (the file is old to the world).
+        assert_eq!(effective_anchor(1000, Some(10)), 10);
+        // mtime newer than first_seen: first_seen still keeps it "old" to us.
+        assert_eq!(effective_anchor(10, Some(1000)), 10);
+    }
+
+    /// Regression: a file we only just enqueued (`first_seen = now`) but
+    /// have owned for 200 days (its mtime) must NOT be polled on the
+    /// aggressive new-file ladder — the mtime anchors it past the 90-day
+    /// cutoff, so it's never re-validated. Before the mtime anchor, a
+    /// queue reset made every long-owned unknown file look brand-new and
+    /// got re-polled every 30 min forever.
+    #[test]
+    fn old_mtime_file_never_revalidates_despite_recent_first_seen() {
+        let now = 1_000 * DAY;
+        let first_seen = now; // just enqueued (e.g. after a DB wipe)
+        let mtime = now - 200 * DAY; // but owned for 200 days
+        let anchor = effective_anchor(first_seen, Some(mtime));
+        assert_eq!(next_attempt(now, anchor, false, Outcome::NoData), None);
+        // Sanity: without the mtime it would be back on the 30-min ladder.
+        assert_eq!(
+            next_attempt(now, effective_anchor(first_seen, None), false, Outcome::NoData),
+            Some(now + 30 * MINUTE)
+        );
+    }
+
+    /// Property (deterministic grid): the unknown-file ladder is governed
+    /// by `now - min(first_seen, mtime)`, and any file whose effective age
+    /// reaches 90 days stops being re-validated regardless of which of the
+    /// two timestamps is the older.
+    #[test]
+    fn ladder_is_governed_by_the_older_timestamp() {
+        let now = 1_000 * DAY;
+        for fs_age in [0, DAY, 8 * DAY, 40 * DAY, 89 * DAY, 90 * DAY, 200 * DAY] {
+            for mt_age in [0, DAY, 8 * DAY, 40 * DAY, 89 * DAY, 90 * DAY, 200 * DAY] {
+                let first_seen = now - fs_age;
+                let mtime = Some(now - mt_age);
+                let anchor = effective_anchor(first_seen, mtime);
+                // The anchor is the older (smaller) timestamp.
+                assert_eq!(anchor, first_seen.min(now - mt_age));
+                let got = next_attempt(now, anchor, false, Outcome::NoData);
+                // Result matches the single-anchor ladder for that age.
+                let expected = next_attempt(now, anchor, false, Outcome::NoData);
+                assert_eq!(got, expected);
+                // The older the file (by either metric), the more it backs
+                // off: an effective age >= 90 days is never re-validated.
+                if fs_age.max(mt_age) >= 90 * DAY {
+                    assert_eq!(got, None, "fs_age={fs_age} mt_age={mt_age}");
+                } else {
+                    assert!(got.is_some(), "fs_age={fs_age} mt_age={mt_age}");
+                }
+            }
+        }
     }
 }

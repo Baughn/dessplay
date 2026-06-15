@@ -51,6 +51,7 @@ async fn compaction_preserves_view_and_clients_keep_working() {
                 hash: hash(1),
                 size: 1_000_000,
                 filename: "ep1.mkv".into(),
+                mtime: None,
             },
         },
     )
