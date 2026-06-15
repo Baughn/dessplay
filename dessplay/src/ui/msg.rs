@@ -56,7 +56,7 @@ pub enum Msg {
     MoveUp(Ed2kHash),
     /// Tombstone an entry.
     RemoveEntry(Ed2kHash),
-    /// Open the manual-mapping browser for a playlist entry (Ctrl-m).
+    /// Open the manual-mapping browser for a playlist entry (`M`).
     MapFile(Ed2kHash),
     /// Archive the selected cached file into the library (`A`).
     ArchiveFile(Ed2kHash),

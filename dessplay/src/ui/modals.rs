@@ -17,7 +17,7 @@ use tuirealm::state::{State, StateValue};
 use dessplay_core::net::AniDbSearchHit;
 use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, SeriesListEntry};
 
-use super::components::{ctrl, plain, typed};
+use super::components::{ctrl, plain, step_by, typed, LIST_PAGE_STEP};
 use super::msg::Msg;
 use super::theme;
 use crate::config::Settings;
@@ -355,11 +355,19 @@ impl AppComponent<Msg, NoUserEvent> for FileBrowser {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match plain(ev)? {
             Key::Up => {
-                self.sel = self.sel.saturating_sub(1);
+                self.sel = step_by(self.sel, self.entries.len(), false, 1);
                 Some(Msg::None)
             }
             Key::Down => {
-                self.sel = (self.sel + 1).min(self.entries.len().saturating_sub(1));
+                self.sel = step_by(self.sel, self.entries.len(), true, 1);
+                Some(Msg::None)
+            }
+            Key::PageUp => {
+                self.sel = step_by(self.sel, self.entries.len(), false, LIST_PAGE_STEP);
+                Some(Msg::None)
+            }
+            Key::PageDown => {
+                self.sel = step_by(self.sel, self.entries.len(), true, LIST_PAGE_STEP);
                 Some(Msg::None)
             }
             Key::Enter => {
@@ -466,8 +474,8 @@ impl SettingsModal {
         vec![
             ("Enter", "Edit/Toggle"),
             ("d", "Remove root"),
-            ("C-j/k", "Reorder"),
-            ("C-s", "Save"),
+            ("Ctrl-j/k", "Reorder"),
+            ("Ctrl-s", "Save"),
             ("Esc", "Cancel"),
         ]
     }
@@ -707,11 +715,19 @@ impl AppComponent<Msg, NoUserEvent> for EpisodeBrowser {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         match plain(ev)? {
             Key::Up => {
-                self.sel = self.sel.saturating_sub(1);
+                self.sel = step_by(self.sel, self.len(), false, 1);
                 Some(Msg::None)
             }
             Key::Down => {
-                self.sel = (self.sel + 1).min(self.len().saturating_sub(1));
+                self.sel = step_by(self.sel, self.len(), true, 1);
+                Some(Msg::None)
+            }
+            Key::PageUp => {
+                self.sel = step_by(self.sel, self.len(), false, LIST_PAGE_STEP);
+                Some(Msg::None)
+            }
+            Key::PageDown => {
+                self.sel = step_by(self.sel, self.len(), true, LIST_PAGE_STEP);
                 Some(Msg::None)
             }
             Key::Enter => {
@@ -833,7 +849,7 @@ impl ListEditModal {
 
     /// Keys for the keybinding bar.
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("Enter", "Edit/Cycle"), ("C-s", "Save"), ("Esc", "Cancel")]
+        vec![("Enter", "Edit/Cycle"), ("Ctrl-s", "Save"), ("Esc", "Cancel")]
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {

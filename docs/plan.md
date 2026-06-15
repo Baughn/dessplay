@@ -282,7 +282,7 @@ re-imports update entries by name instead of duplicating. Found and
 fixed by the import test: a sync-actor deadlock when >256 events queued
 against an undrained UI channel — StateChanged is now a lossy
 edge-triggered signal. AniDbSearch modal deferred to Phase 8 (needs the
-server side); playlist `A`/Ctrl-m bindings to Phase 9 (need files);
+server side); playlist `A`/`M` bindings to Phase 9 (need files);
 Ctrl-arrow word-movement in chat to polish. The interactive client is
 now the binary's default mode (`--headless` opts out).
 
@@ -297,7 +297,7 @@ now the binary's default mode (`--headless` opts out).
   - UsersPane (colored ready states incl. Away; departed + seeder lines;
     focusable, `a` = mark Away)
   - PlaylistPane (current highlighted, missing in red, watched in muted;
-    `d` remove, `A` archive, `Ctrl-m` manual map)
+    `d` remove, `A` archive, `M` manual map)
   - PlayerStatus (progress bar, now-playing)
   - KeybindingBar (derived from focus)
 - State -> Props mapping (CrdtSnapshot + presence -> component data)
@@ -513,7 +513,7 @@ block verification/resume, rarest-first, prefetch, seeder auto-fetch).
   EOF report still marks group progress separately). Recent Series
   sorting was already reading `recent_watched`; populating watch history
   completes it.
-- **Manual mapping** (Ctrl-m): a `FileBrowser` mapping mode that ranks
+- **Manual mapping** (`M`): a `FileBrowser` mapping mode that ranks
   files by `strsim` edit distance to the target. Opens at the media
   roots, not the series' last-used directory (that dir is file-actor
   state not yet in the UI snapshot) — noted in design.md. **Archive**

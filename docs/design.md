@@ -134,7 +134,7 @@ When someone adds a file, everyone needs to find their local copy:
      hatch. The "known series" detection itself uses the series id when
      present and the series name otherwise.
 4a. You can manually map to a different file:
-   - Select the red entry, press a key (ctrl-m) to open browser
+   - Select the red entry, press `M` to open browser
    - Browser opens to the directory most recently used for files from that
      series (Phase 9A: opens at the media roots for now — that per-series
      directory is file-actor state not yet surfaced to the UI; the
@@ -576,20 +576,22 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `s` | Series (All mode) | Toggle sort: by title <-> by year |
 | `/` | Series (Recent / All) | Start filtering franchises by title (removes Recent's watched-only default) |
 | _printable_ | Series (filtering) | Add to the filter text |
-| `Backspace` | Series (filtering) | Delete a filter character |
+| `Backspace` | Series (filtering) | Delete a filter character; on an empty filter, exit filtering |
 | `Esc` | Series (Recent / All) | Clear the filter (and exit filtering) |
+| `PgUp` / `PgDn` | Series | Move the selection by a page |
 | `Enter` | Series | Browse franchise (episode browser or file browser) |
 | `Enter` | Series (List mode) | Jump to next episode / open entry |
 | `e` | Series (List mode) | Edit entry (modal) |
 | `l` | Series (List mode) | Link entry to AniDB (search modal) |
 | `Enter` | Episode Browser | Select season / add episode to playlist |
+| `PgUp` / `PgDn` | Episode Browser | Move the selection by a page |
 | `Esc` / `Backspace` | Episode Browser | Go back (episodes -> seasons -> close) |
 | `a` | Users | Mark selected user as Away (or clear an Away you set) |
 | `Enter` | Playlist | Play selected entry (or open file browser on [Add New]) |
 | `a` | Playlist | Add file (insert after selected entry) |
 | `d` | Playlist | Remove selected entry |
 | `A` | Playlist | Archive selected cached file into the download root |
-| `Ctrl-m` | Playlist | Manually map selected entry to a local file |
+| `M` | Playlist | Manually map selected entry to a local file |
 
 Note: there is no `q` to quit -- too easy to hit while typing in chat.
 

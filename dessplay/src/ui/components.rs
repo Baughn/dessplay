@@ -83,15 +83,23 @@ pub(crate) fn typed(ev: &Event<NoUserEvent>) -> Option<char> {
     }
 }
 
+/// How many rows PgUp/PgDown jump in list panes.
+pub(crate) const LIST_PAGE_STEP: usize = 10;
+
 /// Selection cursor over `len` rows.
 fn step(sel: usize, len: usize, down: bool) -> usize {
+    step_by(sel, len, down, 1)
+}
+
+/// Selection cursor over `len` rows, moved by `delta` (used for PgUp/PgDown).
+pub(crate) fn step_by(sel: usize, len: usize, down: bool, delta: usize) -> usize {
     if len == 0 {
         return 0;
     }
     if down {
-        (sel + 1).min(len - 1)
+        (sel + delta).min(len - 1)
     } else {
-        sel.saturating_sub(1)
+        sel.saturating_sub(delta)
     }
 }
 
@@ -508,8 +516,8 @@ impl PlaylistPane {
             ("Enter", "Play"),
             ("a", "Add"),
             ("d", "Remove"),
-            ("C-j/k", "Move"),
-            ("C-m", "Map"),
+            ("Ctrl-j/k", "Move"),
+            ("M", "Map"),
             ("A", "Archive"),
         ]
     }
@@ -570,16 +578,20 @@ impl AppComponent<Msg, NoUserEvent> for PlaylistPane {
             return match code {
                 Key::Char('j') => Some(Msg::MoveDown(hash)),
                 Key::Char('k') => Some(Msg::MoveUp(hash)),
-                Key::Char('m') => Some(Msg::MapFile(hash)),
                 _ => None,
             };
         }
-        // `A` (shift) archives; lowercase `a` adds. `typed` is the only
-        // helper that sees a shifted char. Only cache-only ("temporary")
-        // rows can be archived — anything else is a no-op.
-        if typed(ev) == Some('A') {
-            let row = self.props.rows.get(self.sel)?;
-            return row.temporary.then_some(Msg::ArchiveFile(row.hash));
+        // Shifted letters: `A` archives, `M` maps. `typed` is the only helper
+        // that sees a shifted char. Map uses `M` rather than Ctrl-M because
+        // Ctrl-M == Enter in terminals lacking the enhanced keyboard protocol.
+        // Only cache-only ("temporary") rows can be archived.
+        match typed(ev) {
+            Some('A') => {
+                let row = self.props.rows.get(self.sel)?;
+                return row.temporary.then_some(Msg::ArchiveFile(row.hash));
+            }
+            Some('M') => return self.selected_hash().map(Msg::MapFile),
+            _ => {}
         }
         match plain(ev)? {
             Key::Up => {
@@ -820,8 +832,12 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                 return Some(Msg::SeriesFilterChanged);
             }
             return match plain(ev)? {
+                // Backspace deletes a filter character; on an empty filter it
+                // exits filtering entirely (the escape hatch, alongside Esc).
                 Key::Backspace => {
-                    self.filter.pop();
+                    if self.filter.pop().is_none() {
+                        self.filtering = false;
+                    }
                     self.sel = 0;
                     Some(Msg::SeriesFilterChanged)
                 }
@@ -839,6 +855,14 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                     self.sel = step(self.sel, self.len(), true);
                     Some(Msg::None)
                 }
+                Key::PageUp => {
+                    self.sel = step_by(self.sel, self.len(), false, LIST_PAGE_STEP);
+                    Some(Msg::None)
+                }
+                Key::PageDown => {
+                    self.sel = step_by(self.sel, self.len(), true, LIST_PAGE_STEP);
+                    Some(Msg::None)
+                }
                 Key::Enter => {
                     let row = self.franchises.get(self.sel)?;
                     Some(Msg::BrowseFranchise(row.key.clone()))
@@ -853,6 +877,14 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
             }
             Key::Down => {
                 self.sel = step(self.sel, self.len(), true);
+                Some(Msg::None)
+            }
+            Key::PageUp => {
+                self.sel = step_by(self.sel, self.len(), false, LIST_PAGE_STEP);
+                Some(Msg::None)
+            }
+            Key::PageDown => {
+                self.sel = step_by(self.sel, self.len(), true, LIST_PAGE_STEP);
                 Some(Msg::None)
             }
             Key::Char('m') => {
@@ -1081,6 +1113,82 @@ mod series_pane_tests {
         assert_eq!(p.mode(), SeriesMode::TheList);
     }
 
+    /// Backspace deletes filter characters; once the filter is empty, a
+    /// further Backspace exits filtering entirely (an escape hatch alongside
+    /// Esc). Regression for filtering being a one-way trip via `/`
+    /// (2026-06-15).
+    #[test]
+    fn backspace_on_empty_filter_exits_filtering() {
+        let mut p = SeriesPane::default();
+        p.on(&key(Key::Char('/')));
+        p.on(&key(Key::Char('a')));
+        assert_eq!(p.filter(), "a");
+
+        // First Backspace empties the filter (still filtering).
+        p.on(&key(Key::Backspace));
+        assert_eq!(p.filter(), "");
+        // Proof we're still in filter mode: `m` types, it does not cycle.
+        p.on(&key(Key::Char('m')));
+        assert_eq!(p.filter(), "m");
+        assert_eq!(p.mode(), SeriesMode::Recent);
+
+        // Empty it again, then Backspace once more to leave filtering.
+        p.on(&key(Key::Backspace)); // "" again
+        p.on(&key(Key::Backspace)); // exits filtering
+        assert_eq!(p.filter(), "");
+        // Now `m` cycles the mode again — filtering really ended.
+        p.on(&key(Key::Char('m')));
+        assert_eq!(p.mode(), SeriesMode::All);
+    }
+
+    fn franchises(n: usize) -> Vec<FranchiseRow> {
+        (0..n)
+            .map(|i| FranchiseRow {
+                key: dessplay_core::franchise::FranchiseKey::Name(i.to_string()),
+                title: i.to_string(),
+                year: None,
+            })
+            .collect()
+    }
+
+    /// PageUp/PageDown jump the selection by a page in both Recent/All and
+    /// while filtering. Regression for the series browser ignoring the page
+    /// keys (2026-06-15). Selection is observed through the franchise Enter
+    /// resolves to.
+    #[test]
+    fn page_keys_jump_series_selection() {
+        let mut p = SeriesPane::default();
+        p.set_franchises(franchises(30));
+
+        // From the top, PageDown lands a page in.
+        p.on(&key(Key::PageDown));
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseFranchise(
+                dessplay_core::franchise::FranchiseKey::Name(LIST_PAGE_STEP.to_string())
+            ))
+        );
+
+        // PageUp returns to the top.
+        p.on(&key(Key::PageUp));
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseFranchise(
+                dessplay_core::franchise::FranchiseKey::Name("0".to_string())
+            ))
+        );
+
+        // The page keys also work while filtering (filter empty = all rows).
+        p.on(&key(Key::Char('/')));
+        p.on(&key(Key::PageDown));
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseFranchise(
+                dessplay_core::franchise::FranchiseKey::Name(LIST_PAGE_STEP.to_string())
+            ))
+        );
+    }
+
     /// The List mode has no filter: `/` is inert and the bare letters keep
     /// their List bindings.
     #[test]
@@ -1094,6 +1202,57 @@ mod series_pane_tests {
         // `m` still cycles (back to Recent), proving `/` didn't start a filter.
         p.on(&key(Key::Char('m')));
         assert_eq!(p.mode(), SeriesMode::Recent);
+    }
+}
+
+#[cfg(test)]
+mod playlist_pane_tests {
+    use super::*;
+    use crate::ui::props::PlaylistRow;
+    use dessplay_core::types::Ed2kHash;
+
+    fn shifted(c: char) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code: Key::Char(c),
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn ctrl_key(c: char) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code: Key::Char(c),
+            modifiers: KeyModifiers::CONTROL,
+        })
+    }
+
+    fn pane_with_one_row() -> (PlaylistPane, Ed2kHash) {
+        let hash = Ed2kHash([7u8; 16]);
+        let mut p = PlaylistPane {
+            focused: true,
+            ..Default::default()
+        };
+        p.set_props(PlaylistProps {
+            rows: vec![PlaylistRow {
+                hash,
+                title: "ep.mkv".to_string(),
+                tone: Tone::Normal,
+                is_now: false,
+                temporary: false,
+            }],
+            ..Default::default()
+        });
+        (p, hash)
+    }
+
+    /// Manual mapping moved from Ctrl-m to capital `M`: Ctrl-M is
+    /// indistinguishable from Enter in terminals without the enhanced
+    /// keyboard protocol. Regression (2026-06-15).
+    #[test]
+    fn capital_m_maps_and_ctrl_m_does_not() {
+        let (mut p, hash) = pane_with_one_row();
+        assert_eq!(p.on(&shifted('M')), Some(Msg::MapFile(hash)));
+        // The old Ctrl-m binding is gone (it now reads as Enter elsewhere).
+        assert_eq!(p.on(&ctrl_key('m')), None);
     }
 }
 

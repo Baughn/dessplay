@@ -118,7 +118,7 @@ enum Msg {
     MoveDown,
     RemoveSelected,
     ArchiveSelected,
-    MapSelected,                // manual file mapping (Ctrl-m)
+    MapSelected,                // manual file mapping (M)
 
     // Player
     SeekTo(f64),
