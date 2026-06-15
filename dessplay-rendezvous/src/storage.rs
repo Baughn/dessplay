@@ -391,6 +391,52 @@ impl ServerStorage {
         Ok(())
     }
 
+    /// Re-arm "settled" file lookups (`has_data = 1`, so AniDB knew the
+    /// file and the next attempt is a week out) whose hash is **absent**
+    /// from `present` — the set of hashes that actually have replicated
+    /// metadata. Such a row is a lie: the lookup succeeded and recorded
+    /// the attempt durably in SQLite, but the metadata write lived only in
+    /// the periodically-snapshotted CRDT state and was lost to a restart
+    /// before it persisted. The file is then orphaned — no metadata, and
+    /// not re-checked for a week.
+    ///
+    /// We reset such rows to due now and clear `has_data`, so the next
+    /// pass looks them up again (writing metadata on success, or the
+    /// filename fallback on a miss). NoData rows are left alone: they
+    /// self-heal on their short retry ladder. Returns the re-armed
+    /// filenames, for logging.
+    pub fn rearm_settled_without_metadata(
+        &self,
+        present: &std::collections::BTreeSet<Ed2kHash>,
+        now: i64,
+    ) -> Result<Vec<String>> {
+        let orphaned: Vec<(Vec<u8>, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT hash, filename FROM anidb_queue WHERE has_data = 1")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (blob, filename) = row?;
+                if !present.contains(&hash_from_blob(blob.clone())?) {
+                    out.push((blob, filename));
+                }
+            }
+            out
+        };
+        let mut rearmed = Vec::with_capacity(orphaned.len());
+        for (blob, filename) in orphaned {
+            self.conn.execute(
+                "UPDATE anidb_queue SET next_attempt = ?2, has_data = 0 WHERE hash = ?1",
+                params![blob, now],
+            )?;
+            rearmed.push(filename);
+        }
+        Ok(rearmed)
+    }
+
     // ---- ANIME (relations) queue.
 
     /// Queue a series for an ANIME lookup if it isn't queued already
@@ -712,6 +758,45 @@ mod tests {
 
         storage.remove_lookup(hash(1)).unwrap();
         assert!(storage.due_lookups(i64::MAX, 10).unwrap().is_empty());
+    }
+
+    /// Regression: a successful lookup marks the queue settled (has_data,
+    /// recheck in a week) durably, but its metadata write can be lost to a
+    /// restart before the CRDT snapshot persists. Such an orphan — settled
+    /// in the queue, no metadata in state — must be re-armed to due now;
+    /// settled rows that *do* have metadata, and unsettled rows, are left
+    /// untouched (2026-06-15).
+    #[test]
+    fn rearm_resets_settled_lookups_whose_metadata_was_lost() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        let info = |i: u8, name: &str| FileHashInfo {
+            hash: hash(i),
+            size: 1,
+            filename: name.into(),
+        };
+        // hash(1): settled with data but metadata lost (the orphan).
+        // hash(2): settled with data and metadata present (healthy).
+        // hash(3): settled WITHOUT data (a known AniDB miss) — leave it.
+        for (i, name) in [(1u8, "orphan.mkv"), (2, "healthy.mkv"), (3, "miss.mkv")] {
+            storage.enqueue_lookup(&info(i, name), 100).unwrap();
+        }
+        storage.record_lookup_attempt(hash(1), 100, 700_000, true).unwrap();
+        storage.record_lookup_attempt(hash(2), 100, 700_000, true).unwrap();
+        storage.record_lookup_attempt(hash(3), 100, 700_000, false).unwrap();
+
+        // Only hash(2) actually has replicated metadata.
+        let present = std::collections::BTreeSet::from([hash(2)]);
+        let rearmed = storage.rearm_settled_without_metadata(&present, 200).unwrap();
+        assert_eq!(rearmed, vec!["orphan.mkv".to_string()]);
+
+        // The orphan is due now and no longer claims data.
+        let due = storage.due_lookups(200, 10).unwrap();
+        let due_hashes: Vec<_> = due.iter().map(|e| e.info.hash).collect();
+        assert!(due_hashes.contains(&hash(1)), "orphan must be due now");
+        assert!(!due_hashes.contains(&hash(2)), "healthy row must stay settled");
+        assert!(!due_hashes.contains(&hash(3)), "no-data row must stay on its ladder");
+        let orphan = due.iter().find(|e| e.info.hash == hash(1)).unwrap();
+        assert!(!orphan.has_data, "re-armed orphan must drop has_data");
     }
 
     #[test]

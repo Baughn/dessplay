@@ -74,6 +74,7 @@ pub trait AniDbHost: Send + Sync + 'static {
 /// simply awaits it.
 pub async fn run<H: AniDbHost>(host: H, api: Arc<dyn AniDbApi>, titles: Arc<dyn TitlesSource>) {
     tracing::info!("anidb worker started");
+    reconcile_settled_lookups(&host);
     // Next time to consider a titles refresh; learned from storage on
     // the first pass.
     let mut titles_due: u64 = 0;
@@ -165,6 +166,40 @@ async fn populate_catalog<H: AniDbHost>(host: &H) {
             },
         )
         .await;
+    }
+}
+
+/// One-time startup reconciliation: re-arm "settled" file lookups whose
+/// metadata is missing from the replicated state. A successful lookup
+/// records its queue attempt durably in SQLite (settled, recheck in a
+/// week) but writes the metadata only into the periodically-snapshotted
+/// CRDT state; a restart in that window loses the metadata yet keeps the
+/// settled row, orphaning the file for a week (no metadata, no near-term
+/// retry). Making the queue honest at startup heals such files — and any
+/// future occurrence — on the next pass. NoData rows self-heal on their
+/// short ladder and are left alone. See
+/// [`ServerStorage::rearm_settled_without_metadata`].
+fn reconcile_settled_lookups<H: AniDbHost>(host: &H) {
+    let now = host.now();
+    let present: BTreeSet<Ed2kHash> = host
+        .view()
+        .anidb_metadata
+        .iter()
+        .filter_map(|(hash, meta)| meta.as_ref().map(|_| *hash))
+        .collect();
+    let Some(rearmed) = store(host, "reconcile settled lookups", |s| {
+        s.rearm_settled_without_metadata(&present, now as i64)
+    }) else {
+        return;
+    };
+    if !rearmed.is_empty() {
+        tracing::warn!(
+            count = rearmed.len(),
+            "re-armed AniDB lookups settled but missing metadata (lost to a restart)"
+        );
+        for file in rearmed {
+            tracing::info!(file = %file, "re-arming orphaned lookup");
+        }
     }
 }
 
@@ -614,6 +649,58 @@ mod tests {
                 size_bytes: 1001,
                 duration_millis: None,
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_rearms_settled_lookup_whose_metadata_was_lost() {
+        // hash(1): lookup succeeded (queue settled, has_data, a week out)
+        // but its metadata write was lost to a restart -> must be re-armed.
+        // hash(2): settled AND present in the metadata view -> left alone.
+        let host = MockHost::new();
+        let week = 7 * 24 * 60 * 60 * 1000;
+        let now = host.now() as i64;
+        host.with_storage(|s| {
+            for (i, name) in [(1u8, "orphan.mkv"), (2, "known.mkv")] {
+                let info = FileHashInfo {
+                    hash: hash(i),
+                    size: 1,
+                    filename: name.into(),
+                };
+                s.enqueue_lookup(&info, now).unwrap();
+                s.record_lookup_attempt(hash(i), now, now + week, true).unwrap();
+            }
+        });
+        host.mutate(|state, ts| {
+            state.set_anidb_metadata(
+                ActorId::SERVER,
+                ts,
+                hash(2),
+                Some(AniDbMetadata {
+                    source: MetadataSource::AniDb,
+                    series_name: "Known".into(),
+                    series_id: Some(AniDbSeriesId(5)),
+                    episode_number: Some("1".into()),
+                }),
+            );
+        });
+        // Both settled: nothing due now.
+        assert!(
+            host.with_storage(|s| s.due_lookups(now, 10).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+
+        reconcile_settled_lookups(&host);
+
+        let due = host
+            .with_storage(|s| s.due_lookups(host.now() as i64, 10).unwrap())
+            .unwrap();
+        let due_hashes: Vec<_> = due.iter().map(|e| e.info.hash).collect();
+        assert!(due_hashes.contains(&hash(1)), "metadata-less orphan must re-arm");
+        assert!(
+            !due_hashes.contains(&hash(2)),
+            "a settled lookup with metadata must stay settled"
         );
     }
 

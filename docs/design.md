@@ -873,6 +873,15 @@ future work.
 5. Either way, the metadata register becomes `Some(AniDbMetadata)` --
    downstream code always has a series name to work with.
 
+**Durability reconciliation:** the queue attempt (settled, re-check in a
+week) is written to SQLite at once, but the metadata write lands only in
+the periodically-snapshotted CRDT state. A restart in that window loses the
+metadata yet keeps the settled queue row -- the file is then orphaned (no
+metadata, no retry for a week). At **startup the worker reconciles**: any
+`anidb_queue` row marked `has_data` whose hash has no metadata in the
+loaded state is re-armed (due now, `has_data` cleared), so it is looked up
+again. NoData rows self-heal on their short ladder and are left alone.
+
 CRDT types:
 - Lookup requests: `GSet<FileHashInfo>` (cleared on compaction)
 - File catalog: `LwwCell<FileCatalogEntry>` keyed by ed2k hash (server-only
