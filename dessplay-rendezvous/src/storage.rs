@@ -408,6 +408,29 @@ impl ServerStorage {
         Ok(entries)
     }
 
+    /// Every file for which a client has reported a title-like directory
+    /// hint, as `(hash, series_hint)`. The worker reconciles filename-derived
+    /// metadata against these: the fallback series name is written once, but
+    /// a hint can be learned afterward (a playlist add carries no hint and
+    /// races ahead of the library scan that does), so an early file would
+    /// otherwise keep a per-episode stem name and split off into its own
+    /// franchise. Independent of the lookup schedule -- a settled file is
+    /// reconciled without an AniDB call.
+    pub fn series_hints(&self) -> Result<Vec<(Ed2kHash, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT hash, series_hint FROM anidb_queue WHERE series_hint IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (blob, hint) = row?;
+            out.push((hash_from_blob(blob)?, hint));
+        }
+        Ok(out)
+    }
+
     /// Record an attempt and its next scheduled time. `got_data` marks
     /// whether AniDB returned data (now or ever before).
     pub fn record_lookup_attempt(

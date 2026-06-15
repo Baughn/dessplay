@@ -907,6 +907,19 @@ metadata, no retry for a week). At **startup the worker reconciles**: any
 loaded state is re-armed (due now, `has_data` cleared), so it is looked up
 again. NoData rows self-heal on their short ladder and are left alone.
 
+**Directory-hint reconciliation:** the fallback series name is written
+once, at the first lookup, using whatever `series_hint` the `anidb_queue`
+row holds then. But the hint can arrive *after* that write -- a playlist
+add carries no hint (the client may not hold the file) and races ahead of
+the hinted library scan -- so the first-seen episode of a series can be
+frozen with its per-episode filename stem and split into its own franchise.
+Each worker pass therefore reconciles: for every row with a learned
+`series_hint`, if the file's metadata is filename-derived and its
+`series_name` differs from the hint, the server rewrites it to the hint
+(no AniDB call, independent of the settled lookup schedule). Real AniDB
+hits are never touched, and a name already matching its hint is left alone,
+so this quiesces.
+
 CRDT types:
 - Lookup requests: `GSet<FileHashInfo>` (cleared on compaction)
 - File catalog: `LwwCell<FileCatalogEntry>` keyed by ed2k hash (server-only

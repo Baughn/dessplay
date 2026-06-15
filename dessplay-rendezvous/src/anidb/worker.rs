@@ -83,6 +83,7 @@ pub async fn run<H: AniDbHost>(host: H, api: Arc<dyn AniDbApi>, titles: Arc<dyn 
         refresh_titles_if_due(&host, &titles, now, &mut titles_due).await;
         seed_queues(&host, now);
         populate_catalog(&host).await;
+        apply_series_hints(&host).await;
         match step(&host, &*api, now).await {
             Ok(true) => {} // did work; the client paces the next send
             Ok(false) => {
@@ -166,6 +167,46 @@ async fn populate_catalog<H: AniDbHost>(host: &H) {
             },
         )
         .await;
+    }
+}
+
+/// Reconcile filename-derived metadata with a learned directory hint. The
+/// fallback series name is written once, at the first lookup — but a client
+/// can report the title-like containing directory only later: a playlist add
+/// carries no hint and races ahead of the library scan that does, so the
+/// first-seen episode of a series can be frozen with its per-episode stem
+/// name and split off into its own franchise. Here we rewrite — with no AniDB
+/// call, independent of the (possibly settled) lookup schedule — any
+/// filename-derived entry whose series name no longer matches the hint. A
+/// real AniDB hit is never touched; once a name matches its hint there is
+/// nothing to write, so this quiesces.
+async fn apply_series_hints<H: AniDbHost>(host: &H) {
+    let Some(hints) = store(host, "reading series hints", |s| s.series_hints()) else {
+        return;
+    };
+    let view = host.view();
+    for (hash, hint) in hints {
+        let hint = hint.trim();
+        if hint.is_empty() {
+            continue;
+        }
+        if let Some(Some(meta)) = view.anidb_metadata.get(&hash)
+            && meta.source == MetadataSource::FilenameDerived
+            && meta.series_name != hint
+        {
+            tracing::info!(
+                %hash, from = %meta.series_name, to = %hint,
+                "applying learned directory hint to filename-derived metadata"
+            );
+            host.write_metadata(
+                hash,
+                AniDbMetadata {
+                    series_name: hint.to_string(),
+                    ..meta.clone()
+                },
+            )
+            .await;
+        }
     }
 }
 
@@ -894,6 +935,88 @@ mod tests {
             .await;
         }
         worker.abort();
+    }
+
+    /// Regression: an episode whose filename-derived metadata was written
+    /// before a directory hint was known (a playlist add carries no hint and
+    /// races ahead of the hinted library scan) keeps its per-episode stem
+    /// name and splits into its own franchise. Once the hint is learned, the
+    /// reconciliation rewrites the stale name to the hint -- with no AniDB
+    /// call, even though the file is settled -- so the episode rejoins its
+    /// siblings. A real AniDB hit is never rewritten.
+    #[tokio::test(start_paused = true)]
+    async fn learned_hint_reconciles_a_frozen_filename_derived_name() {
+        let host = MockHost::new();
+        let now = host.now() as i64;
+
+        // hash(1): frozen with the per-episode stem (the early, hint-less
+        // write), but the queue has since learned the folder hint.
+        host.write_metadata(
+            hash(1),
+            AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: "Cardcaptor Sakura - 01 - The Magic Book".into(),
+                series_id: None,
+                episode_number: None,
+            },
+        )
+        .await;
+        // hash(2): a real AniDB hit; the queue hint must not disturb it.
+        host.write_metadata(
+            hash(2),
+            AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Real Series Name".into(),
+                series_id: Some(AniDbSeriesId(123)),
+                episode_number: Some("02".into()),
+            },
+        )
+        .await;
+        // hash(3): filename-derived and already matching its hint -> no churn.
+        host.write_metadata(
+            hash(3),
+            AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: "Cardcaptor Sakura".into(),
+                series_id: None,
+                episode_number: None,
+            },
+        )
+        .await;
+        host.with_storage(|s| {
+            for i in [1u8, 2, 3] {
+                let info = FileHashInfo {
+                    hash: hash(i),
+                    size: 1,
+                    filename: "x.mkv".into(),
+                    mtime: None,
+                    series_hint: Some("Cardcaptor Sakura".into()),
+                };
+                s.enqueue_lookup(&info, now).unwrap();
+            }
+        });
+
+        // Advance paused time so the reconciling write carries a later
+        // timestamp than the frozen one and wins the LWW merge (in
+        // production minutes pass between the two).
+        tokio::time::advance(Duration::from_secs(1)).await;
+        apply_series_hints(&host).await;
+
+        let view = host.view();
+        let name = |i: u8| {
+            view.anidb_metadata
+                .get(&hash(i))
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .series_name
+                .clone()
+        };
+        // hash(1) rejoins the franchise under the folder name.
+        assert_eq!(name(1), "Cardcaptor Sakura");
+        // The real AniDB hit is untouched.
+        assert_eq!(name(2), "Real Series Name");
+        assert_eq!(name(3), "Cardcaptor Sakura");
     }
 
     /// Regression: a long-owned file AniDB doesn't know (old mtime) but
