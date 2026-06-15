@@ -451,24 +451,30 @@ pub fn franchise_rows(
     rows.into_iter().map(|(_, row)| row).collect()
 }
 
-/// A human-readable label for a file in the episode browser. Prefers the
-/// playlist entry's filename (the real on-disk name); falls back to the
-/// AniDB metadata's "series — episode" when the file is known to AniDB
-/// but not in the playlist; then to the file catalog's filename (a
-/// library file we don't hold, before metadata arrives); only then to the
-/// raw hash.
+/// A human-readable label for a file in the episode browser. In order of
+/// preference:
+/// 1. the playlist entry's filename (the real on-disk name);
+/// 2. AniDB's "series — episode" when the file has a real episode number;
+/// 3. the file catalog's per-file filename — this distinguishes episodes
+///    when metadata is filename-derived, whose `series_name` is a directory
+///    hint shared by every episode of the series (so it must *not* be used
+///    as a per-episode label);
+/// 4. the bare `series_name` (better than a raw hash when nothing else);
+/// 5. the raw hash.
 pub fn episode_label(view: &StateView, hash: &Ed2kHash) -> String {
     if let Some(entry) = view.playlist.iter().find(|entry| entry.hash == *hash) {
         return entry.state.filename.clone();
     }
-    if let Some(Some(metadata)) = view.anidb_metadata.get(hash) {
-        return match &metadata.episode_number {
-            Some(ep) => format!("{} — {}", metadata.series_name, ep),
-            None => metadata.series_name.clone(),
-        };
+    if let Some(Some(metadata)) = view.anidb_metadata.get(hash)
+        && let Some(ep) = &metadata.episode_number
+    {
+        return format!("{} — {}", metadata.series_name, ep);
     }
     if let Some(entry) = view.file_catalog.get(hash) {
         return entry.filename.clone();
+    }
+    if let Some(Some(metadata)) = view.anidb_metadata.get(hash) {
+        return metadata.series_name.clone();
     }
     hash.to_string()
 }
@@ -943,7 +949,8 @@ mod tests {
                 episode_number: Some("01".into()),
             }),
         );
-        // hash(3): metadata with no episode number -> just the name.
+        // hash(3): metadata with no episode number and nothing more specific
+        // to go on -> just the name.
         state.set_anidb_metadata(
             A,
             ts(3),
@@ -961,6 +968,47 @@ mod tests {
         assert_eq!(episode_label(&view, &hash(3)), "Mystery Show");
         // hash(4): totally unknown -> the raw hash is the only fallback.
         assert_eq!(episode_label(&view, &hash(4)), hash(4).to_string());
+    }
+
+    /// Regression: filename-derived metadata shares one `series_name` across
+    /// every episode of a series (it's a directory hint since the
+    /// group-by-folder change). Such an episode must still be labelled by its
+    /// own catalog filename, not by the shared series name — otherwise the
+    /// episode browser shows N identical "Cardcaptor Sakura" rows.
+    #[test]
+    fn episode_label_uses_catalog_filename_when_series_name_is_a_shared_hint() {
+        use dessplay_core::types::{AniDbMetadata, FileCatalogEntry, MetadataSource};
+
+        let mut state = CrdtState::new();
+        let hint = AniDbMetadata {
+            source: MetadataSource::FilenameDerived,
+            series_name: "Cardcaptor Sakura".into(),
+            series_id: None,
+            episode_number: None,
+        };
+        let catalog = |name: &str| FileCatalogEntry {
+            filename: name.into(),
+            size_bytes: 1,
+            duration_millis: None,
+        };
+        // Two episodes of the same folder-derived "series": identical
+        // metadata, distinct catalog filenames.
+        for (i, name) in [
+            (5u8, "Cardcaptor Sakura - 01 - The Magic Book.mkv"),
+            (6, "Cardcaptor Sakura - 02 - Wonderful Friend.mkv"),
+        ] {
+            state.set_anidb_metadata(A, ts(i.into()), hash(i), Some(hint.clone()));
+            state.set_file_catalog(A, ts(i.into()), hash(i), catalog(name));
+        }
+        let view = state.view();
+        assert_eq!(
+            episode_label(&view, &hash(5)),
+            "Cardcaptor Sakura - 01 - The Magic Book.mkv"
+        );
+        assert_eq!(
+            episode_label(&view, &hash(6)),
+            "Cardcaptor Sakura - 02 - Wonderful Friend.mkv"
+        );
     }
 
     /// Sort a list of (episode_number, label) by the episode key and return
