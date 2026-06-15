@@ -31,7 +31,8 @@ This section describes the full workflow from a user's perspective.
 ### First Launch
 
 1. **Launch DessPlay** from the terminal: `dessplay`
-2. **Settings screen** appears (first run only):
+2. **Settings screen** appears (automatically on first run; reopen any time
+   later with `F3` or the `/settings` chat command):
    - Enter your username
    - Choose your player (mpv or vlc; terminal version only)
    - Add media root directories (where your anime/shows live; terminal version only)
@@ -307,6 +308,7 @@ This prevents sync issues from different encodes/versions.
 - Text commands start with `/`:
   - `/exit`, `/quit`, `/q`, ctrl-c -- quit DessPlay
   - `/afk <name>` -- mark another user as Away (see User States)
+  - `/settings` -- open the settings screen (also `F3`)
 
 ### Watching a Series
 
@@ -565,6 +567,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Ctrl-R` | Any | Toggle your own ready/unready (and mark yourself watching the current series) |
 | `Tab` | Any | Cycle focus: Chat -> Series -> Users -> Playlist -> Chat |
 | `F2` | Any | Toggle subtitle pane |
+| `F3` | Any | Open the settings screen (also `/settings`) |
 | `Enter` | Chat | Send message (or execute `/command`) |
 | `Esc` | Chat | Clear input |
 | `Backspace` | Chat | Delete character before cursor |

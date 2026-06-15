@@ -351,6 +351,8 @@ impl Ui {
                     Focus::Playlist => self.playlist.keybindings(),
                 };
                 items.insert(0, ("Tab", "Next pane"));
+                // F3 opens settings, but only when no modal is up.
+                items.push(("F3", "Settings"));
                 items
             }
         };
@@ -363,6 +365,17 @@ impl Ui {
     fn push_modal(&mut self, modal: Modal) {
         tracing::debug!(modal = modal.name(), "modal opened");
         self.modals.push(modal);
+    }
+
+    /// Open the settings modal from the UI's current settings + roots.
+    /// Reachable any time via F3 / `/settings` (the first-run path opens
+    /// it through [`Ui::with_setup`] instead).
+    fn open_settings(&mut self) {
+        self.push_modal(Modal::Settings(SettingsModal::new(
+            self.settings.clone(),
+            self.media_roots.clone(),
+        )));
+        self.sync_focus_attr();
     }
 
     fn pop_modal(&mut self) {
@@ -415,6 +428,12 @@ impl Ui {
                 Some(Key::Function(2)) => {
                     self.subtitle_pane = !self.subtitle_pane;
                     tracing::debug!(enabled = self.subtitle_pane, "subtitle pane toggled");
+                    return Vec::new();
+                }
+                Some(Key::Function(3)) => {
+                    tracing::debug!("user action: open settings (F3)");
+                    self.open_settings();
+                    self.refresh_keybar();
                     return Vec::new();
                 }
                 _ => {}
@@ -704,6 +723,10 @@ impl Ui {
         let mut parts = command.split_whitespace();
         match parts.next()? {
             "/quit" | "/exit" | "/q" => Some(UserAction::Quit),
+            "/settings" => {
+                self.open_settings();
+                None
+            }
             "/afk" => {
                 let name = parts.next()?;
                 Some(UserAction::Mutate(Mutation::SetManualOverride {
@@ -1035,5 +1058,36 @@ mod tests {
                 .iter()
                 .any(|m| matches!(m, Mutation::SetSeriesPreference { .. }))
         );
+    }
+
+    fn key(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn f3_opens_settings_and_esc_closes_it() {
+        // A non-first-run UI: no modal is open initially.
+        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
+        assert!(ui.modals.is_empty());
+
+        ui.handle(key(Key::Function(3)));
+        assert!(matches!(ui.modals.last(), Some(Modal::Settings(_))));
+
+        // Esc dismisses it back to the main screen.
+        ui.handle(key(Key::Esc));
+        assert!(ui.modals.is_empty());
+    }
+
+    #[test]
+    fn settings_chat_command_opens_settings() {
+        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
+        assert!(ui.modals.is_empty());
+
+        let action = ui.update(Msg::Command("/settings".into()));
+        assert!(action.is_none());
+        assert!(matches!(ui.modals.last(), Some(Modal::Settings(_))));
     }
 }
