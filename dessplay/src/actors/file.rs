@@ -173,10 +173,25 @@ pub enum FileCommand {
     },
 }
 
-/// A file the library scan has identified: (ed2k root, size in bytes,
-/// filename, mtime in unix millis). The mtime rides to the server's
-/// lookup queue so re-validation backoff reflects the file's real age.
-pub type IndexedFile = (Ed2kHash, u64, String, i64);
+/// A file the library scan has identified. The mtime rides to the server's
+/// lookup queue so re-validation backoff reflects the file's real age; the
+/// `series_hint` (a title-like ancestor directory name) rides along so the
+/// server can group AniDB-unknown episodes under their series folder rather
+/// than the per-episode filename stem.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedFile {
+    /// The file's ed2k root hash.
+    pub hash: Ed2kHash,
+    /// File size in bytes.
+    pub size: u64,
+    /// Display/match filename (the path's final component).
+    pub filename: String,
+    /// Modification time in unix millis.
+    pub mtime: i64,
+    /// A title-like containing-directory name, or `None` if none looked like
+    /// a title (see [`dir_series_hint`]).
+    pub series_hint: Option<String>,
+}
 
 /// Events out of the actor.
 #[derive(Debug)]
@@ -335,6 +350,8 @@ pub struct ScanItem {
     mtime: i64,
     /// Display/match filename (the path's final component).
     filename: String,
+    /// A title-like containing-directory name (see [`dir_series_hint`]).
+    series_hint: Option<String>,
 }
 
 /// Run the actor until the command channel closes.
@@ -983,7 +1000,13 @@ impl Actor {
                         let _ = self
                             .out
                             .send(FileOutput::LibraryIndexed {
-                                files: vec![(root, size, item.filename, item.mtime)],
+                                files: vec![IndexedFile {
+                                    hash: root,
+                                    size,
+                                    filename: item.filename,
+                                    mtime: item.mtime,
+                                    series_hint: item.series_hint,
+                                }],
                             })
                             .await;
                     }
@@ -1493,6 +1516,60 @@ fn is_video_file(path: &Path) -> bool {
         .is_some_and(|ext| VIDEO_EXTENSIONS.contains(&ext.as_str()))
 }
 
+/// Directory names that organise a series' files but are not the series
+/// itself — season/disc folders and generic library containers. Matched
+/// case-insensitively, with an optional trailing number (`Season 1`, `CD2`).
+const STRUCTURAL_DIR_WORDS: &[&str] = &[
+    // Season / disc / part groupings.
+    "season", "s", "saison", "disc", "disk", "cd", "dvd", "bd", "vol", "volume", "part", "pt",
+    "special", "specials", "extra", "extras", "ova", "bdmv", "stream", "video_ts",
+    // Generic library containers — using one of these as a series name would
+    // collapse an entire mixed folder (e.g. a `Movies` dump) into one entry.
+    "anime", "movies", "movie", "videos", "video", "downloads", "download", "media", "tv",
+    "shows", "series", "watch", "incoming", "complete", "seeding",
+];
+
+/// True if `name` is a structural/container directory rather than a series
+/// title: a season/disc folder, a purely-numeric folder, a generic library
+/// container, or anything with no letters / shorter than two characters.
+fn is_structural_dir(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.len() < 2 || !trimmed.chars().any(|c| c.is_alphabetic()) {
+        return true;
+    }
+    // A season/disc word optionally followed by a number and separators,
+    // e.g. "Season 1", "S01", "Disc-2", "CD 3".
+    let lower = trimmed.to_ascii_lowercase();
+    let word_end = lower
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(lower.len());
+    let (word, rest) = lower.split_at(word_end);
+    let rest_is_number = rest
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, ' ' | '.' | '_' | '-'));
+    STRUCTURAL_DIR_WORDS.contains(&word) && rest_is_number
+}
+
+/// A title-like directory name for `path`, relative to the media `root` it
+/// was found under: walk the ancestor directories between the root and the
+/// file from deepest to shallowest and return the first that isn't a
+/// structural/container folder (see [`is_structural_dir`]). `None` when the
+/// file sits directly in the root or every ancestor is structural — the
+/// server then falls back to the filename stem.
+fn dir_series_hint(path: &Path, root: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    // Directory components between the root and the filename, shallow→deep.
+    let dirs: Vec<&std::ffi::OsStr> = rel.parent()?.components().filter_map(|c| match c {
+        std::path::Component::Normal(s) => Some(s),
+        _ => None,
+    }).collect();
+    dirs.iter()
+        .rev()
+        .map(|s| s.to_string_lossy())
+        .find(|name| !is_structural_dir(name))
+        .map(|name| name.trim().to_string())
+}
+
 /// Walk every media root, classifying each video file as a hash-cache hit
 /// (a known root, returned immediately) or a worklist item (new or
 /// changed since the last scan, needing a hash). Mirrors `find_by_name`'s
@@ -1532,18 +1609,26 @@ fn scan_library(
                     continue;
                 };
                 let filename = entry.file_name().to_string_lossy().into_owned();
+                let series_hint = dir_series_hint(&path, root);
                 match cache.get(&path) {
                     // Unchanged since we hashed it: trust the cache.
                     Some((cached_mtime, hash))
                         if *cached_mtime == mtime && hash.size_bytes == metadata.len() =>
                     {
-                        hits.push((hash.root, hash.size_bytes, filename, *cached_mtime));
+                        hits.push(IndexedFile {
+                            hash: hash.root,
+                            size: hash.size_bytes,
+                            filename,
+                            mtime: *cached_mtime,
+                            series_hint,
+                        });
                     }
                     // New or changed: needs a (re)hash.
                     _ => worklist.push_back(ScanItem {
                         path,
                         mtime,
                         filename,
+                        series_hint,
                     }),
                 }
             }
@@ -2468,8 +2553,8 @@ mod tests {
         let (hits, worklist) = scan_library(&[root.path().to_path_buf()], &cache);
         assert!(worklist.is_empty());
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0, ed2k_hash_bytes(b"episode one").root);
-        assert_eq!(hits[0].2, "ep1.mkv");
+        assert_eq!(hits[0].hash, ed2k_hash_bytes(b"episode one").root);
+        assert_eq!(hits[0].filename, "ep1.mkv");
     }
 
     #[test]
@@ -2489,7 +2574,7 @@ mod tests {
     async fn await_indexed(rig: &mut Rig, wanted: Ed2kHash) {
         for _ in 0..50 {
             if let FileOutput::LibraryIndexed { files } = next_output(rig).await
-                && files.iter().any(|(h, _, _, _)| *h == wanted)
+                && files.iter().any(|f| f.hash == wanted)
             {
                 return;
             }
@@ -2527,5 +2612,49 @@ mod tests {
         assert!(cached.iter().any(|row| row.hash.root == expected));
         // The .nfo was never hashed.
         assert!(cached.iter().all(|row| row.path.extension().unwrap() == "mkv"));
+    }
+
+    fn hint(rel: &str) -> Option<String> {
+        let root = Path::new("/media/anime");
+        dir_series_hint(&root.join(rel), root)
+    }
+
+    #[test]
+    fn dir_series_hint_uses_the_containing_series_folder() {
+        assert_eq!(hint("RahXephon/Season 1/Episode 43.mkv").as_deref(), Some("RahXephon"));
+        assert_eq!(hint("RahXephon/ep01.mkv").as_deref(), Some("RahXephon"));
+    }
+
+    #[test]
+    fn dir_series_hint_skips_structural_folders_to_the_title() {
+        // Season *and* disc folders are skipped; the title is found above them.
+        assert_eq!(
+            hint("RahXephon/Season 1/Disc 1/ep.mkv").as_deref(),
+            Some("RahXephon")
+        );
+        assert_eq!(hint("Show/S01/01.mkv").as_deref(), Some("Show"));
+        assert_eq!(hint("Show/Specials/sp1.mkv").as_deref(), Some("Show"));
+    }
+
+    #[test]
+    fn dir_series_hint_is_none_without_a_title_folder() {
+        // File directly under a media root: no containing folder.
+        assert_eq!(hint("loose.mkv"), None);
+        // A generic container would over-group an unrelated dump.
+        assert_eq!(hint("Movies/SomeFilm.mkv"), None);
+        assert_eq!(hint("Anime/whatever.mkv"), None);
+        // Only structural folders all the way down.
+        assert_eq!(hint("Season 1/01.mkv"), None);
+        assert_eq!(hint("2024/01.mkv"), None);
+    }
+
+    #[test]
+    fn is_structural_dir_classifies_common_shapes() {
+        for s in ["Season 1", "S01", "season", "Disc-2", "CD 3", "Specials", "OVA", "1", "BDMV"] {
+            assert!(is_structural_dir(s), "{s:?} should be structural");
+        }
+        for s in ["RahXephon", "Sousou no Frieren", "K-On!", "Re Zero"] {
+            assert!(!is_structural_dir(s), "{s:?} should look like a title");
+        }
     }
 }

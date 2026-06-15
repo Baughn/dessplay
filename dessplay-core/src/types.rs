@@ -463,6 +463,14 @@ pub struct FileHashInfo {
     /// and when it first saw the file, so files owned for years aren't
     /// re-polled on the aggressive new-file ladder after a queue reset.
     pub mtime: Option<i64>,
+    /// A title-like containing-directory name (e.g. `RahXephon` for a file
+    /// stored under `<root>/RahXephon/Season 1/...`), supplied by the
+    /// requester when it held the file locally; `None` when unknown or when
+    /// no ancestor directory looked like a title. When AniDB doesn't know the
+    /// file, the server prefers this over the filename stem for the
+    /// fallback series name, so a series' episodes group together instead of
+    /// each becoming its own franchise.
+    pub series_hint: Option<String>,
 }
 
 /// A user's playback position report.

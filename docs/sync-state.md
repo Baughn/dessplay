@@ -368,6 +368,14 @@ to look up via AniDB.
   first queued the file, so long-owned files AniDB doesn't know aren't
   re-polled on the aggressive new-file ladder after a queue reset (see
   "Parsing files" in design.md)
+- `series_hint: Option<String>` -- a title-like containing-directory name
+  (e.g. `RahXephon` for a file under `<root>/RahXephon/Season 1/...`),
+  derived by the requester from the local path when it holds the file;
+  `None` when unknown or when no ancestor directory looked like a title
+  (season/disc folders and generic library containers are skipped). When
+  AniDB doesn't know the file, the server prefers this over the filename
+  stem for the fallback `series_name`, so a series' AniDB-unknown episodes
+  group into one franchise instead of one entry per episode
 
 Clients insert entries for **every** file their media-root scan finds that
 still lacks metadata -- not just playlist entries (see "Media Library
@@ -414,10 +422,14 @@ Only the server writes these. `None` means "not yet looked up." The server
 fills in metadata from two sources:
 
 1. **AniDB lookup succeeds**: full metadata (series name, ID, episode number)
-2. **AniDB lookup fails**: filename-derived metadata (series name = filename
-   minus extension, no series ID, no episode number). Any smarter parsing
-   (stripping group tags, episode numbers) is done at the display level so
-   it can be updated without re-querying.
+2. **AniDB lookup fails**: filename-derived metadata. The series name is the
+   requester's `series_hint` (a title-like containing-directory name) when one
+   was supplied, else the filename minus its extension; no series ID, no
+   episode number. The directory hint keeps a series' AniDB-unknown episodes
+   grouped under their folder rather than splitting into one franchise per
+   episode. Any smarter filename parsing (stripping group tags, episode
+   numbers) is done at the display level so it can be updated without
+   re-querying.
 
 Either way, the register becomes `Some(AniDbMetadata)` -- downstream code
 always has a series name to work with.

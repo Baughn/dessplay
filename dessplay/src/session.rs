@@ -381,32 +381,22 @@ impl PlayerWiring {
         })]
     }
 
-    /// Request an AniDB lookup for `hash` if it still lacks metadata and
-    /// we haven't requested it this session. The server records the
+    /// Request an AniDB lookup for `info.hash` if it still lacks metadata
+    /// and we haven't requested it this session. The server records the
     /// file's identity (filename + size) in the broadcast file catalog
     /// when it drains the request, so the file becomes addable group-wide.
     fn maybe_request_lookup(
         &mut self,
-        hash: Ed2kHash,
-        size: u64,
-        filename: &str,
-        mtime: Option<i64>,
+        info: dessplay_core::types::FileHashInfo,
         view: &StateView,
         out: &mut Vec<Directive>,
     ) {
         let missing = view
             .anidb_metadata
-            .get(&hash)
+            .get(&info.hash)
             .is_none_or(|meta| meta.is_none());
-        if missing && self.lookups_requested.insert(hash) {
-            out.push(Directive::Mutate(Mutation::RequestLookup {
-                info: dessplay_core::types::FileHashInfo {
-                    hash,
-                    size,
-                    filename: filename.to_string(),
-                    mtime,
-                },
-            }));
+        if missing && self.lookups_requested.insert(info.hash) {
+            out.push(Directive::Mutate(Mutation::RequestLookup { info }));
         }
     }
 
@@ -420,8 +410,18 @@ impl PlayerWiring {
         view: &StateView,
     ) -> Vec<Directive> {
         let mut out = Vec::new();
-        for (hash, size, filename, mtime) in files {
-            self.maybe_request_lookup(hash, size, &filename, Some(mtime), view, &mut out);
+        for f in files {
+            self.maybe_request_lookup(
+                dessplay_core::types::FileHashInfo {
+                    hash: f.hash,
+                    size: f.size,
+                    filename: f.filename,
+                    mtime: Some(f.mtime),
+                    series_hint: f.series_hint,
+                },
+                view,
+                &mut out,
+            );
         }
         out
     }
@@ -456,12 +456,17 @@ impl PlayerWiring {
         // request set being cleared at compaction.
         for entry in &view.playlist {
             self.maybe_request_lookup(
-                entry.hash,
-                entry.state.size_bytes,
-                &entry.state.filename,
-                // Playlist entries carry no mtime (a client may not even
-                // hold the file); the server then anchors on first-seen.
-                None,
+                dessplay_core::types::FileHashInfo {
+                    hash: entry.hash,
+                    size: entry.state.size_bytes,
+                    filename: entry.state.filename.clone(),
+                    // Playlist entries carry no mtime (a client may not even
+                    // hold the file); the server then anchors on first-seen.
+                    // No local path here either, so no directory to derive a
+                    // series hint from — the library scan supplies that.
+                    mtime: None,
+                    series_hint: None,
+                },
                 view,
                 &mut out,
             );
@@ -1380,10 +1385,17 @@ mod tests {
         let view = state.view();
         let mut wiring = PlayerWiring::new(me());
 
+        let indexed = |h, size, name: &str, mtime| IndexedFile {
+            hash: h,
+            size,
+            filename: name.to_string(),
+            mtime,
+            series_hint: None,
+        };
         let files = vec![
-            (hash(1), 100, "a.mkv".to_string(), 1_000),
-            (hash(2), 200, "b.mkv".to_string(), 2_000),
-            (hash(3), 300, "c.mkv".to_string(), 3_000),
+            indexed(hash(1), 100, "a.mkv", 1_000),
+            indexed(hash(2), 200, "b.mkv", 2_000),
+            indexed(hash(3), 300, "c.mkv", 3_000),
         ];
         let out = wiring.on_library_indexed(files.clone(), &view);
         // hash(2) is skipped (already has metadata); the rest are requested.

@@ -725,10 +725,12 @@ no longer filled only on demand.
   files. Interactive clients rescan about once a minute; a seeder, whose store
   is large and stable, rescans once a day.
 - For every indexed hash that lacks metadata in the synced state, the client
-  inserts a `FileHashInfo` (hash, size, filename, mtime) into the
+  inserts a `FileHashInfo` (hash, size, filename, mtime, and a title-like
+  containing-directory `series_hint`) into the
   `lookup_requests` GSet -- the same "please look this up" set the playlist
-  uses, now fed by the whole library. The scan has each file's mtime in hand
-  (it keys the `hash_cache`), so library requests always carry it. Server-side per-hash de-duplication and the cross-client
+  uses, now fed by the whole library. The scan has each file's path and mtime
+  in hand (the mtime keys the `hash_cache`; the path yields the directory
+  hint), so library requests always carry both. Server-side per-hash de-duplication and the cross-client
   "already checked" bookkeeping (the `anidb_queue` table) keep AniDB load
   bounded even when several clients index overlapping collections.
 
@@ -849,14 +851,16 @@ account is used for nothing else, and AniDB's `ENCRYPT` command remains
 future work.
 
 **Lookup flow:**
-1. Clients insert `FileHashInfo` (hash, size, filename, and the file's
-   mtime when the requester holds it locally) into a
+1. Clients insert `FileHashInfo` (hash, size, filename, and -- when the
+   requester holds the file locally -- the file's mtime and a title-like
+   containing-directory name `series_hint`) into a
    `GSet<FileHashInfo>` -- a "please look these up" set -- for every file that
    lacks metadata, whether it is a playlist entry or just a file the
    [library scan](#media-library-scanning) found in a media root. Any client
    may request; the server deduplicates, and the GSet absorbs repeated inserts.
    This also re-arms requests after compaction clears the set. (A playlist
-   entry a client doesn't hold has no mtime; the request omits it.)
+   entry a client doesn't hold has neither mtime nor directory hint; the
+   request omits both.)
 2. The server drains entries from this set into its AniDB lookup queue, and
    **records each file's identity** (filename + size, taken from the request)
    in the server-authoritative **file catalog** (see the
@@ -868,8 +872,18 @@ future work.
    unpause rule until then.
 3. On success: server writes full `AniDbMetadata` (series name, ID, episode).
 4. On failure (AniDB doesn't know the file): server writes filename-derived
-   metadata (series name parsed from filename, no series ID, no episode number)
-   once -- a later re-validation miss never clobbers real metadata. The
+   metadata once -- a later re-validation miss never clobbers real metadata.
+   The fallback series name is the requester's `series_hint` (a title-like
+   containing-directory name, e.g. `RahXephon` for a file under
+   `<root>/RahXephon/Season 1/...`) when one was supplied, else the filename
+   minus its extension; no series ID, no episode number. The directory hint
+   keeps a series' AniDB-unknown episodes grouped into one franchise instead
+   of one per episode -- without it, per-episode filenames each parse to a
+   distinct series name. The hint is computed client-side by walking the
+   ancestors between the file and its media root, skipping season/disc folders
+   and generic containers (`Movies`, `Anime`, ...) and taking the first
+   title-like directory; the server stores the first non-null hint reported
+   on the `anidb_queue` row. The
    re-validation cadence is an age-based ladder for never-seen files
    (30 min if < 1 day old, 2 h if < 1 week, 12 h if < 30 days, 3 days if
    < 90 days, then never) and weekly for files AniDB knows. **The ladder's
@@ -1114,7 +1128,7 @@ tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 |-------|----------|
 | `crdt_state` | The authoritative snapshot (epoch + postcard blob) |
 | `chat_archive` | Full chat history, archived before compaction trims the replicated GList; unique on (timestamp, sender, text), mirroring GList dedup |
-| `anidb_queue` | FILE validation queue: hash, size, filename, mtime (anchors the re-validation ladder on the file's real age), attempt bookkeeping, `next_attempt` scheduling (`i64::MAX` = settled tombstone) |
+| `anidb_queue` | FILE validation queue: hash, size, filename, mtime (anchors the re-validation ladder on the file's real age), `series_hint` (title-like containing-directory name; the AniDB-miss fallback series name, so episodes group by folder), attempt bookkeeping, `next_attempt` scheduling (`i64::MAX` = settled tombstone) |
 | `anime_queue` | ANIME (relations-walk) queue: aid, attempt bookkeeping; the graph fills in over hours and must survive restarts |
 | `anidb_titles` | The anime-titles dump (aid, kind, lang, title); backs local name search |
 | `kv` | Bookkeeping (e.g. the titles dump's last fetch time) |

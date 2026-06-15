@@ -103,6 +103,7 @@ fn lookup_request(i: u8, filename: &str) -> Mutation {
             size: 1_000_000,
             filename: filename.into(),
             mtime: None,
+            series_hint: None,
         },
     }
 }

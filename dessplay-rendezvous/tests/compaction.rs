@@ -52,6 +52,7 @@ async fn compaction_preserves_view_and_clients_keep_working() {
                 size: 1_000_000,
                 filename: "ep1.mkv".into(),
                 mtime: None,
+                series_hint: None,
             },
         },
     )

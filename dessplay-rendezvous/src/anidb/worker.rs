@@ -240,18 +240,26 @@ async fn step<H: AniDbHost>(
     Ok(false)
 }
 
-/// Fallback metadata when AniDB doesn't know the file: the series name
-/// is the filename minus its extension; smarter parsing happens at the
-/// display level (docs/sync-state.md).
-fn filename_derived(filename: &str) -> AniDbMetadata {
-    let stem = std::path::Path::new(filename)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or_else(|| filename.to_string());
+/// Fallback metadata when AniDB doesn't know the file. The series name is
+/// the requester's title-like containing-directory hint when one was
+/// supplied (so a series' episodes group into one franchise instead of one
+/// per episode), else the filename minus its extension. Smarter filename
+/// parsing happens at the display level (docs/sync-state.md).
+fn filename_derived(filename: &str, series_hint: Option<&str>) -> AniDbMetadata {
+    let series_name = series_hint
+        .map(str::trim)
+        .filter(|hint| !hint.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            std::path::Path::new(filename)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .filter(|stem| !stem.is_empty())
+                .unwrap_or_else(|| filename.to_string())
+        });
     AniDbMetadata {
         source: MetadataSource::FilenameDerived,
-        series_name: stem,
+        series_name,
         series_id: None,
         episode_number: None,
     }
@@ -302,8 +310,11 @@ async fn lookup_file<H: AniDbHost>(
                 .get(&hash)
                 .is_none_or(|existing| existing.is_none());
             if missing {
-                host.write_metadata(hash, filename_derived(&entry.info.filename))
-                    .await;
+                host.write_metadata(
+                    hash,
+                    filename_derived(&entry.info.filename, entry.info.series_hint.as_deref()),
+                )
+                .await;
             }
             let next =
                 schedule::next_attempt(now_i, anchor, entry.has_data, Outcome::NoData)
@@ -582,11 +593,22 @@ mod tests {
     }
 
     fn request_with_mtime(host: &Arc<MockHost>, i: u8, filename: &str, mtime: Option<i64>) {
+        request_full(host, i, filename, mtime, None);
+    }
+
+    fn request_full(
+        host: &Arc<MockHost>,
+        i: u8,
+        filename: &str,
+        mtime: Option<i64>,
+        series_hint: Option<&str>,
+    ) {
         let info = FileHashInfo {
             hash: hash(i),
             size: 1000 + i as u64,
             filename: filename.to_string(),
             mtime,
+            series_hint: series_hint.map(str::to_string),
         };
         host.mutate(|state, _| {
             state.request_lookup(info);
@@ -676,6 +698,7 @@ mod tests {
                     size: 1,
                     filename: name.into(),
                     mtime: None,
+                    series_hint: None,
                 };
                 s.enqueue_lookup(&info, now).unwrap();
                 s.record_lookup_attempt(hash(i), now, now + week, true).unwrap();
@@ -839,6 +862,37 @@ mod tests {
             })
         })
         .await;
+        worker.abort();
+    }
+
+    /// Regression: when AniDB doesn't know a file but the requester supplied
+    /// a title-like directory hint, the fallback series name is the hint, not
+    /// the per-episode filename stem — so a series' episodes group into one
+    /// franchise instead of one entry per episode. Before the hint, the two
+    /// episodes below would derive distinct names ("RahXephon - 01" vs "- 02")
+    /// and split into two franchises.
+    #[tokio::test(start_paused = true)]
+    async fn miss_prefers_the_series_hint_over_the_filename_stem() {
+        let host = MockHost::new();
+        let api = Arc::new(MockApi::default());
+        // Two unknown episodes of the same show, each carrying the folder hint.
+        request_full(&host, 1, "RahXephon - 01.mkv", None, Some("RahXephon"));
+        request_full(&host, 2, "RahXephon - 02.mkv", None, Some("RahXephon"));
+        let (titles, _) = titles_source("", false);
+        let worker = spawn_worker(&host, &api, titles);
+
+        for i in [1u8, 2] {
+            eventually(&host, "hinted fallback metadata", move |view| {
+                view.anidb_metadata.get(&hash(i)).is_some_and(|m| {
+                    m.as_ref().is_some_and(|m| {
+                        m.source == MetadataSource::FilenameDerived
+                            && m.series_name == "RahXephon"
+                            && m.series_id.is_none()
+                    })
+                })
+            })
+            .await;
+        }
         worker.abort();
     }
 

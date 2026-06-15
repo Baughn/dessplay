@@ -403,6 +403,7 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
             // Vary mtime by file index so distinct files stay distinct GSet
             // elements; deterministic, no clock read.
             mtime: Some(*f as i64 * 1000),
+            series_hint: None,
         }),
         ScriptOp::Chat { text } => state.append_chat(ChatMessage {
             timestamp: ts,

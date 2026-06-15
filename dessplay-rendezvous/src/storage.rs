@@ -123,6 +123,13 @@ const MIGRATIONS: &[&str] = &[
     // know aren't re-polled on the aggressive new-file cadence after a
     // queue reset. NULL = unknown (e.g. a playlist-only request).
     "ALTER TABLE anidb_queue ADD COLUMN mtime INTEGER;",
+    // v4: a title-like containing-directory name, supplied by clients that
+    // hold the file (e.g. `RahXephon` for `<root>/RahXephon/Season 1/...`).
+    // When AniDB doesn't know the file, the fallback series name uses this
+    // instead of the per-episode filename stem, so a series' episodes group
+    // into one franchise. NULL = unknown (playlist-only request, or no
+    // ancestor directory looked like a title).
+    "ALTER TABLE anidb_queue ADD COLUMN series_hint TEXT;",
 ];
 
 /// `next_attempt` sentinel for queue entries that are settled and must
@@ -319,24 +326,29 @@ impl ServerStorage {
     /// schedule (`first_seen`, `next_attempt`, `has_data` are left alone),
     /// but it *does* lower the stored `mtime` toward the oldest value
     /// seen, so an existing row learns the file's real age the first time
-    /// a client reports it (and never loses a more-aged value).
+    /// a client reports it (and never loses a more-aged value). It also
+    /// learns a `series_hint` the first time one is reported (keeping the
+    /// first non-null hint), so a row queued before the holder reported
+    /// — or by a client that didn't hold the file — picks one up later.
     pub fn enqueue_lookup(&self, info: &FileHashInfo, now: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO anidb_queue
-             (hash, size_bytes, filename, first_seen, next_attempt, mtime)
-             VALUES (?1, ?2, ?3, ?4, ?4, ?5)
+             (hash, size_bytes, filename, first_seen, next_attempt, mtime, series_hint)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)
              ON CONFLICT(hash) DO UPDATE SET
                  mtime = CASE
                      WHEN excluded.mtime IS NULL THEN mtime
                      WHEN mtime IS NULL THEN excluded.mtime
                      ELSE min(mtime, excluded.mtime)
-                 END",
+                 END,
+                 series_hint = COALESCE(series_hint, excluded.series_hint)",
             params![
                 info.hash.0.as_slice(),
                 info.size as i64,
                 info.filename,
                 now,
                 info.mtime,
+                info.series_hint,
             ],
         )?;
         Ok(())
@@ -346,7 +358,7 @@ impl ServerStorage {
     pub fn due_lookups(&self, now: i64, limit: usize) -> Result<Vec<QueueEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT hash, size_bytes, filename, first_seen, last_attempt,
-                    next_attempt, attempts, has_data, mtime
+                    next_attempt, attempts, has_data, mtime, series_hint
              FROM anidb_queue WHERE next_attempt <= ?1
              ORDER BY next_attempt, hash LIMIT ?2",
         )?;
@@ -361,6 +373,7 @@ impl ServerStorage {
                 row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
                 row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })?;
         let mut entries = Vec::new();
@@ -375,6 +388,7 @@ impl ServerStorage {
                 attempts,
                 has_data,
                 mtime,
+                series_hint,
             ) = row?;
             entries.push(QueueEntry {
                 info: FileHashInfo {
@@ -382,6 +396,7 @@ impl ServerStorage {
                     size: size as u64,
                     filename,
                     mtime,
+                    series_hint,
                 },
                 first_seen,
                 last_attempt,
@@ -759,6 +774,7 @@ mod tests {
             size: 1234,
             filename: "ep1.mkv".into(),
             mtime: None,
+            series_hint: None,
         };
         storage.enqueue_lookup(&info, 100).unwrap();
         // Duplicate enqueue (clients re-insert after reconnect): ignored,
@@ -807,6 +823,7 @@ mod tests {
             size: 1,
             filename: "ep1.mkv".into(),
             mtime,
+            series_hint: None,
         };
         let read_mtime = |s: &ServerStorage| s.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime;
 
@@ -840,6 +857,7 @@ mod tests {
             size: 1,
             filename: "old.mkv".into(),
             mtime,
+            series_hint: None,
         };
         storage.enqueue_lookup(&info(None), 100).unwrap();
         assert_eq!(storage.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime, None);
@@ -848,6 +866,36 @@ mod tests {
             storage.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime,
             Some(42)
         );
+    }
+
+    /// An enqueue learns the series hint and keeps the first non-null one:
+    /// a row queued without a hint (e.g. a playlist-only request) picks one
+    /// up when a holder later reports it, and a differing later hint doesn't
+    /// overwrite it. The hint round-trips through `due_lookups`.
+    #[test]
+    fn enqueue_learns_series_hint() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        let info = |hint: Option<&str>| FileHashInfo {
+            hash: hash(3),
+            size: 1,
+            filename: "RahXephon - 01.mkv".into(),
+            mtime: None,
+            series_hint: hint.map(str::to_string),
+        };
+        let read_hint =
+            |s: &ServerStorage| s.due_lookups(i64::MAX, 10).unwrap()[0].info.series_hint.clone();
+
+        // Queued without a hint first.
+        storage.enqueue_lookup(&info(None), 100).unwrap();
+        assert_eq!(read_hint(&storage), None);
+
+        // A holder reports the containing folder: the row learns it.
+        storage.enqueue_lookup(&info(Some("RahXephon")), 200).unwrap();
+        assert_eq!(read_hint(&storage).as_deref(), Some("RahXephon"));
+
+        // A later, different hint does not overwrite the first.
+        storage.enqueue_lookup(&info(Some("Something Else")), 300).unwrap();
+        assert_eq!(read_hint(&storage).as_deref(), Some("RahXephon"));
     }
 
     /// Regression: a successful lookup marks the queue settled (has_data,
@@ -864,6 +912,7 @@ mod tests {
             size: 1,
             filename: name.into(),
             mtime: None,
+            series_hint: None,
         };
         // hash(1): settled with data but metadata lost (the orphan).
         // hash(2): settled with data and metadata present (healthy).

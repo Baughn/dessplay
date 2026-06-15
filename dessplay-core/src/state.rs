@@ -828,6 +828,7 @@ mod tests {
             size: 123,
             filename: "ep1.mkv".into(),
             mtime: Some(456),
+            series_hint: None,
         });
 
         let snapshot = StateSnapshot {

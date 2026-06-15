@@ -135,16 +135,17 @@ impl SeederTransfer {
                 // browsable catalog: request a lookup for each new hash
                 // (the server dedups against existing metadata/queue and
                 // records the file's identity).
-                for (hash, size, filename, mtime) in files {
-                    if self.lookups_requested.insert(hash) {
+                for f in files {
+                    if self.lookups_requested.insert(f.hash) {
                         let _ = self
                             .sync
                             .send(SyncCommand::Mutate(Box::new(Mutation::RequestLookup {
                                 info: dessplay_core::types::FileHashInfo {
-                                    hash,
-                                    size,
-                                    filename,
-                                    mtime: Some(mtime),
+                                    hash: f.hash,
+                                    size: f.size,
+                                    filename: f.filename,
+                                    mtime: Some(f.mtime),
+                                    series_hint: f.series_hint,
                                 },
                             })))
                             .await;
