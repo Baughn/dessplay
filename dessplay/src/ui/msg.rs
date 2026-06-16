@@ -95,8 +95,8 @@ pub enum Msg {
     // Navigation / global
     /// Cycle pane focus.
     FocusNext,
-    /// Toggle the subtitle pane.
-    ToggleSubtitlePane,
+    /// Cycle the subtitle mode (Off -> Intermixed -> Separate -> Off).
+    CycleSubtitleMode,
     /// Quit DessPlay.
     Quit,
     /// Nothing to do (consumed internally by the component).
@@ -135,7 +135,7 @@ impl Msg {
             Msg::SettingsSaved(..) => "SettingsSaved",
             Msg::ListEntrySaved(..) => "ListEntrySaved",
             Msg::FocusNext => "FocusNext",
-            Msg::ToggleSubtitlePane => "ToggleSubtitlePane",
+            Msg::CycleSubtitleMode => "CycleSubtitleMode",
             Msg::Quit => "Quit",
             Msg::None => "None",
         }

@@ -38,6 +38,20 @@ use crate::actors::file::{
 use crate::actors::player::{PlayerCommand, PlayerOutput};
 use crate::actors::sync::Mutation;
 
+/// A subtitle line bound for the UI. `video_millis` is the in-video
+/// position (the displayed MM:SS timestamp); `arrival_millis` is the
+/// shell's wall-clock stamp, used to interleave with chat. Strictly
+/// local — never synced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubtitleLine {
+    /// Subtitle text.
+    pub text: String,
+    /// In-video position when the cue appeared (milliseconds).
+    pub video_millis: u64,
+    /// Wall-clock arrival on the shared clock (milliseconds).
+    pub arrival_millis: u64,
+}
+
 /// One instruction to the async shell around the wiring.
 #[derive(Debug)]
 pub enum Directive {
@@ -58,8 +72,14 @@ pub enum Directive {
         /// Filename to search for.
         filename: String,
     },
-    /// A subtitle line for the UI's subtitle pane.
-    Subtitle(String),
+    /// A subtitle line for the UI. Carries the in-video position (the
+    /// displayed timestamp); the shell stamps wall-clock arrival.
+    Subtitle {
+        /// Subtitle text.
+        text: String,
+        /// In-video position when the cue appeared (milliseconds).
+        video_millis: u64,
+    },
     /// Record a personally-watched file (the 85% rule crossed). The
     /// shell stamps `watched_at` with its clock and forwards it to the
     /// file actor; this feeds known-series detection and Recent Series
@@ -670,7 +690,13 @@ impl PlayerWiring {
                     vec![]
                 }
             }
-            PlayerOutput::SubtitleLine(line) => vec![Directive::Subtitle(line)],
+            PlayerOutput::SubtitleLine {
+                text,
+                position_millis,
+            } => vec![Directive::Subtitle {
+                text,
+                video_millis: position_millis,
+            }],
             PlayerOutput::Eof { file } => vec![Directive::ReportEof(file)],
             PlayerOutput::LoadFailed { file } => {
                 // The path we loaded is gone/unreadable. Forget it, flip
@@ -778,7 +804,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     }
 
     /// A background hash finished: add the file to the playlist.
-    pub async fn on_hashed(&mut self, done: HashedAdd) -> Vec<String> {
+    pub async fn on_hashed(&mut self, done: HashedAdd) -> Vec<SubtitleLine> {
         self.hashing.remove(&done.path);
         let hashed = match done.result {
             Ok(hashed) => hashed,
@@ -882,7 +908,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     }
 
     /// A fresh state view arrived. Returns subtitle lines for the UI.
-    pub async fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<String> {
+    pub async fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<SubtitleLine> {
         let directives = self.wiring.on_state(view, peers);
         self.execute(directives).await
     }
@@ -892,7 +918,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         &mut self,
         output: PlayerOutput,
         view: &StateView,
-    ) -> Vec<String> {
+    ) -> Vec<SubtitleLine> {
         let directives = self.wiring.on_player(output, view);
         self.execute(directives).await
     }
@@ -904,13 +930,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         resolution: Resolution,
         view: &StateView,
         peers: &[PeerInfo],
-    ) -> Vec<String> {
+    ) -> Vec<SubtitleLine> {
         let directives = self.wiring.on_resolved(file, resolution, view, peers);
         self.execute(directives).await
     }
 
     /// We hashed and added this file ourselves.
-    pub async fn note_local_file(&mut self, file: Ed2kHash, path: PathBuf) -> Vec<String> {
+    pub async fn note_local_file(&mut self, file: Ed2kHash, path: PathBuf) -> Vec<SubtitleLine> {
         let directives = self.wiring.note_local_file(file, path);
         self.execute(directives).await
     }
@@ -930,7 +956,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         }
     }
 
-    async fn execute(&mut self, directives: Vec<Directive>) -> Vec<String> {
+    async fn execute(&mut self, directives: Vec<Directive>) -> Vec<SubtitleLine> {
         let mut subtitles = Vec::new();
         for directive in directives {
             match directive {
@@ -1022,7 +1048,16 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         })
                         .await;
                 }
-                Directive::Subtitle(line) => subtitles.push(line),
+                Directive::Subtitle {
+                    text,
+                    video_millis,
+                } => subtitles.push(SubtitleLine {
+                    text,
+                    video_millis,
+                    // Stamp arrival with the same clock chat/system lines
+                    // use, so all three share one interleave domain.
+                    arrival_millis: (self.clock)(),
+                }),
             }
         }
         subtitles

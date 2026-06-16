@@ -17,8 +17,17 @@ pub enum UiInput {
     Snapshot(Box<UiSnapshot>),
     /// A terminal input event.
     Event(Event<NoUserEvent>),
-    /// A subtitle line from the local player (rolling log).
-    Subtitle(String),
+    /// A subtitle line from the local player. `video_millis` is the
+    /// in-video position (displayed timestamp); `arrival_millis` is the
+    /// wall-clock arrival used to interleave with chat. Local only.
+    Subtitle {
+        /// Subtitle text.
+        text: String,
+        /// In-video position when the cue appeared (milliseconds).
+        video_millis: u64,
+        /// Wall-clock arrival on the shared clock (milliseconds).
+        arrival_millis: u64,
+    },
     /// Playlist-add hashing progress (the no-silent-work rule: shown as
     /// a progress overlay).
     Hashing {
@@ -102,7 +111,11 @@ pub fn run_ui_thread(
         match input {
             UiInput::Shutdown => break,
             UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
-            UiInput::Subtitle(line) => ui.push_subtitle(line),
+            UiInput::Subtitle {
+                text,
+                video_millis,
+                arrival_millis,
+            } => ui.push_subtitle(video_millis, arrival_millis, text),
             UiInput::Hashing {
                 filename,
                 done_bytes,

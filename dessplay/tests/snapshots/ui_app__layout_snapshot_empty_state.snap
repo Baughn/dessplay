@@ -31,4 +31,4 @@ expression: "render(&mut ui, 100, 30)"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ⏸ paused
 Nothing playing
-Tab Next pane | Enter Send | PgUp/Dn Scroll | ↑↓ History | Esc Clear | C-r Ready | C-c Quit
+Tab Next pane | Enter Send | PgUp/Dn Scroll | ↑↓ History | Esc Clear | F2 Subs: off | F3 Settings |

@@ -27,7 +27,7 @@ use super::modals::{AniDbSearchModal, EpisodeBrowser, FileBrowser, ListEditModal
 use super::msg::{Msg, UserAction};
 use super::props;
 use crate::actors::sync::Mutation;
-use crate::config::Settings;
+use crate::config::{Settings, SubtitleMode};
 
 /// Everything the UI renders from, refreshed on every state/peer
 /// change.
@@ -136,6 +136,16 @@ impl Modal {
     }
 }
 
+/// One subtitle line in the rolling log. `video_millis` is the in-video
+/// position (the displayed timestamp); `arrival_millis` is the
+/// wall-clock arrival used to interleave with chat in Intermixed mode.
+#[derive(Clone, Debug)]
+struct SubtitleEntry {
+    video_millis: u64,
+    arrival_millis: u64,
+    text: String,
+}
+
 /// The whole TUI.
 pub struct Ui {
     me: UserId,
@@ -147,9 +157,10 @@ pub struct Ui {
     keybar: KeyBar,
     modals: Vec<Modal>,
     focus: Focus,
-    subtitle_pane: bool,
-    /// Rolling log of the local player's subtitle lines.
-    subtitles: std::collections::VecDeque<String>,
+    subtitle_mode: SubtitleMode,
+    /// Rolling log of the local player's subtitle lines (with in-video
+    /// and arrival timestamps). Local only — never synced.
+    subtitles: std::collections::VecDeque<SubtitleEntry>,
     /// In-flight playlist-add hashes: (filename, done, total). Drawn as
     /// a progress overlay while non-empty (the no-silent-work rule).
     hashing: Vec<(String, u64, u64)>,
@@ -189,7 +200,7 @@ impl Ui {
             keybar: KeyBar::default(),
             modals: Vec::new(),
             focus: Focus::Chat,
-            subtitle_pane: settings.subtitle_pane,
+            subtitle_mode: settings.subtitle_mode,
             subtitles: std::collections::VecDeque::new(),
             hashing: Vec::new(),
             system_log: Vec::new(),
@@ -206,18 +217,41 @@ impl Ui {
     }
 
     /// Append a subtitle line to the rolling log (empty lines are
-    /// clears — the previous line just stopped displaying; skip them).
-    pub fn push_subtitle(&mut self, line: String) {
-        if line.is_empty() {
+    /// clears — the previous cue just stopped displaying; skip them).
+    ///
+    /// Some ASS subs reveal a line letter-by-letter as rapid-fire cues,
+    /// each a longer prefix of the last. We collapse those: when the new
+    /// text has the previous line as a prefix, we replace it in place
+    /// (keeping the original cue's timestamps). An exact repeat is the
+    /// degenerate prefix case, so it collapses too.
+    ///
+    /// A multi-line cue arrives newline-separated; we render one line, so
+    /// newlines become spaces (otherwise the join reads as "youdemons"
+    /// instead of "you demons"). Normalizing also keeps the prefix test
+    /// working as a two-line cue grows past its first line.
+    pub fn push_subtitle(&mut self, video_millis: u64, arrival_millis: u64, text: String) {
+        let text = text.replace('\r', "").replace('\n', " ");
+        if text.is_empty() {
             return;
         }
-        // mpv re-reports multi-line cues; collapse exact repeats.
-        if self.subtitles.back() == Some(&line) {
-            return;
+        if let Some(last) = self.subtitles.back_mut()
+            && text.starts_with(&last.text)
+        {
+            last.text = text;
+        } else {
+            self.subtitles.push_back(SubtitleEntry {
+                video_millis,
+                arrival_millis,
+                text,
+            });
+            while self.subtitles.len() > 100 {
+                self.subtitles.pop_front();
+            }
         }
-        self.subtitles.push_back(line);
-        while self.subtitles.len() > 100 {
-            self.subtitles.pop_front();
+        // In Intermixed mode subtitles live in the chat log, so a new
+        // line must rebuild it (the separate pane re-reads every draw).
+        if self.subtitle_mode == SubtitleMode::Intermixed {
+            self.refresh_chat();
         }
     }
 
@@ -228,16 +262,40 @@ impl Ui {
         while self.system_log.len() > 100 {
             self.system_log.remove(0);
         }
+        self.refresh_chat();
+    }
+
+    /// Cycle the subtitle mode (Off -> Intermixed -> Separate -> Off),
+    /// persist it (user chose F2-persistence), and rebuild chat so
+    /// Intermixed lines appear/disappear at once. Returns the persist
+    /// action for the caller to forward.
+    fn cycle_subtitle_mode(&mut self) -> UserAction {
+        self.subtitle_mode = self.subtitle_mode.next();
+        self.settings.subtitle_mode = self.subtitle_mode;
+        tracing::debug!(mode = ?self.subtitle_mode, "subtitle mode cycled");
+        self.refresh_chat();
+        UserAction::SaveSettings(Box::new(self.settings.clone()), self.media_roots.clone())
+    }
+
+    /// Rebuild the chat pane from the current snapshot, system log, and
+    /// (in Intermixed mode) subtitle log.
+    fn refresh_chat(&mut self) {
         let chat = self.merged_chat(&self.snapshot.view);
         self.chat.set_lines(chat);
     }
 
-    /// The synced chat log merged with local system lines, ordered by
-    /// shared-clock millis (stable: synced messages sort before a system
-    /// line stamped at the same millisecond).
+    /// The synced chat log merged with local system lines — and, in
+    /// Intermixed mode, subtitle lines — ordered by shared-clock millis.
+    /// Stable sort: at an equal millis, synced messages sort before
+    /// system/subtitle lines (which are pushed afterward).
     fn merged_chat(&self, view: &StateView) -> Vec<props::ChatLine> {
         let mut lines = props::chat_lines(view);
         lines.extend(self.system_log.iter().cloned());
+        if self.subtitle_mode == SubtitleMode::Intermixed {
+            lines.extend(self.subtitles.iter().map(|s| {
+                props::subtitle_line(s.video_millis, s.arrival_millis, s.text.clone())
+            }));
+        }
         lines.sort_by_key(|line| line.millis);
         lines
     }
@@ -351,7 +409,16 @@ impl Ui {
                     Focus::Playlist => self.playlist.keybindings(),
                 };
                 items.insert(0, ("Tab", "Next pane"));
-                // F3 opens settings, but only when no modal is up.
+                // F2 cycles subtitle mode; F3 opens settings. Only shown
+                // when no modal is up.
+                items.push((
+                    "F2",
+                    match self.subtitle_mode {
+                        SubtitleMode::Off => "Subs: off",
+                        SubtitleMode::Intermixed => "Subs: intermixed",
+                        SubtitleMode::SeparatePane => "Subs: separate",
+                    },
+                ));
                 items.push(("F3", "Settings"));
                 items
             }
@@ -426,9 +493,9 @@ impl Ui {
                     return Vec::new();
                 }
                 Some(Key::Function(2)) => {
-                    self.subtitle_pane = !self.subtitle_pane;
-                    tracing::debug!(enabled = self.subtitle_pane, "subtitle pane toggled");
-                    return Vec::new();
+                    let action = self.cycle_subtitle_mode();
+                    self.refresh_keybar();
+                    return vec![action];
                 }
                 Some(Key::Function(3)) => {
                     tracing::debug!("user action: open settings (F3)");
@@ -669,8 +736,10 @@ impl Ui {
                 self.pop_modal();
                 self.sync_focus_attr();
                 self.settings = (*settings).clone();
-                self.subtitle_pane = settings.subtitle_pane;
+                self.subtitle_mode = settings.subtitle_mode;
                 self.media_roots = roots.clone();
+                // The mode may have flipped Intermixed membership.
+                self.refresh_chat();
                 // First-run setup may have changed who we are.
                 if let Some(name) = &settings.username {
                     self.me = UserId::new(name.clone());
@@ -691,10 +760,7 @@ impl Ui {
                 self.sync_focus_attr();
                 None
             }
-            Msg::ToggleSubtitlePane => {
-                self.subtitle_pane = !self.subtitle_pane;
-                None
-            }
+            Msg::CycleSubtitleMode => Some(self.cycle_subtitle_mode()),
             Msg::Quit => Some(UserAction::Quit),
         }
     }
@@ -819,12 +885,13 @@ impl Ui {
         ])
         .areas(right);
 
-        if self.subtitle_pane {
+        if self.subtitle_mode == SubtitleMode::SeparatePane {
             let [chat_area, subs_area] =
                 Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
                     .areas(left);
             self.chat.view(frame, chat_area);
-            // The newest lines that fit, oldest first.
+            // The newest lines that fit, oldest first, each prefixed with
+            // its in-video timestamp.
             let visible = (subs_area.height as usize).saturating_sub(2);
             let lines: Vec<tuirealm::ratatui::text::Line> = self
                 .subtitles
@@ -832,7 +899,13 @@ impl Ui {
                 .rev()
                 .take(visible)
                 .rev()
-                .map(|line| tuirealm::ratatui::text::Line::from(line.as_str()))
+                .map(|entry| {
+                    tuirealm::ratatui::text::Line::from(format!(
+                        "{}  {}",
+                        props::mmss(entry.video_millis),
+                        entry.text
+                    ))
+                })
                 .collect();
             frame.render_widget(
                 tuirealm::ratatui::widgets::Paragraph::new(lines).block(
@@ -844,6 +917,8 @@ impl Ui {
                 subs_area,
             );
         } else {
+            // Off and Intermixed both use the full-width chat pane
+            // (Intermixed shows subtitles inside the chat log).
             self.chat.view(frame, left);
         }
         self.series.view(frame, series_area);
@@ -1000,6 +1075,163 @@ mod tests {
             SeriesWatchState::NotWatching,
         );
         state.view()
+    }
+
+    fn chat_msg(t: u64, who: &str, text: &str) -> dessplay_core::types::ChatMessage {
+        dessplay_core::types::ChatMessage {
+            timestamp: SharedTimestamp(t),
+            sender: UserId::new(who),
+            text: text.into(),
+        }
+    }
+
+    fn intermixed_ui() -> Ui {
+        let mut ui = ui_with_view(StateView::default());
+        ui.subtitle_mode = SubtitleMode::Intermixed;
+        ui
+    }
+
+    #[test]
+    fn subtitle_empty_line_is_skipped() {
+        let mut ui = intermixed_ui();
+        ui.push_subtitle(1000, 5, String::new());
+        assert!(ui.subtitles.is_empty());
+    }
+
+    #[test]
+    fn subtitle_incremental_reveal_collapses_to_one() {
+        let mut ui = intermixed_ui();
+        // Each cue is a longer prefix of the next; the first cue's
+        // timestamps win.
+        ui.push_subtitle(1000, 10, "H".into());
+        ui.push_subtitle(1100, 11, "He".into());
+        ui.push_subtitle(1200, 12, "Hello".into());
+        assert_eq!(ui.subtitles.len(), 1);
+        let entry = ui.subtitles.back().unwrap();
+        assert_eq!(entry.text, "Hello");
+        assert_eq!(entry.video_millis, 1000);
+        assert_eq!(entry.arrival_millis, 10);
+    }
+
+    #[test]
+    fn subtitle_exact_duplicate_collapses() {
+        let mut ui = intermixed_ui();
+        ui.push_subtitle(1000, 10, "same".into());
+        ui.push_subtitle(2000, 20, "same".into());
+        assert_eq!(ui.subtitles.len(), 1);
+        assert_eq!(ui.subtitles.back().unwrap().video_millis, 1000);
+    }
+
+    #[test]
+    fn subtitle_non_prefix_appends() {
+        let mut ui = intermixed_ui();
+        ui.push_subtitle(1000, 10, "Hello".into());
+        ui.push_subtitle(2000, 20, "World".into());
+        assert_eq!(ui.subtitles.len(), 2);
+    }
+
+    #[test]
+    fn subtitle_multiline_cue_joins_with_a_space() {
+        // mpv joins a two-line cue with a newline; we render one line, so
+        // it must read "you demons", not "youdemons" (the reported bug).
+        let mut ui = intermixed_ui();
+        ui.push_subtitle(1000, 10, "I won't let you\ndemons have your way".into());
+        assert_eq!(ui.subtitles.len(), 1);
+        assert_eq!(
+            ui.subtitles.back().unwrap().text,
+            "I won't let you demons have your way"
+        );
+    }
+
+    #[test]
+    fn subtitle_second_line_growth_collapses_with_a_space() {
+        // A two-line cue revealed incrementally: first line completes,
+        // then the second grows. Newline-normalization keeps the prefix
+        // relation intact and inserts the space.
+        let mut ui = intermixed_ui();
+        ui.push_subtitle(1000, 10, "I won't let you".into());
+        ui.push_subtitle(1100, 11, "I won't let you\nd".into());
+        ui.push_subtitle(1200, 12, "I won't let you\ndemons".into());
+        assert_eq!(ui.subtitles.len(), 1);
+        assert_eq!(ui.subtitles.back().unwrap().text, "I won't let you demons");
+    }
+
+    #[test]
+    fn subtitle_log_caps_at_100() {
+        let mut ui = intermixed_ui();
+        for i in 0..150 {
+            ui.push_subtitle(i, i, format!("line {i}"));
+        }
+        assert_eq!(ui.subtitles.len(), 100);
+        // Oldest dropped: the front is line 50.
+        assert_eq!(ui.subtitles.front().unwrap().text, "line 50");
+    }
+
+    proptest::proptest! {
+        /// Any sequence of growing prefixes collapses to a single entry
+        /// whose text is the last (longest) cue.
+        #[test]
+        fn prefix_sequence_collapses_to_last(seed in "[a-z ]{1,40}") {
+            let mut ui = intermixed_ui();
+            let chars: Vec<char> = seed.chars().collect();
+            for i in 1..=chars.len() {
+                let prefix: String = chars[..i].iter().collect();
+                ui.push_subtitle(i as u64, i as u64, prefix);
+            }
+            proptest::prop_assert_eq!(ui.subtitles.len(), 1);
+            proptest::prop_assert_eq!(ui.subtitles.back().unwrap().text.as_str(), seed.as_str());
+        }
+    }
+
+    #[test]
+    fn intermixed_interleaves_subtitles_with_chat_by_arrival() {
+        let mut state = CrdtState::new();
+        state.append_chat(chat_msg(100, "kim", "before"));
+        state.append_chat(chat_msg(300, "kim", "after"));
+        let mut ui = ui_with_view(state.view());
+        ui.subtitle_mode = SubtitleMode::Intermixed;
+        // Arrival 200 sits between the two chat messages; the in-video
+        // position (65s) is unrelated to the interleave order.
+        ui.push_subtitle(65_000, 200, "sub".into());
+
+        let lines = ui.merged_chat(&ui.snapshot.view);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["before", "sub", "after"]);
+        // The subtitle is dim, marker-prefixed, with an in-video MM:SS.
+        let sub = lines.iter().find(|l| l.subtitle).unwrap();
+        assert_eq!(sub.time, "01:05");
+        assert!(sub.sender.is_empty());
+    }
+
+    #[test]
+    fn off_and_separate_keep_subtitles_out_of_chat() {
+        let mut state = CrdtState::new();
+        state.append_chat(chat_msg(100, "kim", "hi"));
+        let mut ui = ui_with_view(state.view());
+        ui.push_subtitle(1000, 50, "sub".into());
+
+        for mode in [SubtitleMode::Off, SubtitleMode::SeparatePane] {
+            ui.subtitle_mode = mode;
+            let lines = ui.merged_chat(&ui.snapshot.view);
+            assert!(!lines.iter().any(|l| l.subtitle), "mode {mode:?}");
+        }
+    }
+
+    #[test]
+    fn f2_cycles_subtitle_mode_and_persists() {
+        let mut ui = ui_with_view(StateView::default());
+        assert_eq!(ui.subtitle_mode, SubtitleMode::Off);
+        for expected in [
+            SubtitleMode::Intermixed,
+            SubtitleMode::SeparatePane,
+            SubtitleMode::Off,
+        ] {
+            let action = ui.cycle_subtitle_mode();
+            assert_eq!(ui.subtitle_mode, expected);
+            assert_eq!(ui.settings.subtitle_mode, expected);
+            // Each cycle persists the choice (F2-persistence).
+            assert!(matches!(action, UserAction::SaveSettings(s, _) if s.subtitle_mode == expected));
+        }
     }
 
     #[test]

@@ -55,7 +55,7 @@ Application
 +-- ChatPane (TextLog + TextInput composite)
 |   +-- ChatLog (scrollable message list)
 |   +-- ChatInput (text input with cursor)
-+-- SubtitlePane (rolling sub-text log; optional, splits ChatPane area)
++-- Subtitle log (rolling sub-text; Off / Intermixed-into-chat / Separate pane)
 +-- SeriesPane (SelectableList, three modes: Recent / All / The List)
 +-- UsersPane (styled list; focusable for the Away action)
 +-- PlaylistPane (SelectableList with actions)
@@ -125,7 +125,7 @@ enum Msg {
 
     // Navigation
     FocusNext,
-    ToggleSubtitlePane,
+    CycleSubtitleMode,
     Quit,
 
     // Modals
@@ -217,8 +217,12 @@ When the UiActor receives a `StateUpdate(CrdtSnapshot)`, it maps the
 snapshot data to component props:
 
 - **ChatPane**: snapshot.chat -> list of formatted message lines
-- **SubtitlePane**: rolling log of `SubtitleLine` events from the PlayerActor
-  (local-only; not part of the snapshot)
+- **Subtitle log**: rolling log of subtitle lines from the PlayerActor,
+  each stamped with the in-video position (displayed timestamp) and a
+  wall-clock arrival (chat interleave key). Local-only; not part of the
+  snapshot. Surfaced per `subtitle_mode`: Off, Intermixed (folded into
+  the chat lines via `props::subtitle_line`, ordered by arrival), or a
+  Separate pane that splits the ChatPane area.
 - **SeriesPane**: snapshot.anidb_metadata + snapshot.series_relations + local
   watch history -> franchise list (Recent/All modes). Recent shows only
   *watched* franchises (recency-keyed), newest first; a `/`-initiated filter
@@ -239,8 +243,8 @@ explicit inputs alongside the snapshot), making it testable independently.
 ### Non-snapshot inputs and the hashing overlay
 
 Besides snapshots and terminal events, the bridge loop feeds `Ui`
-local-only inputs through `UiInput`: `Subtitle(String)` (the rolling
-sub-text log), `Hashing { filename, done_bytes, total_bytes,
+local-only inputs through `UiInput`: `Subtitle { text, video_millis,
+arrival_millis }` (the rolling sub-text log), `Hashing { filename, done_bytes, total_bytes,
 finished }` (playlist-add hash progress), and `SearchResults { query,
 results }` (AniDB name-search answers, routed to the search modal if
 it is open; the modal drops results for superseded queries). The

@@ -11,8 +11,8 @@ expression: "render(&mut ui, 100, 30)"
 │              │Server:    dessplay.brage.info                                      │              │
 │              │Password:                                                           │              │
 │              │Ready on startup: no                                                │──────────────┘
-│              │[Add media root]                                                    │──────────────┐
-│              │                                                                    │              │
+│              │Subtitles: Off                                                      │──────────────┐
+│              │[Add media root]                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │
@@ -31,4 +31,4 @@ expression: "render(&mut ui, 100, 30)"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ⏸ paused
 Nothing playing
-Enter Edit/Toggle | d Remove root | C-j/k Reorder | C-s Save | Esc Cancel | C-r Ready | C-c Quit
+Enter Edit/Toggle | d Remove root | Ctrl-j/k Reorder | Ctrl-s Save | Esc Cancel | Ctrl-r Ready | Ctr

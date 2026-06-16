@@ -412,7 +412,8 @@ const FIELD_USERNAME: usize = 0;
 const FIELD_SERVER: usize = 1;
 const FIELD_PASSWORD: usize = 2;
 const FIELD_READY: usize = 3;
-const FIXED_FIELDS: usize = 4;
+const FIELD_SUBTITLE: usize = 4;
+const FIXED_FIELDS: usize = 5;
 
 /// First-run and later settings editing.
 pub struct SettingsModal {
@@ -497,6 +498,7 @@ impl SettingsModal {
                     "no"
                 }
             ),
+            format!("Subtitles: {}", self.settings.subtitle_mode.label()),
         ];
         for row in rows {
             lines.push(ListItem::new(row));
@@ -603,6 +605,9 @@ impl AppComponent<Msg, NoUserEvent> for SettingsModal {
                     }
                     FIELD_READY => {
                         self.settings.ready_on_startup = !self.settings.ready_on_startup;
+                    }
+                    FIELD_SUBTITLE => {
+                        self.settings.subtitle_mode = self.settings.subtitle_mode.next();
                     }
                     index if index == FIXED_FIELDS + self.roots.len() => {
                         return Some(Msg::OpenDirPicker);

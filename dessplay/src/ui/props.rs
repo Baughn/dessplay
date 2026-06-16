@@ -197,17 +197,24 @@ pub fn playlist_props(
 /// One formatted chat line.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChatLine {
-    /// "HH:MM" on the shared clock (UTC).
+    /// Display time. For chat/system lines this is "HH:MM" on the shared
+    /// clock (UTC); for subtitle lines it is the in-video position
+    /// "MM:SS" (see `subtitle`) — a different clock domain from `millis`.
     pub time: String,
-    /// Sender name (empty for system lines).
+    /// Sender name (empty for system and subtitle lines).
     pub sender: String,
     /// Message body.
     pub text: String,
     /// A local system line (archive result, etc.): rendered dim with no
     /// sender, never synced.
     pub system: bool,
-    /// Shared-clock millis, used only to interleave local system lines
-    /// with synced messages.
+    /// A local subtitle line folded into the chat log (Intermixed mode):
+    /// rendered dim with a `»` marker and an in-video `time`, never
+    /// synced.
+    pub subtitle: bool,
+    /// Shared-clock millis, the interleave key across synced messages,
+    /// local system lines, and subtitle arrivals. For subtitle lines
+    /// this is wall-clock *arrival*, not the in-video `time`.
     pub millis: u64,
 }
 
@@ -220,6 +227,7 @@ pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
             sender: message.sender.to_string(),
             text: message.text.clone(),
             system: false,
+            subtitle: false,
             millis: message.timestamp.0,
         })
         .collect()
@@ -232,7 +240,22 @@ pub fn system_line(timestamp: u64, text: String) -> ChatLine {
         sender: String::new(),
         text,
         system: true,
+        subtitle: false,
         millis: timestamp,
+    }
+}
+
+/// Build a local subtitle chat line for Intermixed mode: the displayed
+/// time is the in-video position (`video_millis`), but interleaving uses
+/// wall-clock `arrival_millis`.
+pub fn subtitle_line(video_millis: u64, arrival_millis: u64, text: String) -> ChatLine {
+    ChatLine {
+        time: mmss(video_millis),
+        sender: String::new(),
+        text,
+        system: false,
+        subtitle: true,
+        millis: arrival_millis,
     }
 }
 
@@ -241,6 +264,18 @@ pub fn system_line(timestamp: u64, text: String) -> ChatLine {
 fn hhmm(millis: u64) -> String {
     let minutes = (millis / 60_000) % (24 * 60);
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// In-video position millis -> "MM:SS" (or "H:MM:SS" past an hour). Used
+/// for subtitle timestamps, which are video-relative, not wall-clock.
+pub fn mmss(millis: u64) -> String {
+    let total = millis / 1000;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
 }
 
 // ---- Player status ---------------------------------------------------

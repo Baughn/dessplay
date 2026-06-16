@@ -36,6 +36,59 @@ impl PlayerKind {
     }
 }
 
+/// How the local player's subtitle lines are surfaced in the chat pane.
+/// Strictly local — never synced (different releases / sub tracks per
+/// user are expected).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SubtitleMode {
+    /// Don't show subtitles at all.
+    #[default]
+    Off,
+    /// Fold subtitle lines into the chat log, ordered by arrival.
+    Intermixed,
+    /// Show subtitles in a dedicated pane split off the chat area.
+    SeparatePane,
+}
+
+impl SubtitleMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            SubtitleMode::Off => "off",
+            SubtitleMode::Intermixed => "intermixed",
+            SubtitleMode::SeparatePane => "separate",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "off" => Ok(SubtitleMode::Off),
+            "intermixed" => Ok(SubtitleMode::Intermixed),
+            "separate" => Ok(SubtitleMode::SeparatePane),
+            other => Err(StorageError::Corrupt(format!(
+                "unknown subtitle_mode {other:?}"
+            ))),
+        }
+    }
+
+    /// Cycle Off -> Intermixed -> SeparatePane -> Off (the F2 order).
+    pub fn next(self) -> Self {
+        match self {
+            SubtitleMode::Off => SubtitleMode::Intermixed,
+            SubtitleMode::Intermixed => SubtitleMode::SeparatePane,
+            SubtitleMode::SeparatePane => SubtitleMode::Off,
+        }
+    }
+
+    /// Short label for the keybinding bar / settings row.
+    pub fn label(self) -> &'static str {
+        match self {
+            SubtitleMode::Off => "Off",
+            SubtitleMode::Intermixed => "Intermixed",
+            SubtitleMode::SeparatePane => "Separate",
+        }
+    }
+}
+
 /// How long watched cache downloads are kept after their last access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CacheRetention {
@@ -98,8 +151,8 @@ pub struct Settings {
     /// Upload cap in bytes/sec for serving files to peers; `None` =
     /// unlimited.
     pub upload_limit: Option<u64>,
-    /// Show the subtitle pane.
-    pub subtitle_pane: bool,
+    /// How local player subtitles are surfaced in the chat pane.
+    pub subtitle_mode: SubtitleMode,
 }
 
 impl Default for Settings {
@@ -112,7 +165,7 @@ impl Default for Settings {
             ready_on_startup: false,
             cache_retention: CacheRetention::default(),
             upload_limit: None,
-            subtitle_pane: false,
+            subtitle_mode: SubtitleMode::default(),
         }
     }
 }
@@ -160,11 +213,17 @@ impl Settings {
                         .map_err(|_| StorageError::Corrupt(format!("bad upload_limit {value:?}")))
                 })
                 .transpose()?,
-            subtitle_pane: storage
-                .setting("subtitle_pane")?
-                .map(|value| parse_bool("subtitle_pane", &value))
-                .transpose()?
-                .unwrap_or(defaults.subtitle_pane),
+            subtitle_mode: match storage.setting("subtitle_mode")? {
+                Some(value) => SubtitleMode::parse(&value)?,
+                // Migrate the legacy boolean: an enabled pane becomes
+                // SeparatePane, anything else (absent or "false") Off.
+                None => match storage.setting("subtitle_pane")? {
+                    Some(value) if parse_bool("subtitle_pane", &value)? => {
+                        SubtitleMode::SeparatePane
+                    }
+                    _ => defaults.subtitle_mode,
+                },
+            },
         })
     }
 
@@ -186,10 +245,7 @@ impl Settings {
             "upload_limit",
             self.upload_limit.map(|limit| limit.to_string()).as_deref(),
         )?;
-        storage.set_setting(
-            "subtitle_pane",
-            Some(if self.subtitle_pane { "true" } else { "false" }),
-        )?;
+        storage.set_setting("subtitle_mode", Some(self.subtitle_mode.as_str()))?;
         Ok(())
     }
 }
@@ -220,7 +276,7 @@ mod tests {
             ready_on_startup: true,
             cache_retention: CacheRetention::Infinite,
             upload_limit: Some(1_000_000),
-            subtitle_pane: true,
+            subtitle_mode: SubtitleMode::Intermixed,
         };
         storage.save_settings(&settings).unwrap();
         let loaded = storage.load_settings().unwrap();
@@ -268,5 +324,61 @@ mod tests {
         let storage = Storage::open_in_memory().unwrap();
         storage.set_setting("player", Some("winamp")).unwrap();
         assert!(storage.load_settings().is_err());
+    }
+
+    #[test]
+    fn subtitle_mode_representations() {
+        for mode in [
+            SubtitleMode::Off,
+            SubtitleMode::Intermixed,
+            SubtitleMode::SeparatePane,
+        ] {
+            assert_eq!(SubtitleMode::parse(mode.as_str()).unwrap(), mode);
+        }
+        assert!(SubtitleMode::parse("sideways").is_err());
+    }
+
+    #[test]
+    fn subtitle_mode_cycles() {
+        assert_eq!(SubtitleMode::Off.next(), SubtitleMode::Intermixed);
+        assert_eq!(SubtitleMode::Intermixed.next(), SubtitleMode::SeparatePane);
+        assert_eq!(SubtitleMode::SeparatePane.next(), SubtitleMode::Off);
+    }
+
+    #[test]
+    fn legacy_subtitle_pane_migrates() {
+        // Enabled pane -> SeparatePane.
+        let storage = Storage::open_in_memory().unwrap();
+        storage.set_setting("subtitle_pane", Some("true")).unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().subtitle_mode,
+            SubtitleMode::SeparatePane
+        );
+
+        // Disabled pane -> Off.
+        let storage = Storage::open_in_memory().unwrap();
+        storage.set_setting("subtitle_pane", Some("false")).unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().subtitle_mode,
+            SubtitleMode::Off
+        );
+
+        // Neither key present -> default Off.
+        let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().subtitle_mode,
+            SubtitleMode::Off
+        );
+
+        // The new key wins over a stale legacy key.
+        let storage = Storage::open_in_memory().unwrap();
+        storage.set_setting("subtitle_pane", Some("true")).unwrap();
+        storage
+            .set_setting("subtitle_mode", Some("intermixed"))
+            .unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().subtitle_mode,
+            SubtitleMode::Intermixed
+        );
     }
 }

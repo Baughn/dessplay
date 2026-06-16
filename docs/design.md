@@ -53,7 +53,8 @@ Optional settings (sensible defaults, editable later):
 - Cache retention (duration; `0` = delete watched downloads at end of session,
   `infinite` = keep everything; see [Download Cache](#download-cache-and-retention))
 - Upload limit (bytes/sec cap for serving files to peers; default unlimited)
-- Subtitle pane (on/off; default off)
+- Subtitle mode (off / intermixed / separate pane; default off; also
+  cycled live with `F2`). See [Subtitle Display](#subtitle-display).
 
 Seeder-specific configuration (role, retention) is provided via
 command-line flags / environment only -- seeders are headless, never show
@@ -546,10 +547,12 @@ the same pattern.
 - Right 50%, middle: Users
 - Right 50%, bottom: Playlist
 
-**Subtitle pane (optional):** when enabled (settings toggle or `F2`), the
-chat area is split horizontally and the lower portion shows recent subtitle
-lines from the local player (see [Player Integration](#player-integration)).
-A future refinement may fuse subtitles into the chat log, interleaved by time.
+**Subtitle display (optional):** the local player's subtitles can be
+surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->
+Separate pane -> Off) and persisted as a setting. The choice is **local
+only** -- never synced (different releases / sub tracks per user are
+expected). See [Subtitle Display](#subtitle-display) and
+[Player Integration](#player-integration).
 
 **Keybinding bar:** 1-line context-sensitive bar at the very bottom. Shows
 available actions for the currently focused pane. Derived automatically from
@@ -566,7 +569,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Ctrl-C` | Any | Quit |
 | `Ctrl-R` | Any | Toggle your own ready/unready (and mark yourself watching the current series) |
 | `Tab` | Any | Cycle focus: Chat -> Series -> Users -> Playlist -> Chat |
-| `F2` | Any | Toggle subtitle pane |
+| `F2` | Any | Cycle subtitle mode: Off -> Intermixed -> Separate pane (persisted) |
 | `F3` | Any | Open the settings screen (also `/settings`) |
 | `Enter` | Chat | Send message (or execute `/command`) |
 | `Esc` | Chat | Clear input |
@@ -1074,7 +1077,7 @@ Player choice is per-user configuration.
 - Position updates (polled or subscribed)
 - Pause/unpause events (distinguished: user-initiated vs programmatic)
 - Seek events (distinguished: user-initiated vs programmatic)
-- Subtitle text changes (observed `sub-text` property; feeds the subtitle pane)
+- Subtitle text changes (observed `sub-text` property; feeds the subtitle log)
 - EOF (file ended; reported to the server, which owns the transition)
 - Exit (clean or crash)
 
@@ -1084,13 +1087,39 @@ swallows matching observations as echoes (architecture.md, PlayerActor);
 because correction is observe-and-correct rather than locally enforced,
 a misattributed echo self-heals on the next derived-state round trip.
 
-### Subtitle Pane Feed
+### Subtitle Display
 
-The subtitle pane is **local-only**: it shows whatever subtitle line the
-user's own player is currently displaying, via mpv's `sub-text` property
-observation, appended to a rolling log. Nothing is synced -- different
-releases or sub tracks per user are fine. Image-based subtitle formats
-(PGS/VobSub) expose no text; the pane simply stays empty for those.
+Subtitles are **local-only**: whatever line the user's own player is
+currently displaying (mpv's `sub-text` property), appended to a rolling
+log. Nothing is synced -- different releases or sub tracks per user are
+fine. Image-based subtitle formats (PGS/VobSub) expose no text; the log
+simply stays empty for those.
+
+The log is surfaced in one of three modes (cycled with `F2`, persisted as
+the `subtitle_mode` setting):
+
+- **Off**: subtitles are not shown.
+- **Intermixed**: subtitle lines are folded into the chat log, dim with a
+  `»` marker, ordered by arrival. They share the chat's interleave domain.
+- **Separate pane**: the chat area is split horizontally and the lower
+  portion shows recent subtitle lines.
+
+Each line carries the **in-video position** (mpv `time-pos` at the moment
+the cue appeared), shown as its `MM:SS` timestamp -- *not* the wall clock.
+Interleaving in Intermixed mode still orders by wall-clock arrival (the
+chat domain); the displayed timestamp and the sort key are deliberately
+two different clocks.
+
+**Incremental ASS reveals.** Some subs reveal a line letter-by-letter
+over 2-3s as rapid-fire cues, each a longer prefix of the last. The log
+collapses these: when a new cue has the previous line as a prefix, it
+replaces it in place (keeping the original cue's timestamp). An exact
+repeat is the degenerate prefix case, so mpv's multi-line cue re-reports
+collapse too. A multi-line cue arrives newline-separated; since the log
+renders one line per cue, newlines become spaces (so a two-line cue reads
+"you demons", not "youdemons"). Known limitation: an unrelated later cue
+that happens to share a prefix with its predecessor will be collapsed
+(rare; accepted -- no time-window guard).
 
 ---
 
@@ -1112,7 +1141,7 @@ crashes should be rare enough not to matter, and an edit that *caused* a
 crash should not be replayed into the next session.
 
 **Settings** (username, server, password, media roots, player choice, cache
-retention, upload limit, subtitle pane) live in the same SQLite database and
+retention, upload limit, subtitle mode) live in the same SQLite database and
 are edited through the settings screen. The password is stored in plaintext
 — consistent with the threat model below. Command-line flags and environment
 variables override stored settings at runtime but are never persisted.
@@ -1129,7 +1158,7 @@ tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_pane) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
@@ -1196,8 +1225,10 @@ For v1, this is acceptable. Future improvements could include:
 
 ## Future Plans
 
-- Subtitle pane fused with the chat pane (interleaved by timestamp). The
-  standalone subtitle pane is in scope for v2.
+- Subtitles fused into the chat log, interleaved by timestamp, **landed**
+  as the Intermixed subtitle mode (see [Subtitle Display](#subtitle-display)).
+  A future refinement could interleave by the in-video timestamp rather
+  than wall-clock arrival.
 - Automating The List's "this week's episode is out" flag (possibly via AniDB
   episode air dates).
 - Direct client-to-client connections (with or without hole punching) as a

@@ -119,7 +119,13 @@ pub enum PlayerOutput {
         duration_millis: u64,
     },
     /// The player's displayed subtitle line changed.
-    SubtitleLine(String),
+    SubtitleLine {
+        /// The subtitle text (empty = the previous cue cleared).
+        text: String,
+        /// In-video position when the cue appeared (milliseconds); the
+        /// displayed timestamp. `0` before the first position sample.
+        position_millis: u64,
+    },
     /// Playback reached end of file.
     Eof {
         /// Which file ended.
@@ -448,7 +454,17 @@ impl<F: PlayerFactory> Actor<F> {
                 self.apply_desired_pause().await;
             }
             PlayerEvent::SubtitleLine(line) => {
-                let _ = self.outputs.send(PlayerOutput::SubtitleLine(line)).await;
+                // Capture the in-video position here, where the estimate
+                // is freshest; `0` (-> 00:00) is honest before the first
+                // position sample.
+                let position_millis = self.estimate_now().unwrap_or(0);
+                let _ = self
+                    .outputs
+                    .send(PlayerOutput::SubtitleLine {
+                        text: line,
+                        position_millis,
+                    })
+                    .await;
             }
             PlayerEvent::Eof => {
                 if !self.eof_reported
@@ -1137,9 +1153,32 @@ mod tests {
             .events
             .send(PlayerEvent::SubtitleLine("こんにちは".into()))
             .unwrap();
+        // The in-video position is attached from the actor's estimate;
+        // loaded_rig parked it at 10_000 (paused, so it doesn't advance).
         assert_eq!(
             expect_output(&mut outputs).await,
-            PlayerOutput::SubtitleLine("こんにちは".into())
+            PlayerOutput::SubtitleLine {
+                text: "こんにちは".into(),
+                position_millis: 10_000,
+            }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn subtitle_position_is_zero_before_any_sample() {
+        // No file loaded, so estimate_now() is None -> 0 (honest 00:00).
+        let (player, control) = MockPlayer::pair();
+        let (_commands, mut outputs) = start(vec![player], fixed_clock(1_000_000));
+        control
+            .events
+            .send(PlayerEvent::SubtitleLine("hi".into()))
+            .unwrap();
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::SubtitleLine {
+                text: "hi".into(),
+                position_millis: 0,
+            }
         );
     }
 

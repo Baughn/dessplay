@@ -269,7 +269,32 @@ fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
 fn wrap_chat_line(line: &ChatLine, width: usize) -> Vec<Line<'static>> {
     use tuirealm::ratatui::style::Modifier;
     let indent: String = " ".repeat(CHAT_WRAP_INDENT);
-    if line.system {
+    if line.subtitle {
+        // Local subtitle (Intermixed mode): dim, no sender, "»" marker,
+        // in-video timestamp.
+        let time = format!("{} ", line.time);
+        let prefix_width = time.chars().count();
+        let body = format!("» {}", line.text);
+        let chunks = wrap_body(
+            &body,
+            width.saturating_sub(prefix_width),
+            width.saturating_sub(CHAT_WRAP_INDENT),
+        );
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                if i == 0 {
+                    Line::from(vec![
+                        Span::styled(time.clone(), theme::dim()),
+                        Span::styled(chunk, theme::dim()),
+                    ])
+                } else {
+                    Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim()))
+                }
+            })
+            .collect()
+    } else if line.system {
         // Local system notice: dim, no sender, "*" marker.
         let time = format!("{} ", line.time);
         let prefix_width = time.chars().count();

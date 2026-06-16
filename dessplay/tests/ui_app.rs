@@ -678,12 +678,27 @@ fn status_bar_shows_blockers() {
 }
 
 #[test]
-fn f2_toggles_subtitle_pane() {
+fn f2_cycles_subtitle_mode() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    // Off: no separate pane.
     assert!(!render(&mut ui, 100, 30).contains("Subtitles"));
+    // Off -> Intermixed: still no separate pane (subs fold into chat),
+    // and the cycle persists the choice.
+    let actions = ui.handle(key(Key::Function(2)));
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, UserAction::SaveSettings(..))),
+        "F2 should persist the new mode"
+    );
+    assert!(!render(&mut ui, 100, 30).contains("Subtitles"));
+    // Intermixed -> SeparatePane: the dedicated pane appears.
     ui.handle(key(Key::Function(2)));
     assert!(render(&mut ui, 100, 30).contains("Subtitles"));
+    // SeparatePane -> Off: gone again.
+    ui.handle(key(Key::Function(2)));
+    assert!(!render(&mut ui, 100, 30).contains("Subtitles"));
 }
 
 #[test]

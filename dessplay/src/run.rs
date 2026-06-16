@@ -871,7 +871,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 output = self.shell.player_outputs.recv() => {
                     let Some(output) = output else { continue };
                     for line in self.shell.on_player_output(output, &last_view).await {
-                        let _ = self.ui.try_send(UiInput::Subtitle(line));
+                        let _ = self.ui.try_send(UiInput::Subtitle {
+                            text: line.text,
+                            video_millis: line.video_millis,
+                            arrival_millis: line.arrival_millis,
+                        });
                     }
                 }
                 output = self.shell.file_outputs.recv() => {
