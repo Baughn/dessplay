@@ -50,6 +50,17 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
 ];
 
+/// The command's invocation signature: `name` alone, or `name args`
+/// when it takes arguments (e.g. `/away [name]`). Used both for the
+/// popup's tabulated left column and anywhere a command needs naming.
+pub fn signature(cmd: &SlashCommand) -> String {
+    if cmd.args.is_empty() {
+        cmd.name.to_string()
+    } else {
+        format!("{} {}", cmd.name, cmd.args)
+    }
+}
+
 /// Commands whose name starts with the typed first token
 /// (case-insensitive). Returns empty when `input` does not start with
 /// `/`; a bare `/` matches everything. Keys on the first

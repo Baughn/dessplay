@@ -192,15 +192,25 @@ impl ChatPane {
             let height = (suggestions.len() as u16).min(CHAT_SUGGESTION_MAX);
             let [log_area, sugg_area] =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(height)]).areas(log_area);
+            // Tabulate: every help string starts at the same column. The
+            // "name args" width is measured across the whole command table
+            // (not just the filtered subset) so the column is stable as
+            // the list narrows.
+            let name_col = super::commands::SLASH_COMMANDS
+                .iter()
+                .map(|cmd| super::commands::signature(cmd).chars().count())
+                .max()
+                .unwrap_or(0);
             let items: Vec<ListItem> = suggestions
                 .iter()
                 .take(height as usize)
                 .map(|cmd| {
-                    let label = if cmd.args.is_empty() {
-                        format!("{}   {}", cmd.name, cmd.help)
-                    } else {
-                        format!("{} {}   {}", cmd.name, cmd.args, cmd.help)
-                    };
+                    let label = format!(
+                        "{:<width$}   {}",
+                        super::commands::signature(cmd),
+                        cmd.help,
+                        width = name_col,
+                    );
                     ListItem::new(Span::styled(label, theme::dim()))
                 })
                 .collect();

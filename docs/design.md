@@ -169,12 +169,16 @@ This state is **derived** from two independent sources:
    is cleared when the user explicitly resumes. `ManualState` is
    `Paused | Away { set_by: UserId }`.
 
-**Away**: any user can mark *another* user as Away (`/afk <name>` in chat, or
-`a` on a user in the Users pane) -- for when someone walks off without quitting
-and would otherwise block playback forever. Away behaves like Not Watching for
-playback gating, and is displayed with attribution ("away, set by Baughn"). Any
-input from the marked user's client (keypress, unpause) clears it back to
-normal. With five trusted friends, no permission system is needed.
+**Away**: any user can mark *another* user as Away (`/afk <name>` or `/away
+<name>` in chat, or `a` on a user in the Users pane), and a user can mark
+*themselves* away (`/away` with no name) -- for when someone walks off without
+quitting and would otherwise block playback forever. Away behaves like Not
+Watching for playback gating, and is displayed with attribution ("away, set by
+Baughn"). It is cleared by a deliberate "I'm here" action from the marked
+user's client -- **attempting to unpause the player, or pressing Enter to send
+a chat message** -- back to normal. Merely *typing* a chat line (without
+sending it) does not clear it, so you can compose a message while still marked
+away. With five trusted friends, no permission system is needed.
 
 Derived states:
 - **Ready**: No manual override, and the current series is not marked NotWatching
@@ -245,8 +249,9 @@ how many users are connected.
   now-playing series back to Watching if it was marked Not Watching --
   the only path to undo an auto- (or self-) Not Watching. Marking unready
   pauses (manual override Paused, intent Paused).
-- **Marked Away** (by another user): Manual override -> Away; cleared by any
-  input from the marked user's client
+- **Marked Away** (by another user, or yourself via `/away`): Manual override
+  -> Away; cleared when the marked user's client unpauses the player or sends a
+  chat message (not by merely typing)
 - **Mark "not watching"** on series: Series preference updated; clears "missing from
   known series" block when applicable
 
@@ -318,8 +323,8 @@ This prevents sync issues from different encodes/versions.
     now-playing series Watching)
   - `/pause` -- mark yourself paused (manual override Paused, intent Paused)
   - `/away [name]` -- mark yourself (or, with a name, another user) as Away
-    (alias `/afk <name>`; see User States). Marking yourself Away holds only
-    until your client's next input clears it.
+    (alias `/afk <name>`; see User States). Marking yourself Away holds until
+    you unpause the player or send another chat message.
   - `/skip` -- stop watching the now-playing file's series (sets your
     per-series preference to NotWatching; needs an AniDB series id)
   - `/settings` -- open the settings screen (also `F3`)

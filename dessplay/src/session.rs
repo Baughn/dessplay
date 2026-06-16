@@ -1722,6 +1722,29 @@ mod tests {
     }
 
     #[test]
+    fn user_unpause_clears_an_away() {
+        // Attempting to unpause is activity from my client, so it clears
+        // an Away set on me (same SetManualOverride{None} path as a plain
+        // unpause). Documents the away-clearing spec.
+        let mut wiring = PlayerWiring::new(me());
+        let mut state = playing_state();
+        state.set_manual_override(
+            A,
+            ts(4),
+            me(),
+            Some(ManualState::Away {
+                set_by: UserId::new("baughn"),
+            }),
+        );
+        let view = state.view();
+        let directives = wiring.on_player(PlayerOutput::UserUnpaused, &view);
+        assert!(directives.iter().any(|d| matches!(
+            d,
+            Directive::Mutate(Mutation::SetManualOverride { state: None, .. })
+        )));
+    }
+
+    #[test]
     fn user_seek_takes_authority_and_publishes_position() {
         let mut wiring = PlayerWiring::new(me());
         let view = playing_state().view();

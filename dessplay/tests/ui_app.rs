@@ -214,11 +214,53 @@ fn slash_shows_filtered_command_suggestions() {
     assert!(all.contains("/ready"), "{all}");
     assert!(all.contains("/skip"), "{all}");
     assert!(all.contains("/quit"), "{all}");
+    // Help text is tabulated: each command's description starts at the
+    // same column. Find the help column on two rows of differing
+    // command-name length; they must line up.
+    let ready_col = all
+        .lines()
+        .find(|l| l.contains("/ready"))
+        .and_then(|l| l.find("mark yourself ready"))
+        .expect("ready row");
+    let away_col = all
+        .lines()
+        .find(|l| l.contains("/away"))
+        .and_then(|l| l.find("mark yourself (or"))
+        .expect("away row");
+    assert_eq!(ready_col, away_col, "help column not aligned:\n{all}");
     // Typing narrows to the matching command(s).
     type_str(&mut ui, "sk");
     let narrowed = render(&mut ui, 100, 30);
     assert!(narrowed.contains("/skip"), "{narrowed}");
     assert!(!narrowed.contains("/ready"), "{narrowed}");
+}
+
+#[test]
+fn chat_enter_clears_my_away() {
+    // Marked Away by another user; pressing Enter to send a chat line
+    // clears it and still sends.
+    let mut state = CrdtState::new();
+    state.set_manual_override(
+        A,
+        ts(1),
+        UserId::new("kim"),
+        Some(ManualState::Away {
+            set_by: UserId::new("baughn"),
+        }),
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    type_str(&mut ui, "back now");
+    let actions = ui.handle(key(Key::Enter));
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        UserAction::Mutate(Mutation::SetManualOverride { state: None, user })
+            if *user == UserId::new("kim")
+    )));
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        UserAction::Mutate(Mutation::Chat { text }) if text == "back now"
+    )));
 }
 
 #[test]

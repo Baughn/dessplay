@@ -520,16 +520,27 @@ impl Ui {
         if let Some(msg) = &msg {
             tracing::trace!(msg = msg.name(), "msg produced");
         }
-        // Slash commands can yield several actions; route them straight to
-        // `command()` (like the Ctrl-R global above) rather than through
-        // the single-action `update()`.
-        if let Some(Msg::Command(cmd)) = &msg {
-            let actions = self.command(cmd);
-            for action in &actions {
-                log_action(action);
+        // A couple of messages yield several actions; route them straight
+        // to their handlers (like the Ctrl-R global above) rather than
+        // through the single-action `update()`.
+        match &msg {
+            Some(Msg::Command(cmd)) => {
+                let actions = self.command(cmd);
+                for action in &actions {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return actions;
             }
-            self.refresh_keybar();
-            return actions;
+            Some(Msg::SendChat(text)) => {
+                let actions = self.send_chat(text);
+                for action in &actions {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return actions;
+            }
+            _ => {}
         }
         let action = msg.and_then(|msg| self.update(msg));
         if let Some(action) = &action {
@@ -605,10 +616,10 @@ impl Ui {
     fn update(&mut self, msg: Msg) -> Option<UserAction> {
         match msg {
             Msg::None => None,
-            Msg::SendChat(text) => Some(UserAction::Mutate(Mutation::Chat { text })),
-            // `Msg::Command` is intercepted in `handle()` (it can yield
-            // several actions); it never reaches `update()`.
-            Msg::Command(_) => None,
+            // `Msg::SendChat` and `Msg::Command` are intercepted in
+            // `handle()` (they can each yield several actions); they never
+            // reach `update()`.
+            Msg::SendChat(_) | Msg::Command(_) => None,
             Msg::CycleSeriesMode | Msg::ToggleSeriesSort | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
@@ -808,6 +819,29 @@ impl Ui {
             Some(id) => crate::storage::SeriesKey::AniDb(id),
             None => crate::storage::SeriesKey::Name(metadata.series_name.clone()),
         })
+    }
+
+    /// Send a chat message. Sending a line counts as activity from this
+    /// client, so it clears an [`ManualState::Away`] on us (someone
+    /// stepped off and is now back) — but never a deliberate
+    /// [`ManualState::Paused`], and merely *typing* (without Enter) does
+    /// nothing. Mirrors the unpause-clears-Away path in
+    /// `session.rs::on_player`.
+    fn send_chat(&self, text: &str) -> Vec<UserAction> {
+        let mut actions = Vec::new();
+        if matches!(
+            self.snapshot.view.manual_override.get(&self.me),
+            Some(Some(ManualState::Away { .. }))
+        ) {
+            actions.push(UserAction::Mutate(Mutation::SetManualOverride {
+                user: self.me.clone(),
+                state: None,
+            }));
+        }
+        actions.push(UserAction::Mutate(Mutation::Chat {
+            text: text.to_string(),
+        }));
+        actions
     }
 
     /// `/commands` from the chat input. Returns the actions a command
@@ -1379,6 +1413,59 @@ mod tests {
         let actions = ui.command("/settings");
         assert!(actions.is_empty());
         assert!(matches!(ui.modals.last(), Some(Modal::Settings(_))));
+    }
+
+    #[test]
+    fn chat_send_clears_my_away_but_keeps_chat() {
+        // I was marked Away by someone else; sending a chat line is
+        // activity from my client, so it clears the Away and still sends.
+        let mut state = CrdtState::new();
+        state.set_manual_override(
+            A,
+            SharedTimestamp(1),
+            me(),
+            Some(ManualState::Away {
+                set_by: UserId::new("baughn"),
+            }),
+        );
+        let ui = ui_with_view(state.view());
+        let actions = ui.send_chat("i'm back");
+        // Clears the override...
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            UserAction::Mutate(Mutation::SetManualOverride { state: None, user })
+                if *user == me()
+        )));
+        // ...and still sends the message.
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            UserAction::Mutate(Mutation::Chat { text }) if text == "i'm back"
+        )));
+    }
+
+    #[test]
+    fn chat_send_keeps_my_pause() {
+        // A deliberate Paused override is NOT cleared by chatting.
+        let mut state = CrdtState::new();
+        state.set_manual_override(A, SharedTimestamp(1), me(), Some(ManualState::Paused));
+        let ui = ui_with_view(state.view());
+        let actions = ui.send_chat("hi");
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, UserAction::Mutate(Mutation::SetManualOverride { .. })))
+        );
+        assert_eq!(actions.len(), 1);
+    }
+
+    #[test]
+    fn chat_send_without_away_just_chats() {
+        let ui = ui_with_view(StateView::default());
+        let actions = ui.send_chat("hello");
+        assert!(matches!(
+            actions.as_slice(),
+            [UserAction::Mutate(Mutation::Chat { text })] if text == "hello"
+        ));
     }
 
     #[test]
