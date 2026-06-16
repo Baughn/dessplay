@@ -1392,6 +1392,29 @@ mod tests {
     }
 
     #[test]
+    fn save_button_closes_settings_dialog() {
+        // A valid save (Enter on the [Save] row) persists *and* dismisses
+        // the modal — the dialog must not linger after saving.
+        let mut settings = Settings::default();
+        settings.username = Some("nero".into());
+        settings.password = Some("hunter2".into());
+        let mut ui = Ui::with_setup(me(), settings, vec![PathBuf::from("/anime")], true);
+        assert!(matches!(ui.modals.last(), Some(Modal::Settings(_))));
+        // Walk the cursor to the last row ([Save]) and activate it.
+        for _ in 0..12 {
+            ui.handle(key(Key::Down));
+        }
+        let actions = ui.handle(key(Key::Enter));
+        assert!(ui.modals.is_empty(), "save should close the settings dialog");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, UserAction::SaveSettings(..))),
+            "save should emit a SaveSettings action",
+        );
+    }
+
+    #[test]
     fn f3_opens_settings_and_esc_closes_it() {
         // A non-first-run UI: no modal is open initially.
         let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);

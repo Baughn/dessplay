@@ -509,7 +509,46 @@ impl SettingsModal {
     }
 
     fn field_count(&self) -> usize {
+        FIXED_FIELDS + self.roots.len() + 2
+    }
+
+    /// Index of the `[Add media root]` row.
+    fn add_root_index(&self) -> usize {
+        FIXED_FIELDS + self.roots.len()
+    }
+
+    /// Index of the `[Save]` row (the last row).
+    fn save_index(&self) -> usize {
         FIXED_FIELDS + self.roots.len() + 1
+    }
+
+    /// Essentials still missing for a save, in display order. Empty == saveable.
+    /// Drives both the save gate and the `[Save]` row's "needs …" hint, so the
+    /// UI explains *why* it can't save rather than silently refusing.
+    fn missing_essentials(&self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if self.settings.username.is_none() {
+            missing.push("a username");
+        }
+        if self.settings.password.is_none() {
+            missing.push("a password");
+        }
+        if self.roots.is_empty() {
+            missing.push("a media root");
+        }
+        missing
+    }
+
+    /// Can the current working copy be saved? (username, password, ≥1 root)
+    fn can_save(&self) -> bool {
+        self.missing_essentials().is_empty()
+    }
+
+    /// Build the save message if the essentials are present, else `None`.
+    fn try_save(&self) -> Option<Msg> {
+        self.can_save().then(|| {
+            Msg::SettingsSaved(Box::new(self.settings.clone()), self.roots.clone())
+        })
     }
 
     fn field_value(&self, index: usize) -> String {
@@ -541,7 +580,7 @@ impl SettingsModal {
             ("Enter", "Edit/Toggle"),
             ("d", "Remove root"),
             ("Ctrl-j/k", "Reorder"),
-            ("Ctrl-s", "Save"),
+            ("S", "Save"),
             ("Esc", "Cancel"),
         ]
     }
@@ -580,6 +619,19 @@ impl SettingsModal {
             "[Add media root]",
             theme::dim(),
         )));
+        // Saving needs no Ctrl combo: a plain `[Save]` row, alongside the
+        // capital-`S` key (avoids the Ctrl-S == XOFF terminal trap). When the
+        // essentials are missing the row is dim and spells out *what* is
+        // needed, so a refused save explains itself instead of doing nothing.
+        // The List's own highlight handles the selection cursor, so the
+        // enabled row is just normal text.
+        let missing = self.missing_essentials();
+        let (save_label, save_style) = if missing.is_empty() {
+            ("[Save]".to_string(), tuirealm::props::Style::default())
+        } else {
+            (format!("[Save] — needs {}", missing.join(", ")), theme::dim())
+        };
+        lines.push(ListItem::new(Span::styled(save_label, save_style)));
 
         let mut state = ListState::default();
         state.select(Some(self.sel));
@@ -624,19 +676,10 @@ impl AppComponent<Msg, NoUserEvent> for SettingsModal {
         }
         if let Some(code) = ctrl(ev) {
             match code {
-                Key::Char('s') => {
-                    // Saving requires the essentials.
-                    if self.settings.username.is_none()
-                        || self.settings.password.is_none()
-                        || self.roots.is_empty()
-                    {
-                        return Some(Msg::None);
-                    }
-                    return Some(Msg::SettingsSaved(
-                        Box::new(self.settings.clone()),
-                        self.roots.clone(),
-                    ));
-                }
+                // Ctrl-S is kept as an alias for terminals where it isn't
+                // eaten as XOFF; capital `S` and the `[Save]` row are the
+                // reliable paths.
+                Key::Char('s') => return Some(self.try_save().unwrap_or(Msg::None)),
                 Key::Char('j') | Key::Char('k') if self.sel >= FIXED_FIELDS => {
                     let index = self.sel - FIXED_FIELDS;
                     let down = code == Key::Char('j');
@@ -653,6 +696,11 @@ impl AppComponent<Msg, NoUserEvent> for SettingsModal {
                 }
                 _ => return None,
             }
+        }
+        // Capital `S` saves. `typed` is the only helper that sees a shifted
+        // char; `plain` below requires no modifiers, so this must come first.
+        if let Some('S') = typed(ev) {
+            return Some(self.try_save().unwrap_or(Msg::None));
         }
         match plain(ev)? {
             Key::Up => {
@@ -678,8 +726,11 @@ impl AppComponent<Msg, NoUserEvent> for SettingsModal {
                     FIELD_CACHE => {
                         self.settings.cache_retention = self.settings.cache_retention.next();
                     }
-                    index if index == FIXED_FIELDS + self.roots.len() => {
+                    index if index == self.add_root_index() => {
                         return Some(Msg::OpenDirPicker);
+                    }
+                    index if index == self.save_index() => {
+                        return Some(self.try_save().unwrap_or(Msg::None));
                     }
                     _ => {}
                 }
@@ -1278,5 +1329,74 @@ mod tests {
             browser.on(&enter()),
             Some(Msg::EpisodeChosen { hash: hash(7) })
         );
+    }
+
+    /// A SettingsModal with all the essentials filled in (saveable).
+    fn saveable_settings() -> SettingsModal {
+        let mut settings = Settings::default();
+        settings.username = Some("nero".into());
+        settings.password = Some("hunter2".into());
+        SettingsModal::new(settings, vec![PathBuf::from("/anime")])
+    }
+
+    fn key(code: Key, modifiers: KeyModifiers) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent { code, modifiers })
+    }
+
+    fn is_save(msg: &Option<Msg>) -> bool {
+        matches!(msg, Some(Msg::SettingsSaved(..)))
+    }
+
+    #[test]
+    fn capital_s_saves_when_essentials_present() {
+        // Capital `S` carries SHIFT and must save — the terminal-safe path
+        // that replaces the Ctrl-S == XOFF trap.
+        let mut modal = saveable_settings();
+        assert!(is_save(&modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))));
+    }
+
+    #[test]
+    fn ctrl_s_still_saves() {
+        // Ctrl-S is retained as an alias for terminals where it survives.
+        let mut modal = saveable_settings();
+        assert!(is_save(&modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL))));
+    }
+
+    #[test]
+    fn enter_on_save_row_saves() {
+        let mut modal = saveable_settings();
+        modal.sel = modal.save_index();
+        assert!(is_save(&modal.on(&enter())));
+    }
+
+    #[test]
+    fn missing_essentials_lists_each_gap() {
+        // A blank modal is missing all three; the hint names them in order.
+        let blank = SettingsModal::new(Settings::default(), vec![]);
+        assert_eq!(
+            blank.missing_essentials(),
+            vec!["a username", "a password", "a media root"]
+        );
+        // Fill username + root; only the password remains.
+        let mut settings = Settings::default();
+        settings.username = Some("nero".into());
+        let partial = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
+        assert_eq!(partial.missing_essentials(), vec!["a password"]);
+        // Fully populated: nothing missing, saveable.
+        assert!(saveable_settings().missing_essentials().is_empty());
+    }
+
+    #[test]
+    fn save_blocked_without_essentials() {
+        // Missing password: every save path no-ops rather than emitting a save.
+        let mut settings = Settings::default();
+        settings.username = Some("nero".into());
+        let mut modal = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
+        let save_row = modal.save_index();
+        assert!(!modal.can_save());
+        assert_eq!(modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT)), Some(Msg::None));
+        assert_eq!(modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL)), Some(Msg::None));
+        modal.sel = save_row;
+        assert_eq!(modal.on(&enter()), Some(Msg::None));
     }
 }

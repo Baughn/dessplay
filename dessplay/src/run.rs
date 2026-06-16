@@ -91,10 +91,11 @@ fn with_default_port(server: &str) -> String {
 }
 
 /// Resolve the client's single identity: the `--username` flag wins,
-/// then the stored setting, then `$USER`. The UI, the session, and auth
-/// all derive from this one value — if they disagree, your own writes
-/// (manual override) are keyed under a name your PeerList row doesn't
-/// carry, so your readiness never shows on your own screen.
+/// then the stored setting, then the OS user (`$USER` / `%USERNAME%`,
+/// supplied by the caller). The UI, the session, and auth all derive
+/// from this one value — if they disagree, your own writes (manual
+/// override) are keyed under a name your PeerList row doesn't carry, so
+/// your readiness never shows on your own screen.
 fn resolve_username(
     flag: Option<String>,
     stored: Option<String>,
@@ -476,7 +477,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     settings.username = resolve_username(
         args.username.clone(),
         settings.username.clone(),
-        std::env::var("USER").ok(),
+        // $USER on Linux/macOS, %USERNAME% on Windows — so the username
+        // field starts pre-filled (and the modal saveable) on every OS.
+        std::env::var("USER")
+            .ok()
+            .or_else(|| std::env::var("USERNAME").ok()),
     );
     // Track (and log) where the settings password came from — never
     // the password itself.
