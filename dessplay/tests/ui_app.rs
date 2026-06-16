@@ -203,6 +203,25 @@ fn chat_commands() {
 }
 
 #[test]
+fn slash_shows_filtered_command_suggestions() {
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    // No popup while the input is empty.
+    assert!(!render(&mut ui, 100, 30).contains("/skip"));
+    // A bare `/` lists every command.
+    type_str(&mut ui, "/");
+    let all = render(&mut ui, 100, 30);
+    assert!(all.contains("/ready"), "{all}");
+    assert!(all.contains("/skip"), "{all}");
+    assert!(all.contains("/quit"), "{all}");
+    // Typing narrows to the matching command(s).
+    type_str(&mut ui, "sk");
+    let narrowed = render(&mut ui, 100, 30);
+    assert!(narrowed.contains("/skip"), "{narrowed}");
+    assert!(!narrowed.contains("/ready"), "{narrowed}");
+}
+
+#[test]
 fn ctrl_c_quits_from_anywhere() {
     let mut ui = ui();
     assert_eq!(ui.handle(ctrl('c')), vec![UserAction::Quit]);

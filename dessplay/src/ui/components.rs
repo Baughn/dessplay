@@ -109,6 +109,8 @@ pub(crate) fn step_by(sel: usize, len: usize, down: bool, delta: usize) -> usize
 const CHAT_PAGE_STEP: usize = 5;
 /// Indent applied to wrapped continuation lines in the chat log.
 const CHAT_WRAP_INDENT: usize = 2;
+/// Most command suggestions shown at once in the discoverability popup.
+const CHAT_SUGGESTION_MAX: u16 = 6;
 
 /// Chat log + always-visible input line.
 pub struct ChatPane {
@@ -179,6 +181,32 @@ impl ChatPane {
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         let [log_area, input_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);
+        // When the input starts with `/`, carve the bottom of the log
+        // area for a grey, filtered list of matching commands — pure
+        // discoverability, captures no input. Collapses when the input
+        // no longer matches anything.
+        let suggestions = super::commands::matching(&self.text());
+        let log_area = if suggestions.is_empty() {
+            log_area
+        } else {
+            let height = (suggestions.len() as u16).min(CHAT_SUGGESTION_MAX);
+            let [log_area, sugg_area] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(height)]).areas(log_area);
+            let items: Vec<ListItem> = suggestions
+                .iter()
+                .take(height as usize)
+                .map(|cmd| {
+                    let label = if cmd.args.is_empty() {
+                        format!("{}   {}", cmd.name, cmd.help)
+                    } else {
+                        format!("{} {}   {}", cmd.name, cmd.args, cmd.help)
+                    };
+                    ListItem::new(Span::styled(label, theme::dim()))
+                })
+                .collect();
+            frame.render_widget(List::new(items), sugg_area);
+            log_area
+        };
         let width = log_area.width.saturating_sub(2) as usize;
         // Flatten every message into wrapped visual lines.
         let lines: Vec<Line> = self

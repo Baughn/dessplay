@@ -306,9 +306,22 @@ This prevents sync issues from different encodes/versions.
 - Press Enter to send
 - Messages appear in the chat pane AND as OSD in the video player
 - System messages (joins, disconnects, state changes) appear in chat
-- Text commands start with `/`:
-  - `/exit`, `/quit`, `/q`, ctrl-c -- quit DessPlay
-  - `/afk <name>` -- mark another user as Away (see User States)
+- Text commands start with `/`. Typing `/` shows a grey, filtered list of
+  the available commands at the bottom of the chat pane (discoverability);
+  it narrows as more of the command is typed and disappears once the input
+  no longer matches one. An unknown command (or one that can't run, e.g.
+  `/skip` with no series info yet) posts a local-only system line. The
+  commands:
+  - `/quit` (aliases `/exit`, `/q`; also Ctrl-C) -- quit DessPlay
+  - `/ready` -- mark yourself ready (same as the "become ready" half of
+    `Ctrl-R`: clears your manual override, latches Playing, and marks the
+    now-playing series Watching)
+  - `/pause` -- mark yourself paused (manual override Paused, intent Paused)
+  - `/away [name]` -- mark yourself (or, with a name, another user) as Away
+    (alias `/afk <name>`; see User States). Marking yourself Away holds only
+    until your client's next input clears it.
+  - `/skip` -- stop watching the now-playing file's series (sets your
+    per-series preference to NotWatching; needs an AniDB series id)
   - `/settings` -- open the settings screen (also `F3`)
 
 ### Watching a Series

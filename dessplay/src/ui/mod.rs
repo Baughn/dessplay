@@ -2,6 +2,7 @@
 //! mapping. See docs/ui-architecture.md.
 
 pub mod app;
+pub mod commands;
 pub mod components;
 pub mod modals;
 pub mod msg;

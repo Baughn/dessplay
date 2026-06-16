@@ -70,6 +70,7 @@ fn log_action(action: &UserAction) {
         UserAction::Archive { filename, .. } => {
             tracing::debug!(%filename, "user action: Archive");
         }
+        UserAction::Notice(text) => tracing::debug!(%text, "user action: Notice"),
         UserAction::Quit => tracing::debug!("user action: Quit"),
     }
 }
@@ -519,6 +520,17 @@ impl Ui {
         if let Some(msg) = &msg {
             tracing::trace!(msg = msg.name(), "msg produced");
         }
+        // Slash commands can yield several actions; route them straight to
+        // `command()` (like the Ctrl-R global above) rather than through
+        // the single-action `update()`.
+        if let Some(Msg::Command(cmd)) = &msg {
+            let actions = self.command(cmd);
+            for action in &actions {
+                log_action(action);
+            }
+            self.refresh_keybar();
+            return actions;
+        }
         let action = msg.and_then(|msg| self.update(msg));
         if let Some(action) = &action {
             log_action(action);
@@ -533,24 +545,38 @@ impl Ui {
     /// NotWatching that was auto-set (or chosen) for the now-playing
     /// show, which has no other UI path.
     fn toggle_self_ready(&self) -> Vec<UserAction> {
-        let view = &self.snapshot.view;
-        let me = self.me.clone();
-        let current = derive::user_state(view, &me);
+        let current = derive::user_state(&self.snapshot.view, &self.me);
         tracing::debug!(?current, "Ctrl-R: toggling self readiness");
         if current == DerivedUserState::Ready {
-            // Become unready: like pressing pause.
-            return vec![
-                UserAction::Mutate(Mutation::SetManualOverride {
-                    user: me,
-                    state: Some(ManualState::Paused),
-                }),
-                UserAction::Mutate(Mutation::SetPlaybackIntent {
-                    intent: PlaybackIntent::Paused,
-                }),
-            ];
+            self.become_unready()
+        } else {
+            self.become_ready()
         }
-        // Become ready: like pressing play ("I'm ready, go"). Clear any
-        // manual override and latch Playing.
+    }
+
+    /// Become unready: like pressing pause. Sets the manual override (so
+    /// others see *who* is blocking) and latches intent Paused. Shared by
+    /// Ctrl-R and `/pause`.
+    fn become_unready(&self) -> Vec<UserAction> {
+        vec![
+            UserAction::Mutate(Mutation::SetManualOverride {
+                user: self.me.clone(),
+                state: Some(ManualState::Paused),
+            }),
+            UserAction::Mutate(Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Paused,
+            }),
+        ]
+    }
+
+    /// Become ready: like pressing play ("I'm ready, go"). Clears any
+    /// manual override, latches Playing, and — if the now-playing series
+    /// is marked NotWatching for us — flips it back to Watching so the
+    /// derived state actually reaches Ready. Shared by Ctrl-R and
+    /// `/ready`.
+    fn become_ready(&self) -> Vec<UserAction> {
+        let view = &self.snapshot.view;
+        let me = self.me.clone();
         let mut actions = vec![
             UserAction::Mutate(Mutation::SetManualOverride {
                 user: me.clone(),
@@ -560,8 +586,6 @@ impl Ui {
                 intent: PlaybackIntent::Playing,
             }),
         ];
-        // If the now-playing series is marked NotWatching for us, flip it
-        // back to Watching so the derived state actually reaches Ready.
         if let Some(file) = view.now_playing
             && let Some(Some(metadata)) = view.anidb_metadata.get(&file)
             && let Some(series) = metadata.series_id
@@ -582,7 +606,9 @@ impl Ui {
         match msg {
             Msg::None => None,
             Msg::SendChat(text) => Some(UserAction::Mutate(Mutation::Chat { text })),
-            Msg::Command(command) => self.command(&command),
+            // `Msg::Command` is intercepted in `handle()` (it can yield
+            // several actions); it never reaches `update()`.
+            Msg::Command(_) => None,
             Msg::CycleSeriesMode | Msg::ToggleSeriesSort | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
@@ -784,25 +810,57 @@ impl Ui {
         })
     }
 
-    /// `/commands` from the chat input.
-    fn command(&mut self, command: &str) -> Option<UserAction> {
+    /// `/commands` from the chat input. Returns the actions a command
+    /// produces (often several); an empty vec means "handled, nothing to
+    /// send" (e.g. `/settings`). Unknown or unusable commands return a
+    /// single [`UserAction::Notice`] for local chat feedback. See
+    /// [`super::commands`] for the discoverability table.
+    fn command(&mut self, command: &str) -> Vec<UserAction> {
         let mut parts = command.split_whitespace();
-        match parts.next()? {
-            "/quit" | "/exit" | "/q" => Some(UserAction::Quit),
+        let Some(verb) = parts.next() else {
+            return Vec::new();
+        };
+        match verb {
+            "/quit" | "/exit" | "/q" => vec![UserAction::Quit],
             "/settings" => {
                 self.open_settings();
-                None
+                Vec::new()
             }
-            "/afk" => {
-                let name = parts.next()?;
-                Some(UserAction::Mutate(Mutation::SetManualOverride {
-                    user: UserId::new(name),
+            "/ready" => self.become_ready(),
+            "/pause" => self.become_unready(),
+            // `/away` marks yourself by default; an optional name targets
+            // another user. `/afk` is a name-taking alias (legacy spelling).
+            "/away" | "/afk" => {
+                let user = parts.next().map(UserId::new).unwrap_or_else(|| self.me.clone());
+                vec![UserAction::Mutate(Mutation::SetManualOverride {
+                    user,
                     state: Some(ManualState::Away {
                         set_by: self.me.clone(),
                     }),
-                }))
+                })]
             }
-            _ => None,
+            // Stop watching the now-playing file's series. Requires an
+            // AniDB series id to key the preference on (Phase 9A).
+            "/skip" => {
+                let view = &self.snapshot.view;
+                if let Some(file) = view.now_playing
+                    && let Some(Some(metadata)) = view.anidb_metadata.get(&file)
+                    && let Some(series) = metadata.series_id
+                {
+                    vec![UserAction::Mutate(Mutation::SetSeriesPreference {
+                        user: self.me.clone(),
+                        series,
+                        pref: SeriesWatchState::NotWatching,
+                    })]
+                } else {
+                    vec![UserAction::Notice(
+                        "/skip: no series info for the current file yet".to_string(),
+                    )]
+                }
+            }
+            other => vec![UserAction::Notice(format!(
+                "Unknown command: {other} — type / to see commands"
+            ))],
         }
     }
 
@@ -1318,8 +1376,121 @@ mod tests {
         let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
         assert!(ui.modals.is_empty());
 
-        let action = ui.update(Msg::Command("/settings".into()));
-        assert!(action.is_none());
+        let actions = ui.command("/settings");
+        assert!(actions.is_empty());
         assert!(matches!(ui.modals.last(), Some(Modal::Settings(_))));
+    }
+
+    #[test]
+    fn skip_marks_now_playing_series_not_watching() {
+        // A now-playing file with series id 7, no preference yet.
+        let mut state = CrdtState::new();
+        state.set_now_playing(A, SharedTimestamp(1), Some(Ed2kHash([1; 16])));
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(2),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show".into(),
+                series_id: Some(AniDbSeriesId(7)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let mut ui = ui_with_view(state.view());
+        let actions = ui.command("/skip");
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(
+            actions[0],
+            UserAction::Mutate(Mutation::SetSeriesPreference {
+                series: AniDbSeriesId(7),
+                pref: SeriesWatchState::NotWatching,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn skip_without_series_info_notices() {
+        // No now-playing file at all -> a single Notice, no mutation.
+        let mut ui = ui_with_view(StateView::default());
+        let actions = ui.command("/skip");
+        assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
+    #[test]
+    fn ready_command_readies_and_marks_watching() {
+        let mut ui = ui_with_view(not_watching_state(&me()));
+        let actions = ui.command("/ready");
+        let muts = mutations(&actions);
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetManualOverride { state: None, .. }
+        )));
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Playing
+            }
+        )));
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetSeriesPreference {
+                series: AniDbSeriesId(7),
+                pref: SeriesWatchState::Watching,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn pause_command_pauses() {
+        let mut ui = ui_with_view(StateView::default());
+        let actions = ui.command("/pause");
+        let muts = mutations(&actions);
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetManualOverride {
+                state: Some(ManualState::Paused),
+                ..
+            }
+        )));
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Paused
+            }
+        )));
+    }
+
+    #[test]
+    fn away_command_marks_self_then_named() {
+        let mut ui = ui_with_view(StateView::default());
+        // No argument -> marks myself away, set_by myself.
+        let actions = ui.command("/away");
+        assert!(matches!(
+            actions.as_slice(),
+            [UserAction::Mutate(Mutation::SetManualOverride {
+                user,
+                state: Some(ManualState::Away { set_by }),
+            })] if *user == me() && *set_by == me()
+        ));
+        // With a name -> targets that user, still set_by me.
+        let actions = ui.command("/away nero");
+        assert!(matches!(
+            actions.as_slice(),
+            [UserAction::Mutate(Mutation::SetManualOverride {
+                user,
+                state: Some(ManualState::Away { set_by }),
+            })] if *user == UserId::new("nero") && *set_by == me()
+        ));
+    }
+
+    #[test]
+    fn unknown_command_notices_without_acting() {
+        let mut ui = ui_with_view(StateView::default());
+        let actions = ui.command("/frobnicate");
+        assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+        assert!(!actions.iter().any(|a| matches!(a, UserAction::Quit)));
     }
 }

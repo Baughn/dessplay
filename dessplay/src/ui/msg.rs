@@ -191,6 +191,11 @@ pub enum UserAction {
         /// Original filename.
         filename: String,
     },
+    /// Post a local-only system line to the chat log (command feedback,
+    /// e.g. an unknown command or a `/skip` with no series info). The
+    /// main loop stamps it with the shared clock — the UI has no clock of
+    /// its own.
+    Notice(String),
     /// Quit the application.
     Quit,
 }

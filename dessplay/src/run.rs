@@ -768,6 +768,14 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         Some(UserAction::Archive { file, series_name, filename }) => {
                             self.shell.archive(file, series_name, filename).await;
                         }
+                        Some(UserAction::Notice(text)) => {
+                            // Command feedback — stamp with the shared clock
+                            // (the UI has none) and post a local chat line.
+                            let _ = self.ui.try_send(UiInput::System {
+                                timestamp: (system_clock())(),
+                                text,
+                            });
+                        }
                         Some(UserAction::SaveSettings(saved, roots)) => {
                             if let Err(e) = self.storage.save_settings(&saved) {
                                 tracing::error!("saving settings: {e}");
