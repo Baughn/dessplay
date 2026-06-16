@@ -161,10 +161,21 @@ pub enum BrowseFor {
     },
 }
 
+/// Distinguishes synthetic navigation rows from real filesystem entries.
+enum RowKind {
+    /// `[Select]` — confirm the current directory as a media root.
+    Select,
+    /// `..` — go up one level.
+    Parent,
+    /// A real file/directory at `path`.
+    Entry,
+}
+
 struct DirRow {
     name: String,
     path: PathBuf,
     is_dir: bool,
+    kind: RowKind,
 }
 
 /// Browse the media roots (or the whole filesystem for directory
@@ -241,6 +252,7 @@ impl FileBrowser {
                         name: root.display().to_string(),
                         path: root.clone(),
                         is_dir: true,
+                        kind: RowKind::Entry,
                     });
                 }
             }
@@ -262,6 +274,7 @@ impl FileBrowser {
                             name,
                             path: entry.path(),
                             is_dir,
+                            kind: RowKind::Entry,
                         })
                     })
                     .collect();
@@ -288,6 +301,29 @@ impl FileBrowser {
                             b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name))
                         });
                     }
+                }
+                // In the media-root picker, surface "confirm this
+                // directory" and "go up" as selectable rows at the top, so
+                // they're discoverable beyond the bare `s` / Backspace keys.
+                if matches!(self.purpose, BrowseFor::Directory) {
+                    rows.insert(
+                        0,
+                        DirRow {
+                            name: "..".to_string(),
+                            path: dir.clone(),
+                            is_dir: true,
+                            kind: RowKind::Parent,
+                        },
+                    );
+                    rows.insert(
+                        0,
+                        DirRow {
+                            name: "[Select]".to_string(),
+                            path: dir.clone(),
+                            is_dir: false,
+                            kind: RowKind::Select,
+                        },
+                    );
                 }
                 self.entries = rows;
             }
@@ -340,9 +376,12 @@ impl FileBrowser {
         let items: Vec<ListItem> = self
             .entries
             .iter()
-            .map(|row| {
-                let prefix = if row.is_dir { "▸ " } else { "  " };
-                ListItem::new(format!("{prefix}{}", row.name))
+            .map(|row| match row.kind {
+                RowKind::Select | RowKind::Parent => ListItem::new(row.name.clone()),
+                RowKind::Entry => {
+                    let prefix = if row.is_dir { "▸ " } else { "  " };
+                    ListItem::new(format!("{prefix}{}", row.name))
+                }
             })
             .collect();
         render_modal_list(frame, area, &title, items, self.sel);
@@ -372,6 +411,14 @@ impl AppComponent<Msg, NoUserEvent> for FileBrowser {
             }
             Key::Enter => {
                 let row = self.entries.get(self.sel)?;
+                match row.kind {
+                    RowKind::Select => return self.cwd.clone().map(Msg::DirChosen),
+                    RowKind::Parent => {
+                        self.ascend();
+                        return Some(Msg::None);
+                    }
+                    RowKind::Entry => {}
+                }
                 if row.is_dir {
                     self.cwd = Some(row.path.clone());
                     self.refresh();
@@ -1150,6 +1197,21 @@ mod tests {
             browser.on(&enter()),
             Some(Msg::EpisodeChosen { hash: hash(1) })
         );
+    }
+
+    #[test]
+    fn directory_picker_prepends_select_and_parent() {
+        // The media-root picker surfaces "[Select]" and ".." as the first
+        // two rows, with the cursor on "[Select]".
+        let browser = FileBrowser::for_directory();
+        assert_eq!(browser.sel, 0);
+        assert!(matches!(browser.entries[0].kind, RowKind::Select));
+        assert_eq!(browser.entries[0].name, "[Select]");
+        assert!(matches!(browser.entries[1].kind, RowKind::Parent));
+        assert_eq!(browser.entries[1].name, "..");
+        // Enter on "[Select]" confirms the current directory.
+        let mut browser = FileBrowser::for_directory();
+        assert!(matches!(browser.on(&enter()), Some(Msg::DirChosen(_))));
     }
 
     #[test]

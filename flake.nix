@@ -72,7 +72,7 @@
 
         # Dev shell keeps mold + clang for fast incremental local builds.
         devShells.default = pkgs.mkShell.override {
-          stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.clangStdenv;
+	  #stdenv = if stdenv.targetPlatform.isDarwin then pkgs.clangStdenv else pkgs.stdenvAdapters.useMoldLinker pkgs.clangStdenv;
         } {
           buildInputs = devBuildInputs;
           nativeBuildInputs = [ rustToolchain ];
