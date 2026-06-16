@@ -197,9 +197,10 @@ pub fn playlist_props(
 /// One formatted chat line.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChatLine {
-    /// Display time. For chat/system lines this is "HH:MM" on the shared
-    /// clock (UTC); for subtitle lines it is the in-video position
-    /// "MM:SS" (see `subtitle`) — a different clock domain from `millis`.
+    /// Display time. For chat/system lines this is "HH:MM" in the
+    /// machine's local timezone; for subtitle lines it is the in-video
+    /// position "MM:SS" (see `subtitle`) — a different clock domain from
+    /// `millis`.
     pub time: String,
     /// Sender name (empty for system and subtitle lines).
     pub sender: String,
@@ -259,11 +260,17 @@ pub fn subtitle_line(video_millis: u64, arrival_millis: u64, text: String) -> Ch
     }
 }
 
-/// Unix millis -> "HH:MM" (UTC; good enough until a tz dependency is
-/// justified).
+/// Unix millis -> "HH:MM" in the machine's local timezone.
 fn hhmm(millis: u64) -> String {
-    let minutes = (millis / 60_000) % (24 * 60);
-    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_millis_opt(millis as i64).single() {
+        Some(dt) => dt.format("%H:%M").to_string(),
+        // Out-of-range timestamp; fall back to naive UTC math.
+        None => {
+            let minutes = (millis / 60_000) % (24 * 60);
+            format!("{:02}:{:02}", minutes / 60, minutes % 60)
+        }
+    }
 }
 
 /// In-video position millis -> "MM:SS" (or "H:MM:SS" past an hour). Used
@@ -955,9 +962,20 @@ mod tests {
     }
 
     #[test]
-    fn hhmm_is_utc() {
-        assert_eq!(hhmm(0), "00:00");
-        assert_eq!(hhmm(13 * 3_600_000 + 37 * 60_000 + 12_345), "13:37");
+    fn hhmm_is_local() {
+        use chrono::{Local, TimeZone};
+        // Timestamps render in the machine's local timezone — verify
+        // against chrono's own conversion rather than a hardcoded offset,
+        // so the test holds wherever it runs.
+        for millis in [0u64, 13 * 3_600_000 + 37 * 60_000 + 12_345] {
+            let expected = Local
+                .timestamp_millis_opt(millis as i64)
+                .single()
+                .unwrap()
+                .format("%H:%M")
+                .to_string();
+            assert_eq!(hhmm(millis), expected);
+        }
     }
 
     /// The episode browser must not show a bare ed2k hash. A file in the

@@ -26,6 +26,7 @@ tui-realm-stdlib = { workspace = true }
 image = { workspace = true }
 ab_glyph = { workspace = true }
 strsim = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
