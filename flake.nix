@@ -35,6 +35,7 @@
 
         commonArgs = {
           inherit src;
+	  pname = "dessplay";
           strictDeps = true;
 
           nativeBuildInputs = with pkgs; [ pkg-config ];
