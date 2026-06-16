@@ -266,7 +266,18 @@ impl FileBrowser {
                         if name.starts_with('.') {
                             return None;
                         }
-                        let is_dir = entry.file_type().ok()?.is_dir();
+                        // Follow symlinks: `DirEntry::file_type()` reports the
+                        // link itself, so a symlinked directory would otherwise
+                        // look like a non-dir. No cycle worry — this lists one
+                        // level, it doesn't recurse.
+                        let file_type = entry.file_type().ok()?;
+                        let is_dir = if file_type.is_symlink() {
+                            std::fs::metadata(entry.path())
+                                .map(|m| m.is_dir())
+                                .unwrap_or(false)
+                        } else {
+                            file_type.is_dir()
+                        };
                         if matches!(self.purpose, BrowseFor::Directory) && !is_dir {
                             return None;
                         }
@@ -1230,6 +1241,29 @@ mod tests {
         assert_eq!(browser.cwd.as_deref(), Some(home.as_path()));
         assert!(browser.ascend());
         assert_eq!(browser.cwd.as_deref(), home.parent());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_picker_follows_symlinked_directories() {
+        // A symlink to a directory must list as a navigable directory, not a
+        // dead non-dir row.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("real"), tmp.path().join("link")).unwrap();
+
+        let browser = FileBrowser::for_mapping(
+            vec![tmp.path().to_path_buf()],
+            hash(1),
+            "target.mkv".into(),
+            Some(tmp.path().to_path_buf()),
+        );
+        let link = browser
+            .entries
+            .iter()
+            .find(|r| r.name == "link")
+            .unwrap();
+        assert!(link.is_dir, "symlinked directory must list as a directory");
     }
 
     #[test]

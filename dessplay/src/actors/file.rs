@@ -1570,100 +1570,132 @@ fn dir_series_hint(path: &Path, root: &Path) -> Option<String> {
         .map(|name| name.trim().to_string())
 }
 
+/// Breadth-first walk over every regular file under `roots`, **following
+/// symlinks** — to both directories and files — so a library laid out with
+/// symlinked series/season folders is fully visited. Cycle protection: each
+/// directory is canonicalized and recorded in a shared `visited` set before
+/// it is read, so a symlink pointing back into the tree (or two roots that
+/// overlap) is walked at most once. The callback receives each file's path
+/// (as reached, i.e. through the symlink, not its canonical target) and the
+/// media root it was found under; root order is preserved. Unreadable or
+/// uncanonicalizable directories are skipped with a debug log, and dangling
+/// symlinks are skipped silently.
+fn walk_files(roots: &[PathBuf], mut on_file: impl FnMut(PathBuf, &Path)) {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    for root in roots {
+        let mut queue = std::collections::VecDeque::from([root.clone()]);
+        while let Some(dir) = queue.pop_front() {
+            // Cycle guard: canonicalize (resolving symlinks in the path) and
+            // skip a real directory we've already walked.
+            match std::fs::canonicalize(&dir) {
+                Ok(canon) => {
+                    if !visited.insert(canon) {
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(dir = %dir.display(), "uncanonicalizable directory: {e}");
+                    continue;
+                }
+            }
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::debug!(dir = %dir.display(), "unreadable directory: {e}");
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                // `DirEntry::file_type()` does not follow symlinks; resolve the
+                // link target's type so symlinked dirs/files are traversed.
+                let resolved = if file_type.is_symlink() {
+                    match std::fs::metadata(&path) {
+                        Ok(meta) => meta.file_type(),
+                        Err(_) => continue, // dangling symlink
+                    }
+                } else {
+                    file_type
+                };
+                if resolved.is_dir() {
+                    queue.push_back(path);
+                } else if resolved.is_file() {
+                    on_file(path, root);
+                }
+            }
+        }
+    }
+}
+
 /// Walk every media root, classifying each video file as a hash-cache hit
 /// (a known root, returned immediately) or a worklist item (new or
-/// changed since the last scan, needing a hash). Mirrors `find_by_name`'s
-/// breadth-first, symlink-skipping walk, but visits every video file.
+/// changed since the last scan, needing a hash). Uses the shared
+/// symlink-following [`walk_files`] traversal, visiting every video file.
 fn scan_library(
     roots: &[PathBuf],
     cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>,
 ) -> (Vec<IndexedFile>, std::collections::VecDeque<ScanItem>) {
     let mut hits = Vec::new();
     let mut worklist = std::collections::VecDeque::new();
-    for root in roots {
-        let mut queue = std::collections::VecDeque::from([root.clone()]);
-        while let Some(dir) = queue.pop_front() {
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(entries) => entries,
-                Err(e) => {
-                    tracing::debug!(dir = %dir.display(), "unreadable directory: {e}");
-                    continue;
-                }
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if file_type.is_dir() {
-                    queue.push_back(path);
-                    continue;
-                }
-                if !file_type.is_file() || !is_video_file(&path) {
-                    continue;
-                }
-                let Ok(metadata) = entry.metadata() else {
-                    continue;
-                };
-                let Some(mtime) = mtime_millis(&metadata) else {
-                    continue;
-                };
-                let filename = entry.file_name().to_string_lossy().into_owned();
-                let series_hint = dir_series_hint(&path, root);
-                match cache.get(&path) {
-                    // Unchanged since we hashed it: trust the cache.
-                    Some((cached_mtime, hash))
-                        if *cached_mtime == mtime && hash.size_bytes == metadata.len() =>
-                    {
-                        hits.push(IndexedFile {
-                            hash: hash.root,
-                            size: hash.size_bytes,
-                            filename,
-                            mtime: *cached_mtime,
-                            series_hint,
-                        });
-                    }
-                    // New or changed: needs a (re)hash.
-                    _ => worklist.push_back(ScanItem {
-                        path,
-                        mtime,
-                        filename,
-                        series_hint,
-                    }),
-                }
-            }
+    walk_files(roots, |path, root| {
+        if !is_video_file(&path) {
+            return;
         }
-    }
+        // `std::fs::metadata` follows symlinks, so a symlinked video reports
+        // its target's mtime/size (not the link's).
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            return;
+        };
+        let Some(mtime) = mtime_millis(&metadata) else {
+            return;
+        };
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let series_hint = dir_series_hint(&path, root);
+        match cache.get(&path) {
+            // Unchanged since we hashed it: trust the cache.
+            Some((cached_mtime, hash))
+                if *cached_mtime == mtime && hash.size_bytes == metadata.len() =>
+            {
+                hits.push(IndexedFile {
+                    hash: hash.root,
+                    size: hash.size_bytes,
+                    filename,
+                    mtime: *cached_mtime,
+                    series_hint,
+                });
+            }
+            // New or changed: needs a (re)hash.
+            _ => worklist.push_back(ScanItem {
+                path,
+                mtime,
+                filename,
+                series_hint,
+            }),
+        }
+    });
     (hits, worklist)
 }
 
 /// Every file named exactly `filename` under the roots, in breadth-first
-/// root order. Symlinked directories are skipped (cycle safety).
+/// root order. Uses the shared symlink-following [`walk_files`] traversal,
+/// so it stays consistent with [`scan_library`]'s indexing.
 fn find_by_name(filename: &str, roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    for root in roots {
-        let mut queue = std::collections::VecDeque::from([root.clone()]);
-        while let Some(dir) = queue.pop_front() {
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(entries) => entries,
-                Err(e) => {
-                    tracing::debug!(dir = %dir.display(), "unreadable directory: {e}");
-                    continue;
-                }
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if file_type.is_dir() {
-                    queue.push_back(path);
-                } else if file_type.is_file() && entry.file_name().to_string_lossy() == filename {
-                    found.push(path);
-                }
-            }
+    walk_files(roots, |path, _root| {
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy() == filename)
+        {
+            found.push(path);
         }
-    }
+    });
     found
 }
 
@@ -2568,6 +2600,78 @@ mod tests {
         assert!(hits.is_empty(), "stale mtime must not count as a hit");
         assert_eq!(worklist.len(), 1);
         assert_eq!(worklist[0].path, video);
+    }
+
+    // ---- Symlink traversal (Unix only; Windows symlink creation needs
+    // privileges, and the deployment targets are NixOS/macOS).
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_library_follows_a_symlinked_directory() {
+        // The real episode lives outside the media root; the root only
+        // contains a symlink to its series directory.
+        let base = tempfile::tempdir().unwrap();
+        write(base.path(), "store/Frieren/ep1.mkv", b"episode one");
+        let root = base.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(base.path().join("store/Frieren"), root.join("Frieren"))
+            .unwrap();
+
+        let (hits, worklist) = scan_library(std::slice::from_ref(&root), &HashMap::new());
+        assert!(hits.is_empty());
+        assert_eq!(worklist.len(), 1, "video behind a symlinked dir must be seen");
+        assert_eq!(worklist[0].filename, "ep1.mkv");
+        assert_eq!(worklist[0].path, root.join("Frieren/ep1.mkv"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_library_follows_a_symlinked_file_with_target_metadata() {
+        // A symlink that names a video, pointing at a real file elsewhere.
+        let base = tempfile::tempdir().unwrap();
+        let target = write(base.path(), "store/real.mkv", b"episode one");
+        let root = base.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let link = root.join("ep1.mkv");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let (hits, worklist) = scan_library(std::slice::from_ref(&root), &HashMap::new());
+        assert!(hits.is_empty());
+        assert_eq!(worklist.len(), 1, "symlinked video file must be seen");
+        assert_eq!(worklist[0].path, link);
+        // mtime must come from the target, not the symlink itself.
+        let target_mtime = mtime_millis(&std::fs::metadata(&target).unwrap()).unwrap();
+        assert_eq!(worklist[0].mtime, target_mtime);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_library_terminates_on_a_symlink_cycle() {
+        // A symlink pointing back at an ancestor must not loop forever, and
+        // each real file is indexed exactly once.
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "Frieren/ep1.mkv", b"episode one");
+        std::os::unix::fs::symlink(root.path(), root.path().join("Frieren/loop")).unwrap();
+
+        let (_hits, worklist) = scan_library(&[root.path().to_path_buf()], &HashMap::new());
+        assert_eq!(worklist.len(), 1, "cycle must not duplicate or hang");
+        assert_eq!(worklist[0].filename, "ep1.mkv");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_by_name_follows_a_symlinked_directory() {
+        // Resolution must stay consistent with indexing: a file reachable
+        // only through a symlinked dir is found by name.
+        let base = tempfile::tempdir().unwrap();
+        write(base.path(), "store/Frieren/ep1.mkv", b"episode one");
+        let root = base.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(base.path().join("store/Frieren"), root.join("Frieren"))
+            .unwrap();
+
+        let found = find_by_name("ep1.mkv", std::slice::from_ref(&root));
+        assert_eq!(found, vec![root.join("Frieren/ep1.mkv")]);
     }
 
     /// Drain outputs until a `LibraryIndexed` carrying `wanted` arrives.
