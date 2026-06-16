@@ -416,8 +416,8 @@ fn map_file_opens_browser_ranked_by_edit_distance_and_maps() {
     for _ in 0..3 {
         ui.handle(key(Key::Tab)); // focus Playlist
     }
-    // Ctrl-m opens the mapping browser (at the media roots).
-    assert!(ui.handle(ctrl('m')).is_empty());
+    // `M` opens the mapping browser (at the media roots).
+    assert!(ui.handle(shift('M')).is_empty());
     assert!(ui.modal_open());
     // Enter the only root directory.
     assert!(ui.handle(key(Key::Enter)).is_empty());
