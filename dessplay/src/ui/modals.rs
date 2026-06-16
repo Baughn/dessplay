@@ -2,7 +2,7 @@
 //! (ui-architecture.md, Modals). The dispatcher keeps a modal stack;
 //! the background keeps rendering and the event loop keeps running.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tuirealm::command::{Cmd, CmdResult, Direction, Position};
 use tuirealm::component::{AppComponent, Component};
@@ -334,10 +334,16 @@ impl FileBrowser {
         match self.cwd.take() {
             None => false,
             Some(dir) => {
-                // Back to the roots listing when leaving a root.
-                if !self.roots.contains(&dir)
+                if matches!(self.purpose, BrowseFor::Directory) {
+                    // The media-root picker spans the whole filesystem: walk
+                    // up to the real parent (so directories outside $HOME are
+                    // reachable), stopping only at the filesystem root.
+                    self.cwd = Some(dir.parent().map(Path::to_path_buf).unwrap_or(dir));
+                } else if !self.roots.contains(&dir)
                     && let Some(parent) = dir.parent()
                 {
+                    // File/map browsers are confined to the media roots: leaving
+                    // a root returns to the roots listing.
                     self.cwd = Some(parent.to_path_buf());
                 }
                 self.refresh();
@@ -1212,6 +1218,18 @@ mod tests {
         // Enter on "[Select]" confirms the current directory.
         let mut browser = FileBrowser::for_directory();
         assert!(matches!(browser.on(&enter()), Some(Msg::DirChosen(_))));
+    }
+
+    #[test]
+    fn directory_picker_ascends_above_home() {
+        // Regression: the media-root picker must reach directories outside
+        // $HOME, so ".." walks up to the real filesystem parent rather than
+        // stopping at the (home-only) roots boundary.
+        let mut browser = FileBrowser::for_directory();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(browser.cwd.as_deref(), Some(home.as_path()));
+        assert!(browser.ascend());
+        assert_eq!(browser.cwd.as_deref(), home.parent());
     }
 
     #[test]
