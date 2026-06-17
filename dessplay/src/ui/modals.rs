@@ -413,7 +413,8 @@ const FIELD_SERVER: usize = 1;
 const FIELD_PASSWORD: usize = 2;
 const FIELD_READY: usize = 3;
 const FIELD_SUBTITLE: usize = 4;
-const FIXED_FIELDS: usize = 5;
+const FIELD_CACHE: usize = 5;
+const FIXED_FIELDS: usize = 6;
 
 /// First-run and later settings editing.
 pub struct SettingsModal {
@@ -499,6 +500,7 @@ impl SettingsModal {
                 }
             ),
             format!("Subtitles: {}", self.settings.subtitle_mode.label()),
+            format!("Cache: {}", self.settings.cache_retention.label()),
         ];
         for row in rows {
             lines.push(ListItem::new(row));
@@ -608,6 +610,9 @@ impl AppComponent<Msg, NoUserEvent> for SettingsModal {
                     }
                     FIELD_SUBTITLE => {
                         self.settings.subtitle_mode = self.settings.subtitle_mode.next();
+                    }
+                    FIELD_CACHE => {
+                        self.settings.cache_retention = self.settings.cache_retention.next();
                     }
                     index if index == FIXED_FIELDS + self.roots.len() => {
                         return Some(Msg::OpenDirPicker);
@@ -1097,6 +1102,32 @@ mod tests {
 
     fn hash(i: u8) -> Ed2kHash {
         Ed2kHash([i; 16])
+    }
+
+    fn down() -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code: Key::Down,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn enter_cycles_cache_retention_field() {
+        let mut modal = SettingsModal::new(crate::config::Settings::default(), vec![]);
+        // Default retention is one week.
+        assert_eq!(
+            modal.settings.cache_retention,
+            crate::config::CacheRetention::default()
+        );
+        // Move the cursor onto the Cache field and cycle it.
+        for _ in 0..FIELD_CACHE {
+            modal.on(&down());
+        }
+        modal.on(&enter());
+        assert_eq!(
+            modal.settings.cache_retention,
+            crate::config::CacheRetention::default().next()
+        );
     }
 
     #[test]

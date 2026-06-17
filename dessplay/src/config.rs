@@ -128,6 +128,59 @@ impl CacheRetention {
                 .map_err(|_| StorageError::Corrupt(format!("bad cache_retention {value:?}"))),
         }
     }
+
+    /// Cycle through the settings-screen presets:
+    /// Delete-when-watched -> 1 day -> 7 days -> 30 days -> Keep forever
+    /// -> wrap. A non-preset `Keep` (set out-of-band) advances to the
+    /// first preset strictly larger than it, so it rejoins the ladder.
+    pub fn next(self) -> Self {
+        const DAY: u64 = 24 * 60 * 60;
+        match self {
+            CacheRetention::AfterWatch => CacheRetention::Keep(Duration::from_secs(DAY)),
+            CacheRetention::Keep(d) => {
+                let secs = d.as_secs();
+                if secs < DAY {
+                    CacheRetention::Keep(Duration::from_secs(DAY))
+                } else if secs < 7 * DAY {
+                    CacheRetention::Keep(Duration::from_secs(7 * DAY))
+                } else if secs < 30 * DAY {
+                    CacheRetention::Keep(Duration::from_secs(30 * DAY))
+                } else {
+                    CacheRetention::Infinite
+                }
+            }
+            CacheRetention::Infinite => CacheRetention::AfterWatch,
+        }
+    }
+
+    /// Human-readable label for the settings row.
+    pub fn label(self) -> String {
+        match self {
+            CacheRetention::AfterWatch => "Delete when watched".into(),
+            CacheRetention::Infinite => "Keep forever".into(),
+            CacheRetention::Keep(d) => humanize(d),
+        }
+    }
+}
+
+/// Render a retention window for display: whole days, else whole hours,
+/// else minutes, else seconds (whichever divides cleanly first).
+fn humanize(d: Duration) -> String {
+    let secs = d.as_secs();
+    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    if secs == 0 {
+        return "0 seconds".into();
+    }
+    for (size, unit) in [
+        (24 * 60 * 60, "day"),
+        (60 * 60, "hour"),
+        (60, "minute"),
+    ] {
+        if secs.is_multiple_of(size) {
+            return plural(secs / size, unit);
+        }
+    }
+    plural(secs, "second")
 }
 
 /// All persisted client settings. `username` and `password` are `None`
@@ -317,6 +370,48 @@ mod tests {
             );
         }
         assert!(CacheRetention::parse("yes please").is_err());
+    }
+
+    #[test]
+    fn retention_cycle_ladder() {
+        let day = |n: u64| CacheRetention::Keep(Duration::from_secs(n * 24 * 60 * 60));
+        // The preset ladder wraps.
+        assert_eq!(CacheRetention::AfterWatch.next(), day(1));
+        assert_eq!(day(1).next(), day(7));
+        assert_eq!(day(7).next(), day(30));
+        assert_eq!(day(30).next(), CacheRetention::Infinite);
+        assert_eq!(CacheRetention::Infinite.next(), CacheRetention::AfterWatch);
+        // A non-preset value rejoins at the first strictly-larger preset.
+        assert_eq!(
+            CacheRetention::Keep(Duration::from_secs(3 * 24 * 60 * 60)).next(),
+            day(7)
+        );
+        assert_eq!(
+            CacheRetention::Keep(Duration::from_secs(100 * 24 * 60 * 60)).next(),
+            CacheRetention::Infinite
+        );
+    }
+
+    #[test]
+    fn retention_labels() {
+        assert_eq!(CacheRetention::AfterWatch.label(), "Delete when watched");
+        assert_eq!(CacheRetention::Infinite.label(), "Keep forever");
+        assert_eq!(
+            CacheRetention::Keep(Duration::from_secs(24 * 60 * 60)).label(),
+            "1 day"
+        );
+        assert_eq!(
+            CacheRetention::Keep(Duration::from_secs(7 * 24 * 60 * 60)).label(),
+            "7 days"
+        );
+        assert_eq!(
+            CacheRetention::Keep(Duration::from_secs(90 * 60)).label(),
+            "90 minutes"
+        );
+        assert_eq!(
+            CacheRetention::Keep(Duration::from_secs(2 * 60 * 60)).label(),
+            "2 hours"
+        );
     }
 
     #[test]

@@ -948,8 +948,17 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
                             }
                         }
-                        crate::session::FileEffect::None
-                        | crate::session::FileEffect::Other(_) => {}
+                        crate::session::FileEffect::Evicted { .. } => {
+                            // Eviction emits no sync event, so push a fresh
+                            // snapshot to clear the "temporary" marker on the
+                            // removed rows (cache_hashes is recomputed from
+                            // storage).
+                            if let Some(snapshot) = self.snapshot().await {
+                                last_view = snapshot.view.clone();
+                                let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                            }
+                        }
+                        crate::session::FileEffect::None => {}
                     }
                 }
             }

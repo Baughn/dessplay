@@ -123,6 +123,17 @@ pub enum Directive {
         /// Playback chunk anchor for the sequential window.
         play_chunk: u32,
     },
+    /// Run a cache-eviction pass (design.md, Download Cache: passes run at
+    /// startup and on EOF-advance). `protected` = now-playing + unwatched
+    /// playlist entries, never evicted regardless of retention;
+    /// `group_watched` = group watched flags (a file behind the group's
+    /// progress is evictable even if not personally watched).
+    RunEviction {
+        /// Hashes the pass must never evict.
+        protected: HashSet<Ed2kHash>,
+        /// Hashes the group has watched.
+        group_watched: HashSet<Ed2kHash>,
+    },
 }
 
 /// The session's player-side policy state.
@@ -147,6 +158,11 @@ pub struct PlayerWiring {
     /// Missing now-playing files we've already asked known-series about
     /// (the round trip fires once per file).
     series_known_checked: HashSet<Ed2kHash>,
+    /// Whether the startup eviction pass has run.
+    eviction_started: bool,
+    /// The now-playing file at the last eviction pass; a change is the
+    /// EOF-advance (or manual-jump) signal to run another.
+    last_now_playing: Option<Ed2kHash>,
 }
 
 /// Fraction of a file's duration that counts as "watched" (design.md,
@@ -205,6 +221,8 @@ impl PlayerWiring {
             watcher_prefs_written: HashSet::new(),
             watched_recorded: HashSet::new(),
             series_known_checked: HashSet::new(),
+            eviction_started: false,
+            last_now_playing: None,
         }
     }
 
@@ -294,6 +312,35 @@ impl PlayerWiring {
             });
         }
         out
+    }
+
+    /// Build a cache-eviction pass from the synced view. Protected =
+    /// every unwatched playlist entry plus now-playing (the latter
+    /// unconditionally, covering a group-watched now-playing rewatch).
+    /// The `evictable` rule already shields unwatched files, so protecting
+    /// them here is explicit belt-and-suspenders; the load-bearing case is
+    /// now-playing. A watched playlist entry behind the group's progress is
+    /// deliberately left evictable.
+    fn plan_eviction(&self, view: &StateView) -> Directive {
+        let mut protected: HashSet<Ed2kHash> = view
+            .playlist
+            .iter()
+            .filter(|e| view.watched.get(&e.hash) != Some(&true))
+            .map(|e| e.hash)
+            .collect();
+        if let Some(now) = view.now_playing {
+            protected.insert(now);
+        }
+        let group_watched: HashSet<Ed2kHash> = view
+            .watched
+            .iter()
+            .filter(|(_, watched)| **watched)
+            .map(|(hash, _)| *hash)
+            .collect();
+        Directive::RunEviction {
+            protected,
+            group_watched,
+        }
     }
 
     /// React to the file actor's known-series answer (design.md, File
@@ -450,6 +497,17 @@ impl PlayerWiring {
     pub fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
         let mut out = Vec::new();
 
+        // Cache-eviction pass at startup and on every now-playing change
+        // (EOF-advance, or a manual jump). It is cheap (lists cache rows,
+        // checks timestamps); gating on the now-playing transition keeps it
+        // off every snapshot. Relies only on the synced view + the file
+        // actor's own cache_entries, so it is safe before resolution runs.
+        if !self.eviction_started || self.last_now_playing != view.now_playing {
+            self.eviction_started = true;
+            self.last_now_playing = view.now_playing;
+            out.push(self.plan_eviction(view));
+        }
+
         // Kick the matcher for entries we haven't looked for yet.
         // Watched history is skipped (no point hashing gigabytes of
         // already-seen files) unless it becomes now-playing again.
@@ -592,6 +650,24 @@ impl PlayerWiring {
             }
         }
 
+        out
+    }
+
+    /// Forget cache copies the eviction pass deleted: drop their local
+    /// resolution and retract our advertised availability so peers stop
+    /// treating us as a source. (Mirrors the serve-time-absence guard.)
+    pub fn note_evicted(&mut self, files: &[Ed2kHash]) -> Vec<Directive> {
+        let mut out = Vec::new();
+        for &file in files {
+            // Only retract if we were advertising it; an evicted file we
+            // never resolved as local needs no mutation.
+            if self.resolved.remove(&file).is_some() {
+                out.push(Directive::Mutate(Mutation::SetFileAvailability {
+                    file,
+                    availability: FileAvailability::Missing,
+                }));
+            }
+        }
         out
     }
 
@@ -1048,6 +1124,18 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         })
                         .await;
                 }
+                Directive::RunEviction {
+                    protected,
+                    group_watched,
+                } => {
+                    let _ = self
+                        .file
+                        .send(FileCommand::RunEviction {
+                            protected,
+                            group_watched,
+                        })
+                        .await;
+                }
                 Directive::Subtitle {
                     text,
                     video_millis,
@@ -1185,9 +1273,16 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 FileEffect::ScanProgress { done, total }
             }
             FileOutput::WatchRecorded => FileEffect::WatchRecorded,
-            // The remaining outputs are consumed by the bridge loop as
-            // those features land (eviction notices).
-            other => FileEffect::Other(other),
+            FileOutput::Evicted { files } => {
+                // The file actor deleted these cached copies and pruned
+                // their bookkeeping. Forget the local resolution and
+                // retract our availability so peers stop seeing us as a
+                // source; the entry re-resolves to Missing if it matters
+                // again.
+                let directives = self.wiring.note_evicted(&files);
+                self.execute(directives).await;
+                FileEffect::Evicted { files }
+            }
         }
     }
 }
@@ -1277,8 +1372,12 @@ pub enum FileEffect {
     /// re-reads watch history and reflects the new recency. Carries no
     /// data — watch recording produces no sync event of its own.
     WatchRecorded,
-    /// An output not yet consumed by the shell.
-    Other(FileOutput),
+    /// Cached files were evicted: refresh the snapshot so the playlist
+    /// pane drops the dim "temporary" marker for the removed rows.
+    Evicted {
+        /// The evicted file hashes.
+        files: Vec<Ed2kHash>,
+    },
 }
 
 #[cfg(test)]
@@ -1389,6 +1488,105 @@ mod tests {
 
         // Not in the catalog yet: a user-facing notice, no mutation.
         assert!(add_by_hash_mutation(&me(), hash(9), None, &view).is_err());
+    }
+
+    /// The single RunEviction directive in a list (panics if absent).
+    fn eviction(directives: &[Directive]) -> (&HashSet<Ed2kHash>, &HashSet<Ed2kHash>) {
+        directives
+            .iter()
+            .find_map(|d| match d {
+                Directive::RunEviction {
+                    protected,
+                    group_watched,
+                } => Some((protected, group_watched)),
+                _ => None,
+            })
+            .expect("a RunEviction directive")
+    }
+
+    fn has_eviction(directives: &[Directive]) -> bool {
+        directives
+            .iter()
+            .any(|d| matches!(d, Directive::RunEviction { .. }))
+    }
+
+    #[test]
+    fn eviction_protects_now_playing_and_unwatched_not_watched_history() {
+        // Playlist: ep1 (now-playing, watched), ep2 (unwatched), ep3
+        // (watched, behind the group — play history).
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+        state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
+        state.push_playlist_entry(A, ts(3), entry(3, "ep3.mkv"));
+        state.set_now_playing(A, ts(4), Some(hash(1)));
+        state.set_watched(A, ts(5), hash(1), true);
+        state.set_watched(A, ts(6), hash(3), true);
+        let view = state.view();
+        let wiring = PlayerWiring::new(me());
+
+        let directive = wiring.plan_eviction(&view);
+        let Directive::RunEviction {
+            protected,
+            group_watched,
+        } = directive
+        else {
+            panic!("expected RunEviction");
+        };
+
+        // now-playing protected even though it is watched (a rewatch);
+        // unwatched ep2 protected; watched-history ep3 left evictable.
+        assert!(protected.contains(&hash(1)));
+        assert!(protected.contains(&hash(2)));
+        assert!(!protected.contains(&hash(3)));
+        // group_watched carries every watched flag.
+        assert_eq!(group_watched, HashSet::from([hash(1), hash(3)]));
+    }
+
+    #[test]
+    fn eviction_fires_on_startup_and_now_playing_change_only() {
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+        state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
+        state.set_now_playing(A, ts(3), Some(hash(1)));
+        let mut wiring = PlayerWiring::new(me());
+
+        // Startup: a pass fires.
+        let first = wiring.on_state(&state.view(), &[peer("kim")]);
+        assert!(has_eviction(&first));
+        let (protected, _) = eviction(&first);
+        assert!(protected.contains(&hash(1)));
+
+        // Same now-playing on the next snapshot: no pass.
+        let second = wiring.on_state(&state.view(), &[peer("kim")]);
+        assert!(!has_eviction(&second));
+
+        // now-playing advances (EOF): a fresh pass fires.
+        state.set_now_playing(A, ts(4), Some(hash(2)));
+        let third = wiring.on_state(&state.view(), &[peer("kim")]);
+        assert!(has_eviction(&third));
+    }
+
+    #[test]
+    fn note_evicted_retracts_only_advertised_copies() {
+        let mut wiring = PlayerWiring::new(me());
+        wiring
+            .resolved
+            .insert(hash(1), Resolution::Verified("/c/1".into()));
+
+        // hash(1) was advertised → retracted; hash(2) was never local → no-op.
+        let out = wiring.note_evicted(&[hash(1), hash(2)]);
+        let retracted: Vec<Ed2kHash> = out
+            .iter()
+            .filter_map(|d| match d {
+                Directive::Mutate(Mutation::SetFileAvailability {
+                    file,
+                    availability: FileAvailability::Missing,
+                }) => Some(*file),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(retracted, vec![hash(1)]);
+        assert!(!wiring.resolved.contains_key(&hash(1)));
     }
 
     /// The hashes a directive list asks the server to look up.
