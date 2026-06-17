@@ -60,13 +60,21 @@ pub enum UiInput {
     /// input thread holds a sender clone forever (it's blocked in
     /// `crossterm::event::read`), so the channel never closes.
     Shutdown,
+    /// Test-only latency probe: the UI loop stamps `Instant::now()` into
+    /// the cell the moment it dequeues this input, then draws like any
+    /// other input. Lets a test measure how long the UI thread takes to
+    /// service new input while a snapshot flood is in flight. Always
+    /// present (no cargo feature) to keep it reachable from the
+    /// integration-test crate; the production loop never sends it.
+    #[doc(hidden)]
+    Probe(std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>),
 }
 
 /// Run the UI on the current (dedicated) thread until the input
 /// channel closes or the action receiver goes away. Returns the
 /// terminal to its normal state on exit.
 pub fn run_ui_thread(
-    mut ui: Ui,
+    ui: Ui,
     inputs: std::sync::mpsc::Receiver<UiInput>,
     actions: mpsc::Sender<UserAction>,
 ) {
@@ -95,6 +103,23 @@ pub fn run_ui_thread(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "terminal setup complete"
     );
+    run_ui_loop(ui, inputs, actions, &mut adapter);
+    let _ = adapter.restore();
+    tracing::debug!("UI thread exiting");
+}
+
+/// The terminal-agnostic UI loop body: apply inputs and redraw until the
+/// input channel closes (or a quit action arrives). Generic over the
+/// [`TerminalAdapter`] so the production path drives a real crossterm
+/// terminal while tests drive a headless `TestTerminalAdapter` and run
+/// the *real* draw/refresh work. The caller owns terminal
+/// setup/teardown (raw mode, alternate screen, `restore`).
+pub fn run_ui_loop<A: TerminalAdapter>(
+    mut ui: Ui,
+    inputs: std::sync::mpsc::Receiver<UiInput>,
+    actions: mpsc::Sender<UserAction>,
+    adapter: &mut A,
+) {
     // Deliberately NO Terminal::clear() here (or anywhere while the
     // input thread lives): ratatui's clear() queries the cursor
     // position, and crossterm answers that by reading the terminal's
@@ -103,10 +128,6 @@ pub fn run_ui_thread(
     // screen is already blank and the first fullscreen draw paints
     // every cell.
     let _ = adapter.raw_mut().draw(|frame| ui.draw(frame));
-    tracing::debug!(
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "first draw complete"
-    );
     while let Ok(input) = inputs.recv() {
         match input {
             UiInput::Shutdown => break,
@@ -124,11 +145,16 @@ pub fn run_ui_thread(
             } => ui.set_hash_progress(filename, done_bytes, total_bytes, finished),
             UiInput::System { timestamp, text } => ui.push_system(timestamp, text),
             UiInput::SearchResults { query, results } => ui.set_search_results(&query, results),
+            UiInput::Probe(cell) => {
+                // Stamp the moment we dequeued this input — measured by a
+                // test against the send time. Fall through to a draw so
+                // the probe pays the same per-input cost real input does.
+                *cell.lock().unwrap() = Some(std::time::Instant::now());
+            }
             UiInput::Event(event) => {
                 for action in ui.handle(event) {
                     let quit = action == UserAction::Quit;
                     if actions.blocking_send(action).is_err() || quit {
-                        let _ = adapter.restore();
                         tracing::debug!("UI thread exiting (quit or actions channel closed)");
                         return;
                     }
@@ -139,8 +165,6 @@ pub fn run_ui_thread(
             break;
         }
     }
-    let _ = adapter.restore();
-    tracing::debug!("UI thread exiting");
 }
 
 /// Coarse event description for trace logs. Deliberately omits the
