@@ -149,7 +149,11 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 // Stamp the moment we dequeued this input — measured by a
                 // test against the send time. Fall through to a draw so
                 // the probe pays the same per-input cost real input does.
-                *cell.lock().unwrap() = Some(std::time::Instant::now());
+                // Recover a poisoned lock (the stamp is the only state):
+                // the crate denies `unwrap`, and a panicking probe would
+                // be a poor reason to take down the UI loop.
+                *cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(std::time::Instant::now());
             }
             UiInput::Event(event) => {
                 for action in ui.handle(event) {
