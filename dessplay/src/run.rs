@@ -716,6 +716,18 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         let mut first_connected = true;
         let mut first_peer_list = true;
         let mut first_snapshot = true;
+        // The expensive UI snapshot (a full `StateView` clone + two SQLite
+        // queries + a full pane rebuild on the UI thread) used to fire on
+        // *every* event -- including the 100ms player position tick and
+        // every peer's position datagram, so its rate scaled with peer
+        // count. Coalesce it: events mark the UI dirty, and a 100ms tick
+        // flushes at most one snapshot. (Forced refreshes -- local
+        // mutations and file effects -- still flush immediately below.)
+        // The first tick of a `tokio` interval completes at once, so the
+        // initial snapshot after the first event is not delayed.
+        let mut ui_dirty = false;
+        let mut ui_tick = tokio::time::interval(std::time::Duration::from_millis(100));
+        ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 action = self.actions.recv() => {
@@ -737,6 +749,10 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // so a Ctrl-R toggle could read its own stale
                             // state and never flip (2026-06-14).
                             self.refresh_ui(&mut last_view).await;
+                            // The fresh snapshot is FIFO after the
+                            // mutation, so it already reflects everything
+                            // pending -- no redundant tick flush needed.
+                            ui_dirty = false;
                         }
                         Some(UserAction::HashAndAdd { path, after }) => {
                             // Hashing is seconds per gigabyte: background
@@ -866,8 +882,17 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         _ => {}
                     }
-                    // Any event can change what the UI shows — and what
-                    // the player layer should be doing.
+                    // Any event can change what the UI shows -- and what
+                    // the player layer should be doing -- but the heavy
+                    // snapshot is deferred to the coalescing tick below
+                    // rather than rebuilt per event. The cheap, per-event
+                    // side effects (clock offset, peer messages incl. the
+                    // download data path, fingerprint pinning) ran in the
+                    // match above and are not deferred.
+                    ui_dirty = true;
+                }
+                _ = ui_tick.tick(), if ui_dirty => {
+                    ui_dirty = false;
                     if let Some(snapshot) = self.snapshot().await {
                         if first_snapshot {
                             first_snapshot = false;
@@ -923,6 +948,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             if let Some(snapshot) = self.snapshot().await {
                                 last_view = snapshot.view.clone();
                                 let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                                ui_dirty = false;
                             }
                         }
                         crate::session::FileEffect::ScanProgress { done, total } => {
@@ -951,6 +977,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             if let Some(snapshot) = self.snapshot().await {
                                 last_view = snapshot.view.clone();
                                 let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                                ui_dirty = false;
                             }
                         }
                         crate::session::FileEffect::Evicted { .. } => {
@@ -961,6 +988,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             if let Some(snapshot) = self.snapshot().await {
                                 last_view = snapshot.view.clone();
                                 let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                                ui_dirty = false;
                             }
                         }
                         crate::session::FileEffect::None => {}

@@ -98,71 +98,78 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
         components.entry(root).or_default().insert(id);
     }
 
-    // Series that actually have a known file (via metadata). The
-    // relations walk pulls in the whole graph -- sequels you don't have,
-    // standalone shows reached through crossovers -- so a series with no
-    // file exists only as a relation target. Such series are dropped
-    // from the members list, and a franchise with no files at all does
-    // not appear. (Title/year are still computed from the full
-    // component, so "Overlord" stays the name even when only a later
+    // Attribute every file-bearing series to its component root in a
+    // single pass. Rescanning the whole metadata map once per component
+    // (the previous shape) is O(components * files) -- quadratic on a
+    // library of mostly metadata-only singletons. BTreeMap iteration is by
+    // hash, so `files_by_root` keeps files in hash order and
+    // `name_by_root`'s `or_insert` keeps the lowest-hash name as the
+    // relations-less title fallback -- both matching the old per-component
+    // scans exactly.
+    //
+    // `series_with_files` is the set of series that actually have a known
+    // file. The relations walk pulls in the whole graph -- sequels you
+    // don't have, standalone shows reached through crossovers -- so a
+    // series with no file exists only as a relation target; those are
+    // dropped from the members list, and a franchise with no files at all
+    // does not appear. (Title/year are still computed from the full
+    // component below, so "Overlord" stays the name even when only a later
     // season is held.)
-    let series_with_files: BTreeSet<AniDbSeriesId> = view
-        .anidb_metadata
-        .values()
-        .flatten()
-        .filter_map(|metadata| metadata.series_id)
-        .collect();
+    let mut files_by_root: BTreeMap<AniDbSeriesId, Vec<Ed2kHash>> = BTreeMap::new();
+    let mut name_by_root: BTreeMap<AniDbSeriesId, String> = BTreeMap::new();
+    let mut series_with_files: BTreeSet<AniDbSeriesId> = BTreeSet::new();
+    for (hash, metadata) in &view.anidb_metadata {
+        let Some(metadata) = metadata else { continue };
+        let Some(series) = metadata.series_id else {
+            continue;
+        };
+        series_with_files.insert(series);
+        let root = find(&mut parent, series);
+        files_by_root.entry(root).or_default().push(*hash);
+        name_by_root
+            .entry(root)
+            .or_insert_with(|| metadata.series_name.clone());
+    }
+
+    // Best title and minimum year per component, folded in a single pass
+    // over the relations map. Each member contributes only its own
+    // relations entry, exactly as the old per-member loop did, and the
+    // strict `<` keeps the earliest-id member on ties (relations are
+    // visited in series-id order).
+    let mut best_by_root: BTreeMap<AniDbSeriesId, (String, Option<u16>)> = BTreeMap::new();
+    let mut year_min_by_root: BTreeMap<AniDbSeriesId, Option<u16>> = BTreeMap::new();
+    for (series, relations) in &view.series_relations {
+        let root = find(&mut parent, *series);
+        let year = relations.year;
+        let entry = year_min_by_root.entry(root).or_insert(None);
+        *entry = match (*entry, year) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let better = match best_by_root.get(&root) {
+            None => true,
+            Some((_, Some(existing))) => matches!(year, Some(candidate) if candidate < *existing),
+            Some((_, None)) => year.is_some(),
+        };
+        if better {
+            best_by_root.insert(root, (relations.title.clone(), year));
+        }
+    }
 
     let mut result: Vec<Franchise> = components
         .into_iter()
         .filter_map(|(root, members)| {
+            // A franchise reached only through relations holds no files
+            // (no entry in `files_by_root`) -- drop it.
+            let files = files_by_root.remove(&root)?;
             // Title/year from the earliest-year member with relations
-            // data; fall back to the lowest id's title, then a stub.
-            let mut best: Option<(&str, Option<u16>)> = None;
-            let mut year_min: Option<u16> = None;
-            for member in &members {
-                if let Some(relations) = view.series_relations.get(member) {
-                    let year = relations.year;
-                    year_min = match (year_min, year) {
-                        (Some(a), Some(b)) => Some(a.min(b)),
-                        (a, b) => a.or(b),
-                    };
-                    let better = match (&best, year) {
-                        (None, _) => true,
-                        (Some((_, Some(existing))), Some(candidate)) => candidate < *existing,
-                        (Some((_, None)), Some(_)) => true,
-                        _ => false,
-                    };
-                    if better {
-                        best = Some((&relations.title, year));
-                    }
-                }
-            }
-            let title = best
-                .map(|(title, _)| title.to_string())
-                .or_else(|| {
-                    // No relations data at all: borrow a metadata name.
-                    view.anidb_metadata.values().flatten().find_map(|metadata| {
-                        (metadata.series_id.is_some_and(|id| members.contains(&id)))
-                            .then(|| metadata.series_name.clone())
-                    })
-                })
+            // data; fall back to a metadata name, then a stub.
+            let title = best_by_root
+                .get(&root)
+                .map(|(title, _)| title.clone())
+                .or_else(|| name_by_root.get(&root).cloned())
                 .unwrap_or_else(|| format!("anidb:{}", root.0));
-            let files: Vec<Ed2kHash> = view
-                .anidb_metadata
-                .iter()
-                .filter_map(|(hash, metadata)| {
-                    let metadata = metadata.as_ref()?;
-                    metadata
-                        .series_id
-                        .is_some_and(|id| members.contains(&id))
-                        .then_some(*hash)
-                })
-                .collect();
-            // A franchise reached only through relations holds no files.
-            if files.is_empty() {
-                return None;
-            }
+            let year = year_min_by_root.get(&root).copied().flatten();
             let mut series: Vec<AniDbSeriesId> = members
                 .iter()
                 .copied()
@@ -181,7 +188,7 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
                 key: FranchiseKey::Series(root),
                 title,
                 series,
-                year: year_min,
+                year,
                 files,
             })
         })
@@ -483,5 +490,68 @@ mod tests {
                 "kind {kind:?}: expected {expected} franchise(s), got {groups:#?}"
             );
         }
+    }
+
+    /// Scale check for the linearithmic grouping: a large library of
+    /// metadata-only singletons plus one sequel chain must still produce
+    /// exactly one franchise per singleton and one merged franchise for
+    /// the chain. This guards the loop-inversion rewrite (no per-component
+    /// rescans of the metadata map) against off-by-one attribution bugs at
+    /// scale -- not timing (the perf tests own that).
+    #[test]
+    fn large_library_groups_correctly() {
+        let mut state = CrdtState::new();
+        let a = ActorId::SERVER;
+        const SINGLETONS: u32 = 4000;
+        // Metadata-only singletons: series ids 1..=SINGLETONS, one file each.
+        for i in 1..=SINGLETONS {
+            let mut bytes = [0u8; 16];
+            bytes[..4].copy_from_slice(&i.to_le_bytes());
+            state.set_anidb_metadata(
+                a,
+                ts(i as u64),
+                Ed2kHash(bytes),
+                Some(metadata(&format!("Series {i}"), Some(i))),
+            );
+        }
+        // One sequel chain (two members, one file each) above that range.
+        let s1 = SINGLETONS + 1;
+        let s2 = SINGLETONS + 2;
+        state.set_series_relations(
+            a,
+            ts(1),
+            AniDbSeriesId(s1),
+            relations("Chained", Some(2010), &[(RelationKind::Sequel, s2)]),
+        );
+        state.set_series_relations(
+            a,
+            ts(2),
+            AniDbSeriesId(s2),
+            relations("Chained S2", Some(2012), &[(RelationKind::Prequel, s1)]),
+        );
+        let mut h1 = [0u8; 16];
+        h1[..4].copy_from_slice(&s1.to_le_bytes());
+        let mut h2 = [0u8; 16];
+        h2[..4].copy_from_slice(&s2.to_le_bytes());
+        state.set_anidb_metadata(a, ts(10), Ed2kHash(h1), Some(metadata("Chained", Some(s1))));
+        state.set_anidb_metadata(a, ts(11), Ed2kHash(h2), Some(metadata("Chained S2", Some(s2))));
+
+        let groups = franchises(&state.view());
+        // SINGLETONS standalone franchises + the one merged chain.
+        assert_eq!(groups.len(), SINGLETONS as usize + 1);
+
+        let chained = groups.iter().find(|f| f.title == "Chained").unwrap();
+        assert_eq!(chained.series, vec![AniDbSeriesId(s1), AniDbSeriesId(s2)]);
+        assert_eq!(chained.year, Some(2010));
+        assert_eq!(chained.files.len(), 2);
+
+        // A representative singleton is its own franchise with its one file.
+        let one = groups
+            .iter()
+            .find(|f| f.key == FranchiseKey::Series(AniDbSeriesId(1)))
+            .unwrap();
+        assert_eq!(one.title, "Series 1");
+        assert_eq!(one.series, vec![AniDbSeriesId(1)]);
+        assert_eq!(one.files.len(), 1);
     }
 }
