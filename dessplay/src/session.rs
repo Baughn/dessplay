@@ -281,21 +281,39 @@ impl PlayerWiring {
             .collect()
     }
 
-    fn plan_download(&self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
+    /// Entries at or ahead of the now-playing cursor that we intend to
+    /// watch: the now-playing file plus the next `PREFETCH_AHEAD` queued
+    /// entries (the prefetch window). These are eligible for resolution
+    /// and (re)download regardless of the group's watched flag — a
+    /// re-watch is still a watch. Entries *behind* the cursor are excluded
+    /// by construction (the window starts at now-playing), so position
+    /// relative to the cursor is the whole eligibility test; the watched
+    /// flag does not gate fetching.
+    fn prefetch_window<'a>(
+        &self,
+        view: &'a StateView,
+    ) -> Vec<&'a dessplay_core::playlist::PlaylistEntry> {
         let Some(now) = view.now_playing else {
             return vec![];
         };
         let Some(start) = view.playlist.iter().position(|e| e.hash == now) else {
             return vec![];
         };
+        view.playlist
+            .iter()
+            .skip(start)
+            .take(1 + PREFETCH_AHEAD)
+            .collect()
+    }
+
+    fn plan_download(&self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
         let mut out = Vec::new();
-        // Now-playing, then the next PREFETCH_AHEAD queued entries.
-        for entry in view.playlist.iter().skip(start).take(1 + PREFETCH_AHEAD) {
+        for entry in self.prefetch_window(view) {
             let file = entry.hash;
-            // Have it (or not resolved yet), or already watched: skip.
-            if matches!(self.resolved.get(&file), Some(Resolution::Verified(_)) | None)
-                || view.watched.get(&file) == Some(&true)
-            {
+            // Have it, or not resolved yet: skip. The watched flag does
+            // *not* gate this — a windowed entry is one we intend to
+            // watch, redownload included (design.md, Pre-fetching).
+            if matches!(self.resolved.get(&file), Some(Resolution::Verified(_)) | None) {
                 continue;
             }
             let sources = self.download_sources(view, peers, file);
@@ -510,10 +528,14 @@ impl PlayerWiring {
 
         // Kick the matcher for entries we haven't looked for yet.
         // Watched history is skipped (no point hashing gigabytes of
-        // already-seen files) unless it becomes now-playing again.
+        // already-seen files) unless it is in the prefetch window — the
+        // now-playing cursor plus the next few queued entries, which we
+        // intend to (re)watch and so must resolve so they can download.
+        let window: HashSet<Ed2kHash> =
+            self.prefetch_window(view).iter().map(|e| e.hash).collect();
         for entry in &view.playlist {
-            let watched = view.watched.get(&entry.hash) == Some(&true)
-                && view.now_playing != Some(entry.hash);
+            let watched =
+                view.watched.get(&entry.hash) == Some(&true) && !window.contains(&entry.hash);
             if watched
                 || self.resolved.contains_key(&entry.hash)
                 || self.pending_resolve.contains(&entry.hash)
@@ -1444,6 +1466,26 @@ mod tests {
             .collect()
     }
 
+    fn start_download_files(directives: &[Directive]) -> Vec<Ed2kHash> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::StartDownload { file, .. } => Some(*file),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn resolve_files(directives: &[Directive]) -> Vec<Ed2kHash> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::Resolve { file, .. } => Some(*file),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn archive_notice_uses_filename_and_reports_outcome() {
         let view = playing_state().view();
@@ -1693,20 +1735,24 @@ mod tests {
     }
 
     #[test]
-    fn watched_history_is_not_resolved_unless_now_playing() {
-        let mut state = playing_state();
-        state.push_playlist_entry(A, ts(4), entry(2, "old.mkv"));
+    fn watched_history_behind_cursor_is_not_resolved() {
+        // A group-watched entry *behind* the now-playing cursor is history:
+        // we do not re-hash/re-fetch it. (An in-window watched entry — a
+        // re-watch — *is* resolved; see
+        // watched_in_window_redownloads_but_behind_cursor_does_not.)
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(2, "old.mkv")); // idx 0, behind cursor
+        state.push_playlist_entry(A, ts(2), entry(1, "ep1.mkv")); // idx 1, now-playing
+        state.set_now_playing(A, ts(3), Some(hash(1)));
+        state.set_playback_intent(A, ts(4), PlaybackIntent::Playing);
         state.set_watched(A, ts(5), hash(2), true);
         let mut wiring = PlayerWiring::new(me());
-        let directives = wiring.on_state(&state.view(), &[peer("kim")]);
-        let resolves: Vec<_> = directives
-            .iter()
-            .filter_map(|d| match d {
-                Directive::Resolve { file, .. } => Some(*file),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(resolves, vec![hash(1)], "watched history must be skipped");
+        let resolves = resolve_files(&wiring.on_state(&state.view(), &[peer("kim")]));
+        assert_eq!(
+            resolves,
+            vec![hash(1)],
+            "watched history behind the cursor must be skipped"
+        );
     }
 
     #[test]
@@ -2270,6 +2316,59 @@ mod tests {
             "a downloadable file must not be auto-NotWatching: {directives:?}"
         );
         assert!(has_placeholder(&directives));
+    }
+
+    #[test]
+    fn watched_in_window_redownloads_but_behind_cursor_does_not() {
+        // The group watched flag means "we have already seen it", not "we
+        // do not want a local copy". Eligibility for resolution and
+        // (re)download is decided by position relative to the now-playing
+        // cursor — the now-playing file plus the next PREFETCH_AHEAD queued
+        // entries — not by the watched flag. So a group-watched entry at or
+        // ahead of the cursor (a re-watch) must download from a peer that
+        // has it; group-watched history *behind* the cursor must not.
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "behind.mkv")); // idx 0, behind cursor
+        state.push_playlist_entry(A, ts(2), entry(2, "now.mkv")); // idx 1, now-playing
+        state.push_playlist_entry(A, ts(3), entry(3, "ahead.mkv")); // idx 2, in window
+        state.set_now_playing(A, ts(4), Some(hash(2)));
+        state.set_playback_intent(A, ts(5), PlaybackIntent::Playing);
+        // Both the behind-cursor and the ahead entries are group-watched.
+        state.set_watched(A, ts(6), hash(1), true);
+        state.set_watched(A, ts(7), hash(3), true);
+        // A present peer advertises all three Ready (it holds them).
+        for h in [hash(1), hash(2), hash(3)] {
+            state.set_file_availability(A, ts(8), UserId::new("nas"), h, FileAvailability::Ready);
+        }
+        let view = state.view();
+        let peers = [peer("kim"), peer("nas")];
+
+        let mut wiring = PlayerWiring::new(me());
+        // The resolution pass decides which entries we look for locally.
+        let first = wiring.on_state(&view, &peers);
+        let resolves = resolve_files(&first);
+        assert!(
+            resolves.contains(&hash(3)),
+            "in-window watched entry must be resolved: {resolves:?}"
+        );
+        assert!(
+            !resolves.contains(&hash(1)),
+            "behind-cursor watched entry must not be resolved: {resolves:?}"
+        );
+        // Each looked-up entry comes back Missing (we do not hold it).
+        for h in &resolves {
+            wiring.on_resolved(*h, Resolution::NotFound, &view, &peers);
+        }
+        // The next snapshot plans downloads for the window.
+        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        assert!(
+            downloads.contains(&hash(3)),
+            "an in-window watched re-watch must download: {downloads:?}"
+        );
+        assert!(
+            !downloads.contains(&hash(1)),
+            "watched history behind the cursor must not download: {downloads:?}"
+        );
     }
 
     #[test]
