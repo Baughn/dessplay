@@ -60,6 +60,7 @@
           rustToolchain
           cargo-watch
           cargo-edit
+          cargo-insta
           cargo-outdated
           cargo-audit
           cargo-machete
