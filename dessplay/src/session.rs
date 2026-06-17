@@ -46,6 +46,9 @@ use crate::actors::sync::Mutation;
 pub struct SubtitleLine {
     /// Subtitle text.
     pub text: String,
+    /// The ASS speaker/actor, if the cue carried one (never displayed —
+    /// used only to color the line in separate-pane mode).
+    pub speaker: Option<String>,
     /// In-video position when the cue appeared (milliseconds).
     pub video_millis: u64,
     /// Wall-clock arrival on the shared clock (milliseconds).
@@ -77,6 +80,9 @@ pub enum Directive {
     Subtitle {
         /// Subtitle text.
         text: String,
+        /// The ASS speaker/actor, if any (never displayed — used only to
+        /// color the line).
+        speaker: Option<String>,
         /// In-video position when the cue appeared (milliseconds).
         video_millis: u64,
     },
@@ -790,9 +796,11 @@ impl PlayerWiring {
             }
             PlayerOutput::SubtitleLine {
                 text,
+                speaker,
                 position_millis,
             } => vec![Directive::Subtitle {
                 text,
+                speaker,
                 video_millis: position_millis,
             }],
             PlayerOutput::Eof { file } => vec![Directive::ReportEof(file)],
@@ -1160,9 +1168,11 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 }
                 Directive::Subtitle {
                     text,
+                    speaker,
                     video_millis,
                 } => subtitles.push(SubtitleLine {
                     text,
+                    speaker,
                     video_millis,
                     // Stamp arrival with the same clock chat/system lines
                     // use, so all three share one interleave domain.

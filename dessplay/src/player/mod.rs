@@ -60,8 +60,16 @@ pub enum PlayerEvent {
     },
     /// A loaded file finished opening and can be controlled.
     Loaded,
-    /// The displayed subtitle line changed (empty string = cleared).
-    SubtitleLine(String),
+    /// The displayed subtitle line changed (empty text = cleared).
+    /// `speaker` is the ASS `Name`/actor field when present (never
+    /// displayed — used only to color the line); `None` for formats
+    /// without one (SRT) or events with an empty Name.
+    SubtitleLine {
+        /// The subtitle text, ASS override tags already stripped.
+        text: String,
+        /// The speaker/actor, if the cue carried one.
+        speaker: Option<String>,
+    },
     /// Playback reached end of file. The file stays loaded (mpv runs
     /// with `keep-open`); the server owns what happens next.
     Eof,

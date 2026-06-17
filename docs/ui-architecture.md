@@ -218,11 +218,14 @@ snapshot data to component props:
 
 - **ChatPane**: snapshot.chat -> list of formatted message lines
 - **Subtitle log**: rolling log of subtitle lines from the PlayerActor,
-  each stamped with the in-video position (displayed timestamp) and a
-  wall-clock arrival (chat interleave key). Local-only; not part of the
-  snapshot. Surfaced per `subtitle_mode`: Off, Intermixed (folded into
-  the chat lines via `props::subtitle_line`, ordered by arrival), or a
-  Separate pane that splits the ChatPane area.
+  each stamped with the in-video position (displayed timestamp), a
+  wall-clock arrival (chat interleave key), and an optional ASS speaker.
+  Local-only; not part of the snapshot. Surfaced per `subtitle_mode`: Off,
+  Intermixed (folded into the chat lines via `props::subtitle_line`,
+  ordered by arrival, uniformly dim), or a Separate pane that splits the
+  ChatPane area -- there lines are shown newest-first and colored by
+  speaker (the ASS `Name` hashed into chat's name->color palette; the name
+  is never displayed).
 - **SeriesPane**: snapshot.anidb_metadata + snapshot.series_relations + local
   watch history -> franchise list (Recent/All modes). Recent shows only
   *watched* franchises (recency-keyed), newest first; a `/`-initiated filter
@@ -243,8 +246,8 @@ explicit inputs alongside the snapshot), making it testable independently.
 ### Non-snapshot inputs and the hashing overlay
 
 Besides snapshots and terminal events, the bridge loop feeds `Ui`
-local-only inputs through `UiInput`: `Subtitle { text, video_millis,
-arrival_millis }` (the rolling sub-text log), `Hashing { filename, done_bytes, total_bytes,
+local-only inputs through `UiInput`: `Subtitle { text, speaker,
+video_millis, arrival_millis }` (the rolling subtitle log), `Hashing { filename, done_bytes, total_bytes,
 finished }` (playlist-add hash progress), and `SearchResults { query,
 results }` (AniDB name-search answers, routed to the search modal if
 it is open; the modal drops results for superseded queries). The

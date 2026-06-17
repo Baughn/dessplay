@@ -187,7 +187,9 @@ is relayed through it), connection state, time sync state.
 - `StateUpdate(CrdtSnapshot)` -- new CRDT state to display
 - `TerminalEvent(Event)` -- keyboard/mouse input from crossterm
 - `PlayerStatus(PlayerState)` -- current player position/state
-- `SubtitleLine(String)` -- appended to the subtitle pane's rolling log
+- `SubtitleLine { text, speaker }` -- appended to the subtitle pane's
+  rolling log; `speaker` (ASS `Name` field) colors the line in
+  separate-pane mode and is never displayed
 - `PresenceUpdate(Vec<PeerInfo>)` -- presence/role data for the Users pane
 
 **Produces:**
@@ -229,7 +231,8 @@ crash supervision (relaunch via a `PlayerFactory`).
   paused; extrapolated between player reports)
 - `DurationKnown { file, duration }` -- probed duration (backfills the
   playlist entry when the adder didn't supply one)
-- `SubtitleLine(String)` -- observed `sub-text` change (feeds subtitle pane)
+- `SubtitleLine { text, speaker }` -- observed `sub-text/ass-full` change
+  (feeds subtitle pane; `speaker` is the parsed ASS `Name`/actor field)
 - `Eof { file }` -- file ended, reported once per file (the session
   layer forwards `EofReached` to the server, which owns the transition)
 - `FatalCrash` -- the player died twice within 30s (the session layer

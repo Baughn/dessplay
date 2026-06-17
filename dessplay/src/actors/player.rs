@@ -122,6 +122,9 @@ pub enum PlayerOutput {
     SubtitleLine {
         /// The subtitle text (empty = the previous cue cleared).
         text: String,
+        /// The ASS `Name`/actor field, if the cue carried one (never
+        /// displayed — used only to color the line).
+        speaker: Option<String>,
         /// In-video position when the cue appeared (milliseconds); the
         /// displayed timestamp. `0` before the first position sample.
         position_millis: u64,
@@ -453,7 +456,7 @@ impl<F: PlayerFactory> Actor<F> {
                 }
                 self.apply_desired_pause().await;
             }
-            PlayerEvent::SubtitleLine(line) => {
+            PlayerEvent::SubtitleLine { text, speaker } => {
                 // Capture the in-video position here, where the estimate
                 // is freshest; `0` (-> 00:00) is honest before the first
                 // position sample.
@@ -461,7 +464,8 @@ impl<F: PlayerFactory> Actor<F> {
                 let _ = self
                     .outputs
                     .send(PlayerOutput::SubtitleLine {
-                        text: line,
+                        text,
+                        speaker,
                         position_millis,
                     })
                     .await;
@@ -1151,14 +1155,19 @@ mod tests {
         );
         control
             .events
-            .send(PlayerEvent::SubtitleLine("こんにちは".into()))
+            .send(PlayerEvent::SubtitleLine {
+                text: "こんにちは".into(),
+                speaker: Some("Frieren".into()),
+            })
             .unwrap();
         // The in-video position is attached from the actor's estimate;
         // loaded_rig parked it at 10_000 (paused, so it doesn't advance).
+        // The speaker rides along unchanged.
         assert_eq!(
             expect_output(&mut outputs).await,
             PlayerOutput::SubtitleLine {
                 text: "こんにちは".into(),
+                speaker: Some("Frieren".into()),
                 position_millis: 10_000,
             }
         );
@@ -1171,12 +1180,16 @@ mod tests {
         let (_commands, mut outputs) = start(vec![player], fixed_clock(1_000_000));
         control
             .events
-            .send(PlayerEvent::SubtitleLine("hi".into()))
+            .send(PlayerEvent::SubtitleLine {
+                text: "hi".into(),
+                speaker: None,
+            })
             .unwrap();
         assert_eq!(
             expect_output(&mut outputs).await,
             PlayerOutput::SubtitleLine {
                 text: "hi".into(),
+                speaker: None,
                 position_millis: 0,
             }
         );

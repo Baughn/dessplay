@@ -23,6 +23,9 @@ pub enum UiInput {
     Subtitle {
         /// Subtitle text.
         text: String,
+        /// The ASS speaker/actor, if any (never displayed — used only to
+        /// color the line in separate-pane mode).
+        speaker: Option<String>,
         /// In-video position when the cue appeared (milliseconds).
         video_millis: u64,
         /// Wall-clock arrival on the shared clock (milliseconds).
@@ -134,9 +137,10 @@ pub fn run_ui_loop<A: TerminalAdapter>(
             UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
             UiInput::Subtitle {
                 text,
+                speaker,
                 video_millis,
                 arrival_millis,
-            } => ui.push_subtitle(video_millis, arrival_millis, text),
+            } => ui.push_subtitle(video_millis, arrival_millis, text, speaker),
             UiInput::Hashing {
                 filename,
                 done_bytes,

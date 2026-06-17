@@ -1095,7 +1095,8 @@ Player choice is per-user configuration.
 - Position updates (polled or subscribed)
 - Pause/unpause events (distinguished: user-initiated vs programmatic)
 - Seek events (distinguished: user-initiated vs programmatic)
-- Subtitle text changes (observed `sub-text` property; feeds the subtitle log)
+- Subtitle text changes (observed `sub-text/ass-full` property; feeds the
+  subtitle log, with the ASS speaker field for per-speaker coloring)
 - EOF (file ended; reported to the server, which owns the transition)
 - Exit (clean or crash)
 
@@ -1108,10 +1109,17 @@ a misattributed echo self-heals on the next derived-state round trip.
 ### Subtitle Display
 
 Subtitles are **local-only**: whatever line the user's own player is
-currently displaying (mpv's `sub-text` property), appended to a rolling
-log. Nothing is synced -- different releases or sub tracks per user are
-fine. Image-based subtitle formats (PGS/VobSub) expose no text; the log
-simply stays empty for those.
+currently displaying, appended to a rolling log. Nothing is synced --
+different releases or sub tracks per user are fine. Image-based subtitle
+formats (PGS/VobSub) expose no text; the log simply stays empty for those.
+
+We observe mpv's `sub-text/ass-full` property (not plain `sub-text`):
+it returns the full `.ass` event line, so the client can read the ASS
+`Name`/actor (speaker) field for per-speaker coloring. The client strips
+the ASS override tags (`{...}`, `\N`/`\h`) itself -- work mpv did for us
+under plain `sub-text`. This requires **mpv >= 0.39.0** (where
+`sub-text/ass-full` was added). Non-ASS formats (SRT) convert to an event
+with an empty Name -- no speaker, no special color.
 
 The log is surfaced in one of three modes (cycled with `F2`, persisted as
 the `subtitle_mode` setting):
@@ -1119,8 +1127,15 @@ the `subtitle_mode` setting):
 - **Off**: subtitles are not shown.
 - **Intermixed**: subtitle lines are folded into the chat log, dim with a
   `»` marker, ordered by arrival. They share the chat's interleave domain.
+  (No speaker coloring here -- the lines stay uniformly dim.)
 - **Separate pane**: the chat area is split horizontally and the lower
-  portion shows recent subtitle lines.
+  portion shows recent subtitle lines, **newest first (on top)** so the
+  freshest line sits next to the chat input box just below it. Each line's
+  text is **colored by its speaker** -- the ASS `Name` field hashed into
+  the same name->color palette chat uses for usernames, so each speaker is
+  visually distinct. The speaker name itself is **never displayed** (it is
+  often a character name -- a spoiler); only its color is. The `MM:SS`
+  timestamp prefix stays dim.
 
 Each line carries the **in-video position** (mpv `time-pos` at the moment
 the cue appeared), shown as its `MM:SS` timestamp -- *not* the wall clock.

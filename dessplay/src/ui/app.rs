@@ -145,6 +145,9 @@ struct SubtitleEntry {
     video_millis: u64,
     arrival_millis: u64,
     text: String,
+    /// The ASS speaker/actor, if the cue carried one. Never displayed —
+    /// only hashed to a color in separate-pane mode.
+    speaker: Option<String>,
 }
 
 /// The whole TUI.
@@ -230,7 +233,13 @@ impl Ui {
     /// newlines become spaces (otherwise the join reads as "youdemons"
     /// instead of "you demons"). Normalizing also keeps the prefix test
     /// working as a two-line cue grows past its first line.
-    pub fn push_subtitle(&mut self, video_millis: u64, arrival_millis: u64, text: String) {
+    pub fn push_subtitle(
+        &mut self,
+        video_millis: u64,
+        arrival_millis: u64,
+        text: String,
+        speaker: Option<String>,
+    ) {
         let text = text.replace('\r', "").replace('\n', " ");
         if text.is_empty() {
             return;
@@ -238,12 +247,16 @@ impl Ui {
         if let Some(last) = self.subtitles.back_mut()
             && text.starts_with(&last.text)
         {
+            // An incremental reveal of the same cue: keep the original
+            // timestamps but track the latest text and speaker.
             last.text = text;
+            last.speaker = speaker;
         } else {
             self.subtitles.push_back(SubtitleEntry {
                 video_millis,
                 arrival_millis,
                 text,
+                speaker,
             });
             while self.subtitles.len() > 100 {
                 self.subtitles.pop_front();
@@ -982,21 +995,31 @@ impl Ui {
                 Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
                     .areas(left);
             self.chat.view(frame, chat_area);
-            // The newest lines that fit, oldest first, each prefixed with
-            // its in-video timestamp.
+            // The newest lines that fit, newest first (top) — the input box
+            // sits just below, so the freshest line is closest to the eye.
+            // Each line: a dim in-video timestamp, then the text colored by
+            // its ASS speaker (reusing chat's name->color hash), so each
+            // speaker is visually distinct. The speaker name itself is never
+            // shown (spoilers).
+            use tuirealm::ratatui::text::{Line, Span};
             let visible = (subs_area.height as usize).saturating_sub(2);
-            let lines: Vec<tuirealm::ratatui::text::Line> = self
+            let lines: Vec<Line> = self
                 .subtitles
                 .iter()
                 .rev()
                 .take(visible)
-                .rev()
                 .map(|entry| {
-                    tuirealm::ratatui::text::Line::from(format!(
-                        "{}  {}",
-                        props::mmss(entry.video_millis),
-                        entry.text
-                    ))
+                    let text_style = match &entry.speaker {
+                        Some(name) => super::theme::user_style(name),
+                        None => tuirealm::ratatui::style::Style::default(),
+                    };
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{}  ", props::mmss(entry.video_millis)),
+                            super::theme::dim(),
+                        ),
+                        Span::styled(entry.text.clone(), text_style),
+                    ])
                 })
                 .collect();
             frame.render_widget(
@@ -1186,7 +1209,7 @@ mod tests {
     #[test]
     fn subtitle_empty_line_is_skipped() {
         let mut ui = intermixed_ui();
-        ui.push_subtitle(1000, 5, String::new());
+        ui.push_subtitle(1000, 5, String::new(), None);
         assert!(ui.subtitles.is_empty());
     }
 
@@ -1195,21 +1218,23 @@ mod tests {
         let mut ui = intermixed_ui();
         // Each cue is a longer prefix of the next; the first cue's
         // timestamps win.
-        ui.push_subtitle(1000, 10, "H".into());
-        ui.push_subtitle(1100, 11, "He".into());
-        ui.push_subtitle(1200, 12, "Hello".into());
+        ui.push_subtitle(1000, 10, "H".into(), Some("Frieren".into()));
+        ui.push_subtitle(1100, 11, "He".into(), Some("Frieren".into()));
+        ui.push_subtitle(1200, 12, "Hello".into(), Some("Frieren".into()));
         assert_eq!(ui.subtitles.len(), 1);
         let entry = ui.subtitles.back().unwrap();
         assert_eq!(entry.text, "Hello");
         assert_eq!(entry.video_millis, 1000);
         assert_eq!(entry.arrival_millis, 10);
+        // The speaker tracks the latest cue in the collapsed reveal.
+        assert_eq!(entry.speaker.as_deref(), Some("Frieren"));
     }
 
     #[test]
     fn subtitle_exact_duplicate_collapses() {
         let mut ui = intermixed_ui();
-        ui.push_subtitle(1000, 10, "same".into());
-        ui.push_subtitle(2000, 20, "same".into());
+        ui.push_subtitle(1000, 10, "same".into(), None);
+        ui.push_subtitle(2000, 20, "same".into(), None);
         assert_eq!(ui.subtitles.len(), 1);
         assert_eq!(ui.subtitles.back().unwrap().video_millis, 1000);
     }
@@ -1217,8 +1242,8 @@ mod tests {
     #[test]
     fn subtitle_non_prefix_appends() {
         let mut ui = intermixed_ui();
-        ui.push_subtitle(1000, 10, "Hello".into());
-        ui.push_subtitle(2000, 20, "World".into());
+        ui.push_subtitle(1000, 10, "Hello".into(), None);
+        ui.push_subtitle(2000, 20, "World".into(), None);
         assert_eq!(ui.subtitles.len(), 2);
     }
 
@@ -1227,7 +1252,7 @@ mod tests {
         // mpv joins a two-line cue with a newline; we render one line, so
         // it must read "you demons", not "youdemons" (the reported bug).
         let mut ui = intermixed_ui();
-        ui.push_subtitle(1000, 10, "I won't let you\ndemons have your way".into());
+        ui.push_subtitle(1000, 10, "I won't let you\ndemons have your way".into(), None);
         assert_eq!(ui.subtitles.len(), 1);
         assert_eq!(
             ui.subtitles.back().unwrap().text,
@@ -1241,9 +1266,9 @@ mod tests {
         // then the second grows. Newline-normalization keeps the prefix
         // relation intact and inserts the space.
         let mut ui = intermixed_ui();
-        ui.push_subtitle(1000, 10, "I won't let you".into());
-        ui.push_subtitle(1100, 11, "I won't let you\nd".into());
-        ui.push_subtitle(1200, 12, "I won't let you\ndemons".into());
+        ui.push_subtitle(1000, 10, "I won't let you".into(), None);
+        ui.push_subtitle(1100, 11, "I won't let you\nd".into(), None);
+        ui.push_subtitle(1200, 12, "I won't let you\ndemons".into(), None);
         assert_eq!(ui.subtitles.len(), 1);
         assert_eq!(ui.subtitles.back().unwrap().text, "I won't let you demons");
     }
@@ -1252,11 +1277,68 @@ mod tests {
     fn subtitle_log_caps_at_100() {
         let mut ui = intermixed_ui();
         for i in 0..150 {
-            ui.push_subtitle(i, i, format!("line {i}"));
+            ui.push_subtitle(i, i, format!("line {i}"), None);
         }
         assert_eq!(ui.subtitles.len(), 100);
         // Oldest dropped: the front is line 50.
         assert_eq!(ui.subtitles.front().unwrap().text, "line 50");
+    }
+
+    #[test]
+    fn separate_pane_renders_newest_on_top_colored_by_speaker() {
+        use tuirealm::ratatui::Terminal;
+        use tuirealm::ratatui::backend::TestBackend;
+
+        let mut ui = ui_with_view(StateView::default());
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        // Three distinct cues, oldest first; the third names a speaker.
+        ui.push_subtitle(1000, 10, "oldest".into(), None);
+        ui.push_subtitle(2000, 20, "middle".into(), None);
+        ui.push_subtitle(3000, 30, "newest".into(), Some("Frieren".into()));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let buffer = terminal
+            .draw(|frame| ui.draw(frame))
+            .unwrap()
+            .buffer
+            .clone();
+
+        // Find each line's row by scanning for its text; the pane is the
+        // lower-left quarter of the frame.
+        let row_of = |needle: &str| -> u16 {
+            for y in 0..buffer.area.height {
+                let mut line = String::new();
+                for x in 0..buffer.area.width {
+                    line.push_str(buffer[(x, y)].symbol());
+                }
+                if line.contains(needle) {
+                    return y;
+                }
+            }
+            panic!("{needle:?} not found in render");
+        };
+        let (newest, middle, oldest) = (row_of("newest"), row_of("middle"), row_of("oldest"));
+        // Feature 1: newest is on top (smallest y), oldest at the bottom.
+        assert!(
+            newest < middle && middle < oldest,
+            "expected newest-on-top order, got newest={newest} middle={middle} oldest={oldest}"
+        );
+
+        // Feature 2: the speaker'd line's text is colored with the same
+        // hash->palette color chat uses; the timestamp prefix stays dim.
+        let want = crate::ui::theme::user_style("Frieren").fg.unwrap();
+        let y = newest;
+        let n_cell = (0..buffer.area.width)
+            .map(|x| &buffer[(x, y)])
+            .find(|c| c.symbol() == "n")
+            .expect("subtitle text cell");
+        assert_eq!(n_cell.fg, want, "subtitle text should be speaker-colored");
+        // A digit from the MM:SS prefix is dim, not the speaker color.
+        let prefix_cell = (0..buffer.area.width)
+            .map(|x| &buffer[(x, y)])
+            .find(|c| c.symbol() == "0")
+            .expect("timestamp digit cell");
+        assert_eq!(prefix_cell.fg, crate::ui::theme::dim().fg.unwrap());
     }
 
     proptest::proptest! {
@@ -1268,7 +1350,7 @@ mod tests {
             let chars: Vec<char> = seed.chars().collect();
             for i in 1..=chars.len() {
                 let prefix: String = chars[..i].iter().collect();
-                ui.push_subtitle(i as u64, i as u64, prefix);
+                ui.push_subtitle(i as u64, i as u64, prefix, None);
             }
             proptest::prop_assert_eq!(ui.subtitles.len(), 1);
             proptest::prop_assert_eq!(ui.subtitles.back().unwrap().text.as_str(), seed.as_str());
@@ -1284,7 +1366,7 @@ mod tests {
         ui.subtitle_mode = SubtitleMode::Intermixed;
         // Arrival 200 sits between the two chat messages; the in-video
         // position (65s) is unrelated to the interleave order.
-        ui.push_subtitle(65_000, 200, "sub".into());
+        ui.push_subtitle(65_000, 200, "sub".into(), None);
 
         let lines = ui.merged_chat(&ui.snapshot.view);
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
@@ -1300,7 +1382,7 @@ mod tests {
         let mut state = CrdtState::new();
         state.append_chat(chat_msg(100, "kim", "hi"));
         let mut ui = ui_with_view(state.view());
-        ui.push_subtitle(1000, 50, "sub".into());
+        ui.push_subtitle(1000, 50, "sub".into(), None);
 
         for mode in [SubtitleMode::Off, SubtitleMode::SeparatePane] {
             ui.subtitle_mode = mode;

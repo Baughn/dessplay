@@ -911,6 +911,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                     for line in self.shell.on_player_output(output, &last_view).await {
                         let _ = self.ui.try_send(UiInput::Subtitle {
                             text: line.text,
+                            speaker: line.speaker,
                             video_millis: line.video_millis,
                             arrival_millis: line.arrival_millis,
                         });

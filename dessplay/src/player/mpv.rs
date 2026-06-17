@@ -116,7 +116,10 @@ impl MpvPlayer {
             (OBS_PAUSE, "pause"),
             (OBS_TIME_POS, "time-pos"),
             (OBS_DURATION, "duration"),
-            (OBS_SUB_TEXT, "sub-text"),
+            // ass-full carries the ASS `Name`/actor field (for per-speaker
+            // coloring) and the full override-tagged text; we strip the tags
+            // ourselves in `parse_ass_full`. Requires mpv >= 0.39.0.
+            (OBS_SUB_TEXT, "sub-text/ass-full"),
             (OBS_EOF, "eof-reached"),
         ] {
             player
@@ -307,7 +310,7 @@ async fn read_loop(
                 // real user pause.
                 neutral @ (PlayerEvent::Position { .. }
                 | PlayerEvent::DurationKnown { .. }
-                | PlayerEvent::SubtitleLine(_)) => neutral,
+                | PlayerEvent::SubtitleLine { .. }) => neutral,
                 other => {
                     if std::mem::take(&mut held_pause)
                         && events.send(PlayerEvent::PauseChanged(true)).await.is_err()
@@ -391,8 +394,9 @@ fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<Pl
                     .into_iter()
                     .collect(),
                 Some(OBS_SUB_TEXT) => {
-                    let text = data.and_then(Value::as_str).unwrap_or_default().to_string();
-                    vec![PlayerEvent::SubtitleLine(text)]
+                    let raw = data.and_then(Value::as_str).unwrap_or_default();
+                    let (text, speaker) = parse_ass_full(raw);
+                    vec![PlayerEvent::SubtitleLine { text, speaker }]
                 }
                 Some(OBS_EOF) => {
                     let reached = data.and_then(Value::as_bool).unwrap_or(false);
@@ -418,6 +422,78 @@ fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<Pl
         }
         _ => vec![],
     }
+}
+
+/// Parse mpv's `sub-text/ass-full` value into `(plain_text, speaker)`.
+///
+/// Each event is a `.ass` file event line:
+/// `Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`
+/// — so field index 4 is the `Name`/actor (the speaker, never displayed)
+/// and field 9 (the remainder, since `Text` may contain commas) is the
+/// text, still carrying ASS override tags we strip here. Multiple
+/// simultaneous events arrive newline-separated; we join their texts and
+/// take the first non-empty speaker. A line that is not a well-formed
+/// `Dialogue:` event is treated as plain text with no speaker.
+fn parse_ass_full(raw: &str) -> (String, Option<String>) {
+    let mut texts: Vec<String> = Vec::new();
+    let mut speaker: Option<String> = None;
+    for line in raw.split('\n') {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let (name, text) = match line.strip_prefix("Dialogue:") {
+            Some(rest) => {
+                // 9 commas split off the 10 leading fields; the 10th
+                // (Text) keeps any internal commas.
+                let fields: Vec<&str> = rest.splitn(10, ',').collect();
+                if fields.len() == 10 {
+                    (fields[4].trim(), fields[9])
+                } else {
+                    ("", line)
+                }
+            }
+            None => ("", line),
+        };
+        let stripped = strip_ass_tags(text);
+        if !stripped.is_empty() {
+            texts.push(stripped);
+        }
+        if speaker.is_none() && !name.is_empty() {
+            speaker = Some(name.to_string());
+        }
+    }
+    (texts.join(" "), speaker)
+}
+
+/// Strip ASS override tags from an event's Text field: drop `{...}`
+/// override blocks, turn the `\N`/`\n` line breaks and `\h` hard space
+/// into spaces, and leave any other escape as-is.
+fn strip_ass_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => {
+                // Skip to the closing brace (an unclosed brace eats the
+                // rest, matching libass's lenient behavior).
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        break;
+                    }
+                }
+            }
+            '\\' => match chars.peek() {
+                Some('N') | Some('n') | Some('h') => {
+                    chars.next();
+                    out.push(' ');
+                }
+                _ => out.push('\\'),
+            },
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Spawns [`MpvPlayer`]s with per-instance sockets.
@@ -609,21 +685,75 @@ mod tests {
     #[test]
     fn subtitle_lines_pass_through_and_clear() {
         let mut state = Translate::default();
+        // A plain (non-Dialogue) value still passes through as text.
         assert_eq!(
             ev(
-                r#"{"event":"property-change","id":4,"name":"sub-text","data":"hello"}"#,
+                r#"{"event":"property-change","id":4,"name":"sub-text/ass-full","data":"hello"}"#,
                 &mut state,
                 false
             ),
-            vec![PlayerEvent::SubtitleLine("hello".into())]
+            vec![PlayerEvent::SubtitleLine {
+                text: "hello".into(),
+                speaker: None
+            }]
         );
         assert_eq!(
             ev(
-                r#"{"event":"property-change","id":4,"name":"sub-text","data":null}"#,
+                r#"{"event":"property-change","id":4,"name":"sub-text/ass-full","data":null}"#,
                 &mut state,
                 false
             ),
-            vec![PlayerEvent::SubtitleLine(String::new())]
+            vec![PlayerEvent::SubtitleLine {
+                text: String::new(),
+                speaker: None
+            }]
         );
+    }
+
+    #[test]
+    fn ass_full_dialogue_yields_text_and_speaker() {
+        let mut state = Translate::default();
+        assert_eq!(
+            ev(
+                r#"{"event":"property-change","id":4,"name":"sub-text/ass-full","data":"Dialogue: 0,0:00:01.00,0:00:03.00,Default,Frieren,0,0,0,,{\\i1}Hello,{\\i0} there"}"#,
+                &mut state,
+                false
+            ),
+            vec![PlayerEvent::SubtitleLine {
+                // Comma inside Text is preserved; override tags stripped.
+                text: "Hello, there".into(),
+                speaker: Some("Frieren".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_ass_full_handles_name_tags_breaks_and_fallback() {
+        // Normal line with a speaker.
+        assert_eq!(
+            parse_ass_full("Dialogue: 0,0:00:00.00,0:00:01.00,Default,Stark,0,0,0,,Hi"),
+            ("Hi".into(), Some("Stark".into()))
+        );
+        // Empty Name -> no speaker; override tags and \N break stripped.
+        assert_eq!(
+            parse_ass_full(
+                r"Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\pos(1,2)}you\Ndemons"
+            ),
+            ("you demons".into(), None)
+        );
+        // Multiple events: texts joined, first non-empty speaker wins.
+        assert_eq!(
+            parse_ass_full(
+                "Dialogue: 0,0,0,Default,,0,0,0,,one\nDialogue: 0,0,0,Default,Fern,0,0,0,,two"
+            ),
+            ("one two".into(), Some("Fern".into()))
+        );
+        // Not a Dialogue line: plain text, no speaker.
+        assert_eq!(
+            parse_ass_full("just text"),
+            ("just text".into(), None)
+        );
+        // Empty / cleared cue.
+        assert_eq!(parse_ass_full(""), (String::new(), None));
     }
 }
