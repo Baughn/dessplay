@@ -394,7 +394,11 @@ mod tests {
         // Four standalone shows + the crossover, all separate.
         assert_eq!(groups.len(), 5, "{groups:#?}");
         for f in &groups {
-            assert_eq!(f.series.len(), 1, "no franchise should absorb others: {f:#?}");
+            assert_eq!(
+                f.series.len(),
+                1,
+                "no franchise should absorb others: {f:#?}"
+            );
         }
     }
 
@@ -534,7 +538,12 @@ mod tests {
         let mut h2 = [0u8; 16];
         h2[..4].copy_from_slice(&s2.to_le_bytes());
         state.set_anidb_metadata(a, ts(10), Ed2kHash(h1), Some(metadata("Chained", Some(s1))));
-        state.set_anidb_metadata(a, ts(11), Ed2kHash(h2), Some(metadata("Chained S2", Some(s2))));
+        state.set_anidb_metadata(
+            a,
+            ts(11),
+            Ed2kHash(h2),
+            Some(metadata("Chained S2", Some(s2))),
+        );
 
         let groups = franchises(&state.view());
         // SINGLETONS standalone franchises + the one merged chain.

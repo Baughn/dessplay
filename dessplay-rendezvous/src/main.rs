@@ -113,9 +113,7 @@ fn run(cli: Cli) -> Result<(), String> {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("tokio: {e}"))?;
     // AniDB integration: enabled iff credentials are present. The
     // password is never logged — only its presence.
-    let anidb_user = cli
-        .anidb_user
-        .or_else(|| std::env::var("ANIDB_USER").ok());
+    let anidb_user = cli.anidb_user.or_else(|| std::env::var("ANIDB_USER").ok());
     let anidb_password = cli
         .anidb_password
         .or_else(|| std::env::var("ANIDB_PASSWORD").ok());
@@ -138,8 +136,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         _ => {
             return Err(
-                "AniDB needs both DESSPLAY_ANIDB_USER and DESSPLAY_ANIDB_PASSWORD (got one)"
-                    .into(),
+                "AniDB needs both DESSPLAY_ANIDB_USER and DESSPLAY_ANIDB_PASSWORD (got one)".into(),
             );
         }
     };

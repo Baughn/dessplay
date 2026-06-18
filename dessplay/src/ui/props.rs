@@ -444,7 +444,10 @@ pub fn watch_recency(
 ) -> BTreeMap<SeriesKey, u64> {
     let mut recency: BTreeMap<SeriesKey, u64> = BTreeMap::new();
     for record in records {
-        let meta = view.anidb_metadata.get(&record.hash).and_then(|m| m.as_ref());
+        let meta = view
+            .anidb_metadata
+            .get(&record.hash)
+            .and_then(|m| m.as_ref());
         let key = meta
             .and_then(|m| m.series_id)
             .or(record.series_id)
@@ -633,7 +636,9 @@ pub fn episode_sort_key(episode_number: Option<&str>, label: &str) -> EpisodeSor
             .chars()
             .take_while(|c| c.is_ascii_digit())
             .filter_map(|c| c.to_digit(10))
-            .fold(0u64, |n, d| n.saturating_mul(10).saturating_add(u64::from(d)));
+            .fold(0u64, |n, d| {
+                n.saturating_mul(10).saturating_add(u64::from(d))
+            });
         let category = match prefix.to_ascii_uppercase().as_str() {
             "" => 0,
             "S" => 1,
@@ -1103,7 +1108,10 @@ mod tests {
     fn sorted_labels(items: &[(Option<&str>, &str)]) -> Vec<String> {
         let mut items = items.to_vec();
         items.sort_by_key(|a| episode_sort_key(a.0, a.1));
-        items.into_iter().map(|(_, label)| label.to_string()).collect()
+        items
+            .into_iter()
+            .map(|(_, label)| label.to_string())
+            .collect()
     }
 
     /// Episodes within a season must order by AniDB episode *number*, not by

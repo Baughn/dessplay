@@ -83,8 +83,7 @@ mod tests {
         // A handful of distinct names should land on more than one color
         // (a constant function would fail this).
         let names = ["Baughn", "Nero", "Quickshot", "Dagger", "Kim", "nas"];
-        let colors: std::collections::HashSet<_> =
-            names.iter().map(|n| user_style(n).fg).collect();
+        let colors: std::collections::HashSet<_> = names.iter().map(|n| user_style(n).fg).collect();
         assert!(colors.len() > 1, "all names mapped to the same color");
     }
 }

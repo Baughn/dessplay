@@ -171,11 +171,7 @@ fn humanize(d: Duration) -> String {
     if secs == 0 {
         return "0 seconds".into();
     }
-    for (size, unit) in [
-        (24 * 60 * 60, "day"),
-        (60 * 60, "hour"),
-        (60, "minute"),
-    ] {
+    for (size, unit) in [(24 * 60 * 60, "day"), (60 * 60, "hour"), (60, "minute")] {
         if secs.is_multiple_of(size) {
             return plural(secs / size, unit);
         }

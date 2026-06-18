@@ -330,9 +330,7 @@ async fn a_missing_file_is_downloaded_from_a_peer() {
     // downloads it from the seed through the relay, and becomes Ready.
     eventually(&[&seed, &leech], BUDGET, |snaps| {
         let ready = |s: &ClientSnapshot, who: &str| {
-            s.view
-                .file_availability
-                .get(&(UserId::new(who), file.hash))
+            s.view.file_availability.get(&(UserId::new(who), file.hash))
                 == Some(&FileAvailability::Ready)
         };
         snaps.iter().all(|s| ready(s, "seed") && ready(s, "leech"))
@@ -374,9 +372,12 @@ async fn queued_entries_are_prefetched_ahead_of_now_playing() {
     // (prefetched, never now-playing).
     eventually(&[&leech], BUDGET, |snaps| {
         let ready = |s: &ClientSnapshot, h| {
-            s.view.file_availability.get(&(UserId::new("leech"), h)) == Some(&FileAvailability::Ready)
+            s.view.file_availability.get(&(UserId::new("leech"), h))
+                == Some(&FileAvailability::Ready)
         };
-        snaps.iter().all(|s| ready(s, ep1.hash) && ready(s, ep2.hash))
+        snaps
+            .iter()
+            .all(|s| ready(s, ep1.hash) && ready(s, ep2.hash))
     })
     .await;
 }

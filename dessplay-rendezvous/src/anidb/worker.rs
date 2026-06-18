@@ -261,13 +261,9 @@ fn wanted_series(view: &StateView) -> BTreeSet<AniDbSeriesId> {
 }
 
 /// Perform one due lookup, files first. Returns whether work was done.
-async fn step<H: AniDbHost>(
-    host: &H,
-    api: &dyn AniDbApi,
-    now: u64,
-) -> Result<bool, LookupError> {
-    if let Some(entry) = store(host, "due file", |s| s.due_lookups(now as i64, 1))
-        .and_then(|mut due| due.pop())
+async fn step<H: AniDbHost>(host: &H, api: &dyn AniDbApi, now: u64) -> Result<bool, LookupError> {
+    if let Some(entry) =
+        store(host, "due file", |s| s.due_lookups(now as i64, 1)).and_then(|mut due| due.pop())
     {
         lookup_file(host, api, now, entry).await?;
         return Ok(true);
@@ -334,8 +330,7 @@ async fn lookup_file<H: AniDbHost>(
                 episode_number: Some(file.epno.clone()),
             };
             host.write_metadata(hash, metadata).await;
-            let next = schedule::next_attempt(now_i, anchor, true, Outcome::Data)
-                .unwrap_or(NEVER);
+            let next = schedule::next_attempt(now_i, anchor, true, Outcome::Data).unwrap_or(NEVER);
             store(host, "file hit", |s| {
                 s.record_lookup_attempt(hash, now_i, next, true)
             });
@@ -357,9 +352,8 @@ async fn lookup_file<H: AniDbHost>(
                 )
                 .await;
             }
-            let next =
-                schedule::next_attempt(now_i, anchor, entry.has_data, Outcome::NoData)
-                    .unwrap_or(NEVER);
+            let next = schedule::next_attempt(now_i, anchor, entry.has_data, Outcome::NoData)
+                .unwrap_or(NEVER);
             store(host, "file miss", |s| {
                 s.record_lookup_attempt(hash, now_i, next, false)
             });
@@ -445,10 +439,12 @@ async fn refresh_titles_if_due<H: AniDbHost>(
     if now < *titles_due {
         return;
     }
-    let fetched_at: u64 = store(host, "titles bookkeeping", |s| s.kv_get(titles::FETCHED_AT_KEY))
-        .flatten()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let fetched_at: u64 = store(host, "titles bookkeeping", |s| {
+        s.kv_get(titles::FETCHED_AT_KEY)
+    })
+    .flatten()
+    .and_then(|value| value.parse().ok())
+    .unwrap_or(0);
     if now.saturating_sub(fetched_at) < titles::REFRESH_MILLIS {
         *titles_due = fetched_at + titles::REFRESH_MILLIS;
         return;
@@ -742,7 +738,8 @@ mod tests {
                     series_hint: None,
                 };
                 s.enqueue_lookup(&info, now).unwrap();
-                s.record_lookup_attempt(hash(i), now, now + week, true).unwrap();
+                s.record_lookup_attempt(hash(i), now, now + week, true)
+                    .unwrap();
             }
         });
         host.mutate(|state, ts| {
@@ -771,7 +768,10 @@ mod tests {
             .with_storage(|s| s.due_lookups(host.now() as i64, 10).unwrap())
             .unwrap();
         let due_hashes: Vec<_> = due.iter().map(|e| e.info.hash).collect();
-        assert!(due_hashes.contains(&hash(1)), "metadata-less orphan must re-arm");
+        assert!(
+            due_hashes.contains(&hash(1)),
+            "metadata-less orphan must re-arm"
+        );
         assert!(
             !due_hashes.contains(&hash(2)),
             "a settled lookup with metadata must stay settled"
@@ -818,10 +818,10 @@ mod tests {
             AniDbSeriesId(8692),
             anime_hit(8692, "Sousou no Frieren", &[(1, 17617)]),
         );
-        api.anime
-            .lock()
-            .unwrap()
-            .insert(AniDbSeriesId(17617), anime_hit(17617, "Frieren S2", &[(2, 8692)]));
+        api.anime.lock().unwrap().insert(
+            AniDbSeriesId(17617),
+            anime_hit(17617, "Frieren S2", &[(2, 8692)]),
+        );
         request(&host, 1, "[SubsPlease] Sousou no Frieren - 01.mkv");
 
         let (titles, _) = titles_source("", false);
@@ -885,11 +885,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(due_soon.len(), 1, "entry should be scheduled for ~30min");
-        assert!(host
-            .with_storage(|s| s.due_lookups(now + 5 * 60 * 1000, 10))
-            .unwrap()
-            .unwrap()
-            .is_empty());
+        assert!(
+            host.with_storage(|s| s.due_lookups(now + 5 * 60 * 1000, 10))
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
 
         // When AniDB learns the file, re-validation upgrades the
         // metadata in place.
@@ -899,7 +900,8 @@ mod tests {
             .insert(hash(2), file_hit(123, "Some Show", "05"));
         eventually(&host, "upgraded metadata", |view| {
             view.anidb_metadata.get(&hash(2)).is_some_and(|m| {
-                m.as_ref().is_some_and(|m| m.source == MetadataSource::AniDb)
+                m.as_ref()
+                    .is_some_and(|m| m.source == MetadataSource::AniDb)
             })
         })
         .await;
@@ -1078,7 +1080,11 @@ mod tests {
         api.files.lock().unwrap().insert(hash(3), Ok(None));
         tokio::time::sleep(Duration::from_secs(8 * 24 * 3600)).await;
         let meta = host.view().anidb_metadata[&hash(3)].clone().unwrap();
-        assert_eq!(meta.source, MetadataSource::AniDb, "fallback clobbered real data");
+        assert_eq!(
+            meta.source,
+            MetadataSource::AniDb,
+            "fallback clobbered real data"
+        );
         assert_eq!(meta.series_name, "Real Name");
         worker.abort();
     }

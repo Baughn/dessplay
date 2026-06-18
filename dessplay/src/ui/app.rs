@@ -10,9 +10,7 @@ use dessplay_core::StateView;
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::franchise::{self, FranchiseKey};
 use dessplay_core::net::PeerInfo;
-use dessplay_core::types::{
-    Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId,
-};
+use dessplay_core::types::{Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId};
 use tuirealm::component::AppComponent;
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute};
@@ -23,7 +21,9 @@ use tuirealm::ratatui::widgets::{Block, Borders};
 use super::components::{
     ChatPane, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
 };
-use super::modals::{AniDbSearchModal, EpisodeBrowser, FileBrowser, ListEditModal, Season, SettingsModal};
+use super::modals::{
+    AniDbSearchModal, EpisodeBrowser, FileBrowser, ListEditModal, Season, SettingsModal,
+};
 use super::msg::{Msg, UserAction};
 use super::props;
 use crate::actors::sync::Mutation;
@@ -306,9 +306,11 @@ impl Ui {
         let mut lines = props::chat_lines(view);
         lines.extend(self.system_log.iter().cloned());
         if self.subtitle_mode == SubtitleMode::Intermixed {
-            lines.extend(self.subtitles.iter().map(|s| {
-                props::subtitle_line(s.video_millis, s.arrival_millis, s.text.clone())
-            }));
+            lines.extend(
+                self.subtitles.iter().map(|s| {
+                    props::subtitle_line(s.video_millis, s.arrival_millis, s.text.clone())
+                }),
+            );
         }
         lines.sort_by_key(|line| line.millis);
         Self::insert_day_separators(lines)
@@ -735,7 +737,12 @@ impl Ui {
                 // per-series last-used directory is FileActor state, not
                 // in the snapshot yet — edit-distance ranking surfaces
                 // the right file regardless).
-                let entry = self.snapshot.view.playlist.iter().find(|e| e.hash == hash)?;
+                let entry = self
+                    .snapshot
+                    .view
+                    .playlist
+                    .iter()
+                    .find(|e| e.hash == hash)?;
                 let target = entry.state.filename.clone();
                 self.push_modal(Modal::Files(FileBrowser::for_mapping(
                     self.media_roots.clone(),
@@ -755,7 +762,12 @@ impl Ui {
                 })
             }
             Msg::ArchiveFile(hash) => {
-                let entry = self.snapshot.view.playlist.iter().find(|e| e.hash == hash)?;
+                let entry = self
+                    .snapshot
+                    .view
+                    .playlist
+                    .iter()
+                    .find(|e| e.hash == hash)?;
                 let filename = entry.state.filename.clone();
                 let series_name = self
                     .snapshot
@@ -900,7 +912,10 @@ impl Ui {
             // `/away` marks yourself by default; an optional name targets
             // another user. `/afk` is a name-taking alias (legacy spelling).
             "/away" | "/afk" => {
-                let user = parts.next().map(UserId::new).unwrap_or_else(|| self.me.clone());
+                let user = parts
+                    .next()
+                    .map(UserId::new)
+                    .unwrap_or_else(|| self.me.clone());
                 vec![UserAction::Mutate(Mutation::SetManualOverride {
                     user,
                     state: Some(ManualState::Away {
@@ -1274,7 +1289,12 @@ mod tests {
         // mpv joins a two-line cue with a newline; we render one line, so
         // it must read "you demons", not "youdemons" (the reported bug).
         let mut ui = intermixed_ui();
-        ui.push_subtitle(1000, 10, "I won't let you\ndemons have your way".into(), None);
+        ui.push_subtitle(
+            1000,
+            10,
+            "I won't let you\ndemons have your way".into(),
+            None,
+        );
         assert_eq!(ui.subtitles.len(), 1);
         assert_eq!(
             ui.subtitles.back().unwrap().text,
@@ -1426,7 +1446,9 @@ mod tests {
             assert_eq!(ui.subtitle_mode, expected);
             assert_eq!(ui.settings.subtitle_mode, expected);
             // Each cycle persists the choice (F2-persistence).
-            assert!(matches!(action, UserAction::SaveSettings(s, _) if s.subtitle_mode == expected));
+            assert!(
+                matches!(action, UserAction::SaveSettings(s, _) if s.subtitle_mode == expected)
+            );
         }
     }
 
@@ -1436,10 +1458,10 @@ mod tests {
         let actions = ui.toggle_self_ready();
         let muts = mutations(&actions);
         // Clears the manual override...
-        assert!(muts.iter().any(|m| matches!(
-            m,
-            Mutation::SetManualOverride { state: None, .. }
-        )));
+        assert!(
+            muts.iter()
+                .any(|m| matches!(m, Mutation::SetManualOverride { state: None, .. }))
+        );
         // ...latches Playing...
         assert!(muts.iter().any(|m| matches!(
             m,
@@ -1509,7 +1531,10 @@ mod tests {
             ui.handle(key(Key::Down));
         }
         let actions = ui.handle(key(Key::Enter));
-        assert!(ui.modals.is_empty(), "save should close the settings dialog");
+        assert!(
+            ui.modals.is_empty(),
+            "save should close the settings dialog"
+        );
         assert!(
             actions
                 .iter()
@@ -1637,10 +1662,10 @@ mod tests {
         let mut ui = ui_with_view(not_watching_state(&me()));
         let actions = ui.command("/ready");
         let muts = mutations(&actions);
-        assert!(muts.iter().any(|m| matches!(
-            m,
-            Mutation::SetManualOverride { state: None, .. }
-        )));
+        assert!(
+            muts.iter()
+                .any(|m| matches!(m, Mutation::SetManualOverride { state: None, .. }))
+        );
         assert!(muts.iter().any(|m| matches!(
             m,
             Mutation::SetPlaybackIntent {

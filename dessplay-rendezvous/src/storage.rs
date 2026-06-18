@@ -539,7 +539,8 @@ impl ServerStorage {
                 attempts: row.get::<_, i64>(4)? as u32,
             })
         })?;
-        rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(Into::into)
     }
 
     /// Record an ANIME attempt. `next_attempt = NEVER` settles the
@@ -589,7 +590,12 @@ impl ServerStorage {
                 "INSERT INTO anidb_titles (aid, kind, lang, title) VALUES (?1, ?2, ?3, ?4)",
             )?;
             for row in titles {
-                stmt.execute(params![row.series.0 as i64, row.kind as i64, row.lang, row.title])?;
+                stmt.execute(params![
+                    row.series.0 as i64,
+                    row.kind as i64,
+                    row.lang,
+                    row.title
+                ])?;
             }
         }
         tx.commit()?;
@@ -631,7 +637,9 @@ impl ServerStorage {
             if !seen.insert(series) {
                 continue;
             }
-            let primary = self.primary_title(series)?.unwrap_or_else(|| matched.clone());
+            let primary = self
+                .primary_title(series)?
+                .unwrap_or_else(|| matched.clone());
             hits.push(TitleSearchHit {
                 series,
                 title: primary,
@@ -853,7 +861,10 @@ mod tests {
         // First sighting carries an mtime; first_seen is pinned to 100.
         storage.enqueue_lookup(&info(Some(5_000)), 100).unwrap();
         assert_eq!(read_mtime(&storage), Some(5_000));
-        assert_eq!(storage.due_lookups(i64::MAX, 10).unwrap()[0].first_seen, 100);
+        assert_eq!(
+            storage.due_lookups(i64::MAX, 10).unwrap()[0].first_seen,
+            100
+        );
 
         // A re-enqueue with no mtime must not wipe the known one.
         storage.enqueue_lookup(&info(None), 200).unwrap();
@@ -862,7 +873,10 @@ mod tests {
         // An older mtime wins (min); first_seen stays put.
         storage.enqueue_lookup(&info(Some(1_000)), 300).unwrap();
         assert_eq!(read_mtime(&storage), Some(1_000));
-        assert_eq!(storage.due_lookups(i64::MAX, 10).unwrap()[0].first_seen, 100);
+        assert_eq!(
+            storage.due_lookups(i64::MAX, 10).unwrap()[0].first_seen,
+            100
+        );
 
         // A newer mtime does not raise it back up.
         storage.enqueue_lookup(&info(Some(9_000)), 400).unwrap();
@@ -883,7 +897,10 @@ mod tests {
             series_hint: None,
         };
         storage.enqueue_lookup(&info(None), 100).unwrap();
-        assert_eq!(storage.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime, None);
+        assert_eq!(
+            storage.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime,
+            None
+        );
         storage.enqueue_lookup(&info(Some(42)), 200).unwrap();
         assert_eq!(
             storage.due_lookups(i64::MAX, 10).unwrap()[0].info.mtime,
@@ -905,19 +922,27 @@ mod tests {
             mtime: None,
             series_hint: hint.map(str::to_string),
         };
-        let read_hint =
-            |s: &ServerStorage| s.due_lookups(i64::MAX, 10).unwrap()[0].info.series_hint.clone();
+        let read_hint = |s: &ServerStorage| {
+            s.due_lookups(i64::MAX, 10).unwrap()[0]
+                .info
+                .series_hint
+                .clone()
+        };
 
         // Queued without a hint first.
         storage.enqueue_lookup(&info(None), 100).unwrap();
         assert_eq!(read_hint(&storage), None);
 
         // A holder reports the containing folder: the row learns it.
-        storage.enqueue_lookup(&info(Some("RahXephon")), 200).unwrap();
+        storage
+            .enqueue_lookup(&info(Some("RahXephon")), 200)
+            .unwrap();
         assert_eq!(read_hint(&storage).as_deref(), Some("RahXephon"));
 
         // A later, different hint does not overwrite the first.
-        storage.enqueue_lookup(&info(Some("Something Else")), 300).unwrap();
+        storage
+            .enqueue_lookup(&info(Some("Something Else")), 300)
+            .unwrap();
         assert_eq!(read_hint(&storage).as_deref(), Some("RahXephon"));
     }
 
@@ -943,21 +968,35 @@ mod tests {
         for (i, name) in [(1u8, "orphan.mkv"), (2, "healthy.mkv"), (3, "miss.mkv")] {
             storage.enqueue_lookup(&info(i, name), 100).unwrap();
         }
-        storage.record_lookup_attempt(hash(1), 100, 700_000, true).unwrap();
-        storage.record_lookup_attempt(hash(2), 100, 700_000, true).unwrap();
-        storage.record_lookup_attempt(hash(3), 100, 700_000, false).unwrap();
+        storage
+            .record_lookup_attempt(hash(1), 100, 700_000, true)
+            .unwrap();
+        storage
+            .record_lookup_attempt(hash(2), 100, 700_000, true)
+            .unwrap();
+        storage
+            .record_lookup_attempt(hash(3), 100, 700_000, false)
+            .unwrap();
 
         // Only hash(2) actually has replicated metadata.
         let present = std::collections::BTreeSet::from([hash(2)]);
-        let rearmed = storage.rearm_settled_without_metadata(&present, 200).unwrap();
+        let rearmed = storage
+            .rearm_settled_without_metadata(&present, 200)
+            .unwrap();
         assert_eq!(rearmed, vec!["orphan.mkv".to_string()]);
 
         // The orphan is due now and no longer claims data.
         let due = storage.due_lookups(200, 10).unwrap();
         let due_hashes: Vec<_> = due.iter().map(|e| e.info.hash).collect();
         assert!(due_hashes.contains(&hash(1)), "orphan must be due now");
-        assert!(!due_hashes.contains(&hash(2)), "healthy row must stay settled");
-        assert!(!due_hashes.contains(&hash(3)), "no-data row must stay on its ladder");
+        assert!(
+            !due_hashes.contains(&hash(2)),
+            "healthy row must stay settled"
+        );
+        assert!(
+            !due_hashes.contains(&hash(3)),
+            "no-data row must stay on its ladder"
+        );
         let orphan = due.iter().find(|e| e.info.hash == hash(1)).unwrap();
         assert!(!orphan.has_data, "re-armed orphan must drop has_data");
     }
@@ -1052,6 +1091,9 @@ mod tests {
             Some("12345")
         );
         storage.kv_set("titles_fetched_at", "99").unwrap();
-        assert_eq!(storage.kv_get("titles_fetched_at").unwrap().as_deref(), Some("99"));
+        assert_eq!(
+            storage.kv_get("titles_fetched_at").unwrap().as_deref(),
+            Some("99")
+        );
     }
 }

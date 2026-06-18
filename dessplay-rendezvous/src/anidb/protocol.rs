@@ -294,8 +294,7 @@ pub fn unescape(field: &str) -> String {
 /// header text (`"xK3fp LOGIN ACCEPTED"`).
 pub fn session_key(text: &str) -> Option<String> {
     let key = text.split(' ').next()?;
-    (!key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric()))
-        .then(|| key.to_string())
+    (!key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| key.to_string())
 }
 
 /// A [`FILE`] hit under our masks.
@@ -326,7 +325,10 @@ impl FileResult {
 
 /// Parse the data line of a [`FILE`] response.
 pub fn parse_file_data(response: &Response) -> Result<FileResult, ProtocolError> {
-    let line = response.lines.first().ok_or(ProtocolError::MissingDataLine)?;
+    let line = response
+        .lines
+        .first()
+        .ok_or(ProtocolError::MissingDataLine)?;
     if line.len() != FILE_FIELDS {
         return Err(ProtocolError::WrongFieldCount {
             expected: FILE_FIELDS,
@@ -372,7 +374,10 @@ impl AnimeResult {
 
 /// Parse the data line of an [`ANIME`] response.
 pub fn parse_anime_data(response: &Response) -> Result<AnimeResult, ProtocolError> {
-    let line = response.lines.first().ok_or(ProtocolError::MissingDataLine)?;
+    let line = response
+        .lines
+        .first()
+        .ok_or(ProtocolError::MissingDataLine)?;
     if line.len() != ANIME_FIELDS {
         return Err(ProtocolError::WrongFieldCount {
             expected: ANIME_FIELDS,
@@ -511,7 +516,10 @@ mod tests {
     #[test]
     fn anime_command_format() {
         let cmd = anime_by_id(AniDbSeriesId(8692), "sess1", "t7");
-        assert_eq!(cmd, format!("ANIME aid=8692&amask={ANIME_AMASK}&s=sess1&tag=t7"));
+        assert_eq!(
+            cmd,
+            format!("ANIME aid=8692&amask={ANIME_AMASK}&s=sess1&tag=t7")
+        );
     }
 
     #[test]
@@ -522,7 +530,10 @@ mod tests {
 
     #[test]
     fn parses_tagged_response() {
-        let response = parse_response("t42 220 FILE\n312498|8692|Sousou no Frieren|Frieren: Beyond Journey's End|01\n").unwrap();
+        let response = parse_response(
+            "t42 220 FILE\n312498|8692|Sousou no Frieren|Frieren: Beyond Journey's End|01\n",
+        )
+        .unwrap();
         assert_eq!(response.tag.as_deref(), Some("t42"));
         assert_eq!(response.code, FILE);
         assert_eq!(response.text, "FILE");
@@ -601,7 +612,10 @@ mod tests {
             })
         );
         let no_data = parse_response("t1 220 FILE").unwrap();
-        assert_eq!(parse_file_data(&no_data), Err(ProtocolError::MissingDataLine));
+        assert_eq!(
+            parse_file_data(&no_data),
+            Err(ProtocolError::MissingDataLine)
+        );
     }
 
     #[test]
@@ -615,10 +629,7 @@ mod tests {
         assert_eq!(anime.year, Some(2023));
         assert_eq!(
             anime.relations,
-            vec![
-                (2, AniDbSeriesId(13310)),
-                (1, AniDbSeriesId(17617)),
-            ]
+            vec![(2, AniDbSeriesId(13310)), (1, AniDbSeriesId(17617)),]
         );
         assert_eq!(anime.romaji, "Sousou no Frieren");
         assert_eq!(anime.english, "Frieren: Beyond Journey's End");
@@ -641,8 +652,12 @@ mod tests {
         // The server escapes content pipes as `/`, which makes `/`
         // ambiguous; reversing it would corrupt real slashes. We keep
         // them as-is.
-        let response = parse_response("t2 220 FILE\n1|2|Fate/stay night|Fate/stay night|01\n").unwrap();
-        assert_eq!(parse_file_data(&response).unwrap().romaji, "Fate/stay night");
+        let response =
+            parse_response("t2 220 FILE\n1|2|Fate/stay night|Fate/stay night|01\n").unwrap();
+        assert_eq!(
+            parse_file_data(&response).unwrap().romaji,
+            "Fate/stay night"
+        );
     }
 
     #[test]

@@ -72,11 +72,7 @@ pub fn sanitize_response(response: &str) -> String {
 ///
 /// ```
 /// (pairs separated by a blank line)
-pub fn write_exchange(
-    out: &mut impl Write,
-    request: &str,
-    response: &str,
-) -> std::io::Result<()> {
+pub fn write_exchange(out: &mut impl Write, request: &str, response: &str) -> std::io::Result<()> {
     writeln!(out, ">>> {request}")?;
     for line in response.lines() {
         writeln!(out, "<<< {line}")?;
@@ -196,7 +192,10 @@ mod tests {
             "AUTH user=USER&pass=REDACTED&protover=3&client=dessplay&clientver=1&enc=UTF8&tag=t1"
         );
         let file = sanitize_request("FILE size=1&ed2k=ab&fmask=40&amask=00&s=xK3fp&tag=t2");
-        assert_eq!(file, "FILE size=1&ed2k=ab&fmask=40&amask=00&s=SESSION&tag=t2");
+        assert_eq!(
+            file,
+            "FILE size=1&ed2k=ab&fmask=40&amask=00&s=SESSION&tag=t2"
+        );
     }
 
     #[test]

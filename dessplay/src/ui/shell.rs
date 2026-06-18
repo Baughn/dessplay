@@ -156,7 +156,9 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 // Recover a poisoned lock (the stamp is the only state):
                 // the crate denies `unwrap`, and a panicking probe would
                 // be a poor reason to take down the UI loop.
-                *cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                *cell
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Some(std::time::Instant::now());
             }
             UiInput::Event(event) => {

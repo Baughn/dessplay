@@ -698,7 +698,10 @@ fn linking_a_list_entry_searches_and_links() {
     let screen = render(&mut ui, 100, 30);
     assert!(screen.contains("Gochuumon wa Usagi Desu ka?"), "{screen}");
     assert!(screen.contains("a5391"), "{screen}");
-    assert!(!screen.contains("Wrong"), "stale results displayed: {screen}");
+    assert!(
+        !screen.contains("Wrong"),
+        "stale results displayed: {screen}"
+    );
 
     // Pick the second result; Enter links it.
     ui.handle(key(Key::Down));

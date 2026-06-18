@@ -17,7 +17,7 @@ use tuirealm::state::{State, StateValue};
 use dessplay_core::net::AniDbSearchHit;
 use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, SeriesListEntry};
 
-use super::components::{ctrl, plain, step_by, typed, LIST_PAGE_STEP};
+use super::components::{LIST_PAGE_STEP, ctrl, plain, step_by, typed};
 use super::msg::Msg;
 use super::theme;
 use crate::config::Settings;
@@ -546,9 +546,8 @@ impl SettingsModal {
 
     /// Build the save message if the essentials are present, else `None`.
     fn try_save(&self) -> Option<Msg> {
-        self.can_save().then(|| {
-            Msg::SettingsSaved(Box::new(self.settings.clone()), self.roots.clone())
-        })
+        self.can_save()
+            .then(|| Msg::SettingsSaved(Box::new(self.settings.clone()), self.roots.clone()))
     }
 
     fn field_value(&self, index: usize) -> String {
@@ -629,7 +628,10 @@ impl SettingsModal {
         let (save_label, save_style) = if missing.is_empty() {
             ("[Save]".to_string(), tuirealm::props::Style::default())
         } else {
-            (format!("[Save] — needs {}", missing.join(", ")), theme::dim())
+            (
+                format!("[Save] — needs {}", missing.join(", ")),
+                theme::dim(),
+            )
         };
         lines.push(ListItem::new(Span::styled(save_label, save_style)));
 
@@ -974,7 +976,11 @@ impl ListEditModal {
 
     /// Keys for the keybinding bar.
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("Enter", "Edit/Cycle"), ("Ctrl-s", "Save"), ("Esc", "Cancel")]
+        vec![
+            ("Enter", "Edit/Cycle"),
+            ("Ctrl-s", "Save"),
+            ("Esc", "Cancel"),
+        ]
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -1309,11 +1315,7 @@ mod tests {
             "target.mkv".into(),
             Some(tmp.path().to_path_buf()),
         );
-        let link = browser
-            .entries
-            .iter()
-            .find(|r| r.name == "link")
-            .unwrap();
+        let link = browser.entries.iter().find(|r| r.name == "link").unwrap();
         assert!(link.is_dir, "symlinked directory must list as a directory");
     }
 
@@ -1352,14 +1354,18 @@ mod tests {
         // Capital `S` carries SHIFT and must save — the terminal-safe path
         // that replaces the Ctrl-S == XOFF trap.
         let mut modal = saveable_settings();
-        assert!(is_save(&modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))));
+        assert!(is_save(
+            &modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))
+        ));
     }
 
     #[test]
     fn ctrl_s_still_saves() {
         // Ctrl-S is retained as an alias for terminals where it survives.
         let mut modal = saveable_settings();
-        assert!(is_save(&modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL))));
+        assert!(is_save(
+            &modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL))
+        ));
     }
 
     #[test]
@@ -1394,8 +1400,14 @@ mod tests {
         let mut modal = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
         let save_row = modal.save_index();
         assert!(!modal.can_save());
-        assert_eq!(modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT)), Some(Msg::None));
-        assert_eq!(modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL)), Some(Msg::None));
+        assert_eq!(
+            modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT)),
+            Some(Msg::None)
+        );
+        assert_eq!(
+            modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL)),
+            Some(Msg::None)
+        );
         modal.sel = save_row;
         assert_eq!(modal.on(&enter()), Some(Msg::None));
     }

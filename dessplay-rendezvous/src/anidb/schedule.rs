@@ -74,7 +74,10 @@ mod tests {
 
     #[test]
     fn fresh_unknown_files_retry_every_half_hour() {
-        assert_eq!(next_attempt(1000, 0, false, Outcome::NoData), Some(1000 + 30 * MINUTE));
+        assert_eq!(
+            next_attempt(1000, 0, false, Outcome::NoData),
+            Some(1000 + 30 * MINUTE)
+        );
     }
 
     #[test]
@@ -103,7 +106,10 @@ mod tests {
 
     #[test]
     fn known_files_revalidate_weekly_at_most() {
-        assert_eq!(next_attempt(1000, 0, false, Outcome::Data), Some(1000 + WEEK));
+        assert_eq!(
+            next_attempt(1000, 0, false, Outcome::Data),
+            Some(1000 + WEEK)
+        );
         // A file that had data once but is now missing keeps the weekly
         // cadence — has_data sticks.
         assert_eq!(
@@ -128,7 +134,10 @@ mod tests {
     #[test]
     fn boundaries_are_exact() {
         // At exactly one day, the 2h band applies.
-        assert_eq!(next_attempt(DAY, 0, false, Outcome::NoData), Some(DAY + 2 * HOUR));
+        assert_eq!(
+            next_attempt(DAY, 0, false, Outcome::NoData),
+            Some(DAY + 2 * HOUR)
+        );
         // At exactly 90 days, re-validation stops.
         assert_eq!(next_attempt(90 * DAY, 0, false, Outcome::NoData), None);
     }
@@ -158,7 +167,12 @@ mod tests {
         assert_eq!(next_attempt(now, anchor, false, Outcome::NoData), None);
         // Sanity: without the mtime it would be back on the 30-min ladder.
         assert_eq!(
-            next_attempt(now, effective_anchor(first_seen, None), false, Outcome::NoData),
+            next_attempt(
+                now,
+                effective_anchor(first_seen, None),
+                false,
+                Outcome::NoData
+            ),
             Some(now + 30 * MINUTE)
         );
     }

@@ -210,9 +210,10 @@ impl std::fmt::Debug for PeerMessage {
                 .field("file", file)
                 .field("bitfield", bitfield)
                 .finish(),
-            PeerMessage::BlockHashRequest { file } => {
-                f.debug_struct("BlockHashRequest").field("file", file).finish()
-            }
+            PeerMessage::BlockHashRequest { file } => f
+                .debug_struct("BlockHashRequest")
+                .field("file", file)
+                .finish(),
             // Elide the hashes themselves — show how many.
             PeerMessage::BlockHashes { file, hashes } => f
                 .debug_struct("BlockHashes")

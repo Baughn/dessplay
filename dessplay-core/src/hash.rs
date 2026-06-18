@@ -190,7 +190,16 @@ mod tests {
     #[test]
     fn root_from_blocks_reproduces_the_root_and_block_hash_matches() {
         let block = ED2K_BLOCK_SIZE as usize;
-        for len in [0, 1, 1000, block - 1, block, block + 1, 2 * block, 2 * block + 7] {
+        for len in [
+            0,
+            1,
+            1000,
+            block - 1,
+            block,
+            block + 1,
+            2 * block,
+            2 * block + 7,
+        ] {
             let bytes = data(len);
             let full = ed2k_hash_bytes(&bytes);
             assert_eq!(
@@ -202,7 +211,11 @@ mod tests {
             for (i, expected) in full.blocks.iter().enumerate() {
                 let start = i * block;
                 let end = ((i + 1) * block).min(bytes.len());
-                assert_eq!(block_hash(&bytes[start..end]), *expected, "block {i} at len {len}");
+                assert_eq!(
+                    block_hash(&bytes[start..end]),
+                    *expected,
+                    "block {i} at len {len}"
+                );
             }
         }
     }

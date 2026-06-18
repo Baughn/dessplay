@@ -196,7 +196,11 @@ async fn single_seed_transfer_completes_with_full_goodput() {
     let outcome = pump_until_complete(&mut actors, "leech", Duration::from_secs(30)).await;
 
     let path = outcome.completed_path.expect("leecher should complete");
-    assert_eq!(std::fs::read(&path).unwrap(), bytes, "assembled file matches");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "assembled file matches"
+    );
 
     // Efficiency: every byte transmitted was useful and sent once, so
     // goodput is ~100% and retransmits ~0 (a single clean source).
@@ -211,8 +215,14 @@ async fn single_seed_transfer_completes_with_full_goodput() {
         retransmit_bps / 100,
         retransmit_bps % 100,
     );
-    assert!(goodput_bps >= 9_900, "goodput should be ~100%: {goodput_bps} bps");
-    assert!(retransmit_bps <= 100, "retransmit should be ~0%: {retransmit_bps} bps");
+    assert!(
+        goodput_bps >= 9_900,
+        "goodput should be ~100%: {goodput_bps} bps"
+    );
+    assert!(
+        retransmit_bps <= 100,
+        "retransmit should be ~0%: {retransmit_bps} bps"
+    );
 }
 
 #[tokio::test]
@@ -245,7 +255,11 @@ async fn two_seed_transfer_completes_and_stays_efficient() {
     let outcome = pump_until_complete(&mut actors, "leech", Duration::from_secs(30)).await;
 
     let path = outcome.completed_path.expect("leecher should complete");
-    assert_eq!(std::fs::read(&path).unwrap(), bytes, "assembled file matches");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "assembled file matches"
+    );
 
     let goodput_bps = (hash.size_bytes * 10_000) / outcome.chunk_bytes;
     println!(
@@ -256,5 +270,8 @@ async fn two_seed_transfer_completes_and_stays_efficient() {
         goodput_bps % 100,
     );
     // Even with two sources and endgame, almost nothing is wasted.
-    assert!(goodput_bps >= 9_500, "goodput should stay high: {goodput_bps} bps");
+    assert!(
+        goodput_bps >= 9_500,
+        "goodput should stay high: {goodput_bps} bps"
+    );
 }

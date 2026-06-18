@@ -692,7 +692,9 @@ impl Actor {
                     .retain(|job| !(job.0 == from && job.1 == file && cancelled.contains(&job.2)));
             }
             download_msg => {
-                let actions = self.downloads.on_peer_message(from, download_msg, (self.clock)());
+                let actions = self
+                    .downloads
+                    .on_peer_message(from, download_msg, (self.clock)());
                 self.run_download_actions(actions).await;
             }
         }
@@ -906,7 +908,11 @@ impl Actor {
                         .out
                         .send(FileOutput::SendPeer {
                             to,
-                            message: Box::new(PeerMessage::ChunkData { file, index: chunk, data }),
+                            message: Box::new(PeerMessage::ChunkData {
+                                file,
+                                index: chunk,
+                                data,
+                            }),
                         })
                         .await;
                 }
@@ -1200,12 +1206,7 @@ impl Actor {
             .await;
     }
 
-    async fn archive(
-        &mut self,
-        file: Ed2kHash,
-        series_name: Option<String>,
-        filename: String,
-    ) {
+    async fn archive(&mut self, file: Ed2kHash, series_name: Option<String>, filename: String) {
         let result = self.archive_inner(file, series_name, &filename);
         if let Ok(new_path) = &result {
             tracing::info!(path = %new_path.display(), "archived cached file into the library");
@@ -1223,9 +1224,14 @@ impl Actor {
         // AniDB models each season as its own anime, so a single series
         // name is effectively one season's folder; the explicit
         // "Season #" the design mentions is deferred with that note.
-        let download_root = self.media_roots.first().ok_or("no download root configured")?;
+        let download_root = self
+            .media_roots
+            .first()
+            .ok_or("no download root configured")?;
         let folder = sanitize_component(series_name.as_deref().unwrap_or("Unsorted"));
-        let dest = download_root.join(folder).join(sanitize_component(filename));
+        let dest = download_root
+            .join(folder)
+            .join(sanitize_component(filename));
         let entries = self.storage.cache_entries().map_err(|e| e.to_string())?;
         let entry = entries
             .iter()
@@ -1277,7 +1283,13 @@ impl Actor {
         for entry in entries {
             let watched = group_watched.contains(&entry.hash)
                 || matches!(self.storage.watched(entry.hash), Ok(Some(_)));
-            if !evictable(now, self.retention, &entry, watched, protected.contains(&entry.hash)) {
+            if !evictable(
+                now,
+                self.retention,
+                &entry,
+                watched,
+                protected.contains(&entry.hash),
+            ) {
                 continue;
             }
             tracing::info!(path = %entry.path.display(), "evicting watched cached file");
@@ -1299,10 +1311,7 @@ impl Actor {
             evicted.push(entry.hash);
         }
         if !evicted.is_empty() {
-            let _ = self
-                .out
-                .send(FileOutput::Evicted { files: evicted })
-                .await;
+            let _ = self.out.send(FileOutput::Evicted { files: evicted }).await;
         }
     }
 }
@@ -1521,12 +1530,43 @@ fn is_video_file(path: &Path) -> bool {
 /// case-insensitively, with an optional trailing number (`Season 1`, `CD2`).
 const STRUCTURAL_DIR_WORDS: &[&str] = &[
     // Season / disc / part groupings.
-    "season", "s", "saison", "disc", "disk", "cd", "dvd", "bd", "vol", "volume", "part", "pt",
-    "special", "specials", "extra", "extras", "ova", "bdmv", "stream", "video_ts",
+    "season",
+    "s",
+    "saison",
+    "disc",
+    "disk",
+    "cd",
+    "dvd",
+    "bd",
+    "vol",
+    "volume",
+    "part",
+    "pt",
+    "special",
+    "specials",
+    "extra",
+    "extras",
+    "ova",
+    "bdmv",
+    "stream",
+    "video_ts",
     // Generic library containers — using one of these as a series name would
     // collapse an entire mixed folder (e.g. a `Movies` dump) into one entry.
-    "anime", "movies", "movie", "videos", "video", "downloads", "download", "media", "tv",
-    "shows", "series", "watch", "incoming", "complete", "seeding",
+    "anime",
+    "movies",
+    "movie",
+    "videos",
+    "video",
+    "downloads",
+    "download",
+    "media",
+    "tv",
+    "shows",
+    "series",
+    "watch",
+    "incoming",
+    "complete",
+    "seeding",
 ];
 
 /// True if `name` is a structural/container directory rather than a series
@@ -1559,10 +1599,14 @@ fn is_structural_dir(name: &str) -> bool {
 fn dir_series_hint(path: &Path, root: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?;
     // Directory components between the root and the filename, shallow→deep.
-    let dirs: Vec<&std::ffi::OsStr> = rel.parent()?.components().filter_map(|c| match c {
-        std::path::Component::Normal(s) => Some(s),
-        _ => None,
-    }).collect();
+    let dirs: Vec<&std::ffi::OsStr> = rel
+        .parent()?
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
     dirs.iter()
         .rev()
         .map(|s| s.to_string_lossy())
@@ -1839,8 +1883,13 @@ mod tests {
         poisoned.size_bytes = contents.len() as u64;
         let cache = HashMap::from([(path.clone(), (mtime, poisoned))]);
 
-        let (resolution, fresh) =
-            resolve_with_cache("ep1.mkv", expected, &[root.path().to_path_buf()], &cache, None);
+        let (resolution, fresh) = resolve_with_cache(
+            "ep1.mkv",
+            expected,
+            &[root.path().to_path_buf()],
+            &cache,
+            None,
+        );
         // The poisoned root doesn't match and wasn't re-read: mismatch.
         assert_eq!(resolution, Resolution::HashMismatch(path));
         assert!(fresh.is_empty(), "a cache hit must not re-hash");
@@ -1860,8 +1909,13 @@ mod tests {
         // Same size, *different* mtime: stale.
         let cache = HashMap::from([(path.clone(), (-1, poisoned))]);
 
-        let (resolution, fresh) =
-            resolve_with_cache("ep1.mkv", expected, &[root.path().to_path_buf()], &cache, None);
+        let (resolution, fresh) = resolve_with_cache(
+            "ep1.mkv",
+            expected,
+            &[root.path().to_path_buf()],
+            &cache,
+            None,
+        );
         assert_eq!(resolution, Resolution::Verified(path));
         assert_eq!(fresh.len(), 1, "the re-hash must be reported for caching");
     }
@@ -1910,7 +1964,13 @@ mod tests {
         }
 
         // AfterWatch: gone at the next pass.
-        assert!(evictable(1_000, CacheRetention::AfterWatch, &entry, true, false));
+        assert!(evictable(
+            1_000,
+            CacheRetention::AfterWatch,
+            &entry,
+            true,
+            false
+        ));
 
         // Keep(week): exact boundary is evictable, one millisecond
         // before is not.
@@ -2328,7 +2388,12 @@ mod tests {
 
         // No media roots at all: the filename can only ever be found in
         // the cache, and only by hash.
-        let mut rig = spawn_rig_at(storage, vec![], CacheRetention::default(), cache.path().into());
+        let mut rig = spawn_rig_at(
+            storage,
+            vec![],
+            CacheRetention::default(),
+            cache.path().into(),
+        );
         rig.commands
             .send(FileCommand::Resolve {
                 file: hashed.root,
@@ -2376,8 +2441,12 @@ mod tests {
             })
             .unwrap();
 
-        let mut rig =
-            spawn_rig_at(storage, vec![], CacheRetention::default(), cache.path().into());
+        let mut rig = spawn_rig_at(
+            storage,
+            vec![],
+            CacheRetention::default(),
+            cache.path().into(),
+        );
         // A resolve round-trip guarantees startup (and thus reconcile)
         // completed before we inspect the DB.
         rig.commands
@@ -2438,8 +2507,12 @@ mod tests {
                 .unwrap();
         }
 
-        let mut rig =
-            spawn_rig_at(storage, vec![], CacheRetention::default(), cache.path().into());
+        let mut rig = spawn_rig_at(
+            storage,
+            vec![],
+            CacheRetention::default(),
+            cache.path().into(),
+        );
         rig.commands
             .send(FileCommand::Resolve {
                 file: hash(200),
@@ -2488,8 +2561,12 @@ mod tests {
             .upsert_hash_cache(&cached_path, mtime_millis(&metadata).unwrap(), &hashed, 1)
             .unwrap();
 
-        let mut rig =
-            spawn_rig_at(storage, vec![], CacheRetention::default(), cache.path().into());
+        let mut rig = spawn_rig_at(
+            storage,
+            vec![],
+            CacheRetention::default(),
+            cache.path().into(),
+        );
         // Round-trip a resolve so startup reconciliation (which registers
         // the cached file as servable) has definitely run before we
         // delete it — otherwise the race makes the test flaky.
@@ -2595,7 +2672,10 @@ mod tests {
         let video = write(root.path(), "ep1.mkv", b"episode one");
         // Cache row records a *different* mtime than the file now has.
         let stale_mtime = mtime_millis(&std::fs::metadata(&video).unwrap()).unwrap() - 5_000;
-        let cache = HashMap::from([(video.clone(), (stale_mtime, ed2k_hash_bytes(b"episode one")))]);
+        let cache = HashMap::from([(
+            video.clone(),
+            (stale_mtime, ed2k_hash_bytes(b"episode one")),
+        )]);
         let (hits, worklist) = scan_library(&[root.path().to_path_buf()], &cache);
         assert!(hits.is_empty(), "stale mtime must not count as a hit");
         assert_eq!(worklist.len(), 1);
@@ -2619,7 +2699,11 @@ mod tests {
 
         let (hits, worklist) = scan_library(std::slice::from_ref(&root), &HashMap::new());
         assert!(hits.is_empty());
-        assert_eq!(worklist.len(), 1, "video behind a symlinked dir must be seen");
+        assert_eq!(
+            worklist.len(),
+            1,
+            "video behind a symlinked dir must be seen"
+        );
         assert_eq!(worklist[0].filename, "ep1.mkv");
         assert_eq!(worklist[0].path, root.join("Frieren/ep1.mkv"));
     }
@@ -2703,10 +2787,7 @@ mod tests {
             CacheRetention::default(),
         );
 
-        rig.commands
-            .send(FileCommand::RescanLibrary)
-            .await
-            .unwrap();
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
         await_indexed(&mut rig, expected).await;
 
         // The scan persisted the hash; a fresh connection sees it (so the
@@ -2715,7 +2796,11 @@ mod tests {
         let cached = check.hash_cache().unwrap();
         assert!(cached.iter().any(|row| row.hash.root == expected));
         // The .nfo was never hashed.
-        assert!(cached.iter().all(|row| row.path.extension().unwrap() == "mkv"));
+        assert!(
+            cached
+                .iter()
+                .all(|row| row.path.extension().unwrap() == "mkv")
+        );
     }
 
     fn hint(rel: &str) -> Option<String> {
@@ -2725,7 +2810,10 @@ mod tests {
 
     #[test]
     fn dir_series_hint_uses_the_containing_series_folder() {
-        assert_eq!(hint("RahXephon/Season 1/Episode 43.mkv").as_deref(), Some("RahXephon"));
+        assert_eq!(
+            hint("RahXephon/Season 1/Episode 43.mkv").as_deref(),
+            Some("RahXephon")
+        );
         assert_eq!(hint("RahXephon/ep01.mkv").as_deref(), Some("RahXephon"));
     }
 
@@ -2754,7 +2842,9 @@ mod tests {
 
     #[test]
     fn is_structural_dir_classifies_common_shapes() {
-        for s in ["Season 1", "S01", "season", "Disc-2", "CD 3", "Specials", "OVA", "1", "BDMV"] {
+        for s in [
+            "Season 1", "S01", "season", "Disc-2", "CD 3", "Specials", "OVA", "1", "BDMV",
+        ] {
             assert!(is_structural_dir(s), "{s:?} should be structural");
         }
         for s in ["RahXephon", "Sousou no Frieren", "K-On!", "Re Zero"] {

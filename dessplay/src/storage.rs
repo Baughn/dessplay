@@ -553,7 +553,13 @@ impl Storage {
     // ---- Hash cache.
 
     /// Insert or refresh a hash-cache row.
-    pub fn upsert_hash_cache(&self, path: &Path, mtime: i64, hash: &Ed2kFileHash, now: i64) -> Result<()> {
+    pub fn upsert_hash_cache(
+        &self,
+        path: &Path,
+        mtime: i64,
+        hash: &Ed2kFileHash,
+        now: i64,
+    ) -> Result<()> {
         let blocks: Vec<u8> = hash.blocks.iter().flat_map(|b| b.0).collect();
         self.conn.execute(
             "INSERT INTO hash_cache (path, mtime, size_bytes, root, blocks, hashed_at)
@@ -577,9 +583,9 @@ impl Storage {
     /// Every hash-cache row (loaded into memory at session start; the
     /// table is one row per known media file).
     pub fn hash_cache(&self) -> Result<Vec<CachedHash>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT path, mtime, size_bytes, root, blocks FROM hash_cache",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, mtime, size_bytes, root, blocks FROM hash_cache")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -855,10 +861,7 @@ mod tests {
                 [&b"not a valid postcard CrdtState"[..]],
             )
             .unwrap();
-        assert!(matches!(
-            storage.load_state(),
-            Err(StorageError::Codec(_))
-        ));
+        assert!(matches!(storage.load_state(), Err(StorageError::Codec(_))));
     }
 
     #[test]
@@ -991,7 +994,9 @@ mod tests {
         assert_eq!(rows[0].mtime, 2_000);
         assert_eq!(rows[0].hash, rehashed);
 
-        storage.remove_hash_cache(Path::new("/anime/ep1.mkv")).unwrap();
+        storage
+            .remove_hash_cache(Path::new("/anime/ep1.mkv"))
+            .unwrap();
         assert!(storage.hash_cache().unwrap().is_empty());
     }
 

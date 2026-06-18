@@ -69,7 +69,9 @@ enum Command {
 }
 
 /// Extensions treated as video files by `scan`.
-const VIDEO_EXTS: &[&str] = &["mkv", "mp4", "avi", "ogm", "webm", "m4v", "wmv", "mov", "ts"];
+const VIDEO_EXTS: &[&str] = &[
+    "mkv", "mp4", "avi", "ogm", "webm", "m4v", "wmv", "mov", "ts",
+];
 
 /// Collect video files under `dir`, sorted for a deterministic order.
 fn collect_videos(dir: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
@@ -108,7 +110,12 @@ async fn run_scan<W: dessplay_rendezvous::anidb::client::Wire>(
     let mut aids = std::collections::BTreeSet::new();
     let (mut hits, mut misses) = (0u32, 0u32);
     for (index, path) in videos.iter().enumerate() {
-        println!("[{}/{}] hashing {}", index + 1, videos.len(), path.display());
+        println!(
+            "[{}/{}] hashing {}",
+            index + 1,
+            videos.len(),
+            path.display()
+        );
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(e) => {
@@ -182,7 +189,9 @@ async fn run(cli: Cli) -> Result<(), String> {
     }
 
     let user = cli.user.or_else(|| std::env::var("ANIDB_USER").ok());
-    let password = cli.password.or_else(|| std::env::var("ANIDB_PASSWORD").ok());
+    let password = cli
+        .password
+        .or_else(|| std::env::var("ANIDB_PASSWORD").ok());
     let (user, password) = match (user, password) {
         (Some(user), Some(password)) => (user, password),
         _ => {
@@ -250,11 +259,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 println!("  episodes {:?}", anime.episode_count);
                 println!("  relations:");
                 for (code, target) in &anime.relations {
-                    println!(
-                        "    {:?} -> a{}",
-                        protocol::relation_kind(*code),
-                        target.0
-                    );
+                    println!("    {:?} -> a{}", protocol::relation_kind(*code), target.0);
                 }
                 Ok(())
             }

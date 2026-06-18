@@ -94,7 +94,10 @@ async fn a_peer_message_is_relayed_through_the_server() {
 
     let (from, got) = received;
     assert_eq!(from, UserId::new("kim"), "envelope carries the sender");
-    assert_eq!(got, message, "the peer message survives the relay round trip");
+    assert_eq!(
+        got, message,
+        "the peer message survives the relay round trip"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -135,7 +138,10 @@ async fn messages_to_an_absent_peer_are_dropped_not_fatal() {
         if let Some(got) = try_recv_peer(&mut baughn, Duration::from_millis(200)).await {
             break got;
         }
-        assert!(tokio::time::Instant::now() < deadline, "message never arrived");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "message never arrived"
+        );
     };
     assert_eq!(received.1, message);
 }

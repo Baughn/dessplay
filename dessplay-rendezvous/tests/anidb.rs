@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use common::{Harness, eventually_views, hash, mutate, report_eof, view_of};
+use dessplay::actors::sync::Mutation;
 use dessplay_core::types::{
     AniDbSeriesId, FileHashInfo, ListEntryId, ListStatus, MetadataSource, NextEpState,
     SeriesListEntry,
@@ -21,7 +22,6 @@ use dessplay_rendezvous::anidb::protocol::{AnimeResult, FileResult};
 use dessplay_rendezvous::anidb::titles::TitlesSource;
 use dessplay_rendezvous::server::{AniDbConfig, ServerConfig};
 use dessplay_rendezvous::storage::ServerStorage;
-use dessplay::actors::sync::Mutation;
 
 /// Canned API tables.
 #[derive(Default)]
@@ -89,11 +89,7 @@ fn frieren_harness(seed: u64) -> Harness {
             "8692|1|x-jat|Sousou no Frieren\n8692|3|en|Frieren\n5391|1|x-jat|Gochuumon wa Usagi Desu ka?\n5391|3|en|GochiUsa\n",
         )),
     });
-    Harness::with_config_and_storage(
-        seed,
-        config,
-        Some(ServerStorage::open_in_memory().unwrap()),
-    )
+    Harness::with_config_and_storage(seed, config, Some(ServerStorage::open_in_memory().unwrap()))
 }
 
 fn lookup_request(i: u8, filename: &str) -> Mutation {
@@ -114,10 +110,17 @@ async fn lookup_requests_become_replicated_metadata_and_relations() {
     let kim = harness.client("kim", 1);
     let nero = harness.client("nero", 2);
 
-    mutate(&kim, lookup_request(1, "[SubsPlease] Sousou no Frieren - 01.mkv")).await;
+    mutate(
+        &kim,
+        lookup_request(1, "[SubsPlease] Sousou no Frieren - 01.mkv"),
+    )
+    .await;
 
     // Both clients converge on server-written metadata and relations.
-    eventually_views(&[&kim, &nero], std::time::Duration::from_secs(120), |views| {
+    eventually_views(
+        &[&kim, &nero],
+        std::time::Duration::from_secs(120),
+        |views| {
             views.iter().all(|view| {
                 let meta = view.anidb_metadata.get(&hash(1));
                 meta.is_some_and(|m| {
@@ -130,8 +133,9 @@ async fn lookup_requests_become_replicated_metadata_and_relations() {
                     .series_relations
                     .get(&FRIEREN)
                     .is_some_and(|r| r.title == "Sousou no Frieren" && r.year == Some(2023))
-        })
-    })
+            })
+        },
+    )
     .await;
 }
 
@@ -168,7 +172,11 @@ async fn eof_advances_a_linked_list_entry() {
         },
     )
     .await;
-    mutate(&kim, lookup_request(1, "[SubsPlease] Sousou no Frieren - 01.mkv")).await;
+    mutate(
+        &kim,
+        lookup_request(1, "[SubsPlease] Sousou no Frieren - 01.mkv"),
+    )
+    .await;
     eventually_views(&[&kim], std::time::Duration::from_secs(120), |views| {
         views[0]
             .anidb_metadata
@@ -191,7 +199,14 @@ async fn eof_advances_a_linked_list_entry() {
         watchers: Default::default(),
         anidb_series_id: Some(FRIEREN),
     };
-    mutate(&kim, Mutation::PutListEntry { id, entry: entry.clone() }).await;
+    mutate(
+        &kim,
+        Mutation::PutListEntry {
+            id,
+            entry: entry.clone(),
+        },
+    )
+    .await;
     mutate(
         &kim,
         Mutation::SetNextEp {

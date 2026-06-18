@@ -247,9 +247,7 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
 /// authoritative server snapshot on connect — so a blob we can no longer
 /// decode (e.g. a CRDT schema change between versions) must never brick
 /// startup: drop it and re-sync. Non-codec storage errors still propagate.
-fn load_state_tolerant(
-    storage: &Storage,
-) -> Result<Option<dessplay_core::StateSnapshot>, String> {
+fn load_state_tolerant(storage: &Storage) -> Result<Option<dessplay_core::StateSnapshot>, String> {
     match storage.load_state() {
         Ok(snapshot) => Ok(snapshot),
         Err(crate::storage::StorageError::Codec(e)) => {
@@ -1215,7 +1213,10 @@ mod tests {
     fn username_precedence_flag_then_stored_then_env() {
         let s = |x: &str| Some(x.to_string());
         // Flag wins over everything.
-        assert_eq!(resolve_username(s("flag"), s("stored"), s("env")), s("flag"));
+        assert_eq!(
+            resolve_username(s("flag"), s("stored"), s("env")),
+            s("flag")
+        );
         // No flag: stored wins over env.
         assert_eq!(resolve_username(None, s("stored"), s("env")), s("stored"));
         // Neither flag nor stored: fall back to $USER.

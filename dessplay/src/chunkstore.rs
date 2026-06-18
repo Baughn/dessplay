@@ -25,7 +25,7 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use dessplay_core::hash::{Ed2kBlockHash, ED2K_BLOCK_SIZE, block_hash, root_from_blocks};
+use dessplay_core::hash::{ED2K_BLOCK_SIZE, Ed2kBlockHash, block_hash, root_from_blocks};
 use dessplay_core::net::{Bitfield, CHUNKS_PER_BLOCK, chunk_count, chunk_range};
 use dessplay_core::types::Ed2kHash;
 
@@ -101,7 +101,11 @@ impl ChunkStore {
     /// rebuild a trustworthy `verified` set. If the file is missing or
     /// the wrong size, falls back to a fresh [`Self::create`].
     pub fn open(path: &Path, size_bytes: u64) -> io::Result<Self> {
-        let file = match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+        {
             Ok(file) if file.metadata().map(|m| m.len()).unwrap_or(0) == size_bytes => file,
             _ => return Self::create(path, size_bytes),
         };
@@ -157,11 +161,7 @@ impl ChunkStore {
     /// Validate a peer-supplied block-hash list against `root` (the file
     /// id) and the expected block count. Hashes must be trusted before
     /// they can verify chunks.
-    pub fn block_hashes_match(
-        &self,
-        root: Ed2kHash,
-        hashes: &[Ed2kBlockHash],
-    ) -> bool {
+    pub fn block_hashes_match(&self, root: Ed2kHash, hashes: &[Ed2kBlockHash]) -> bool {
         hashes.len() as u32 == self.blocks && root_from_blocks(hashes, self.size_bytes) == root
     }
 

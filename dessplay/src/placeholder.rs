@@ -74,7 +74,11 @@ pub fn render(lines: &[String]) -> io::Result<RgbImage> {
 }
 
 fn base_scale(line_index: usize) -> f32 {
-    if line_index == 0 { TITLE_SCALE } else { BODY_SCALE }
+    if line_index == 0 {
+        TITLE_SCALE
+    } else {
+        BODY_SCALE
+    }
 }
 
 /// Shrink a line's scale until it fits the image width (long filenames
@@ -137,11 +141,7 @@ fn draw_line(
         outlined.draw(|gx, gy, coverage| {
             let px = bounds.min.x as i32 + gx as i32;
             let py = bounds.min.y as i32 + gy as i32;
-            if (px as f32) < MARGIN
-                || (px as f32) >= right_limit
-                || py < 0
-                || py >= HEIGHT as i32
-            {
+            if (px as f32) < MARGIN || (px as f32) >= right_limit || py < 0 || py >= HEIGHT as i32 {
                 return;
             }
             let pixel = image.get_pixel_mut(px as u32, py as u32);

@@ -109,7 +109,9 @@ fn meta_hash(i: u32) -> Ed2kHash {
 
 async fn view_via(sync: &mpsc::Sender<SyncCommand>) -> dessplay_core::StateView {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    sync.send(SyncCommand::GetView(tx)).await.expect("sync gone");
+    sync.send(SyncCommand::GetView(tx))
+        .await
+        .expect("sync gone");
     rx.await.expect("sync gone")
 }
 
@@ -230,15 +232,20 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
 /// Inject `SetPlaybackPosition` mutations every `interval` until the rig
 /// drops. Each one fires the per-event snapshot rebuild; the rate stands
 /// in for several users' position updates arriving at once.
-fn start_position_flood(sync: mpsc::Sender<SyncCommand>, interval: Duration) -> tokio::task::JoinHandle<()> {
+fn start_position_flood(
+    sync: mpsc::Sender<SyncCommand>,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut pos: u64 = 0;
         loop {
             pos += 1000;
             if sync
-                .send(SyncCommand::Mutate(Box::new(Mutation::SetPlaybackPosition {
-                    position_millis: pos,
-                })))
+                .send(SyncCommand::Mutate(Box::new(
+                    Mutation::SetPlaybackPosition {
+                        position_millis: pos,
+                    },
+                )))
                 .await
                 .is_err()
             {

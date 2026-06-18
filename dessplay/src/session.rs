@@ -292,9 +292,10 @@ impl NarratorState {
             .now_playing
             .is_some_and(|f| view.watched.get(&f) == Some(&true));
         let seek_sample = match (&view.now_playing, &view.seek_authority) {
-            (Some(_), Some(SeekAuthority::User(user))) => {
-                view.playback_position.get(user).map(|p| (p.position_millis, p.timestamp.0))
-            }
+            (Some(_), Some(SeekAuthority::User(user))) => view
+                .playback_position
+                .get(user)
+                .map(|p| (p.position_millis, p.timestamp.0)),
             _ => None,
         };
         NarratorState {
@@ -311,7 +312,9 @@ impl NarratorState {
 /// The followed (seek-authority) position sample for `authority`, if it
 /// has published a position.
 fn current_seek_sample(view: &StateView, authority: &UserId) -> Option<(u64, u64)> {
-    view.playback_position.get(authority).map(|p| (p.position_millis, p.timestamp.0))
+    view.playback_position
+        .get(authority)
+        .map(|p| (p.position_millis, p.timestamp.0))
 }
 
 /// Present/Lost/Departed presence of interactive peers (seeders excluded).
@@ -357,7 +360,9 @@ fn presence_line(
         // Recovered from a glitch.
         (Some(Lost), Some(Present)) => Some(format!("{user} is back")),
         // Dropped: 30s idle, everyone pauses.
-        (Some(Present), Some(Lost)) => Some(format!("{user}'s connection dropped — everyone paused")),
+        (Some(Present), Some(Lost)) => {
+            Some(format!("{user}'s connection dropped — everyone paused"))
+        }
         // Gone: departed (60s) or removed from the list (graceful quit).
         (Some(Present | Lost), Some(Departed) | None) => Some(format!("{user} left")),
         _ => None,
@@ -429,7 +434,12 @@ impl PlayerWiring {
                 (current_seek_sample(view, authority), prev.seek_sample)
         {
             let active = derive::playback_active(view, peers);
-            let expected = prev_pos + if active { ts.saturating_sub(prev_ts) } else { 0 };
+            let expected = prev_pos
+                + if active {
+                    ts.saturating_sub(prev_ts)
+                } else {
+                    0
+                };
             if pos.abs_diff(expected) > SEEK_NARRATE_MILLIS {
                 lines.push(format!("{authority} skipped to {}", fmt_mmss(pos)));
             }
@@ -517,9 +527,11 @@ impl PlayerWiring {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
         for user in &peer_users {
-            if let Some(line) =
-                presence_line(user, prev.peers.get(user).copied(), now_peers.get(user).copied())
-            {
+            if let Some(line) = presence_line(
+                user,
+                prev.peers.get(user).copied(),
+                now_peers.get(user).copied(),
+            ) {
                 lines.push(line);
             }
         }
@@ -528,7 +540,10 @@ impl PlayerWiring {
         if lines.len() > NARRATOR_BURST_CAP {
             return vec![];
         }
-        lines.into_iter().map(|text| Directive::SystemLine { text }).collect()
+        lines
+            .into_iter()
+            .map(|text| Directive::SystemLine { text })
+            .collect()
     }
 
     /// If the now-playing file is missing and has metadata, ask the file
@@ -618,7 +633,10 @@ impl PlayerWiring {
             // Have it, or not resolved yet: skip. The watched flag does
             // *not* gate this — a windowed entry is one we intend to
             // watch, redownload included (design.md, Pre-fetching).
-            if matches!(self.resolved.get(&file), Some(Resolution::Verified(_)) | None) {
+            if matches!(
+                self.resolved.get(&file),
+                Some(Resolution::Verified(_)) | None
+            ) {
                 continue;
             }
             let sources = self.download_sources(view, peers, file);
@@ -705,7 +723,10 @@ impl PlayerWiring {
         // NotWatching once; the Users-pane downloading display masks it
         // and Ctrl-r clears it.)
         if !self.download_sources(view, peers, file).is_empty() {
-            tracing::debug!(aid = series.0, "missing file is downloadable; not marking NotWatching");
+            tracing::debug!(
+                aid = series.0,
+                "missing file is downloadable; not marking NotWatching"
+            );
             let mut out = vec![];
             if view.now_playing == Some(file) {
                 out.push(Directive::RenderPlaceholder {
@@ -715,7 +736,10 @@ impl PlayerWiring {
             }
             return out;
         }
-        tracing::info!(aid = series.0, "missing file from an unknown series; marking NotWatching");
+        tracing::info!(
+            aid = series.0,
+            "missing file from an unknown series; marking NotWatching"
+        );
         let mut out = vec![Directive::Mutate(Mutation::SetSeriesPreference {
             user: self.me.clone(),
             series,
@@ -836,8 +860,7 @@ impl PlayerWiring {
         // already-seen files) unless it is in the prefetch window — the
         // now-playing cursor plus the next few queued entries, which we
         // intend to (re)watch and so must resolve so they can download.
-        let window: HashSet<Ed2kHash> =
-            self.prefetch_window(view).iter().map(|e| e.hash).collect();
+        let window: HashSet<Ed2kHash> = self.prefetch_window(view).iter().map(|e| e.hash).collect();
         for entry in &view.playlist {
             let watched =
                 view.watched.get(&entry.hash) == Some(&true) && !window.contains(&entry.hash);
@@ -1397,7 +1420,10 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         .await;
                 }
                 Directive::Resolve { file, filename } => {
-                    let _ = self.file.send(FileCommand::Resolve { file, filename }).await;
+                    let _ = self
+                        .file
+                        .send(FileCommand::Resolve { file, filename })
+                        .await;
                 }
                 Directive::RecordWatched {
                     file,
@@ -1556,7 +1582,9 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 series,
                 known,
             } => {
-                let directives = self.wiring.on_series_known(file, series, known, view, peers);
+                let directives = self
+                    .wiring
+                    .on_series_known(file, series, known, view, peers);
                 self.execute(directives).await;
                 FileEffect::None
             }
@@ -1614,9 +1642,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 self.execute(directives).await;
                 FileEffect::None
             }
-            FileOutput::ScanProgress { done, total } => {
-                FileEffect::ScanProgress { done, total }
-            }
+            FileOutput::ScanProgress { done, total } => FileEffect::ScanProgress { done, total },
             FileOutput::WatchRecorded => FileEffect::WatchRecorded,
             FileOutput::Evicted { files } => {
                 // The file actor deleted these cached copies and pruned
@@ -1868,7 +1894,10 @@ mod tests {
             narrate_diff(&view, &present, &view, &lost),
             ["nero's connection dropped — everyone paused"]
         );
-        assert_eq!(narrate_diff(&view, &lost, &view, &present), ["nero is back"]);
+        assert_eq!(
+            narrate_diff(&view, &lost, &view, &present),
+            ["nero is back"]
+        );
     }
 
     #[test]
@@ -1888,7 +1917,10 @@ mod tests {
         let v0 = state.view();
         state.set_manual_override(A, ts(10), baughn.clone(), Some(ManualState::Paused));
         let v_paused = state.view();
-        assert_eq!(narrate_diff(&v0, &peers, &v_paused, &peers), ["baughn paused"]);
+        assert_eq!(
+            narrate_diff(&v0, &peers, &v_paused, &peers),
+            ["baughn paused"]
+        );
 
         state.set_manual_override(A, ts(11), baughn.clone(), None);
         let v_resumed = state.view();
@@ -1959,7 +1991,13 @@ mod tests {
             ["baughn set to not-watching Some Show (by baughn)"]
         );
 
-        state.set_series_preference(A, ts(21), baughn.clone(), series, SeriesWatchState::Watching);
+        state.set_series_preference(
+            A,
+            ts(21),
+            baughn.clone(),
+            series,
+            SeriesWatchState::Watching,
+        );
         let v_yes = state.view();
         assert_eq!(
             narrate_diff(&v_not, &peers, &v_yes, &peers),
@@ -2009,7 +2047,10 @@ mod tests {
         state.set_watched(A, ts(9), hash(1), true);
         state.set_now_playing(A, ts(10), Some(hash(2)));
         let v_eof = state.view();
-        assert_eq!(narrate_diff(&v0, &peers, &v_eof, &peers), ["Up next: ep2.mkv"]);
+        assert_eq!(
+            narrate_diff(&v0, &peers, &v_eof, &peers),
+            ["Up next: ep2.mkv"]
+        );
     }
 
     #[test]
@@ -2371,10 +2412,12 @@ mod tests {
             &view,
             &[peer("kim")],
         );
-        let title = player_cmds(&directives).into_iter().find_map(|cmd| match cmd {
-            PlayerCommand::Load { title, .. } => Some(title.clone()),
-            _ => None,
-        });
+        let title = player_cmds(&directives)
+            .into_iter()
+            .find_map(|cmd| match cmd {
+                PlayerCommand::Load { title, .. } => Some(title.clone()),
+                _ => None,
+            });
         assert_eq!(
             title,
             Some(Some("ep1.mkv".to_string())),
@@ -3131,7 +3174,12 @@ mod tests {
         use dessplay_core::types::{AniDbSeriesId, ListEntryId};
         let mut state = CrdtState::new();
         // kim is not in the watchers set.
-        state.put_list_entry(A, ts(1), ListEntryId(1), list_entry(Some(7), &["baughn", "nero"]));
+        state.put_list_entry(
+            A,
+            ts(1),
+            ListEntryId(1),
+            list_entry(Some(7), &["baughn", "nero"]),
+        );
         let mut wiring = PlayerWiring::new(me());
         let view = state.view();
         let first = wiring.on_state(&view, &[peer("kim")]);
@@ -3149,7 +3197,12 @@ mod tests {
         use dessplay_core::types::ListEntryId;
         let mut state = CrdtState::new();
         // kim watches this one: no write.
-        state.put_list_entry(A, ts(1), ListEntryId(1), list_entry(Some(7), &["kim", "nero"]));
+        state.put_list_entry(
+            A,
+            ts(1),
+            ListEntryId(1),
+            list_entry(Some(7), &["kim", "nero"]),
+        );
         // Unlinked: no write.
         state.put_list_entry(A, ts(2), ListEntryId(2), list_entry(None, &["nero"]));
         // Empty watchers means "unrecorded", not "nobody": no write.

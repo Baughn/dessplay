@@ -135,7 +135,10 @@ pub enum DownloadAction {
 /// State for fetching block hashes (needed before any chunk can verify).
 enum BlockHashes {
     /// Requested from `peer` at `requested_at`; re-asked on snub.
-    Pending { peer: Option<PeerId>, requested_at: u64 },
+    Pending {
+        peer: Option<PeerId>,
+        requested_at: u64,
+    },
     /// Validated against the file's root.
     Have(Vec<Ed2kBlockHash>),
 }
@@ -286,7 +289,9 @@ impl Downloads {
                 }
                 self.progress_and_refill(file, now)
             }
-            PeerMessage::BlockHashes { file, hashes } => self.on_block_hashes(file, from, hashes, now),
+            PeerMessage::BlockHashes { file, hashes } => {
+                self.on_block_hashes(file, from, hashes, now)
+            }
             PeerMessage::ChunkData { file, index, data } => {
                 self.on_chunk_data(file, from, index, data, now)
             }
@@ -425,7 +430,9 @@ impl Downloads {
         let snubbed: Vec<PeerId> = d
             .sources
             .iter()
-            .filter(|(_, s)| !s.in_flight.is_empty() && now.saturating_sub(s.last_progress) >= timeout)
+            .filter(|(_, s)| {
+                !s.in_flight.is_empty() && now.saturating_sub(s.last_progress) >= timeout
+            })
             .map(|(p, _)| p.clone())
             .collect();
         for peer in snubbed {
@@ -489,9 +496,7 @@ impl Downloads {
         // Block hashes first: no chunk can verify without them.
         if matches!(d.block_hashes, BlockHashes::Pending { .. }) {
             let need_request = matches!(d.block_hashes, BlockHashes::Pending { peer: None, .. });
-            if need_request
-                && let Some(target) = d.sources.keys().next().cloned()
-            {
+            if need_request && let Some(target) = d.sources.keys().next().cloned() {
                 d.block_hashes = BlockHashes::Pending {
                     peer: Some(target.clone()),
                     requested_at: now,
@@ -616,10 +621,7 @@ fn plan_requests(d: &mut Download, config: &DownloadConfig, file: Ed2kHash) -> V
         }
         actions.push(DownloadAction::Send {
             to: peer,
-            message: PeerMessage::ChunkRequest {
-                file,
-                chunks: take,
-            },
+            message: PeerMessage::ChunkRequest { file, chunks: take },
         });
     }
     actions
@@ -825,16 +827,29 @@ mod tests {
         };
         // 5 blocks so 20% window is a meaningful slice; play at chunk 50.
         let mut r = rig(5 * ED2K_BLOCK_SIZE as usize, config);
-        r.downloads
-            .start(r.file, r.hash.size_bytes, r.hash.root, r.path.clone(), vec![peer("seed")], 50, 1000);
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("seed")],
+            50,
+            1000,
+        );
         r.downloads.on_peer_message(
             peer("seed"),
-            PeerMessage::BlockHashes { file: r.file, hashes: r.hash.blocks.clone() },
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
             1100,
         );
         let actions = r.downloads.on_peer_message(
             peer("seed"),
-            PeerMessage::FileAvailability { file: r.file, bitfield: r.full_bitfield() },
+            PeerMessage::FileAvailability {
+                file: r.file,
+                bitfield: r.full_bitfield(),
+            },
             1200,
         );
         let reqs = requests(&actions);
@@ -851,17 +866,30 @@ mod tests {
             snub_timeout_millis: 30_000,
         };
         let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
-        r.downloads
-            .start(r.file, r.hash.size_bytes, r.hash.root, r.path.clone(), vec![peer("slow"), peer("fast")], 0, 1000);
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("slow"), peer("fast")],
+            0,
+            1000,
+        );
         r.downloads.on_peer_message(
             peer("slow"),
-            PeerMessage::BlockHashes { file: r.file, hashes: r.hash.blocks.clone() },
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
             1100,
         );
         for name in ["slow", "fast"] {
             r.downloads.on_peer_message(
                 peer(name),
-                PeerMessage::FileAvailability { file: r.file, bitfield: r.full_bitfield() },
+                PeerMessage::FileAvailability {
+                    file: r.file,
+                    bitfield: r.full_bitfield(),
+                },
                 1200,
             );
         }
@@ -870,7 +898,11 @@ mod tests {
         // 'fast' delivers a chunk at t=2000; 'slow' stays silent.
         r.downloads.on_peer_message(
             peer("fast"),
-            PeerMessage::ChunkData { file: r.file, index: 0, data: r.chunk(0) },
+            PeerMessage::ChunkData {
+                file: r.file,
+                index: 0,
+                data: r.chunk(0),
+            },
             2000,
         );
         // Tick well past the snub timeout: 'slow' is dropped, its chunks
@@ -878,9 +910,20 @@ mod tests {
         let actions = r.downloads.tick(40_000);
         let cancels: Vec<&DownloadAction> = actions
             .iter()
-            .filter(|a| matches!(a, DownloadAction::Send { message: PeerMessage::Cancel { .. }, .. }))
+            .filter(|a| {
+                matches!(
+                    a,
+                    DownloadAction::Send {
+                        message: PeerMessage::Cancel { .. },
+                        ..
+                    }
+                )
+            })
             .collect();
-        assert!(!cancels.is_empty(), "snubbed source's chunks must be cancelled");
+        assert!(
+            !cancels.is_empty(),
+            "snubbed source's chunks must be cancelled"
+        );
         let stats = r.downloads.stats(&r.file).unwrap();
         assert!(stats.chunks_requeued > 0);
     }
@@ -889,7 +932,10 @@ mod tests {
     fn full_transfer_from_one_seed_completes_with_perfect_goodput() {
         // Drive a whole download from a single seed, answering each
         // ChunkRequest with the true bytes, until Complete.
-        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize + 5000, DownloadConfig::default());
+        let mut r = rig(
+            2 * ED2K_BLOCK_SIZE as usize + 5000,
+            DownloadConfig::default(),
+        );
         let _ = r.downloads.start(
             r.file,
             r.hash.size_bytes,
@@ -902,13 +948,19 @@ mod tests {
         // Answer block hashes.
         let _ = r.downloads.on_peer_message(
             peer("seed"),
-            PeerMessage::BlockHashes { file: r.file, hashes: r.hash.blocks.clone() },
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
             1,
         );
         // Advertise full availability — this kicks off chunk requests.
         let mut actions = r.downloads.on_peer_message(
             peer("seed"),
-            PeerMessage::FileAvailability { file: r.file, bitfield: r.full_bitfield() },
+            PeerMessage::FileAvailability {
+                file: r.file,
+                bitfield: r.full_bitfield(),
+            },
             2,
         );
 
@@ -927,7 +979,11 @@ mod tests {
                             t += 1;
                             let reply = r.downloads.on_peer_message(
                                 peer("seed"),
-                                PeerMessage::ChunkData { file: r.file, index: c, data: r.chunk(c) },
+                                PeerMessage::ChunkData {
+                                    file: r.file,
+                                    index: c,
+                                    data: r.chunk(c),
+                                },
                                 t,
                             );
                             next.extend(reply);
@@ -957,7 +1013,11 @@ mod tests {
             actions = next;
         }
         let path = completed.expect("download should complete");
-        assert_eq!(std::fs::read(&path).unwrap(), r.bytes, "assembled file matches");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            r.bytes,
+            "assembled file matches"
+        );
         // The download was removed on completion; recompute stats from a
         // fresh read isn't possible, so assert via the file contents
         // above. (Per-file stats are asserted in the sim test.)

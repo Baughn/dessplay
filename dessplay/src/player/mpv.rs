@@ -799,10 +799,7 @@ mod tests {
             ("one two".into(), Some("Fern".into()))
         );
         // Not a Dialogue line: plain text, no speaker.
-        assert_eq!(
-            parse_ass_full("just text"),
-            ("just text".into(), None)
-        );
+        assert_eq!(parse_ass_full("just text"), ("just text".into(), None));
         // Empty / cleared cue.
         assert_eq!(parse_ass_full(""), (String::new(), None));
     }
@@ -813,7 +810,9 @@ mod tests {
         // commands (m/l/b coordinates) are *not* text, `\p0` leaves it.
         // Only the trailing real text should survive.
         assert_eq!(
-            strip_ass_tags(r"{\p1}m -6 -56 l -611 -56 l -600 -155 l 338 -156{\p0}Due to heavy snowfall"),
+            strip_ass_tags(
+                r"{\p1}m -6 -56 l -611 -56 l -600 -155 l 338 -156{\p0}Due to heavy snowfall"
+            ),
             "Due to heavy snowfall"
         );
         // Combined tags in one block, and text before the shape.
@@ -822,10 +821,7 @@ mod tests {
             "beforeafter"
         );
         // `\pos(...)` is a position tag, NOT drawing mode — text kept.
-        assert_eq!(
-            strip_ass_tags(r"{\pos(960,540)}real text"),
-            "real text"
-        );
+        assert_eq!(strip_ass_tags(r"{\pos(960,540)}real text"), "real text");
         // A pure-shape event collapses to empty (so it is filtered out).
         assert_eq!(
             strip_ass_tags(r"{\p1}m -6 -56 l -611 -56 l -600 -155{\p0}"),
@@ -838,15 +834,13 @@ mod tests {
         // A sign rendered as two shape events (border + fill) followed by
         // the real text event: only the text survives, no path leakage.
         assert_eq!(
-            parse_ass_full(
-                concat!(
-                    r"Dialogue: 0,0,0,Sign,,0,0,0,,{\p1}m -6 -56 l -611 -56 l -600 -155{\p0}",
-                    "\n",
-                    r"Dialogue: 0,0,0,Sign,,0,0,0,,{\p1}m -6 -56 l 338 -156 l 349 -55{\p0}",
-                    "\n",
-                    r"Dialogue: 0,0,0,Default,,0,0,0,,Due to heavy snowfall, the trains will be delayed."
-                )
-            ),
+            parse_ass_full(concat!(
+                r"Dialogue: 0,0,0,Sign,,0,0,0,,{\p1}m -6 -56 l -611 -56 l -600 -155{\p0}",
+                "\n",
+                r"Dialogue: 0,0,0,Sign,,0,0,0,,{\p1}m -6 -56 l 338 -156 l 349 -55{\p0}",
+                "\n",
+                r"Dialogue: 0,0,0,Default,,0,0,0,,Due to heavy snowfall, the trains will be delayed."
+            )),
             (
                 "Due to heavy snowfall, the trains will be delayed.".into(),
                 None

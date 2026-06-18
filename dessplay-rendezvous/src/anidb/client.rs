@@ -143,8 +143,8 @@ impl RateLimiter {
     }
 
     fn refill(&mut self, now: Instant) {
-        let accrued = now.duration_since(self.last_refill).as_secs_f64()
-            / SUSTAINED_GAP.as_secs_f64();
+        let accrued =
+            now.duration_since(self.last_refill).as_secs_f64() / SUSTAINED_GAP.as_secs_f64();
         self.tokens = (self.tokens + accrued).min(BURST);
         self.last_refill = now;
     }
@@ -203,9 +203,17 @@ impl<W: Wire> UdpClient<W> {
     }
 
     /// Send one packet and wait for the matching (tagged) reply.
-    async fn exchange(&self, inner: &mut Inner, payload: &str, tag: &str) -> Result<Response, LookupError> {
+    async fn exchange(
+        &self,
+        inner: &mut Inner,
+        payload: &str,
+        tag: &str,
+    ) -> Result<Response, LookupError> {
         inner.limiter.acquire().await;
-        tracing::trace!(command = payload.split(' ').next().unwrap_or(""), "anidb send");
+        tracing::trace!(
+            command = payload.split(' ').next().unwrap_or(""),
+            "anidb send"
+        );
         if self.wire.send(payload).await.is_err() {
             inner.limiter.penalize(TIMEOUT_PENALTY);
             return Err(LookupError::Timeout);
@@ -251,7 +259,9 @@ impl<W: Wire> UdpClient<W> {
             protocol::BANNED | protocol::INTERNAL_SERVER_ERROR | protocol::OUT_OF_SERVICE => {
                 backoff(inner, BAN_BACKOFF)
             }
-            protocol::LOGIN_FAILED => Some(LookupError::Fatal("login failed (bad credentials)".into())),
+            protocol::LOGIN_FAILED => {
+                Some(LookupError::Fatal("login failed (bad credentials)".into()))
+            }
             protocol::CLIENT_VERSION_OUTDATED => {
                 Some(LookupError::Fatal("client version outdated".into()))
             }
@@ -296,10 +306,7 @@ impl<W: Wire> UdpClient<W> {
 
     /// Run a session-bearing command, re-authenticating once if the
     /// session has expired.
-    async fn call(
-        &self,
-        build: impl Fn(&str, &str) -> String,
-    ) -> Result<Response, LookupError> {
+    async fn call(&self, build: impl Fn(&str, &str) -> String) -> Result<Response, LookupError> {
         let mut inner = self.inner.lock().await;
         for attempt in 0..2 {
             let session = self.ensure_session(&mut inner).await?;
@@ -664,7 +671,10 @@ mod tests {
         );
         // Now the wire delivers the stale t2 reply followed by the real
         // t3 reply.
-        let _ = client.wire.reply_tx.send("t2 220 FILE\n9|9|stale|stale|99".into());
+        let _ = client
+            .wire
+            .reply_tx
+            .send("t2 220 FILE\n9|9|stale|stale|99".into());
         let _ = client
             .wire
             .reply_tx

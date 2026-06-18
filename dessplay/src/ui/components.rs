@@ -206,8 +206,7 @@ impl ChatPane {
 
     /// Load `text` into the input and park the cursor at its end.
     fn set_input(&mut self, text: String) {
-        self.input
-            .attr(Attribute::Value, AttrValue::String(text));
+        self.input.attr(Attribute::Value, AttrValue::String(text));
         let _ = self.input.perform(Cmd::GoTo(Position::End));
     }
 
@@ -292,7 +291,11 @@ impl ChatPane {
         self.scroll_offset = self.scroll_offset.min(max_offset);
         let end = lines.len().saturating_sub(self.scroll_offset);
         let start = end.saturating_sub(visible);
-        let items: Vec<ListItem> = lines[start..end].iter().cloned().map(ListItem::new).collect();
+        let items: Vec<ListItem> = lines[start..end]
+            .iter()
+            .cloned()
+            .map(ListItem::new)
+            .collect();
         frame.render_widget(
             List::new(items).block(
                 Block::default()
@@ -478,66 +481,66 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
                     return Some(Msg::None);
                 }
                 match plain(ev)? {
-                Key::Enter => {
-                    let text = self.text().trim().to_string();
-                    if text.is_empty() {
-                        return None;
-                    }
-                    self.clear();
-                    self.sent_history.push(text.clone());
-                    self.history_pos = None;
-                    self.scroll_offset = 0; // jump to newest so you see it
-                    return Some(if text.starts_with('/') {
-                        Msg::Command(text)
-                    } else {
-                        Msg::SendChat(text)
-                    });
-                }
-                Key::Esc => {
-                    self.clear();
-                    self.history_pos = None;
-                    return Some(Msg::None);
-                }
-                Key::PageUp => {
-                    self.scroll_offset += CHAT_PAGE_STEP;
-                    return Some(Msg::None);
-                }
-                Key::PageDown => {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_PAGE_STEP);
-                    return Some(Msg::None);
-                }
-                Key::Up => {
-                    // Recall an older message I sent into the input.
-                    if self.sent_history.is_empty() {
-                        return None;
-                    }
-                    let pos = match self.history_pos {
-                        None => self.sent_history.len() - 1,
-                        Some(p) => p.saturating_sub(1),
-                    };
-                    self.history_pos = Some(pos);
-                    self.set_input(self.sent_history[pos].clone());
-                    return Some(Msg::None);
-                }
-                Key::Down => {
-                    // Walk back toward the newest, then to an empty draft.
-                    let pos = self.history_pos?;
-                    if pos + 1 < self.sent_history.len() {
-                        self.history_pos = Some(pos + 1);
-                        self.set_input(self.sent_history[pos + 1].clone());
-                    } else {
-                        self.history_pos = None;
+                    Key::Enter => {
+                        let text = self.text().trim().to_string();
+                        if text.is_empty() {
+                            return None;
+                        }
                         self.clear();
+                        self.sent_history.push(text.clone());
+                        self.history_pos = None;
+                        self.scroll_offset = 0; // jump to newest so you see it
+                        return Some(if text.starts_with('/') {
+                            Msg::Command(text)
+                        } else {
+                            Msg::SendChat(text)
+                        });
                     }
-                    return Some(Msg::None);
-                }
-                Key::Backspace => Cmd::Delete, // stdlib: Delete = backspace
-                Key::Delete => Cmd::Cancel,    // stdlib: Cancel = delete-forward
-                Key::Left => Cmd::Move(Direction::Left),
-                Key::Right => Cmd::Move(Direction::Right),
-                Key::Home => Cmd::GoTo(Position::Begin),
-                Key::End => Cmd::GoTo(Position::End),
-                _ => return None,
+                    Key::Esc => {
+                        self.clear();
+                        self.history_pos = None;
+                        return Some(Msg::None);
+                    }
+                    Key::PageUp => {
+                        self.scroll_offset += CHAT_PAGE_STEP;
+                        return Some(Msg::None);
+                    }
+                    Key::PageDown => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_PAGE_STEP);
+                        return Some(Msg::None);
+                    }
+                    Key::Up => {
+                        // Recall an older message I sent into the input.
+                        if self.sent_history.is_empty() {
+                            return None;
+                        }
+                        let pos = match self.history_pos {
+                            None => self.sent_history.len() - 1,
+                            Some(p) => p.saturating_sub(1),
+                        };
+                        self.history_pos = Some(pos);
+                        self.set_input(self.sent_history[pos].clone());
+                        return Some(Msg::None);
+                    }
+                    Key::Down => {
+                        // Walk back toward the newest, then to an empty draft.
+                        let pos = self.history_pos?;
+                        if pos + 1 < self.sent_history.len() {
+                            self.history_pos = Some(pos + 1);
+                            self.set_input(self.sent_history[pos + 1].clone());
+                        } else {
+                            self.history_pos = None;
+                            self.clear();
+                        }
+                        return Some(Msg::None);
+                    }
+                    Key::Backspace => Cmd::Delete, // stdlib: Delete = backspace
+                    Key::Delete => Cmd::Cancel,    // stdlib: Cancel = delete-forward
+                    Key::Left => Cmd::Move(Direction::Left),
+                    Key::Right => Cmd::Move(Direction::Right),
+                    Key::Home => Cmd::GoTo(Position::Begin),
+                    Key::End => Cmd::GoTo(Position::End),
+                    _ => return None,
                 }
             }
         };
@@ -880,7 +883,12 @@ impl SeriesPane {
                 ("Enter", "Browse"),
             ],
             SeriesMode::TheList => {
-                vec![("m", "Mode"), ("Enter", "Open"), ("e", "Edit"), ("l", "Link")]
+                vec![
+                    ("m", "Mode"),
+                    ("Enter", "Open"),
+                    ("e", "Edit"),
+                    ("l", "Link"),
+                ]
             }
         }
     }
@@ -893,12 +901,12 @@ impl SeriesPane {
         };
         // Surface the filter so typing is visible (no silent state); show
         // the `/` cue the moment filtering starts, even before any text.
-        let title = if self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty())
-        {
-            format!("{base}  /{}", self.filter)
-        } else {
-            base.to_string()
-        };
+        let title =
+            if self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty()) {
+                format!("{base}  /{}", self.filter)
+            } else {
+                base.to_string()
+            };
         let items: Vec<ListItem> = match self.mode {
             SeriesMode::Recent | SeriesMode::All => self
                 .franchises
@@ -1247,7 +1255,11 @@ mod series_pane_tests {
             p.on(&key(Key::Char(c)));
         }
         assert_eq!(p.filter(), "mon");
-        assert_eq!(p.mode(), SeriesMode::All, "mode must not change while filtering");
+        assert_eq!(
+            p.mode(),
+            SeriesMode::All,
+            "mode must not change while filtering"
+        );
 
         // Backspace edits; Esc clears and exits filtering.
         p.on(&key(Key::Backspace));
@@ -1415,9 +1427,10 @@ mod chat_wrap_tests {
             assert!(line.chars().count() <= 10, "line too wide: {line:?}");
         }
         // Reassembling with single spaces recovers the words in order.
-        assert_eq!(lines.join(" ").split_whitespace().collect::<Vec<_>>(), [
-            "the", "quick", "brown", "fox"
-        ]);
+        assert_eq!(
+            lines.join(" ").split_whitespace().collect::<Vec<_>>(),
+            ["the", "quick", "brown", "fox"]
+        );
     }
 
     #[test]

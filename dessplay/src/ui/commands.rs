@@ -72,7 +72,11 @@ pub fn matching(input: &str) -> Vec<&'static SlashCommand> {
         return Vec::new();
     }
     // First token, lowercased, including the leading `/`.
-    let token = input.split_whitespace().next().unwrap_or("/").to_lowercase();
+    let token = input
+        .split_whitespace()
+        .next()
+        .unwrap_or("/")
+        .to_lowercase();
     SLASH_COMMANDS
         .iter()
         .filter(|cmd| cmd.name.starts_with(&token))
