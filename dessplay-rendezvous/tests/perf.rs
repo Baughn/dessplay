@@ -76,8 +76,12 @@ use tuirealm::terminal::TestTerminalAdapter;
 //     One rebuild still fits under the 50ms budget, so a fix that stops
 //     rebuilding on every snapshot drains the queue promptly.
 
-/// CPU test: library size and a realistic ~100 updates/s flood.
+/// CPU test: library size and a realistic ~100 updates/s flood. Only the
+/// Linux-gated `playback_cpu_under_10_percent` reads these (CPU sampling is
+/// implemented via /proc), so gate them too or they're dead code elsewhere.
+#[cfg(target_os = "linux")]
 const SEED_CPU: u32 = 4000;
+#[cfg(target_os = "linux")]
 const FLOOD_CPU: Duration = Duration::from_millis(10);
 
 /// Latency test: smaller library, but a high ~1000 updates/s flood that

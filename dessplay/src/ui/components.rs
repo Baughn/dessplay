@@ -72,6 +72,26 @@ pub(crate) fn ctrl(ev: &Event<NoUserEvent>) -> Option<Key> {
     }
 }
 
+/// Match helper for word navigation/deletion: a key carrying *either* the
+/// Ctrl or the Alt modifier. Desktop terminals send Ctrl for Ctrl-arrow;
+/// macOS terminals (ghostty) send Alt for Option-arrow and are unreliable
+/// about Ctrl-arrow — accepting both makes word motion work everywhere, and
+/// matches the Alt-arrow/Alt-Backspace muscle memory from macOS line editing.
+/// `.contains` (rather than `==`) also tolerates the extra modifier bits the
+/// kitty keyboard protocol can set alongside Ctrl. The modifiers are returned
+/// so callers can keep a binding Ctrl-only where Alt would collide (e.g. `w`).
+pub(crate) fn word_mod(ev: &Event<NoUserEvent>) -> Option<(Key, KeyModifiers)> {
+    match ev {
+        Event::Keyboard(KeyEvent { code, modifiers })
+            if modifiers.contains(KeyModifiers::CONTROL)
+                || modifiers.contains(KeyModifiers::ALT) =>
+        {
+            Some((*code, *modifiers))
+        }
+        _ => None,
+    }
+}
+
 /// Is this a typed character (with or without shift)?
 pub(crate) fn typed(ev: &Event<NoUserEvent>) -> Option<char> {
     match ev {
@@ -670,12 +690,28 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
                 Cmd::Type(c)
             }
             None => {
-                if let Some(key) = ctrl(ev) {
+                if let Some((key, mods)) = word_mod(ev) {
                     match key {
                         Key::Left => self.move_word_left(),
                         Key::Right => self.move_word_right(),
-                        // Ctrl-W and Ctrl-Backspace both kill the previous word.
-                        Key::Char('w') | Key::Backspace => self.kill_word_left(),
+                        // macOS terminals (ghostty) don't send Alt-arrow for
+                        // Option-Left/Right — they emit the readline word-motion
+                        // bytes Alt-b / Alt-f. Bind those (Alt-only; Ctrl-B /
+                        // Ctrl-F are char-wise motion in readline, not ours).
+                        Key::Char('b') if mods.contains(KeyModifiers::ALT) => self.move_word_left(),
+                        Key::Char('f') if mods.contains(KeyModifiers::ALT) => {
+                            self.move_word_right()
+                        }
+                        // Ctrl-Backspace / Alt-Backspace kill the previous word
+                        // (Alt-Backspace is the macOS delete-word habit).
+                        Key::Backspace => self.kill_word_left(),
+                        // Ctrl-W also kills, but only under Ctrl — Alt-W is a
+                        // typed character on macOS, not a word kill.
+                        Key::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
+                            self.kill_word_left()
+                        }
+                        // Any other Ctrl/Alt combo isn't ours; fall through to
+                        // the plain-key match (which rejects modified keys).
                         _ => return None,
                     }
                     return Some(Msg::None);
@@ -1683,6 +1719,13 @@ mod chat_input_tests {
         })
     }
 
+    fn alt(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::ALT,
+        })
+    }
+
     fn focused_pane() -> ChatPane {
         ChatPane {
             focused: true,
@@ -1764,6 +1807,82 @@ mod chat_input_tests {
         assert_eq!(pane.input.states.cursor, 15); // end of "brown"
         pane.on(&ctrl(Key::Right));
         assert_eq!(pane.input.states.cursor, 15); // clamped
+    }
+
+    /// Alt-Left/Right move by word too — macOS terminals (ghostty) send Alt
+    /// for Option-arrow, and some never send a usable Ctrl-arrow at all.
+    #[test]
+    fn alt_left_right_move_by_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        pane.on(&alt(Key::Left));
+        assert_eq!(pane.input.states.cursor, 10); // start of "brown"
+        pane.on(&alt(Key::Left));
+        assert_eq!(pane.input.states.cursor, 4); // start of "quick"
+        pane.on(&alt(Key::Right));
+        assert_eq!(pane.input.states.cursor, 9); // end of "quick"
+    }
+
+    /// macOS terminals (ghostty) emit Option-Left/Right as the readline
+    /// word-motion bytes Alt-b / Alt-f, not Alt-arrow — those must move by word.
+    #[test]
+    fn alt_b_f_move_by_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        pane.on(&alt(Key::Char('b')));
+        assert_eq!(pane.input.states.cursor, 10); // start of "brown"
+        pane.on(&alt(Key::Char('b')));
+        assert_eq!(pane.input.states.cursor, 4); // start of "quick"
+        pane.on(&alt(Key::Char('f')));
+        assert_eq!(pane.input.states.cursor, 9); // end of "quick"
+    }
+
+    /// Ctrl-B / Ctrl-F are char-wise in readline, not word motion — they must
+    /// not be hijacked into word jumps (and aren't typed into the buffer).
+    #[test]
+    fn ctrl_b_f_are_not_word_motion() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        let before = pane.input.states.cursor;
+        pane.on(&ctrl(Key::Char('b')));
+        pane.on(&ctrl(Key::Char('f')));
+        assert_eq!(pane.input.states.cursor, before);
+        assert_eq!(pane.text(), "the quick brown");
+    }
+
+    /// Alt-Backspace deletes the previous word (macOS line-editing habit).
+    #[test]
+    fn alt_backspace_kills_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        pane.on(&alt(Key::Backspace));
+        assert_eq!(pane.text(), "the quick ");
+    }
+
+    /// Alt-W is a typed character on macOS, not a word kill — only Ctrl-W
+    /// kills. (Here it simply does nothing, not delete a word.)
+    #[test]
+    fn alt_w_does_not_kill_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        pane.on(&alt(Key::Char('w')));
+        assert_eq!(pane.text(), "the quick brown");
+    }
+
+    /// The kitty keyboard protocol can report Ctrl-arrow with extra modifier
+    /// bits set; word motion must still trigger (we match on `contains`, not
+    /// equality). This is the most likely cause of "Ctrl-Left does nothing on
+    /// the laptop but works on the desktop".
+    #[test]
+    fn ctrl_left_with_extra_modifier_bits_moves_by_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        let ev = Event::Keyboard(KeyEvent {
+            code: Key::Left,
+            modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        });
+        pane.on(&ev);
+        assert_eq!(pane.input.states.cursor, 10); // start of "brown"
     }
 
     #[test]
