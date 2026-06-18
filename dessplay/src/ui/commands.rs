@@ -34,6 +34,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         help: "mark yourself (or someone) away",
     },
     SlashCommand {
+        name: "/me",
+        args: "<action>",
+        help: "send an action (e.g. * Baughn waves)",
+    },
+    SlashCommand {
         name: "/skip",
         args: "",
         help: "stop watching the current series",
@@ -100,6 +105,12 @@ mod tests {
     fn prefix_narrows() {
         assert_eq!(names("/sk"), vec!["/skip"]);
         assert_eq!(names("/pa"), vec!["/pause"]);
+    }
+
+    #[test]
+    fn me_is_offered() {
+        assert!(names("/").contains(&"/me"));
+        assert_eq!(names("/me"), vec!["/me"]);
     }
 
     #[test]

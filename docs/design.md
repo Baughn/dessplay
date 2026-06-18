@@ -328,6 +328,13 @@ This prevents sync issues from different encodes/versions.
     you unpause the player or send another chat message.
   - `/skip` -- stop watching the now-playing file's series (sets your
     per-series preference to NotWatching; needs an AniDB series id)
+  - `/me <action>` -- send an IRC-style action ("* Baughn waves"). Unlike
+    the other commands this is a real, **synced** chat message (it reaches
+    everyone, persists, and shows on the player OSD as "* Baughn waves");
+    sending one also clears your own Away. The action is carried inline in
+    the message text using the CTCP `ACTION` convention
+    (`"\x01ACTION waves\x01"`), so no separate message type or schema change
+    is needed -- only the display sites decode it.
   - `/settings` -- open the settings screen (also `F3`)
 
 ### System Messages
@@ -359,7 +366,7 @@ mechanism that already posts command feedback and archive results).
 | Event | Derived from | Example line | Delivery |
 |-------|--------------|--------------|----------|
 | **Player crashed** (died twice in 30s) | the crashing client writes a chat message | "Baughn: my player crashed -- pausing" | **Synced** (a real chat message: persisted, shows the sender, late joiners see it) |
-| **Player gave up** (died three times in 30s) | the crashing client writes a chat message | "Baughn: my player keeps crashing -- giving up until I pick another file" | **Synced** (a real chat message; same rationale as Player crashed) |
+| **Player gave up** (died three times in 30s) | the crashing client writes a chat message | "Baughn: my player keeps crashing -- giving up until someone picks another file" | **Synced** (a real chat message; same rationale as Player crashed) |
 | **Seek** (> 5s jump) | seek-authority + the authority's position | "Baughn skipped to 12:34" | Local |
 | **New file** (manual select) | now-playing register change, no watched flip | "Now playing: [Frieren] - 02.mkv" | Local (the *what* persists in the playlist pane) |
 | **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
@@ -1180,7 +1187,7 @@ Player choice is per-user configuration.
      kills the player would otherwise loop forever (spamming the log and
      re-pausing on every death). The client stays paused and writes a
      second shared chat message ("my player keeps crashing — giving up
-     until I pick another file"). Loading a **different file** (a new
+     until someone picks another file"). Loading a **different file** (a new
      now-playing) resets the counter and brings the player back — the
      deliberate recovery action. The crash counter resets whenever a
      different file is loaded, so deaths spaced further than 30s apart

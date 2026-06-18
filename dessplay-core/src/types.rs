@@ -443,8 +443,58 @@ pub struct ChatMessage {
     pub timestamp: SharedTimestamp,
     /// Who sent it.
     pub sender: UserId,
-    /// The message.
+    /// The message. An IRC-style action ("/me waves") is carried inline
+    /// using the CTCP convention — `"\x01ACTION waves\x01"` — see
+    /// [`encode_action`] / [`decode_action`]. This keeps actions ordinary
+    /// chat messages (synced, archived, no schema change); only the
+    /// display sites decode them.
     pub text: String,
+}
+
+/// The CTCP `ACTION` prefix marking an IRC-style emote ("/me waves").
+const ACTION_PREFIX: &str = "\u{1}ACTION ";
+/// The trailing CTCP delimiter.
+const ACTION_SUFFIX: char = '\u{1}';
+
+/// Encode an IRC-style action (`/me <action>`) into chat `text` using the
+/// CTCP `ACTION` convention. The result is stored as an ordinary
+/// [`ChatMessage`] text; [`decode_action`] reverses it at display time.
+pub fn encode_action(action: &str) -> String {
+    format!("{ACTION_PREFIX}{action}{ACTION_SUFFIX}")
+}
+
+/// If `text` is a CTCP `ACTION` (see [`encode_action`]), return the inner
+/// action phrase; otherwise `None`. A missing trailing delimiter is
+/// tolerated, but stripped when present.
+pub fn decode_action(text: &str) -> Option<&str> {
+    let body = text.strip_prefix(ACTION_PREFIX)?;
+    Some(body.strip_suffix(ACTION_SUFFIX).unwrap_or(body))
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips() {
+        assert_eq!(decode_action(&encode_action("waves")), Some("waves"));
+        assert_eq!(
+            decode_action(&encode_action("waves at Nero")),
+            Some("waves at Nero")
+        );
+    }
+
+    #[test]
+    fn plain_text_is_not_an_action() {
+        assert_eq!(decode_action("hello"), None);
+        assert_eq!(decode_action("/me waves"), None);
+        assert_eq!(decode_action(""), None);
+    }
+
+    #[test]
+    fn tolerates_missing_suffix() {
+        assert_eq!(decode_action("\u{1}ACTION waves"), Some("waves"));
+    }
 }
 
 /// A "please look this up on AniDB" request, inserted by clients as they

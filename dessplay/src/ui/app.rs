@@ -10,7 +10,9 @@ use dessplay_core::StateView;
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::franchise::{self, FranchiseKey};
 use dessplay_core::net::PeerInfo;
-use dessplay_core::types::{Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId};
+use dessplay_core::types::{
+    Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId, encode_action,
+};
 use tuirealm::component::AppComponent;
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute};
@@ -909,6 +911,21 @@ impl Ui {
             }
             "/ready" => self.become_ready(),
             "/pause" => self.become_unready(),
+            // `/me <action>` emotes an IRC-style action. It is an ordinary
+            // (synced) chat message carrying a CTCP-encoded body, routed
+            // through `send_chat` so it also clears your own Away — sending
+            // any chat line is an "I'm here" action. The raw remainder is
+            // kept verbatim (internal spacing preserved).
+            "/me" => {
+                let action = command.strip_prefix("/me").map_or("", str::trim_start);
+                if action.is_empty() {
+                    vec![UserAction::Notice(
+                        "/me: describe an action, e.g. /me waves".to_string(),
+                    )]
+                } else {
+                    self.send_chat(&encode_action(action))
+                }
+            }
             // `/away` marks yourself by default; an optional name targets
             // another user. `/afk` is a name-taking alias (legacy spelling).
             "/away" | "/afk" => {
@@ -1657,6 +1674,58 @@ mod tests {
         let mut ui = ui_with_view(StateView::default());
         let actions = ui.command("/skip");
         assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
+    #[test]
+    fn me_command_sends_encoded_action() {
+        use dessplay_core::types::decode_action;
+        let mut ui = ui_with_view(StateView::default());
+        let actions = ui.command("/me waves at Nero");
+        // A single synced chat message whose body decodes to the action.
+        assert!(matches!(
+            actions.as_slice(),
+            [UserAction::Mutate(Mutation::Chat { text })]
+                if decode_action(text) == Some("waves at Nero")
+        ));
+    }
+
+    #[test]
+    fn me_command_clears_away() {
+        // Like sending a normal chat line, `/me` is an "I'm here" action.
+        let mut state = CrdtState::new();
+        state.set_manual_override(
+            A,
+            SharedTimestamp(1),
+            me(),
+            Some(ManualState::Away {
+                set_by: UserId::new("baughn"),
+            }),
+        );
+        let mut ui = ui_with_view(state.view());
+        let actions = ui.command("/me waves");
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            UserAction::Mutate(Mutation::SetManualOverride { state: None, user })
+                if *user == me()
+        )));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, UserAction::Mutate(Mutation::Chat { .. })))
+        );
+    }
+
+    #[test]
+    fn me_command_without_action_notices() {
+        let mut ui = ui_with_view(StateView::default());
+        assert!(matches!(
+            ui.command("/me").as_slice(),
+            [UserAction::Notice(_)]
+        ));
+        assert!(matches!(
+            ui.command("/me    ").as_slice(),
+            [UserAction::Notice(_)]
+        ));
     }
 
     #[test]

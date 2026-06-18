@@ -30,7 +30,7 @@ use dessplay_core::net::PeerInfo;
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
     AniDbSeriesId, Ed2kHash, FileAvailability, ManualState, PlaybackIntent, SeekAuthority,
-    SeriesWatchState, UserId,
+    SeriesWatchState, UserId, decode_action,
 };
 
 use crate::actors::file::{
@@ -992,10 +992,11 @@ impl PlayerWiring {
             None => self.chat_seen = Some(view.chat.len()),
             Some(seen) => {
                 for msg in view.chat.iter().skip(seen) {
-                    out.push(Directive::Player(PlayerCommand::ShowOsd(format!(
-                        "{}: {}",
-                        msg.sender, msg.text
-                    ))));
+                    let osd = match decode_action(&msg.text) {
+                        Some(phrase) => format!("* {} {}", msg.sender, phrase),
+                        None => format!("{}: {}", msg.sender, msg.text),
+                    };
+                    out.push(Directive::Player(PlayerCommand::ShowOsd(osd)));
                 }
                 self.chat_seen = Some(view.chat.len());
             }
@@ -1166,7 +1167,8 @@ impl PlayerWiring {
                     intent: PlaybackIntent::Paused,
                 }),
                 Directive::Mutate(Mutation::Chat {
-                    text: "my player keeps crashing — giving up until someone picks another file".into(),
+                    text: "my player keeps crashing — giving up until someone picks another file"
+                        .into(),
                 }),
             ],
         }
@@ -2581,6 +2583,28 @@ mod tests {
     }
 
     #[test]
+    fn action_chat_renders_as_osd_emote() {
+        let mut state = playing_state();
+        let mut wiring = PlayerWiring::new(me());
+        // Establish the chat baseline (backlog is not news).
+        wiring.on_state(&state.view(), &[peer("kim")]);
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(6),
+            sender: UserId::new("baughn"),
+            text: dessplay_core::types::encode_action("waves"),
+        });
+        let out = wiring.on_state(&state.view(), &[peer("kim")]);
+        let osd: Vec<_> = player_cmds(&out)
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                PlayerCommand::ShowOsd(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(osd, vec!["* baughn waves"]);
+    }
+
+    #[test]
     fn user_pause_writes_override_and_latch() {
         let mut wiring = PlayerWiring::new(me());
         let view = playing_state().view();
@@ -3094,7 +3118,7 @@ mod tests {
         assert!(directives.iter().any(|d| matches!(
             d,
             Directive::Mutate(Mutation::Chat { text })
-                if text == "my player keeps crashing — giving up until I pick another file"
+                if text == "my player keeps crashing — giving up until someone picks another file"
         )));
     }
 

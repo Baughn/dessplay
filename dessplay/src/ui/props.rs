@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::{PeerInfo, Presence, Role};
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, UserId,
+    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, UserId, decode_action,
 };
 use dessplay_core::{StateView, franchise};
 
@@ -217,6 +217,10 @@ pub struct ChatLine {
     /// holds the date label, rendered centered between dashes. Not a
     /// message — computed from timestamps, never stored or synced.
     pub separator: bool,
+    /// An IRC-style action ("/me waves"): rendered "* sender text" with no
+    /// colon. `text` holds the decoded action phrase (the CTCP wrapper is
+    /// stripped). UI-only flag derived from the message text.
+    pub action: bool,
     /// Shared-clock millis, the interleave key across synced messages,
     /// local system lines, and subtitle arrivals. For subtitle lines
     /// this is wall-clock *arrival*, not the in-video `time`.
@@ -227,14 +231,24 @@ pub struct ChatLine {
 pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
     view.chat
         .iter()
-        .map(|message| ChatLine {
-            time: hhmm(message.timestamp.0),
-            sender: message.sender.to_string(),
-            text: message.text.clone(),
-            system: false,
-            subtitle: false,
-            separator: false,
-            millis: message.timestamp.0,
+        .map(|message| {
+            // An IRC-style action carries its phrase CTCP-encoded in the
+            // text; decode it here so the renderer sees a plain phrase plus
+            // the `action` flag.
+            let (text, action) = match decode_action(&message.text) {
+                Some(phrase) => (phrase.to_string(), true),
+                None => (message.text.clone(), false),
+            };
+            ChatLine {
+                time: hhmm(message.timestamp.0),
+                sender: message.sender.to_string(),
+                text,
+                system: false,
+                subtitle: false,
+                separator: false,
+                action,
+                millis: message.timestamp.0,
+            }
         })
         .collect()
 }
@@ -248,6 +262,7 @@ pub fn system_line(timestamp: u64, text: String) -> ChatLine {
         system: true,
         subtitle: false,
         separator: false,
+        action: false,
         millis: timestamp,
     }
 }
@@ -265,6 +280,7 @@ pub fn day_separator(millis: u64) -> ChatLine {
         system: false,
         subtitle: false,
         separator: true,
+        action: false,
         millis,
     }
 }
@@ -290,6 +306,7 @@ pub fn subtitle_line(video_millis: u64, arrival_millis: u64, text: String) -> Ch
         system: false,
         subtitle: true,
         separator: false,
+        action: false,
         millis: arrival_millis,
     }
 }
@@ -747,6 +764,24 @@ mod tests {
 
     fn ts(t: u64) -> SharedTimestamp {
         SharedTimestamp(t)
+    }
+
+    #[test]
+    fn chat_lines_decode_actions() {
+        let mut state = CrdtState::new();
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(1),
+            sender: UserId::new("baughn"),
+            text: "hello".to_string(),
+        });
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(2),
+            sender: UserId::new("baughn"),
+            text: dessplay_core::types::encode_action("waves"),
+        });
+        let lines = chat_lines(&state.view());
+        assert_eq!((lines[0].text.as_str(), lines[0].action), ("hello", false));
+        assert_eq!((lines[1].text.as_str(), lines[1].action), ("waves", true));
     }
 
     fn hash(i: u8) -> Ed2kHash {

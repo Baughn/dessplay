@@ -137,7 +137,9 @@ const CHAT_PAGE_STEP: usize = 5;
 /// Indent applied to wrapped continuation lines in the chat log.
 const CHAT_WRAP_INDENT: usize = 2;
 /// Most command suggestions shown at once in the discoverability popup.
-const CHAT_SUGGESTION_MAX: u16 = 6;
+/// Sized to fit the whole command table on a bare `/` with a little
+/// headroom (see [`super::commands::SLASH_COMMANDS`]).
+const CHAT_SUGGESTION_MAX: u16 = 8;
 
 /// Chat log + always-visible input line.
 pub struct ChatPane {
@@ -428,6 +430,35 @@ fn wrap_chat_line(line: &ChatLine, width: usize) -> Vec<Line<'static>> {
                     ])
                 } else {
                     Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim()))
+                }
+            })
+            .collect()
+    } else if line.action {
+        // IRC-style action: "* sender phrase", no colon. The "* " is dim,
+        // the sender keeps its per-user color/bold, the phrase is raw.
+        let time = format!("{} ", line.time);
+        let marker = "* ";
+        let sender = format!("{} ", line.sender);
+        let prefix_width = time.chars().count() + marker.chars().count() + sender.chars().count();
+        let chunks = wrap_body(
+            &line.text,
+            width.saturating_sub(prefix_width),
+            width.saturating_sub(CHAT_WRAP_INDENT),
+        );
+        let sender_style = theme::user_style(&line.sender).add_modifier(Modifier::BOLD);
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                if i == 0 {
+                    Line::from(vec![
+                        Span::styled(time.clone(), theme::dim()),
+                        Span::styled(marker, theme::dim()),
+                        Span::styled(sender.clone(), sender_style),
+                        Span::raw(chunk),
+                    ])
+                } else {
+                    Line::from(Span::raw(format!("{indent}{chunk}")))
                 }
             })
             .collect()
