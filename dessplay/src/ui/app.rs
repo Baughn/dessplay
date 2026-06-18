@@ -311,7 +311,29 @@ impl Ui {
             }));
         }
         lines.sort_by_key(|line| line.millis);
-        lines
+        Self::insert_day_separators(lines)
+    }
+
+    /// Insert a biblical-day separator (09:00 boundary) between adjacent
+    /// lines whose day differs. A render-time view concern: computed from
+    /// the (already sorted) line timestamps, never stored or synced, so it
+    /// is recomputed every draw and is visible to late joiners too.
+    fn insert_day_separators(lines: Vec<props::ChatLine>) -> Vec<props::ChatLine> {
+        let mut out = Vec::with_capacity(lines.len());
+        let mut prev_day = None;
+        for line in lines {
+            let day = props::biblical_date(line.millis);
+            if let (Some(today), Some(prev)) = (day, prev_day)
+                && today != prev
+            {
+                out.push(props::day_separator(line.millis));
+            }
+            if day.is_some() {
+                prev_day = day;
+            }
+            out.push(line);
+        }
+        out
     }
 
     /// Track playlist-add hashing progress (drawn as an overlay).

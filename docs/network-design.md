@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-06-12
+Last updated: 2026-06-18
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see

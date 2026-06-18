@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-06-14
+Last updated: 2026-06-18
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -261,6 +261,21 @@ the real channels and lazily spawns the player actor on the first load.
 `run_interactive` and the multi-client harness drive the same shell, so
 the full pipeline (player → wiring → sync → server → peers → their
 players) is covered in tests without a terminal or a real mpv.
+
+**Chat narrator.** `PlayerWiring::narrate` (called at the end of
+`on_state`) turns state changes into the chat log's
+[system messages](../docs/design.md) (joins, pauses, seeks, not-watching,
+new files). It diffs a small captured slice of each (state view, peer
+list) against the previous one and emits a `Directive::SystemLine` per
+transition; the shell stamps it and forwards it to the UI as a local
+`UiInput::System` line (the same path archive/command feedback uses),
+*not* through the synced GList. It is pure and snapshot-diffing, so it is
+tested like the rest of the wiring: feed it successive snapshots and
+assert on the lines. The lone non-derived case is the player crash: the
+`FatalCrash` arm already writes an ordinary synced `Mutation::Chat`, which
+reaches every client (and late joiners) without special handling. The
+09:00 day separator is *not* here -- it is a render-time insertion in the
+UI's chat builder, computed from message timestamps.
 
 ### The bridge loop (`run::SessionLoop`)
 

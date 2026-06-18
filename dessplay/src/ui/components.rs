@@ -369,6 +369,16 @@ fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
 fn wrap_chat_line(line: &ChatLine, width: usize) -> Vec<Line<'static>> {
     use tuirealm::ratatui::style::Modifier;
     let indent: String = " ".repeat(CHAT_WRAP_INDENT);
+    if line.separator {
+        // Render-time day divider: the date label centered between dashes.
+        let label = format!(" {} ", line.text);
+        let label_w = label.chars().count();
+        let total = width.max(label_w);
+        let dashes = total - label_w;
+        let left = dashes / 2;
+        let bar = format!("{}{}{}", "─".repeat(left), label, "─".repeat(dashes - left));
+        return vec![Line::from(Span::styled(bar, theme::dim()))];
+    }
     if line.subtitle {
         // Local subtitle (Intermixed mode): dim, no sender, "»" marker,
         // in-video timestamp.

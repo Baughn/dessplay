@@ -22,14 +22,15 @@
 //! - Files are verified (ed2k) before they can play: now-playing is
 //!   only loaded once the matcher returns [`Resolution::Verified`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use dessplay_core::derive;
 use dessplay_core::net::PeerInfo;
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
-    Ed2kHash, FileAvailability, ManualState, PlaybackIntent, SeekAuthority, UserId,
+    AniDbSeriesId, Ed2kHash, FileAvailability, ManualState, PlaybackIntent, SeekAuthority,
+    SeriesWatchState, UserId,
 };
 
 use crate::actors::file::{
@@ -55,6 +56,29 @@ pub struct SubtitleLine {
     pub arrival_millis: u64,
 }
 
+/// A local-only system chat line bound for the UI (the narrator's
+/// output: "Baughn paused", "Nero joined", …). Derived per-client from
+/// the synced state, never written to the GList. `timestamp` is the
+/// shell's wall-clock stamp, interleaving it with chat by arrival.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemNotice {
+    /// Shared-clock arrival (milliseconds); the chat interleave key.
+    pub timestamp: u64,
+    /// The line body (rendered dim, no sender).
+    pub text: String,
+}
+
+/// UI-bound effects from executing a batch of directives: local subtitle
+/// lines and local system chat lines. Both are interleaved into the chat
+/// by arrival time and are strictly local (never synced).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UiLines {
+    /// Subtitle lines for the subtitle log.
+    pub subtitles: Vec<SubtitleLine>,
+    /// System chat lines from the narrator.
+    pub system: Vec<SystemNotice>,
+}
+
 /// One instruction to the async shell around the wiring.
 #[derive(Debug)]
 pub enum Directive {
@@ -66,6 +90,12 @@ pub enum Directive {
     Mutate(Mutation),
     /// Report end-of-file to the server (it owns the transition).
     ReportEof(Ed2kHash),
+    /// A local-only system chat line for the UI (the narrator's output).
+    /// The shell stamps wall-clock arrival; never synced to the GList.
+    SystemLine {
+        /// The line body (rendered dim, no sender).
+        text: String,
+    },
     /// Resolve a playlist entry against the media roots (blocking IO —
     /// the shell runs the matcher and calls
     /// [`PlayerWiring::on_resolved`] with the outcome).
@@ -169,6 +199,9 @@ pub struct PlayerWiring {
     /// The now-playing file at the last eviction pass; a change is the
     /// EOF-advance (or manual-jump) signal to run another.
     last_now_playing: Option<Ed2kHash>,
+    /// The chat narrator's previous snapshot slice. `None` until the
+    /// first state arrives (the initial view is a baseline, not news).
+    narrator: Option<NarratorState>,
 }
 
 /// Fraction of a file's duration that counts as "watched" (design.md,
@@ -222,6 +255,115 @@ fn placeholder_lines(view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> Ve
     ]
 }
 
+/// More than this many narration lines in a single diff is read as a
+/// wholesale snapshot replacement (reconnect / daily compaction), not a
+/// run of real events — suppress them rather than spam the chat. Normal
+/// play produces one or two lines per tick.
+const NARRATOR_BURST_CAP: usize = 5;
+/// A position jump beyond this (relative to expected playback progress)
+/// is narrated as a seek (design.md, System Messages).
+const SEEK_NARRATE_MILLIS: u64 = 5_000;
+
+/// The slice of state the chat narrator diffs between snapshots. Kept
+/// deliberately small — it is captured every UI tick, so cloning the
+/// whole `StateView` (chat, playlist, metadata maps) would be wasteful
+/// (see the perf notes on the ~100ms tick).
+struct NarratorState {
+    now_playing: Option<Ed2kHash>,
+    /// Whether `now_playing`'s watched flag was set at capture time — the
+    /// EOF-advance signature (watched flips true as now-playing moves on).
+    now_playing_watched: bool,
+    /// The followed (seek-authority) position sample, when a user holds
+    /// authority and a real video is playing: `(position_millis,
+    /// sample_timestamp)`. `None` under Server authority / no now-playing.
+    seek_sample: Option<(u64, u64)>,
+    /// Per-user manual override (Paused / Away).
+    manual_override: BTreeMap<UserId, Option<ManualState>>,
+    /// Per-(user, series) watch preference (small; one or two per user).
+    series_preference: BTreeMap<(UserId, AniDbSeriesId), SeriesWatchState>,
+    /// Per-user presence (interactive users only; seeders never narrated).
+    peers: BTreeMap<UserId, dessplay_core::net::Presence>,
+}
+
+impl NarratorState {
+    /// Capture the diffable slice of the current view + peers.
+    fn capture(view: &StateView, peers: &[PeerInfo]) -> Self {
+        let now_playing_watched = view
+            .now_playing
+            .is_some_and(|f| view.watched.get(&f) == Some(&true));
+        let seek_sample = match (&view.now_playing, &view.seek_authority) {
+            (Some(_), Some(SeekAuthority::User(user))) => {
+                view.playback_position.get(user).map(|p| (p.position_millis, p.timestamp.0))
+            }
+            _ => None,
+        };
+        NarratorState {
+            now_playing: view.now_playing,
+            now_playing_watched,
+            seek_sample,
+            manual_override: view.manual_override.clone(),
+            series_preference: view.series_preference.clone(),
+            peers: current_interactive(peers),
+        }
+    }
+}
+
+/// The followed (seek-authority) position sample for `authority`, if it
+/// has published a position.
+fn current_seek_sample(view: &StateView, authority: &UserId) -> Option<(u64, u64)> {
+    view.playback_position.get(authority).map(|p| (p.position_millis, p.timestamp.0))
+}
+
+/// Present/Lost/Departed presence of interactive peers (seeders excluded).
+fn current_interactive(peers: &[PeerInfo]) -> BTreeMap<UserId, dessplay_core::net::Presence> {
+    peers
+        .iter()
+        .filter(|p| p.role == dessplay_core::net::Role::Interactive)
+        .map(|p| (p.username.clone(), p.presence))
+        .collect()
+}
+
+/// Format an in-video position as `MM:SS` (or `H:MM:SS` past an hour),
+/// for the "skipped to" line. Local to the session layer (the UI's
+/// `props::mmss` is the same idea but lives behind the UI boundary).
+fn fmt_mmss(millis: u64) -> String {
+    let total = millis / 1000;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// Display name for a now-playing file: the playlist filename, else the
+/// file-catalog filename, else the hash.
+fn now_playing_name(view: &StateView, file: Ed2kHash) -> String {
+    playlist_title(view, file)
+        .or_else(|| view.file_catalog.get(&file).map(|c| c.filename.clone()))
+        .unwrap_or_else(|| file.to_string())
+}
+
+/// The narration line for a single presence transition, if any.
+fn presence_line(
+    user: &UserId,
+    was: Option<dessplay_core::net::Presence>,
+    now: Option<dessplay_core::net::Presence>,
+) -> Option<String> {
+    use dessplay_core::net::Presence::{Departed, Lost, Present};
+    match (was, now) {
+        // Appears (new, or returning from Departed) as a live peer.
+        (None | Some(Departed), Some(Present)) => Some(format!("{user} joined")),
+        // Recovered from a glitch.
+        (Some(Lost), Some(Present)) => Some(format!("{user} is back")),
+        // Dropped: 30s idle, everyone pauses.
+        (Some(Present), Some(Lost)) => Some(format!("{user}'s connection dropped — everyone paused")),
+        // Gone: departed (60s) or removed from the list (graceful quit).
+        (Some(Present | Lost), Some(Departed) | None) => Some(format!("{user} left")),
+        _ => None,
+    }
+}
+
 impl PlayerWiring {
     /// A fresh wiring for `me`.
     pub fn new(me: UserId) -> Self {
@@ -238,7 +380,155 @@ impl PlayerWiring {
             series_known_checked: HashSet::new(),
             eviction_started: false,
             last_now_playing: None,
+            narrator: None,
         }
+    }
+
+    /// Derive the chat log's [system messages](design.md, System
+    /// Messages) by diffing this snapshot against the previous one:
+    /// joins/leaves, pause/resume/away, not-watching/watching of the
+    /// now-playing series, seeks over 5s, and new-file selections. All
+    /// are local-only [`Directive::SystemLine`]s — never synced (every
+    /// client derives the same lines from the same synced inputs).
+    ///
+    /// The first snapshot is a baseline (no narration); a diff producing
+    /// more than [`NARRATOR_BURST_CAP`] lines is read as a wholesale
+    /// replacement (reconnect / compaction) and suppressed.
+    fn narrate(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
+        let current = NarratorState::capture(view, peers);
+        let Some(prev) = self.narrator.replace(current) else {
+            // First snapshot: baseline only.
+            return vec![];
+        };
+        let mut lines: Vec<String> = Vec::new();
+
+        // New now-playing file. The EOF-advance signature (the prior
+        // file's watched flag flipping true) distinguishes an automatic
+        // advance from a manual selection.
+        if prev.now_playing != view.now_playing
+            && let Some(file) = view.now_playing
+        {
+            let name = now_playing_name(view, file);
+            let eof = prev.now_playing.is_some_and(|prev_file| {
+                !prev.now_playing_watched && view.watched.get(&prev_file) == Some(&true)
+            });
+            lines.push(if eof {
+                format!("Up next: {name}")
+            } else {
+                format!("Now playing: {name}")
+            });
+        }
+
+        // Seek > 5s by the authority, on the *same* file (a new file
+        // resets the position domain and is covered by the line above).
+        // Authority flips to a user only via a seek, so a fresh sample on
+        // an unchanged file is itself a jump candidate.
+        if prev.now_playing == view.now_playing
+            && let Some(SeekAuthority::User(authority)) = &view.seek_authority
+            && let (Some((pos, ts)), Some((prev_pos, prev_ts))) =
+                (current_seek_sample(view, authority), prev.seek_sample)
+        {
+            let active = derive::playback_active(view, peers);
+            let expected = prev_pos + if active { ts.saturating_sub(prev_ts) } else { 0 };
+            if pos.abs_diff(expected) > SEEK_NARRATE_MILLIS {
+                lines.push(format!("{authority} skipped to {}", fmt_mmss(pos)));
+            }
+        }
+
+        // Manual override changes (pause / resume / away / back), keyed by
+        // the affected user; Away carries who set it.
+        let users = prev
+            .manual_override
+            .keys()
+            .chain(view.manual_override.keys())
+            .collect::<std::collections::BTreeSet<_>>();
+        for user in users {
+            let was = prev.manual_override.get(user).cloned().flatten();
+            let now = view.manual_override.get(user).cloned().flatten();
+            if was == now {
+                continue;
+            }
+            match now {
+                Some(ManualState::Paused) => lines.push(format!("{user} paused")),
+                Some(ManualState::Away { set_by })
+                    if !matches!(was, Some(ManualState::Away { .. })) =>
+                {
+                    lines.push(if &set_by == user {
+                        format!("{user} is away")
+                    } else {
+                        format!("{set_by} marked {user} away")
+                    });
+                }
+                None => lines.push(match was {
+                    Some(ManualState::Paused) => format!("{user} resumed"),
+                    _ => format!("{user} is back"),
+                }),
+                _ => {}
+            }
+        }
+
+        // Watch-preference change for the *now-playing* series (the /skip,
+        // /ready, Ctrl-R surface). Scoping to now-playing keeps the List's
+        // bulk auto-writes for other series out of the chat; the local
+        // user's own auto-writes (tracked in `watcher_prefs_written`) are
+        // skipped too. Attribution is the subject until the "mark others
+        // not-watching" feature lands and adds a real setter.
+        if let Some(file) = view.now_playing
+            && let Some(Some(meta)) = view.anidb_metadata.get(&file)
+            && let Some(series) = meta.series_id
+        {
+            let keys = prev
+                .series_preference
+                .keys()
+                .chain(view.series_preference.keys())
+                .filter(|(_, s)| *s == series)
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            for key in keys {
+                let was = prev.series_preference.get(&key).copied();
+                let now = view.series_preference.get(&key).copied();
+                if was == now {
+                    continue;
+                }
+                let (user, _) = &key;
+                // Skip our own List-derived auto-write.
+                if user == &self.me && self.watcher_prefs_written.contains(&series) {
+                    continue;
+                }
+                let name = &meta.series_name;
+                match now {
+                    Some(SeriesWatchState::NotWatching) => {
+                        lines.push(format!("{user} set to not-watching {name} (by {user})"))
+                    }
+                    Some(SeriesWatchState::Watching) => {
+                        lines.push(format!("{user} set to watching {name} (by {user})"))
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        // Presence changes (join / leave / lost / back), seeders excluded.
+        let now_peers = current_interactive(peers);
+        let peer_users = prev
+            .peers
+            .keys()
+            .chain(now_peers.keys())
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        for user in &peer_users {
+            if let Some(line) =
+                presence_line(user, prev.peers.get(user).copied(), now_peers.get(user).copied())
+            {
+                lines.push(line);
+            }
+        }
+
+        // A wholesale replacement (reconnect / compaction) trips the cap.
+        if lines.len() > NARRATOR_BURST_CAP {
+            return vec![];
+        }
+        lines.into_iter().map(|text| Directive::SystemLine { text }).collect()
     }
 
     /// If the now-playing file is missing and has metadata, ask the file
@@ -688,6 +978,10 @@ impl PlayerWiring {
             }
         }
 
+        // Narrate the diff against the previous snapshot (local system
+        // chat lines). Last, so it sees the same view the rest reacted to.
+        out.extend(self.narrate(view, peers));
+
         out
     }
 
@@ -841,7 +1135,7 @@ impl PlayerWiring {
                     intent: PlaybackIntent::Paused,
                 }),
                 Directive::Mutate(Mutation::Chat {
-                    text: "[my player crashed twice in a row; pausing]".into(),
+                    text: "my player crashed — pausing".into(),
                 }),
             ],
         }
@@ -921,13 +1215,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     }
 
     /// A background hash finished: add the file to the playlist.
-    pub async fn on_hashed(&mut self, done: HashedAdd) -> Vec<SubtitleLine> {
+    pub async fn on_hashed(&mut self, done: HashedAdd) -> UiLines {
         self.hashing.remove(&done.path);
         let hashed = match done.result {
             Ok(hashed) => hashed,
             Err(e) => {
                 tracing::error!(path = %done.path.display(), "hashing failed: {e}");
-                return Vec::new();
+                return UiLines::default();
             }
         };
         let filename = done
@@ -1024,18 +1318,15 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.hashing.len()
     }
 
-    /// A fresh state view arrived. Returns subtitle lines for the UI.
-    pub async fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<SubtitleLine> {
+    /// A fresh state view arrived. Returns local UI lines (subtitles +
+    /// the narrator's system chat lines).
+    pub async fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) -> UiLines {
         let directives = self.wiring.on_state(view, peers);
         self.execute(directives).await
     }
 
     /// The player actor reported something.
-    pub async fn on_player_output(
-        &mut self,
-        output: PlayerOutput,
-        view: &StateView,
-    ) -> Vec<SubtitleLine> {
+    pub async fn on_player_output(&mut self, output: PlayerOutput, view: &StateView) -> UiLines {
         let directives = self.wiring.on_player(output, view);
         self.execute(directives).await
     }
@@ -1047,13 +1338,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         resolution: Resolution,
         view: &StateView,
         peers: &[PeerInfo],
-    ) -> Vec<SubtitleLine> {
+    ) -> UiLines {
         let directives = self.wiring.on_resolved(file, resolution, view, peers);
         self.execute(directives).await
     }
 
     /// We hashed and added this file ourselves.
-    pub async fn note_local_file(&mut self, file: Ed2kHash, path: PathBuf) -> Vec<SubtitleLine> {
+    pub async fn note_local_file(&mut self, file: Ed2kHash, path: PathBuf) -> UiLines {
         let directives = self.wiring.note_local_file(file, path);
         self.execute(directives).await
     }
@@ -1073,8 +1364,8 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         }
     }
 
-    async fn execute(&mut self, directives: Vec<Directive>) -> Vec<SubtitleLine> {
-        let mut subtitles = Vec::new();
+    async fn execute(&mut self, directives: Vec<Directive>) -> UiLines {
+        let mut lines = UiLines::default();
         for directive in directives {
             match directive {
                 Directive::Player(cmd) => {
@@ -1181,7 +1472,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                     text,
                     speaker,
                     video_millis,
-                } => subtitles.push(SubtitleLine {
+                } => lines.subtitles.push(SubtitleLine {
                     text,
                     speaker,
                     video_millis,
@@ -1189,9 +1480,15 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                     // use, so all three share one interleave domain.
                     arrival_millis: (self.clock)(),
                 }),
+                Directive::SystemLine { text } => lines.system.push(SystemNotice {
+                    // Same shared clock as subtitles/chat: one interleave
+                    // domain in the chat log.
+                    timestamp: (self.clock)(),
+                    text,
+                }),
             }
         }
-        subtitles
+        lines
     }
 
     /// A file-transfer message relayed from a peer: hand it to the file
@@ -1510,6 +1807,258 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn peer_p(name: &str, presence: Presence) -> PeerInfo {
+        PeerInfo {
+            presence,
+            ..peer(name)
+        }
+    }
+
+    fn seeder(name: &str) -> PeerInfo {
+        PeerInfo {
+            role: Role::Seeder,
+            ..peer(name)
+        }
+    }
+
+    /// The narrator's system-chat lines among a directive batch.
+    fn system_texts(directives: &[Directive]) -> Vec<String> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::SystemLine { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Baseline with `view1`/`peers1`, then narrate the diff to
+    /// `view2`/`peers2`.
+    fn narrate_diff(
+        view1: &StateView,
+        peers1: &[PeerInfo],
+        view2: &StateView,
+        peers2: &[PeerInfo],
+    ) -> Vec<String> {
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(view1, peers1);
+        system_texts(&wiring.on_state(view2, peers2))
+    }
+
+    #[test]
+    fn narrator_first_snapshot_is_silent() {
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        assert!(system_texts(&wiring.on_state(&view, &[peer("kim")])).is_empty());
+    }
+
+    #[test]
+    fn narrator_join_leave_lost_back() {
+        let view = playing_state().view();
+        let kb = [peer("kim"), peer("baughn")];
+        let kbn = [peer("kim"), peer("baughn"), peer("nero")];
+        assert_eq!(narrate_diff(&view, &kb, &view, &kbn), ["nero joined"]);
+        assert_eq!(narrate_diff(&view, &kbn, &view, &kb), ["nero left"]);
+
+        let lost = [peer("kim"), peer_p("nero", Presence::Lost)];
+        let present = [peer("kim"), peer("nero")];
+        assert_eq!(
+            narrate_diff(&view, &present, &view, &lost),
+            ["nero's connection dropped — everyone paused"]
+        );
+        assert_eq!(narrate_diff(&view, &lost, &view, &present), ["nero is back"]);
+    }
+
+    #[test]
+    fn narrator_excludes_seeders() {
+        let view = playing_state().view();
+        let before = [peer("kim")];
+        let after = [peer("kim"), seeder("nas")];
+        assert!(narrate_diff(&view, &before, &view, &after).is_empty());
+    }
+
+    #[test]
+    fn narrator_pause_resume_away_back() {
+        let baughn = UserId::new("baughn");
+        let peers = [peer("kim"), peer("baughn")];
+
+        let mut state = playing_state();
+        let v0 = state.view();
+        state.set_manual_override(A, ts(10), baughn.clone(), Some(ManualState::Paused));
+        let v_paused = state.view();
+        assert_eq!(narrate_diff(&v0, &peers, &v_paused, &peers), ["baughn paused"]);
+
+        state.set_manual_override(A, ts(11), baughn.clone(), None);
+        let v_resumed = state.view();
+        assert_eq!(
+            narrate_diff(&v_paused, &peers, &v_resumed, &peers),
+            ["baughn resumed"]
+        );
+
+        // Away by another user names both; clearing it reads "is back".
+        let mut state = playing_state();
+        let v0 = state.view();
+        state.set_manual_override(
+            A,
+            ts(10),
+            baughn.clone(),
+            Some(ManualState::Away { set_by: me() }),
+        );
+        let v_away = state.view();
+        assert_eq!(
+            narrate_diff(&v0, &peers, &v_away, &peers),
+            ["kim marked baughn away"]
+        );
+        state.set_manual_override(A, ts(11), baughn.clone(), None);
+        let v_back = state.view();
+        assert_eq!(
+            narrate_diff(&v_away, &peers, &v_back, &peers),
+            ["baughn is back"]
+        );
+    }
+
+    #[test]
+    fn narrator_self_away() {
+        let baughn = UserId::new("baughn");
+        let peers = [peer("kim"), peer("baughn")];
+        let mut state = playing_state();
+        let v0 = state.view();
+        state.set_manual_override(
+            A,
+            ts(10),
+            baughn.clone(),
+            Some(ManualState::Away {
+                set_by: baughn.clone(),
+            }),
+        );
+        let v1 = state.view();
+        assert_eq!(narrate_diff(&v0, &peers, &v1, &peers), ["baughn is away"]);
+    }
+
+    #[test]
+    fn narrator_not_watching_and_watching_now_playing_series() {
+        let baughn = UserId::new("baughn");
+        let series = dessplay_core::types::AniDbSeriesId(7);
+        let peers = [peer("kim"), peer("baughn")];
+
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let v0 = state.view();
+        state.set_series_preference(
+            A,
+            ts(20),
+            baughn.clone(),
+            series,
+            SeriesWatchState::NotWatching,
+        );
+        let v_not = state.view();
+        assert_eq!(
+            narrate_diff(&v0, &peers, &v_not, &peers),
+            ["baughn set to not-watching Some Show (by baughn)"]
+        );
+
+        state.set_series_preference(A, ts(21), baughn.clone(), series, SeriesWatchState::Watching);
+        let v_yes = state.view();
+        assert_eq!(
+            narrate_diff(&v_not, &peers, &v_yes, &peers),
+            ["baughn set to watching Some Show (by baughn)"]
+        );
+    }
+
+    #[test]
+    fn narrator_ignores_other_series_preference() {
+        // A preference for a series other than now-playing's (e.g. the
+        // List's bulk auto-writes) is not narrated.
+        let baughn = UserId::new("baughn");
+        let peers = [peer("kim"), peer("baughn")];
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let v0 = state.view();
+        state.set_series_preference(
+            A,
+            ts(20),
+            baughn,
+            dessplay_core::types::AniDbSeriesId(99),
+            SeriesWatchState::NotWatching,
+        );
+        let v1 = state.view();
+        assert!(narrate_diff(&v0, &peers, &v1, &peers).is_empty());
+    }
+
+    #[test]
+    fn narrator_now_playing_manual_vs_eof() {
+        let peers = [peer("kim")];
+
+        // Manual selection: prior file not watched -> "Now playing".
+        let mut state = playing_state();
+        state.push_playlist_entry(A, ts(4), entry(2, "ep2.mkv"));
+        let v0 = state.view();
+        state.set_now_playing(A, ts(10), Some(hash(2)));
+        let v_manual = state.view();
+        assert_eq!(
+            narrate_diff(&v0, &peers, &v_manual, &peers),
+            ["Now playing: ep2.mkv"]
+        );
+
+        // EOF advance: prior file's watched flag flips true -> "Up next".
+        let mut state = playing_state();
+        state.push_playlist_entry(A, ts(4), entry(2, "ep2.mkv"));
+        let v0 = state.view();
+        state.set_watched(A, ts(9), hash(1), true);
+        state.set_now_playing(A, ts(10), Some(hash(2)));
+        let v_eof = state.view();
+        assert_eq!(narrate_diff(&v0, &peers, &v_eof, &peers), ["Up next: ep2.mkv"]);
+    }
+
+    #[test]
+    fn narrator_seek_over_threshold_only() {
+        let baughn = UserId::new("baughn");
+        let peers = [peer("kim"), peer("baughn")];
+        let pos = |p: u64, t: u64| PlaybackPosition {
+            position_millis: p,
+            timestamp: ts(t),
+        };
+
+        let mut state = playing_state();
+        state.set_seek_authority(A, ts(5), SeekAuthority::User(baughn.clone()));
+        state.set_playback_position(A, ts(6), baughn.clone(), pos(1_000, 10_000));
+        let v0 = state.view();
+
+        // A 59s jump well past 100ms of elapsed time -> narrated.
+        state.set_playback_position(A, ts(7), baughn.clone(), pos(60_000, 10_100));
+        let v_jump = state.view();
+        assert_eq!(
+            narrate_diff(&v0, &peers, &v_jump, &peers),
+            ["baughn skipped to 1:00"]
+        );
+
+        // A sub-5s move -> not narrated.
+        let mut state = playing_state();
+        state.set_seek_authority(A, ts(5), SeekAuthority::User(baughn.clone()));
+        state.set_playback_position(A, ts(6), baughn.clone(), pos(1_000, 10_000));
+        let v0 = state.view();
+        state.set_playback_position(A, ts(7), baughn.clone(), pos(3_000, 10_100));
+        let v_small = state.view();
+        assert!(narrate_diff(&v0, &peers, &v_small, &peers).is_empty());
+    }
+
+    #[test]
+    fn narrator_burst_is_suppressed() {
+        // A wholesale change (six joins at once) reads as a reconnect.
+        let view = playing_state().view();
+        let before = [peer("kim")];
+        let after = [
+            peer("kim"),
+            peer("a"),
+            peer("b"),
+            peer("c"),
+            peer("d"),
+            peer("e"),
+            peer("f"),
+        ];
+        assert!(narrate_diff(&view, &before, &view, &after).is_empty());
     }
 
     #[test]
@@ -2474,11 +3023,10 @@ mod tests {
                 intent: PlaybackIntent::Paused
             })
         )));
-        assert!(
-            directives
-                .iter()
-                .any(|d| matches!(d, Directive::Mutate(Mutation::Chat { .. })))
-        );
+        assert!(directives.iter().any(|d| matches!(
+            d,
+            Directive::Mutate(Mutation::Chat { text }) if text == "my player crashed — pausing"
+        )));
     }
 
     #[test]

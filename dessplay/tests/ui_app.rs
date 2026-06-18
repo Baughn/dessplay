@@ -427,6 +427,42 @@ fn system_chat_line_renders() {
 }
 
 #[test]
+fn day_separator_renders_between_different_days() {
+    use dessplay::ui::props;
+    let day = 86_400_000u64;
+    let t1 = 1_000_000_000_000; // a fixed instant
+    let t2 = t1 + 2 * day; // two days later — a different biblical day
+    assert_ne!(props::biblical_date(t1), props::biblical_date(t2));
+
+    let mut ui = ui();
+    ui.push_system(t1, "first".into());
+    ui.push_system(t2, "second".into());
+    let screen = render(&mut ui, 100, 30);
+
+    // The divider carries the later day's date label.
+    let label = props::day_separator(t2).text;
+    assert!(!label.is_empty());
+    assert!(screen.contains(&label), "expected '{label}' in:\n{screen}");
+}
+
+#[test]
+fn no_day_separator_within_one_day() {
+    use dessplay::ui::props;
+    let t1 = 1_000_000_000_000;
+    let t2 = t1 + 60_000; // one minute later — same biblical day
+    assert_eq!(props::biblical_date(t1), props::biblical_date(t2));
+
+    let mut ui = ui();
+    ui.push_system(t1, "first".into());
+    ui.push_system(t2, "second".into());
+    let screen = render(&mut ui, 100, 30);
+
+    // No divider is inserted, so the date label never appears.
+    let label = props::day_separator(t1).text;
+    assert!(!screen.contains(&label), "unexpected divider in:\n{screen}");
+}
+
+#[test]
 fn archive_action_ignored_for_non_temporary_file() {
     // A file already in a media root (not in the cache set) shows no
     // "temporary" marker, so `A` is a no-op.

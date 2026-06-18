@@ -213,6 +213,10 @@ pub struct ChatLine {
     /// rendered dim with a `»` marker and an in-video `time`, never
     /// synced.
     pub subtitle: bool,
+    /// A render-time day separator (the biblical-day divider): `text`
+    /// holds the date label, rendered centered between dashes. Not a
+    /// message — computed from timestamps, never stored or synced.
+    pub separator: bool,
     /// Shared-clock millis, the interleave key across synced messages,
     /// local system lines, and subtitle arrivals. For subtitle lines
     /// this is wall-clock *arrival*, not the in-video `time`.
@@ -229,6 +233,7 @@ pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
             text: message.text.clone(),
             system: false,
             subtitle: false,
+            separator: false,
             millis: message.timestamp.0,
         })
         .collect()
@@ -242,8 +247,36 @@ pub fn system_line(timestamp: u64, text: String) -> ChatLine {
         text,
         system: true,
         subtitle: false,
+        separator: false,
         millis: timestamp,
     }
+}
+
+/// Build a day-separator line for `millis`. `text` is the date label
+/// (e.g. "Thursday, June 18"); the chat pane renders it centered between
+/// dashes. The displayed-time field is unused.
+pub fn day_separator(millis: u64) -> ChatLine {
+    ChatLine {
+        time: String::new(),
+        sender: String::new(),
+        text: biblical_date(millis).map_or_else(String::new, |d| {
+            d.format("%A, %B ").to_string() + &d.format("%-d").to_string()
+        }),
+        system: false,
+        subtitle: false,
+        separator: true,
+        millis,
+    }
+}
+
+/// The "biblical" calendar day for `millis`: the local date after
+/// shifting the boundary to 09:00 (the small hours belong to the prior
+/// evening's session — design.md, System Messages). Two timestamps are
+/// the same day iff this is equal. `None` for an out-of-range timestamp.
+pub fn biblical_date(millis: u64) -> Option<chrono::NaiveDate> {
+    use chrono::{Local, TimeZone};
+    let dt = Local.timestamp_millis_opt(millis as i64).single()?;
+    Some((dt - chrono::Duration::hours(9)).date_naive())
 }
 
 /// Build a local subtitle chat line for Intermixed mode: the displayed
@@ -256,6 +289,7 @@ pub fn subtitle_line(video_millis: u64, arrival_millis: u64, text: String) -> Ch
         text,
         system: false,
         subtitle: true,
+        separator: false,
         millis: arrival_millis,
     }
 }

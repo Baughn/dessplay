@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-14
+Last updated: 2026-06-18
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -310,7 +310,8 @@ This prevents sync issues from different encodes/versions.
 - Type in the chat input (always visible at bottom of chat pane)
 - Press Enter to send
 - Messages appear in the chat pane AND as OSD in the video player
-- System messages (joins, disconnects, state changes) appear in chat
+- System messages (joins, disconnects, state changes) appear in chat --
+  see [System Messages](#system-messages)
 - Text commands start with `/`. Typing `/` shows a grey, filtered list of
   the available commands at the bottom of the chat pane (discoverability);
   it narrows as more of the command is typed and disappears once the input
@@ -328,6 +329,88 @@ This prevents sync issues from different encodes/versions.
   - `/skip` -- stop watching the now-playing file's series (sets your
     per-series preference to NotWatching; needs an AniDB series id)
   - `/settings` -- open the settings screen (also `F3`)
+
+### System Messages
+
+The chat log narrates what the group is doing -- who joined, who paused,
+what got put on -- so a glance at the chat is a glance at the session.
+These lines are **derived, not synced**: the underlying facts already live
+in the synced CRDT state or in the server's `PeerList` (presence). A small
+synchronous **chat narrator** in the session layer diffs each new (state
+view, peer list) against the previous one and emits a local system line
+for each change. Because every client diffs the *same* synced inputs,
+every client narrates the *same* lines -- consistent without any extra
+wire traffic.
+
+The cost of deriving rather than syncing is that **a late joiner does not
+see past events**: a transition like "Baughn paused" cannot be
+reconstructed from a snapshot that holds only the *current* value. That is
+acceptable -- system lines are a real-time "what's happening now" cue, and
+the durable answers live elsewhere (the Users pane shows who is present
+now; the playlist pane shows the full play history in muted colors). The
+two things that *do* reach late joiners are called out below: the player
+crash (a real synced chat message) and the day separators (recomputed
+from the persisted chat timestamps).
+
+System lines render like the existing local-only lines: dim, no sender,
+interleaved into the chat by shared-clock arrival time (the same
+mechanism that already posts command feedback and archive results).
+
+| Event | Derived from | Example line | Delivery |
+|-------|--------------|--------------|----------|
+| **Player crashed** (died twice in 30s) | the crashing client writes a chat message | "Baughn: my player crashed -- pausing" | **Synced** (a real chat message: persisted, shows the sender, late joiners see it) |
+| **Seek** (> 5s jump) | seek-authority + the authority's position | "Baughn skipped to 12:34" | Local |
+| **New file** (manual select) | now-playing register change, no watched flip | "Now playing: [Frieren] - 02.mkv" | Local (the *what* persists in the playlist pane) |
+| **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
+| **Joined** | `PeerList`: a peer becomes Present | "Nero joined" | Local |
+| **Connection lost** | `PeerList`: a peer becomes Lost | "Nero's connection dropped -- everyone paused" | Local |
+| **Left** | `PeerList`: Departed, or a graceful `Goodbye` | "Nero left" | Local |
+| **Back** | `PeerList`: Lost -> Present | "Nero is back" | Local |
+| **Paused** | manual-override map: None -> Paused | "Baughn paused" | Local |
+| **Resumed** | manual-override cleared (Paused -> None) | "Baughn resumed" | Local |
+| **Away** | manual-override map -> Away | "Kim is away" / "Baughn marked Kim away" | Local |
+| **Not watching** | series-preference map -> NotWatching (now-playing series) | "Kim set to not-watching Frieren (by Kim)" | Local |
+| **Watching again** | series-preference map -> Watching (now-playing series) | "Kim set to watching Frieren (by Kim)" | Local |
+
+**Attribution.** The resolved `StateView` does not record *who* wrote a
+register, so attribution comes from the data, not the writer. The subject
+of a per-user / per-`(user, series)` change is the map *key*; Away carries
+its setter in the value (`ManualState::Away { set_by }`), so it can name
+both when one user marks another ("Baughn marked Kim away"). The
+**now-playing** writer is *not* recoverable (manual selection takes no
+seek authority), so new-file lines are un-attributed; EOF-advance is told
+apart by the prior file's watched flag flipping true. Watch-preference
+lines are scoped to the **now-playing series** (the `/skip` / `/ready` /
+Ctrl-R surface), which keeps the List's bulk auto-writes for other series
+out of the chat; their `(by …)` is the subject today (you can only set
+your own preference) and will name the real setter once
+[marking *others* not-watching](#future-plans) lands.
+
+**No cascade spam.** A single user-meaningful action often writes several
+registers at once -- pressing play clears the manual override *and* sets
+intent to Playing; an EOF advance moves now-playing, forces intent to
+Paused, *and* sets the watched flag. The narrator emits **one** line per
+action, not one per register. In particular, the server-forced intent ->
+Paused on Lost / departure / EOF is never narrated as a bare "paused" --
+it is already explained by the corresponding lost / left / new-file line.
+Brief presence glitches under 30s never reach Lost, so they stay silent.
+Drift-correction slews and the < 100ms ignore band never write the
+seek-authority register, so they never produce a "skipped to" line; the
+1500ms seek debounce already coalesces scrubbing into a single write.
+
+**Seeders** are excluded from every presence-derived line, exactly as they
+are excluded from the Users pane and playback gating.
+
+**Day separators.** Watch parties straddle midnight, so the log marks each
+new day -- but on a **biblical day boundary at 09:00 local time**, not
+literal midnight (the small hours still belong to last night's session).
+This is purely a **view concern**, not an event and not stored anywhere:
+when rendering the chat, a separator ("──── Thursday, June 18 ────") is
+inserted between two adjacent lines whose 09:00-anchored local date
+differs. Because it is recomputed from the (persisted) chat timestamps, a
+late joiner sees the separators too, and days with no messages produce no
+separator. The boundary is local-time and per-client by design -- it is a
+reading aid, never synced.
 
 ### Watching a Series
 
@@ -718,6 +801,10 @@ Chat messages include:
 
 Reliability: Chat is a `crdts::GList` (grow-only list). New messages are
 sent through the server; the CRDT handles ordering and deduplication.
+The [system messages](#system-messages) are local-only and derived
+per-client, *not* in this GList; the one exception is the player-crash
+notice, which the crashing client writes as an ordinary chat message (so
+it persists and reaches late joiners).
 
 ---
 
@@ -1079,7 +1166,13 @@ Player choice is per-user configuration.
      restore the desired pause state
    - Second death within 30s: *additionally* pause globally and notify
      in chat — the relaunch then comes up paused, the safe state if
-     the file itself is crashing the player
+     the file itself is crashing the player. Unlike most
+     [system messages](#system-messages), this one is **shared**: the
+     crashing client writes a real chat message (and forces playback
+     intent to Paused). A crash is the one state change peers cannot
+     derive from their own view (they have no signal for *another* user's
+     player dying), so it must be communicated — and being an ordinary
+     synced chat message, it persists and reaches late joiners.
 
 ### Commands Sent to Player
 
@@ -1269,6 +1362,11 @@ For v1, this is acceptable. Future improvements could include:
   than wall-clock arrival.
 - Automating The List's "this week's episode is out" flag (possibly via AniDB
   episode air dates).
+- Marking *another* user as not-watching a series (the per-series analogue of
+  `/away <name>` -- for when someone never gets around to a show). Needs a
+  `set_by` on `SeriesWatchState` (mirroring `ManualState::Away`) so the
+  [system message](#system-messages) can name the real setter; the narrator
+  already derives the subject from the map key.
 - Direct client-to-client connections (with or without hole punching) as a
   transfer optimization, slotted in beneath the `send(peer, message)`
   interface. Cut from v2: the relay-through-NAS path makes them unnecessary.

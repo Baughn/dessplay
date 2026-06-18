@@ -49,6 +49,30 @@ pub struct HeadlessArgs {
     pub cache_dir: Option<PathBuf>,
 }
 
+/// Forward the local UI lines produced by the session shell (subtitle
+/// lines and the narrator's system chat lines) to the UI. Both are local
+/// only — never synced — and share the chat interleave domain.
+fn forward_ui_lines(
+    ui: &std::sync::mpsc::SyncSender<crate::ui::shell::UiInput>,
+    lines: crate::session::UiLines,
+) {
+    use crate::ui::shell::UiInput;
+    for line in lines.subtitles {
+        let _ = ui.try_send(UiInput::Subtitle {
+            text: line.text,
+            speaker: line.speaker,
+            video_millis: line.video_millis,
+            arrival_millis: line.arrival_millis,
+        });
+    }
+    for notice in lines.system {
+        let _ = ui.try_send(UiInput::System {
+            timestamp: notice.timestamp,
+            text: notice.text,
+        });
+    }
+}
+
 /// The wall clock in unix millis — the client-side equivalent of the
 /// server's shared clock source.
 fn system_clock() -> Arc<dyn Fn() -> u64 + Send + Sync> {
@@ -901,21 +925,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 "first state snapshot pushed to the UI"
                             );
                         }
-                        self.shell.on_state(&snapshot.view, &snapshot.peers).await;
+                        let lines = self.shell.on_state(&snapshot.view, &snapshot.peers).await;
+                        forward_ui_lines(&self.ui, lines);
                         last_view = snapshot.view.clone();
                         let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
                     }
                 }
                 output = self.shell.player_outputs.recv() => {
                     let Some(output) = output else { continue };
-                    for line in self.shell.on_player_output(output, &last_view).await {
-                        let _ = self.ui.try_send(UiInput::Subtitle {
-                            text: line.text,
-                            speaker: line.speaker,
-                            video_millis: line.video_millis,
-                            arrival_millis: line.arrival_millis,
-                        });
-                    }
+                    let lines = self.shell.on_player_output(output, &last_view).await;
+                    forward_ui_lines(&self.ui, lines);
                 }
                 output = self.shell.file_outputs.recv() => {
                     let Some(output) = output else { continue };
@@ -1007,7 +1026,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
     /// effect at once, independent of network-event timing.
     async fn refresh_ui(&mut self, last_view: &mut dessplay_core::StateView) {
         if let Some(snapshot) = self.snapshot().await {
-            self.shell.on_state(&snapshot.view, &snapshot.peers).await;
+            let lines = self.shell.on_state(&snapshot.view, &snapshot.peers).await;
+            forward_ui_lines(&self.ui, lines);
             *last_view = snapshot.view.clone();
             let _ = self
                 .ui

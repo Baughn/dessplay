@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-06-14
+Last updated: 2026-06-18
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -488,6 +488,12 @@ Each `ChatMessage` contains:
 - `sender: UserId`
 - `text: String`
 - `timestamp: SharedTimestamp`
+
+The chat log's [system messages](../docs/design.md) (joins, pauses,
+seeks, …) are local-only and derived per-client; they never enter this
+GList. The one exception is the player-crash notice, written by the
+crashing client as an ordinary `ChatMessage` so it persists and reaches
+late joiners.
 
 GList handles ordering and deduplication. Messages are displayed sorted by
 the GList's internal ordering (which respects insertion order). Operations
