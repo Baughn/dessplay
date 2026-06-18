@@ -69,7 +69,7 @@ async fn full_journey_against_real_mpv() {
     .await
     .expect("launching mpv");
 
-    player.load(&video).await.unwrap();
+    player.load(&video, None).await.unwrap();
     expect_event(&player, BUDGET, |e| {
         matches!(e, PlayerEvent::Loaded).then_some(())
     })

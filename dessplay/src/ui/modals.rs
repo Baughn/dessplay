@@ -1335,9 +1335,11 @@ mod tests {
 
     /// A SettingsModal with all the essentials filled in (saveable).
     fn saveable_settings() -> SettingsModal {
-        let mut settings = Settings::default();
-        settings.username = Some("nero".into());
-        settings.password = Some("hunter2".into());
+        let settings = Settings {
+            username: Some("nero".into()),
+            password: Some("hunter2".into()),
+            ..Default::default()
+        };
         SettingsModal::new(settings, vec![PathBuf::from("/anime")])
     }
 
@@ -1384,8 +1386,10 @@ mod tests {
             vec!["a username", "a password", "a media root"]
         );
         // Fill username + root; only the password remains.
-        let mut settings = Settings::default();
-        settings.username = Some("nero".into());
+        let settings = Settings {
+            username: Some("nero".into()),
+            ..Default::default()
+        };
         let partial = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
         assert_eq!(partial.missing_essentials(), vec!["a password"]);
         // Fully populated: nothing missing, saveable.
@@ -1395,8 +1399,10 @@ mod tests {
     #[test]
     fn save_blocked_without_essentials() {
         // Missing password: every save path no-ops rather than emitting a save.
-        let mut settings = Settings::default();
-        settings.username = Some("nero".into());
+        let settings = Settings {
+            username: Some("nero".into()),
+            ..Default::default()
+        };
         let mut modal = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
         let save_row = modal.save_index();
         assert!(!modal.can_save());
