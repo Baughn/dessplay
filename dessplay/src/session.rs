@@ -470,7 +470,7 @@ impl PlayerWiring {
                     });
                 }
                 None => lines.push(match was {
-                    Some(ManualState::Paused) => format!("{user} resumed"),
+                    Some(ManualState::Paused) => format!("{user} unpaused"),
                     _ => format!("{user} is back"),
                 }),
                 _ => {}

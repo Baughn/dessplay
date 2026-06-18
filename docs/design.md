@@ -367,7 +367,7 @@ mechanism that already posts command feedback and archive results).
 | **Left** | `PeerList`: Departed, or a graceful `Goodbye` | "Nero left" | Local |
 | **Back** | `PeerList`: Lost -> Present | "Nero is back" | Local |
 | **Paused** | manual-override map: None -> Paused | "Baughn paused" | Local |
-| **Resumed** | manual-override cleared (Paused -> None) | "Baughn resumed" | Local |
+| **Resumed** | manual-override cleared (Paused -> None) | "Baughn unpaused" | Local |
 | **Away** | manual-override map -> Away | "Kim is away" / "Baughn marked Kim away" | Local |
 | **Not watching** | series-preference map -> NotWatching (now-playing series) | "Kim set to not-watching Frieren (by Kim)" | Local |
 | **Watching again** | series-preference map -> Watching (now-playing series) | "Kim set to watching Frieren (by Kim)" | Local |
