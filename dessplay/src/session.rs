@@ -1161,6 +1161,14 @@ impl PlayerWiring {
                     text: "my player crashed — pausing".into(),
                 }),
             ],
+            PlayerOutput::GaveUp => vec![
+                Directive::Mutate(Mutation::SetPlaybackIntent {
+                    intent: PlaybackIntent::Paused,
+                }),
+                Directive::Mutate(Mutation::Chat {
+                    text: "my player keeps crashing — giving up until I pick another file".into(),
+                }),
+            ],
         }
     }
 }
@@ -1926,7 +1934,7 @@ mod tests {
         let v_resumed = state.view();
         assert_eq!(
             narrate_diff(&v_paused, &peers, &v_resumed, &peers),
-            ["baughn resumed"]
+            ["baughn unpaused"]
         );
 
         // Away by another user names both; clearing it reads "is back".
@@ -3069,6 +3077,24 @@ mod tests {
         assert!(directives.iter().any(|d| matches!(
             d,
             Directive::Mutate(Mutation::Chat { text }) if text == "my player crashed — pausing"
+        )));
+    }
+
+    #[test]
+    fn give_up_pauses_and_posts_chat() {
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        let directives = wiring.on_player(PlayerOutput::GaveUp, &view);
+        assert!(directives.iter().any(|d| matches!(
+            d,
+            Directive::Mutate(Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Paused
+            })
+        )));
+        assert!(directives.iter().any(|d| matches!(
+            d,
+            Directive::Mutate(Mutation::Chat { text })
+                if text == "my player keeps crashing — giving up until I pick another file"
         )));
     }
 

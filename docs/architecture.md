@@ -237,6 +237,10 @@ crash supervision (relaunch via a `PlayerFactory`).
   layer forwards `EofReached` to the server, which owns the transition)
 - `FatalCrash` -- the player died twice within 30s (the session layer
   pauses globally and notifies chat)
+- `GaveUp` -- the player died three times within 30s; the actor stopped
+  relaunching until a different file is loaded (loading a new now-playing
+  resets the crash counter and respawns the player). The session layer
+  pauses globally and notifies chat, same as `FatalCrash`.
 
 **Echo suppression:** expected-state tracking, entirely on our side —
 mpv does *not* flag events as user-vs-programmatic. The actor remembers

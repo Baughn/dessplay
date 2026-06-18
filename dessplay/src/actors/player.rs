@@ -59,6 +59,10 @@ pub const POSITION_CADENCE_PLAYING: Duration = Duration::from_millis(100);
 pub const POSITION_CADENCE_PAUSED: Duration = Duration::from_secs(1);
 /// A second player death within this window is a fatal crash loop.
 pub const CRASH_FATAL_WINDOW: Duration = Duration::from_secs(30);
+/// This many deaths in a row, each within [`CRASH_FATAL_WINDOW`] of the
+/// last, and the actor gives up relaunching until a new file is loaded —
+/// otherwise a file that reliably kills the player loops forever.
+pub const CRASH_GIVE_UP_COUNT: u32 = 3;
 
 /// Commands from the main loop.
 #[derive(Debug)]
@@ -146,6 +150,10 @@ pub enum PlayerOutput {
     /// The player died twice within [`CRASH_FATAL_WINDOW`]. The main
     /// loop should pause globally and say so in chat.
     FatalCrash,
+    /// The player crashed [`CRASH_GIVE_UP_COUNT`] times in a row; the
+    /// actor stopped relaunching until a new file is loaded. The main
+    /// loop should pause globally and say so in chat.
+    GaveUp,
 }
 
 /// Position estimate: last observation plus extrapolation while playing.
@@ -183,6 +191,9 @@ struct Actor<F: PlayerFactory> {
     last_position_emit: Option<Instant>,
     eof_reported: bool,
     last_death: Option<Instant>,
+    /// Deaths in a row, each within [`CRASH_FATAL_WINDOW`] of the last.
+    /// Reset when a different file is loaded.
+    consecutive_crashes: u32,
 }
 
 /// Run the player actor until `commands` closes or [`PlayerCommand::Shutdown`].
@@ -210,6 +221,7 @@ pub async fn run<F: PlayerFactory>(
         last_position_emit: None,
         eof_reported: false,
         last_death: None,
+        consecutive_crashes: 0,
     };
 
     match actor.factory.spawn().await {
@@ -292,6 +304,7 @@ impl<F: PlayerFactory> Actor<F> {
         match cmd {
             PlayerCommand::Load { file, path, title } => {
                 tracing::info!(path = %path.display(), "loading file");
+                let different = self.current.as_ref().map(|(f, ..)| *f) != Some(file);
                 self.current = Some((file, path.clone(), title.clone()));
                 self.eof_reported = false;
                 self.restore_millis = None;
@@ -300,6 +313,25 @@ impl<F: PlayerFactory> Actor<F> {
                 // The load contract says the file opens paused.
                 self.believed_pause = Some(true);
                 self.set_speed(1.0).await;
+                if different {
+                    // A new file is a clean slate for the crash-loop counter.
+                    self.consecutive_crashes = 0;
+                    self.last_death = None;
+                    if self.player.is_none() {
+                        // We gave up relaunching after a crash loop; a new
+                        // file is the recovery trigger — bring a player back.
+                        match self.factory.spawn().await {
+                            Ok(player) => {
+                                tracing::info!("relaunching player for the new file");
+                                self.player = Some(player);
+                            }
+                            Err(e) => {
+                                tracing::error!("could not relaunch the player: {e}");
+                                let _ = self.outputs.send(PlayerOutput::FatalCrash).await;
+                            }
+                        }
+                    }
+                }
                 if let Some(player) = &self.player
                     && let Err(e) = player.load(&path, title.as_deref()).await
                 {
@@ -564,15 +596,34 @@ impl<F: PlayerFactory> Actor<F> {
         self.believed_pause = None;
 
         let now = Instant::now();
-        let fatal = self
+        let recent = self
             .last_death
             .is_some_and(|at| now.duration_since(at) < CRASH_FATAL_WINDOW);
+        self.consecutive_crashes = if recent {
+            self.consecutive_crashes + 1
+        } else {
+            1
+        };
         self.last_death = Some(now);
-        if fatal {
+
+        if self.consecutive_crashes == 2 {
             // Twice in quick succession: tell the session (global pause
             // + chat notice). The relaunch below then comes up paused.
             tracing::error!("player died twice within {CRASH_FATAL_WINDOW:?}");
             let _ = self.outputs.send(PlayerOutput::FatalCrash).await;
+        }
+        if self.consecutive_crashes >= CRASH_GIVE_UP_COUNT {
+            // A crash loop: relaunching just feeds the fire (and spams the
+            // log). Stop, but stay alive — loading a different file resets
+            // the counter and brings a player back (see PlayerCommand::Load).
+            tracing::error!(
+                "player crashed {} times in a row; not relaunching until a new file is selected",
+                self.consecutive_crashes
+            );
+            let _ = self.outputs.send(PlayerOutput::GaveUp).await;
+            self.speed = 1.0;
+            self.estimate = None;
+            return true;
         }
 
         self.restore_millis = self.estimate_now();
@@ -1116,6 +1167,62 @@ mod tests {
         // Still relaunched — the fatal signal pauses the session, and a
         // paused player is the safe state to come back in.
         expect_command(&mut c3).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn third_crash_within_window_gives_up_then_recovers_on_new_file() {
+        const FILE2: Ed2kHash = Ed2kHash([9; 16]);
+        let (p1, c1) = MockPlayer::pair();
+        let (p2, c2) = MockPlayer::pair();
+        let (p3, c3) = MockPlayer::pair();
+        let (p4, mut c4) = MockPlayer::pair();
+        let (commands, mut outputs) = start(vec![p1, p2, p3, p4], fixed_clock(0));
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE,
+                path: "/media/ep1.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        settle().await;
+
+        // Crash 1: silent relaunch onto p2.
+        c1.events
+            .send(PlayerEvent::Exited { clean: false })
+            .unwrap();
+        settle().await;
+        // Crash 2: FatalCrash, relaunch onto p3.
+        c2.events
+            .send(PlayerEvent::Exited { clean: false })
+            .unwrap();
+        assert_eq!(expect_output(&mut outputs).await, PlayerOutput::FatalCrash);
+        settle().await;
+        // Crash 3: give up — no relaunch.
+        c3.events
+            .send(PlayerEvent::Exited { clean: false })
+            .unwrap();
+        assert_eq!(expect_output(&mut outputs).await, PlayerOutput::GaveUp);
+        settle().await;
+        assert!(
+            c4.commands.try_recv().is_err(),
+            "after giving up, the actor must not spawn another player"
+        );
+
+        // A different file is the recovery trigger: spawn p4 and load it.
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE2,
+                path: "/media/ep2.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut c4).await,
+            MockCommand::Load("/media/ep2.mkv".into(), None),
+            "loading a new file recovers from the crash-loop give-up"
+        );
     }
 
     #[tokio::test(start_paused = true)]

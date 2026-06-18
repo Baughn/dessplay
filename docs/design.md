@@ -359,6 +359,7 @@ mechanism that already posts command feedback and archive results).
 | Event | Derived from | Example line | Delivery |
 |-------|--------------|--------------|----------|
 | **Player crashed** (died twice in 30s) | the crashing client writes a chat message | "Baughn: my player crashed -- pausing" | **Synced** (a real chat message: persisted, shows the sender, late joiners see it) |
+| **Player gave up** (died three times in 30s) | the crashing client writes a chat message | "Baughn: my player keeps crashing -- giving up until I pick another file" | **Synced** (a real chat message; same rationale as Player crashed) |
 | **Seek** (> 5s jump) | seek-authority + the authority's position | "Baughn skipped to 12:34" | Local |
 | **New file** (manual select) | now-playing register change, no watched flip | "Now playing: [Frieren] - 02.mkv" | Local (the *what* persists in the playlist pane) |
 | **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
@@ -1161,10 +1162,12 @@ Player choice is per-user configuration.
 2. **Control**: Send play/pause/seek commands via IPC
 3. **Monitor**: Read current position, playback state
 4. **OSD**: Display chat messages in video window
-5. **Crash handling** (also covers the user closing mpv by hand):
-   - Always relaunch: reload the file, seek to the last position,
-     restore the desired pause state
-   - Second death within 30s: *additionally* pause globally and notify
+5. **Crash handling** (also covers the user closing mpv by hand). The
+   response escalates with the number of deaths in a row, each within 30s
+   of the last:
+   - **First death**: relaunch silently — reload the file, seek to the last
+     position, restore the desired pause state.
+   - **Second death within 30s**: *additionally* pause globally and notify
      in chat — the relaunch then comes up paused, the safe state if
      the file itself is crashing the player. Unlike most
      [system messages](#system-messages), this one is **shared**: the
@@ -1173,6 +1176,15 @@ Player choice is per-user configuration.
      derive from their own view (they have no signal for *another* user's
      player dying), so it must be communicated — and being an ordinary
      synced chat message, it persists and reaches late joiners.
+   - **Third death within 30s**: stop relaunching. A file that reliably
+     kills the player would otherwise loop forever (spamming the log and
+     re-pausing on every death). The client stays paused and writes a
+     second shared chat message ("my player keeps crashing — giving up
+     until I pick another file"). Loading a **different file** (a new
+     now-playing) resets the counter and brings the player back — the
+     deliberate recovery action. The crash counter resets whenever a
+     different file is loaded, so deaths spaced further than 30s apart
+     never accumulate toward the give-up threshold.
 
 **Attach mode (`--attach-mpv=<socket>`).** A dev/headless aid for working
 without a desktop (e.g. over ssh): instead of spawning mpv, dessplay
