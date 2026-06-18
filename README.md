@@ -48,6 +48,36 @@ exact command to install it. It never installs system packages for you.
 
   Whatever `cargo` you have is used (stable is fine).
 
+## Developing without a desktop
+
+Normally DessPlay spawns its own mpv window, which needs a display. To work on
+it remotely (e.g. over ssh) you can instead point DessPlay at an mpv you launch
+yourself with `--attach-mpv=<socket>`.
+
+In one terminal — ideally a separate tmux pane — launch mpv with terminal video
+output (`--vo=tct`) and a JSON IPC socket:
+
+```sh
+mpv --idle=yes --keep-open=yes --vo=tct --input-ipc-server=/tmp/dessplay-mpv.sock
+```
+
+In another, attach DessPlay to it:
+
+```sh
+dessplay --attach-mpv=/tmp/dessplay-mpv.sock
+```
+
+mpv accepts multiple IPC clients at once, so DessPlay drives loads, seeks, and
+playback while your keyboard in the mpv pane still pauses (space) and scrubs
+(arrows) directly — a manual pause there propagates to the group exactly like
+one in a normal window. The `--idle --keep-open` flags are required (DessPlay's
+EOF and load handling depend on them). DessPlay leaves your mpv running when it
+exits, and re-attaches if you restart it.
+
+The picture is low-fidelity (`tct` renders video as colored terminal cells), so
+this is a development aid, not a way to actually watch anything. If your
+terminal supports them, `--vo=sixel` or `--vo=kitty` look considerably better.
+
 ## Notes
 
 - The rendezvous server and seeder (`dessplay-rendezvous`) are deployed

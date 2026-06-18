@@ -55,6 +55,15 @@ struct Cli {
     #[arg(long)]
     headless: bool,
 
+    /// Attach to an mpv you launched yourself at this IPC socket instead
+    /// of spawning one — a dev/headless aid for working without a desktop.
+    /// Launch mpv with, e.g.,
+    /// `mpv --idle=yes --keep-open=yes --vo=tct --input-ipc-server=<socket>`
+    /// (the `--idle --keep-open` matter; `--vo=tct` shows video in the
+    /// terminal). dessplay leaves that mpv running on exit.
+    #[arg(long, value_name = "SOCKET")]
+    attach_mpv: Option<std::path::PathBuf>,
+
     /// Print stored settings and CRDT state, then exit.
     #[arg(long)]
     dump: bool,
@@ -141,6 +150,7 @@ fn main() -> color_eyre::Result<()> {
         pipeline_depth: cli.pipeline_depth,
         media_roots: cli.media_root,
         cache_dir: cli.cache_dir,
+        attach_mpv: cli.attach_mpv,
     };
     if cli.dump {
         if let Err(message) = run_dump(&args) {

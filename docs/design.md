@@ -1174,6 +1174,21 @@ Player choice is per-user configuration.
      player dying), so it must be communicated — and being an ordinary
      synced chat message, it persists and reaches late joiners.
 
+**Attach mode (`--attach-mpv=<socket>`).** A dev/headless aid for working
+without a desktop (e.g. over ssh): instead of spawning mpv, dessplay
+*attaches* to one the user already launched at a given `--input-ipc-server`
+socket. The user runs mpv in a separate terminal (e.g. a tmux pane) with
+`mpv --idle=yes --keep-open=yes --vo=tct --input-ipc-server=<socket>` — the
+`--idle --keep-open` are required (the EOF/load mechanics depend on them) and
+`--vo=tct` renders video as terminal cells. mpv accepts multiple simultaneous
+IPC clients, so dessplay drives loads/seeks/observation while the user's
+keyboard in that terminal still pauses and scrubs directly. A manual pause
+there is an ordinary `pause` property change — indistinguishable from one in a
+normal window — so the existing echo model propagates it to the group with no
+special handling. dessplay **never `quit`s an attached mpv** on shutdown (it
+isn't ours to kill); if that mpv dies, the relaunch path re-attaches, waiting
+for it to come back. Interactive-only; seeders have no player.
+
 ### Commands Sent to Player
 
 - `loadfile <path>`: Load video file

@@ -47,6 +47,9 @@ pub struct HeadlessArgs {
     pub media_roots: Vec<PathBuf>,
     /// Seeder download-cache directory (defaults to the standard cache).
     pub cache_dir: Option<PathBuf>,
+    /// Attach to a user-launched mpv at this IPC socket instead of
+    /// spawning one (a dev/headless aid). Interactive only.
+    pub attach_mpv: Option<PathBuf>,
 }
 
 /// Forward the local UI lines produced by the session shell (subtitle
@@ -602,9 +605,13 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         .map_err(|e| format!("loading media roots: {e}"))?;
     let file_storage =
         Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
+    let player_factory = match &args.attach_mpv {
+        Some(socket) => crate::player::mpv::MpvFactory::attach(socket.clone()),
+        None => crate::player::mpv::MpvFactory::new("mpv"),
+    };
     let shell = crate::session::SessionShell::new(
         me.clone(),
-        crate::player::mpv::MpvFactory::new("mpv"),
+        player_factory,
         system_clock(),
         crate::actors::file::FileConfig {
             storage: file_storage,

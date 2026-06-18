@@ -34,6 +34,7 @@ use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
 
 use super::{Player, PlayerError, PlayerEvent, PlayerFactory};
 
@@ -59,6 +60,9 @@ pub struct MpvPlayer {
     loading: Arc<AtomicBool>,
     /// Tell the supervisor task to stop being patient.
     kill: mpsc::Sender<()>,
+    /// True when we attached to a user-launched mpv rather than spawning
+    /// our own: shutdown must not `quit` it (it isn't ours to kill).
+    attached: bool,
 }
 
 impl MpvPlayer {
@@ -89,6 +93,26 @@ impl MpvPlayer {
         tracing::info!(binary, socket = %socket.display(), "mpv spawned");
 
         let stream = wait_for_socket(&socket).await?;
+        Self::setup(stream, Some(child)).await
+    }
+
+    /// Attach to an mpv the user already launched (a dev/headless aid;
+    /// see `--attach-mpv`). The socket is the user's live
+    /// `--input-ipc-server`, so we neither remove it nor spawn a process —
+    /// and on shutdown we leave that mpv running. The user must launch mpv
+    /// with `--idle --keep-open` so our EOF/load mechanics hold.
+    pub async fn attach(socket: PathBuf) -> Result<MpvPlayer, PlayerError> {
+        tracing::info!(socket = %socket.display(), "attaching to mpv");
+        let stream = wait_for_socket(&socket).await?;
+        Self::setup(stream, None).await
+    }
+
+    /// Wire a connected IPC stream into a running player: split it, start
+    /// the reader and the supervisor (process-watching when we spawned
+    /// mpv, socket-watching when we attached), and register property
+    /// observations. `child` is `Some` only in spawn mode.
+    async fn setup(stream: UnixStream, child: Option<Child>) -> Result<MpvPlayer, PlayerError> {
+        let attached = child.is_none();
         let (read_half, write_half) = stream.into_split();
         let writer = Arc::new(Mutex::new(write_half));
         let (event_tx, event_rx) = mpsc::channel(256);
@@ -96,14 +120,25 @@ impl MpvPlayer {
         let request_id = Arc::new(AtomicU64::new(1));
         let loading = Arc::new(AtomicBool::new(false));
 
-        tokio::spawn(read_loop(
+        let read_task = tokio::spawn(read_loop(
             BufReader::new(read_half),
             Arc::clone(&writer),
             Arc::clone(&request_id),
             Arc::clone(&loading),
             event_tx.clone(),
         ));
-        tokio::spawn(supervise(child, kill_rx, event_tx));
+        match child {
+            // Spawn mode: watch the process; the kill signal gives `quit` a
+            // grace period before we kill it.
+            Some(child) => {
+                tokio::spawn(supervise(child, kill_rx, event_tx));
+            }
+            // Attach mode: there is no process of ours — the read loop
+            // ending means the user's mpv closed the socket.
+            None => {
+                tokio::spawn(supervise_attached(read_task, kill_rx, event_tx));
+            }
+        }
 
         let player = MpvPlayer {
             writer,
@@ -111,6 +146,7 @@ impl MpvPlayer {
             request_id,
             loading,
             kill: kill_tx,
+            attached,
         };
         for (id, name) in [
             (OBS_PAUSE, "pause"),
@@ -216,7 +252,11 @@ impl Player for MpvPlayer {
     }
 
     async fn shutdown(&self) {
-        let _ = self.command(json!(["quit"])).await;
+        // An attached mpv is the user's process, not ours: tell the
+        // supervisor to stand down but never `quit` it.
+        if !self.attached {
+            let _ = self.command(json!(["quit"])).await;
+        }
         let _ = self.kill.try_send(());
     }
 }
@@ -244,6 +284,24 @@ async fn supervise(
     let clean = status.as_ref().map(|s| s.success()).unwrap_or(false);
     tracing::info!(?status, "mpv exited");
     let _ = events.send(PlayerEvent::Exited { clean }).await;
+}
+
+/// Supervisor for an attached mpv (no process of ours to wait on). The
+/// read loop ending means the user's mpv closed the socket; a kill signal
+/// means we are shutting down. Either way we emit `Exited` so the actor's
+/// relaunch path runs — in attach mode that re-attaches, waiting for the
+/// user's mpv to come back. We report `clean` because we have no exit
+/// status to judge.
+async fn supervise_attached(
+    read: JoinHandle<()>,
+    mut kill: mpsc::Receiver<()>,
+    events: mpsc::Sender<PlayerEvent>,
+) {
+    tokio::select! {
+        _ = read => tracing::info!("attached mpv closed its ipc socket"),
+        _ = kill.recv() => tracing::info!("detaching from mpv"),
+    }
+    let _ = events.send(PlayerEvent::Exited { clean: true }).await;
 }
 
 /// Translation state for the reader loop.
@@ -546,12 +604,23 @@ fn last_p_tag(block: &str) -> Option<u32> {
     result
 }
 
-/// Spawns [`MpvPlayer`]s with per-instance sockets.
+/// Produces [`MpvPlayer`]s, either by spawning mpv (the normal case) or by
+/// attaching to one the user already launched (the `--attach-mpv` dev aid).
 pub struct MpvFactory {
-    binary: String,
-    socket_dir: PathBuf,
-    extra_args: Vec<String>,
-    instance: u64,
+    mode: Mode,
+}
+
+enum Mode {
+    /// Spawn a fresh mpv per call, each with its own per-instance socket.
+    Spawn {
+        binary: String,
+        socket_dir: PathBuf,
+        extra_args: Vec<String>,
+        instance: u64,
+    },
+    /// Connect to a user-launched mpv at a fixed socket path. Every call
+    /// re-attaches to the same socket (the relaunch path reuses it).
+    Attach { socket: PathBuf },
 }
 
 impl MpvFactory {
@@ -566,10 +635,20 @@ impl MpvFactory {
     pub fn with_args(binary: impl Into<String>, extra_args: Vec<String>) -> MpvFactory {
         let socket_dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
         MpvFactory {
-            binary: binary.into(),
-            socket_dir,
-            extra_args,
-            instance: 0,
+            mode: Mode::Spawn {
+                binary: binary.into(),
+                socket_dir,
+                extra_args,
+                instance: 0,
+            },
+        }
+    }
+
+    /// A factory that attaches to a user-launched mpv at `socket` instead
+    /// of spawning one (see [`MpvPlayer::attach`]).
+    pub fn attach(socket: PathBuf) -> MpvFactory {
+        MpvFactory {
+            mode: Mode::Attach { socket },
         }
     }
 }
@@ -578,13 +657,23 @@ impl PlayerFactory for MpvFactory {
     type Player = MpvPlayer;
 
     async fn spawn(&mut self) -> Result<MpvPlayer, PlayerError> {
-        self.instance += 1;
-        let socket = self.socket_dir.join(format!(
-            "dessplay-mpv-{}-{}.sock",
-            std::process::id(),
-            self.instance
-        ));
-        MpvPlayer::launch(&self.binary, socket, &self.extra_args).await
+        match &mut self.mode {
+            Mode::Spawn {
+                binary,
+                socket_dir,
+                extra_args,
+                instance,
+            } => {
+                *instance += 1;
+                let socket = socket_dir.join(format!(
+                    "dessplay-mpv-{}-{}.sock",
+                    std::process::id(),
+                    instance
+                ));
+                MpvPlayer::launch(binary, socket, extra_args).await
+            }
+            Mode::Attach { socket } => MpvPlayer::attach(socket.clone()).await,
+        }
     }
 }
 

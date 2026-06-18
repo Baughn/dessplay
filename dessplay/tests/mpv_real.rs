@@ -136,3 +136,63 @@ async fn full_journey_against_real_mpv() {
     })
     .await;
 }
+
+/// Attach mode (`--attach-mpv`): dessplay connects to an mpv the user
+/// launched and drives it, but must leave that process running on
+/// shutdown — it isn't ours to kill. We spawn mpv ourselves here, standing
+/// in for the user's tmux pane.
+#[tokio::test]
+async fn attach_to_external_mpv_and_leave_it_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let video = encode_test_video(dir.path()).await;
+    let socket = dir.path().join("external.sock");
+
+    // The "user's" mpv — launched with the flags attach mode depends on
+    // (idle + keep-open), exactly as the --attach-mpv help instructs.
+    let mut external = tokio::process::Command::new("mpv")
+        .arg("--idle=yes")
+        .arg("--keep-open=yes")
+        .arg("--vo=null")
+        .arg("--ao=null")
+        .arg("--no-terminal")
+        .arg(format!("--input-ipc-server={}", socket.display()))
+        .spawn()
+        .expect("spawning external mpv");
+
+    let player = MpvPlayer::attach(socket.clone())
+        .await
+        .expect("attaching to mpv");
+
+    // We can drive the attached instance: load, then a pause echo.
+    player.load(&video, None).await.unwrap();
+    expect_event(&player, BUDGET, |e| {
+        matches!(e, PlayerEvent::Loaded).then_some(())
+    })
+    .await;
+    player.set_pause(false).await.unwrap();
+    expect_event(&player, BUDGET, |e| {
+        matches!(e, PlayerEvent::PauseChanged(false)).then_some(())
+    })
+    .await;
+    player.seek(1_000).await.unwrap();
+    expect_event(&player, BUDGET, |e| {
+        matches!(e, PlayerEvent::Seeked { .. }).then_some(())
+    })
+    .await;
+
+    // Detaching reports Exited (so the actor's relaunch path runs) but must
+    // NOT quit the user's mpv.
+    player.shutdown().await;
+    expect_event(&player, BUDGET, |e| match e {
+        PlayerEvent::Exited { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        external.try_wait().unwrap().is_none(),
+        "attach shutdown killed the external mpv"
+    );
+
+    // We spawned it, so we clean it up.
+    external.kill().await.unwrap();
+}
