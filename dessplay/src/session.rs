@@ -199,6 +199,15 @@ pub struct PlayerWiring {
     /// The now-playing file at the last eviction pass; a change is the
     /// EOF-advance (or manual-jump) signal to run another.
     last_now_playing: Option<Ed2kHash>,
+    /// Windowed missing files we've logged a prefetch download start for.
+    /// `plan_download` re-emits `StartDownload` every snapshot (idempotent
+    /// in the file actor), so this collapses the log to one line per
+    /// download rather than one per second. Pruned to the current window.
+    prefetching: HashSet<Ed2kHash>,
+    /// Windowed missing files we've logged as having no available source
+    /// yet (so the "why isn't this downloading?" line is emitted once per
+    /// stall, not every snapshot). Pruned to the current window.
+    awaiting_source: HashSet<Ed2kHash>,
     /// The chat narrator's previous snapshot slice. `None` until the
     /// first state arrives (the initial view is a baseline, not news).
     narrator: Option<NarratorState>,
@@ -385,6 +394,8 @@ impl PlayerWiring {
             series_known_checked: HashSet::new(),
             eviction_started: false,
             last_now_playing: None,
+            prefetching: HashSet::new(),
+            awaiting_source: HashSet::new(),
             narrator: None,
         }
     }
@@ -626,10 +637,22 @@ impl PlayerWiring {
             .collect()
     }
 
-    fn plan_download(&self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
+    fn plan_download(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
+        // Collect the window up front so the `view` borrow is released
+        // before we touch the per-file log-tracking sets (`&mut self`).
+        let window: Vec<(Ed2kHash, u64)> = self
+            .prefetch_window(view)
+            .iter()
+            .map(|e| (e.hash, e.state.size_bytes))
+            .collect();
+        let window_set: HashSet<Ed2kHash> = window.iter().map(|(h, _)| *h).collect();
+        // Forget files that have fallen out of the window, so a later
+        // re-entry logs its decision afresh.
+        self.prefetching.retain(|f| window_set.contains(f));
+        self.awaiting_source.retain(|f| window_set.contains(f));
+
         let mut out = Vec::new();
-        for entry in self.prefetch_window(view) {
-            let file = entry.hash;
+        for (file, size_bytes) in window {
             // Have it, or not resolved yet: skip. The watched flag does
             // *not* gate this — a windowed entry is one we intend to
             // watch, redownload included (design.md, Pre-fetching).
@@ -637,15 +660,34 @@ impl PlayerWiring {
                 self.resolved.get(&file),
                 Some(Resolution::Verified(_)) | None
             ) {
+                self.prefetching.remove(&file);
+                self.awaiting_source.remove(&file);
                 continue;
             }
             let sources = self.download_sources(view, peers, file);
             if sources.is_empty() {
+                // A windowed file we want but can't fetch — the diagnostic
+                // signal for "why didn't this prefetch?". Logged once per
+                // stall (not every snapshot); clears once a source appears.
+                self.prefetching.remove(&file);
+                if self.awaiting_source.insert(file) {
+                    tracing::info!(
+                        %file,
+                        "prefetch: windowed file is missing but no present peer has it Ready yet; not downloading"
+                    );
+                }
                 continue;
+            }
+            self.awaiting_source.remove(&file);
+            // `StartDownload` is re-emitted every snapshot to refresh the
+            // source set (idempotent in the file actor); log only the
+            // transition into downloading.
+            if self.prefetching.insert(file) {
+                tracing::info!(%file, sources = sources.len(), "prefetch: starting download");
             }
             out.push(Directive::StartDownload {
                 file,
-                size_bytes: entry.state.size_bytes,
+                size_bytes,
                 sources,
                 // Sequential from the start; seek-aware windowing is
                 // future work (downloads still prioritise early chunks).
@@ -1039,10 +1081,13 @@ impl PlayerWiring {
         let availability = match &resolution {
             Resolution::Verified(_) => FileAvailability::Ready,
             Resolution::HashMismatch(path) => {
-                tracing::info!(path = %path.display(), "local copy has different contents");
+                tracing::info!(%file, path = %path.display(), "local copy has different contents; treating as missing");
                 FileAvailability::Missing
             }
-            Resolution::NotFound => FileAvailability::Missing,
+            Resolution::NotFound => {
+                tracing::info!(%file, "no local copy found; will prefetch if windowed and a source is present");
+                FileAvailability::Missing
+            }
         };
         self.resolved.insert(file, resolution);
         let mut out = vec![Directive::Mutate(Mutation::SetFileAvailability {
@@ -3044,6 +3089,50 @@ mod tests {
         assert!(
             !downloads.contains(&hash(1)),
             "watched history behind the cursor must not download: {downloads:?}"
+        );
+    }
+
+    #[test]
+    fn windowed_missing_file_without_a_source_does_not_download() {
+        // The prefetch-logging refactor (collect-first + per-file
+        // transition tracking) must not change the download decision: a
+        // windowed missing file with no present Ready peer is *not*
+        // downloaded, and one gains its download the moment a source
+        // appears.
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "now.mkv")); // now-playing
+        state.push_playlist_entry(A, ts(2), entry(2, "ahead.mkv")); // in window
+        state.set_now_playing(A, ts(3), Some(hash(1)));
+        state.set_playback_intent(A, ts(4), PlaybackIntent::Playing);
+        let view = state.view();
+        let peers = [peer("kim")]; // only us; nobody advertises the files
+
+        let mut wiring = PlayerWiring::new(me());
+        // Both windowed entries come back Missing (we hold neither).
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        wiring.on_resolved(hash(2), Resolution::NotFound, &view, &peers);
+
+        // No source: nothing to download yet.
+        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        assert!(
+            downloads.is_empty(),
+            "a windowed missing file with no source must not download: {downloads:?}"
+        );
+
+        // A peer now advertises the ahead entry Ready.
+        state.set_file_availability(
+            A,
+            ts(5),
+            UserId::new("nas"),
+            hash(2),
+            FileAvailability::Ready,
+        );
+        let view = state.view();
+        let peers = [peer("kim"), peer("nas")];
+        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        assert!(
+            downloads.contains(&hash(2)),
+            "the windowed file must download once a source appears: {downloads:?}"
         );
     }
 

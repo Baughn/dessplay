@@ -605,6 +605,15 @@ impl Actor {
                 play_chunk,
             } => {
                 let path = self.download_path(file);
+                // The session re-emits StartDownload every snapshot to
+                // refresh sources (idempotent); log only the actor-side
+                // birth of a download. This should mirror the session's
+                // "prefetch: starting download" transition one-for-one —
+                // a divergence means the two disagree about what is in
+                // flight, which is worth seeing.
+                if !self.downloads.is_active(&file) {
+                    tracing::info!(%file, sources = sources.len(), "starting download");
+                }
                 let actions = self.downloads.start(
                     file,
                     size_bytes,
@@ -758,6 +767,7 @@ impl Actor {
         path: PathBuf,
         block_hashes: Vec<dessplay_core::hash::Ed2kBlockHash>,
     ) {
+        tracing::info!(%file, path = %path.display(), "download complete");
         self.local_files.insert(file, path.clone());
         self.last_progress_at.remove(&file);
         if let Ok(metadata) = std::fs::metadata(&path) {
