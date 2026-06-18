@@ -469,20 +469,36 @@ fn parse_ass_full(raw: &str) -> (String, Option<String>) {
 /// Strip ASS override tags from an event's Text field: drop `{...}`
 /// override blocks, turn the `\N`/`\n` line breaks and `\h` hard space
 /// into spaces, and leave any other escape as-is.
+///
+/// Also handles **drawing mode**: a `{\p<n>}` block with non-zero `<n>`
+/// switches the renderer into vector-drawing, where the following "text"
+/// is a path of `m`/`l`/`b` coordinate commands (a sign or shape, not
+/// dialogue); `{\p0}` switches back. The path commands are not words and
+/// are dropped, so a pure shape collapses to the empty string (and is
+/// filtered out by `parse_ass_full`).
 fn strip_ass_tags(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
+    let mut drawing = false;
     while let Some(c) = chars.next() {
         match c {
             '{' => {
-                // Skip to the closing brace (an unclosed brace eats the
-                // rest, matching libass's lenient behavior).
+                // Consume the override block (an unclosed brace eats the
+                // rest, matching libass's lenient behavior), tracking any
+                // `\p<n>` drawing-mode toggle inside it.
+                let mut block = String::new();
                 for inner in chars.by_ref() {
                     if inner == '}' {
                         break;
                     }
+                    block.push(inner);
+                }
+                if let Some(scale) = last_p_tag(&block) {
+                    drawing = scale != 0;
                 }
             }
+            // In drawing mode the literal text is path data; drop it.
+            _ if drawing => {}
             '\\' => match chars.peek() {
                 Some('N') | Some('n') | Some('h') => {
                     chars.next();
@@ -494,6 +510,33 @@ fn strip_ass_tags(text: &str) -> String {
         }
     }
     out
+}
+
+/// Return the argument of the last `\p<n>` drawing-scale tag in an ASS
+/// override block, or `None` if the block has no such tag. `\p0` disables
+/// drawing; any non-zero value enables it. Only `\p` immediately followed
+/// by a digit counts — `\pos(...)`, `\pbo`, and other `\p`-prefixed tags
+/// are deliberately ignored.
+fn last_p_tag(block: &str) -> Option<u32> {
+    let bytes = block.as_bytes();
+    let mut result = None;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'\\' && bytes[i + 1] == b'p' {
+            let start = i + 2;
+            let mut j = start;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start {
+                result = block[start..j].parse().ok();
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    result
 }
 
 /// Spawns [`MpvPlayer`]s with per-instance sockets.
@@ -755,5 +798,52 @@ mod tests {
         );
         // Empty / cleared cue.
         assert_eq!(parse_ass_full(""), (String::new(), None));
+    }
+
+    #[test]
+    fn strip_ass_tags_drops_vector_drawing_commands() {
+        // ASS drawing mode: `\p1` enters vector-drawing, the path
+        // commands (m/l/b coordinates) are *not* text, `\p0` leaves it.
+        // Only the trailing real text should survive.
+        assert_eq!(
+            strip_ass_tags(r"{\p1}m -6 -56 l -611 -56 l -600 -155 l 338 -156{\p0}Due to heavy snowfall"),
+            "Due to heavy snowfall"
+        );
+        // Combined tags in one block, and text before the shape.
+        assert_eq!(
+            strip_ass_tags(r"before{\an8\p1}m 0 0 l 100 0 100 100{\p0}after"),
+            "beforeafter"
+        );
+        // `\pos(...)` is a position tag, NOT drawing mode — text kept.
+        assert_eq!(
+            strip_ass_tags(r"{\pos(960,540)}real text"),
+            "real text"
+        );
+        // A pure-shape event collapses to empty (so it is filtered out).
+        assert_eq!(
+            strip_ass_tags(r"{\p1}m -6 -56 l -611 -56 l -600 -155{\p0}"),
+            ""
+        );
+    }
+
+    #[test]
+    fn parse_ass_full_filters_pure_shape_events() {
+        // A sign rendered as two shape events (border + fill) followed by
+        // the real text event: only the text survives, no path leakage.
+        assert_eq!(
+            parse_ass_full(
+                concat!(
+                    r"Dialogue: 0,0,0,Sign,,0,0,0,,{\p1}m -6 -56 l -611 -56 l -600 -155{\p0}",
+                    "\n",
+                    r"Dialogue: 0,0,0,Sign,,0,0,0,,{\p1}m -6 -56 l 338 -156 l 349 -55{\p0}",
+                    "\n",
+                    r"Dialogue: 0,0,0,Default,,0,0,0,,Due to heavy snowfall, the trains will be delayed."
+                )
+            ),
+            (
+                "Due to heavy snowfall, the trains will be delayed.".into(),
+                None
+            )
+        );
     }
 }
