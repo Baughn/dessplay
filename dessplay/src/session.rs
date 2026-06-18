@@ -1166,7 +1166,7 @@ impl PlayerWiring {
                     intent: PlaybackIntent::Paused,
                 }),
                 Directive::Mutate(Mutation::Chat {
-                    text: "my player keeps crashing — giving up until I pick another file".into(),
+                    text: "my player keeps crashing — giving up until someone picks another file".into(),
                 }),
             ],
         }
