@@ -593,6 +593,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Esc` | Chat | Clear input |
 | `Backspace` | Chat | Delete character before cursor |
 | `Delete` | Chat | Delete character after cursor |
+| `Ctrl-W` / `Ctrl-Backspace` | Chat | Delete word before cursor |
 | `Left` / `Right` | Chat | Move cursor |
 | `Ctrl-Left` / `Ctrl-Right` | Chat | Move cursor by word |
 | `Home` / `End` | Chat | Move cursor to start/end |

@@ -91,6 +91,33 @@ fn step(sel: usize, len: usize, down: bool) -> usize {
     step_by(sel, len, down, 1)
 }
 
+/// First index at or left of `cursor` that starts the word being left:
+/// skip any whitespace to the left, then skip the word to the left.
+fn word_boundary_left(chars: &[char], cursor: usize) -> usize {
+    let mut i = cursor.min(chars.len());
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    i
+}
+
+/// First index at or right of `cursor` past the next word: skip any
+/// whitespace to the right, then skip the word to the right.
+fn word_boundary_right(chars: &[char], cursor: usize) -> usize {
+    let n = chars.len();
+    let mut i = cursor.min(n);
+    while i < n && chars[i].is_whitespace() {
+        i += 1;
+    }
+    while i < n && !chars[i].is_whitespace() {
+        i += 1;
+    }
+    i
+}
+
 /// Selection cursor over `len` rows, moved by `delta` (used for PgUp/PgDown).
 pub(crate) fn step_by(sel: usize, len: usize, down: bool, delta: usize) -> usize {
     if len == 0 {
@@ -159,6 +186,12 @@ impl ChatPane {
     fn clear(&mut self) {
         self.input
             .attr(Attribute::Value, AttrValue::String(String::new()));
+        // Setting Value resets the cursor but NOT the stdlib Input's
+        // horizontal scroll offset; without this a previously-scrolled line
+        // would render the next line from a stale column. GoTo(Begin) runs
+        // cursor_at_begin(), which zeroes the offset. (Same trick set_input
+        // uses with GoTo(End).)
+        let _ = self.input.perform(Cmd::GoTo(Position::Begin));
     }
 
     /// Keys shown in the keybinding bar.
@@ -176,6 +209,35 @@ impl ChatPane {
         self.input
             .attr(Attribute::Value, AttrValue::String(text));
         let _ = self.input.perform(Cmd::GoTo(Position::End));
+    }
+
+    /// Move the cursor left by one word. Driven through single-step Moves so
+    /// the stdlib's horizontal-scroll bookkeeping stays correct.
+    fn move_word_left(&mut self) {
+        let cursor = self.input.states.cursor;
+        let target = word_boundary_left(&self.input.states.input, cursor);
+        for _ in target..cursor {
+            let _ = self.input.perform(Cmd::Move(Direction::Left));
+        }
+    }
+
+    /// Move the cursor right by one word.
+    fn move_word_right(&mut self) {
+        let cursor = self.input.states.cursor;
+        let target = word_boundary_right(&self.input.states.input, cursor);
+        for _ in cursor..target {
+            let _ = self.input.perform(Cmd::Move(Direction::Right));
+        }
+    }
+
+    /// Delete the word before the cursor (Ctrl-W / Ctrl-Backspace). Driven
+    /// through stdlib backspaces so the scroll offset tracks down with it.
+    fn kill_word_left(&mut self) {
+        let cursor = self.input.states.cursor;
+        let target = word_boundary_left(&self.input.states.input, cursor);
+        for _ in target..cursor {
+            let _ = self.input.perform(Cmd::Delete);
+        }
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -394,7 +456,18 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
                 self.history_pos = None;
                 Cmd::Type(c)
             }
-            None => match plain(ev)? {
+            None => {
+                if let Some(key) = ctrl(ev) {
+                    match key {
+                        Key::Left => self.move_word_left(),
+                        Key::Right => self.move_word_right(),
+                        // Ctrl-W and Ctrl-Backspace both kill the previous word.
+                        Key::Char('w') | Key::Backspace => self.kill_word_left(),
+                        _ => return None,
+                    }
+                    return Some(Msg::None);
+                }
+                match plain(ev)? {
                 Key::Enter => {
                     let text = self.text().trim().to_string();
                     if text.is_empty() {
@@ -455,7 +528,8 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
                 Key::Home => Cmd::GoTo(Position::Begin),
                 Key::End => Cmd::GoTo(Position::End),
                 _ => return None,
-            },
+                }
+            }
         };
         let _ = self.input.perform(cmd);
         Some(Msg::None)
@@ -1365,5 +1439,167 @@ mod chat_wrap_tests {
         // Degenerate width is clamped to 1 internally; must terminate.
         let lines = wrap_body("hi there", 0, 0);
         assert!(!lines.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod chat_input_tests {
+    use super::*;
+
+    fn key(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn ctrl(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+        })
+    }
+
+    fn focused_pane() -> ChatPane {
+        ChatPane {
+            focused: true,
+            ..Default::default()
+        }
+    }
+
+    fn type_str(pane: &mut ChatPane, text: &str) {
+        for c in text.chars() {
+            pane.on(&key(Key::Char(c)));
+        }
+    }
+
+    /// Regression: a scrolled input line must reset its horizontal scroll
+    /// offset when sent, so the next line is not rendered from a stale column.
+    #[test]
+    fn enter_resets_display_offset() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "a fairly long line that would scroll");
+        // `display_offset` only grows during rendering (last_width is unset in
+        // tests); simulate a scrolled line directly.
+        pane.input.states.display_offset = 12;
+        let msg = pane.on(&key(Key::Enter));
+        assert!(matches!(msg, Some(Msg::SendChat(_))));
+        assert_eq!(pane.input.states.display_offset, 0);
+        assert_eq!(pane.text(), "");
+    }
+
+    #[test]
+    fn esc_resets_display_offset() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "some text");
+        pane.input.states.display_offset = 5;
+        pane.on(&key(Key::Esc));
+        assert_eq!(pane.input.states.display_offset, 0);
+        assert_eq!(pane.text(), "");
+    }
+
+    /// Backspacing the whole line away leaves the offset at zero (relies on
+    /// stdlib `backspace()` tracking the offset down with the cursor).
+    #[test]
+    fn backspace_to_empty_resets_display_offset() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "hello");
+        for _ in 0.."hello".len() {
+            pane.on(&key(Key::Backspace));
+        }
+        assert_eq!(pane.text(), "");
+        assert_eq!(pane.input.states.display_offset, 0);
+    }
+
+    #[test]
+    fn ctrl_left_moves_by_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        // Cursor parks at end (15). Word-left lands on the start of "brown".
+        pane.on(&ctrl(Key::Left));
+        assert_eq!(pane.input.states.cursor, 10);
+        pane.on(&ctrl(Key::Left));
+        assert_eq!(pane.input.states.cursor, 4); // start of "quick"
+        pane.on(&ctrl(Key::Left));
+        assert_eq!(pane.input.states.cursor, 0); // start of "the"
+        pane.on(&ctrl(Key::Left));
+        assert_eq!(pane.input.states.cursor, 0); // clamped
+    }
+
+    #[test]
+    fn ctrl_right_moves_by_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        // Move cursor to the start first.
+        pane.on(&key(Key::Home));
+        assert_eq!(pane.input.states.cursor, 0);
+        pane.on(&ctrl(Key::Right));
+        assert_eq!(pane.input.states.cursor, 3); // end of "the"
+        pane.on(&ctrl(Key::Right));
+        assert_eq!(pane.input.states.cursor, 9); // end of "quick"
+        pane.on(&ctrl(Key::Right));
+        assert_eq!(pane.input.states.cursor, 15); // end of "brown"
+        pane.on(&ctrl(Key::Right));
+        assert_eq!(pane.input.states.cursor, 15); // clamped
+    }
+
+    #[test]
+    fn ctrl_w_kills_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        pane.on(&ctrl(Key::Char('w')));
+        assert_eq!(pane.text(), "the quick ");
+        // Second kill skips the trailing space, then removes "quick".
+        pane.on(&ctrl(Key::Char('w')));
+        assert_eq!(pane.text(), "the ");
+    }
+
+    #[test]
+    fn ctrl_backspace_kills_word() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        pane.on(&ctrl(Key::Backspace));
+        assert_eq!(pane.text(), "the quick ");
+    }
+
+    /// Killing across trailing whitespace removes the spaces and the word.
+    #[test]
+    fn ctrl_w_skips_trailing_whitespace() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "hello   ");
+        pane.on(&ctrl(Key::Char('w')));
+        assert_eq!(pane.text(), "");
+    }
+
+    #[test]
+    fn word_boundary_left_cases() {
+        let chars: Vec<char> = "the quick".chars().collect();
+        assert_eq!(word_boundary_left(&chars, 9), 4); // from end → start of "quick"
+        assert_eq!(word_boundary_left(&chars, 4), 0); // from start of "quick" → "the"
+        assert_eq!(word_boundary_left(&chars, 0), 0); // clamped
+        // Mid-word.
+        assert_eq!(word_boundary_left(&chars, 6), 4);
+        // Leading spaces: word-left from the end stops at the word start.
+        let spaced: Vec<char> = "   hi".chars().collect();
+        assert_eq!(word_boundary_left(&spaced, 5), 3);
+        // From the word start, skipping the leading spaces reaches 0.
+        assert_eq!(word_boundary_left(&spaced, 3), 0);
+        // Empty.
+        assert_eq!(word_boundary_left(&[], 0), 0);
+    }
+
+    #[test]
+    fn word_boundary_right_cases() {
+        let chars: Vec<char> = "the quick".chars().collect();
+        assert_eq!(word_boundary_right(&chars, 0), 3); // → end of "the"
+        assert_eq!(word_boundary_right(&chars, 3), 9); // → end of "quick"
+        assert_eq!(word_boundary_right(&chars, 9), 9); // clamped
+        // Mid-word.
+        assert_eq!(word_boundary_right(&chars, 1), 3);
+        // Trailing spaces.
+        let spaced: Vec<char> = "hi   ".chars().collect();
+        assert_eq!(word_boundary_right(&spaced, 0), 2);
+        // Empty.
+        assert_eq!(word_boundary_right(&[], 0), 0);
     }
 }
