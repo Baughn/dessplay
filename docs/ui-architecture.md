@@ -216,7 +216,15 @@ The UiActor bridges tui-realm and the actor system:
 When the UiActor receives a `StateUpdate(CrdtSnapshot)`, it maps the
 snapshot data to component props:
 
-- **ChatPane**: snapshot.chat -> list of formatted message lines
+- **ChatPane**: snapshot.chat -> list of formatted message lines. It is also
+  fed the online-username set (interactive peers, present or lost; derived by
+  `props::chat_usernames`) and the local username: the former drives `Tab`
+  username-completion in the input and mention highlighting in the log, the
+  latter additionally reverses mentions of *your own* name. `Tab` completion
+  is tried in the dispatcher's global `Tab` handler before pane-cycling --
+  `ChatPane::try_tab_complete` returns whether it consumed the key (it does
+  only when the trailing word is a prefix of some username), so `Tab` still
+  cycles panes whenever completion doesn't apply.
 - **Subtitle log**: rolling log of subtitle lines from the PlayerActor,
   each stamped with the in-video position (displayed timestamp), a
   wall-clock arrival (chat interleave key), and an optional ASS speaker.

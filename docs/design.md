@@ -310,6 +310,20 @@ This prevents sync issues from different encodes/versions.
 - Type in the chat input (always visible at bottom of chat pane)
 - Press Enter to send
 - Messages appear in the chat pane AND as OSD in the video player
+- **Username tab-completion**: pressing `Tab` completes the word at the end
+  of the input when it is a non-empty, case-insensitive prefix of an online
+  username (present or lost interactive peers; seeders and departed users
+  excluded). When the buffer is *nothing but* that prefix the completion
+  appends `": "` (the IRC "Baughn: " address form); mid-sentence it just
+  fills in the name. If several names match, repeated `Tab` (without an
+  intervening edit) cycles through them. When the trailing word matches no
+  username, `Tab` keeps its normal job of cycling panes -- so completion is
+  invisible until it's useful.
+- **Mention highlighting**: in the chat log, any word matching an online
+  username is drawn in that user's [palette color](#subtitle-display) + bold
+  (trailing punctuation like `:` or `,` is matched-through but stays plain).
+  Mentions of *your own* username are additionally reversed, so a ping stands
+  out at a glance.
 - System messages (joins, disconnects, state changes) appear in chat --
   see [System Messages](#system-messages)
 - Text commands start with `/`. Typing `/` shows a grey, filtered list of
@@ -678,6 +692,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Ctrl-C` | Any | Quit |
 | `Ctrl-R` | Any | Toggle your own ready/unready (and mark yourself watching the current series) |
 | `Tab` | Any | Cycle focus: Chat -> Series -> Users -> Playlist -> Chat |
+| `Tab` | Chat | Complete a username if the end of the input is a prefix of one (see below); otherwise cycle focus |
 | `F2` | Any | Cycle subtitle mode: Off -> Intermixed -> Separate pane (persisted) |
 | `F3` | Any | Open the settings screen (also `/settings`) |
 | `Enter` | Chat | Send message (or execute `/command`) |

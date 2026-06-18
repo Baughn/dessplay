@@ -153,6 +153,32 @@ pub struct ChatPane {
     sent_history: Vec<String>,
     /// Position while walking `sent_history` (None = editing a fresh draft).
     history_pos: Option<usize>,
+    /// Online usernames (present + lost interactive peers; seeders and
+    /// departed excluded), used for Tab-completion and mention highlighting.
+    /// Stored with original casing; matching is case-insensitive.
+    usernames: Vec<String>,
+    /// The local user's name, so their own mentions can be emphasized.
+    me: String,
+    /// Tab-completion cycling state (see [`ChatPane::try_tab_complete`]).
+    completion: Option<CompletionState>,
+}
+
+/// In-flight Tab-completion cycle. While the input still equals `produced`,
+/// repeated Tab walks `candidates`; any other edit drops this state so the
+/// next Tab recomputes from the buffer.
+struct CompletionState {
+    /// Buffer text before the completed trailing word.
+    head: String,
+    /// Matching usernames, in the order Tab cycles through them.
+    candidates: Vec<String>,
+    /// Index of the candidate currently in the buffer.
+    index: usize,
+    /// Trailing text added after the name (`": "` for a whole-buffer
+    /// completion, else empty).
+    suffix: &'static str,
+    /// Exact text last written, so we can tell a continued cycle from a
+    /// fresh completion.
+    produced: String,
 }
 
 impl Default for ChatPane {
@@ -166,6 +192,9 @@ impl Default for ChatPane {
             scroll_offset: 0,
             sent_history: Vec::new(),
             history_pos: None,
+            usernames: Vec::new(),
+            me: String::new(),
+            completion: None,
         }
     }
 }
@@ -174,6 +203,55 @@ impl ChatPane {
     /// Replace the log.
     pub fn set_lines(&mut self, lines: Vec<ChatLine>) {
         self.lines = lines;
+    }
+
+    /// Set the online-username set used for completion and highlighting.
+    pub fn set_usernames(&mut self, names: Vec<String>) {
+        self.usernames = names;
+    }
+
+    /// Set the local user's name (for self-mention emphasis).
+    pub fn set_me(&mut self, me: String) {
+        self.me = me;
+    }
+
+    /// Try to Tab-complete a username at the end of the input. Returns
+    /// `true` if it completed (the caller should *not* cycle panes), `false`
+    /// if the trailing word matches no online username (Tab falls through to
+    /// its normal pane-cycling job). Repeated Tab without an intervening edit
+    /// cycles through multiple matches.
+    pub fn try_tab_complete(&mut self) -> bool {
+        let text = self.text();
+        // Continue an in-flight cycle iff the buffer is still exactly what we
+        // last wrote.
+        if let Some(state) = &mut self.completion
+            && state.produced == text
+        {
+            state.index = (state.index + 1) % state.candidates.len();
+            let chosen = &state.candidates[state.index];
+            let produced = format!("{}{}{}", state.head, chosen, state.suffix);
+            state.produced = produced.clone();
+            self.set_input(produced);
+            return true;
+        }
+        // Fresh completion.
+        let Some((head, matches)) = mention_completion_candidates(&text, &self.usernames) else {
+            self.completion = None;
+            return false;
+        };
+        let suffix = if head.is_empty() { ": " } else { "" };
+        let candidates: Vec<String> = matches.into_iter().cloned().collect();
+        let chosen = &candidates[0];
+        let produced = format!("{head}{chosen}{suffix}");
+        self.set_input(produced.clone());
+        self.completion = Some(CompletionState {
+            head,
+            candidates,
+            index: 0,
+            suffix,
+            produced,
+        });
+        true
     }
 
     /// Current input text.
@@ -285,7 +363,7 @@ impl ChatPane {
         let lines: Vec<Line> = self
             .lines
             .iter()
-            .flat_map(|line| wrap_chat_line(line, width))
+            .flat_map(|line| wrap_chat_line(line, width, &self.usernames, &self.me))
             .collect();
         let visible = log_area.height.saturating_sub(2) as usize;
         // Clamp the scroll so it can never run past the top of the log.
@@ -370,8 +448,87 @@ fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
     lines
 }
 
+/// Trailing punctuation stripped off a word before testing it against the
+/// username set (so "Baughn:" and "Nero," still match), and used to bound
+/// the completable trailing word.
+const MENTION_PUNCT: &[char] = &[':', ',', '.', '!', '?', ';', ')', '('];
+
+/// Compute a Tab-completion for the trailing word of `text`.
+///
+/// The trailing word is the run after the last space. If it is a non-empty,
+/// case-insensitive prefix of one or more `usernames`, returns the buffer
+/// text *before* that word (`head`) and the matching usernames, sorted
+/// case-insensitively for deterministic cycling. Returns `None` when the
+/// trailing word is empty or matches nothing (Tab then keeps its normal job).
+fn mention_completion_candidates<'a>(
+    text: &str,
+    usernames: &'a [String],
+) -> Option<(String, Vec<&'a String>)> {
+    let trail_start = text.rfind(' ').map(|i| i + 1).unwrap_or(0);
+    let head = &text[..trail_start];
+    let prefix = &text[trail_start..];
+    if prefix.is_empty() {
+        return None;
+    }
+    let lower = prefix.to_lowercase();
+    let mut matches: Vec<&String> = usernames
+        .iter()
+        .filter(|u| u.to_lowercase().starts_with(&lower))
+        .collect();
+    if matches.is_empty() {
+        return None;
+    }
+    matches.sort_by_key(|u| u.to_lowercase());
+    Some((head.to_string(), matches))
+}
+
+/// Split one wrapped body chunk into spans, coloring any whitespace-delimited
+/// word that matches an online username (trailing punctuation stripped before
+/// matching but kept as plain text). Mentions of `me` are additionally
+/// reversed so a ping stands out. Spacing is preserved verbatim.
+fn highlight_mentions(chunk: &str, usernames: &[String], me: &str) -> Vec<Span<'static>> {
+    use tuirealm::ratatui::style::Modifier;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    // Walk space-separated tokens, re-emitting the single spaces between them.
+    let mut first = true;
+    for token in chunk.split(' ') {
+        if !first {
+            spans.push(Span::raw(" "));
+        }
+        first = false;
+        if token.is_empty() {
+            continue;
+        }
+        // Split the candidate word from any trailing punctuation.
+        let candidate = token.trim_end_matches(MENTION_PUNCT);
+        let punct = &token[candidate.len()..];
+        let canonical = (!candidate.is_empty())
+            .then(|| usernames.iter().find(|u| u.eq_ignore_ascii_case(candidate)))
+            .flatten();
+        match canonical {
+            Some(name) => {
+                let mut style = theme::user_style(name).add_modifier(Modifier::BOLD);
+                if name.eq_ignore_ascii_case(me) {
+                    style = style.patch(theme::highlight_style());
+                }
+                spans.push(Span::styled(candidate.to_string(), style));
+                if !punct.is_empty() {
+                    spans.push(Span::raw(punct.to_string()));
+                }
+            }
+            None => spans.push(Span::raw(token.to_string())),
+        }
+    }
+    spans
+}
+
 /// Render one chat message as one or more wrapped visual lines.
-fn wrap_chat_line(line: &ChatLine, width: usize) -> Vec<Line<'static>> {
+fn wrap_chat_line(
+    line: &ChatLine,
+    width: usize,
+    usernames: &[String],
+    me: &str,
+) -> Vec<Line<'static>> {
     use tuirealm::ratatui::style::Modifier;
     let indent: String = " ".repeat(CHAT_WRAP_INDENT);
     if line.separator {
@@ -450,15 +607,19 @@ fn wrap_chat_line(line: &ChatLine, width: usize) -> Vec<Line<'static>> {
             .into_iter()
             .enumerate()
             .map(|(i, chunk)| {
+                let body = highlight_mentions(&chunk, usernames, me);
                 if i == 0 {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(time.clone(), theme::dim()),
                         Span::styled(marker, theme::dim()),
                         Span::styled(sender.clone(), sender_style),
-                        Span::raw(chunk),
-                    ])
+                    ];
+                    spans.extend(body);
+                    Line::from(spans)
                 } else {
-                    Line::from(Span::raw(format!("{indent}{chunk}")))
+                    let mut spans = vec![Span::raw(indent.clone())];
+                    spans.extend(body);
+                    Line::from(spans)
                 }
             })
             .collect()
@@ -476,14 +637,18 @@ fn wrap_chat_line(line: &ChatLine, width: usize) -> Vec<Line<'static>> {
             .into_iter()
             .enumerate()
             .map(|(i, chunk)| {
+                let body = highlight_mentions(&chunk, usernames, me);
                 if i == 0 {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(time.clone(), theme::dim()),
                         Span::styled(sender.clone(), sender_style),
-                        Span::raw(chunk),
-                    ])
+                    ];
+                    spans.extend(body);
+                    Line::from(spans)
                 } else {
-                    Line::from(Span::raw(format!("{indent}{chunk}")))
+                    let mut spans = vec![Span::raw(indent.clone())];
+                    spans.extend(body);
+                    Line::from(spans)
                 }
             })
             .collect()
@@ -494,6 +659,10 @@ passive_component!(ChatPane);
 
 impl AppComponent<Msg, NoUserEvent> for ChatPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        // Tab is intercepted in `Ui::handle` (it drives completion / pane
+        // cycling), so every event reaching this method is a non-Tab key:
+        // any of them ends an in-flight completion cycle.
+        self.completion = None;
         let cmd = match typed(ev) {
             Some(c) => {
                 // Editing detaches from history recall (shell behavior).
@@ -1655,5 +1824,152 @@ mod chat_input_tests {
         assert_eq!(word_boundary_right(&spaced, 0), 2);
         // Empty.
         assert_eq!(word_boundary_right(&[], 0), 0);
+    }
+}
+
+#[cfg(test)]
+mod chat_completion_tests {
+    use super::*;
+    use tuirealm::ratatui::style::Modifier;
+
+    fn names() -> Vec<String> {
+        ["Baughn", "Nero", "Dagger", "Danny"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    fn pane(names: Vec<String>, me: &str) -> ChatPane {
+        let mut p = ChatPane::default();
+        p.set_usernames(names);
+        p.set_me(me.to_string());
+        p
+    }
+
+    #[test]
+    fn no_completion_for_empty_or_trailing_space() {
+        let mut p = pane(names(), "");
+        // Empty buffer: Tab does not complete (falls through to pane cycle).
+        assert!(!p.try_tab_complete());
+        // Trailing space: the word is empty, so no completion.
+        p.set_input("hello ".to_string());
+        assert!(!p.try_tab_complete());
+        assert_eq!(p.text(), "hello ");
+    }
+
+    #[test]
+    fn whole_buffer_prefix_gets_colon_suffix() {
+        let mut p = pane(names(), "");
+        p.set_input("bau".to_string());
+        assert!(p.try_tab_complete());
+        assert_eq!(p.text(), "Baughn: ");
+    }
+
+    #[test]
+    fn mid_sentence_completes_without_colon_or_space() {
+        let mut p = pane(names(), "");
+        p.set_input("hey ner".to_string());
+        assert!(p.try_tab_complete());
+        assert_eq!(p.text(), "hey Nero");
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_canonical_casing_wins() {
+        let mut p = pane(names(), "");
+        p.set_input("BAU".to_string());
+        assert!(p.try_tab_complete());
+        assert_eq!(p.text(), "Baughn: ");
+    }
+
+    #[test]
+    fn non_prefix_does_not_complete() {
+        let mut p = pane(names(), "");
+        p.set_input("xyz".to_string());
+        assert!(!p.try_tab_complete());
+        assert_eq!(p.text(), "xyz");
+    }
+
+    #[test]
+    fn repeated_tab_cycles_through_matches_and_wraps() {
+        // "da" matches both Dagger and Danny (sorted case-insensitively).
+        let mut p = pane(names(), "");
+        p.set_input("da".to_string());
+        assert!(p.try_tab_complete());
+        assert_eq!(p.text(), "Dagger: ");
+        // Tab again (no edit) advances to the next match.
+        assert!(p.try_tab_complete());
+        assert_eq!(p.text(), "Danny: ");
+        // And wraps back around.
+        assert!(p.try_tab_complete());
+        assert_eq!(p.text(), "Dagger: ");
+    }
+
+    #[test]
+    fn editing_resets_the_cycle() {
+        let mut p = pane(names(), "");
+        p.set_input("da".to_string());
+        assert!(p.try_tab_complete());
+        assert_eq!(p.text(), "Dagger: ");
+        // An edit (any key reaching `on`) drops the cycle state; the buffer
+        // no longer equals `produced`, so the next Tab recomputes fresh.
+        p.on(&Event::Keyboard(KeyEvent {
+            code: Key::Char('x'),
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(p.text(), "Dagger: x");
+        // "x" alone matches nothing, so Tab no longer completes.
+        assert!(!p.try_tab_complete());
+    }
+
+    fn span_is_styled_user(span: &Span, name: &str) -> bool {
+        span.content == name
+            && span.style.fg == theme::user_style(name).fg
+            && span.style.add_modifier.contains(Modifier::BOLD)
+    }
+
+    #[test]
+    fn plain_text_has_no_styled_mentions() {
+        let spans = highlight_mentions("just some words", &names(), "Baughn");
+        assert!(
+            spans.iter().all(|s| s.style.fg.is_none()),
+            "no word should be colored"
+        );
+        // Rejoining the span contents reproduces the chunk verbatim.
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "just some words");
+    }
+
+    #[test]
+    fn leading_mention_with_colon_is_highlighted_punct_plain() {
+        let spans = highlight_mentions("Baughn: hi", &names(), "Nero");
+        assert!(span_is_styled_user(&spans[0], "Baughn"));
+        // The colon is a separate, unstyled span.
+        assert_eq!(spans[1].content, ":");
+        assert!(spans[1].style.fg.is_none());
+    }
+
+    #[test]
+    fn mid_sentence_mention_only_styles_the_name() {
+        let spans = highlight_mentions("ask Nero please", &names(), "Baughn");
+        let styled: Vec<_> = spans.iter().filter(|s| s.style.fg.is_some()).collect();
+        assert_eq!(styled.len(), 1);
+        assert!(span_is_styled_user(styled[0], "Nero"));
+    }
+
+    #[test]
+    fn own_mention_is_additionally_reversed() {
+        let spans = highlight_mentions("hi Baughn", &names(), "Baughn");
+        assert!(
+            spans.iter().any(|s| s.content == "Baughn"
+                && s.style.add_modifier.contains(Modifier::REVERSED)),
+            "self-mention should be reversed"
+        );
+    }
+
+    #[test]
+    fn prefix_of_a_name_is_not_a_mention() {
+        // "Bau" is a completion prefix but not an exact name — never styled.
+        let spans = highlight_mentions("Bau is short", &names(), "Nero");
+        assert!(spans.iter().all(|s| s.style.fg.is_none()));
     }
 }

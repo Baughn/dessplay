@@ -214,6 +214,7 @@ impl Ui {
             settings: settings.clone(),
             media_roots: media_roots.clone(),
         };
+        ui.chat.set_me(ui.me.to_string());
         if open_settings {
             ui.push_modal(Modal::Settings(SettingsModal::new(settings, media_roots)));
         }
@@ -375,6 +376,8 @@ impl Ui {
     pub fn apply_snapshot(&mut self, snapshot: UiSnapshot) {
         let chat = self.merged_chat(&snapshot.view);
         self.chat.set_lines(chat);
+        self.chat
+            .set_usernames(props::chat_usernames(&snapshot.peers));
         self.users
             .set_props(props::users_props(&snapshot.view, &snapshot.peers));
         self.playlist.set_props(props::playlist_props(
@@ -526,6 +529,13 @@ impl Ui {
         if self.modals.is_empty() {
             match super::components::plain(&ev) {
                 Some(Key::Tab) => {
+                    // In the chat pane, Tab first tries to complete a username
+                    // at the end of the input; only if nothing matches does it
+                    // fall through to cycling panes.
+                    if self.focus == Focus::Chat && self.chat.try_tab_complete() {
+                        self.refresh_keybar();
+                        return Vec::new();
+                    }
                     self.focus = self.focus.next();
                     tracing::debug!(focus = ?self.focus, "focus changed");
                     self.sync_focus_attr();

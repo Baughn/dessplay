@@ -55,6 +55,17 @@ pub struct UsersProps {
     pub seeders: Vec<String>,
 }
 
+/// Names of chat participants: interactive peers that are present or lost
+/// (seeders and departed users excluded). Used for chat tab-completion and
+/// mention highlighting.
+pub fn chat_usernames(peers: &[PeerInfo]) -> Vec<String> {
+    peers
+        .iter()
+        .filter(|p| p.role != Role::Seeder && p.presence != Presence::Departed)
+        .map(|p| p.username.to_string())
+        .collect()
+}
+
 /// Build the users pane from the design's ready-state table.
 pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
     let mut props = UsersProps::default();
