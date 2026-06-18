@@ -170,10 +170,17 @@ async fn wait_for_socket(socket: &Path) -> Result<UnixStream, PlayerError> {
 }
 
 impl Player for MpvPlayer {
-    async fn load(&self, path: &Path) -> Result<(), PlayerError> {
+    async fn load(&self, path: &Path, title: Option<&str>) -> Result<(), PlayerError> {
         self.loading.store(true, Ordering::Relaxed);
         // Pause first so the new file opens paused (the trait contract).
         self.command(json!(["set_property", "pause", true])).await?;
+        // Override the displayed title (set before loadfile so it applies to
+        // the new file). Cached downloads are hash-named on disk, so without
+        // this mpv would show the ed2k hash instead of the real filename.
+        if let Some(title) = title {
+            self.command(json!(["set_property", "force-media-title", title]))
+                .await?;
+        }
         self.command(json!(["loadfile", path.to_string_lossy(), "replace"]))
             .await
     }

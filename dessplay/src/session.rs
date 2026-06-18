@@ -180,6 +180,15 @@ const WATCHED_FRACTION: f64 = 0.85;
 /// disk/retention-aware depth is future work. Seeders fetch everything.
 const PREFETCH_AHEAD: usize = 2;
 
+/// The playlist filename to show as the player's media title. Cache files
+/// are hash-named on disk, so without this mpv would display the ed2k hash.
+fn playlist_title(view: &StateView, file: Ed2kHash) -> Option<String> {
+    view.playlist
+        .iter()
+        .find(|e| e.hash == file)
+        .map(|e| e.state.filename.clone())
+}
+
 /// Text for the not-watching placeholder image (design.md, Placeholder
 /// Image): the filename, the explanation, and who *is* watching.
 fn placeholder_lines(view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> Vec<String> {
@@ -627,6 +636,7 @@ impl PlayerWiring {
             out.push(Directive::Player(PlayerCommand::Load {
                 file,
                 path: path.clone(),
+                title: playlist_title(view, file),
             }));
         }
 
@@ -730,6 +740,7 @@ impl PlayerWiring {
             out.push(Directive::Player(PlayerCommand::Load {
                 file,
                 path: path.clone(),
+                title: playlist_title(view, file),
             }));
             out.push(Directive::Player(PlayerCommand::SetPlaying(
                 derive::playback_active(view, peers),
@@ -1258,8 +1269,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 // touch the wiring's `loaded` state, so the real video
                 // still loads if the file later becomes available.
                 if view.now_playing == Some(file) {
-                    self.execute(vec![Directive::Player(PlayerCommand::Load { file, path })])
-                        .await;
+                    let title = playlist_title(view, file);
+                    self.execute(vec![Directive::Player(PlayerCommand::Load {
+                        file,
+                        path,
+                        title,
+                    })])
+                    .await;
                 }
                 FileEffect::None
             }
@@ -1788,6 +1804,32 @@ mod tests {
                 .iter()
                 .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
             "verified now-playing must load"
+        );
+    }
+
+    #[test]
+    fn load_title_is_the_playlist_filename_not_the_on_disk_path() {
+        // Regression: cache downloads are hash-named on disk, so the load
+        // must carry the playlist filename as the display title — otherwise
+        // mpv shows the ed2k hash.
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        wiring.on_state(&view, &[peer("kim")]);
+        // Resolve to a hash-named cache path (not the real filename).
+        let directives = wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/cache/dessplay/files/0123abcd".into()),
+            &view,
+            &[peer("kim")],
+        );
+        let title = player_cmds(&directives).into_iter().find_map(|cmd| match cmd {
+            PlayerCommand::Load { title, .. } => Some(title.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            title,
+            Some(Some("ep1.mkv".to_string())),
+            "load must title the player with the playlist filename, not the hash path"
         );
     }
 

@@ -55,10 +55,10 @@ async fn pause_in_one_player_pauses_everyone() {
         })
     })
     .await;
-    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
     baughn
-        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
 
     // Kim presses play in mpv. The auto-mock acked the unpause, so this
@@ -113,10 +113,10 @@ async fn seek_follows_the_authority() {
         },
     )
     .await;
-    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
     baughn
-        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
     // Baughn's player needs a known position before drift correction
     // can act (a fresh load has none until the player reports one).
@@ -196,10 +196,10 @@ async fn eof_advances_and_everyone_loads_the_next_file() {
         },
     )
     .await;
-    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
     baughn
-        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
     kim.user(PlayerEvent::PauseChanged(false));
     eventually(&[&kim, &baughn], BUDGET, |snaps| {
@@ -221,17 +221,17 @@ async fn eof_advances_and_everyone_loads_the_next_file() {
     })
     .await;
     let loaded = kim
-        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
     assert!(
-        matches!(&loaded, MockCommand::Load(path) if path.ends_with("ep2.mkv")),
+        matches!(&loaded, MockCommand::Load(path, _) if path.ends_with("ep2.mkv")),
         "kim loaded {loaded:?}"
     );
     let loaded = baughn
-        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
     assert!(
-        matches!(&loaded, MockCommand::Load(path) if path.ends_with("ep2.mkv")),
+        matches!(&loaded, MockCommand::Load(path, _) if path.ends_with("ep2.mkv")),
         "baughn loaded {loaded:?}"
     );
 }
@@ -274,7 +274,7 @@ async fn optimist_is_repaused_while_a_peer_blocks() {
         },
     )
     .await;
-    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
 
     // Kim presses play anyway.
@@ -451,7 +451,7 @@ async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
     // Baughn's player is handed the placeholder (a Load), not the real
     // file (which nobody has).
     baughn
-        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(_)))
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
 
     // An unpause now starts playback: nobody gates (all NotWatching), so

@@ -84,8 +84,15 @@ pub enum PlayerEvent {
 /// One running player instance.
 pub trait Player: Send + Sync + 'static {
     /// Load a file, replacing whatever is playing. The player starts
-    /// paused; a [`PlayerEvent::Loaded`] follows when it's ready.
-    fn load(&self, path: &Path) -> impl Future<Output = Result<(), PlayerError>> + Send;
+    /// paused; a [`PlayerEvent::Loaded`] follows when it's ready. `title`,
+    /// when given, overrides the displayed media title — needed because
+    /// cached downloads are hash-named on disk (the original filename would
+    /// otherwise be lost).
+    fn load(
+        &self,
+        path: &Path,
+        title: Option<&str>,
+    ) -> impl Future<Output = Result<(), PlayerError>> + Send;
 
     /// Set the pause state.
     fn set_pause(&self, paused: bool) -> impl Future<Output = Result<(), PlayerError>> + Send;

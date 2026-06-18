@@ -69,6 +69,9 @@ pub enum PlayerCommand {
         file: Ed2kHash,
         /// Local path to play.
         path: PathBuf,
+        /// Display title override. Cache files are hash-named on disk, so
+        /// this carries the real filename for mpv to show.
+        title: Option<String>,
     },
     /// The derived group playback state: should video be running?
     /// Sent on every re-derivation; the actor dedups against what the
@@ -157,8 +160,10 @@ struct Actor<F: PlayerFactory> {
     clock: Clock,
     offset_millis: i64,
     player: Option<F::Player>,
-    /// Now-loaded file and path (for EOF attribution and relaunch).
-    current: Option<(Ed2kHash, PathBuf)>,
+    /// Now-loaded file, path, and display title (for EOF attribution and
+    /// relaunch — the title must be re-applied so a relaunched player still
+    /// shows the real filename for hash-named cache files).
+    current: Option<(Ed2kHash, PathBuf, Option<String>)>,
     /// The group's desired playback state.
     desired_playing: bool,
     /// Pause state we believe the player is in (last command or
@@ -285,9 +290,9 @@ impl<F: PlayerFactory> Actor<F> {
 
     async fn handle_command(&mut self, cmd: PlayerCommand) {
         match cmd {
-            PlayerCommand::Load { file, path } => {
+            PlayerCommand::Load { file, path, title } => {
                 tracing::info!(path = %path.display(), "loading file");
-                self.current = Some((file, path.clone()));
+                self.current = Some((file, path.clone(), title.clone()));
                 self.eof_reported = false;
                 self.restore_millis = None;
                 self.pending_user_seek = None;
@@ -296,7 +301,7 @@ impl<F: PlayerFactory> Actor<F> {
                 self.believed_pause = Some(true);
                 self.set_speed(1.0).await;
                 if let Some(player) = &self.player
-                    && let Err(e) = player.load(&path).await
+                    && let Err(e) = player.load(&path, title.as_deref()).await
                 {
                     // A failed load is not silent: tell the session so it
                     // flips the file to Missing and re-resolves (the file
@@ -439,7 +444,7 @@ impl<F: PlayerFactory> Actor<F> {
                 self.note_position(position_millis);
             }
             PlayerEvent::DurationKnown { duration_millis } => {
-                if let Some((file, _)) = &self.current {
+                if let Some((file, _, _)) = &self.current {
                     let _ = self
                         .outputs
                         .send(PlayerOutput::DurationKnown {
@@ -472,7 +477,7 @@ impl<F: PlayerFactory> Actor<F> {
             }
             PlayerEvent::Eof => {
                 if !self.eof_reported
-                    && let Some((file, _)) = &self.current
+                    && let Some((file, _, _)) = &self.current
                 {
                     self.eof_reported = true;
                     tracing::info!("end of file reached");
@@ -576,9 +581,9 @@ impl<F: PlayerFactory> Actor<F> {
         match self.factory.spawn().await {
             Ok(player) => {
                 self.player = Some(player);
-                if let Some((_, path)) = self.current.clone()
+                if let Some((_, path, title)) = self.current.clone()
                     && let Some(player) = &self.player
-                    && let Err(e) = player.load(&path).await
+                    && let Err(e) = player.load(&path, title.as_deref()).await
                 {
                     tracing::warn!("reload after relaunch failed: {e}");
                 }
@@ -670,12 +675,13 @@ mod tests {
             .send(PlayerCommand::Load {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
+                title: None,
             })
             .await
             .unwrap();
         assert_eq!(
             expect_command(&mut control).await,
-            MockCommand::Load("/media/ep1.mkv".into())
+            MockCommand::Load("/media/ep1.mkv".into(), None)
         );
         control.events.send(PlayerEvent::Loaded).unwrap();
         control
@@ -696,6 +702,7 @@ mod tests {
             .send(PlayerCommand::Load {
                 file: FILE,
                 path: "/gone/ep1.mkv".into(),
+                title: None,
             })
             .await
             .unwrap();
@@ -1033,6 +1040,7 @@ mod tests {
             .send(PlayerCommand::Load {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
+                title: None,
             })
             .await
             .unwrap();
@@ -1056,7 +1064,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             expect_command(&mut c2).await,
-            MockCommand::Load("/media/ep1.mkv".into()),
+            MockCommand::Load("/media/ep1.mkv".into(), None),
             "relaunch must reload the current file"
         );
         c2.events.send(PlayerEvent::Loaded).unwrap();
@@ -1088,6 +1096,7 @@ mod tests {
             .send(PlayerCommand::Load {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
+                title: None,
             })
             .await
             .unwrap();
@@ -1119,6 +1128,7 @@ mod tests {
             .send(PlayerCommand::Load {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
+                title: None,
             })
             .await
             .unwrap();

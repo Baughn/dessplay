@@ -1083,6 +1083,10 @@ Player choice is per-user configuration.
 ### Commands Sent to Player
 
 - `loadfile <path>`: Load video file
+- `set_property force-media-title <name>`: Override the displayed title with
+  the playlist filename (set before `loadfile`). Cache downloads are
+  hash-named on disk, so without this mpv shows the ed2k hash instead of the
+  real episode name.
 - `pause` / `unpause`: Control playback
 - `seek <seconds>`: Seek to position
 - `set_property speed <factor>`: Slew playback rate for drift correction

@@ -27,8 +27,8 @@ pub const AUTO_DURATION_MILLIS: u64 = 24 * 60 * 1000;
 /// A command the actor sent to the mock, verbatim.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MockCommand {
-    /// `load(path)`.
-    Load(PathBuf),
+    /// `load(path, title)`.
+    Load(PathBuf, Option<String>),
     /// `set_pause(paused)`.
     SetPause(bool),
     /// `seek(position_millis)`.
@@ -122,8 +122,11 @@ impl MockPlayer {
 }
 
 impl Player for MockPlayer {
-    async fn load(&self, path: &Path) -> Result<(), PlayerError> {
-        self.send(MockCommand::Load(path.to_path_buf()))?;
+    async fn load(&self, path: &Path, title: Option<&str>) -> Result<(), PlayerError> {
+        self.send(MockCommand::Load(
+            path.to_path_buf(),
+            title.map(str::to_owned),
+        ))?;
         if self.load_fails {
             return Err(PlayerError::Gone("mock load failure".into()));
         }
