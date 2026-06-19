@@ -267,6 +267,23 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     let start = std::time::Instant::now();
     let seeder = args.seeder;
     let db_path = args.db_path.clone();
+
+    // Refuse to start if another dessplay process already owns this
+    // database/cache. This is the colliding case from the field: a seeder and
+    // a client launched from the same home directory with no path overrides
+    // share the default db (`Storage::default_path`) and cache, fighting over
+    // the same SQLite file and hash-named cache files. Held for the whole
+    // process; the advisory lock releases on exit or crash.
+    let resolved_db = match &db_path {
+        Some(path) => path.clone(),
+        None => Storage::default_path().ok_or("cannot determine the data directory")?,
+    };
+    let cache_dir = match &args.cache_dir {
+        Some(dir) => dir.clone(),
+        None => download_cache_dir()?,
+    };
+    let _instance_lock = crate::instance_lock::acquire(&resolved_db, Some(&cache_dir))?;
+
     let setup = prepare(&args).await?;
 
     // Stored CRDT state, and a second storage handle for the sync
@@ -476,6 +493,10 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         Some(path) => path.clone(),
         None => Storage::default_path().ok_or("cannot determine the data directory")?,
     };
+    // Refuse to start if another dessplay process already owns this
+    // database/cache (e.g. a seeder launched from the same home directory
+    // with no path overrides). Held for the whole process; released on exit.
+    let _instance_lock = crate::instance_lock::acquire(&db_path, Some(&download_cache_dir()?))?;
     // Interactive mode owns first-run setup: whether the settings
     // screen opens is decided by the *stored* settings, before any
     // prefills. Prefills ($USER, the .env password, flags) only become

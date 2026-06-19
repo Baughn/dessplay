@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-18
+Last updated: 2026-06-19
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1308,6 +1308,12 @@ that happens to share a prefix with its predecessor will be collapsed
 ### SQLite Database
 
 Location: `$XDG_DATA_HOME/dessplay/dessplay.db` (typically `~/.local/share/dessplay/`)
+
+**Single-instance lock:** at startup a process takes an exclusive advisory
+lock (`File::try_lock`) on `<db>.lock` and `<cache>/.lock` and refuses to start
+if another instance already holds either — two processes sharing one db/cache
+(e.g. a client and seeder from the same home dir) corrupt each other's state.
+Run a second instance with its own `--db` and `--cache-dir`.
 
 Uses `rusqlite` with `bundled` feature. CRDT state is persisted per-room as
 periodic **full-state snapshots** (postcard blobs) so it survives full
