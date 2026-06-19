@@ -115,6 +115,11 @@ pub enum PlayerOutput {
     },
     /// Periodic position report (100ms playing / 1s paused).
     PositionTick {
+        /// The file this position measures (the player's loaded file).
+        /// A position is meaningless without it: after an EOF-advance the
+        /// player can still be on the previous file, and a trailing tick
+        /// must not be attributed to the new now-playing file.
+        file: Ed2kHash,
         /// Current position, milliseconds.
         position_millis: u64,
     },
@@ -560,6 +565,9 @@ impl<F: PlayerFactory> Actor<F> {
         let Some(position_millis) = self.estimate_now() else {
             return;
         };
+        let Some(file) = self.current.as_ref().map(|(f, ..)| *f) else {
+            return; // no loaded file to attribute the position to
+        };
         let cadence = if self.believed_pause == Some(false) {
             POSITION_CADENCE_PLAYING
         } else {
@@ -572,7 +580,10 @@ impl<F: PlayerFactory> Actor<F> {
             self.last_position_emit = Some(Instant::now());
             let _ = self
                 .outputs
-                .send(PlayerOutput::PositionTick { position_millis })
+                .send(PlayerOutput::PositionTick {
+                    file,
+                    position_millis,
+                })
                 .await;
         }
     }
@@ -1038,7 +1049,10 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let mut playing_positions = Vec::new();
         while let Ok(o) = outputs.try_recv() {
-            if let PlayerOutput::PositionTick { position_millis } = o {
+            if let PlayerOutput::PositionTick {
+                position_millis, ..
+            } = o
+            {
                 playing_positions.push(position_millis);
             }
         }

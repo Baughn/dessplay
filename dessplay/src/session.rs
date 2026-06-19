@@ -1143,12 +1143,27 @@ impl PlayerWiring {
                 }),
                 Directive::Mutate(Mutation::SetPlaybackPosition { position_millis }),
             ],
-            PlayerOutput::PositionTick { position_millis } => {
-                let mut out = vec![Directive::Mutate(Mutation::SetPlaybackPosition {
-                    position_millis,
-                })];
-                out.extend(self.maybe_record_watched(view, position_millis));
-                out
+            PlayerOutput::PositionTick {
+                file,
+                position_millis,
+            } => {
+                // A position sample measures whatever file the player has
+                // loaded. When now-playing has advanced past it -- e.g. a
+                // trailing tick from the just-ended file arriving after the
+                // server's EOF-advance, while a still-missing next file means
+                // no fresh `loadfile` reset the estimate -- it must not be
+                // attributed to the new now-playing file: doing so both
+                // publishes a bogus position for us and falsely records the
+                // new file watched. See `stale_position_tick_*` tests.
+                if view.now_playing != Some(file) {
+                    vec![]
+                } else {
+                    let mut out = vec![Directive::Mutate(Mutation::SetPlaybackPosition {
+                        position_millis,
+                    })];
+                    out.extend(self.maybe_record_watched(view, position_millis));
+                    out
+                }
             }
             PlayerOutput::DurationKnown {
                 file,
@@ -2794,6 +2809,7 @@ mod tests {
         // Below threshold: nothing.
         let before = wiring.on_player(
             PlayerOutput::PositionTick {
+                file: hash(1),
                 position_millis: 80_000,
             },
             &view,
@@ -2802,6 +2818,7 @@ mod tests {
         // At 85%: recorded.
         let at = wiring.on_player(
             PlayerOutput::PositionTick {
+                file: hash(1),
                 position_millis: 85_000,
             },
             &view,
@@ -2810,11 +2827,54 @@ mod tests {
         // Later ticks: not re-recorded.
         let after = wiring.on_player(
             PlayerOutput::PositionTick {
+                file: hash(1),
                 position_millis: 95_000,
             },
             &view,
         );
         assert!(watched_records(&after).is_empty());
+    }
+
+    #[test]
+    fn stale_position_tick_from_old_file_is_not_credited_to_now_playing() {
+        // Regression: the previous file hit EOF, the server advanced
+        // now-playing to a file we don't hold (so no fresh `loadfile`
+        // reset the player's estimate), and a trailing position tick from
+        // the *old* file then arrived. It must not be attributed to the
+        // new now-playing file -- neither marking it watched nor
+        // publishing it as our position. (docs/design.md, Watch Tracking)
+        let mut wiring = PlayerWiring::new(me());
+        // now-playing is hash(1) with a known 100s duration.
+        let view = timed_state(100_000).view();
+        // A trailing tick from a different (just-ended) file, well past
+        // hash(1)'s 85% threshold.
+        let directives = wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(2),
+                position_millis: 99_000,
+            },
+            &view,
+        );
+        assert!(
+            watched_records(&directives).is_empty(),
+            "a tick from another file must not mark now-playing watched"
+        );
+        assert!(
+            !directives
+                .iter()
+                .any(|d| matches!(d, Directive::Mutate(Mutation::SetPlaybackPosition { .. }))),
+            "a tick from another file must not publish our position"
+        );
+        // And a genuine tick for now-playing still records it: the guard
+        // rejects only mismatched files, it doesn't wedge recording.
+        let genuine = wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 90_000,
+            },
+            &view,
+        );
+        assert_eq!(watched_records(&genuine), vec![hash(1)]);
     }
 
     #[test]
@@ -2834,6 +2894,7 @@ mod tests {
         let mut wiring = PlayerWiring::new(me());
         let directives = wiring.on_player(
             PlayerOutput::PositionTick {
+                file: hash(1),
                 position_millis: 90_000,
             },
             &state.view(),
@@ -2863,6 +2924,7 @@ mod tests {
         let view = playing_state().view(); // entry(1) has duration None
         let directives = wiring.on_player(
             PlayerOutput::PositionTick {
+                file: hash(1),
                 position_millis: 9_999_999,
             },
             &view,
