@@ -374,7 +374,7 @@ impl Storage {
             tracing::debug!("no stored state snapshot");
             return Ok(None);
         };
-        let state: CrdtState = wire::decode(&blob)?;
+        let state = CrdtState::decode_snapshot(&blob)?;
         tracing::debug!(
             epoch,
             bytes = blob.len(),

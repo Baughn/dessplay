@@ -11,7 +11,7 @@ use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::franchise::{self, FranchiseKey};
 use dessplay_core::net::PeerInfo;
 use dessplay_core::types::{
-    Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId, encode_action,
+    AniDbSeriesId, Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId, encode_action,
 };
 use tuirealm::component::AppComponent;
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
@@ -607,7 +607,10 @@ impl Ui {
     fn toggle_self_ready(&self) -> Vec<UserAction> {
         let current = derive::user_state(&self.snapshot.view, &self.me);
         tracing::debug!(?current, "Ctrl-R: toggling self readiness");
-        if current == DerivedUserState::Ready {
+        // Ready (committed) and Maybe (default) are both "participating"
+        // states — Ctrl-R from either pauses; from Paused/Away/NotWatching
+        // it becomes ready.
+        if matches!(current, DerivedUserState::Ready | DerivedUserState::Maybe) {
             self.become_unready()
         } else {
             self.become_ready()
@@ -631,9 +634,10 @@ impl Ui {
 
     /// Become ready: like pressing play ("I'm ready, go"). Clears any
     /// manual override, latches Playing, and — if the now-playing series
-    /// is marked NotWatching for us — flips it back to Watching so the
-    /// derived state actually reaches Ready. Shared by Ctrl-R and
-    /// `/ready`.
+    /// is marked NotWatching for us — flips it back to **Maybe** (the
+    /// default), enough to reach a non-blocking state while present. It
+    /// deliberately does *not* commit to Watching; that is `/watch`.
+    /// Shared by Ctrl-R and `/ready`.
     fn become_ready(&self) -> Vec<UserAction> {
         let view = &self.snapshot.view;
         let me = self.me.clone();
@@ -655,7 +659,7 @@ impl Ui {
             actions.push(UserAction::Mutate(Mutation::SetSeriesPreference {
                 user: me,
                 series,
-                pref: SeriesWatchState::Watching,
+                pref: SeriesWatchState::Maybe,
             }));
         }
         actions
@@ -793,6 +797,37 @@ impl Ui {
                     series_name,
                     filename,
                 })
+            }
+            Msg::CycleSeriesWatch(hash) => {
+                let view = &self.snapshot.view;
+                // Resolve the entry's series; no id yet → local notice.
+                let Some(series) = view
+                    .anidb_metadata
+                    .get(&hash)
+                    .and_then(|m| m.as_ref())
+                    .and_then(|m| m.series_id)
+                else {
+                    return Some(UserAction::Notice(
+                        "watch: no series info for that file yet".to_string(),
+                    ));
+                };
+                // Cycle Watching -> Maybe -> NotWatching -> Watching, with
+                // an absent entry (the default) treated as Maybe.
+                let current = view
+                    .series_preference
+                    .get(&(self.me.clone(), series))
+                    .copied()
+                    .unwrap_or(SeriesWatchState::Maybe);
+                let next = match current {
+                    SeriesWatchState::Watching => SeriesWatchState::Maybe,
+                    SeriesWatchState::Maybe => SeriesWatchState::NotWatching,
+                    SeriesWatchState::NotWatching => SeriesWatchState::Watching,
+                };
+                Some(UserAction::Mutate(Mutation::SetSeriesPreference {
+                    user: self.me.clone(),
+                    series,
+                    pref: next,
+                }))
             }
             Msg::CloseModal => {
                 self.pop_modal();
@@ -950,29 +985,71 @@ impl Ui {
                     }),
                 })]
             }
-            // Stop watching the now-playing file's series. Requires an
-            // AniDB series id to key the preference on (Phase 9A).
-            "/skip" => {
-                let view = &self.snapshot.view;
-                if let Some(file) = view.now_playing
-                    && let Some(Some(metadata)) = view.anidb_metadata.get(&file)
-                    && let Some(series) = metadata.series_id
-                {
-                    vec![UserAction::Mutate(Mutation::SetSeriesPreference {
-                        user: self.me.clone(),
-                        series,
-                        pref: SeriesWatchState::NotWatching,
-                    })]
-                } else {
-                    vec![UserAction::Notice(
-                        "/skip: no series info for the current file yet".to_string(),
-                    )]
-                }
-            }
+            // Per-series watch state for the now-playing file. Each needs
+            // an AniDB series id to key the preference on (Phase 9A).
+            // `/watch` commits (the group waits for you even when absent);
+            // `/maybe` is the opportunistic default; `/skip` opts out.
+            "/watch" => self.set_now_playing_pref(SeriesWatchState::Watching, "/watch"),
+            "/maybe" => self.set_now_playing_pref(SeriesWatchState::Maybe, "/maybe"),
+            "/skip" => self.set_now_playing_pref(SeriesWatchState::NotWatching, "/skip"),
+            // Play past a committed-but-absent blocker of the current file.
+            "/ack" => self.acknowledge_blockers(),
             other => vec![UserAction::Notice(format!(
                 "Unknown command: {other} — type / to see commands"
             ))],
         }
+    }
+
+    /// The AniDB series id of the now-playing file, if known — the key the
+    /// per-series watch commands write against.
+    fn now_playing_series(&self) -> Option<AniDbSeriesId> {
+        let view = &self.snapshot.view;
+        let file = view.now_playing?;
+        view.anidb_metadata.get(&file)?.as_ref()?.series_id
+    }
+
+    /// Set our watch preference for the now-playing file's series, or post
+    /// a local notice when there is no series id yet.
+    fn set_now_playing_pref(&self, pref: SeriesWatchState, cmd: &str) -> Vec<UserAction> {
+        match self.now_playing_series() {
+            Some(series) => vec![UserAction::Mutate(Mutation::SetSeriesPreference {
+                user: self.me.clone(),
+                series,
+                pref,
+            })],
+            None => vec![UserAction::Notice(format!(
+                "{cmd}: no series info for the current file yet"
+            ))],
+        }
+    }
+
+    /// `/ack`: acknowledge every committed-but-absent blocker of the
+    /// now-playing file (a per-file one-shot) and latch Playing — "play
+    /// anyway". A no-op notice when nothing is playing or nobody is a
+    /// committed-absent blocker.
+    fn acknowledge_blockers(&self) -> Vec<UserAction> {
+        let view = &self.snapshot.view;
+        let Some(file) = view.now_playing else {
+            return vec![UserAction::Notice("/ack: nothing is playing".to_string())];
+        };
+        let blockers: Vec<UserId> = derive::playback_blockers(view, &self.snapshot.peers)
+            .into_iter()
+            .filter(|blocker| blocker.reason == derive::BlockReason::CommittedAbsent)
+            .map(|blocker| blocker.user)
+            .collect();
+        if blockers.is_empty() {
+            return vec![UserAction::Notice(
+                "/ack: no committed-but-absent blockers right now".to_string(),
+            )];
+        }
+        let mut actions: Vec<UserAction> = blockers
+            .into_iter()
+            .map(|user| UserAction::Mutate(Mutation::AcknowledgeAbsent { file, user }))
+            .collect();
+        actions.push(UserAction::Mutate(Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Playing,
+        }));
+        actions
     }
 
     fn open_episode_browser(&mut self, key: FranchiseKey) {
@@ -1480,7 +1557,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_r_marks_watching_and_readies_when_not_watching() {
+    fn ctrl_r_readies_to_maybe_when_not_watching() {
         let ui = ui_with_view(not_watching_state(&me()));
         let actions = ui.toggle_self_ready();
         let muts = mutations(&actions);
@@ -1496,12 +1573,13 @@ mod tests {
                 intent: PlaybackIntent::Playing
             }
         )));
-        // ...and flips the series back to Watching (the escape hatch).
+        // ...and flips the series back to Maybe (the escape hatch — NOT a
+        // commit to Watching, which is now a deliberate `/watch`).
         assert!(muts.iter().any(|m| matches!(
             m,
             Mutation::SetSeriesPreference {
                 series: AniDbSeriesId(7),
-                pref: SeriesWatchState::Watching,
+                pref: SeriesWatchState::Maybe,
                 ..
             }
         )));
@@ -1739,7 +1817,7 @@ mod tests {
     }
 
     #[test]
-    fn ready_command_readies_and_marks_watching() {
+    fn ready_command_readies_and_clears_not_watching_to_maybe() {
         let mut ui = ui_with_view(not_watching_state(&me()));
         let actions = ui.command("/ready");
         let muts = mutations(&actions);
@@ -1753,6 +1831,22 @@ mod tests {
                 intent: PlaybackIntent::Playing
             }
         )));
+        // Clears NotWatching to Maybe (the default), not a Watching commit.
+        assert!(muts.iter().any(|m| matches!(
+            m,
+            Mutation::SetSeriesPreference {
+                series: AniDbSeriesId(7),
+                pref: SeriesWatchState::Maybe,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn watch_command_commits_now_playing_series() {
+        let mut ui = ui_with_view(not_watching_state(&me()));
+        let actions = ui.command("/watch");
+        let muts = mutations(&actions);
         assert!(muts.iter().any(|m| matches!(
             m,
             Mutation::SetSeriesPreference {

@@ -972,7 +972,10 @@ async fn handle_eof<T: Transport>(
         }
         match derive::user_state(&view, reporter) {
             DerivedUserState::NotWatching | DerivedUserState::Away { .. } => return,
-            DerivedUserState::Ready | DerivedUserState::Paused => {}
+            // A present watcher advances now-playing — committed (Ready)
+            // or opportunistic (Maybe), and even if manually Paused (they
+            // still watched this file to the end).
+            DerivedUserState::Ready | DerivedUserState::Maybe | DerivedUserState::Paused => {}
         }
         let next = view
             .playlist

@@ -159,7 +159,7 @@ const CHAT_WRAP_INDENT: usize = 2;
 /// Most command suggestions shown at once in the discoverability popup.
 /// Sized to fit the whole command table on a bare `/` with a little
 /// headroom (see [`super::commands::SLASH_COMMANDS`]).
-const CHAT_SUGGESTION_MAX: u16 = 8;
+const CHAT_SUGGESTION_MAX: u16 = 11;
 
 /// Chat log + always-visible input line.
 pub struct ChatPane {
@@ -902,6 +902,7 @@ impl PlaylistPane {
             ("Enter", "Play"),
             ("a", "Add"),
             ("d", "Remove"),
+            ("w", "Watch"),
             ("Ctrl-j/k", "Move"),
             ("M", "Map"),
             ("A", "Archive"),
@@ -917,22 +918,28 @@ impl PlaylistPane {
                 let marker = if row.is_now { "▶ " } else { "  " };
                 let style = theme::tone_style(row.tone);
                 let left = format!("{marker}{}", row.title);
-                if row.temporary {
-                    // Cache-only file: dim "temporary" pushed to the right
-                    // edge. Title clips before the tag when space is tight.
-                    const TAG: &str = "temporary";
-                    let inner = area.width.saturating_sub(2) as usize;
-                    let pad = inner
-                        .saturating_sub(left.chars().count() + TAG.len() + 1)
-                        .max(1);
-                    ListItem::new(Line::from(vec![
-                        Span::styled(left, style),
-                        Span::raw(" ".repeat(pad)),
-                        Span::styled(TAG, theme::dim()),
-                    ]))
+                // Right-aligned dim tags: the always-shown watch state,
+                // prefixed by "temporary" for a cache-only copy. Title
+                // clips before the tags when space is tight.
+                let watch_tag = match row.watch {
+                    dessplay_core::types::SeriesWatchState::Watching => "watching",
+                    dessplay_core::types::SeriesWatchState::Maybe => "maybe",
+                    dessplay_core::types::SeriesWatchState::NotWatching => "not watching",
+                };
+                let right = if row.temporary {
+                    format!("temporary  {watch_tag}")
                 } else {
-                    ListItem::new(Span::styled(left, style))
-                }
+                    watch_tag.to_string()
+                };
+                let inner = area.width.saturating_sub(2) as usize;
+                let pad = inner
+                    .saturating_sub(left.chars().count() + right.chars().count() + 1)
+                    .max(1);
+                ListItem::new(Line::from(vec![
+                    Span::styled(left, style),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(right, theme::dim()),
+                ]))
             })
             .collect();
         items.push(ListItem::new(Span::styled("  [Add New]", theme::dim())));
@@ -995,6 +1002,9 @@ impl AppComponent<Msg, NoUserEvent> for PlaylistPane {
             },
             Key::Char('a') => Some(Msg::AddFileAfter(self.selected_hash())),
             Key::Char('d') => self.selected_hash().map(Msg::RemoveEntry),
+            // Cycle this entry's series watch state: Watching -> Maybe ->
+            // NotWatching -> ...
+            Key::Char('w') => self.selected_hash().map(Msg::CycleSeriesWatch),
             _ => None,
         }
     }
@@ -1633,6 +1643,7 @@ mod playlist_pane_tests {
                 tone: Tone::Normal,
                 is_now: false,
                 temporary: false,
+                watch: dessplay_core::types::SeriesWatchState::Maybe,
             }],
             ..Default::default()
         });

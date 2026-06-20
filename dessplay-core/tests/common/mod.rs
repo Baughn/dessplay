@@ -20,12 +20,8 @@ pub fn arb_script_op() -> impl Strategy<Value = ScriptOp> {
         proptest::option::of(any::<u8>()).prop_map(|file| ScriptOp::SetNowPlaying { file }),
         any::<u8>().prop_map(|authority| ScriptOp::SetSeekAuthority { authority }),
         any::<bool>().prop_map(|playing| ScriptOp::SetIntent { playing }),
-        (any::<u8>(), any::<u8>(), any::<bool>()).prop_map(|(user, series, watching)| {
-            ScriptOp::SetSeriesPreference {
-                user,
-                series,
-                watching,
-            }
+        (any::<u8>(), any::<u8>(), any::<u8>()).prop_map(|(user, series, pref)| {
+            ScriptOp::SetSeriesPreference { user, series, pref }
         }),
         (any::<u8>(), any::<u8>(), any::<u8>()).prop_map(|(user, kind, set_by)| {
             ScriptOp::SetManualOverride { user, kind, set_by }
@@ -63,6 +59,8 @@ pub fn arb_script_op() -> impl Strategy<Value = ScriptOp> {
             }
         }),
         any::<u8>().prop_map(|file| ScriptOp::RequestLookup { file }),
+        (any::<u8>(), any::<u8>())
+            .prop_map(|(file, user)| ScriptOp::AcknowledgeAbsent { file, user }),
         any::<u8>().prop_map(|text| ScriptOp::Chat { text }),
         (any::<u8>(), any::<u32>())
             .prop_map(|(user, millis)| ScriptOp::SetPosition { user, millis }),

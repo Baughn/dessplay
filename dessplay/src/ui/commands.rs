@@ -39,9 +39,24 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         help: "send an action (e.g. * Baughn waves)",
     },
     SlashCommand {
+        name: "/watch",
+        args: "",
+        help: "commit to the current series (wait for you even when away)",
+    },
+    SlashCommand {
+        name: "/maybe",
+        args: "",
+        help: "set the current series to maybe (the default)",
+    },
+    SlashCommand {
         name: "/skip",
         args: "",
         help: "stop watching the current series",
+    },
+    SlashCommand {
+        name: "/ack",
+        args: "",
+        help: "play past a committed-but-absent user (this file)",
     },
     SlashCommand {
         name: "/settings",

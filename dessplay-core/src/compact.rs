@@ -29,7 +29,9 @@ use crate::types::{ActorId, SharedTimestamp};
 /// - chat keeps only the trailing `chat_keep` messages (archive the
 ///   full log first);
 /// - the lookup-request set empties (clients re-request what still
-///   matters).
+///   matters);
+/// - the acknowledged-absent set empties (per-file, session-scoped — a
+///   stale acknowledgement should never outlive the day).
 pub fn rebuild(
     view: &StateView,
     actor: ActorId,

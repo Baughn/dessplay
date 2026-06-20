@@ -187,13 +187,28 @@ pub struct PlaylistFileState {
     pub duration_millis: Option<u64>,
 }
 
-/// Per-user, per-series watch preference.
+/// Per-user, per-series watch preference: a user's commitment to a series.
+///
+/// Three states, with an *absent* map entry meaning [`Maybe`](Self::Maybe)
+/// — the common default. `Maybe` is a **trailing** variant on purpose:
+/// serde/postcard number variants by declaration order, so the two older
+/// discriminants stay byte-identical and snapshots written before `Maybe`
+/// existed still deserialize (see docs/sync-state.md, Series Preference).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub enum SeriesWatchState {
-    /// The default: this user watches the series and gates playback.
+    /// Committed: the group waits for this user on this series **even when
+    /// they are absent** (Lost/Departed/quit). The only state that gates
+    /// across absence.
     Watching,
-    /// The user skips this series and never gates playback on it.
+    /// The user skips this series and never gates playback on it, present
+    /// or absent; it is also not auto-downloaded.
     NotWatching,
+    /// The default (also the value of an absent entry): opportunistic.
+    /// Gates only while the user is *present* and not ready-to-play; an
+    /// absent Maybe user does not block. Stored explicitly so a user can
+    /// cycle back to it from Watching/NotWatching (the CRDT has no key
+    /// removal — see docs/sync-state.md).
+    Maybe,
 }
 
 /// Who is currently the playback-position authority. A user identity

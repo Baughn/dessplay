@@ -159,10 +159,34 @@ can be set on the settings screen.
 
 This state is **derived** from two independent sources:
 
-1. **Per-series watch preference** (`Map<AniDbSeriesId, LwwCell<SeriesWatchState>>`):
-   Each user can mark themselves as NotWatching for a specific AniDB series.
-   When the currently playing file belongs to a series the user has marked as
-   NotWatching, their state is derived as NotWatching.
+1. **Per-series watch preference** (`Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>`):
+   a user's commitment to a specific AniDB series, with **three** values:
+
+   - **Watching** (committed): "I am definitely watching this series." The
+     group waits for this user even when they are **absent** -- Lost,
+     Departed, or quit. This is the only state that blocks across absence
+     (see [Playback Rules](#playback-rules)); unblocking a committed-absent
+     user takes a deliberate per-file [acknowledge](#playback-rules).
+   - **Maybe** (the default): opportunistic / undecided -- "I'll watch if
+     I'm here, but don't hold up the night for me." A **present** Maybe user
+     gates playback exactly like a committed one (the group waits for their
+     file); an **absent** Maybe user does not block. This is the value for
+     every series a user has never explicitly ruled on.
+   - **NotWatching** (definite no): the user skips this series and **never**
+     gates playback on it, present or absent, and it is not auto-downloaded.
+
+   When the currently playing file belongs to a series, that user's
+   commitment to it is one input to their derived state. A user with no
+   stored preference for the series is treated as **Maybe** -- the schema
+   stores `Watching`/`NotWatching`/`Maybe` explicitly, and an *absent* map
+   entry also means Maybe (see [sync-state.md](sync-state.md#series-preference)).
+
+   **Becoming committed** is a deliberate act -- being listed in a
+   [List](#the-list-series-tracker) entry's `watchers` set, or a per-series
+   action (`/watch`, or the watch-cycle key in the playlist/series pane).
+   `Ctrl-R` / "mark ready" does **not** commit: it clears a pause or an
+   auto-`NotWatching` back to **Maybe**, never to Watching, so the
+   block-across-absence commitment is always opt-in.
 
 2. **Manual override** (`LwwCell<Option<ManualState>>`): The user can manually
    pause (stepping away), which overrides the series-based state. The override
@@ -180,8 +204,12 @@ a chat message** -- back to normal. Merely *typing* a chat line (without
 sending it) does not clear it, so you can compose a message while still marked
 away. With five trusted friends, no permission system is needed.
 
-Derived states:
-- **Ready**: No manual override, and the current series is not marked NotWatching
+Derived states (manual override wins; otherwise the now-playing series'
+commitment decides):
+- **Ready**: No manual override, and the current series is **Watching**
+  (committed)
+- **Maybe**: No manual override, and the current series is **Maybe** (the
+  default). Gates only while the user is present
 - **Paused**: Manual override is set to Paused
 - **Away**: Manual override is set to Away (does not block playback)
 - **Not Watching**: Current file's series is marked NotWatching (no manual override)
@@ -205,13 +233,18 @@ Their ready state is decided by a combination of the above; this only exists in 
 
 | State | Color | Meaning |
 |-------|-------|---------|
-| Ready | Green | Ready & Ready |
+| Ready | Green | (Ready, or a present Maybe) & Ready |
 | Paused | Red | Paused & Any |
 | Away | Gray | Away & Any (shows who set it) |
 | Not watching | Gray | Not watching & Any |
+| Committed, away | Red | Watching (committed) & **absent** (Lost/Departed) -- blocks; acknowledge to play past |
 | Downloading | Green | Ready & Downloading [complete enough to play] |
 | Downloading | Blue | Ready & Downloading [still fetching] |
 | Downloading | Red | Paused / Away / Not watching & Downloading |
+
+A present **Maybe** user displays exactly like Ready (the per-series
+distinction lives in the playlist's right-aligned watch tag, not the
+Users-pane colour) -- both gate on their file state while present.
 
 An in-progress download is **always** shown: a peer actively downloading
 the now-playing file reads as Downloading even if their derived state is
@@ -221,7 +254,10 @@ and they are Ready, blue while a Ready peer is still fetching, and red
 otherwise (the download is visible; the red says they still won't be
 watching right now).
 
-Departed users (see [Presence](#presence)) are shown on a dim "departed" line.
+Departed users (see [Presence](#presence)) are shown on a dim "departed"
+line -- **except** a committed (Watching) absent user, who keeps gating
+the now-playing file and is surfaced as a "committed, away" blocker until
+they return or the group [acknowledges](#playback-rules) past them.
 Seeders are not listed as users; they appear on a separate dim "seeders:" line.
 
 The OSD on the video player shows a summary: Which users are unready (in any form),
@@ -246,26 +282,63 @@ how many users are connected.
 - **Mark ready / unready** (`Ctrl-R`, global): toggles your own readiness
   without touching the Users pane. Marking ready clears your manual
   override, latches playback intent Playing, **and** flips the
-  now-playing series back to Watching if it was marked Not Watching --
-  the only path to undo an auto- (or self-) Not Watching. Marking unready
-  pauses (manual override Paused, intent Paused).
+  now-playing series back to **Maybe** if it was marked Not Watching --
+  the path to undo an auto- (or self-) Not Watching. (It does **not**
+  commit you to Watching; that is a deliberate act -- see below.) Marking
+  unready pauses (manual override Paused, intent Paused).
 - **Marked Away** (by another user, or yourself via `/away`): Manual override
   -> Away; cleared when the marked user's client unpauses the player or sends a
   chat message (not by merely typing)
-- **Mark "not watching"** on series: Series preference updated; clears "missing from
-  known series" block when applicable
+- **Set watch state** on a series (`/watch` / `/maybe` / `/skip`, or the
+  watch-cycle key in the playlist/series pane): series preference updated to
+  Watching / Maybe / NotWatching. Setting NotWatching also clears a "missing
+  from known series" block when applicable.
+- **Acknowledge a committed-absent blocker** (`/ack`, or from the blocker
+  line): records a **per-file** one-shot that lets the group play past a
+  committed (Watching) user who is absent. It is scoped to the current
+  now-playing file -- advancing to the next episode re-raises the block, so
+  it is re-acknowledged consciously each file (see [Playback Rules](#playback-rules)).
 
 ### Playback Rules
 
-1. The video plays iff the shared **playback intent** is Playing, **and**
-   every **present** user is Ready, Away, or Not Watching with a File State
-   that permits playback, **and** no user is Lost. Presence is defined in
-   [Presence](#presence); departed users and seeders never gate playback.
+1. The video plays iff the shared **playback intent** is Playing **and**
+   no interactive user *blocks*. Whether a user blocks depends on their
+   commitment to the now-playing series and their presence (seeders never
+   gate; a user with no peer entry is ignored):
+
+   - **NotWatching**: never blocks (any presence).
+   - **Away**: never blocks (any presence) -- this is also what an
+     [acknowledge](#playback-rules) writes.
+   - **Maybe** (the default): blocks only while **present** and not
+     ready-to-play (a Missing/insufficiently-downloaded file, or a manual
+     Paused). An **absent** (Lost/Departed) Maybe user does **not** block --
+     we don't hold up the night for someone who isn't here and only *maybe*
+     wanted this.
+   - **Watching** (committed): blocks whenever they are not ready-to-play,
+     **including while absent** (Lost or Departed) -- "wait for me even if
+     I've been gone a week." A committed-absent user blocks until they
+     return ready, or until the group [acknowledges](#playback-rules) past
+     them for the current file.
+
    The intent is a synced register (`LwwCell<PlaybackIntent>`,
    `Playing | Paused`) written by users (play/pause actions) and the server
    (forced to Paused on Lost, on graceful quit during playback, on
    departure, and on EOF-advance) -- it is the latch that keeps playback
-   paused after a blocker leaves, instead of silently auto-resuming.
+   paused after a blocker leaves, instead of silently auto-resuming. (The
+   server forces this Paused on **any** Lost, committed or not; gating then
+   decides whether pressing play resumes -- for an absent Maybe user it
+   does, for a committed one it does not until acknowledged.)
+
+   **Acknowledging a committed-absent blocker** is a deliberate per-file
+   one-shot: it records `(now-playing file, absent user)` in a synced set
+   (`acknowledged_absent`), which suppresses that user's committed-absent
+   block *for that file only*. Advancing now-playing (EOF or manual select)
+   leaves the old entry behind, so the block re-raises on the next episode
+   and is re-acknowledged consciously. The per-file scoping is why this is a
+   dedicated set rather than a reuse of the per-user **Away** override (an
+   Away would persist across episodes until the user returned). The set is
+   grow-only and cleared at compaction, like other ephemeral session state
+   (see [sync-state.md](sync-state.md#acknowledged-absent)).
 2. If you press play in your player but someone is Paused or has a Missing file:
    - Your player is immediately re-paused
    - You are marked Ready, and intent is set to Playing (you tried!) --
@@ -285,8 +358,9 @@ how many users are connected.
    The server initiates this (it is the authoritative entity for "file ended"):
    clients whose player reaches end-of-file send an `EofReached { file }` report
    to the server; when the server receives the first report matching the current
-   now-playing file from a present, watching user (not a seeder, and not one
-   whose derived state is Not Watching or Away), it marks the file watched,
+   now-playing file from a present, watching user -- Ready (committed) or
+   Maybe, but not a seeder and not one whose derived state is Not Watching
+   or Away -- it marks the file watched,
    advances now-playing, sets playback intent to Paused (the next episode
    loads paused; anyone presses play when ready), and takes seek authority.
    Later duplicate reports no
@@ -334,14 +408,23 @@ This prevents sync issues from different encodes/versions.
   commands:
   - `/quit` (aliases `/exit`, `/q`; also Ctrl-C) -- quit DessPlay
   - `/ready` -- mark yourself ready (same as the "become ready" half of
-    `Ctrl-R`: clears your manual override, latches Playing, and marks the
-    now-playing series Watching)
+    `Ctrl-R`: clears your manual override, latches Playing, and flips the
+    now-playing series back to Maybe if it was Not Watching -- it does
+    **not** commit you to Watching)
   - `/pause` -- mark yourself paused (manual override Paused, intent Paused)
   - `/away [name]` -- mark yourself (or, with a name, another user) as Away
     (alias `/afk <name>`; see User States). Marking yourself Away holds until
     you unpause the player or send another chat message.
+  - `/watch` -- **commit** to the now-playing file's series (sets your
+    per-series preference to Watching, so the group waits for you even when
+    you're absent; needs an AniDB series id)
+  - `/maybe` -- set the now-playing file's series to Maybe, the opportunistic
+    default (needs an AniDB series id)
   - `/skip` -- stop watching the now-playing file's series (sets your
     per-series preference to NotWatching; needs an AniDB series id)
+  - `/ack` -- acknowledge the current committed-absent blocker(s): a per-file
+    one-shot that lets the group play past a committed (Watching) user who is
+    Lost/Departed, and latches intent Playing. Re-needed on the next episode.
   - `/me <action>` -- send an IRC-style action ("* Baughn waves"). Unlike
     the other commands this is a real, **synced** chat message (it reaches
     everyone, persists, and shows on the player OSD as "* Baughn waves");
@@ -392,7 +475,9 @@ mechanism that already posts command feedback and archive results).
 | **Resumed** | manual-override cleared (Paused -> None) | "Baughn unpaused" | Local |
 | **Away** | manual-override map -> Away | "Kim is away" / "Baughn marked Kim away" | Local |
 | **Not watching** | series-preference map -> NotWatching (now-playing series) | "Kim set to not-watching Frieren (by Kim)" | Local |
-| **Watching again** | series-preference map -> Watching (now-playing series) | "Kim set to watching Frieren (by Kim)" | Local |
+| **Watching (committed)** | series-preference map -> Watching (now-playing series) | "Kim is committed to Frieren (by Kim)" | Local |
+| **Maybe** | series-preference map -> Maybe (now-playing series) | "Kim set Frieren to maybe (by Kim)" | Local |
+| **Acknowledged absent** | `acknowledged_absent` gains `(now-playing, user)` | "Playing past Baughn (committed, away)" | Local |
 
 **Attribution.** The resolved `StateView` does not record *who* wrote a
 register, so attribution comes from the data, not the writer. The subject
@@ -402,10 +487,10 @@ both when one user marks another ("Baughn marked Kim away"). The
 **now-playing** writer is *not* recoverable (manual selection takes no
 seek authority), so new-file lines are un-attributed; EOF-advance is told
 apart by the prior file's watched flag flipping true. Watch-preference
-lines are scoped to the **now-playing series** (the `/skip` / `/ready` /
-Ctrl-R surface), which keeps the List's bulk auto-writes for other series
-out of the chat; their `(by …)` is the subject today (you can only set
-your own preference) and will name the real setter once
+lines are scoped to the **now-playing series** (the `/watch` / `/maybe` /
+`/skip` / Ctrl-R surface), which keeps the List's bulk auto-writes for
+other series out of the chat; their `(by …)` is the subject today (you can
+only set your own preference) and will name the real setter once
 [marking *others* not-watching](#future-plans) lands.
 
 **No cascade spam.** A single user-meaningful action often writes several
@@ -603,12 +688,15 @@ search modal: it pre-searches for the entry's name (informal names like
 from the ranked candidates and confirms. Enter on fresh results links;
 editing the query re-arms search.
 
-The `watchers` set wires into the existing per-series watch preference: when
-an entry is linked, users *not* in the watchers set get
-`SeriesWatchState::NotWatching` for that series, so they never gate playback
-on shows they skip. Two guards: an *empty* watchers set means
-"unrecorded", not "nobody", and never writes preferences; and an
-existing preference (a manual choice) is never overridden.
+The `watchers` set wires into the per-series watch preference, and is the
+declarative route to **commitment**: when an entry is linked, users *in*
+the watchers set get `SeriesWatchState::Watching` (committed -- the group
+waits for them even when absent) and users *not* in it get
+`SeriesWatchState::NotWatching` (so they never gate playback on shows they
+skip). Series with no List opinion stay at the **Maybe** default. Two
+guards: an *empty* watchers set means "unrecorded", not "nobody", and
+never writes preferences; and an existing preference (a manual choice) is
+never overridden.
 
 ### Import
 
@@ -690,7 +778,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | Key | Context | Action |
 |-----|---------|--------|
 | `Ctrl-C` | Any | Quit |
-| `Ctrl-R` | Any | Toggle your own ready/unready (and mark yourself watching the current series) |
+| `Ctrl-R` | Any | Toggle your own ready/unready (clears a manual pause; flips the now-playing series from NotWatching back to Maybe -- does **not** commit to Watching) |
 | `Tab` | Any | Cycle focus: Chat -> Series -> Users -> Playlist -> Chat |
 | `Tab` | Chat | Complete a username if the end of the input is a prefix of one (see below); otherwise cycle focus |
 | `F2` | Any | Cycle subtitle mode: Off -> Intermixed -> Separate pane (persisted) |
@@ -721,6 +809,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Enter` | Playlist | Play selected entry (or open file browser on [Add New]) |
 | `a` | Playlist | Add file (insert after selected entry) |
 | `d` | Playlist | Remove selected entry |
+| `w` | Playlist | Cycle the selected entry's series watch state: Watching -> Maybe -> NotWatching |
 | `A` | Playlist | Archive selected cached file into the download root |
 | `M` | Playlist | Manually map selected entry to a local file |
 
@@ -791,8 +880,9 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Standalone register; last seeker is position authority |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/quit/departure/EOF-advance |
-| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>` | Compound key |
+| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>` | Compound key; `Watching \| NotWatching \| Maybe`, absent entry = Maybe |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
+| Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Per-file one-shot: play past a committed-absent user; cleared on compaction |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>>` | Compound key |
 | AniDB metadata | `Map<Ed2kHash, LwwCell<Option<AniDbMetadata>>>` | Server-authoritative; spans every file any client has indexed, not just playlist entries |
 | File catalog | `Map<Ed2kHash, LwwCell<FileCatalogEntry>>` | Server-authoritative; filename + size from the lookup request, duration filled lazily; lets a client add a file it doesn't hold |
@@ -810,10 +900,13 @@ use `ActorId` as the actor type. See [sync-state.md](sync-state.md) for
 the full `Lww<V>` design.
 
 Whether the video actually plays is **derived**: it plays iff playback
-intent is Playing, every present user's state is Ready, Away, or Not
-Watching with a permitting File State, and no user is Lost. The intent
-register exists because gating alone cannot express "stays paused after
-the blocker departs" -- see [Playback Rules](#playback-rules).
+intent is Playing and no interactive user blocks. A NotWatching or Away
+user never blocks; a **Maybe** user blocks only while present and not
+ready-to-play; a **committed** (Watching) user blocks whenever not
+ready-to-play, *including while absent*, until they return or the group
+acknowledges past them for the current file. The intent register exists
+because gating alone cannot express "stays paused after the blocker
+departs" -- see [Playback Rules](#playback-rules).
 
 ### Chat Protocol
 
@@ -951,7 +1044,11 @@ failed (…): …"); these notices are local, not synced.
 *ahead* of now-playing (in playlist order) in the background, so next week's
 episode is usually local before the session starts. Seeders fetch everything
 (see [Client Roles](#client-roles)); interactive clients pre-fetch within
-their retention/disk constraints.
+their retention/disk constraints. An interactive client **skips
+auto-download** for entries whose series it has marked **NotWatching** --
+no point fetching a show you've opted out of. **Maybe** (the default) and
+**Watching** entries are prefetched normally; a NotWatching file that is
+already local still loads (you can mute), it is just never fetched.
 
 ### Parsing files to series/season/episode
 
@@ -1339,6 +1436,16 @@ configured purely by flags/environment (systemd services on NixOS).
 Versioned via `PRAGMA user_version`; migrations are append-only. All
 tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 (storage never reads the clock — keeps tests deterministic).
+
+The postcard `crdt_state` blob has **no internal version tag**, so a
+field added to `CrdtState` (e.g. `acknowledged_absent`) is decoded with a
+small forward-compat fallback: try the current layout, and on failure
+decode the previous layout (`CrdtStateV1`) and upgrade it (new fields
+default-initialized). This matters most for the *server*, which is
+authoritative and cannot re-sync its lost state from anyone; an
+interactive client can fall back to dropping an unreadable blob and
+re-syncing from the server. New struct fields are appended (never
+inserted) so the previous layout is a strict prefix.
 
 **Client** (`$XDG_DATA_HOME/dessplay/dessplay.db`):
 

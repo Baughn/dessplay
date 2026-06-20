@@ -292,6 +292,8 @@ struct NarratorState {
     series_preference: BTreeMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     /// Per-user presence (interactive users only; seeders never narrated).
     peers: BTreeMap<UserId, dessplay_core::net::Presence>,
+    /// Per-file acknowledgements of committed-absent users.
+    acknowledged_absent: std::collections::BTreeSet<(dessplay_core::types::Ed2kHash, UserId)>,
 }
 
 impl NarratorState {
@@ -314,6 +316,7 @@ impl NarratorState {
             manual_override: view.manual_override.clone(),
             series_preference: view.series_preference.clone(),
             peers: current_interactive(peers),
+            acknowledged_absent: view.acknowledged_absent.clone(),
         }
     }
 }
@@ -512,8 +515,14 @@ impl PlayerWiring {
                     continue;
                 }
                 let (user, _) = &key;
-                // Skip our own List-derived auto-write.
-                if user == &self.me && self.watcher_prefs_written.contains(&series) {
+                // Skip our own List-derived auto-write — but *only* the
+                // initial `None -> auto` transition it produces, not every
+                // later change. The auto-write only ever fires when no
+                // preference exists yet (`!has_pref`), so `was.is_none()`
+                // is its signature; a subsequent manual /watch / /maybe /
+                // /skip is a value->value diff and must still narrate.
+                if user == &self.me && was.is_none() && self.watcher_prefs_written.contains(&series)
+                {
                     continue;
                 }
                 let name = &meta.series_name;
@@ -522,9 +531,23 @@ impl PlayerWiring {
                         lines.push(format!("{user} set to not-watching {name} (by {user})"))
                     }
                     Some(SeriesWatchState::Watching) => {
-                        lines.push(format!("{user} set to watching {name} (by {user})"))
+                        lines.push(format!("{user} is committed to {name} (by {user})"))
+                    }
+                    Some(SeriesWatchState::Maybe) => {
+                        lines.push(format!("{user} set {name} to maybe (by {user})"))
                     }
                     None => {}
+                }
+            }
+        }
+
+        // Acknowledged a committed-absent blocker of the now-playing file:
+        // a new `(now_playing, user)` pair (the per-file "play anyway").
+        if let Some(file) = view.now_playing {
+            for (acked_file, user) in &view.acknowledged_absent {
+                if *acked_file == file && !prev.acknowledged_absent.contains(&(file, user.clone()))
+                {
+                    lines.push(format!("Playing past {user} (committed, away)"));
                 }
             }
         }
@@ -640,9 +663,17 @@ impl PlayerWiring {
     fn plan_download(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
         // Collect the window up front so the `view` borrow is released
         // before we touch the per-file log-tracking sets (`&mut self`).
+        // Skip auto-download for entries whose series we've marked
+        // NotWatching — no point fetching a show we've opted out of
+        // (design.md, Pre-fetching). Watching / Maybe / no-metadata still
+        // download. (A NotWatching file already local still loads.)
         let window: Vec<(Ed2kHash, u64)> = self
             .prefetch_window(view)
             .iter()
+            .filter(|e| {
+                derive::series_watch_for_file(view, &self.me, e.hash)
+                    != dessplay_core::types::SeriesWatchState::NotWatching
+            })
             .map(|e| (e.hash, e.state.size_bytes))
             .collect();
         let window_set: HashSet<Ed2kHash> = window.iter().map(|(h, _)| *h).collect();
@@ -942,11 +973,12 @@ impl PlayerWiring {
             );
         }
 
-        // The List's watchers sets: a linked series we're *not* watching
-        // gets a NotWatching preference, so we never gate playback on a
-        // show we skip (docs/design.md, The List). Written once per
-        // series per session, and only when no preference exists — a
-        // manual choice always wins.
+        // The List's watchers set is the declarative commitment route
+        // (docs/design.md, The List): a member of a linked series commits
+        // (Watching — the group waits for them even when absent), a
+        // non-member skips it (NotWatching). A series with no List opinion
+        // stays at the Maybe default. Written once per series per session,
+        // and only when no preference exists — a manual choice always wins.
         for entry in view.list_entries.values() {
             let Some(series) = entry.anidb_series_id else {
                 continue;
@@ -958,17 +990,19 @@ impl PlayerWiring {
             let has_pref = view
                 .series_preference
                 .contains_key(&(self.me.clone(), series));
-            if entry.watchers.contains(&self.me)
-                || has_pref
-                || !self.watcher_prefs_written.insert(series)
-            {
+            if has_pref || !self.watcher_prefs_written.insert(series) {
                 continue;
             }
-            tracing::info!(aid = series.0, name = %entry.name, "not in watchers; marking series NotWatching");
+            let pref = if entry.watchers.contains(&self.me) {
+                dessplay_core::types::SeriesWatchState::Watching
+            } else {
+                dessplay_core::types::SeriesWatchState::NotWatching
+            };
+            tracing::info!(aid = series.0, name = %entry.name, ?pref, "List watchers: writing series preference");
             out.push(Directive::Mutate(Mutation::SetSeriesPreference {
                 user: self.me.clone(),
                 series,
-                pref: dessplay_core::types::SeriesWatchState::NotWatching,
+                pref,
             }));
         }
 
@@ -2071,7 +2105,59 @@ mod tests {
         let v_yes = state.view();
         assert_eq!(
             narrate_diff(&v_not, &peers, &v_yes, &peers),
-            ["baughn set to watching Some Show (by baughn)"]
+            ["baughn is committed to Some Show (by baughn)"]
+        );
+
+        // Watching -> Maybe (the default) is narrated too.
+        state.set_series_preference(A, ts(22), baughn.clone(), series, SeriesWatchState::Maybe);
+        let v_maybe = state.view();
+        assert_eq!(
+            narrate_diff(&v_yes, &peers, &v_maybe, &peers),
+            ["baughn set Some Show to maybe (by baughn)"]
+        );
+    }
+
+    #[test]
+    fn narrator_reports_manual_change_after_list_auto_write() {
+        // Regression: the List-watchers auto-write suppression must be a
+        // one-shot. After a series is auto-written (here: kim is a watcher,
+        // so it auto-commits), the local user's *later* manual /watch /
+        // /maybe / /skip changes for that series must still narrate — only
+        // the initial None -> auto transition is silenced.
+        use dessplay_core::types::ListEntryId;
+        let me = me();
+        let series = dessplay_core::types::AniDbSeriesId(7);
+        let peers = [peer("kim")];
+
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        state.put_list_entry(A, ts(10), ListEntryId(1), list_entry(Some(7), &["kim"]));
+
+        let mut wiring = PlayerWiring::new(me.clone());
+        // Baseline: the List auto-write fires (kim is a watcher -> Watching),
+        // populating the per-session suppression set.
+        let baseline = wiring.on_state(&state.view(), &peers);
+        assert!(
+            preference_writes(&baseline).contains(&(series, SeriesWatchState::Watching)),
+            "List membership should auto-commit: {:?}",
+            preference_writes(&baseline)
+        );
+
+        // The auto-write lands; its own narration is suppressed (intended).
+        state.set_series_preference(A, ts(11), me.clone(), series, SeriesWatchState::Watching);
+        let auto = wiring.on_state(&state.view(), &peers);
+        assert!(
+            !system_texts(&auto).iter().any(|l| l.contains("committed")),
+            "the initial auto-write must stay silent: {:?}",
+            system_texts(&auto)
+        );
+
+        // A later manual /skip MUST narrate (this is the regression).
+        state.set_series_preference(A, ts(12), me.clone(), series, SeriesWatchState::NotWatching);
+        let manual = wiring.on_state(&state.view(), &peers);
+        assert_eq!(
+            system_texts(&manual),
+            ["kim set to not-watching Some Show (by kim)"]
         );
     }
 
@@ -3199,6 +3285,47 @@ mod tests {
     }
 
     #[test]
+    fn not_watching_series_is_not_prefetched() {
+        // A windowed missing file whose series we've marked NotWatching is
+        // not auto-downloaded even with a present source; flipping the
+        // series to Watching makes the window download (design.md,
+        // Pre-fetching).
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "now.mkv")); // now-playing
+        state.push_playlist_entry(A, ts(2), entry(2, "ahead.mkv")); // in window
+        state.set_now_playing(A, ts(3), Some(hash(1)));
+        state.set_playback_intent(A, ts(4), PlaybackIntent::Playing);
+        // Both belong to series 7, and a present peer holds both.
+        with_metadata(&mut state, hash(1), Some(7));
+        with_metadata(&mut state, hash(2), Some(7));
+        for h in [hash(1), hash(2)] {
+            state.set_file_availability(A, ts(5), UserId::new("nas"), h, FileAvailability::Ready);
+        }
+        let series = dessplay_core::types::AniDbSeriesId(7);
+        state.set_series_preference(A, ts(6), me(), series, SeriesWatchState::NotWatching);
+        let view = state.view();
+        let peers = [peer("kim"), peer("nas")];
+
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        wiring.on_resolved(hash(2), Resolution::NotFound, &view, &peers);
+        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        assert!(
+            downloads.is_empty(),
+            "a NotWatching series must not prefetch: {downloads:?}"
+        );
+
+        // Commit to the series: now the whole window downloads.
+        state.set_series_preference(A, ts(7), me(), series, SeriesWatchState::Watching);
+        let view = state.view();
+        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        assert!(
+            downloads.contains(&hash(1)) && downloads.contains(&hash(2)),
+            "a Watching series must prefetch the window: {downloads:?}"
+        );
+    }
+
+    #[test]
     fn unpause_does_not_resume_a_stale_file_after_now_playing_changes() {
         // Bug 2: once now-playing switches to a file we don't hold, the
         // previously-loaded real video must be held paused — not resumed
@@ -3397,7 +3524,7 @@ mod tests {
     fn watcher_membership_and_manual_choices_are_respected() {
         use dessplay_core::types::ListEntryId;
         let mut state = CrdtState::new();
-        // kim watches this one: no write.
+        // kim is a watcher of this one: commits (Watching).
         state.put_list_entry(
             A,
             ts(1),
@@ -3409,7 +3536,7 @@ mod tests {
         // Empty watchers means "unrecorded", not "nobody": no write.
         state.put_list_entry(A, ts(3), ListEntryId(3), list_entry(Some(8), &[]));
         // kim already chose to watch series 9 despite not being listed:
-        // the manual preference wins.
+        // the manual preference wins (no auto-write at all).
         state.put_list_entry(A, ts(4), ListEntryId(4), list_entry(Some(9), &["nero"]));
         state.set_series_preference(
             A,
@@ -3420,10 +3547,11 @@ mod tests {
         );
         let mut wiring = PlayerWiring::new(me());
         let directives = wiring.on_state(&state.view(), &[peer("kim")]);
-        assert!(
-            preference_writes(&directives).is_empty(),
-            "got: {:?}",
-            preference_writes(&directives)
+        // Only series 7 is auto-written, and as a commitment (Watching);
+        // the unlinked / empty / manually-chosen series are untouched.
+        assert_eq!(
+            preference_writes(&directives),
+            vec![(AniDbSeriesId(7), SeriesWatchState::Watching)]
         );
     }
 }

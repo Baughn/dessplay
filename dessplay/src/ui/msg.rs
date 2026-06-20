@@ -60,6 +60,9 @@ pub enum Msg {
     MapFile(Ed2kHash),
     /// Archive the selected cached file into the library (`A`).
     ArchiveFile(Ed2kHash),
+    /// Cycle this entry's series watch state (`w`): Watching -> Maybe ->
+    /// NotWatching -> ...
+    CycleSeriesWatch(Ed2kHash),
 
     // Modals
     /// Close the topmost modal.
@@ -127,6 +130,7 @@ impl Msg {
             Msg::RemoveEntry(_) => "RemoveEntry",
             Msg::MapFile(_) => "MapFile",
             Msg::ArchiveFile(_) => "ArchiveFile",
+            Msg::CycleSeriesWatch(_) => "CycleSeriesWatch",
             Msg::FileMapped { .. } => "FileMapped",
             Msg::CloseModal => "CloseModal",
             Msg::FileChosen { .. } => "FileChosen",

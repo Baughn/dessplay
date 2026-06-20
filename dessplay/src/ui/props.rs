@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::{PeerInfo, Presence, Role};
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, UserId, decode_action,
+    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, SeriesWatchState, UserId,
+    decode_action,
 };
 use dessplay_core::{StateView, franchise};
 
@@ -79,11 +80,27 @@ pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
             continue;
         }
         match peer.presence {
+            // A committed (Watching) absent user keeps gating across
+            // absence (until acknowledged), so they must read as a blocker
+            // here too — never hidden on the dim departed line — matching
+            // the `CommittedAbsent` blocker the status bar surfaces. A
+            // Maybe/NotWatching absent user does not block: Departed goes
+            // to the dim line, Lost shows greyed (a dropped connection, not
+            // something we are waiting on).
+            Presence::Departed | Presence::Lost
+                if committed_absent_blocker(view, &peer.username) =>
+            {
+                props.rows.push(UserRow {
+                    name,
+                    label: "committed, away".into(),
+                    tone: Tone::Blocked,
+                });
+            }
             Presence::Departed => props.departed.push(name),
             Presence::Lost => props.rows.push(UserRow {
                 name,
                 label: "lost".into(),
-                tone: Tone::Blocked,
+                tone: Tone::Idle,
             }),
             Presence::Present => {
                 let state = derive::user_state(view, &peer.username);
@@ -99,8 +116,11 @@ pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
                 // blue while a Ready user is still fetching, and red
                 // otherwise: the download is visible, the colour says
                 // they still won't be watching right now.
+                // A present Maybe user displays exactly like Ready (the
+                // per-series distinction lives in the playlist watch tag,
+                // not here): both gate on their file state while present.
                 let (label, tone) = match (downloading, &state) {
-                    (Some(bps), DerivedUserState::Ready) => {
+                    (Some(bps), DerivedUserState::Ready | DerivedUserState::Maybe) => {
                         let label = format!("downloading {}%", bps / 100);
                         if bps >= 2_000 {
                             (label, Tone::Good)
@@ -116,9 +136,9 @@ pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
                     (None, DerivedUserState::NotWatching) => {
                         ("not watching".to_string(), Tone::Idle)
                     }
-                    // Ready, not downloading: Downloading is impossible
-                    // here (it would be `Some` above), so `_` is ready.
-                    (None, DerivedUserState::Ready) => match avail {
+                    // Ready/Maybe, not downloading: Downloading is
+                    // impossible here (it would be `Some` above).
+                    (None, DerivedUserState::Ready | DerivedUserState::Maybe) => match avail {
                         Some(FileAvailability::Missing) => {
                             ("missing file".to_string(), Tone::Blocked)
                         }
@@ -137,6 +157,18 @@ fn availability(view: &StateView, user: &UserId) -> Option<FileAvailability> {
     view.file_availability.get(&(user.clone(), file)).copied()
 }
 
+/// Whether an absent (Lost/Departed) peer still gates playback: committed
+/// (Watching) to the now-playing series and not yet acknowledged for that
+/// file. Mirrors the `Watching + Lost|Departed` arm of
+/// [`derive::playback_blockers`] so the Users pane and status bar agree.
+fn committed_absent_blocker(view: &StateView, user: &UserId) -> bool {
+    let Some(file) = view.now_playing else {
+        return false;
+    };
+    derive::series_watch_for_file(view, user, file) == SeriesWatchState::Watching
+        && !view.acknowledged_absent.contains(&(file, user.clone()))
+}
+
 // ---- Playlist pane ---------------------------------------------------
 
 /// One playlist row.
@@ -153,6 +185,9 @@ pub struct PlaylistRow {
     /// The local copy lives only in the download cache, not a media root
     /// (drives the dim "temporary" marker and gates the archive action).
     pub temporary: bool,
+    /// The local user's effective watch state for this entry's series,
+    /// always shown as a right-aligned tag. Maybe is the default.
+    pub watch: SeriesWatchState,
 }
 
 /// Playlist pane props.
@@ -198,6 +233,7 @@ pub fn playlist_props(
             tone,
             is_now,
             temporary,
+            watch: derive::series_watch_for_file(view, me, entry.hash),
         });
     }
     props
@@ -385,7 +421,7 @@ pub fn status_props(view: &StateView, peers: &[PeerInfo], me: &UserId) -> Status
                 derive::BlockReason::Paused => "paused",
                 derive::BlockReason::FileMissing => "missing file",
                 derive::BlockReason::Downloading => "downloading",
-                derive::BlockReason::Lost => "lost",
+                derive::BlockReason::CommittedAbsent => "committed, away",
             };
             format!("{} ({reason})", blocker.user)
         })
@@ -875,6 +911,74 @@ mod tests {
         assert_eq!(by_name["ghost"].label, "lost");
         assert_eq!(props.departed, vec!["gone"]);
         assert_eq!(props.seeders, vec!["nas"]);
+    }
+
+    #[test]
+    fn users_pane_surfaces_committed_absent_blockers() {
+        // Regression: a committed (Watching) absent user must read as a
+        // blocker in the Users pane — matching the status bar's
+        // "committed, away" — not vanish onto the dim departed line. A
+        // Maybe (default) absent user must not block: Departed -> dim line,
+        // Lost -> greyed (a dropped connection, not something we wait on).
+        let series = AniDbSeriesId(7);
+        let mut state = CrdtState::new();
+        state.set_now_playing(A, ts(1), Some(hash(1)));
+        state.set_anidb_metadata(
+            A,
+            ts(2),
+            hash(1),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show".into(),
+                series_id: Some(series),
+                episode_number: Some("1".into()),
+            }),
+        );
+        for who in ["clost", "cgone"] {
+            state.set_series_preference(
+                A,
+                ts(3),
+                UserId::new(who),
+                series,
+                SeriesWatchState::Watching,
+            );
+        }
+        let peers = [
+            peer("clost", Role::Interactive, Presence::Lost),
+            peer("cgone", Role::Interactive, Presence::Departed),
+            peer("mlost", Role::Interactive, Presence::Lost),
+            peer("mgone", Role::Interactive, Presence::Departed),
+        ];
+        let props = users_props(&state.view(), &peers);
+        let by_name: BTreeMap<&str, &UserRow> = props
+            .rows
+            .iter()
+            .map(|row| (row.name.as_str(), row))
+            .collect();
+
+        // Committed absent users block, on a visible row, Lost or Departed.
+        for who in ["clost", "cgone"] {
+            assert_eq!(by_name[who].label, "committed, away", "{who}");
+            assert_eq!(by_name[who].tone, Tone::Blocked, "{who}");
+        }
+        assert!(
+            !props.departed.contains(&"cgone".to_string()),
+            "a committed departed user must not hide on the dim line"
+        );
+        // Maybe absent users do not block.
+        assert_eq!(by_name["mlost"].label, "lost");
+        assert_eq!(by_name["mlost"].tone, Tone::Idle);
+        assert_eq!(props.departed, vec!["mgone"]);
+
+        // Acknowledging cgone for this file clears the block: it returns to
+        // the dim departed line.
+        state.acknowledge_absent(hash(1), UserId::new("cgone"));
+        let props = users_props(&state.view(), &peers);
+        assert!(
+            props.departed.contains(&"cgone".to_string()),
+            "an acknowledged committed-absent user no longer blocks: {:?}",
+            props.departed
+        );
     }
 
     #[test]

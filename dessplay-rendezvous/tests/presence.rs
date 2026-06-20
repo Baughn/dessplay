@@ -9,7 +9,10 @@ use std::time::Duration;
 use common::*;
 use dessplay::actors::sync::Mutation;
 use dessplay_core::net::{Presence, Role};
-use dessplay_core::types::{PlaybackIntent, SeekAuthority, UserId};
+use dessplay_core::types::{
+    AniDbMetadata, AniDbSeriesId, MetadataSource, PlaybackIntent, SeekAuthority, SeriesWatchState,
+    UserId,
+};
 
 /// Get a two-user session playing: now-playing set, intent Playing,
 /// both clients agreeing playback is active.
@@ -101,6 +104,101 @@ async fn presence_ladder_lost_departed_return() {
         snaps.iter().all(|s| s.playing())
     })
     .await;
+}
+
+/// A *committed* (Watching) user gates across absence: once Departed they
+/// keep blocking playback (unlike a default Maybe user), until the group
+/// acknowledges past them for the current file — a per-file one-shot.
+#[tokio::test(start_paused = true)]
+async fn committed_absent_user_blocks_until_acknowledged() {
+    let harness = Harness::new(0x5EED);
+    let (kim, baughn) = playing_session(&harness).await;
+
+    // Link the now-playing file to a series and have baughn commit to it.
+    let series = AniDbSeriesId(42);
+    let baughn_id = UserId::new("baughn");
+    mutate(
+        &kim,
+        Mutation::SetAniDbMetadata {
+            hash: hash(1),
+            metadata: Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(series),
+                episode_number: Some("1".into()),
+            }),
+        },
+    )
+    .await;
+    mutate(
+        &baughn,
+        Mutation::SetSeriesPreference {
+            user: baughn_id.clone(),
+            series,
+            pref: SeriesWatchState::Watching,
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .series_preference
+                .get(&(UserId::new("baughn"), series))
+                == Some(&SeriesWatchState::Watching)
+        })
+    })
+    .await;
+
+    // Baughn's connection dies; he eventually becomes Departed.
+    harness.isolate("baughn");
+    eventually(&[&kim], Duration::from_secs(120), |snaps| {
+        snaps[0]
+            .peer("baughn")
+            .is_some_and(|p| p.presence == Presence::Departed)
+    })
+    .await;
+
+    // Even with intent forced back to Playing, the committed-absent
+    // baughn keeps gating — a Maybe user here would *not* (see the ladder
+    // test); commitment is the difference.
+    mutate(
+        &kim,
+        Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Playing,
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snap = snapshot_of(&kim).await;
+    assert!(
+        !snap.playing(),
+        "committed-absent baughn must block playback"
+    );
+    assert!(
+        dessplay_core::derive::playback_blockers(&snap.view, &snap.peers)
+            .iter()
+            .any(|b| b.user == baughn_id
+                && b.reason == dessplay_core::derive::BlockReason::CommittedAbsent),
+        "baughn must show as a committed-absent blocker"
+    );
+
+    // Kim acknowledges baughn for this file and presses play: it runs.
+    mutate(
+        &kim,
+        Mutation::AcknowledgeAbsent {
+            file: hash(1),
+            user: baughn_id.clone(),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Playing,
+        },
+    )
+    .await;
+    eventually(&[&kim], Duration::from_secs(30), |snaps| snaps[0].playing()).await;
 }
 
 /// Graceful quit: removed immediately (no Lost stage), playback pauses.

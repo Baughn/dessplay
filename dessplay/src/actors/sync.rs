@@ -166,6 +166,15 @@ pub enum Mutation {
         /// Probed duration, milliseconds.
         duration_millis: u64,
     },
+    /// Acknowledge a committed-but-absent user for a file: a per-file
+    /// one-shot that lets the group play past them (see
+    /// docs/design.md, Playback Rules).
+    AcknowledgeAbsent {
+        /// The now-playing file the acknowledgement is scoped to.
+        file: Ed2kHash,
+        /// The committed-absent user being acknowledged.
+        user: UserId,
+    },
 }
 
 impl Mutation {
@@ -192,6 +201,7 @@ impl Mutation {
             Mutation::Chat { .. } => "Chat",
             Mutation::SetPlaybackPosition { .. } => "SetPlaybackPosition",
             Mutation::SetPlaylistDuration { .. } => "SetPlaylistDuration",
+            Mutation::AcknowledgeAbsent { .. } => "AcknowledgeAbsent",
         }
     }
 }
@@ -566,6 +576,7 @@ impl SyncActor {
                 updated.duration_millis = Some(duration_millis);
                 self.state.set_playlist_entry(actor, ts, hash, updated)
             }
+            Mutation::AcknowledgeAbsent { file, user } => self.state.acknowledge_absent(file, user),
         };
 
         if self.link == Link::Synced {

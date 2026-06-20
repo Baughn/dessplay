@@ -31,6 +31,7 @@ fn expected_view(mut view: StateView) -> StateView {
     let tail = view.chat.len().saturating_sub(CHAT_KEEP);
     view.chat.drain(..tail);
     view.lookup_requests.clear();
+    view.acknowledged_absent.clear();
     view.watched
         .retain(|hash, _| view.playlist.iter().any(|entry| entry.hash == *hash));
     view

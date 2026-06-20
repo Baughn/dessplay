@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-06-18
+Last updated: 2026-06-19
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -122,7 +122,7 @@ We use the following types from the `crdts` crate:
 | `LwwCell<V>` (ours) | Max-merge LWW register; the only register type |
 | `Map<K, V, A>` (crdts) | Keyed collections (playlist, per-user maps, file availability) |
 | `GList<V>` (crdts) | Grow-only ordered list (chat) |
-| `GSet<V>` (crdts) | Grow-only set (lookup requests) |
+| `GSet<V>` (crdts) | Grow-only set (lookup requests, acknowledged-absent) |
 | `Identifier<T>` (crdts) | Dense ordering for playlist positions |
 
 The standard pattern is `Map<K, LwwCell<V>, ActorId>`. The Map's keys are
@@ -187,6 +187,7 @@ and the wire protocol uniform.
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Any user (play/pause); server forces Paused on lost/quit/departure/EOF-advance |
 | Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>, ActorId>` | Each user writes own |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
+| Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Any peer inserts; cleared on compaction |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>` | Each user writes own |
 | AniDB metadata | `Map<Ed2kHash, LwwCell<Option<AniDbMetadata>>, ActorId>` | Server only |
 | File catalog | `Map<Ed2kHash, LwwCell<FileCatalogEntry>, ActorId>` | Server only |
@@ -324,10 +325,63 @@ playback would silently auto-resume the moment a paused/lost user departs
 
 `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>, ActorId>`.
 
-`SeriesWatchState` is `Watching | NotWatching`. When the currently playing
-file belongs to a series the user has marked NotWatching, their derived user
-state becomes NotWatching. This means they don't block playback for content
-they're not interested in.
+`SeriesWatchState` is `Watching | NotWatching | Maybe` -- a user's
+commitment to a series, with three values:
+
+- **Watching** (committed): the group waits for this user on this series
+  even when they are absent (Lost/Departed). This is the only state that
+  gates across absence.
+- **NotWatching**: the user never gates on this series, present or absent,
+  and it is not auto-downloaded.
+- **Maybe** (the default): opportunistic -- gates only while the user is
+  *present* and not ready-to-play; an absent Maybe user does not block.
+
+See [design.md](design.md#user-states) for how these compose with the
+manual override into the derived user state, and
+[Playback Rules](design.md#playback-rules) for the gating matrix.
+
+**Absent entry == Maybe.** A user with no map entry for a series is treated
+as Maybe -- the common case (you've never ruled on most series). The schema
+*also* stores `Maybe` explicitly so a user can cycle a series back to the
+default from `Watching`/`NotWatching`: removal is not an option, because
+DessPlay never uses `Map::rm` (see the API notes above -- it is
+non-convergent here), so "return to default" must be a real written value.
+
+**`Maybe` is a *trailing* enum variant** (`Watching = 0`, `NotWatching =
+1`, `Maybe = 2`). serde/postcard number variants by declaration order, so
+appending `Maybe` keeps the existing two discriminants byte-identical:
+**snapshots and ops written before the change still deserialize unchanged**
+(an old binary, however, cannot read a `Maybe` written by a new one -- the
+upgrade is all-at-once across the group). `SeriesWatchState` derives `Ord`,
+which is the LWW same-timestamp tiebreak; appending a variant only *extends*
+the total order (`Maybe` becomes the max), so it stays a deterministic
+total order on every replica -- convergence-safe. The only visible effect
+is that at an exact-millisecond tie, a concurrent `Maybe` write beats a
+`Watching`/`NotWatching` one, which is vanishingly rare under the
+Lamport-monotonic stamp discipline.
+
+### Acknowledged Absent
+
+`GSet<(Ed2kHash, UserId)>` -- a grow-only set of `(now-playing file,
+committed-absent user)` pairs.
+
+A **committed** (Watching) user who is absent keeps gating the now-playing
+file (the "wait for me even if I've been gone a week" rule). To play past
+them the group records a **per-file one-shot acknowledge**: inserting
+`(now_playing, user)` here suppresses that user's committed-absent block
+*for that file only*. Gating consults the set keyed by the **current**
+now-playing file, so advancing to the next episode leaves the old entry
+behind and the block re-raises -- it is re-acknowledged consciously each
+file.
+
+It is synced (not local) because gating is computed independently on every
+client: if one client acknowledged locally and another did not, they would
+disagree on whether to play and desync. A `GSet` fits because the signal is
+purely additive within a session -- no entry is ever retracted -- and it is
+**cleared at compaction** (daily, far from watch hours), like the lookup
+set. This is deliberately *not* a reuse of the per-user `Away` override:
+`Away` is per-user and would persist across episodes until the marked user
+returned, whereas acknowledge must be per-file and one-shot.
 
 ### Manual Override
 
@@ -630,7 +684,8 @@ debt taken on by session-scoped ActorIds). Around it, the server:
 1. Takes its current resolved view (one lock).
 2. Rebuilds: playlist tombstones are purged and `Identifier` positions
    reassigned small and flat; watched flags for files no longer on the
-   playlist are dropped; the lookup GSet empties; chat keeps its
+   playlist are dropped; the lookup and acknowledged-absent GSets empty;
+   chat keeps its
    trailing `chat_keep` messages (default 100); playback positions come
    along already coalesced (the view holds one per user); The List is
    untouched — permanent state. Stamps come from the server's Lamport

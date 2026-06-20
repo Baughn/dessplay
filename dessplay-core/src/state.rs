@@ -71,6 +71,15 @@ pub struct CrdtState {
     pub chat: GList<ChatMessage>,
     /// Per-user playback positions. High-frequency, datagram transport.
     pub playback_position: LwwMap<UserId, PlaybackPosition>,
+    /// Per-file one-shot acknowledgements that let the group play past a
+    /// committed (Watching) user who is absent: each `(now-playing file,
+    /// acknowledged user)` pair suppresses that user's committed-absent
+    /// block *for that file only*. Grow-only, cleared at compaction.
+    ///
+    /// **Must stay the last field** — the on-disk snapshot has no version
+    /// tag, so [`CrdtState::decode_snapshot`] migrates older blobs by
+    /// treating them as the field-less [`CrdtStateV1`] prefix.
+    pub acknowledged_absent: GSet<(Ed2kHash, UserId)>,
 }
 
 /// One replicated operation, as sent over the wire (postcard-serialized).
@@ -119,6 +128,8 @@ pub enum CrdtOp {
     Chat(glist::Op<ChatMessage>),
     /// Playback position write.
     PlaybackPosition(LwwMapOp<UserId, PlaybackPosition>),
+    /// Acknowledged-absent insert (GSet ops are the element itself).
+    AcknowledgeAbsent((Ed2kHash, UserId)),
 }
 
 impl CrdtOp {
@@ -153,7 +164,7 @@ impl CrdtOp {
             CrdtOp::NowPlaying(op) => Some(op.timestamp),
             CrdtOp::SeekAuthority(op) => Some(op.timestamp),
             CrdtOp::PlaybackIntent(op) => Some(op.timestamp),
-            CrdtOp::LookupRequest(_) | CrdtOp::Chat(_) => None,
+            CrdtOp::LookupRequest(_) | CrdtOp::Chat(_) | CrdtOp::AcknowledgeAbsent(_) => None,
         }
     }
 
@@ -177,6 +188,7 @@ impl CrdtOp {
             CrdtOp::LookupRequest(_) => "LookupRequest",
             CrdtOp::Chat(_) => "Chat",
             CrdtOp::PlaybackPosition(_) => "PlaybackPosition",
+            CrdtOp::AcknowledgeAbsent(_) => "AcknowledgeAbsent",
         }
     }
 }
@@ -188,6 +200,73 @@ pub struct StateSnapshot {
     pub epoch: Epoch,
     /// The complete state.
     pub state: CrdtState,
+}
+
+/// The previous on-disk/wire layout of [`CrdtState`], before
+/// `acknowledged_absent` was appended. postcard snapshots have no version
+/// tag, so [`CrdtState::decode_snapshot`] falls back to decoding this
+/// (a strict field prefix of the current struct) and upgrading it. Frozen:
+/// it is a record of the v1 format, not live state. Drop it once no blob
+/// predating `acknowledged_absent` can plausibly still be on disk.
+#[derive(Deserialize)]
+struct CrdtStateV1 {
+    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
+    watched: LwwMap<Ed2kHash, bool>,
+    now_playing: LwwCell<Option<Ed2kHash>>,
+    seek_authority: LwwCell<SeekAuthority>,
+    playback_intent: LwwCell<PlaybackIntent>,
+    series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
+    manual_override: LwwMap<UserId, Option<ManualState>>,
+    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
+    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
+    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
+    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_next_ep: LwwMap<ListEntryId, NextEpState>,
+    lookup_requests: GSet<FileHashInfo>,
+    chat: GList<ChatMessage>,
+    playback_position: LwwMap<UserId, PlaybackPosition>,
+}
+
+impl From<CrdtStateV1> for CrdtState {
+    fn from(v1: CrdtStateV1) -> Self {
+        CrdtState {
+            playlist: v1.playlist,
+            watched: v1.watched,
+            now_playing: v1.now_playing,
+            seek_authority: v1.seek_authority,
+            playback_intent: v1.playback_intent,
+            series_preference: v1.series_preference,
+            manual_override: v1.manual_override,
+            file_availability: v1.file_availability,
+            anidb_metadata: v1.anidb_metadata,
+            series_relations: v1.series_relations,
+            file_catalog: v1.file_catalog,
+            list_entries: v1.list_entries,
+            list_next_ep: v1.list_next_ep,
+            lookup_requests: v1.lookup_requests,
+            chat: v1.chat,
+            playback_position: v1.playback_position,
+            acknowledged_absent: GSet::new(),
+        }
+    }
+}
+
+impl CrdtState {
+    /// Decode a persisted snapshot blob, migrating an older on-disk layout
+    /// forward. The postcard blob carries no version tag, so try the
+    /// current layout first and, on failure, decode the previous layout
+    /// ([`CrdtStateV1`], which lacks `acknowledged_absent`) and upgrade it.
+    /// A blob that is neither (genuinely corrupt) surfaces the *original*
+    /// error, so callers still see a real codec failure.
+    pub fn decode_snapshot(blob: &[u8]) -> Result<CrdtState, crate::wire::WireError> {
+        match crate::wire::decode::<CrdtState>(blob) {
+            Ok(state) => Ok(state),
+            Err(primary) => crate::wire::decode::<CrdtStateV1>(blob)
+                .map(CrdtState::from)
+                .map_err(|_| primary),
+        }
+    }
 }
 
 /// Write the LWW winner for `key`. The map-level dot (from `actor`)
@@ -260,6 +339,7 @@ impl CrdtState {
             CrdtOp::LookupRequest(info) => self.lookup_requests.apply(info),
             CrdtOp::Chat(op) => self.chat.apply(op),
             CrdtOp::PlaybackPosition(op) => self.playback_position.apply(op),
+            CrdtOp::AcknowledgeAbsent(key) => self.acknowledged_absent.apply(key),
         }
     }
 
@@ -282,6 +362,7 @@ impl CrdtState {
         self.lookup_requests.merge(other.lookup_requests);
         self.chat.merge(other.chat);
         self.playback_position.merge(other.playback_position);
+        self.acknowledged_absent.merge(other.acknowledged_absent);
     }
 
     // ---- Mutators. Each applies locally and returns the op to broadcast.
@@ -475,6 +556,16 @@ impl CrdtState {
         CrdtOp::LookupRequest(info)
     }
 
+    /// Record a per-file acknowledgement that the group accepts playing
+    /// `file` without the committed-but-absent `user` (see the field
+    /// docs). Any peer may write it; it gates only against the current
+    /// now-playing file and is cleared at compaction.
+    pub fn acknowledge_absent(&mut self, file: Ed2kHash, user: UserId) -> CrdtOp {
+        let key = (file, user);
+        self.acknowledged_absent.apply(key.clone());
+        CrdtOp::AcknowledgeAbsent(key)
+    }
+
     /// Append a chat message.
     pub fn append_chat(&mut self, message: ChatMessage) -> CrdtOp {
         let op = self.chat.insert_after(self.chat.last(), message);
@@ -527,6 +618,7 @@ impl CrdtState {
                 .cloned()
                 .collect(),
             playback_position: map_view(&self.playback_position),
+            acknowledged_absent: self.acknowledged_absent.read(),
         }
     }
 }
@@ -634,7 +726,8 @@ impl CrdtState {
             | CrdtOp::SeekAuthority(_)
             | CrdtOp::PlaybackIntent(_)
             | CrdtOp::LookupRequest(_)
-            | CrdtOp::Chat(_)) => {
+            | CrdtOp::Chat(_)
+            | CrdtOp::AcknowledgeAbsent(_)) => {
                 self.apply(op);
                 true
             }
@@ -678,6 +771,8 @@ pub struct StateView {
     pub chat: Vec<ChatMessage>,
     /// Per-user playback positions.
     pub playback_position: BTreeMap<UserId, PlaybackPosition>,
+    /// Per-file acknowledgements of committed-but-absent users.
+    pub acknowledged_absent: BTreeSet<(Ed2kHash, UserId)>,
 }
 
 #[cfg(test)]

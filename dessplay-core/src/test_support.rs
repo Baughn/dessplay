@@ -117,8 +117,8 @@ pub enum ScriptOp {
         user: u8,
         /// Series index.
         series: u8,
-        /// Watching vs NotWatching.
-        watching: bool,
+        /// Preference selector: 0 = Watching, 1 = NotWatching, else Maybe.
+        pref: u8,
     },
     /// Set a manual override: 0 = None, 1 = Paused, otherwise Away.
     SetManualOverride {
@@ -183,6 +183,13 @@ pub enum ScriptOp {
     RequestLookup {
         /// File index.
         file: u8,
+    },
+    /// Acknowledge a committed-absent user for a file.
+    AcknowledgeAbsent {
+        /// File index.
+        file: u8,
+        /// User index.
+        user: u8,
     },
     /// Send a chat message.
     Chat {
@@ -282,16 +289,16 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
         ScriptOp::SetSeriesPreference {
             user: u,
             series: s,
-            watching,
+            pref,
         } => state.set_series_preference(
             a,
             ts,
             user(*u),
             series(*s),
-            if *watching {
-                SeriesWatchState::Watching
-            } else {
-                SeriesWatchState::NotWatching
+            match pref % 3 {
+                0 => SeriesWatchState::Watching,
+                1 => SeriesWatchState::NotWatching,
+                _ => SeriesWatchState::Maybe,
             },
         ),
         ScriptOp::SetManualOverride {
@@ -405,6 +412,9 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
             mtime: Some(*f as i64 * 1000),
             series_hint: None,
         }),
+        ScriptOp::AcknowledgeAbsent { file: f, user: u } => {
+            state.acknowledge_absent(file(*f), user(*u))
+        }
         ScriptOp::Chat { text } => state.append_chat(ChatMessage {
             timestamp: ts,
             sender: user(actor_index),
