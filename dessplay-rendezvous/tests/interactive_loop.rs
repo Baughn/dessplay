@@ -77,6 +77,7 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
             upload_limit: None,
             scan_interval: None,
         },
+        true, // auto_download
         handle.sync.clone(),
         handle.network.clone(),
     );

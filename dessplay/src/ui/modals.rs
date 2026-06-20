@@ -478,7 +478,8 @@ const FIELD_PASSWORD: usize = 2;
 const FIELD_READY: usize = 3;
 const FIELD_SUBTITLE: usize = 4;
 const FIELD_CACHE: usize = 5;
-const FIXED_FIELDS: usize = 6;
+const FIELD_AUTO_DOWNLOAD: usize = 6;
+const FIXED_FIELDS: usize = 7;
 
 /// First-run and later settings editing.
 pub struct SettingsModal {
@@ -603,6 +604,14 @@ impl SettingsModal {
             ),
             format!("Subtitles: {}", self.settings.subtitle_mode.label()),
             format!("Cache: {}", self.settings.cache_retention.label()),
+            format!(
+                "Auto-download: {}",
+                if self.settings.auto_download {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ),
         ];
         for row in rows {
             lines.push(ListItem::new(row));
@@ -727,6 +736,9 @@ impl AppComponent<Msg, NoUserEvent> for SettingsModal {
                     }
                     FIELD_CACHE => {
                         self.settings.cache_retention = self.settings.cache_retention.next();
+                    }
+                    FIELD_AUTO_DOWNLOAD => {
+                        self.settings.auto_download = !self.settings.auto_download;
                     }
                     index if index == self.add_root_index() => {
                         return Some(Msg::OpenDirPicker);

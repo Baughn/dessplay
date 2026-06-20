@@ -211,6 +211,13 @@ pub struct PlayerWiring {
     /// The chat narrator's previous snapshot slice. `None` until the
     /// first state arrives (the initial view is a baseline, not news).
     narrator: Option<NarratorState>,
+    /// Whether automatic downloading is enabled (the `auto_download`
+    /// setting, default true). When false the client never fetches file
+    /// contents from peers — neither the prefetch window nor the missing
+    /// now-playing file — so an unknown-series missing file is treated as
+    /// unobtainable and resolves to NotWatching rather than waiting on a
+    /// download that will never arrive (design.md, Pre-fetching).
+    auto_download: bool,
 }
 
 /// Fraction of a file's duration that counts as "watched" (design.md,
@@ -400,7 +407,16 @@ impl PlayerWiring {
             prefetching: HashSet::new(),
             awaiting_source: HashSet::new(),
             narrator: None,
+            auto_download: true,
         }
+    }
+
+    /// Set whether automatic downloading is enabled (the `auto_download`
+    /// setting). Builder form for the production wiring; tests set the
+    /// field directly.
+    pub fn with_auto_download(mut self, enabled: bool) -> Self {
+        self.auto_download = enabled;
+        self
     }
 
     /// Derive the chat log's [system messages](design.md, System
@@ -661,6 +677,16 @@ impl PlayerWiring {
     }
 
     fn plan_download(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
+        // Auto-download disabled (the `auto_download` setting): never fetch
+        // file contents from peers — neither the prefetch window nor the
+        // missing now-playing file. The client relies on its own library;
+        // a missing unknown-series file resolves to NotWatching in
+        // `on_series_known` rather than waiting on a download.
+        if !self.auto_download {
+            self.prefetching.clear();
+            self.awaiting_source.clear();
+            return vec![];
+        }
         // Collect the window up front so the `view` borrow is released
         // before we touch the per-file log-tracking sets (`&mut self`).
         // Skip auto-download for entries whose series we've marked
@@ -794,8 +820,10 @@ impl PlayerWiring {
         // placeholder while it arrives. (Residual race: if the source's
         // Ready hasn't synced when this fires we may still write
         // NotWatching once; the Users-pane downloading display masks it
-        // and Ctrl-r clears it.)
-        if !self.download_sources(view, peers, file).is_empty() {
+        // and Ctrl-r clears it.) With auto_download off the file will
+        // never download, so it counts as unobtainable and flips to
+        // NotWatching below.
+        if self.auto_download && !self.download_sources(view, peers, file).is_empty() {
             tracing::debug!(
                 aid = series.0,
                 "missing file is downloadable; not marking NotWatching"
@@ -1303,6 +1331,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         factory: F,
         clock: crate::actors::network::Clock,
         file_config: FileConfig,
+        auto_download: bool,
         sync: tokio::sync::mpsc::Sender<crate::actors::sync::SyncCommand>,
         network: tokio::sync::mpsc::Sender<crate::actors::network::NetworkCommand>,
     ) -> Self {
@@ -1312,7 +1341,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         tokio::spawn(crate::actors::file::run(file_config, file_rx, file_out_tx));
         SessionShell {
             me: me.clone(),
-            wiring: PlayerWiring::new(me),
+            wiring: PlayerWiring::new(me).with_auto_download(auto_download),
             factory: Some(factory),
             clock,
             clock_offset: 0,
@@ -1412,6 +1441,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     /// Tell the file actor the retention policy changed (settings save).
     pub async fn set_retention(&self, retention: crate::config::CacheRetention) {
         let _ = self.file.send(FileCommand::SetRetention(retention)).await;
+    }
+
+    /// Apply an `auto_download` setting change (settings save). The wiring
+    /// is owned directly, so this is a synchronous field update — no actor
+    /// round-trip.
+    pub fn set_auto_download(&mut self, enabled: bool) {
+        self.wiring.auto_download = enabled;
     }
 
     /// Persist a manual mapping (and resolve it Verified at once).
@@ -3323,6 +3359,98 @@ mod tests {
             downloads.contains(&hash(1)) && downloads.contains(&hash(2)),
             "a Watching series must prefetch the window: {downloads:?}"
         );
+    }
+
+    #[test]
+    fn auto_download_off_suppresses_prefetch() {
+        // With the `auto_download` setting off the client never fetches
+        // file contents — neither the prefetch-ahead nor the now-playing
+        // file — even with a present Ready source. Turning it back on
+        // resumes the whole window (design.md, Pre-fetching).
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "now.mkv")); // now-playing
+        state.push_playlist_entry(A, ts(2), entry(2, "ahead.mkv")); // in window
+        state.set_now_playing(A, ts(3), Some(hash(1)));
+        state.set_playback_intent(A, ts(4), PlaybackIntent::Playing);
+        // A present peer holds both windowed entries.
+        for h in [hash(1), hash(2)] {
+            state.set_file_availability(A, ts(5), UserId::new("nas"), h, FileAvailability::Ready);
+        }
+        let view = state.view();
+        let peers = [peer("kim"), peer("nas")];
+
+        let mut wiring = PlayerWiring::new(me());
+        wiring.auto_download = false;
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        wiring.on_resolved(hash(2), Resolution::NotFound, &view, &peers);
+        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        assert!(
+            downloads.is_empty(),
+            "auto_download off must not fetch the now-playing file or prefetch: {downloads:?}"
+        );
+
+        // Re-enable: the window downloads as usual.
+        wiring.auto_download = true;
+        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        assert!(
+            downloads.contains(&hash(1)) && downloads.contains(&hash(2)),
+            "auto_download on must prefetch the window: {downloads:?}"
+        );
+    }
+
+    #[test]
+    fn auto_download_off_flips_unknown_series_to_not_watching() {
+        // An obtainable unknown-series missing now-playing file is normally
+        // *suppressed* (it will download instead of writing a sticky
+        // NotWatching). With auto_download off it will never download, so
+        // it must flip to NotWatching immediately rather than wait on a
+        // download that never arrives.
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        state.set_file_availability(
+            A,
+            ts(40),
+            UserId::new("nas"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+        let view = state.view();
+        let peers = [peer("kim"), peer("nas")];
+
+        // Default (auto_download on): obtainable, so suppressed.
+        let mut wiring = PlayerWiring::new(me());
+        let directives = wiring.on_series_known(
+            hash(1),
+            Some(dessplay_core::types::AniDbSeriesId(7)),
+            false, // unknown
+            &view,
+            &peers,
+        );
+        assert!(
+            series_pref_writes(&directives).is_empty(),
+            "auto_download on: a downloadable file must not auto-NotWatching: {directives:?}"
+        );
+        assert!(has_placeholder(&directives));
+
+        // auto_download off: treated as unobtainable, flips to NotWatching.
+        let mut wiring = PlayerWiring::new(me());
+        wiring.auto_download = false;
+        let directives = wiring.on_series_known(
+            hash(1),
+            Some(dessplay_core::types::AniDbSeriesId(7)),
+            false, // unknown
+            &view,
+            &peers,
+        );
+        assert_eq!(
+            series_pref_writes(&directives),
+            vec![(
+                dessplay_core::types::AniDbSeriesId(7),
+                SeriesWatchState::NotWatching
+            )],
+            "auto_download off: an unobtainable unknown-series file must flip to NotWatching"
+        );
+        assert!(has_placeholder(&directives));
     }
 
     #[test]

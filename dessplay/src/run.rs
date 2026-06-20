@@ -648,6 +648,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             // Interactive clients re-scan the library about once a minute.
             scan_interval: Some(std::time::Duration::from_secs(60)),
         },
+        settings.auto_download,
         handle.sync.clone(),
         handle.network.clone(),
     );
@@ -862,6 +863,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             }
                             self.shell.set_media_roots(roots).await;
                             self.shell.set_retention(saved.cache_retention).await;
+                            self.shell.set_auto_download(saved.auto_download);
                             self.settings = *saved;
                         }
                     }

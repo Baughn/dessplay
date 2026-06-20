@@ -13,9 +13,9 @@ expression: "render(&mut ui, 100, 30)"
 │              │Ready on startup: no                                                │──────────────┘
 │              │Subtitles: Off                                                      │──────────────┐
 │              │Cache: 7 days                                                       │              │
+│              │Auto-download: yes                                                  │              │
 │              │[Add media root]                                                    │              │
 │              │[Save] — needs a username, a password, a media root                 │              │
-│              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │──────────────┘

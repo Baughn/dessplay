@@ -55,6 +55,10 @@ Optional settings (sensible defaults, editable later):
 - Upload limit (bytes/sec cap for serving files to peers; default unlimited)
 - Subtitle mode (off / intermixed / separate pane; default off; also
   cycled live with `F2`). See [Subtitle Display](#subtitle-display).
+- Auto-download (toggle, default on). When off the client never fetches
+  file contents from peers -- neither the prefetch window nor the missing
+  now-playing file -- so it relies entirely on its own media roots. See
+  [Pre-fetching](#download-cache-and-retention).
 
 Seeder-specific configuration (role, retention) is provided via
 command-line flags / environment only -- seeders are headless, never show
@@ -1049,6 +1053,15 @@ auto-download** for entries whose series it has marked **NotWatching** --
 no point fetching a show you've opted out of. **Maybe** (the default) and
 **Watching** entries are prefetched normally; a NotWatching file that is
 already local still loads (you can mute), it is just never fetched.
+
+The **auto-download** setting (default on) is a coarser switch: turning it
+off disables *all* automatic fetching for that client -- both the prefetch
+window and the missing now-playing file -- making it a "bring your own
+files" participant. A missing now-playing file from a **known** series
+then stays Missing (obtain it via a media root or manual map); a missing
+file from an **unknown** series resolves to **NotWatching** immediately
+rather than waiting on a download that will never arrive. Seeders are
+unaffected (they persist no settings and must seed the whole playlist).
 
 ### Parsing files to series/season/episode
 

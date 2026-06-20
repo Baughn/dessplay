@@ -119,6 +119,7 @@ impl Harness {
                 upload_limit: None,
                 scan_interval: None,
             },
+            true, // auto_download
             handle.sync.clone(),
             handle.network.clone(),
         );
