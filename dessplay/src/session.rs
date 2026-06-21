@@ -36,7 +36,7 @@ use dessplay_core::types::{
 use crate::actors::file::{
     FileCommand, FileConfig, FileOutput, HashEvent, HashedAdd, IndexedFile, Resolution,
 };
-use crate::actors::player::{PlayerCommand, PlayerOutput};
+use crate::actors::player::{DRIFT_HARD_SEEK_MILLIS, PlayerCommand, PlayerOutput};
 use crate::actors::sync::Mutation;
 
 /// A subtitle line bound for the UI. `video_millis` is the in-video
@@ -218,6 +218,12 @@ pub struct PlayerWiring {
     /// unobtainable and resolves to NotWatching rather than waiting on a
     /// download that will never arrive (design.md, Pre-fetching).
     auto_download: bool,
+    /// Consecutive snapshots in which the same-file position spread has
+    /// exceeded the hard-seek band. Drift correction should close a gap
+    /// within a snapshot or two, so a spread that survives many snapshots
+    /// is anomalous — `report_drift` warns once when this crosses
+    /// [`DRIFT_PERSIST_SNAPSHOTS`]. Reset on convergence or unload.
+    drift_high_snapshots: u32,
 }
 
 /// Fraction of a file's duration that counts as "watched" (design.md,
@@ -228,6 +234,13 @@ const WATCHED_FRACTION: f64 = 0.85;
 /// client prefetches (design.md, Pre-fetching). A small fixed lookahead;
 /// disk/retention-aware depth is future work. Seeders fetch everything.
 const PREFETCH_AHEAD: usize = 2;
+
+/// How many consecutive snapshots a same-file position spread past the
+/// player's hard-seek band must persist before `report_drift` warns.
+/// Positions broadcast about once a second and drift correction closes a
+/// gap within a snapshot or two, so a spread still open after this many is
+/// genuinely stuck (≈ this many seconds).
+const DRIFT_PERSIST_SNAPSHOTS: u32 = 8;
 
 /// The playlist filename to show as the player's media title. Cache files
 /// are hash-named on disk, so without this mpv would display the ed2k hash.
@@ -345,6 +358,35 @@ fn current_interactive(peers: &[PeerInfo]) -> BTreeMap<UserId, dessplay_core::ne
         .collect()
 }
 
+/// Present interactive peers that have the now-playing file *loaded*
+/// (they advertise [`FileAvailability::Ready`] for it) paired with their
+/// latest reported position. This is the only set drift correction keys
+/// on: it excludes peers who are absent, on a different file, or watching
+/// a placeholder (file missing / still downloading / not watching) —
+/// their `playback_position` entry is stale or for some other file and
+/// must never elect a bogus leader or inflate the measured spread.
+///
+/// `playback_position` carries no file tag (a position sample drops the
+/// file it was taken against), so "same file loaded" is read from
+/// `file_availability`, which is keyed by `(user, file)`.
+fn same_file_positions(
+    view: &StateView,
+    peers: &[PeerInfo],
+) -> Vec<(UserId, dessplay_core::types::PlaybackPosition)> {
+    let Some(now_playing) = view.now_playing else {
+        return Vec::new();
+    };
+    current_interactive(peers)
+        .into_iter()
+        .filter(|(_, presence)| *presence == dessplay_core::net::Presence::Present)
+        .filter(|(user, _)| {
+            view.file_availability.get(&(user.clone(), now_playing))
+                == Some(&FileAvailability::Ready)
+        })
+        .filter_map(|(user, _)| view.playback_position.get(&user).map(|p| (user, *p)))
+        .collect()
+}
+
 /// Format an in-video position as `MM:SS` (or `H:MM:SS` past an hour),
 /// for the "skipped to" line. Local to the session layer (the UI's
 /// `props::mmss` is the same idea but lives behind the UI boundary).
@@ -408,6 +450,7 @@ impl PlayerWiring {
             awaiting_source: HashSet::new(),
             narrator: None,
             auto_download: true,
+            drift_high_snapshots: 0,
         }
     }
 
@@ -941,6 +984,104 @@ impl PlayerWiring {
         out
     }
 
+    /// The position reference this client slaves to for drift correction,
+    /// or `None` when *we* are the reference (or there is no one to follow).
+    ///
+    /// A user seek authority is the reference directly: they last seeked, so
+    /// they are on the now-playing file. Otherwise the Server holds
+    /// authority — which has no position — so we fall back to the
+    /// furthest-ahead present peer that has the now-playing file *loaded*
+    /// (the "leader", per [`same_file_positions`]). Following the leader
+    /// makes laggards catch up *forward* (no group rewind); the leader, and
+    /// anyone tied with or ahead of it, follows no one. Restricting the
+    /// election to same-file peers is what keeps a stale or other-file
+    /// position from electing a bogus leader.
+    fn position_reference(
+        &self,
+        view: &StateView,
+        peers: &[PeerInfo],
+    ) -> Option<(UserId, dessplay_core::types::PlaybackPosition)> {
+        if let Some(SeekAuthority::User(authority)) = &view.seek_authority {
+            return if *authority == self.me {
+                None
+            } else {
+                view.playback_position
+                    .get(authority)
+                    .map(|p| (authority.clone(), *p))
+            };
+        }
+        // Server (or unset) authority: elect the furthest-ahead same-file
+        // peer and follow them only if they are strictly ahead of us.
+        let leader = same_file_positions(view, peers)
+            .into_iter()
+            .max_by_key(|(_, p)| p.position_millis)?;
+        let mine = view
+            .playback_position
+            .get(&self.me)
+            .map_or(0, |p| p.position_millis);
+        if leader.0 == self.me || leader.1.position_millis <= mine {
+            None
+        } else {
+            Some(leader)
+        }
+    }
+
+    /// Log the playback-position spread across same-file peers so drift is
+    /// visible, and warn if a large spread *persists* (correction should
+    /// close it within a snapshot or two — a spread still open after
+    /// [`DRIFT_PERSIST_SNAPSHOTS`] means correction isn't working). Raw
+    /// position samples, no per-peer extrapolation: every client reports
+    /// about once a second, close enough in wall-clock for a diagnostic.
+    /// Only same-file peers count (see [`same_file_positions`]), so stale
+    /// or other-file positions never inflate the measured spread.
+    /// `following` is whether we are slaved to a reference this snapshot.
+    fn report_drift(
+        &mut self,
+        view: &StateView,
+        peers: &[PeerInfo],
+        active: bool,
+        following: bool,
+    ) {
+        let samples = same_file_positions(view, peers);
+        let (Some(lagging), Some(leading)) = (
+            samples.iter().min_by_key(|(_, p)| p.position_millis),
+            samples.iter().max_by_key(|(_, p)| p.position_millis),
+        ) else {
+            // No same-file peers to compare against.
+            self.drift_high_snapshots = 0;
+            return;
+        };
+        let spread = leading.1.position_millis - lagging.1.position_millis;
+        tracing::trace!(
+            spread_ms = spread,
+            leader = %leading.0,
+            lagger = %lagging.0,
+            following,
+            active,
+            "drift: position spread across same-file peers"
+        );
+
+        if active && spread > DRIFT_HARD_SEEK_MILLIS {
+            self.drift_high_snapshots = self.drift_high_snapshots.saturating_add(1);
+            if self.drift_high_snapshots == DRIFT_PERSIST_SNAPSHOTS {
+                tracing::warn!(
+                    spread_ms = spread,
+                    leader = %leading.0,
+                    lagger = %lagging.0,
+                    authority = ?view.seek_authority,
+                    "drift: position spread past the hard-seek band has not \
+                     converged across {DRIFT_PERSIST_SNAPSHOTS} snapshots — \
+                     drift correction may not be working"
+                );
+            }
+        } else {
+            if self.drift_high_snapshots >= DRIFT_PERSIST_SNAPSHOTS {
+                tracing::info!(spread_ms = spread, "drift: position spread converged");
+            }
+            self.drift_high_snapshots = 0;
+        }
+    }
+
     /// React to a fresh state view + peer list.
     pub fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
         let mut out = Vec::new();
@@ -1072,14 +1213,20 @@ impl PlayerWiring {
             )));
         }
 
-        // Follow the seek authority's position (never our own). Only when
-        // the real now-playing video is what's loaded.
-        if showing_now_playing
-            && let Some(SeekAuthority::User(authority)) = &view.seek_authority
-            && *authority != self.me
-            && let Some(position) = view.playback_position.get(authority)
-        {
-            let sample = (authority.clone(), *position);
+        // Follow the position reference (docs/design.md, Playback Rules:
+        // drift correction). A user seek authority is followed directly;
+        // when the Server holds authority — the default after an EOF-advance
+        // or a manual now-playing change, until someone seeks, and it has no
+        // position of its own — we follow the furthest-ahead present peer
+        // that has the now-playing file loaded (the "leader"), so the group
+        // still converges. Only when the real now-playing video is loaded.
+        let following = if showing_now_playing {
+            self.position_reference(view, peers)
+        } else {
+            None
+        };
+        if let Some((reference, position)) = &following {
+            let sample = (reference.clone(), *position);
             if self.last_synced.as_ref() != Some(&sample) {
                 self.last_synced = Some(sample);
                 out.push(Directive::Player(PlayerCommand::SyncTo {
@@ -1088,6 +1235,14 @@ impl PlayerWiring {
                     playing: active,
                 }));
             }
+        }
+
+        // Drift visibility: log the spread across same-file peers, and warn
+        // if a large spread persists (correction should close it quickly).
+        if showing_now_playing {
+            self.report_drift(view, peers, active, following.is_some());
+        } else {
+            self.drift_high_snapshots = 0;
         }
 
         // New chat messages go to the OSD. The first view's backlog is
@@ -2729,6 +2884,149 @@ mod tests {
                 .iter()
                 .any(|cmd| matches!(cmd, PlayerCommand::SyncTo { .. })),
             "we never sync to ourselves"
+        );
+    }
+
+    #[test]
+    fn server_authority_follows_furthest_ahead_same_file_peer() {
+        // The Server holds seek authority (the default after an EOF-advance
+        // or a manual now-playing change, until someone seeks). It has no
+        // position of its own, so clients must fall back to following the
+        // furthest-ahead peer that has the now-playing file *loaded* — the
+        // regression: previously nothing was followed and any offset (e.g.
+        // a player that started late) sat uncorrected for the whole episode.
+        let mut state = playing_state();
+        state.set_seek_authority(A, ts(4), dessplay_core::types::SeekAuthority::Server);
+
+        // baughn: present, has now-playing (hash 1) loaded, far ahead.
+        state.set_file_availability(
+            A,
+            ts(5),
+            UserId::new("baughn"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+        state.set_playback_position(
+            A,
+            ts(6),
+            UserId::new("baughn"),
+            PlaybackPosition {
+                position_millis: 600_000,
+                timestamp: ts(6),
+            },
+        );
+
+        // zombie: present and wildly "ahead", but on a *different* file
+        // (Ready on hash 2, nothing for hash 1). A stale/other-file
+        // position that must never be elected leader.
+        state.set_file_availability(
+            A,
+            ts(7),
+            UserId::new("zombie"),
+            hash(2),
+            FileAvailability::Ready,
+        );
+        state.set_playback_position(
+            A,
+            ts(8),
+            UserId::new("zombie"),
+            PlaybackPosition {
+                position_millis: 9_000_000,
+                timestamp: ts(8),
+            },
+        );
+
+        // us (kim): behind, has now-playing loaded.
+        state.set_file_availability(A, ts(9), me(), hash(1), FileAvailability::Ready);
+        state.set_playback_position(
+            A,
+            ts(10),
+            me(),
+            PlaybackPosition {
+                position_millis: 100_000,
+                timestamp: ts(10),
+            },
+        );
+
+        let peers = [peer("baughn"), peer("zombie")];
+        let mut wiring = PlayerWiring::new(me());
+        let view = state.view();
+        wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            &view,
+            &peers,
+        );
+        let directives = wiring.on_state(&view, &peers);
+
+        let synced: Vec<u64> = player_cmds(&directives)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                PlayerCommand::SyncTo {
+                    position_millis, ..
+                } => Some(*position_millis),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            synced,
+            vec![600_000],
+            "must follow the furthest-ahead peer that has the now-playing file \
+             loaded, ignoring the absent/other-file/stale positions"
+        );
+    }
+
+    #[test]
+    fn server_authority_leader_follows_no_one() {
+        // When *we* are the furthest-ahead same-file peer under Server
+        // authority, we are the reference and must not chase anyone behind
+        // us (no group rewind).
+        let mut state = playing_state();
+        state.set_seek_authority(A, ts(4), dessplay_core::types::SeekAuthority::Server);
+        // A peer behind us.
+        state.set_file_availability(
+            A,
+            ts(5),
+            UserId::new("baughn"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+        state.set_playback_position(
+            A,
+            ts(6),
+            UserId::new("baughn"),
+            PlaybackPosition {
+                position_millis: 100_000,
+                timestamp: ts(6),
+            },
+        );
+        // us (kim): ahead.
+        state.set_file_availability(A, ts(7), me(), hash(1), FileAvailability::Ready);
+        state.set_playback_position(
+            A,
+            ts(8),
+            me(),
+            PlaybackPosition {
+                position_millis: 600_000,
+                timestamp: ts(8),
+            },
+        );
+
+        let peers = [peer("baughn")];
+        let mut wiring = PlayerWiring::new(me());
+        let view = state.view();
+        wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            &view,
+            &peers,
+        );
+        let directives = wiring.on_state(&view, &peers);
+        assert!(
+            !player_cmds(&directives)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::SyncTo { .. })),
+            "the leader follows no one"
         );
     }
 

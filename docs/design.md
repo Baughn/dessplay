@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-19
+Last updated: 2026-06-22
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -351,12 +351,33 @@ how many users are connected.
    override (so others see *who* is blocking resume) and intent to Paused.
    Pressing play clears your own override and sets intent to Playing.
 4. When someone seeks, everyone seeks (via seek authority; see [sync-state.md](sync-state.md))
-5. **Drift correction** relative to the seek authority's position uses three bands
-   (thresholds configurable in one place; defaults below):
+5. **Drift correction** aligns each client to a **position reference** using
+   three bands (thresholds configurable in one place; defaults below):
    - **< 100ms**: ignore
    - **100ms - 3s**: slew -- adjust playback speed by up to ±2% (mpv `speed`
      property, pitch-corrected, invisible to the viewer) until converged
    - **> 3s**: hard seek
+
+   The position reference is the **seek authority's** position when a *user*
+   holds authority (they last seeked, so they are on the now-playing file).
+   But the authority is the **Server** for most of an episode -- it is set to
+   `Server` on every EOF-advance and manual now-playing change, and only a
+   manual seek hands it back to a user -- and the Server has *no position*.
+   In that case each client falls back to following the **furthest-ahead
+   present peer that has the now-playing file loaded** (advertises
+   `FileAvailability::Ready` for it): the "leader". Following the leader makes
+   laggards catch up *forward* (no group rewind); the leader, and anyone tied
+   with or ahead of it, follows no one, so the group converges on the front.
+
+   Eligibility is restricted to peers that have **this file** loaded
+   (`playback_position` carries no file tag, so "same file" is read from
+   `file_availability`). This deliberately excludes absent users, users on a
+   different file, and users watching a placeholder (file missing / still
+   downloading / not watching) -- their position is stale or for another file
+   and must never elect a bogus leader. *Without this fallback the player ran
+   open-loop under Server authority: any initial offset (e.g. a player that
+   started late, or a brief decode stall) sat uncorrected for the whole
+   episode, since no `SyncTo` was ever issued.*
 6. Seeks are debounced (1500ms) -- only broadcast after the user stops scrubbing
 7. **EOF** advances the synced now-playing pointer to the next playlist entry.
    The server initiates this (it is the authoritative entity for "file ended"):
