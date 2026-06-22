@@ -60,6 +60,14 @@ pub enum PlayerEvent {
     },
     /// A loaded file finished opening and can be controlled.
     Loaded,
+    /// The player's loaded file path changed (mpv's `path` property). Fires
+    /// for our own `loadfile` *and* when the user loads a file directly
+    /// (e.g. drag-and-drop into the mpv window); the actor decides which by
+    /// comparing against the path it commanded.
+    PathChanged {
+        /// The path mpv now has loaded, as reported by the `path` property.
+        path: String,
+    },
     /// The displayed subtitle line changed (empty text = cleared).
     /// `speaker` is the ASS `Name`/actor field when present (never
     /// displayed — used only to color the line); `None` for formats

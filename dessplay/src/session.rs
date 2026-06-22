@@ -170,6 +170,20 @@ pub enum Directive {
         /// Hashes the group has watched.
         group_watched: HashSet<Ed2kHash>,
     },
+    /// Adopt a file the user loaded directly into the player (drag-and-drop)
+    /// whose name matches the now-playing entry: register it as a manual
+    /// mapping so it resolves Ready and clears a Missing now-playing file
+    /// (design.md, File Matching). Filename-trusted, no hash — the same
+    /// "user explicitly chose this file" exemption as the M-key map.
+    AdoptDraggedFile {
+        /// The now-playing file this stands in for.
+        file: Ed2kHash,
+        /// The path the user loaded.
+        path: PathBuf,
+        /// Series key, so the per-series mapping directory is remembered
+        /// (mirrors the M-key map).
+        series: Option<crate::storage::SeriesKey>,
+    },
 }
 
 /// The session's player-side policy state.
@@ -984,6 +998,16 @@ impl PlayerWiring {
         out
     }
 
+    /// True iff we hold the *real* verified now-playing video (not a
+    /// placeholder, not a stale frame). `loaded` only ever names a verified
+    /// now-playing file — the placeholder Load deliberately leaves it
+    /// untouched (see `FileOutput::PlaceholderReady`) — so this is the single
+    /// gate on "our player may speak for the group": publishing our position,
+    /// taking seek authority, following a reference, and unpausing.
+    fn holds_now_playing(&self, view: &StateView) -> bool {
+        self.loaded.is_some() && self.loaded == view.now_playing
+    }
+
     /// The position reference this client slaves to for drift correction,
     /// or `None` when *we* are the reference (or there is no one to follow).
     ///
@@ -1002,16 +1026,25 @@ impl PlayerWiring {
         peers: &[PeerInfo],
     ) -> Option<(UserId, dessplay_core::types::PlaybackPosition)> {
         if let Some(SeekAuthority::User(authority)) = &view.seek_authority {
-            return if *authority == self.me {
-                None
-            } else {
-                view.playback_position
-                    .get(authority)
-                    .map(|p| (authority.clone(), *p))
-            };
+            if *authority == self.me {
+                return None;
+            }
+            // Follow a user authority only when it is a valid same-file
+            // source (Present + advertises the now-playing file Ready). A
+            // not-watching / placeholder / absent / other-file authority must
+            // not drag the group to a bogus or frozen position — fall through
+            // to leader election instead. `same_file_positions` both
+            // validates the authority and yields its sample.
+            if let Some(sample) = same_file_positions(view, peers)
+                .into_iter()
+                .find(|(u, _)| u == authority)
+            {
+                return Some(sample);
+            }
         }
-        // Server (or unset) authority: elect the furthest-ahead same-file
-        // peer and follow them only if they are strictly ahead of us.
+        // Server (or unset) authority — or a user authority that is not a
+        // valid source: elect the furthest-ahead same-file peer and follow
+        // them only if they are strictly ahead of us.
         let leader = same_file_positions(view, peers)
             .into_iter()
             .max_by_key(|(_, p)| p.position_millis)?;
@@ -1206,7 +1239,7 @@ impl PlayerWiring {
         // to something we don't hold, so a stale frame or placeholder is
         // on screen), force pause: never resume the wrong file.
         let active = derive::playback_active(view, peers);
-        let showing_now_playing = self.loaded.is_some() && self.loaded == view.now_playing;
+        let showing_now_playing = self.holds_now_playing(view);
         if self.loaded.is_some() {
             out.push(Directive::Player(PlayerCommand::SetPlaying(
                 showing_now_playing && active,
@@ -1329,6 +1362,41 @@ impl PlayerWiring {
         out
     }
 
+    /// Decide whether a file the user loaded directly into the player
+    /// (drag-and-drop) should be adopted to clear a Missing now-playing
+    /// file. We adopt only when we do **not** already hold the real video
+    /// (`holds_now_playing` false — we're showing a placeholder / stale
+    /// frame) and the dropped file's basename matches the now-playing
+    /// entry. Filename-trusted, no hash check — the same exemption the
+    /// M-key manual map gets (design.md, File Matching / Content Hash).
+    fn adopt_dragged_file(&self, path: PathBuf, view: &StateView) -> Option<Directive> {
+        let file = view.now_playing?;
+        if self.holds_now_playing(view) {
+            return None;
+        }
+        let want = playlist_title(view, file)
+            .or_else(|| view.file_catalog.get(&file).map(|c| c.filename.clone()))?;
+        let got = path.file_name()?.to_string_lossy().to_string();
+        if !want.eq_ignore_ascii_case(&got) {
+            tracing::debug!(
+                want,
+                got,
+                "dropped-in file name does not match now-playing; ignoring"
+            );
+            return None;
+        }
+        tracing::info!(path = %path.display(), "adopting dropped-in file for the now-playing entry");
+        let series = view
+            .anidb_metadata
+            .get(&file)
+            .and_then(|m| m.as_ref())
+            .map(|meta| match meta.series_id {
+                Some(id) => crate::storage::SeriesKey::AniDb(id),
+                None => crate::storage::SeriesKey::Name(meta.series_name.clone()),
+            });
+        Some(Directive::AdoptDraggedFile { file, path, series })
+    }
+
     /// React to a player actor output.
     pub fn on_player(&mut self, output: PlayerOutput, view: &StateView) -> Vec<Directive> {
         match output {
@@ -1354,12 +1422,23 @@ impl PlayerWiring {
                     intent: PlaybackIntent::Playing,
                 }),
             ],
-            PlayerOutput::UserSeeked { position_millis } => vec![
-                Directive::Mutate(Mutation::SetSeekAuthority {
-                    authority: SeekAuthority::User(self.me.clone()),
-                }),
-                Directive::Mutate(Mutation::SetPlaybackPosition { position_millis }),
-            ],
+            PlayerOutput::UserSeeked { position_millis } => {
+                if !self.holds_now_playing(view) {
+                    // A seek while a placeholder / stale frame is loaded (a
+                    // file dragged into mpv, or a scrubbed placeholder) must
+                    // not take seek authority or publish a position for the
+                    // real file — it would make the group follow a frozen
+                    // placeholder. See `holds_now_playing`.
+                    vec![]
+                } else {
+                    vec![
+                        Directive::Mutate(Mutation::SetSeekAuthority {
+                            authority: SeekAuthority::User(self.me.clone()),
+                        }),
+                        Directive::Mutate(Mutation::SetPlaybackPosition { position_millis }),
+                    ]
+                }
+            }
             PlayerOutput::PositionTick {
                 file,
                 position_millis,
@@ -1372,7 +1451,12 @@ impl PlayerWiring {
                 // attributed to the new now-playing file: doing so both
                 // publishes a bogus position for us and falsely records the
                 // new file watched. See `stale_position_tick_*` tests.
-                if view.now_playing != Some(file) {
+                //
+                // The same applies to a placeholder we hold (`loaded !=
+                // now_playing`): its position is the placeholder's, not the
+                // real video's, so a not-watching client must not publish it
+                // or mark the file watched. `holds_now_playing` is that gate.
+                if view.now_playing != Some(file) || !self.holds_now_playing(view) {
                     vec![]
                 } else {
                     let mut out = vec![Directive::Mutate(Mutation::SetPlaybackPosition {
@@ -1430,6 +1514,9 @@ impl PlayerWiring {
                     });
                 }
                 out
+            }
+            PlayerOutput::PathObserved { path } => {
+                self.adopt_dragged_file(path, view).into_iter().collect()
             }
             PlayerOutput::FatalCrash => vec![
                 Directive::Mutate(Mutation::SetPlaybackIntent {
@@ -1759,6 +1846,16 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                     let _ = self
                         .file
                         .send(FileCommand::RenderPlaceholder { file, lines })
+                        .await;
+                }
+                Directive::AdoptDraggedFile { file, path, series } => {
+                    // Same sink as the M-key map: persist the mapping, then
+                    // the file actor's Resolved{Verified} flows back through
+                    // `on_resolved`, flipping us to Ready and loading the
+                    // real video (clearing the placeholder).
+                    let _ = self
+                        .file
+                        .send(FileCommand::SetManualMapping { file, path, series })
                         .await;
                 }
                 Directive::StartDownload {
@@ -2839,6 +2936,15 @@ mod tests {
                 timestamp: ts(11),
             },
         );
+        // The authority must be a valid same-file source to be followed:
+        // someone who seeked is watching the file, hence Ready for it.
+        state.set_file_availability(
+            A,
+            ts(12),
+            UserId::new("baughn"),
+            hash(1),
+            FileAvailability::Ready,
+        );
         let mut wiring = PlayerWiring::new(me());
         let view = state.view();
         wiring.on_state(&view, &[peer("kim"), peer("baughn")]);
@@ -3031,6 +3137,305 @@ mod tests {
     }
 
     #[test]
+    fn user_authority_on_a_placeholder_is_not_followed() {
+        // Regression (the "Kill Ao" incident): a not-watching user whose
+        // player shows a placeholder still publishes a frozen position and
+        // could hold seek authority. The group must NOT slave to it — a user
+        // authority is followed only when it is a valid same-file source
+        // (Present + advertises the now-playing file Ready). Here dagger is
+        // the authority but is not Ready, so we fall through to the leader.
+        let mut state = playing_state();
+        state.set_seek_authority(
+            A,
+            ts(4),
+            dessplay_core::types::SeekAuthority::User(UserId::new("dagger")),
+        );
+        // dagger: the (bogus) authority — a frozen position but NOT Ready for
+        // the now-playing file (he is watching a placeholder).
+        state.set_playback_position(
+            A,
+            ts(5),
+            UserId::new("dagger"),
+            PlaybackPosition {
+                position_millis: 5_000,
+                timestamp: ts(5),
+            },
+        );
+        // baughn: a valid same-file leader, far ahead.
+        state.set_file_availability(
+            A,
+            ts(6),
+            UserId::new("baughn"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+        state.set_playback_position(
+            A,
+            ts(7),
+            UserId::new("baughn"),
+            PlaybackPosition {
+                position_millis: 600_000,
+                timestamp: ts(7),
+            },
+        );
+        // us (kim): Ready, behind.
+        state.set_file_availability(A, ts(8), me(), hash(1), FileAvailability::Ready);
+        state.set_playback_position(
+            A,
+            ts(9),
+            me(),
+            PlaybackPosition {
+                position_millis: 100_000,
+                timestamp: ts(9),
+            },
+        );
+
+        let peers = [peer("baughn"), peer("dagger")];
+        let mut wiring = PlayerWiring::new(me());
+        let view = state.view();
+        wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            &view,
+            &peers,
+        );
+        let directives = wiring.on_state(&view, &peers);
+
+        let synced: Vec<u64> = player_cmds(&directives)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                PlayerCommand::SyncTo {
+                    position_millis, ..
+                } => Some(*position_millis),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            synced,
+            vec![600_000],
+            "must follow the valid same-file leader, never the not-watching \
+             authority's frozen position (5_000)"
+        );
+    }
+
+    #[test]
+    fn position_tick_against_a_placeholder_is_not_published() {
+        // A client showing a placeholder (file missing / not watching) has
+        // `loaded != now_playing`. A position tick then measures the
+        // placeholder, not the real video, so it must not be published as our
+        // position nor mark the file watched — else a not-watching peer
+        // injects a frozen position into the group's leader election (and
+        // falsely records the file watched).
+        let mut wiring = PlayerWiring::new(me());
+        let view = timed_state(100_000).view(); // now_playing hash(1), not loaded
+        let directives = wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 90_000,
+            },
+            &view,
+        );
+        assert!(
+            !directives
+                .iter()
+                .any(|d| matches!(d, Directive::Mutate(Mutation::SetPlaybackPosition { .. }))),
+            "a placeholder tick must not publish our position"
+        );
+        assert!(
+            watched_records(&directives).is_empty(),
+            "a placeholder tick must not mark the file watched"
+        );
+
+        // Once we hold the real video, the same tick IS credited.
+        wiring.loaded = Some(hash(1));
+        let credited = wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 90_000,
+            },
+            &view,
+        );
+        assert!(
+            credited.iter().any(|d| matches!(
+                d,
+                Directive::Mutate(Mutation::SetPlaybackPosition {
+                    position_millis: 90_000
+                })
+            )),
+            "a tick for the real now-playing video must still be published"
+        );
+    }
+
+    #[test]
+    fn user_seek_on_a_placeholder_takes_no_authority() {
+        // A seek observed while a placeholder / stale frame is loaded (the
+        // user dragged a file into mpv, or scrubbed the placeholder) must NOT
+        // take seek authority or publish a position for the real file — it
+        // would make the whole group follow a frozen placeholder.
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view(); // now_playing hash(1), not loaded
+        let directives = wiring.on_player(
+            PlayerOutput::UserSeeked {
+                position_millis: 5_000,
+            },
+            &view,
+        );
+        assert!(
+            !directives
+                .iter()
+                .any(|d| matches!(d, Directive::Mutate(Mutation::SetSeekAuthority { .. }))),
+            "a placeholder seek must not take authority"
+        );
+        assert!(
+            !directives
+                .iter()
+                .any(|d| matches!(d, Directive::Mutate(Mutation::SetPlaybackPosition { .. }))),
+            "a placeholder seek must not publish a position"
+        );
+
+        // With the real video loaded, a seek DOES take authority.
+        wiring.loaded = Some(hash(1));
+        let real = wiring.on_player(
+            PlayerOutput::UserSeeked {
+                position_millis: 5_000,
+            },
+            &view,
+        );
+        assert!(
+            real.iter().any(|d| matches!(
+                d,
+                Directive::Mutate(Mutation::SetSeekAuthority {
+                    authority: SeekAuthority::User(_)
+                })
+            )),
+            "a seek on the real now-playing video must take authority"
+        );
+    }
+
+    #[test]
+    fn dragged_in_matching_name_is_adopted() {
+        // Placeholder state (we don't hold the now-playing video). The user
+        // drops a file whose name matches the now-playing entry — adopt it as
+        // a manual mapping, even though it lives outside the media roots.
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view(); // now_playing hash(1), filename ep1.mkv
+        let directives = wiring.on_player(
+            PlayerOutput::PathObserved {
+                path: "/somewhere/else/ep1.mkv".into(),
+            },
+            &view,
+        );
+        let adopted = directives.iter().find_map(|d| match d {
+            Directive::AdoptDraggedFile { file, path, .. } => Some((*file, path.clone())),
+            _ => None,
+        });
+        assert_eq!(adopted, Some((hash(1), "/somewhere/else/ep1.mkv".into())));
+    }
+
+    #[test]
+    fn dragged_in_wrong_name_is_ignored() {
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        let directives = wiring.on_player(
+            PlayerOutput::PathObserved {
+                path: "/somewhere/random.mkv".into(),
+            },
+            &view,
+        );
+        assert!(
+            !directives
+                .iter()
+                .any(|d| matches!(d, Directive::AdoptDraggedFile { .. })),
+            "a drop whose name doesn't match now-playing must be ignored"
+        );
+    }
+
+    #[test]
+    fn dragged_in_ignored_when_already_holding_the_video() {
+        // We already hold the real now-playing video; a stray path
+        // observation (e.g. a late echo) must not trigger re-adoption.
+        let mut wiring = PlayerWiring::new(me());
+        wiring.loaded = Some(hash(1));
+        let view = playing_state().view();
+        let directives = wiring.on_player(
+            PlayerOutput::PathObserved {
+                path: "/somewhere/ep1.mkv".into(),
+            },
+            &view,
+        );
+        assert!(
+            !directives
+                .iter()
+                .any(|d| matches!(d, Directive::AdoptDraggedFile { .. }))
+        );
+    }
+
+    proptest::proptest! {
+        /// Whatever the seek authority and per-peer availability/position, the
+        /// position reference we slave to (when any) is ALWAYS a valid
+        /// same-file source — present and advertising the now-playing file
+        /// Ready. A not-watching / placeholder / absent / other-file peer must
+        /// never be followed, no matter how it became (or held) seek
+        /// authority. This is the single invariant behind the "group followed
+        /// a not-watching user's frozen position" bug.
+        #[test]
+        fn position_reference_is_always_a_valid_same_file_source(
+            // (ready?, position?, present?) for up to four candidate peers.
+            specs in proptest::collection::vec(
+                (
+                    proptest::bool::ANY,
+                    proptest::option::of(0u64..1_000_000),
+                    proptest::bool::ANY,
+                ),
+                0..4,
+            ),
+            // 0 = Server, 1 = User(me), 2.. = User(candidate[k-2]).
+            authority_sel in 0usize..6,
+        ) {
+            use dessplay_core::net::Presence;
+            let names = ["baughn", "dagger", "nero", "zombie"];
+            let mut state = playing_state(); // now_playing hash(1), intent Playing
+            let mut t = 100u64;
+            let mut peers = Vec::new();
+            for (i, (ready, pos, present)) in specs.iter().enumerate() {
+                let user = UserId::new(names[i]);
+                if *ready {
+                    state.set_file_availability(A, ts(t), user.clone(), hash(1), FileAvailability::Ready);
+                    t += 1;
+                }
+                if let Some(p) = pos {
+                    state.set_playback_position(
+                        A,
+                        ts(t),
+                        user.clone(),
+                        PlaybackPosition { position_millis: *p, timestamp: ts(t) },
+                    );
+                    t += 1;
+                }
+                let presence = if *present { Presence::Present } else { Presence::Lost };
+                peers.push(peer_p(names[i], presence));
+            }
+            let authority = match authority_sel {
+                0 => SeekAuthority::Server,
+                1 => SeekAuthority::User(me()),
+                k => SeekAuthority::User(UserId::new(names[(k - 2) % names.len()])),
+            };
+            state.set_seek_authority(A, ts(t), authority);
+            let view = state.view();
+            let wiring = PlayerWiring::new(me());
+
+            let eligible = same_file_positions(&view, &peers);
+            if let Some((u, _)) = wiring.position_reference(&view, &peers) {
+                proptest::prop_assert!(
+                    eligible.iter().any(|(eu, _)| *eu == u),
+                    "position_reference returned {u}, not a valid same-file source; eligible = {:?}",
+                    eligible.iter().map(|(e, _)| e.to_string()).collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn chat_backlog_is_history_but_new_messages_are_osd() {
         let mut state = playing_state();
         state.append_chat(dessplay_core::types::ChatMessage {
@@ -3147,6 +3552,7 @@ mod tests {
     #[test]
     fn user_seek_takes_authority_and_publishes_position() {
         let mut wiring = PlayerWiring::new(me());
+        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
         let view = playing_state().view();
         let directives = wiring.on_player(
             PlayerOutput::UserSeeked {
@@ -3225,6 +3631,7 @@ mod tests {
     #[test]
     fn crossing_85_percent_records_watched_once() {
         let mut wiring = PlayerWiring::new(me());
+        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
         let view = timed_state(100_000).view();
         // Below threshold: nothing.
         let before = wiring.on_player(
@@ -3264,6 +3671,7 @@ mod tests {
         // new now-playing file -- neither marking it watched nor
         // publishing it as our position. (docs/design.md, Watch Tracking)
         let mut wiring = PlayerWiring::new(me());
+        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
         // now-playing is hash(1) with a known 100s duration.
         let view = timed_state(100_000).view();
         // A trailing tick from a different (just-ended) file, well past
@@ -3312,6 +3720,7 @@ mod tests {
             }),
         );
         let mut wiring = PlayerWiring::new(me());
+        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
         let directives = wiring.on_player(
             PlayerOutput::PositionTick {
                 file: hash(1),
@@ -3341,6 +3750,7 @@ mod tests {
         // the 85% rule never fires (the EOF report still marks group
         // progress separately).
         let mut wiring = PlayerWiring::new(me());
+        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
         let view = playing_state().view(); // entry(1) has duration None
         let directives = wiring.on_player(
             PlayerOutput::PositionTick {

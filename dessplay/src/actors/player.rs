@@ -152,6 +152,14 @@ pub enum PlayerOutput {
         /// The file that failed to load.
         file: Ed2kHash,
     },
+    /// The user loaded a file directly into the player (drag-and-drop) — a
+    /// path we never commanded. The session may adopt it to clear a Missing
+    /// now-playing file when the name matches. Echoes of our own loads
+    /// (including the placeholder) are already filtered out.
+    PathObserved {
+        /// The path the user loaded.
+        path: PathBuf,
+    },
     /// The player died twice within [`CRASH_FATAL_WINDOW`]. The main
     /// loop should pause globally and say so in chat.
     FatalCrash,
@@ -498,6 +506,28 @@ impl<F: PlayerFactory> Actor<F> {
                 }
                 self.apply_desired_pause().await;
             }
+            PlayerEvent::PathChanged { path } => {
+                // Swallow the echo of our own load (a real file or the
+                // placeholder); any other path is one the user loaded
+                // directly (drag-and-drop). The session decides whether to
+                // adopt it — `self.current.path` is exactly what we last
+                // commanded, so a string-equal path is our own.
+                let observed = PathBuf::from(path);
+                let ours = self
+                    .current
+                    .as_ref()
+                    .is_some_and(|(_, commanded, _)| *commanded == observed);
+                if !ours {
+                    tracing::info!(
+                        path = %observed.display(),
+                        "user loaded a file directly into the player"
+                    );
+                    let _ = self
+                        .outputs
+                        .send(PlayerOutput::PathObserved { path: observed })
+                        .await;
+                }
+            }
             PlayerEvent::SubtitleLine { text, speaker } => {
                 // Capture the in-video position here, where the estimate
                 // is freshest; `0` (-> 00:00) is honest before the first
@@ -771,6 +801,42 @@ mod tests {
         assert_eq!(
             expect_output(&mut outputs).await,
             PlayerOutput::LoadFailed { file: FILE }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn our_own_load_path_is_not_reported_but_a_dragged_path_is() {
+        let (_commands, mut outputs, control) = loaded_rig().await;
+        // Clear anything the rig left in flight.
+        let _ = drain_outputs(&mut outputs);
+
+        // mpv re-announces `path` after our own loadfile — the echo must be
+        // swallowed (the actor compares against the path it commanded).
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep1.mkv".into(),
+            })
+            .unwrap();
+        settle().await;
+        assert!(
+            drain_outputs(&mut outputs).is_empty(),
+            "our own load path must not be reported as a drag-in"
+        );
+
+        // A path we never commanded: the user dragged a file in.
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/elsewhere/dragged.mkv".into(),
+            })
+            .unwrap();
+        settle().await;
+        assert_eq!(
+            drain_outputs(&mut outputs),
+            vec![PlayerOutput::PathObserved {
+                path: "/elsewhere/dragged.mkv".into()
+            }]
         );
     }
 

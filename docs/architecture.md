@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-06-18
+Last updated: 2026-06-23
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -233,6 +233,12 @@ crash supervision (relaunch via a `PlayerFactory`).
   playlist entry when the adder didn't supply one)
 - `SubtitleLine { text, speaker }` -- observed `sub-text/ass-full` change
   (feeds subtitle pane; `speaker` is the parsed ASS `Name`/actor field)
+- `PathObserved { path }` -- the user loaded a file directly into the
+  player (observed `path` property), a path we never commanded. Echoes of
+  our own `loadfile` (including the placeholder PNG) are filtered out by
+  comparing against the last commanded path. The session adopts it when
+  the basename matches the now-playing entry (design.md, Manual File
+  Mapping: drag-in adoption).
 - `Eof { file }` -- file ended, reported once per file (the session
   layer forwards `EofReached` to the server, which owns the transition)
 - `FatalCrash` -- the player died twice within 30s (the session layer
@@ -245,8 +251,9 @@ crash supervision (relaunch via a `PlayerFactory`).
 **Echo suppression:** expected-state tracking, entirely on our side —
 mpv does *not* flag events as user-vs-programmatic. The actor remembers
 what it commanded (a queue of expected pause flips, a counter of
-expected seeks); an observation matching the queue head is an echo and
-is swallowed, anything else is the user. Misattribution self-heals:
+expected seeks, the path of the last `loadfile`); an observation matching
+the queue head (or, for `path`, equal to the last commanded path) is an
+echo and is swallowed, anything else is the user. Misattribution self-heals:
 the actor never enforces locally (observe-and-correct), so the next
 `SetPlaying` round trip re-converges the player. The mpv layer
 additionally hides two pieces of pure mechanics: the forced pause

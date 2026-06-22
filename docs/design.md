@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-22
+Last updated: 2026-06-23
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -359,25 +359,38 @@ how many users are connected.
    - **> 3s**: hard seek
 
    The position reference is the **seek authority's** position when a *user*
-   holds authority (they last seeked, so they are on the now-playing file).
-   But the authority is the **Server** for most of an episode -- it is set to
+   holds authority -- **but only when that user is a valid same-file source**
+   (present and advertising `FileAvailability::Ready` for the now-playing
+   file). A user can hold seek authority without being on the real video --
+   e.g. a not-watching client whose player shows a placeholder, which still
+   reports a position. Following such an authority blindly froze the whole
+   group on its bogus position (everyone hard-seeking back every couple of
+   seconds). So an invalid user authority is treated exactly like Server
+   authority below; it is never followed. (Symmetrically, a client that does
+   not hold the real now-playing video never *takes* seek authority or
+   publishes a position from its placeholder in the first place -- see the
+   `holds_now_playing` gate in [Player Integration](#player-integration).)
+
+   The authority is the **Server** for most of an episode -- it is set to
    `Server` on every EOF-advance and manual now-playing change, and only a
    manual seek hands it back to a user -- and the Server has *no position*.
-   In that case each client falls back to following the **furthest-ahead
-   present peer that has the now-playing file loaded** (advertises
-   `FileAvailability::Ready` for it): the "leader". Following the leader makes
-   laggards catch up *forward* (no group rewind); the leader, and anyone tied
-   with or ahead of it, follows no one, so the group converges on the front.
+   In that case (and when a user authority is not a valid source) each client
+   falls back to following the **furthest-ahead present peer that has the
+   now-playing file loaded** (advertises `FileAvailability::Ready` for it):
+   the "leader". Following the leader makes laggards catch up *forward* (no
+   group rewind); the leader, and anyone tied with or ahead of it, follows no
+   one, so the group converges on the front.
 
-   Eligibility is restricted to peers that have **this file** loaded
+   Eligibility -- for both the leader election and validating a user
+   authority -- is restricted to peers that have **this file** loaded
    (`playback_position` carries no file tag, so "same file" is read from
    `file_availability`). This deliberately excludes absent users, users on a
    different file, and users watching a placeholder (file missing / still
    downloading / not watching) -- their position is stale or for another file
-   and must never elect a bogus leader. *Without this fallback the player ran
-   open-loop under Server authority: any initial offset (e.g. a player that
-   started late, or a brief decode stall) sat uncorrected for the whole
-   episode, since no `SyncTo` was ever issued.*
+   and must never elect a bogus leader or be followed as authority. *Without
+   the leader fallback the player ran open-loop under Server authority: any
+   initial offset (e.g. a player that started late, or a brief decode stall)
+   sat uncorrected for the whole episode, since no `SyncTo` was ever issued.*
 6. Seeks are debounced (1500ms) -- only broadcast after the user stops scrubbing
 7. **EOF** advances the synced now-playing pointer to the next playlist entry.
    The server initiates this (it is the authoritative entity for "file ended"):
@@ -1248,6 +1261,24 @@ When explicitly invoked:
 4. User selects correct file
 5. Mapping stored locally
 
+**Drag-in adoption.** A second, lower-friction route to the same outcome:
+if the user loads a file **directly into the player** (drag-and-drop into
+the mpv window) whose basename matches the now-playing entry, dessplay
+adopts it -- it registers the loaded path as a manual mapping for the
+now-playing file, exactly as if it had been picked through the browser.
+This clears the Missing/placeholder state, flips `FileAvailability` to
+Ready, and loads the real video. It is **filename-trusted, no hash
+check** -- the same "the user explicitly chose this file" exemption the
+browser map gets (see [Content Hash](#content-hash)). The trade-off is
+that a same-named *different encode* dropped in would silently desync the
+client from the group; this is accepted for parity with the browser map
+and because the user deliberately loaded that exact file. dessplay learns
+what mpv has loaded by observing its `path` property (see
+[Events from Player](#events-from-player)); a path it never commanded, with
+a matching name, is the trigger. (Especially handy in attach mode, where
+driving mpv directly -- including dragging files in -- is the normal
+workflow.)
+
 ### Content Hash
 
 Before playback can unpause:
@@ -1375,6 +1406,11 @@ for it to come back. Interactive-only; seeders have no player.
 - Seek events (distinguished: user-initiated vs programmatic)
 - Subtitle text changes (observed `sub-text/ass-full` property; feeds the
   subtitle log, with the ASS speaker field for per-speaker coloring)
+- Loaded-file path changes (observed `path` property; distinguished:
+  our own `loadfile` echo vs. a file the **user** loaded directly, e.g.
+  drag-and-drop into the mpv window). A user-loaded path whose basename
+  matches the now-playing entry is **adopted** -- see
+  [Manual File Mapping](#manual-file-mapping).
 - EOF (file ended; reported to the server, which owns the transition)
 - Exit (clean or crash)
 
@@ -1382,7 +1418,10 @@ The user/programmatic distinction is made on **our** side — mpv does not
 flag event origins. The player actor tracks what it commanded and
 swallows matching observations as echoes (architecture.md, PlayerActor);
 because correction is observe-and-correct rather than locally enforced,
-a misattributed echo self-heals on the next derived-state round trip.
+a misattributed echo self-heals on the next derived-state round trip. The
+`path` observation uses the same model: an observed path equal to the one
+we last commanded (including the placeholder PNG) is our echo and is
+swallowed; any other is the user's.
 
 ### Subtitle Display
 

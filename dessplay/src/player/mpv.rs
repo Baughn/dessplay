@@ -49,6 +49,7 @@ const OBS_TIME_POS: u64 = 2;
 const OBS_DURATION: u64 = 3;
 const OBS_SUB_TEXT: u64 = 4;
 const OBS_EOF: u64 = 5;
+const OBS_PATH: u64 = 6;
 
 /// One running mpv instance.
 pub struct MpvPlayer {
@@ -157,6 +158,9 @@ impl MpvPlayer {
             // ourselves in `parse_ass_full`. Requires mpv >= 0.39.0.
             (OBS_SUB_TEXT, "sub-text/ass-full"),
             (OBS_EOF, "eof-reached"),
+            // The loaded file path, so the actor can detect a file the user
+            // loaded directly (drag-and-drop) versus one we commanded.
+            (OBS_PATH, "path"),
         ] {
             player
                 .command(json!(["observe_property", id, name]))
@@ -315,6 +319,8 @@ struct Translate {
     eof_reached: bool,
     /// Last observed pause state, deduped (mpv re-announces on observe).
     last_pause: Option<bool>,
+    /// Last observed loaded path, deduped (mpv re-announces on observe).
+    last_path: Option<String>,
 }
 
 /// How long a `pause=true` is held back waiting for an `eof-reached`
@@ -375,7 +381,8 @@ async fn read_loop(
                 // real user pause.
                 neutral @ (PlayerEvent::Position { .. }
                 | PlayerEvent::DurationKnown { .. }
-                | PlayerEvent::SubtitleLine { .. }) => neutral,
+                | PlayerEvent::SubtitleLine { .. }
+                | PlayerEvent::PathChanged { .. }) => neutral,
                 other => {
                     if std::mem::take(&mut held_pause)
                         && events.send(PlayerEvent::PauseChanged(true)).await.is_err()
@@ -472,6 +479,20 @@ fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<Pl
                     } else {
                         vec![]
                     }
+                }
+                Some(OBS_PATH) => {
+                    // mpv re-announces on observe and on every load; emit only
+                    // on a real change (idle/cleared `path` is null → none).
+                    let Some(path) = data.and_then(Value::as_str) else {
+                        return vec![];
+                    };
+                    if state.last_path.as_deref() == Some(path) {
+                        return vec![];
+                    }
+                    state.last_path = Some(path.to_string());
+                    vec![PlayerEvent::PathChanged {
+                        path: path.to_string(),
+                    }]
                 }
                 _ => vec![],
             }
@@ -703,6 +724,50 @@ mod tests {
         assert_eq!(
             ev(
                 r#"{"event":"property-change","id":1,"name":"pause","data":true}"#,
+                &mut state,
+                false
+            ),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn path_property_translates_and_dedups() {
+        let mut state = Translate::default();
+        assert_eq!(
+            ev(
+                r#"{"event":"property-change","id":6,"name":"path","data":"/media/KillAo - 01.mkv"}"#,
+                &mut state,
+                false
+            ),
+            vec![PlayerEvent::PathChanged {
+                path: "/media/KillAo - 01.mkv".into()
+            }]
+        );
+        // mpv re-announces on observe; dedup.
+        assert_eq!(
+            ev(
+                r#"{"event":"property-change","id":6,"name":"path","data":"/media/KillAo - 01.mkv"}"#,
+                &mut state,
+                false
+            ),
+            vec![]
+        );
+        // A different path emits again (the drag-in case).
+        assert_eq!(
+            ev(
+                r#"{"event":"property-change","id":6,"name":"path","data":"/other/dragged.mkv"}"#,
+                &mut state,
+                false
+            ),
+            vec![PlayerEvent::PathChanged {
+                path: "/other/dragged.mkv".into()
+            }]
+        );
+        // Null (idle / cleared) produces nothing.
+        assert_eq!(
+            ev(
+                r#"{"event":"property-change","id":6,"name":"path","data":null}"#,
                 &mut state,
                 false
             ),

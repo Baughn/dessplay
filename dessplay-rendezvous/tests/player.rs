@@ -463,3 +463,177 @@ async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
     })
     .await;
 }
+
+/// Regression (the "Kill Ao" incident): a client showing a placeholder
+/// (it does not hold the real now-playing video) must never seize seek
+/// authority. Pre-fix, a seek in such a client — a scrub of the
+/// placeholder, or the side effect of dragging a file into mpv — took
+/// authority and froze the whole group on that client's bogus position
+/// (everyone hard-seeking back every couple of seconds). Reuses the
+/// unobtainable-unknown-series setup so both clients sit on placeholders
+/// deterministically (no downloads to race).
+#[tokio::test(start_paused = true)]
+async fn placeholder_client_cannot_take_seek_authority() {
+    use dessplay_core::types::{
+        AniDbMetadata, AniDbSeriesId, MetadataSource, SeekAuthority, SeriesWatchState,
+    };
+
+    let harness = Harness::new(707);
+    let kim = harness.player_client("kim", 1);
+    let baughn = harness.player_client("baughn", 2);
+    let file = media_file(1);
+    // Nobody installs it: unobtainable unknown series → both NotWatching,
+    // both on placeholders (neither holds the real video).
+
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&file, "kim"),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetAniDbMetadata {
+            hash: file.hash,
+            metadata: Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Some Obscure Show".into(),
+                series_id: Some(AniDbSeriesId(4242)),
+                episode_number: Some("1".into()),
+            }),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .series_preference
+                .get(&(UserId::new("baughn"), AniDbSeriesId(4242)))
+                == Some(&SeriesWatchState::NotWatching)
+        })
+    })
+    .await;
+
+    // The group plays on placeholders (nobody gates).
+    kim.user(PlayerEvent::PauseChanged(false));
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| s.playing())
+    })
+    .await;
+
+    // baughn scrubs / drags against their placeholder — a Seeked for a file
+    // they do not hold.
+    baughn.user(PlayerEvent::Seeked {
+        position_millis: 990_000,
+    });
+    // Past the 1.5s seek debounce: a pre-fix client would have published a
+    // UserSeeked and taken authority by now.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let snap = snapshot_of(&baughn).await;
+    assert_ne!(
+        snap.view.seek_authority,
+        Some(SeekAuthority::User(UserId::new("baughn"))),
+        "a placeholder client must never take seek authority"
+    );
+    // The group is still playing, not frozen on a bogus position.
+    eventually(&[&kim, &baughn], BUDGET, |snaps| {
+        snaps.iter().all(|s| s.playing())
+    })
+    .await;
+}
+
+/// Regression: a user who lacks the now-playing file in any media root can
+/// clear the Missing state by loading the correctly-named file directly
+/// into their player (drag-and-drop), even from outside the media roots.
+/// dessplay observes mpv's `path`, matches the basename to the now-playing
+/// entry, and adopts it as a manual mapping → Ready + a real load.
+#[tokio::test(start_paused = true)]
+async fn dragging_the_right_file_clears_missing() {
+    use dessplay_core::types::{AniDbMetadata, AniDbSeriesId, MetadataSource, SeriesWatchState};
+
+    let harness = Harness::new(708);
+    let kim = harness.player_client("kim", 1);
+    let mut dagger = harness.player_client("dagger", 2);
+    let file = media_file(1); // filename ep1.mkv
+    // dagger does NOT install it: no filename match under their media root.
+
+    mutate(
+        &kim,
+        Mutation::PushPlaylist {
+            new: file_entry(&file, "kim"),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetAniDbMetadata {
+            hash: file.hash,
+            metadata: Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Some Obscure Show".into(),
+                series_id: Some(AniDbSeriesId(4242)),
+                episode_number: Some("1".into()),
+            }),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+
+    // dagger lacks the unobtainable unknown-series file → placeholder.
+    eventually(&[&dagger], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .series_preference
+                .get(&(UserId::new("dagger"), AniDbSeriesId(4242)))
+                == Some(&SeriesWatchState::NotWatching)
+        })
+    })
+    .await;
+    dagger
+        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
+        .await;
+
+    // The user drags the correctly-named file into mpv, from outside any
+    // media root.
+    let drop_dir = tempfile::tempdir().unwrap();
+    let dropped = drop_dir.path().join(&file.filename);
+    std::fs::write(&dropped, &file.contents).unwrap();
+    dagger.user(PlayerEvent::PathChanged {
+        path: dropped.to_string_lossy().into_owned(),
+    });
+
+    // dagger now holds the file: availability flips to Ready...
+    eventually(&[&dagger], BUDGET, |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .file_availability
+                .get(&(UserId::new("dagger"), file.hash))
+                == Some(&FileAvailability::Ready)
+        })
+    })
+    .await;
+    // ...and the real file (the dropped path) is loaded into their player.
+    let want = dropped.clone();
+    dagger
+        .expect_player_command(
+            BUDGET,
+            |cmd| matches!(cmd, MockCommand::Load(p, _) if *p == want),
+        )
+        .await;
+}
