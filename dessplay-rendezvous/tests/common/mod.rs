@@ -194,6 +194,7 @@ impl Harness {
                 cache.path().to_path_buf(),
                 sim_clock(0),
                 None,
+                dessplay::download::DownloadConfig::default(),
             ),
             handle.sync.clone(),
             handle.network.clone(),

@@ -34,7 +34,9 @@ struct Cli {
     #[arg(long)]
     fingerprint: Option<String>,
 
-    /// Settings database path (interactive only).
+    /// Settings/state database path. Overrides the default; honored in
+    /// every mode (run a second instance with its own --db and
+    /// --cache-dir).
     #[arg(long)]
     db: Option<std::path::PathBuf>,
 
@@ -42,12 +44,14 @@ struct Cli {
     #[arg(long)]
     pipeline_depth: Option<u32>,
 
-    /// Seeder: an existing media library to serve from (repeatable). The
-    /// download cache is always served too.
+    /// Media library to search/serve (repeatable). Overrides the stored
+    /// media roots for this run (not persisted); for a seeder, the only
+    /// way to set them. The download cache is always served too.
     #[arg(long = "media-root")]
     media_root: Vec<std::path::PathBuf>,
 
-    /// Seeder: download cache directory (defaults to the standard cache).
+    /// Download cache directory (defaults to the standard cache).
+    /// Overrides the default in every mode.
     #[arg(long)]
     cache_dir: Option<std::path::PathBuf>,
 

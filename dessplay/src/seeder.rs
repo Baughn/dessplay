@@ -196,12 +196,18 @@ impl SeederTransfer {
 /// hash-addressed and resolved by hash). It also scans its media roots
 /// once a day, contributing its (large, stable) library to the group's
 /// browsable catalog (design.md, Seeder Behavior).
+///
+/// `download` is supplied by the caller (rather than defaulted here) so
+/// flags like `--pipeline-depth` reach the seeder, which downloads the
+/// whole playlist and benefits from the same tuning interactive clients
+/// get.
 pub fn seeder_file_config(
     storage: crate::storage::Storage,
     media_roots: Vec<PathBuf>,
     cache_dir: PathBuf,
     clock: crate::actors::network::Clock,
     upload_limit: Option<u64>,
+    download: crate::download::DownloadConfig,
 ) -> FileConfig {
     FileConfig {
         storage,
@@ -209,9 +215,39 @@ pub fn seeder_file_config(
         retention: crate::config::CacheRetention::Infinite,
         cache_dir,
         clock,
-        download: crate::download::DownloadConfig::default(),
+        download,
         upload_limit,
         // A seeder's store is large and stable: scan daily, not minutely.
         scan_interval: Some(std::time::Duration::from_secs(24 * 60 * 60)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// The seeder downloads the whole playlist, so `--pipeline-depth`
+    /// must reach its download config — not be fixed at the default.
+    /// (Regression: `seeder_file_config` ignored the flag and always
+    /// built `DownloadConfig::default()`.)
+    #[test]
+    fn seeder_honors_pipeline_depth() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let clock: crate::actors::network::Clock = std::sync::Arc::new(|| 0);
+        let download = crate::download::DownloadConfig {
+            pipeline_depth: 32,
+            ..Default::default()
+        };
+        let config = seeder_file_config(
+            storage,
+            vec![],
+            PathBuf::from("/tmp/cache"),
+            clock,
+            None,
+            download,
+        );
+        assert_eq!(config.download.pipeline_depth, 32);
     }
 }

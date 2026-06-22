@@ -37,15 +37,18 @@ pub struct HeadlessArgs {
     /// Hex-encoded server certificate fingerprint to pin (mainly for
     /// seeders, which persist nothing).
     pub fingerprint: Option<String>,
-    /// Settings database override (interactive only).
+    /// Settings/state database override. Honored in every mode.
     pub db_path: Option<PathBuf>,
     /// Outstanding chunk requests per source for downloads (default 16).
-    /// A flag so transfer behaviour can be tuned in testing.
+    /// A flag so transfer behaviour can be tuned in testing; applies to
+    /// interactive clients and seeders alike.
     pub pipeline_depth: Option<u32>,
-    /// Seeder media roots (existing library to serve from). The cache
-    /// dir is always added as a root automatically.
+    /// Media roots to search/serve. Overrides the stored roots for this
+    /// run when non-empty (a seeder has none stored, so it always uses
+    /// these). The cache dir is always added as a root automatically.
     pub media_roots: Vec<PathBuf>,
-    /// Seeder download-cache directory (defaults to the standard cache).
+    /// Download-cache directory override (defaults to the standard
+    /// cache). Honored in every mode.
     pub cache_dir: Option<PathBuf>,
     /// Attach to a user-launched mpv at this IPC socket instead of
     /// spawning one (a dev/headless aid). Interactive only.
@@ -96,6 +99,42 @@ fn download_cache_dir() -> Result<PathBuf, String> {
         .join("files");
     std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     Ok(dir)
+}
+
+/// Resolve the download-cache directory: the `--cache-dir` flag wins,
+/// else the standard `$XDG_CACHE_HOME/dessplay/files/`. Honored in every
+/// mode — the single-instance-lock docs tell users to run a second
+/// instance with its own `--db` and `--cache-dir`, which only works if
+/// interactive mode reads the flag too.
+fn resolve_cache_dir(args: &HeadlessArgs) -> Result<PathBuf, String> {
+    match &args.cache_dir {
+        Some(dir) => Ok(dir.clone()),
+        None => download_cache_dir(),
+    }
+}
+
+/// Resolve the media roots: the repeatable `--media-root` flag wins when
+/// non-empty, else the `stored` roots. A non-empty flag overrides the
+/// settings-DB roots for this run only (never persisted), mirroring how
+/// `--username` / `--server` override their stored settings. A seeder
+/// has no stored roots, so it always uses the flag.
+fn resolve_media_roots(flag: &[PathBuf], stored: Vec<PathBuf>) -> Vec<PathBuf> {
+    if flag.is_empty() {
+        stored
+    } else {
+        flag.to_vec()
+    }
+}
+
+/// The peer-download tuning shared by every mode that downloads: the
+/// `--pipeline-depth` flag, or the default of 16. Interactive clients
+/// and seeders both build their [`crate::download::DownloadConfig`] from
+/// this, so the flag means the same thing everywhere.
+fn download_config(args: &HeadlessArgs) -> crate::download::DownloadConfig {
+    crate::download::DownloadConfig {
+        pipeline_depth: args.pipeline_depth.unwrap_or(16),
+        ..Default::default()
+    }
 }
 
 /// Append the default port unless the address already has one. A
@@ -278,10 +317,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
         Some(path) => path.clone(),
         None => Storage::default_path().ok_or("cannot determine the data directory")?,
     };
-    let cache_dir = match &args.cache_dir {
-        Some(dir) => dir.clone(),
-        None => download_cache_dir()?,
-    };
+    let cache_dir = resolve_cache_dir(&args)?;
     let _instance_lock = crate::instance_lock::acquire(&resolved_db, Some(&cache_dir))?;
 
     let setup = prepare(&args).await?;
@@ -337,24 +373,18 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     // re-hashed on restart; the cache dir is added as a media root, so
     // prior downloads are re-discovered, not re-fetched).
     let (mut seeder_transfer, mut seeder_outputs) = if seeder {
-        let cache_dir = match &args.cache_dir {
-            Some(dir) => dir.clone(),
-            None => download_cache_dir()?,
-        };
-        let file_db_path = match &args.db_path {
-            Some(path) => path.clone(),
-            None => Storage::default_path().ok_or("cannot determine the data directory")?,
-        };
-        let file_storage = Storage::open(&file_db_path)
-            .map_err(|e| format!("opening {}: {e}", file_db_path.display()))?;
+        // Reuse the db/cache paths already resolved (and locked) above.
+        let file_storage = Storage::open(&resolved_db)
+            .map_err(|e| format!("opening {}: {e}", resolved_db.display()))?;
         let (transfer, outputs) = crate::seeder::SeederTransfer::new(
             UserId::new(&username),
             crate::seeder::seeder_file_config(
                 file_storage,
                 args.media_roots.clone(),
-                cache_dir,
+                cache_dir.clone(),
                 system_clock(),
                 None,
+                download_config(&args),
             ),
             handle.sync.clone(),
             handle.network.clone(),
@@ -493,10 +523,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         Some(path) => path.clone(),
         None => Storage::default_path().ok_or("cannot determine the data directory")?,
     };
+    let cache_dir = resolve_cache_dir(&args)?;
     // Refuse to start if another dessplay process already owns this
     // database/cache (e.g. a seeder launched from the same home directory
     // with no path overrides). Held for the whole process; released on exit.
-    let _instance_lock = crate::instance_lock::acquire(&db_path, Some(&download_cache_dir()?))?;
+    let _instance_lock = crate::instance_lock::acquire(&db_path, Some(&cache_dir))?;
     // Interactive mode owns first-run setup: whether the settings
     // screen opens is decided by the *stored* settings, before any
     // prefills. Prefills ($USER, the .env password, flags) only become
@@ -507,9 +538,15 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     let mut settings: crate::config::Settings = setup_storage
         .load_settings()
         .map_err(|e| format!("loading settings: {e}"))?;
-    let media_roots = setup_storage
-        .media_roots()
-        .map_err(|e| format!("loading media roots: {e}"))?;
+    // `--media-root` overrides the stored roots for this run (never
+    // persisted). Applied before `needs_setup` so a flag-supplied run is
+    // not forced into first-run setup merely because the DB has no roots.
+    let media_roots = resolve_media_roots(
+        &args.media_roots,
+        setup_storage
+            .media_roots()
+            .map_err(|e| format!("loading media roots: {e}"))?,
+    );
     tracing::info!(
         elapsed_ms = phase.elapsed().as_millis() as u64,
         "storage opened and settings loaded"
@@ -621,9 +658,12 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // process itself only spawns when something first loads; the file
     // actor (its own storage handle — WAL handles concurrency) runs
     // from the start.
-    let media_roots = setup_storage
-        .media_roots()
-        .map_err(|e| format!("loading media roots: {e}"))?;
+    let media_roots = resolve_media_roots(
+        &args.media_roots,
+        setup_storage
+            .media_roots()
+            .map_err(|e| format!("loading media roots: {e}"))?,
+    );
     let file_storage =
         Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
     let player_factory = match &args.attach_mpv {
@@ -638,12 +678,9 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             storage: file_storage,
             media_roots,
             retention: settings.cache_retention,
-            cache_dir: download_cache_dir()?,
+            cache_dir,
             clock: system_clock(),
-            download: crate::download::DownloadConfig {
-                pipeline_depth: args.pipeline_depth.unwrap_or(16),
-                ..crate::download::DownloadConfig::default()
-            },
+            download: download_config(&args),
             upload_limit: settings.upload_limit,
             // Interactive clients re-scan the library about once a minute.
             scan_interval: Some(std::time::Duration::from_secs(60)),
@@ -1253,6 +1290,48 @@ mod tests {
         assert_eq!(resolve_username(None, None, s("env")), s("env"));
         // Nothing at all.
         assert_eq!(resolve_username(None, None, None), None);
+    }
+
+    #[test]
+    fn cache_dir_flag_overrides_default() {
+        // --cache-dir set: used verbatim, in every mode.
+        let args = HeadlessArgs {
+            cache_dir: Some(PathBuf::from("/tmp/custom-cache")),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_cache_dir(&args).unwrap(),
+            PathBuf::from("/tmp/custom-cache")
+        );
+        // Unset: fall back to the standard XDG cache directory.
+        assert_eq!(
+            resolve_cache_dir(&HeadlessArgs::default()).unwrap(),
+            download_cache_dir().unwrap()
+        );
+    }
+
+    #[test]
+    fn media_roots_flag_overrides_stored() {
+        let stored = vec![PathBuf::from("/stored/a"), PathBuf::from("/stored/b")];
+        // Non-empty --media-root overrides the stored roots (interactive),
+        // and is the seeder's only source.
+        assert_eq!(
+            resolve_media_roots(&[PathBuf::from("/flag/x")], stored.clone()),
+            vec![PathBuf::from("/flag/x")]
+        );
+        // Empty flag falls through to the stored roots.
+        assert_eq!(resolve_media_roots(&[], stored.clone()), stored);
+    }
+
+    #[test]
+    fn pipeline_depth_flag_overrides_default() {
+        let args = HeadlessArgs {
+            pipeline_depth: Some(64),
+            ..Default::default()
+        };
+        assert_eq!(download_config(&args).pipeline_depth, 64);
+        // Unset: the shared default of 16.
+        assert_eq!(download_config(&HeadlessArgs::default()).pipeline_depth, 16);
     }
 
     #[test]
