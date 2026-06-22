@@ -39,7 +39,7 @@ pub struct HeadlessArgs {
     pub fingerprint: Option<String>,
     /// Settings/state database override. Honored in every mode.
     pub db_path: Option<PathBuf>,
-    /// Outstanding chunk requests per source for downloads (default 16).
+    /// Outstanding chunk requests per source for downloads (default 48).
     /// A flag so transfer behaviour can be tuned in testing; applies to
     /// interactive clients and seeders alike.
     pub pipeline_depth: Option<u32>,
@@ -132,7 +132,7 @@ fn resolve_media_roots(flag: &[PathBuf], stored: Vec<PathBuf>) -> Vec<PathBuf> {
 /// this, so the flag means the same thing everywhere.
 fn download_config(args: &HeadlessArgs) -> crate::download::DownloadConfig {
     crate::download::DownloadConfig {
-        pipeline_depth: args.pipeline_depth.unwrap_or(16),
+        pipeline_depth: args.pipeline_depth.unwrap_or(48),
         ..Default::default()
     }
 }
@@ -1330,8 +1330,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(download_config(&args).pipeline_depth, 64);
-        // Unset: the shared default of 16.
-        assert_eq!(download_config(&HeadlessArgs::default()).pipeline_depth, 16);
+        // Unset: the default download queue size.
+        assert_eq!(download_config(&HeadlessArgs::default()).pipeline_depth, 48);
     }
 
     #[test]
