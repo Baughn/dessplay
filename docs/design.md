@@ -1460,15 +1460,30 @@ Interleaving in Intermixed mode still orders by wall-clock arrival (the
 chat domain); the displayed timestamp and the sort key are deliberately
 two different clocks.
 
-**Incremental ASS reveals.** Some subs reveal a line letter-by-letter
-over 2-3s as rapid-fire cues, each a longer prefix of the last. The log
-collapses these: when a new cue has the previous line as a prefix, it
-replaces it in place (keeping the original cue's timestamp). An exact
-repeat is the degenerate prefix case, so mpv's multi-line cue re-reports
-collapse too. A multi-line cue arrives newline-separated; since the log
+**Incremental ASS reveals and overlapping cues.** The on-screen cue-set
+evolves while mpv re-emits the whole joined value on every change, so
+consecutive observations are often the *same* utterance growing or
+shrinking rather than a new line. Two cases:
+
+- *Reveal*: some subs reveal a line letter-by-letter over 2-3s as
+  rapid-fire cues, each a longer prefix of the last.
+- *Overlap*: when two ASS events display at once mpv joins them (separated
+  by a space); as one ends the combined text shrinks back to just the
+  other. The disappearing event can sit at either end of the join (mpv's
+  order is not fixed), so the shrink leaves a prefix *or* a suffix of what
+  was shown.
+
+The log collapses any such prefix/suffix relationship between the previous
+line and the new text into one entry: a growth replaces it in place
+(keeping the original cue's timestamp and tracking the latest speaker); a
+shrink-back is dropped as a redundant re-show. Without the shrink case a
+brief interjection overlapping a stable line produced a duplicate when it
+cleared (SL2_Episode-141 at ~03:19: "…glory." re-appeared once the
+overlapping "Coming!" ended). An exact repeat is the degenerate case and
+collapses too. A multi-line cue arrives newline-separated; since the log
 renders one line per cue, newlines become spaces (so a two-line cue reads
 "you demons", not "youdemons"). Known limitation: an unrelated later cue
-that happens to share a prefix with its predecessor will be collapsed
+that happens to be a prefix or suffix of its predecessor will be collapsed
 (rare; accepted -- no time-window guard).
 
 ---

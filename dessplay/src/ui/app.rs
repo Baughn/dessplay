@@ -234,16 +234,31 @@ impl Ui {
     /// Append a subtitle line to the rolling log (empty lines are
     /// clears — the previous cue just stopped displaying; skip them).
     ///
-    /// Some ASS subs reveal a line letter-by-letter as rapid-fire cues,
-    /// each a longer prefix of the last. We collapse those: when the new
-    /// text has the previous line as a prefix, we replace it in place
-    /// (keeping the original cue's timestamps). An exact repeat is the
-    /// degenerate prefix case, so it collapses too.
+    /// The on-screen cue-set evolves over time, and mpv re-emits the whole
+    /// (joined) value on every change, so consecutive pushes are often the
+    /// *same* utterance growing or shrinking rather than a new line:
+    ///
+    /// - **Incremental reveal**: some ASS subs reveal a line letter-by-letter
+    ///   as rapid-fire cues, each a longer prefix of the last.
+    /// - **Overlapping cues**: when two ASS events display simultaneously mpv
+    ///   joins them (`parse_ass_full` separates with a space); as one ends the
+    ///   combined text shrinks back. The disappearing event can sit at either
+    ///   end of the join (mpv's order is not fixed), so the shrink leaves a
+    ///   prefix *or* a suffix of what was shown.
+    ///
+    /// We collapse any such prefix/suffix relationship between the previous
+    /// and the new text into one log entry: a growth replaces it in place
+    /// (keeping the original cue's timestamps and tracking the latest
+    /// speaker); a shrink-back is dropped as a redundant re-show — otherwise
+    /// it reads as a duplicate (SL2_Episode-141 at ~03:19, where "…glory."
+    /// re-appeared after the overlapping "Coming!" cleared). An exact repeat
+    /// is the degenerate case and collapses too. Only strictly-distinct text,
+    /// with no containment either way, starts a new line.
     ///
     /// A multi-line cue arrives newline-separated; we render one line, so
     /// newlines become spaces (otherwise the join reads as "youdemons"
-    /// instead of "you demons"). Normalizing also keeps the prefix test
-    /// working as a two-line cue grows past its first line.
+    /// instead of "you demons"). Normalizing also keeps the prefix/suffix
+    /// test working as a two-line cue grows past its first line.
     pub fn push_subtitle(
         &mut self,
         video_millis: u64,
@@ -255,13 +270,28 @@ impl Ui {
         if text.is_empty() {
             return;
         }
-        if let Some(last) = self.subtitles.back_mut()
-            && text.starts_with(&last.text)
-        {
-            // An incremental reveal of the same cue: keep the original
-            // timestamps but track the latest text and speaker.
+        // Classify the new text against the last entry: does it *extend* it
+        // (same cue, fuller — a reveal or a neighbour appearing) or is it
+        // *contained* in it (same cue, receding — a neighbour ending)? The
+        // length test makes the two mutually exclusive; either end of the
+        // join may carry the change, so both prefix and suffix count.
+        let (extends, contained) = match self.subtitles.back() {
+            Some(last) => (
+                text.len() >= last.text.len()
+                    && (text.starts_with(&last.text) || text.ends_with(&last.text)),
+                text.len() < last.text.len()
+                    && (last.text.starts_with(&text) || last.text.ends_with(&text)),
+            ),
+            None => (false, false),
+        };
+        if let Some(last) = self.subtitles.back_mut().filter(|_| extends) {
+            // Same cue, fuller now: keep the original timestamps, track the
+            // latest text and speaker.
             last.text = text;
             last.speaker = speaker;
+        } else if contained {
+            // Same cue receding (an overlapping neighbour ended); the fuller
+            // text is already logged — drop the redundant re-show.
         } else {
             self.subtitles.push_back(SubtitleEntry {
                 video_millis,
@@ -1427,6 +1457,42 @@ mod tests {
         ui.push_subtitle(1200, 12, "I won't let you\ndemons".into(), None);
         assert_eq!(ui.subtitles.len(), 1);
         assert_eq!(ui.subtitles.back().unwrap().text, "I won't let you demons");
+    }
+
+    #[test]
+    fn subtitle_overlapping_cue_shrink_does_not_duplicate() {
+        // Reproduces SL2_Episode-141 at ~03:19: a stable line is on screen
+        // when a brief interjection ("Coming!") overlaps it. mpv reports the
+        // two simultaneous ASS events as one combined cue; when the
+        // interjection ends it re-emits the stable line *alone*, so the
+        // combined text shrinks back to a prefix of itself. That shrink is
+        // the same cue receding -- it must not append a duplicate line.
+        let mut ui = intermixed_ui();
+        let main = "that your greatest wish was to reforge Tang Sect's glory.";
+        let combined = "that your greatest wish was to reforge Tang Sect's glory. Coming!";
+        ui.push_subtitle(1000, 10, main.into(), None); // cue 67 alone
+        ui.push_subtitle(1100, 11, combined.into(), None); // 67 + "Coming!"
+        ui.push_subtitle(1200, 12, main.into(), None); // "Coming!" gone, 67 alone
+        assert_eq!(ui.subtitles.len(), 1, "shrink-back must not duplicate");
+        // The fullest text seen is retained as the single history line.
+        assert_eq!(ui.subtitles.back().unwrap().text, combined);
+        assert_eq!(ui.subtitles.back().unwrap().video_millis, 1000);
+    }
+
+    #[test]
+    fn subtitle_overlapping_cue_shrink_from_front_does_not_duplicate() {
+        // The mirror of the above: mpv can order overlapping events either
+        // way, so the disappearing neighbour may sit at the *front* of the
+        // joined text. The shrink then leaves a suffix of what was shown;
+        // still the same cue receding, still no new line.
+        let mut ui = intermixed_ui();
+        let main = "that your greatest wish";
+        let combined = "Coming! that your greatest wish";
+        ui.push_subtitle(1000, 10, "Coming!".into(), None);
+        ui.push_subtitle(1100, 11, combined.into(), None);
+        ui.push_subtitle(1200, 12, main.into(), None);
+        assert_eq!(ui.subtitles.len(), 1, "suffix shrink must not duplicate");
+        assert_eq!(ui.subtitles.back().unwrap().text, combined);
     }
 
     #[test]
