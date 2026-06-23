@@ -35,11 +35,12 @@ checkout instead.)
 The launcher checks for what it needs and, if something is missing, prints the
 exact command to install it. It never installs system packages for you.
 
-- **NixOS** — only `nix` is required. The launcher builds and runs inside a
-  `nix-shell` that pulls the toolchain (`cargo`, `rustc`), `pkg-config`,
-  `openssl`, `libwebp`, and `mpv` from your system `<nixpkgs>` channel. It does
-  **not** use flakes, so flakes do not need to be enabled.
-- **Other distros** (CachyOS/Arch, Debian/Ubuntu, Fedora, …) — you need:
+- **Nix** (NixOS, or any distro / macOS with the Nix package manager) — only
+  `nix` is required. The launcher builds and runs inside a `nix-shell` that
+  pulls the toolchain (`cargo`, `rustc`), `pkg-config`, `openssl`, `libwebp`,
+  and `mpv` from `<nixpkgs>` (your channel, or Determinate Nix's built-in flake
+  fallback). It does **not** use flakes, so flakes do not need to be enabled.
+- **Other systems without Nix** (CachyOS/Arch, Debian/Ubuntu, Fedora, …) — you need:
   - `git`
   - a Rust toolchain (`cargo`; distro package or [rustup](https://rustup.rs))
   - `pkg-config`

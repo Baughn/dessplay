@@ -11,8 +11,9 @@
 #
 # On first run (no clone yet) it clones the repo and symlinks itself into
 # ~/.local/bin, then launches. On every later run it pulls the latest commit and
-# builds/runs the main `dessplay` binary -- via nix-shell on NixOS, or via the
-# system's own cargo on ordinary distros.
+# builds/runs the main `dessplay` binary -- via nix-shell whenever Nix is
+# installed (NixOS, or any distro / macOS with the Nix package manager), or via
+# the system's own cargo otherwise.
 
 set -eu
 
@@ -37,15 +38,14 @@ quote() {
 # Distro / package-manager detection (for the "you're missing X" hints).
 # ---------------------------------------------------------------------------
 
-is_nixos() {
-    [ -e /etc/NIXOS ] && return 0
-    if [ -r /etc/os-release ]; then
-        # shellcheck disable=SC1091
-        ID=""; . /etc/os-release 2>/dev/null || true
-        [ "${ID:-}" = "nixos" ] && return 0
-    fi
-    return 1
-}
+# True when we can build inside a nix-shell: any system with the Nix package
+# manager installed -- NixOS, or an ordinary distro / macOS (incl. nix-darwin)
+# where the user installed Nix. We prefer it whenever available: it pulls every
+# build/runtime dependency (cargo, openssl, libwebp, mpv, ...) from nixpkgs, so
+# nothing else need be on PATH. Detect the tool, not the OS -- a non-NixOS Nix
+# install (e.g. nix-darwin on macOS) has no /etc/NIXOS marker but still has
+# nix-shell.
+have_nix() { have nix-shell; }
 
 # Echo a `sudo <pm> ...` install command for the given package keywords,
 # choosing package names per the detected distro family. Best-effort: if we
@@ -128,10 +128,11 @@ run_mode() {
         git pull --ff-only || warn "git pull failed; running the existing checkout"
     fi
 
-    if is_nixos; then
-        say "NixOS detected; building inside nix-shell"
-        # No flakes, no flake.lock: a plain shell expression over the system
-        # <nixpkgs> channel, mirroring flake.nix's build inputs.
+    if have_nix; then
+        say "Nix detected; building inside nix-shell"
+        # No flakes, no flake.lock: a plain shell expression over <nixpkgs>
+        # (a channel, or Determinate Nix's built-in flake fallback), mirroring
+        # flake.nix's build inputs.
         nix_expr='let pkgs = import <nixpkgs> {};
 in pkgs.mkShell {
   buildInputs = [ pkgs.cargo pkgs.rustc pkgs.pkg-config pkgs.openssl pkgs.libwebp pkgs.mpv pkgs.git ];
