@@ -66,7 +66,9 @@
           cargo-machete
           cargo-features-manager
           cargo-flamegraph
+	  samply
           bacon
+	  python3
         ];
       in
       {

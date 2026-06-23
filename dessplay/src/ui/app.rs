@@ -174,6 +174,10 @@ pub struct Ui {
     /// the chat log by timestamp. Never synced.
     system_log: Vec<props::ChatLine>,
     snapshot: UiSnapshot,
+    /// Memoizes the franchise grouping so it is not rebuilt on every 10Hz
+    /// playback-position snapshot (was ~⅓ of normal-play CPU). Reachable
+    /// only via `get`, so it can never be read without its freshness check.
+    franchise_cache: franchise::FranchiseCache,
     settings: Settings,
     media_roots: Vec<PathBuf>,
 }
@@ -211,6 +215,7 @@ impl Ui {
             hashing: Vec::new(),
             system_log: Vec::new(),
             snapshot: UiSnapshot::default(),
+            franchise_cache: franchise::FranchiseCache::default(),
             settings: settings.clone(),
             media_roots: media_roots.clone(),
         };
@@ -395,23 +400,25 @@ impl Ui {
     }
 
     fn refresh_series(&mut self) {
-        match self.series.mode() {
-            SeriesMode::Recent => self.series.set_franchises(props::franchise_rows(
-                &self.snapshot.view,
-                self.series.sort(),
-                Some(&self.snapshot.recency),
-                self.series.filter(),
-            )),
-            SeriesMode::All => self.series.set_franchises(props::franchise_rows(
-                &self.snapshot.view,
-                self.series.sort(),
-                None,
-                self.series.filter(),
-            )),
-            SeriesMode::TheList => self
-                .series
-                .set_groups(props::list_groups(&self.snapshot.view)),
-        }
+        let recency = match self.series.mode() {
+            SeriesMode::Recent => Some(&self.snapshot.recency),
+            SeriesMode::All => None,
+            SeriesMode::TheList => {
+                let groups = props::list_groups(&self.snapshot.view);
+                self.series.set_groups(groups);
+                return;
+            }
+        };
+        // The grouping comes through the cache, which recomputes only when
+        // the metadata/relations maps change -- not on every position tick.
+        let franchises = self.franchise_cache.get(&self.snapshot.view);
+        let rows = props::franchise_rows_from(
+            franchises,
+            self.series.sort(),
+            recency,
+            self.series.filter(),
+        );
+        self.series.set_franchises(rows);
     }
 
     fn sync_focus_attr(&mut self) {

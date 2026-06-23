@@ -44,6 +44,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 ab_glyph = "0.2"
 # Manual-mapping browser: candidate files sorted by edit distance.
 strsim = "0.11"
+# Fast non-cryptographic hasher for the franchise-cache input fingerprint
+# (hashed every UI snapshot; SipHash showed up as ~450ms in profiling).
+rustc-hash = "2"
 # Local-time conversion for chat timestamps (reliable in multithreaded
 # apps, unlike the `time` crate's current_local_offset).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

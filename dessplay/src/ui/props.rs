@@ -543,14 +543,14 @@ pub fn watch_recency(
 ///   the title, which *removes* the watched-only restriction so any series
 ///   can be found by typing. Recent still orders watched matches first.
 /// - **All mode, no filter**: every franchise, by title or year-then-title.
-pub fn franchise_rows(
-    view: &StateView,
+pub fn franchise_rows_from(
+    franchises: &[franchise::Franchise],
     sort: SeriesSort,
     recency: Option<&BTreeMap<SeriesKey, u64>>,
     filter: &str,
 ) -> Vec<FranchiseRow> {
-    let mut rows: Vec<(Option<u64>, FranchiseRow)> = franchise::franchises(view)
-        .into_iter()
+    let mut rows: Vec<(Option<u64>, FranchiseRow)> = franchises
+        .iter()
         .map(|franchise| {
             let last_watched = recency.and_then(|map| {
                 // Match by any AniDB id the franchise spans, and — for a
@@ -565,8 +565,8 @@ pub fn franchise_rows(
             (
                 last_watched,
                 FranchiseRow {
-                    key: franchise.key,
-                    title: franchise.title,
+                    key: franchise.key.clone(),
+                    title: franchise.title.clone(),
                     year: franchise.year,
                 },
             )
@@ -592,6 +592,18 @@ pub fn franchise_rows(
         }),
     }
     rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// Convenience for callers without a [`franchise::FranchiseCache`] (tests,
+/// one-shots): computes the grouping fresh, then [`franchise_rows_from`].
+/// The hot path (the UI snapshot) goes through the cache instead.
+pub fn franchise_rows(
+    view: &StateView,
+    sort: SeriesSort,
+    recency: Option<&BTreeMap<SeriesKey, u64>>,
+    filter: &str,
+) -> Vec<FranchiseRow> {
+    franchise_rows_from(&franchise::franchises(view), sort, recency, filter)
 }
 
 /// A human-readable label for a file in the episode browser. In order of

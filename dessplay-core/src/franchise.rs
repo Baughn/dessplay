@@ -220,6 +220,64 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
     result
 }
 
+/// Memoizes [`franchises`], which depends only on the metadata and
+/// relations maps. The grouping (a full connected-components pass over the
+/// whole library) was recomputed on every 10Hz playback-position tick --
+/// about a third of normal-play CPU. The grouping is reachable *only*
+/// through [`FranchiseCache::get`], so a caller cannot read a stale
+/// grouping without the freshness check running.
+#[derive(Default)]
+pub struct FranchiseCache {
+    /// Fingerprint of the (metadata, relations) the cached grouping was
+    /// built from; `None` until the first `get`.
+    key: Option<u64>,
+    franchises: Vec<Franchise>,
+    /// Number of real recomputes; the regression guard asserts a run of
+    /// position-only views recomputes exactly once.
+    #[cfg(any(test, feature = "test-support"))]
+    recomputes: usize,
+}
+
+impl FranchiseCache {
+    /// The current franchise grouping, recomputing only when the inputs
+    /// [`franchises`] reads -- `anidb_metadata` and `series_relations` --
+    /// have changed since the last call. Position ticks and other unrelated
+    /// state churn leave the fingerprint unchanged and reuse the grouping.
+    pub fn get(&mut self, view: &StateView) -> &[Franchise] {
+        let key = inputs_fingerprint(view);
+        if self.key != Some(key) {
+            self.key = Some(key);
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.recomputes += 1;
+            }
+            self.franchises = franchises(view);
+        }
+        &self.franchises
+    }
+}
+
+/// Fingerprint the two maps [`franchises`] reads. Hashes the *resolved*
+/// register values, not the LWW clocks, so a no-op rewrite (same value,
+/// newer timestamp) does not force a recompute. Iteration is by key, so
+/// the fingerprint is order-stable.
+fn inputs_fingerprint(view: &StateView) -> u64 {
+    use std::hash::{Hash, Hasher};
+    // FxHasher (non-cryptographic) rather than the std SipHash default: the
+    // fingerprint covers the whole metadata+relations maps every UI snapshot,
+    // where SipHash showed up as ~450ms in profiling (2026-06-23).
+    let mut hasher = rustc_hash::FxHasher::default();
+    for (hash, metadata) in &view.anidb_metadata {
+        hash.hash(&mut hasher);
+        metadata.hash(&mut hasher);
+    }
+    for (series, relations) in &view.series_relations {
+        series.hash(&mut hasher);
+        relations.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -317,6 +375,65 @@ mod tests {
         let parsed = groups.iter().find(|f| f.title == "Parsed Show").unwrap();
         assert_eq!(parsed.key, FranchiseKey::Name("Parsed Show".into()));
         assert_eq!(parsed.files, vec![Ed2kHash([2; 16])]);
+    }
+
+    /// Regression: the franchise grouping must not be rebuilt on every
+    /// playback-position tick. A run of views that differ only in playback
+    /// position recomputes the grouping exactly once. (Profiling showed
+    /// `franchises` rebuilt at 10Hz was ~⅓ of normal-play CPU -- 2026-06-23.)
+    #[test]
+    fn cache_recomputes_only_when_inputs_change() {
+        use crate::types::{PlaybackPosition, UserId};
+
+        let mut state = CrdtState::new();
+        let a = ActorId::SERVER;
+        state.set_series_relations(
+            a,
+            ts(1),
+            AniDbSeriesId(10816),
+            relations("Overlord", Some(2015), &[]),
+        );
+        state.set_anidb_metadata(
+            a,
+            ts(2),
+            Ed2kHash([1; 16]),
+            Some(metadata("Overlord", Some(10816))),
+        );
+
+        let mut cache = FranchiseCache::default();
+        let expected = franchises(&state.view());
+
+        // Many position-only ticks: the grouping is identical and the
+        // cache must recompute it only once.
+        for tick in 0u64..20 {
+            state.set_playback_position(
+                a,
+                ts(100 + tick),
+                UserId("me".into()),
+                PlaybackPosition {
+                    position_millis: tick * 1000,
+                    timestamp: ts(100 + tick),
+                },
+            );
+            assert_eq!(cache.get(&state.view()), expected.as_slice());
+        }
+        assert_eq!(
+            cache.recomputes, 1,
+            "position ticks must not rebuild the franchise grouping"
+        );
+
+        // A real change to the inputs triggers exactly one more recompute.
+        state.set_anidb_metadata(
+            a,
+            ts(200),
+            Ed2kHash([2; 16]),
+            Some(metadata("KonoSuba", Some(11261))),
+        );
+        let _ = cache.get(&state.view());
+        assert_eq!(
+            cache.recomputes, 2,
+            "a metadata change must recompute the grouping"
+        );
     }
 
     #[test]

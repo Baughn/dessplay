@@ -615,6 +615,7 @@ dependencies = [
  "quinn",
  "rand 0.9.2",
  "rcgen",
+ "rustc-hash",
  "rustls",
  "serde",
  "sha2",
