@@ -49,7 +49,7 @@ impl UiClient {
     /// Pull a fresh snapshot into the UI.
     async fn sync_ui(&mut self) {
         let snapshot = UiSnapshot {
-            view: view_of(&self.handle).await,
+            view: std::sync::Arc::new(view_of(&self.handle).await),
             peers: self.handle.peers.borrow().clone(),
             recency: BTreeMap::new(),
             cache_hashes: Default::default(),

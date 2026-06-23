@@ -799,7 +799,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         use crate::ui::shell::UiInput;
         use dessplay_core::types::ManualState;
 
-        let mut last_view = dessplay_core::StateView::default();
+        let mut last_view = std::sync::Arc::new(dessplay_core::StateView::default());
         let mut startup_state_written = false;
         let mut first_connected = true;
         let mut first_peer_list = true;
@@ -1089,7 +1089,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
     /// Pull a fresh snapshot and push it to the UI + player layer.
     /// Called after a local mutation so the user's own actions take
     /// effect at once, independent of network-event timing.
-    async fn refresh_ui(&mut self, last_view: &mut dessplay_core::StateView) {
+    async fn refresh_ui(&mut self, last_view: &mut std::sync::Arc<dessplay_core::StateView>) {
         if let Some(snapshot) = self.snapshot().await {
             let lines = self.shell.on_state(&snapshot.view, &snapshot.peers).await;
             forward_ui_lines(&self.ui, lines);
@@ -1120,7 +1120,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             .map(|entry| entry.hash)
             .collect();
         Some(crate::ui::app::UiSnapshot {
-            view,
+            view: std::sync::Arc::new(view),
             peers: self.handle.peers.borrow().clone(),
             recency,
             cache_hashes,

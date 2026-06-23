@@ -82,16 +82,33 @@ fn peer(name: &str) -> PeerInfo {
 
 fn snapshot(view: StateView, peers: Vec<PeerInfo>) -> UiSnapshot {
     UiSnapshot {
-        view,
+        view: std::sync::Arc::new(view),
         peers,
         recency: BTreeMap::new(),
         cache_hashes: Default::default(),
     }
 }
 
+/// Regression: a playback-position tick fans the resolved view out to the
+/// run loop's diff baseline (`last_view`) and to the UI thread. That must
+/// share one `Arc`-allocated `StateView`, not deep-clone the whole view
+/// ~10x/s (profiling: the StateView clone was a large chunk of play-time
+/// malloc -- 2026-06-23). `Arc::ptr_eq` proves the fan-out is a refcount
+/// bump rather than a deep copy.
+#[test]
+fn snapshot_fan_out_shares_one_view() {
+    let snap = snapshot(StateView::default(), vec![]);
+    // Mirrors the run loop's per-tick line: `last_view = snapshot.view.clone()`.
+    let last_view = snap.view.clone();
+    assert!(
+        std::sync::Arc::ptr_eq(&last_view, &snap.view),
+        "per-tick snapshot fan-out must share one StateView (Arc), not deep-clone it"
+    );
+}
+
 fn snapshot_with_cache(view: StateView, peers: Vec<PeerInfo>, cache: &[Ed2kHash]) -> UiSnapshot {
     UiSnapshot {
-        view,
+        view: std::sync::Arc::new(view),
         peers,
         recency: BTreeMap::new(),
         cache_hashes: cache.iter().copied().collect(),

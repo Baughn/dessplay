@@ -35,8 +35,11 @@ use crate::config::{Settings, SubtitleMode};
 /// change.
 #[derive(Clone, Debug, Default)]
 pub struct UiSnapshot {
-    /// The resolved CRDT view.
-    pub view: StateView,
+    /// The resolved CRDT view. `Arc`-wrapped so the per-tick fan-out --
+    /// the run loop's diff baseline plus the copy handed to this UI thread
+    /// -- shares one allocation (a refcount bump) instead of deep-cloning
+    /// the whole view every playback-position tick.
+    pub view: std::sync::Arc<StateView>,
     /// The latest peer list.
     pub peers: Vec<PeerInfo>,
     /// Local watch history: series (by AniDB id or filename-parsed name)
@@ -1288,7 +1291,7 @@ mod tests {
 
     fn ui_with_view(view: StateView) -> Ui {
         let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
-        ui.snapshot.view = view;
+        ui.snapshot.view = std::sync::Arc::new(view);
         ui
     }
 
