@@ -579,7 +579,7 @@ impl SettingsModal {
         vec![
             ("Enter", "Edit/Toggle"),
             ("d", "Remove root"),
-            ("Ctrl-j/k", "Reorder"),
+            ("J/K", "Reorder"),
             ("S", "Save"),
             ("Esc", "Cancel"),
         ]
@@ -685,33 +685,34 @@ impl AppComponent<Msg, NoUserEvent> for SettingsModal {
             }
             return Some(Msg::None);
         }
-        if let Some(code) = ctrl(ev) {
-            match code {
-                // Ctrl-S is kept as an alias for terminals where it isn't
-                // eaten as XOFF; capital `S` and the `[Save]` row are the
-                // reliable paths.
-                Key::Char('s') => return Some(self.try_save().unwrap_or(Msg::None)),
-                Key::Char('j') | Key::Char('k') if self.sel >= FIXED_FIELDS => {
-                    let index = self.sel - FIXED_FIELDS;
-                    let down = code == Key::Char('j');
-                    let target = if down {
-                        index + 1
-                    } else {
-                        index.wrapping_sub(1)
-                    };
-                    if index < self.roots.len() && target < self.roots.len() {
-                        self.roots.swap(index, target);
-                        self.sel = FIXED_FIELDS + target;
-                    }
-                    return Some(Msg::None);
-                }
-                _ => return None,
-            }
-        }
-        // Capital `S` saves. `typed` is the only helper that sees a shifted
-        // char; `plain` below requires no modifiers, so this must come first.
-        if let Some('S') = typed(ev) {
+        // Ctrl-S is kept as an alias for terminals where it isn't eaten as
+        // XOFF; capital `S` and the `[Save]` row are the reliable paths.
+        if ctrl(ev) == Some(Key::Char('s')) {
             return Some(self.try_save().unwrap_or(Msg::None));
+        }
+        // Letters reach us through `typed` (it sees both the unshifted and the
+        // shifted form): `S` saves, `J`/`K` (and lowercase `j`/`k`) reorder the
+        // selected media root, carrying the cursor with it. Bare letters rather
+        // than Ctrl-J/Ctrl-K, which collide with control codes (Ctrl-J == LF)
+        // in terminals lacking the enhanced keyboard protocol. `typed` must
+        // come before the `plain` match below, which would swallow these.
+        match typed(ev) {
+            Some('S') => return Some(self.try_save().unwrap_or(Msg::None)),
+            Some(c @ ('j' | 'J' | 'k' | 'K')) if self.sel >= FIXED_FIELDS => {
+                let index = self.sel - FIXED_FIELDS;
+                let down = matches!(c, 'j' | 'J');
+                let target = if down {
+                    index + 1
+                } else {
+                    index.wrapping_sub(1)
+                };
+                if index < self.roots.len() && target < self.roots.len() {
+                    self.roots.swap(index, target);
+                    self.sel = FIXED_FIELDS + target;
+                }
+                return Some(Msg::None);
+            }
+            _ => {}
         }
         match plain(ev)? {
             Key::Up => {

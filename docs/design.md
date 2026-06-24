@@ -116,7 +116,9 @@ sync state with each other. See [network-design.md](network-design.md).
 
 **Reordering:**
 1. Focus the **Playlist** pane
-2. Use `Ctrl-j` / `Ctrl-k` to move the selected item down/up
+2. Use `J` / `K` (lowercase `j` / `k` work too) to move the selected item
+   down/up; the cursor follows the moved entry, so repeated presses keep
+   carrying the same episode
 
 ### File Matching
 
@@ -836,7 +838,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Ctrl-W` / `Ctrl-Backspace` / `Alt-Backspace` | Chat | Delete word before cursor |
 | `Left` / `Right` | Chat | Move cursor |
 | `Ctrl-Left` / `Ctrl-Right` (or `Alt-`) | Chat | Move cursor by word |
-| `Home` / `End` | Chat | Move cursor to start/end |
+| `Home` / `End` (or `Ctrl-A` / `Ctrl-E`) | Chat | Move cursor to start/end of line |
 | `m` | Series | Cycle mode: Recent Series -> All Series -> The List |
 | `s` | Series (All mode) | Toggle sort: by title <-> by year |
 | `/` | Series (Recent / All) | Start filtering franchises by title (removes Recent's watched-only default) |
@@ -856,6 +858,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `a` | Playlist | Add file (insert after selected entry) |
 | `d` | Playlist | Remove selected entry |
 | `w` | Playlist | Cycle the selected entry's series watch state: Watching -> Maybe -> NotWatching |
+| `J` / `K` (or `j` / `k`) | Playlist | Move selected entry down/up (cursor follows the entry) |
 | `A` | Playlist | Archive selected cached file into the download root |
 | `M` | Playlist | Manually map selected entry to a local file |
 

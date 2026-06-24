@@ -31,4 +31,4 @@ expression: "render(&mut ui, 100, 30)"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ⏸ paused
 Nothing playing
-Enter Edit/Toggle | d Remove root | Ctrl-j/k Reorder | S Save | Esc Cancel | Ctrl-r Ready | Ctrl-c Q
+Enter Edit/Toggle | d Remove root | J/K Reorder | S Save | Esc Cancel | Ctrl-r Ready | Ctrl-c Quit

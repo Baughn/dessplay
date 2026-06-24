@@ -334,24 +334,30 @@ fn playlist_actions() {
             }),
         ]
     );
-    // Move the second row up: it lands at the front (no anchor).
-    ui.handle(key(Key::Down));
+    // Move the second row up with `K`: it lands at the front (no anchor).
+    ui.handle(key(Key::Down)); // sel -> row 2 (hash 2)
     assert_eq!(
-        ui.handle(ctrl('k')),
+        ui.handle(key(Key::Char('K'))),
         vec![UserAction::Mutate(Mutation::MovePlaylistAfter {
             hash: hash(2),
             anchor: None,
         })]
     );
-    // Move it down instead: anchored after the third row.
+    // `K` carried the cursor up with the entry, so re-select hash 2 before the
+    // down move. (The harness doesn't apply the reorder, so the props are still
+    // [1,2,3] and row index 1 is hash 2.)
+    ui.handle(key(Key::Down)); // sel back to row 2 (hash 2)
+    // Move it down with `J`: anchored after the third row. Lowercase works too.
     assert_eq!(
-        ui.handle(ctrl('j')),
+        ui.handle(key(Key::Char('j'))),
         vec![UserAction::Mutate(Mutation::MovePlaylistAfter {
             hash: hash(2),
             anchor: Some(hash(3)),
         })]
     );
-    // Remove it.
+    // `J` carried the cursor down to the third row, so step back up to hash 2
+    // before removing it.
+    ui.handle(key(Key::Up)); // sel back to row 2 (hash 2)
     assert_eq!(
         ui.handle(key(Key::Char('d'))),
         vec![UserAction::Mutate(Mutation::RemovePlaylist {

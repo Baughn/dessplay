@@ -710,6 +710,15 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
                         Key::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
                             self.kill_word_left()
                         }
+                        // Ctrl-A / Ctrl-E jump to the start / end of the line
+                        // (readline / emacs habit; Home / End below do the same).
+                        // Ctrl-only — Alt-a / Alt-e are typed characters on macOS.
+                        Key::Char('a') if mods.contains(KeyModifiers::CONTROL) => {
+                            let _ = self.input.perform(Cmd::GoTo(Position::Begin));
+                        }
+                        Key::Char('e') if mods.contains(KeyModifiers::CONTROL) => {
+                            let _ = self.input.perform(Cmd::GoTo(Position::End));
+                        }
                         // Any other Ctrl/Alt combo isn't ours; fall through to
                         // the plain-key match (which rejects modified keys).
                         _ => return None,
@@ -903,7 +912,7 @@ impl PlaylistPane {
             ("a", "Add"),
             ("d", "Remove"),
             ("w", "Watch"),
-            ("Ctrl-j/k", "Move"),
+            ("J/K", "Move"),
             ("M", "Map"),
             ("A", "Archive"),
         ]
@@ -966,19 +975,34 @@ passive_component!(PlaylistPane);
 
 impl AppComponent<Msg, NoUserEvent> for PlaylistPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        if let Some(code) = ctrl(ev) {
-            let hash = self.selected_hash()?;
-            return match code {
-                Key::Char('j') => Some(Msg::MoveDown(hash)),
-                Key::Char('k') => Some(Msg::MoveUp(hash)),
-                _ => None,
-            };
-        }
-        // Shifted letters: `A` archives, `M` maps. `typed` is the only helper
-        // that sees a shifted char. Map uses `M` rather than Ctrl-M because
-        // Ctrl-M == Enter in terminals lacking the enhanced keyboard protocol.
-        // Only cache-only ("temporary") rows can be archived.
+        // Letters reach us through `typed` (it sees both the unshifted and the
+        // shifted form): `j`/`J` and `k`/`K` reorder, `A` archives, `M` maps.
+        // Reorder and Map use bare letters rather than Ctrl-J/Ctrl-K/Ctrl-M
+        // because those collide with control codes (Ctrl-J == LF, Ctrl-M ==
+        // Enter) in terminals lacking the enhanced keyboard protocol.
         match typed(ev) {
+            // Move the selected entry down / up, carrying the cursor with it so
+            // repeated presses keep moving the same episode. The cursor update
+            // mirrors app.rs's no-op guards (MoveDown stops at the bottom real
+            // row, MoveUp at the top); the reorder is reflected immediately via
+            // the forced UI refresh, so `self.sel` lands on the moved entry.
+            Some('j' | 'J') => {
+                let hash = self.selected_hash()?;
+                if self.sel + 1 >= self.props.rows.len() {
+                    return None; // already the bottom row
+                }
+                self.sel += 1;
+                return Some(Msg::MoveDown(hash));
+            }
+            Some('k' | 'K') => {
+                let hash = self.selected_hash()?;
+                if self.sel == 0 {
+                    return None; // already the top row
+                }
+                self.sel -= 1;
+                return Some(Msg::MoveUp(hash));
+            }
+            // Only cache-only ("temporary") rows can be archived.
             Some('A') => {
                 let row = self.props.rows.get(self.sel)?;
                 return row.temporary.then_some(Msg::ArchiveFile(row.hash));
@@ -1630,6 +1654,27 @@ mod playlist_pane_tests {
         })
     }
 
+    /// A char event the way a capital letter arrives from the terminal: the
+    /// char is already uppercase, no modifier bit set (`typed` also accepts the
+    /// SHIFT-flagged form).
+    fn typed_char(c: char) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code: Key::Char(c),
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn row(hash: Ed2kHash) -> PlaylistRow {
+        PlaylistRow {
+            hash,
+            title: "ep.mkv".to_string(),
+            tone: Tone::Normal,
+            is_now: false,
+            temporary: false,
+            watch: dessplay_core::types::SeriesWatchState::Maybe,
+        }
+    }
+
     fn pane_with_one_row() -> (PlaylistPane, Ed2kHash) {
         let hash = Ed2kHash([7u8; 16]);
         let mut p = PlaylistPane {
@@ -1637,17 +1682,43 @@ mod playlist_pane_tests {
             ..Default::default()
         };
         p.set_props(PlaylistProps {
-            rows: vec![PlaylistRow {
-                hash,
-                title: "ep.mkv".to_string(),
-                tone: Tone::Normal,
-                is_now: false,
-                temporary: false,
-                watch: dessplay_core::types::SeriesWatchState::Maybe,
-            }],
+            rows: vec![row(hash)],
             ..Default::default()
         });
         (p, hash)
+    }
+
+    fn pane_with_rows(n: u8) -> (PlaylistPane, Vec<Ed2kHash>) {
+        let hashes: Vec<Ed2kHash> = (0..n).map(|i| Ed2kHash([i; 16])).collect();
+        let mut p = PlaylistPane {
+            focused: true,
+            ..Default::default()
+        };
+        p.set_props(PlaylistProps {
+            rows: hashes.iter().copied().map(row).collect(),
+            ..Default::default()
+        });
+        (p, hashes)
+    }
+
+    /// Mimic the app applying a `MoveDown`/`MoveUp`: reorder the props to put
+    /// `hash` at `new_index` and push them back, exactly as `apply_snapshot`
+    /// does after the forced UI refresh. The component keeps its `sel`.
+    fn apply_reorder(p: &mut PlaylistPane, hash: Ed2kHash, new_index: usize) {
+        // All rows are identical except their hash, so drop the moved hash and
+        // re-insert a fresh row for it at the target index (avoids an unwrap).
+        let mut rows: Vec<PlaylistRow> = p
+            .props
+            .rows
+            .iter()
+            .filter(|r| r.hash != hash)
+            .cloned()
+            .collect();
+        rows.insert(new_index, row(hash));
+        p.set_props(PlaylistProps {
+            rows,
+            ..Default::default()
+        });
     }
 
     /// Manual mapping moved from Ctrl-m to capital `M`: Ctrl-M is
@@ -1659,6 +1730,22 @@ mod playlist_pane_tests {
         assert_eq!(p.on(&shifted('M')), Some(Msg::MapFile(hash)));
         // The old Ctrl-m binding is gone (it now reads as Enter elsewhere).
         assert_eq!(p.on(&ctrl_key('m')), None);
+    }
+
+    /// The cursor follows the moved entry across the reorder: after `J` advances
+    /// `sel` and the app pushes the reordered props, `sel` lands on the same
+    /// entry, so repeated `J` keeps carrying it down.
+    #[test]
+    fn cursor_follows_moved_entry() {
+        let (mut p, h) = pane_with_rows(3); // [0,1,2], sel=0
+        assert_eq!(p.on(&typed_char('J')), Some(Msg::MoveDown(h[0])));
+        apply_reorder(&mut p, h[0], 1); // -> [1,0,2]
+        assert_eq!(p.sel, 1);
+        assert_eq!(p.selected_hash(), Some(h[0])); // still on the moved entry
+        assert_eq!(p.on(&typed_char('J')), Some(Msg::MoveDown(h[0])));
+        apply_reorder(&mut p, h[0], 2); // -> [1,2,0]
+        assert_eq!(p.sel, 2);
+        assert_eq!(p.selected_hash(), Some(h[0]));
     }
 }
 
@@ -1858,6 +1945,22 @@ mod chat_input_tests {
         pane.on(&ctrl(Key::Char('b')));
         pane.on(&ctrl(Key::Char('f')));
         assert_eq!(pane.input.states.cursor, before);
+        assert_eq!(pane.text(), "the quick brown");
+    }
+
+    /// Ctrl-A / Ctrl-E jump to the start / end of the line (emacs / readline
+    /// habit), like Home / End. Ctrl-only — the letters must not be swallowed
+    /// as word motion or typed into the buffer.
+    #[test]
+    fn ctrl_a_e_jump_to_line_ends() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "the quick brown");
+        // Cursor parks at the end (15).
+        pane.on(&ctrl(Key::Char('a')));
+        assert_eq!(pane.input.states.cursor, 0);
+        pane.on(&ctrl(Key::Char('e')));
+        assert_eq!(pane.input.states.cursor, 15);
+        // Neither was typed into the buffer.
         assert_eq!(pane.text(), "the quick brown");
     }
 
