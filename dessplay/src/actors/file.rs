@@ -715,6 +715,26 @@ impl Actor {
         for action in actions {
             match action {
                 DownloadAction::Send { to, message } => {
+                    // The outgoing edge of every download request funnels
+                    // through here, so log it here -- a stalled download is
+                    // otherwise a black box (we saw `starting download` then
+                    // nothing). Debug, not trace: trace is off in most
+                    // sessions and a stall is exactly when the log is read.
+                    // Volume is low -- block hashes once per (re)ask, chunk
+                    // requests batched -- so this never floods even a fast
+                    // download. Cancels are endgame noise, kept at trace.
+                    match &message {
+                        PeerMessage::BlockHashRequest { file } => {
+                            tracing::debug!(%file, %to, "requesting block hashes")
+                        }
+                        PeerMessage::ChunkRequest { file, chunks } => {
+                            tracing::debug!(%file, %to, count = chunks.len(), "requesting chunks")
+                        }
+                        PeerMessage::Cancel { file, chunks } => {
+                            tracing::trace!(%file, %to, count = chunks.len(), "cancelling chunks")
+                        }
+                        _ => {}
+                    }
                     let _ = self
                         .out
                         .send(FileOutput::SendPeer {
@@ -809,6 +829,11 @@ impl Actor {
     /// hashes cached.
     async fn serve_block_hashes(&mut self, to: PeerId, file: Ed2kHash) {
         let Some(path) = self.local_files.get(&file).cloned() else {
+            // A peer asked us for this file's block hashes -- so it picked
+            // us as a source, meaning we advertised it Ready -- but we no
+            // longer hold it. This silent bail is a prime suspect for a
+            // downloader stuck waiting on block hashes that never come.
+            tracing::debug!(%file, %to, "asked for block hashes we don't hold; ignoring");
             return;
         };
         // Don't advertise a file the user deleted under us: drop it and
@@ -825,6 +850,7 @@ impl Actor {
         };
         let blocks = hashed.blocks.clone();
         let size = hashed.size_bytes;
+        tracing::debug!(%file, %to, blocks = blocks.len(), "serving block hashes");
         let _ = self
             .out
             .send(FileOutput::SendPeer {
@@ -881,14 +907,22 @@ impl Actor {
     /// Queue a peer's chunk requests for serving (deduping re-requests).
     fn enqueue_serve(&mut self, to: PeerId, file: Ed2kHash, chunks: Vec<u32>) {
         if !self.local_files.contains_key(&file) {
-            return; // we don't have it
+            // We advertised Ready but no longer hold it -- same silent
+            // "advertised but can't serve" failure as serve_block_hashes,
+            // for chunks rather than block hashes.
+            tracing::debug!(%file, %to, count = chunks.len(),
+                "asked for chunks we don't hold; ignoring");
+            return;
         }
+        let requested = chunks.len();
         for chunk in chunks {
             let job = (to.clone(), file, chunk);
             if !self.serve_queue.contains(&job) {
                 self.serve_queue.push_back(job);
             }
         }
+        tracing::debug!(%file, %to, requested, queued = self.serve_queue.len(),
+            "queued chunks to serve");
     }
 
     /// Send queued chunks within the upload budget. Reads are small
