@@ -13,8 +13,8 @@ use dessplay::ui::msg::UserAction;
 use dessplay_core::net::{PeerInfo, Presence, Role};
 use dessplay_core::playlist::NewPlaylistEntry;
 use dessplay_core::types::{
-    ActorId, Ed2kHash, ListEntryId, ListStatus, ManualState, SeriesListEntry, SharedTimestamp,
-    UserId,
+    ActorId, Ed2kHash, ListEntryId, ListStatus, ManualState, PlaybackIntent, SeriesListEntry,
+    SharedTimestamp, UserId,
 };
 use dessplay_core::{CrdtState, StateView};
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
@@ -320,12 +320,19 @@ fn playlist_actions() {
     for _ in 0..3 {
         ui.handle(key(Key::Tab)); // Chat -> Series -> Users -> Playlist
     }
-    // Enter on the first row plays it.
+    // Enter on the first row makes it now-playing. Nothing was playing,
+    // so this is a real transition: it also latches intent Paused, exactly
+    // like an EOF advance, so the new file loads paused at the start.
     assert_eq!(
         ui.handle(key(Key::Enter)),
-        vec![UserAction::Mutate(Mutation::SetNowPlaying {
-            file: Some(hash(1))
-        })]
+        vec![
+            UserAction::Mutate(Mutation::SetNowPlaying {
+                file: Some(hash(1))
+            }),
+            UserAction::Mutate(Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Paused,
+            }),
+        ]
     );
     // Move the second row up: it lands at the front (no anchor).
     ui.handle(key(Key::Down));
@@ -350,6 +357,42 @@ fn playlist_actions() {
         vec![UserAction::Mutate(Mutation::RemovePlaylist {
             hash: hash(2)
         })]
+    );
+}
+
+/// Selecting a *different* entry pauses (EOF parity); re-selecting the
+/// already-playing entry is not a transition, so it must not pause.
+#[test]
+fn selecting_now_playing_entry_does_not_pause() {
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
+    state.set_now_playing(A, ts(3), Some(hash(1)));
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab)); // focus the Playlist pane
+    }
+    // Enter on the currently-playing row: re-assert now-playing only, no pause.
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::Mutate(Mutation::SetNowPlaying {
+            file: Some(hash(1))
+        })]
+    );
+    // Enter on a different row: a real transition, so it also pauses.
+    ui.handle(key(Key::Down));
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![
+            UserAction::Mutate(Mutation::SetNowPlaying {
+                file: Some(hash(2))
+            }),
+            UserAction::Mutate(Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Paused,
+            }),
+        ]
     );
 }
 

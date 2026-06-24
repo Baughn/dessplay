@@ -629,6 +629,14 @@ impl Ui {
                 self.refresh_keybar();
                 return actions;
             }
+            Some(Msg::PlaySelected(hash)) => {
+                let actions = self.play_selected(*hash);
+                for action in &actions {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return actions;
+            }
             _ => {}
         }
         let action = msg.and_then(|msg| self.update(msg));
@@ -705,14 +713,34 @@ impl Ui {
         actions
     }
 
+    /// Enter on a playlist entry: make it now-playing. A real file change
+    /// loads a fresh episode, so -- exactly like an EOF advance
+    /// (`dessplay-rendezvous` `handle_eof`) -- it also latches intent
+    /// Paused, so the new file comes up paused at the start and the group
+    /// presses play when ready. (The server resets seek authority to
+    /// Server on the now-playing op, the other half of the transition.)
+    /// Re-selecting the already-playing entry is not a transition, so it
+    /// must not pause.
+    fn play_selected(&self, hash: Ed2kHash) -> Vec<UserAction> {
+        let mut actions = vec![UserAction::Mutate(Mutation::SetNowPlaying {
+            file: Some(hash),
+        })];
+        if self.snapshot.view.now_playing != Some(hash) {
+            actions.push(UserAction::Mutate(Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Paused,
+            }));
+        }
+        actions
+    }
+
     /// The Elm update: messages become internal changes or actions.
     fn update(&mut self, msg: Msg) -> Option<UserAction> {
         match msg {
             Msg::None => None,
-            // `Msg::SendChat` and `Msg::Command` are intercepted in
-            // `handle()` (they can each yield several actions); they never
-            // reach `update()`.
-            Msg::SendChat(_) | Msg::Command(_) => None,
+            // `Msg::SendChat`, `Msg::Command`, and `Msg::PlaySelected` are
+            // intercepted in `handle()` (they can each yield several
+            // actions); they never reach `update()`.
+            Msg::SendChat(_) | Msg::Command(_) | Msg::PlaySelected(_) => None,
             Msg::CycleSeriesMode | Msg::ToggleSeriesSort | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
@@ -758,9 +786,6 @@ impl Ui {
                     state,
                 }))
             }
-            Msg::PlaySelected(hash) => Some(UserAction::Mutate(Mutation::SetNowPlaying {
-                file: Some(hash),
-            })),
             Msg::AddFileAfter(after) => {
                 self.push_modal(Modal::Files(FileBrowser::for_file(
                     self.media_roots.clone(),

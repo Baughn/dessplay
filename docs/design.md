@@ -405,7 +405,15 @@ how many users are connected.
    longer match now-playing and are ignored, making the transition idempotent.
    Files are **not** removed from the playlist on EOF -- they remain visible
    in muted colors as play history. Users can select any entry with Enter to
-   set it as now-playing.
+   set it as now-playing. A manual selection of a **different** file mirrors
+   the playback-state half of the EOF transition: it loads the new file
+   **paused at the start** -- the client writes playback intent Paused
+   alongside the now-playing change, and the server resets seek authority to
+   Server on the now-playing op -- so the group presses play when ready, just
+   like an EOF advance. It deliberately does **not** mark the abandoned file
+   watched or advance The List (selecting a different file abandons the
+   current one rather than finishing it). Re-selecting the entry that is
+   already now-playing is not a transition and does not pause.
 
 ### Before Playback Starts
 
