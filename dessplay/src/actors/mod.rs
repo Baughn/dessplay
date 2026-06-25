@@ -2,6 +2,7 @@
 //! communicating via typed message channels (see architecture.md).
 
 pub mod file;
+pub mod irc;
 pub mod network;
 pub mod player;
 pub mod sync;

@@ -268,6 +268,11 @@ pub struct ChatLine {
     /// colon. `text` holds the decoded action phrase (the CTCP wrapper is
     /// stripped). UI-only flag derived from the message text.
     pub action: bool,
+    /// A local-only line from an external IRC user (the IRC bridge):
+    /// rendered like normal chat (colored sender, mention highlight) but
+    /// prefixed with a dim `irc` tag so it isn't mistaken for a dessplay
+    /// peer. Never synced.
+    pub irc: bool,
     /// Shared-clock millis, the interleave key across synced messages,
     /// local system lines, and subtitle arrivals. For subtitle lines
     /// this is wall-clock *arrival*, not the in-video `time`.
@@ -294,6 +299,7 @@ pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
                 subtitle: false,
                 separator: false,
                 action,
+                irc: false,
                 millis: message.timestamp.0,
             }
         })
@@ -310,6 +316,24 @@ pub fn system_line(timestamp: u64, text: String) -> ChatLine {
         subtitle: false,
         separator: false,
         action: false,
+        irc: false,
+        millis: timestamp,
+    }
+}
+
+/// Build a local chat line from an external IRC user. Rendered like
+/// normal chat (colored sender, mention highlight) but flagged `irc` so
+/// the renderer tags it; never synced.
+pub fn irc_line(timestamp: u64, sender: String, text: String, action: bool) -> ChatLine {
+    ChatLine {
+        time: hhmm(timestamp),
+        sender,
+        text,
+        system: false,
+        subtitle: false,
+        separator: false,
+        action,
+        irc: true,
         millis: timestamp,
     }
 }
@@ -328,6 +352,7 @@ pub fn day_separator(millis: u64) -> ChatLine {
         subtitle: false,
         separator: true,
         action: false,
+        irc: false,
         millis,
     }
 }
@@ -354,6 +379,7 @@ pub fn subtitle_line(video_millis: u64, arrival_millis: u64, text: String) -> Ch
         subtitle: true,
         separator: false,
         action: false,
+        irc: false,
         millis: arrival_millis,
     }
 }

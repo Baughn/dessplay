@@ -690,6 +690,17 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         handle.network.clone(),
     );
 
+    // IRC bridge (interactive-only): mirror our own chat to IRC and
+    // surface external IRC users locally. Spawned here, never in
+    // spawn_client, so seeders (headless, no chat) are unaffected.
+    let (irc_tx, irc_rx) = mpsc::channel::<crate::actors::irc::IrcCommand>(64);
+    let (irc_ev_tx, irc_events) = mpsc::channel::<crate::actors::irc::IrcEvent>(64);
+    tokio::spawn(crate::actors::irc::run(
+        crate::actors::irc::IrcConfig::from_settings(&settings, &me),
+        irc_rx,
+        irc_ev_tx,
+    ));
+
     let connector = Arc::clone(&setup.connector);
     let mut session = SessionLoop {
         handle,
@@ -704,6 +715,9 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         pin_pending: setup.first_use,
         server_addr: setup.server_addr_str.clone(),
         start,
+        irc_tx,
+        irc_events,
+        irc_alive: true,
     };
     let end = session.run().await;
 
@@ -725,9 +739,14 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     session.shell.shutdown().await;
     let _ = session.handle.network.send(NetworkCommand::Shutdown).await;
     let _ = session.handle.sync.send(SyncCommand::Shutdown).await;
+    let _ = session
+        .irc_tx
+        .send(crate::actors::irc::IrcCommand::Shutdown)
+        .await;
     let done = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         session.handle.network.closed().await;
         session.handle.sync.closed().await;
+        session.irc_tx.closed().await;
     })
     .await;
     if done.is_err() {
@@ -789,6 +808,15 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     pub server_addr: String,
     /// Process start, for startup timing logs.
     pub start: std::time::Instant,
+    /// Commands to the IRC bridge actor (forward our chat, reconfigure on
+    /// settings change, shutdown).
+    pub irc_tx: mpsc::Sender<crate::actors::irc::IrcCommand>,
+    /// Events from the IRC bridge actor (incoming external messages,
+    /// connect/disconnect notices).
+    pub irc_events: mpsc::Receiver<crate::actors::irc::IrcEvent>,
+    /// Whether the IRC event channel is still open (guards its select arm
+    /// so a closed channel can't busy-loop).
+    pub irc_alive: bool,
 }
 
 impl<F: crate::player::PlayerFactory> SessionLoop<F> {
@@ -822,6 +850,18 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                     match action {
                         None | Some(UserAction::Quit) => return SessionEnd::Quit,
                         Some(UserAction::Mutate(mutation)) => {
+                            // Tap our own chat for the IRC bridge. This arm
+                            // only ever carries the local user's mutations
+                            // (remote ops arrive as SyncCommand::Server), so
+                            // this forwards exactly our own messages — not
+                            // events, subtitles, or narrator lines. Lossy
+                            // try_send: never await the bridge here (it may
+                            // be mid-reconnect with a full channel).
+                            if let Mutation::Chat { text } = &mutation {
+                                let _ = self.irc_tx.try_send(
+                                    crate::actors::irc::IrcCommand::SendChat(text.clone()),
+                                );
+                            }
                             let _ = self
                                 .handle
                                 .sync
@@ -902,6 +942,17 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             self.shell.set_retention(saved.cache_retention).await;
                             self.shell.set_auto_download(saved.auto_download);
                             self.settings = *saved;
+                            // Apply any IRC settings change live: the actor
+                            // reconnects (or idles, if disabled). The nick is
+                            // stable — `me` is fixed after first-run setup.
+                            let _ = self.irc_tx.try_send(
+                                crate::actors::irc::IrcCommand::Reconfigure(Box::new(
+                                    crate::actors::irc::IrcConfig::from_settings(
+                                        &self.settings,
+                                        &self.me,
+                                    ),
+                                )),
+                            );
                         }
                     }
                 }
@@ -994,6 +1045,37 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         forward_ui_lines(&self.ui, lines);
                         last_view = snapshot.view.clone();
                         let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
+                    }
+                }
+                event = self.irc_events.recv(), if self.irc_alive => {
+                    // Incoming from the IRC bridge. Messages from external
+                    // users become local-only chat lines; connect/disconnect
+                    // become local system notices. None means the actor exited
+                    // — disable this arm so it can't busy-loop. (Crucially it
+                    // does NOT end the session, unlike handle.events.)
+                    use crate::actors::irc::IrcEvent;
+                    match event {
+                        None => self.irc_alive = false,
+                        Some(IrcEvent::Message { from, text, action }) => {
+                            let _ = self.ui.try_send(UiInput::Irc {
+                                timestamp: (system_clock())(),
+                                sender: from,
+                                text,
+                                action,
+                            });
+                        }
+                        Some(IrcEvent::Connected) => {
+                            let _ = self.ui.try_send(UiInput::System {
+                                timestamp: (system_clock())(),
+                                text: format!("Connected to IRC ({}).", self.settings.irc_channel),
+                            });
+                        }
+                        Some(IrcEvent::Disconnected { reason }) => {
+                            let _ = self.ui.try_send(UiInput::System {
+                                timestamp: (system_clock())(),
+                                text: format!("IRC disconnected: {reason}"),
+                            });
+                        }
                     }
                 }
                 output = self.shell.player_outputs.recv() => {

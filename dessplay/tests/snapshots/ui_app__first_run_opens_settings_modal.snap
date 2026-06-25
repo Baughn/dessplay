@@ -14,12 +14,12 @@ expression: "render(&mut ui, 100, 30)"
 │              │Subtitles: Off                                                      │──────────────┐
 │              │Cache: 7 days                                                       │              │
 │              │Auto-download: yes                                                  │              │
-│              │[Add media root]                                                    │              │
-│              │[Save] — needs a username, a password, a media root                 │              │
-│              │                                                                    │              │
-│              │                                                                    │              │
-│              │                                                                    │──────────────┘
-│              │                                                                    │──────────────┐
+│              │IRC bridge: yes                                                     │              │
+│              │IRC server:  irc.rizon.net                                          │              │
+│              │IRC TLS:     yes                                                    │              │
+│              │IRC channel: #dess                                                  │              │
+│              │[Add media root]                                                    │──────────────┘
+│              │[Save] — needs a username, a password, a media root                 │──────────────┐
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │

@@ -612,11 +612,16 @@ fn wrap_chat_line(
             .collect()
     } else if line.action {
         // IRC-style action: "* sender phrase", no colon. The "* " is dim,
-        // the sender keeps its per-user color/bold, the phrase is raw.
+        // the sender keeps its per-user color/bold, the phrase is raw. A
+        // bridged IRC action also carries a dim "irc" tag.
         let time = format!("{} ", line.time);
+        let tag = if line.irc { "irc " } else { "" };
         let marker = "* ";
         let sender = format!("{} ", line.sender);
-        let prefix_width = time.chars().count() + marker.chars().count() + sender.chars().count();
+        let prefix_width = time.chars().count()
+            + tag.chars().count()
+            + marker.chars().count()
+            + sender.chars().count();
         let chunks = wrap_body(
             &line.text,
             width.saturating_sub(prefix_width),
@@ -629,11 +634,12 @@ fn wrap_chat_line(
             .map(|(i, chunk)| {
                 let body = highlight_mentions(&chunk, usernames, me);
                 if i == 0 {
-                    let mut spans = vec![
-                        Span::styled(time.clone(), theme::dim()),
-                        Span::styled(marker, theme::dim()),
-                        Span::styled(sender.clone(), sender_style),
-                    ];
+                    let mut spans = vec![Span::styled(time.clone(), theme::dim())];
+                    if !tag.is_empty() {
+                        spans.push(Span::styled(tag, theme::dim()));
+                    }
+                    spans.push(Span::styled(marker, theme::dim()));
+                    spans.push(Span::styled(sender.clone(), sender_style));
                     spans.extend(body);
                     Line::from(spans)
                 } else {
@@ -644,9 +650,13 @@ fn wrap_chat_line(
             })
             .collect()
     } else {
+        // Normal chat. A bridged IRC message is rendered identically
+        // (colored sender, mention highlight) but with a dim "irc" tag so
+        // it isn't mistaken for a dessplay peer.
         let time = format!("{} ", line.time);
+        let tag = if line.irc { "irc " } else { "" };
         let sender = format!("{}: ", line.sender);
-        let prefix_width = time.chars().count() + sender.chars().count();
+        let prefix_width = time.chars().count() + tag.chars().count() + sender.chars().count();
         let chunks = wrap_body(
             &line.text,
             width.saturating_sub(prefix_width),
@@ -659,10 +669,11 @@ fn wrap_chat_line(
             .map(|(i, chunk)| {
                 let body = highlight_mentions(&chunk, usernames, me);
                 if i == 0 {
-                    let mut spans = vec![
-                        Span::styled(time.clone(), theme::dim()),
-                        Span::styled(sender.clone(), sender_style),
-                    ];
+                    let mut spans = vec![Span::styled(time.clone(), theme::dim())];
+                    if !tag.is_empty() {
+                        spans.push(Span::styled(tag, theme::dim()));
+                    }
+                    spans.push(Span::styled(sender.clone(), sender_style));
                     spans.extend(body);
                     Line::from(spans)
                 } else {

@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-23
+Last updated: 2026-06-25
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -59,6 +59,11 @@ Optional settings (sensible defaults, editable later):
   file contents from peers -- neither the prefetch window nor the missing
   now-playing file -- so it relies entirely on its own media roots. See
   [Pre-fetching](#download-cache-and-retention).
+- IRC bridge (toggle, default **on**) plus IRC server (default
+  `irc.rizon.net`), IRC TLS (toggle, default on -- selects port 6697 vs
+  6667), and IRC channel (default `#dess`). See [IRC Bridge](#irc-bridge).
+  A dim hint reminds the user the channel is **public**: chat leaves the
+  encrypted group.
 
 Seeder-specific configuration (role, retention) is provided via
 command-line flags / environment only -- seeders are headless, never show
@@ -481,6 +486,47 @@ This prevents sync issues from different encodes/versions.
     (`"\x01ACTION waves\x01"`), so no separate message type or schema change
     is needed -- only the display sites decode it.
   - `/settings` -- open the settings screen (also `F3`)
+
+### IRC Bridge
+
+DessPlay logs are unavailable when the program isn't running, so the
+chat is gone the moment you close the app. The IRC bridge fixes that:
+each interactive client (never a seeder -- they have no chat) optionally
+mirrors **its own** chat into a shared IRC channel that others can keep
+open or log, and surfaces messages from plain-IRC users back into the
+chat pane. It is **on by default**; defaults are `irc.rizon.net`, TLS
+(port 6697), channel `#dess`.
+
+- **Identity.** The client connects as `[Username]Dess` (e.g.
+  `BaughnDess`). The username is sanitized to a legal IRC nick (illegal
+  characters dropped, a letter forced to lead, length capped) while the
+  `Dess` suffix is always preserved. On a nick collision (433) the client
+  retries with a disambiguator that **keeps `Dess` terminal**
+  (`Baughn2Dess`), because the suffix is how *other* bridges recognize
+  and de-duplicate it.
+- **Outbound.** Only the local user's own chat messages are sent --
+  tapped at the same `Mutation::Chat` site that feeds the synced chat, so
+  events, subtitles, and narrator/system lines are never forwarded. A
+  `/me` action goes out as a real IRC CTCP ACTION (the wire form is
+  identical to DessPlay's inline `"\x01ACTION …\x01"`, so it forwards
+  verbatim). Long lines are split to fit IRC's 512-byte limit; newlines
+  become separate messages.
+- **Inbound.** Messages from IRC nicks that do **not** end in `Dess` are
+  shown locally, rendered like normal chat (per-nick color, mention
+  highlight) but with a dim `irc` tag so they aren't mistaken for
+  DessPlay peers. These lines are **local-only, never synced** -- each
+  client runs its own bridge, so syncing them would duplicate. Messages
+  from `*Dess` nicks are dropped: those are other bridges echoing DessPlay
+  users who are already present via CRDT sync. (Heuristic cost: a genuine
+  IRC user whose nick ends in "dess", e.g. `Goddess`, is also dropped --
+  accepted, since the actor deliberately doesn't hold the roster.)
+- **Lifecycle.** A dedicated [IRC actor](architecture.md#ircactor) owns
+  the TLS connection, reconnects with capped backoff, answers PING, and
+  is reconfigured live when the IRC settings change (disabling it makes
+  it QUIT and idle). Connect/disconnect post local system lines. The
+  channel is **public and unauthenticated** -- unlike the encrypted QUIC
+  group, anything said in DessPlay chat is visible (and bot-loggable) on
+  IRC; the settings screen says so.
 
 ### System Messages
 
@@ -1523,8 +1569,9 @@ crashes should be rare enough not to matter, and an edit that *caused* a
 crash should not be replayed into the next session.
 
 **Settings** (username, server, password, media roots, player choice, cache
-retention, upload limit, subtitle mode) live in the same SQLite database and
-are edited through the settings screen. The password is stored in plaintext
+retention, upload limit, subtitle mode, auto-download, and the IRC bridge
+settings -- enabled, server, TLS, channel) live in the same SQLite database
+and are edited through the settings screen. The password is stored in plaintext
 — consistent with the threat model below. Command-line flags and environment
 variables override stored settings at runtime but are never persisted.
 Seeders and the rendezvous server store no settings at all; they are
@@ -1550,7 +1597,7 @@ inserted) so the previous layout is a strict prefix.
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, auto_download, irc_enabled, irc_server, irc_tls, irc_channel) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |

@@ -207,6 +207,16 @@ pub struct Settings {
     /// downloads — it relies on its own library (design.md,
     /// Pre-fetching). Default true.
     pub auto_download: bool,
+    /// Bridge our own chat to IRC so the conversation survives the app
+    /// being closed (design.md, IRC bridge). Default on.
+    pub irc_enabled: bool,
+    /// IRC server to bridge to. Default `irc.rizon.net`.
+    pub irc_server: String,
+    /// Connect to IRC over TLS (port 6697); plaintext (6667) when false.
+    /// Default true.
+    pub irc_tls: bool,
+    /// IRC channel to join. Default `#dess`.
+    pub irc_channel: String,
 }
 
 impl Default for Settings {
@@ -221,6 +231,10 @@ impl Default for Settings {
             upload_limit: None,
             subtitle_mode: SubtitleMode::default(),
             auto_download: true,
+            irc_enabled: true,
+            irc_server: "irc.rizon.net".into(),
+            irc_tls: true,
+            irc_channel: "#dess".into(),
         }
     }
 }
@@ -284,6 +298,22 @@ impl Settings {
                 .map(|value| parse_bool("auto_download", &value))
                 .transpose()?
                 .unwrap_or(defaults.auto_download),
+            irc_enabled: storage
+                .setting("irc_enabled")?
+                .map(|value| parse_bool("irc_enabled", &value))
+                .transpose()?
+                .unwrap_or(defaults.irc_enabled),
+            irc_server: storage
+                .setting("irc_server")?
+                .unwrap_or(defaults.irc_server),
+            irc_tls: storage
+                .setting("irc_tls")?
+                .map(|value| parse_bool("irc_tls", &value))
+                .transpose()?
+                .unwrap_or(defaults.irc_tls),
+            irc_channel: storage
+                .setting("irc_channel")?
+                .unwrap_or(defaults.irc_channel),
         })
     }
 
@@ -310,6 +340,13 @@ impl Settings {
             "auto_download",
             Some(if self.auto_download { "true" } else { "false" }),
         )?;
+        storage.set_setting(
+            "irc_enabled",
+            Some(if self.irc_enabled { "true" } else { "false" }),
+        )?;
+        storage.set_setting("irc_server", Some(&self.irc_server))?;
+        storage.set_setting("irc_tls", Some(if self.irc_tls { "true" } else { "false" }))?;
+        storage.set_setting("irc_channel", Some(&self.irc_channel))?;
         Ok(())
     }
 }
@@ -342,6 +379,10 @@ mod tests {
             upload_limit: Some(1_000_000),
             subtitle_mode: SubtitleMode::Intermixed,
             auto_download: false,
+            irc_enabled: false,
+            irc_server: "irc.example.org".into(),
+            irc_tls: false,
+            irc_channel: "#watchparty".into(),
         };
         storage.save_settings(&settings).unwrap();
         let loaded = storage.load_settings().unwrap();

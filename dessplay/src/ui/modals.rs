@@ -479,7 +479,11 @@ const FIELD_READY: usize = 3;
 const FIELD_SUBTITLE: usize = 4;
 const FIELD_CACHE: usize = 5;
 const FIELD_AUTO_DOWNLOAD: usize = 6;
-const FIXED_FIELDS: usize = 7;
+const FIELD_IRC_ENABLED: usize = 7;
+const FIELD_IRC_SERVER: usize = 8;
+const FIELD_IRC_TLS: usize = 9;
+const FIELD_IRC_CHANNEL: usize = 10;
+const FIXED_FIELDS: usize = 11;
 
 /// First-run and later settings editing.
 pub struct SettingsModal {
@@ -556,6 +560,8 @@ impl SettingsModal {
             FIELD_USERNAME => self.settings.username.clone().unwrap_or_default(),
             FIELD_SERVER => self.settings.server.clone(),
             FIELD_PASSWORD => self.settings.password.clone().unwrap_or_default(),
+            FIELD_IRC_SERVER => self.settings.irc_server.clone(),
+            FIELD_IRC_CHANNEL => self.settings.irc_channel.clone(),
             _ => String::new(),
         }
     }
@@ -570,6 +576,8 @@ impl SettingsModal {
             FIELD_PASSWORD => {
                 self.settings.password = (!value.is_empty()).then_some(value);
             }
+            FIELD_IRC_SERVER if !value.is_empty() => self.settings.irc_server = value,
+            FIELD_IRC_CHANNEL if !value.is_empty() => self.settings.irc_channel = value,
             _ => {}
         }
     }
@@ -612,6 +620,20 @@ impl SettingsModal {
                     "no"
                 }
             ),
+            format!(
+                "IRC bridge: {}",
+                if self.settings.irc_enabled {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ),
+            format!("IRC server:  {}", self.field_value(FIELD_IRC_SERVER)),
+            format!(
+                "IRC TLS:     {}",
+                if self.settings.irc_tls { "yes" } else { "no" }
+            ),
+            format!("IRC channel: {}", self.field_value(FIELD_IRC_CHANNEL)),
         ];
         for row in rows {
             lines.push(ListItem::new(row));
@@ -725,12 +747,19 @@ impl AppComponent<Msg, NoUserEvent> for SettingsModal {
             }
             Key::Enter => {
                 match self.sel {
-                    FIELD_USERNAME | FIELD_SERVER | FIELD_PASSWORD => {
+                    FIELD_USERNAME | FIELD_SERVER | FIELD_PASSWORD | FIELD_IRC_SERVER
+                    | FIELD_IRC_CHANNEL => {
                         self.editor =
                             Some((self.sel, FieldEditor::new(&self.field_value(self.sel))));
                     }
                     FIELD_READY => {
                         self.settings.ready_on_startup = !self.settings.ready_on_startup;
+                    }
+                    FIELD_IRC_ENABLED => {
+                        self.settings.irc_enabled = !self.settings.irc_enabled;
+                    }
+                    FIELD_IRC_TLS => {
+                        self.settings.irc_tls = !self.settings.irc_tls;
                     }
                     FIELD_SUBTITLE => {
                         self.settings.subtitle_mode = self.settings.subtitle_mode.next();

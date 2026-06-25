@@ -176,6 +176,10 @@ pub struct Ui {
     /// Local-only system chat lines (archive results, etc.), merged into
     /// the chat log by timestamp. Never synced.
     system_log: Vec<props::ChatLine>,
+    /// Local-only chat lines from external IRC users (the IRC bridge),
+    /// merged into the chat log by timestamp. Never synced — each client
+    /// runs its own bridge.
+    irc_log: Vec<props::ChatLine>,
     snapshot: UiSnapshot,
     /// Memoizes the franchise grouping so it is not rebuilt on every 10Hz
     /// playback-position snapshot (was ~⅓ of normal-play CPU). Reachable
@@ -217,6 +221,7 @@ impl Ui {
             subtitles: std::collections::VecDeque::new(),
             hashing: Vec::new(),
             system_log: Vec::new(),
+            irc_log: Vec::new(),
             snapshot: UiSnapshot::default(),
             franchise_cache: franchise::FranchiseCache::default(),
             settings: settings.clone(),
@@ -320,6 +325,19 @@ impl Ui {
         self.refresh_chat();
     }
 
+    /// Append a local chat line from an external IRC user and refresh the
+    /// chat pane. Rendered like normal chat (colored nick, mention
+    /// highlight) but with a dim `irc` tag, and never synced — each
+    /// client's bridge surfaces these independently.
+    pub fn push_irc(&mut self, timestamp: u64, sender: String, text: String, action: bool) {
+        self.irc_log
+            .push(props::irc_line(timestamp, sender, text, action));
+        while self.irc_log.len() > 100 {
+            self.irc_log.remove(0);
+        }
+        self.refresh_chat();
+    }
+
     /// Cycle the subtitle mode (Off -> Intermixed -> Separate -> Off),
     /// persist it (user chose F2-persistence), and rebuild chat so
     /// Intermixed lines appear/disappear at once. Returns the persist
@@ -346,6 +364,7 @@ impl Ui {
     fn merged_chat(&self, view: &StateView) -> Vec<props::ChatLine> {
         let mut lines = props::chat_lines(view);
         lines.extend(self.system_log.iter().cloned());
+        lines.extend(self.irc_log.iter().cloned());
         if self.subtitle_mode == SubtitleMode::Intermixed {
             lines.extend(
                 self.subtitles.iter().map(|s| {
@@ -1734,8 +1753,10 @@ mod tests {
         };
         let mut ui = Ui::with_setup(me(), settings, vec![PathBuf::from("/anime")], true);
         assert!(matches!(ui.modals.last(), Some(Modal::Settings(_))));
-        // Walk the cursor to the last row ([Save]) and activate it.
-        for _ in 0..12 {
+        // Walk the cursor to the last row ([Save]) and activate it. Down
+        // clamps at the last row, so any count past the field total lands
+        // on [Save] regardless of how many setting rows exist.
+        for _ in 0..30 {
             ui.handle(key(Key::Down));
         }
         let actions = ui.handle(key(Key::Enter));

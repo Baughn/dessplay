@@ -51,6 +51,18 @@ pub enum UiInput {
         /// The message body.
         text: String,
     },
+    /// A local-only chat line from an external IRC user (the IRC bridge).
+    /// Not synced — each client runs its own bridge.
+    Irc {
+        /// Shared-clock millis (orders the line within the chat log).
+        timestamp: u64,
+        /// The IRC nick of the sender.
+        sender: String,
+        /// The message body (CTCP already decoded).
+        text: String,
+        /// True if the message was a CTCP ACTION (an emote).
+        action: bool,
+    },
     /// AniDB name-search results (delivered to the search modal).
     SearchResults {
         /// The query these results answer.
@@ -148,6 +160,12 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 finished,
             } => ui.set_hash_progress(filename, done_bytes, total_bytes, finished),
             UiInput::System { timestamp, text } => ui.push_system(timestamp, text),
+            UiInput::Irc {
+                timestamp,
+                sender,
+                text,
+                action,
+            } => ui.push_irc(timestamp, sender, text, action),
             UiInput::SearchResults { query, results } => ui.set_search_results(&query, results),
             UiInput::Probe(cell) => {
                 // Stamp the moment we dequeued this input — measured by a

@@ -84,6 +84,9 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
     let storage = Storage::open(&db_dir.join(format!("{name}.db"))).expect("opening storage");
     let (action_tx, action_rx) = mpsc::channel(64);
     let (ui_tx, ui_rx) = std::sync::mpsc::sync_channel(64);
+    // Inert IRC bridge: the opposite ends are dropped so it never connects.
+    let (irc_tx, _irc_rx) = mpsc::channel(8);
+    let (_irc_ev_tx, irc_events) = mpsc::channel(8);
     let mut session = SessionLoop {
         handle,
         shell,
@@ -97,6 +100,9 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
         pin_pending: false,
         server_addr: "sim".into(),
         start: std::time::Instant::now(),
+        irc_tx,
+        irc_events,
+        irc_alive: true,
     };
     let task = tokio::spawn(async move { session.run().await });
     LoopRig {

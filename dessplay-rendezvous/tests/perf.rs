@@ -192,6 +192,9 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
 
     // Now spawn the session loop; it owns `handle` and drains its events
     // from here on.
+    // Inert IRC bridge: the opposite ends are dropped so it never connects.
+    let (irc_tx, _irc_rx) = mpsc::channel(8);
+    let (_irc_ev_tx, irc_events) = mpsc::channel(8);
     let mut session = SessionLoop {
         handle,
         shell,
@@ -205,6 +208,9 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
         pin_pending: false,
         server_addr: "sim".into(),
         start: Instant::now(),
+        irc_tx,
+        irc_events,
+        irc_alive: true,
     };
     let loop_task = tokio::spawn(async move { session.run().await });
 

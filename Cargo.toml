@@ -14,7 +14,13 @@ postcard = { version = "1", features = ["alloc"] }
 crdts = "7.3"
 tokio = { version = "1", features = ["full"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# tls12 is enabled for the IRC bridge: QUIC always negotiates TLS 1.3, but
+# a public IRC server we don't control may only offer 1.2. Harmless for QUIC.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# IRC bridge: plain-TCP TLS over the same pinned rustls (no native-tls).
+# webpki-roots is already in the tree via ureq, so it adds no new weight.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 rcgen = "0.13"
 sha2 = "0.10"
 color-eyre = "0.6"

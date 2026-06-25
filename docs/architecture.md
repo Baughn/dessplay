@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-06-23
+Last updated: 2026-06-25
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -115,6 +115,10 @@ inputs is a bug: it would be behavior the harness cannot see.
 **Seeder composition:** in seeder mode (`--seeder`), only SyncActor,
 NetworkActor, and FileActor are spawned -- no UiActor, no PlayerActor. The
 main loop is the same; the routing arms for absent actors simply never fire.
+
+The interactive client additionally spawns an [IrcActor](#ircactor) (the
+optional IRC chat bridge), wired in by `run_interactive` rather than
+`spawn_client` so seeders never get one.
 
 ### Communication
 
@@ -370,6 +374,37 @@ from `local_files` (verified resolutions, manual mappings, completed
 downloads). The session (`PlayerWiring::plan_download`) drives downloads
 for the now-playing file plus a prefetch window. Seeder auto-fetch
 (headless, fetch everything) is the remaining 9B piece.
+
+### IrcActor
+
+A small bridge actor (`actors/irc.rs`) that mirrors the local user's chat
+to an IRC channel and surfaces external IRC users back into the chat pane
+(see "IRC Bridge" in design.md). It owns one `tokio-rustls` TLS
+connection to the IRC server (reusing the project's pinned rustls — no
+native-tls), parses the line protocol, and reconnects with capped
+exponential backoff. The protocol parsing/formatting (PRIVMSG, PING,
+nick derivation, the `*Dess` filter, CTCP ACTION) lives in pure
+functions; the loop is driven over an in-memory `tokio::io::duplex` pipe
+in tests.
+
+**Interactive-only.** It is spawned from `run_interactive`, *not* the
+shared `spawn_client`, so seeders (headless, no chat) never get one. It
+talks only to the bridge loop, never to other actors directly.
+
+**Receives (`IrcCommand`):** `SendChat(text)` (forward one of our chat
+messages), `Reconfigure(IrcConfig)` (settings changed — reconnect or
+idle), `Shutdown` (QUIT and exit).
+
+**Produces (`IrcEvent`):** `Connected` / `Disconnected { reason }`
+(mapped to local system lines), `Message { from, text, action }` (an
+external user's line, mapped to a local-only `UiInput::Irc` chat line).
+
+**Wiring.** The bridge loop taps `Mutation::Chat` in its `UserAction::
+Mutate` arm and forwards the text via a lossy `try_send` (never awaiting
+a possibly-reconnecting actor — the liveness rule). A guarded
+`irc_events.recv()` select arm drains events without ending the session
+when the channel closes. `SaveSettings` sends a `Reconfigure`; shutdown
+sends `Shutdown` and waits (bounded) for the actor to drop its receiver.
 
 ### AniDB worker (server-side, Phase 8)
 
