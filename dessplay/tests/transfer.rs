@@ -227,9 +227,15 @@ async fn single_seed_transfer_completes_with_full_goodput() {
 
 #[tokio::test]
 async fn two_seed_transfer_completes_and_stays_efficient() {
-    // Two complete sources: rarest-first/source-cap spread the load;
-    // endgame may briefly double-request the tail, so allow a small
-    // retransmit budget but still expect high goodput.
+    // Two complete sources, both genuinely solicited and used (before the
+    // 2026-06-26 review fix, only one was ever solicited, so this silently
+    // ran single-source). bulk-mode planning must not double-assign a
+    // chunk, so the *only* wasted bytes are the endgame tail: the last
+    // <= pipeline_depth chunks are requested from both seeds and the loser
+    // is Cancelled. We bound the waste by exactly that tail — a regression
+    // to bulk-mode duplication would blow past it (goodput would collapse
+    // toward 50%). On a real (large) file this tail is a negligible
+    // fraction; it only looks large here because the test file is small.
     let bytes = data(3 * ED2K_BLOCK_SIZE as usize + 50_000); // 4 blocks
     let hash = ed2k_hash_bytes(&bytes);
     let filename = "show.mkv";
@@ -262,16 +268,21 @@ async fn two_seed_transfer_completes_and_stays_efficient() {
     );
 
     let goodput_bps = (hash.size_bytes * 10_000) / outcome.chunk_bytes;
+    let wasted = outcome.chunk_bytes - hash.size_bytes;
+    // The endgame tail: at most pipeline_depth chunks re-requested from the
+    // second seed.
+    let endgame_tail =
+        u64::from(DownloadConfig::default().pipeline_depth) * dessplay_core::net::CHUNK_SIZE;
     println!(
-        "two-seed: {} file bytes, {} transmitted — goodput {}.{:02}%",
+        "two-seed: {} file bytes, {} transmitted — goodput {}.{:02}%, wasted {wasted} (tail bound {endgame_tail})",
         hash.size_bytes,
         outcome.chunk_bytes,
         goodput_bps / 100,
         goodput_bps % 100,
     );
-    // Even with two sources and endgame, almost nothing is wasted.
+    // Bulk mode must not duplicate: all waste is the bounded endgame tail.
     assert!(
-        goodput_bps >= 9_500,
-        "goodput should stay high: {goodput_bps} bps"
+        wasted <= endgame_tail,
+        "waste {wasted} exceeds the endgame tail {endgame_tail} — bulk mode is duplicating chunks"
     );
 }

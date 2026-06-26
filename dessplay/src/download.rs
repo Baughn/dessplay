@@ -134,11 +134,11 @@ pub enum DownloadAction {
 
 /// State for fetching block hashes (needed before any chunk can verify).
 enum BlockHashes {
-    /// Requested from `peer` at `requested_at`; re-asked on snub.
-    Pending {
-        peer: Option<PeerId>,
-        requested_at: u64,
-    },
+    /// Not yet validated. Block hashes are solicited per-source (see
+    /// [`Source::solicited`]) -- a `BlockHashRequest` is answered with both
+    /// the per-block hashes and the source's bitfield -- so the lone
+    /// asked-peer tracking that used to live here is gone.
+    Pending,
     /// Validated against the file's root.
     Have(Vec<Ed2kBlockHash>),
 }
@@ -151,6 +151,10 @@ struct Source {
     /// Shared-clock millis of the last byte (or the request that armed
     /// the snub clock). Drives snub detection.
     last_progress: u64,
+    /// Whether we've sent this source a `BlockHashRequest` (which doubles
+    /// as a bitfield solicitation). Set once per source; a source dropped
+    /// on departure is re-added fresh by `set_sources` and re-solicited.
+    solicited: bool,
 }
 
 struct Download {
@@ -225,10 +229,7 @@ impl Downloads {
                     store,
                     root,
                     size_bytes,
-                    block_hashes: BlockHashes::Pending {
-                        peer: None,
-                        requested_at: 0,
-                    },
+                    block_hashes: BlockHashes::Pending,
                     sources: HashMap::new(),
                     play_chunk,
                     stats: TransferStats::default(),
@@ -263,6 +264,7 @@ impl Downloads {
                 bitfield: Bitfield::new(chunk_count(d.size_bytes)),
                 in_flight: HashSet::new(),
                 last_progress: now,
+                solicited: false,
             });
         }
         self.progress_and_refill(file, now)
@@ -329,7 +331,9 @@ impl Downloads {
         }
         if !d.store.block_hashes_match(d.root, &hashes) {
             tracing::warn!(%from, "block hashes don't match the file root; ignoring source");
-            // Leave Pending; tick will re-ask another source.
+            // Leave Pending; another solicited source's reply can still
+            // validate. (Promptly re-asking the *same* bad peer is a
+            // separate, out-of-scope improvement.)
             return vec![];
         }
         tracing::debug!(blocks = hashes.len(), "block hashes validated");
@@ -444,34 +448,17 @@ impl Downloads {
                     to: peer.clone(),
                     message: PeerMessage::Cancel { file, chunks },
                 });
-                // Drop it; set_sources re-adds (with a fresh clock) if
-                // it's still a candidate next round.
+                // Drop it; set_sources re-adds (with a fresh clock, and
+                // re-solicited) if it's still a candidate next round.
                 d.sources.remove(&peer);
             }
-        }
-        // If we're still waiting on block hashes and the asked source
-        // went quiet, clear the pending peer so refill re-asks. Decide
-        // first (immutable borrow), then reassign.
-        let reset_ra = if let BlockHashes::Pending { peer, requested_at } = &d.block_hashes {
-            let stale = peer.as_ref().is_some_and(|p| {
-                !d.sources.contains_key(p) || now.saturating_sub(*requested_at) >= timeout
-            });
-            stale.then_some(*requested_at)
-        } else {
-            None
-        };
-        if let Some(requested_at) = reset_ra {
-            d.block_hashes = BlockHashes::Pending {
-                peer: None,
-                requested_at,
-            };
         }
         actions
     }
 
     /// Emit a progress action if the verified fraction changed, then
     /// refill request pipelines.
-    fn progress_and_refill(&mut self, file: Ed2kHash, now: u64) -> Vec<DownloadAction> {
+    fn progress_and_refill(&mut self, file: Ed2kHash, _now: u64) -> Vec<DownloadAction> {
         let mut actions = Vec::new();
         let Some(d) = self.files.get_mut(&file) else {
             return actions;
@@ -482,7 +469,7 @@ impl Downloads {
             let path = d.store.path().to_path_buf();
             let block_hashes = match &d.block_hashes {
                 BlockHashes::Have(hashes) => hashes.clone(),
-                BlockHashes::Pending { .. } => Vec::new(),
+                BlockHashes::Pending => Vec::new(),
             };
             self.files.remove(&file);
             actions.push(DownloadAction::Complete {
@@ -493,20 +480,31 @@ impl Downloads {
             return actions;
         }
 
-        // Block hashes first: no chunk can verify without them.
-        if matches!(d.block_hashes, BlockHashes::Pending { .. }) {
-            let need_request = matches!(d.block_hashes, BlockHashes::Pending { peer: None, .. });
-            if need_request && let Some(target) = d.sources.keys().next().cloned() {
-                d.block_hashes = BlockHashes::Pending {
-                    peer: Some(target.clone()),
-                    requested_at: now,
-                };
+        // Solicit block hashes + availability from *every* source we
+        // haven't asked yet. A `BlockHashRequest` is answered (by
+        // `file::serve_block_hashes`) with both the per-block hashes AND the
+        // source's `FileAvailability` bitfield, so one request doubles as a
+        // bitfield solicitation -- no new wire message needed. Asking all
+        // sources (not just one) is what makes the transfer multi-source,
+        // and re-asking a source that joins after we already `Have` the
+        // hashes (empty bitfield, not yet solicited) is what lets a
+        // surviving source take over when the one that supplied the hashes
+        // departs -- otherwise the download wedges permanently. Sources
+        // come from synced Ready peers (complete holders), so an empty
+        // bitfield means "hasn't advertised yet", never "has nothing".
+        for (peer, src) in d.sources.iter_mut() {
+            if !src.solicited && src.bitfield.count_ones() == 0 {
+                src.solicited = true;
                 actions.push(DownloadAction::Send {
-                    to: target,
+                    to: peer.clone(),
                     message: PeerMessage::BlockHashRequest { file },
                 });
             }
-            return actions; // no chunks until hashes are validated
+        }
+
+        // No chunk can verify without validated block hashes.
+        if matches!(d.block_hashes, BlockHashes::Pending) {
+            return actions;
         }
 
         // Progress write on change.
@@ -548,7 +546,9 @@ fn plan_requests(d: &mut Download, config: &DownloadConfig, file: Ed2kHash) -> V
     }
 
     // Chunks already in flight somewhere (bulk mode avoids duplicating).
-    let assigned: HashSet<u32> = d
+    // Updated *within* the source loop as each chunk is committed, so two
+    // sources planned in the same pass can't both grab the same chunk.
+    let mut assigned: HashSet<u32> = d
         .sources
         .values()
         .flat_map(|s| s.in_flight.iter().copied())
@@ -619,6 +619,9 @@ fn plan_requests(d: &mut Download, config: &DownloadConfig, file: Ed2kHash) -> V
                 src.in_flight.insert(c);
             }
         }
+        // Reserve these so a later source in this same pass won't re-pick
+        // them in bulk mode. (Endgame ignores `assigned`, by design.)
+        assigned.extend(take.iter().copied());
         actions.push(DownloadAction::Send {
             to: peer,
             message: PeerMessage::ChunkRequest { file, chunks: take },
@@ -709,6 +712,96 @@ mod tests {
         fn chunk(&self, index: u32) -> Vec<u8> {
             let r = chunk_range(index, self.hash.size_bytes);
             self.bytes[r.start as usize..r.end as usize].to_vec()
+        }
+
+        /// Drive the download to completion against a set of honest,
+        /// *present* sources, mirroring what `serve_block_hashes` / the
+        /// file actor would do: a present source answers a
+        /// `BlockHashRequest` with valid block hashes **and** a full
+        /// `FileAvailability` bitfield, and a `ChunkRequest` with the real
+        /// bytes. A source not in `present` answers nothing (it has
+        /// departed / is unreachable). Returns the completed path, or
+        /// `None` if the scheduler wedges (no progress and nothing in
+        /// flight).
+        fn drive_to_complete(
+            &mut self,
+            present: &HashSet<String>,
+            mut actions: Vec<DownloadAction>,
+            start_t: u64,
+        ) -> Option<PathBuf> {
+            let mut t = start_t;
+            for _ in 0..100_000 {
+                let mut next = Vec::new();
+                let mut completed: Option<PathBuf> = None;
+                for action in &actions {
+                    match action {
+                        DownloadAction::Complete { path, .. } => completed = Some(path.clone()),
+                        DownloadAction::Send { to, message }
+                            if present.contains(&to.to_string()) =>
+                        {
+                            let to = to.clone();
+                            match message {
+                                PeerMessage::BlockHashRequest { file } => {
+                                    let file = *file;
+                                    let blocks = self.hash.blocks.clone();
+                                    let bf = self.full_bitfield();
+                                    t += 1;
+                                    next.extend(self.downloads.on_peer_message(
+                                        to.clone(),
+                                        PeerMessage::BlockHashes {
+                                            file,
+                                            hashes: blocks,
+                                        },
+                                        t,
+                                    ));
+                                    t += 1;
+                                    next.extend(self.downloads.on_peer_message(
+                                        to,
+                                        PeerMessage::FileAvailability { file, bitfield: bf },
+                                        t,
+                                    ));
+                                }
+                                PeerMessage::ChunkRequest { file, chunks } => {
+                                    let file = *file;
+                                    for &c in chunks {
+                                        let data = self.chunk(c);
+                                        t += 1;
+                                        next.extend(self.downloads.on_peer_message(
+                                            to.clone(),
+                                            PeerMessage::ChunkData {
+                                                file,
+                                                index: c,
+                                                data,
+                                            },
+                                            t,
+                                        ));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                for a in &next {
+                    if let DownloadAction::Complete { path, .. } = a {
+                        completed = Some(path.clone());
+                    }
+                }
+                if let Some(p) = completed {
+                    return Some(p);
+                }
+                if next.is_empty() {
+                    // Nothing in flight: nudge with a tick (snub + refill).
+                    next = self.downloads.tick(t + 1);
+                    t += 2;
+                    if next.is_empty() {
+                        return None; // wedged
+                    }
+                }
+                actions = next;
+            }
+            None
         }
     }
 
@@ -1021,5 +1114,173 @@ mod tests {
         // The download was removed on completion; recompute stats from a
         // fresh read isn't possible, so assert via the file contents
         // above. (Per-file stats are asserted in the sim test.)
+    }
+
+    // --- Regression tests for the multi-source-solicitation / stall and
+    // duplicate-assignment defects (2026-06-26 codebase review). ---
+
+    /// Every source must be solicited for block hashes / availability, not
+    /// just `sources.keys().next()`. A `BlockHashRequest` is answered with
+    /// both the per-block hashes and the source's bitfield, so soliciting
+    /// all sources is what makes the transfer multi-source. Pre-fix only
+    /// one source was ever asked, so secondary sources kept empty bitfields
+    /// and were never used.
+    #[test]
+    fn every_source_is_solicited_for_block_hashes() {
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, DownloadConfig::default());
+        let actions = r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("a"), peer("b"), peer("c")],
+            0,
+            1000,
+        );
+        let asked: HashSet<String> = block_hash_requests(&actions).into_iter().collect();
+        let want: HashSet<String> = ["a", "b", "c"].into_iter().map(String::from).collect();
+        assert_eq!(
+            asked, want,
+            "every source must be solicited, not just one: {actions:?}"
+        );
+    }
+
+    /// A source that joins *after* block hashes are already validated (so
+    /// the download is past the `Pending` phase) must still be solicited
+    /// for its bitfield -- otherwise it stays an empty, unusable candidate.
+    /// This is the "re-solicit when `block_hashes` is `Have` but a source
+    /// has an empty bitfield" case; pre-fix the only solicitation site sat
+    /// inside the `Pending` branch and was unreachable here.
+    #[test]
+    fn a_source_added_after_block_hashes_is_solicited() {
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, DownloadConfig::default());
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("a")],
+            0,
+            1000,
+        );
+        // 'a' supplies valid block hashes -> state leaves Pending.
+        r.downloads.on_peer_message(
+            peer("a"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            1100,
+        );
+        // A new Ready source 'b' joins. It must be solicited.
+        let actions = r
+            .downloads
+            .set_sources(r.file, vec![peer("a"), peer("b")], 0, 1200);
+        assert!(
+            block_hash_requests(&actions).contains(&"b".to_string()),
+            "a source joining after block hashes are validated must be solicited: {actions:?}"
+        );
+    }
+
+    /// A download must not wedge when the source that supplied block hashes
+    /// departs before serving any chunks: a surviving Ready source has to
+    /// be solicited and carry the transfer to completion. Pre-fix, once
+    /// `block_hashes` became `Have` no further `BlockHashRequest` was ever
+    /// issued, so the replacement source kept an empty bitfield forever and
+    /// the download stalled permanently.
+    #[test]
+    fn download_completes_after_the_driving_source_departs() {
+        let mut r = rig(ED2K_BLOCK_SIZE as usize + 5000, DownloadConfig::default());
+        // 'a' is the initial source and supplies valid block hashes...
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("a")],
+            0,
+            1000,
+        );
+        r.downloads.on_peer_message(
+            peer("a"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            1100,
+        );
+        // ...but departs before advertising any chunks; 'b' replaces it.
+        let actions = r.downloads.set_sources(r.file, vec![peer("b")], 0, 1200);
+        let present: HashSet<String> = ["b"].into_iter().map(String::from).collect();
+        let path = r
+            .drive_to_complete(&present, actions, 1300)
+            .expect("download must complete from the surviving source, not stall");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            r.bytes,
+            "assembled file matches"
+        );
+    }
+
+    /// Two sources advertising overlapping bitfields and planned in the
+    /// *same* `plan_requests` pass (both with empty in-flight) must not be
+    /// handed the same chunk. They accumulate while block hashes are still
+    /// Pending (refill is suppressed), then the first plan after validation
+    /// schedules both at once. Pre-fix the `assigned` set was a stale
+    /// pre-loop snapshot, so both sources grabbed the identical
+    /// window/rarest chunks -> duplicate fetch.
+    #[test]
+    fn two_sources_in_one_pass_are_not_assigned_the_same_chunk() {
+        let config = DownloadConfig {
+            pipeline_depth: 16,
+            max_sources: 4,
+            ..DownloadConfig::default()
+        };
+        // 2 blocks ~ 77 chunks: bulk (non-endgame) mode.
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("a"), peer("b")],
+            0,
+            1000,
+        );
+        // Both advertise full bitfields *before* block hashes arrive, so
+        // neither has anything in flight when the first plan runs.
+        for name in ["a", "b"] {
+            r.downloads.on_peer_message(
+                peer(name),
+                PeerMessage::FileAvailability {
+                    file: r.file,
+                    bitfield: r.full_bitfield(),
+                },
+                1100,
+            );
+        }
+        // Block hashes validate -> the first refill plans both at once.
+        let actions = r.downloads.on_peer_message(
+            peer("a"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            1200,
+        );
+        let reqs = requests(&actions);
+        assert!(
+            reqs.len() >= 2,
+            "both sources should be planned in this pass: {reqs:?}"
+        );
+        let mut seen = HashSet::new();
+        for (_, chunks) in &reqs {
+            for c in chunks {
+                assert!(
+                    seen.insert(*c),
+                    "chunk {c} assigned to two sources in one pass: {reqs:?}"
+                );
+            }
+        }
     }
 }
