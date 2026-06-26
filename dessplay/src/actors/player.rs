@@ -313,6 +313,21 @@ impl<F: PlayerFactory> Actor<F> {
         });
     }
 
+    /// Freeze the position estimate at its current extrapolated value.
+    ///
+    /// `estimate_now` reads `believed_pause` and `speed`, so mutating
+    /// either retroactively re-interprets the interval since the last
+    /// anchor — a pause→play flip would otherwise count the whole paused
+    /// gap as playback. Call this **before** changing pause/speed so the
+    /// change only affects the future, never the elapsed interval. (The
+    /// invariant lives in one place precisely because every site that
+    /// forgot it re-introduces that phantom-playback jump.)
+    fn reanchor_estimate(&mut self) {
+        if let Some(now) = self.estimate_now() {
+            self.note_position(now);
+        }
+    }
+
     async fn handle_command(&mut self, cmd: PlayerCommand) {
         match cmd {
             PlayerCommand::Load { file, path, title } => {
@@ -393,9 +408,7 @@ impl<F: PlayerFactory> Actor<F> {
             if player.set_pause(target).await.is_ok() {
                 // Settle the estimate at the flip: extrapolation stops
                 // (or starts) from the position at this instant.
-                if let Some(now) = self.estimate_now() {
-                    self.note_position(now);
-                }
+                self.reanchor_estimate();
                 self.believed_pause = Some(target);
                 self.pending_pause_echoes.push_back(target);
             }
@@ -410,9 +423,7 @@ impl<F: PlayerFactory> Actor<F> {
             && player.set_speed(speed).await.is_ok()
         {
             // Re-anchor so past extrapolation used the old speed.
-            if let Some(now) = self.estimate_now() {
-                self.note_position(now);
-            }
+            self.reanchor_estimate();
             self.speed = speed;
         }
     }
@@ -559,11 +570,13 @@ impl<F: PlayerFactory> Actor<F> {
     }
 
     async fn handle_pause_observation(&mut self, paused: bool) {
+        // Settle the estimate BEFORE flipping believed_pause — otherwise a
+        // user unpause re-reads the new (playing) state and extrapolates the
+        // whole paused interval as phantom playback, jumping the broadcast
+        // position forward by the pause duration. Mirrors apply_desired_pause
+        // / set_speed.
+        self.reanchor_estimate();
         self.believed_pause = Some(paused);
-        // Re-anchor extrapolation at the flip.
-        if let Some(now) = self.estimate_now() {
-            self.note_position(now);
-        }
         if self.pending_pause_echoes.front() == Some(&paused) {
             self.pending_pause_echoes.pop_front();
             return;
@@ -786,6 +799,34 @@ mod tests {
         (commands, outputs, control)
     }
 
+    /// A bare [`Actor`] for unit-testing the position estimator directly,
+    /// without driving the run loop. No player is spawned (the factory is
+    /// empty); the returned receiver keeps the outputs channel alive.
+    fn test_actor() -> (Actor<MockFactory>, mpsc::Receiver<PlayerOutput>) {
+        let (out_tx, out_rx) = mpsc::channel(64);
+        let actor = Actor {
+            factory: MockFactory::new(vec![]),
+            outputs: out_tx,
+            clock: fixed_clock(0),
+            offset_millis: 0,
+            player: None,
+            current: None,
+            desired_playing: false,
+            believed_pause: None,
+            speed: 1.0,
+            pending_pause_echoes: VecDeque::new(),
+            pending_seek_echoes: 0,
+            pending_user_seek: None,
+            restore_millis: None,
+            estimate: None,
+            last_position_emit: None,
+            eof_reported: false,
+            last_death: None,
+            consecutive_crashes: 0,
+        };
+        (actor, out_rx)
+    }
+
     #[tokio::test(start_paused = true)]
     async fn load_failure_is_reported_upstream() {
         let (player, _control) = MockPlayer::pair_failing_load();
@@ -924,6 +965,87 @@ mod tests {
             expect_output(&mut outputs).await,
             PlayerOutput::UserUnpaused
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unpausing_in_mpv_after_a_long_pause_does_not_jump_the_broadcast_position() {
+        // The file sits paused at 10_000 (loaded_rig's last Position sample).
+        let (_commands, mut outputs, control) = loaded_rig().await;
+        // A five-minute break passes with the player paused — mpv emits no
+        // Position events while paused, so the anchor stays at 10_000.
+        tokio::time::sleep(Duration::from_secs(300)).await;
+        while outputs.try_recv().is_ok() {} // drop the paused-cadence ticks
+        // The user unpauses directly in mpv (a flip we did not command).
+        control
+            .events
+            .send(PlayerEvent::PauseChanged(false))
+            .unwrap();
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::UserUnpaused
+        );
+        // The first position broadcast after the unpause must be near where
+        // we paused (~10_000), NOT ~310_000 (the 5-minute pause counted as
+        // phantom playback) — which would make this client a spurious
+        // furthest-ahead drift leader and yank the group forward.
+        let position = loop {
+            let out = tokio::time::timeout(BUDGET, outputs.recv())
+                .await
+                .expect("position budget exhausted")
+                .expect("actor exited");
+            if let PlayerOutput::PositionTick {
+                position_millis, ..
+            } = out
+            {
+                break position_millis;
+            }
+        };
+        assert!(
+            position < 20_000,
+            "unpause after a long pause broadcast position {position}; the \
+             paused interval leaked into the estimate"
+        );
+    }
+
+    proptest::proptest! {
+        /// A user unpause (a pause flip we did not command) must never count
+        /// the paused interval as playback. The estimate is anchored when the
+        /// player pauses; after any paused interval, an unpause must re-anchor
+        /// to that same position — extrapolation may only begin *from* the
+        /// unpause, never reach back across the pause.
+        ///
+        /// Regression: `handle_pause_observation` set `believed_pause` before
+        /// settling the estimate, so on an unpause `estimate_now` extrapolated
+        /// the whole pause as phantom playback (the client could then broadcast
+        /// a position far ahead and become a spurious drift leader).
+        #[test]
+        fn user_unpause_never_counts_the_paused_interval_as_playback(
+            start_pos in 0u64..2_000_000,
+            pause_millis in 0u64..3_600_000,
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .start_paused(true)
+                .build()
+                .unwrap();
+            let anchored = rt.block_on(async move {
+                let (mut actor, _outputs) = test_actor();
+                // The player is paused, anchored at `start_pos`.
+                actor.believed_pause = Some(true);
+                actor.note_position(start_pos);
+                // A paused interval passes with no position events.
+                tokio::time::sleep(Duration::from_millis(pause_millis)).await;
+                // The user unpauses directly in the player.
+                actor.handle_pause_observation(false).await;
+                actor.estimate.as_ref().expect("estimate present").millis
+            });
+            proptest::prop_assert_eq!(
+                anchored, start_pos,
+                "unpause after a {}ms pause re-anchored at {} instead of {} \
+                 (the paused interval leaked in as phantom playback)",
+                pause_millis, anchored, start_pos,
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
