@@ -112,6 +112,35 @@ impl ServerConfig {
 /// (a frame can span several poll-writes) and held across them.
 type RelayTx = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>;
 
+/// Which channel a relayed op leaves the server on.
+#[derive(Clone, Copy, Debug)]
+enum RelayTransport {
+    /// Reliable control stream plus an eager datagram copy when it fits.
+    /// The default: ordinary ops, server-authored writes, and the 1s
+    /// reliable playback-position tick.
+    Eager,
+    /// Datagram only, best-effort — no reliable copy.
+    DatagramOnly,
+}
+
+/// The relay transport for `op`, given how it *arrived*.
+///
+/// A `PlaybackPosition` that came in on the 100ms datagram fast path is
+/// relayed datagram-only: re-fanning every stale position out reliably to
+/// all peers is exactly the head-of-line blocking the datagram-only
+/// position transport exists to avoid (docs/network-design.md, "Exception
+/// -- playback position"; docs/sync-state.md, Playback Position). The rule
+/// mirrors the inbound transport — a position that arrived reliably (the
+/// 1s catch-up tick, sent eager by the client) and every other op type
+/// relay [`RelayTransport::Eager`].
+fn relay_transport(op: &CrdtOp, via_datagram: bool) -> RelayTransport {
+    if via_datagram && matches!(op, CrdtOp::PlaybackPosition(_)) {
+        RelayTransport::DatagramOnly
+    } else {
+        RelayTransport::Eager
+    }
+}
+
 struct PeerEntry<T> {
     /// Id of the connection backing this entry (live or last).
     conn_id: u64,
@@ -209,9 +238,16 @@ impl<T: Transport> Shared<T> {
             .collect()
     }
 
-    /// Broadcast one message to every live connection: reliable, plus
-    /// an eager datagram copy when it fits.
-    async fn broadcast_op(&self, msg: ServerControl, skip: Option<u64>) {
+    /// Broadcast one message to every live connection, on the channel
+    /// [`RelayTransport`] selects.
+    ///
+    /// [`RelayTransport::Eager`] (ordinary ops and server-authored
+    /// writes): reliable control stream, plus an eager datagram copy when
+    /// it fits. [`RelayTransport::DatagramOnly`]: datagram only,
+    /// best-effort — used to mirror the 100ms position fast path so stale
+    /// positions never queue on the control stream (see
+    /// [`relay_transport`]).
+    async fn broadcast_op(&self, msg: ServerControl, skip: Option<u64>, transport: RelayTransport) {
         let name = msg.variant_name();
         let Ok(frame) = wire::encode(&WireMessage::Control(msg)) else {
             return;
@@ -221,14 +257,23 @@ impl<T: Transport> Shared<T> {
             msg = name,
             bytes = frame.len(),
             recipients = conns.len(),
+            ?transport,
             "broadcast"
         );
         for conn in conns {
-            let _ = conn.send_control(&frame).await;
-            if conn
+            let fits_datagram = conn
                 .max_datagram_size()
-                .is_some_and(|max| frame.len() <= max)
-            {
+                .is_some_and(|max| frame.len() <= max);
+            if matches!(transport, RelayTransport::Eager) {
+                let _ = conn.send_control(&frame).await;
+            }
+            // Eager: an extra datagram copy (pure latency win, receivers
+            // dedup). DatagramOnly: the *only* copy — and if it won't fit
+            // a datagram we drop it rather than fall back to the control
+            // stream (the next position, or the 1s reliable tick,
+            // supersedes it), since that fallback is the very head-of-line
+            // blocking this path exists to avoid.
+            if fits_datagram {
                 let _ = conn.send_datagram(&frame).await;
             }
         }
@@ -276,8 +321,12 @@ impl<T: Transport> Shared<T> {
             (Epoch(self.epoch.load(Ordering::SeqCst)), op)
         };
         self.dirty.store(true, Ordering::SeqCst);
-        self.broadcast_op(ServerControl::StateOp { epoch, op }, None)
-            .await;
+        self.broadcast_op(
+            ServerControl::StateOp { epoch, op },
+            None,
+            RelayTransport::Eager,
+        )
+        .await;
     }
 
     /// Force the playback-intent latch to Paused (lost connection,
@@ -896,8 +945,15 @@ async fn serve_authed<T: Transport>(
                 }
                 shared.dirty.store(true, Ordering::SeqCst);
                 let now_playing_changed = matches!(op, CrdtOp::NowPlaying(_)) && !via_datagram;
+                // Mirror the inbound transport: a 100ms datagram position
+                // is relayed datagram-only, never re-fanned-out reliably.
+                let transport = relay_transport(&op, via_datagram);
                 shared
-                    .broadcast_op(ServerControl::StateOp { epoch, op }, Some(conn_id))
+                    .broadcast_op(
+                        ServerControl::StateOp { epoch, op },
+                        Some(conn_id),
+                        transport,
+                    )
                     .await;
                 // File change: the server takes seek authority so the
                 // transition has one position source (everyone resets
@@ -1040,7 +1096,7 @@ async fn handle_eof<T: Transport>(
     shared.dirty.store(true, Ordering::SeqCst);
     tracing::info!("EOF on {file:?} reported by {reporter:?}; advancing");
     for op in ops {
-        shared.broadcast_op(op, None).await;
+        shared.broadcast_op(op, None, RelayTransport::Eager).await;
     }
 }
 
