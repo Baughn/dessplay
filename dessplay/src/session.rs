@@ -1008,6 +1008,18 @@ impl PlayerWiring {
         self.loaded.is_some() && self.loaded == view.now_playing
     }
 
+    /// True iff this client may *speak for the group* about `file`: it is the
+    /// current now-playing file **and** we hold the real verified video for it
+    /// (not a placeholder / stale frame). The two file-tagged group-speaking
+    /// player outputs — publishing a position sample (`PositionTick`) and
+    /// reporting end-of-file (`Eof`) — share this gate, so a placeholder that
+    /// reuses the now-playing hash never advances now-playing or marks a file
+    /// watched. (`UserSeeked` carries no file, so it gates on the bare
+    /// `holds_now_playing`.) See `holds_now_playing`.
+    fn speaks_for_now_playing(&self, view: &StateView, file: Ed2kHash) -> bool {
+        view.now_playing == Some(file) && self.holds_now_playing(view)
+    }
+
     /// The position reference this client slaves to for drift correction,
     /// or `None` when *we* are the reference (or there is no one to follow).
     ///
@@ -1455,8 +1467,9 @@ impl PlayerWiring {
                 // The same applies to a placeholder we hold (`loaded !=
                 // now_playing`): its position is the placeholder's, not the
                 // real video's, so a not-watching client must not publish it
-                // or mark the file watched. `holds_now_playing` is that gate.
-                if view.now_playing != Some(file) || !self.holds_now_playing(view) {
+                // or mark the file watched. `speaks_for_now_playing` is that
+                // gate (current now-playing file AND we hold the real video).
+                if !self.speaks_for_now_playing(view, file) {
                     vec![]
                 } else {
                     let mut out = vec![Directive::Mutate(Mutation::SetPlaybackPosition {
@@ -1493,7 +1506,22 @@ impl PlayerWiring {
                 speaker,
                 video_millis: position_millis,
             }],
-            PlayerOutput::Eof { file } => vec![Directive::ReportEof(file)],
+            PlayerOutput::Eof { file } => {
+                // EOF advances the whole group (the server marks the file
+                // watched, advances now-playing and The List, pauses everyone).
+                // A placeholder / stale frame reuses the now-playing hash and
+                // reaches `eof-reached` when its ~1s image plays out, so its
+                // `Eof` carries `file == now_playing` despite nobody watching.
+                // Gate it exactly like `PositionTick`: only report when we hold
+                // the real now-playing video. This also harmlessly drops
+                // duplicate/stale reports for an already-advanced file (the
+                // server ignores those anyway). See `speaks_for_now_playing`.
+                if self.speaks_for_now_playing(view, file) {
+                    vec![Directive::ReportEof(file)]
+                } else {
+                    vec![]
+                }
+            }
             PlayerOutput::LoadFailed { file } => {
                 // The path we loaded is gone/unreadable. Forget it, flip
                 // to Missing, and re-resolve so a re-download (or a
@@ -4196,9 +4224,42 @@ mod tests {
     }
 
     #[test]
+    fn eof_from_a_placeholder_is_not_reported_to_the_server() {
+        // Regression: a downloading / not-watching client holds the
+        // placeholder PNG (`FileOutput::PlaceholderReady` reuses the
+        // now-playing hash but deliberately leaves `loaded` untouched, so
+        // `loaded != now_playing`). If a manual unpause lets that ~1s image
+        // play out, the player echoes `Eof { file: now_playing }`. Reporting
+        // it would let the server advance now-playing, set the watched flag,
+        // advance The List, and pause the whole group for an episode nobody
+        // watched. The EOF report must be gated on holding the real
+        // now-playing video, exactly like the `UserSeeked` / `PositionTick`
+        // arms. See `holds_now_playing` / `speaks_for_now_playing`.
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view(); // now-playing = hash(1)
+        // `loaded` is None — we only ever held a placeholder for hash(1).
+        let directives = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert!(
+            !directives
+                .iter()
+                .any(|d| matches!(d, Directive::ReportEof(_))),
+            "a placeholder/stale EOF must not advance the group: {directives:?}"
+        );
+    }
+
+    #[test]
     fn eof_and_fatal_crash_map_to_their_directives() {
         let mut wiring = PlayerWiring::new(me());
         let view = playing_state().view();
+        // Hold the real verified now-playing video, so the EOF speaks for the
+        // group (`loaded == now_playing`); a placeholder EOF would be gated
+        // out — see `eof_from_a_placeholder_is_not_reported_to_the_server`.
+        wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            &view,
+            &[peer("baughn")],
+        );
         let directives = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
         assert!(
             directives
