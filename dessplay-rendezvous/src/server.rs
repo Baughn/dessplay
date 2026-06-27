@@ -358,26 +358,60 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 /// docs/design.md (Presence).
 const DEPART_AFTER_MILLIS: u64 = 30_000;
 
+/// Resolve the snapshot the server starts from.
+///
+/// - `None` storage, or `Ok(None)` (no stored row) — a genuine first run:
+///   fresh epoch-1 state.
+/// - `Ok(Some(snapshot))` — the stored snapshot, used as-is.
+/// - `Err(e)` — a load failure (a corrupt/truncated blob, a layout the
+///   forward-compat [`CrdtState::decode_snapshot`] cannot read, or a
+///   SQLite read error). This is **fatal**: the server is authoritative
+///   and cannot re-sync its lost state from anyone, so it refuses to
+///   start rather than silently discard the playlist/List/metadata/...
+///   and reset the epoch to 1. An operator can then investigate or
+///   restore the database.
+fn initial_snapshot(storage: Option<&ServerStorage>) -> Result<StateSnapshot, String> {
+    let fresh = || StateSnapshot {
+        epoch: Epoch(1),
+        state: CrdtState::new(),
+    };
+    match storage.map(ServerStorage::load_state) {
+        // No storage, or no stored row: a genuine first run.
+        None | Some(Ok(None)) => Ok(fresh()),
+        // A stored snapshot: use it.
+        Some(Ok(Some(snapshot))) => Ok(snapshot),
+        // A load failure must never be collapsed into "first run": doing
+        // so silently discards authoritative state and resets the epoch.
+        Some(Err(e)) => Err(format!(
+            "refusing to start: cannot load the authoritative state snapshot from \
+             the server database ({e}); the snapshot may be corrupt or from an \
+             incompatible version — investigate or restore the database rather \
+             than losing server state (playlist, the List, watched flags, AniDB \
+             metadata, file catalog, relations, chat) and resetting the epoch"
+        )),
+    }
+}
+
 /// Run the accept loop until the listener fails. Each connection gets
 /// its own task. State is loaded from `storage` if present; a fresh
 /// server starts at epoch 1 (clients persist real epochs, so epoch 0
 /// always reads as stale and gets a snapshot).
+///
+/// Returns `Err` (refusing to start) if the stored snapshot exists but
+/// cannot be loaded — see [`initial_snapshot`]. The server is
+/// authoritative and cannot re-sync its lost state from anyone, so a
+/// load failure must never be silently treated as a fresh start.
 pub async fn run<L: Listener>(
     listener: L,
     config: ServerConfig,
     clock: Clock,
     storage: Option<ServerStorage>,
-) where
+) -> Result<(), String>
+where
     L::Conn: Transport,
 {
     let config = Arc::new(config);
-    let initial = storage
-        .as_ref()
-        .and_then(|s| s.load_state().ok().flatten())
-        .unwrap_or(StateSnapshot {
-            epoch: Epoch(1),
-            state: CrdtState::new(),
-        });
+    let initial = initial_snapshot(storage.as_ref())?;
     // Lamport floor from stored state: a restart must not re-issue
     // stamps the previous incarnation already spent.
     let last_issued = initial.state.max_lww_timestamp().0;
@@ -482,7 +516,7 @@ pub async fn run<L: Listener>(
             Err(e) => {
                 tracing::info!("listener stopped: {e}");
                 shared.flush();
-                return;
+                return Ok(());
             }
         };
         let conn_id = next_conn_id;
@@ -1098,4 +1132,94 @@ fn compact_state<T: Transport>(shared: &Shared<T>, chat_keep: usize) -> StateSna
     }
     shared.dirty.store(true, Ordering::SeqCst);
     shared.snapshot()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use dessplay_core::test_support::{ClusterEvent, ScriptOp, run_cluster};
+
+    use super::*;
+
+    /// A small snapshot with one playlist entry, for the load tests.
+    fn sample_snapshot(epoch: u64) -> StateSnapshot {
+        let cluster = run_cluster(&[ClusterEvent::ServerOp {
+            ts: 1,
+            op: ScriptOp::AddPlaylist {
+                file: 1,
+                after: None,
+            },
+        }]);
+        StateSnapshot {
+            epoch: Epoch(epoch),
+            state: cluster.server,
+        }
+    }
+
+    /// No storage at all (e.g. an ephemeral server) is a genuine first
+    /// run: fresh epoch-1 state.
+    #[test]
+    fn initial_snapshot_without_storage_is_fresh_epoch_1() {
+        let snapshot = initial_snapshot(None).expect("no storage must be a fresh start");
+        assert_eq!(snapshot.epoch, Epoch(1));
+        assert_eq!(snapshot.state, CrdtState::new());
+    }
+
+    /// Storage with no stored row is also a genuine first run.
+    #[test]
+    fn initial_snapshot_with_empty_storage_is_fresh_epoch_1() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        let snapshot = initial_snapshot(Some(&storage)).expect("empty storage must be fresh");
+        assert_eq!(snapshot.epoch, Epoch(1));
+        assert_eq!(snapshot.state, CrdtState::new());
+    }
+
+    /// A valid stored blob loads as-is (epoch and state preserved).
+    #[test]
+    fn initial_snapshot_loads_a_valid_stored_blob() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        let snapshot = sample_snapshot(9);
+        storage.save_state(&snapshot, 1000).unwrap();
+        let loaded = initial_snapshot(Some(&storage)).expect("valid blob must load");
+        assert_eq!(loaded, snapshot);
+    }
+
+    /// Regression (2026-06-27): a corrupt/undecodable stored blob must
+    /// **abort startup**, not be silently treated as "first run" — which
+    /// would discard the authoritative playlist/List/metadata/... and
+    /// reset the epoch to 1. The server cannot re-sync this from anyone.
+    #[test]
+    fn initial_snapshot_aborts_on_a_corrupt_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rendezvous.db");
+
+        // Persist a real snapshot, then overwrite its blob with bytes that
+        // decode as neither the current layout nor the CrdtStateV1 prefix.
+        {
+            let storage = ServerStorage::open(&path).unwrap();
+            storage.save_state(&sample_snapshot(5), 1000).unwrap();
+        }
+        {
+            let raw = rusqlite::Connection::open(&path).unwrap();
+            raw.execute(
+                "UPDATE crdt_state SET state = ?1 WHERE room = 'default'",
+                rusqlite::params![vec![0xFF_u8; 64]],
+            )
+            .unwrap();
+        }
+
+        let storage = ServerStorage::open(&path).unwrap();
+        // Sanity: the storage layer itself reports the decode failure.
+        assert!(
+            storage.load_state().is_err(),
+            "load_state must surface the corrupt blob as an error"
+        );
+
+        // The startup resolver must propagate it, not swallow it.
+        assert!(
+            initial_snapshot(Some(&storage)).is_err(),
+            "a corrupt snapshot must abort startup, not silently reset to epoch 1"
+        );
+    }
 }

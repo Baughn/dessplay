@@ -156,8 +156,7 @@ fn run(cli: Cli) -> Result<(), String> {
         config,
         server::system_clock(),
         Some(storage),
-    ));
-    Ok(())
+    ))
 }
 
 fn main() -> color_eyre::Result<()> {
