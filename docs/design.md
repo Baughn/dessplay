@@ -239,6 +239,14 @@ It can have one of three values:
 - **Downloading**: The user's client is actively retrieving the file from other
   clients. Unpausing is conditional: their download speed must be higher than the
   file's computed bitrate, *and* at least 20% of the file must be downloaded.
+  *Implementation status (2026-06-28):* only the **20%** half is enforced today
+  (`derive::file_block_reason` blocks below 20%). The download-speed-vs-bitrate
+  half is **deferred** — `FileAvailability::Downloading { progress_bps }` carries
+  only progress, no measured throughput, so the speed clause cannot be evaluated
+  from synced state; honoring it would require a synced eligibility signal. See
+  [Future Plans](#future-plans). Impact is a self-only edge (a user who unpauses
+  at exactly 20% with throughput below the bitrate may stall their own playback;
+  it never gates the group).
 
 ### Ready States (UI Display)
 
@@ -1673,6 +1681,10 @@ For v1, this is acceptable. Future improvements could include:
   than wall-clock arrival.
 - Automating The List's "this week's episode is out" flag (possibly via AniDB
   episode air dates).
+- Enforcing the **download-speed-vs-bitrate** half of the Downloading unpause
+  rule (see [File State](#file-state)). Needs a synced eligibility signal on
+  `FileAvailability::Downloading` (the downloader's measured speed vs the
+  file's bitrate); only the 20% threshold is enforced today.
 - Marking *another* user as not-watching a series (the per-series analogue of
   `/away <name>` -- for when someone never gets around to a show). Needs a
   `set_by` on `SeriesWatchState` (mirroring `ManualState::Away`) so the
