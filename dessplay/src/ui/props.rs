@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::{PeerInfo, Presence, Role};
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, SeriesWatchState, UserId,
-    decode_action,
+    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, ManualState,
+    SeriesWatchState, UserId, decode_action,
 };
 use dessplay_core::{StateView, franchise};
 
@@ -165,6 +165,17 @@ fn committed_absent_blocker(view: &StateView, user: &UserId) -> bool {
     let Some(file) = view.now_playing else {
         return false;
     };
+    // Away is the per-user escape hatch: it excuses a committed-absent user
+    // from gating, so `derive::playback_blockers` early-`continue`s on it.
+    // Mirror that here, or the Users pane would keep drawing a red
+    // "committed, away" blocker after playback has already been allowed to
+    // proceed — contradicting both gating and this helper's own contract.
+    if matches!(
+        view.manual_override.get(user).and_then(|m| m.as_ref()),
+        Some(ManualState::Away { .. })
+    ) {
+        return false;
+    }
     derive::series_watch_for_file(view, user, file) == SeriesWatchState::Watching
         && !view.acknowledged_absent.contains(&(file, user.clone()))
 }
@@ -1036,6 +1047,70 @@ mod tests {
             "an acknowledged committed-absent user no longer blocks: {:?}",
             props.departed
         );
+    }
+
+    #[test]
+    fn away_excuses_a_committed_absent_user_in_the_users_pane() {
+        // Regression: marking a committed (Watching) absent user Away is the
+        // per-user escape hatch that lets playback proceed (mirrors derive's
+        // `away_excuses_a_committed_absent_user`). The Users pane must follow
+        // `derive::playback_blockers` and stop drawing them as a red
+        // "committed, away" blocker — otherwise the pane contradicts gating.
+        let series = AniDbSeriesId(7);
+        for presence in [Presence::Lost, Presence::Departed] {
+            let mut state = CrdtState::new();
+            state.set_now_playing(A, ts(1), Some(hash(1)));
+            state.set_anidb_metadata(
+                A,
+                ts(2),
+                hash(1),
+                Some(AniDbMetadata {
+                    source: MetadataSource::AniDb,
+                    series_name: "Show".into(),
+                    series_id: Some(series),
+                    episode_number: Some("1".into()),
+                }),
+            );
+            state.set_series_preference(
+                A,
+                ts(3),
+                UserId::new("cabs"),
+                series,
+                SeriesWatchState::Watching,
+            );
+            let peers = [peer("cabs", Role::Interactive, presence)];
+
+            // Before Away: shown as a red "committed, away" blocker.
+            let props = users_props(&state.view(), &peers);
+            assert!(
+                props
+                    .rows
+                    .iter()
+                    .any(|r| r.name == "cabs" && r.tone == Tone::Blocked),
+                "committed-absent ({presence:?}) should start as a blocker"
+            );
+
+            // Marking them Away clears the block (derive::playback_blockers
+            // early-continues on Away), so the Users pane must no longer show
+            // a red blocker row for them.
+            state.set_manual_override(
+                A,
+                ts(4),
+                UserId::new("cabs"),
+                Some(ManualState::Away {
+                    set_by: UserId::new("kim"),
+                }),
+            );
+            let props = users_props(&state.view(), &peers);
+            assert!(
+                !props
+                    .rows
+                    .iter()
+                    .any(|r| r.name == "cabs" && r.tone == Tone::Blocked),
+                "away-excused committed-absent ({presence:?}) must not be a red blocker: {:?}",
+                props.rows
+            );
+        }
     }
 
     #[test]
