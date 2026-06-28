@@ -136,6 +136,70 @@ const MIGRATIONS: &[&str] = &[
         hashed_at   INTEGER NOT NULL
     ) STRICT;
     ",
+    // v3 (2026-06-28): store path columns as a BLOB of the OS-native bytes
+    // instead of TEXT, so non-UTF-8 paths (legal on Linux) round-trip
+    // losslessly instead of being mangled by `to_string_lossy()`. The
+    // affected columns are media_roots.path, cache_entries.path,
+    // hash_cache.path, manual_mappings.local_path, series_map_dirs.dir.
+    // Existing rows hold valid UTF-8 paths; `CAST(path AS BLOB)` yields
+    // their UTF-8 bytes — exactly what `OsStr::as_bytes()` produces for a
+    // UTF-8 path — so the new reader reconstructs the same PathBuf. Tables
+    // are rebuilt because SQLite cannot change a column's declared type in
+    // place, and STRICT rejects a BLOB in a TEXT column.
+    "
+    CREATE TABLE media_roots_v3 (
+        position INTEGER PRIMARY KEY,
+        path     BLOB NOT NULL UNIQUE
+    ) STRICT;
+    INSERT INTO media_roots_v3 (position, path)
+        SELECT position, CAST(path AS BLOB) FROM media_roots;
+    DROP TABLE media_roots;
+    ALTER TABLE media_roots_v3 RENAME TO media_roots;
+
+    CREATE TABLE cache_entries_v3 (
+        hash        BLOB PRIMARY KEY,
+        path        BLOB NOT NULL,
+        size_bytes  INTEGER NOT NULL,
+        last_access INTEGER NOT NULL
+    ) STRICT;
+    INSERT INTO cache_entries_v3 (hash, path, size_bytes, last_access)
+        SELECT hash, CAST(path AS BLOB), size_bytes, last_access FROM cache_entries;
+    DROP TABLE cache_entries;
+    ALTER TABLE cache_entries_v3 RENAME TO cache_entries;
+
+    CREATE TABLE hash_cache_v3 (
+        path        BLOB PRIMARY KEY,
+        mtime       INTEGER NOT NULL,
+        size_bytes  INTEGER NOT NULL,
+        root        BLOB NOT NULL,
+        blocks      BLOB NOT NULL,
+        hashed_at   INTEGER NOT NULL
+    ) STRICT;
+    INSERT INTO hash_cache_v3 (path, mtime, size_bytes, root, blocks, hashed_at)
+        SELECT CAST(path AS BLOB), mtime, size_bytes, root, blocks, hashed_at FROM hash_cache;
+    DROP TABLE hash_cache;
+    ALTER TABLE hash_cache_v3 RENAME TO hash_cache;
+
+    CREATE TABLE manual_mappings_v3 (
+        hash       BLOB PRIMARY KEY,
+        local_path BLOB NOT NULL,
+        mapped_at  INTEGER NOT NULL
+    ) STRICT;
+    INSERT INTO manual_mappings_v3 (hash, local_path, mapped_at)
+        SELECT hash, CAST(local_path AS BLOB), mapped_at FROM manual_mappings;
+    DROP TABLE manual_mappings;
+    ALTER TABLE manual_mappings_v3 RENAME TO manual_mappings;
+
+    CREATE TABLE series_map_dirs_v3 (
+        series_key TEXT PRIMARY KEY,
+        dir        BLOB NOT NULL,
+        used_at    INTEGER NOT NULL
+    ) STRICT;
+    INSERT INTO series_map_dirs_v3 (series_key, dir, used_at)
+        SELECT series_key, CAST(dir AS BLOB), used_at FROM series_map_dirs;
+    DROP TABLE series_map_dirs;
+    ALTER TABLE series_map_dirs_v3 RENAME TO series_map_dirs;
+    ",
 ];
 
 /// Apply any unapplied migrations. Exposed shape (a slice parameter) so
@@ -231,6 +295,35 @@ fn hash_from_blob(blob: Vec<u8>) -> Result<Ed2kHash> {
     Ok(Ed2kHash(bytes))
 }
 
+/// Encode a path as the OS-native bytes stored in a BLOB column. On Unix a
+/// path is an arbitrary byte sequence, so `to_string_lossy()` would mangle
+/// non-UTF-8 paths (substituting U+FFFD) and desync the stored path from
+/// disk; storing the raw bytes round-trips losslessly (see the v3
+/// migration). On non-Unix (no `OsStrExt`) it falls back to the UTF-8
+/// representation — this project targets Linux/NixOS.
+#[cfg(unix)]
+fn path_to_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn path_to_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
+}
+
+/// Decode a path BLOB written by [`path_to_bytes`].
+#[cfg(unix)]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+}
+
 /// The client's persistent storage.
 pub struct Storage {
     conn: Connection,
@@ -313,10 +406,10 @@ impl Storage {
         let mut stmt = self
             .conn
             .prepare("SELECT path FROM media_roots ORDER BY position")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
         let mut roots = Vec::new();
         for row in rows {
-            roots.push(PathBuf::from(row?));
+            roots.push(path_from_bytes(&row?));
         }
         Ok(roots)
     }
@@ -328,7 +421,7 @@ impl Storage {
         for (position, root) in roots.iter().enumerate() {
             tx.execute(
                 "INSERT INTO media_roots (position, path) VALUES (?1, ?2)",
-                params![position as i64, root.to_string_lossy()],
+                params![position as i64, path_to_bytes(root)],
             )?;
         }
         tx.commit()?;
@@ -489,7 +582,7 @@ impl Storage {
                  last_access = excluded.last_access",
             params![
                 entry.hash.0.as_slice(),
-                entry.path.to_string_lossy(),
+                path_to_bytes(&entry.path),
                 entry.size_bytes as i64,
                 entry.last_access
             ],
@@ -524,7 +617,7 @@ impl Storage {
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, i64>(3)?,
             ))
@@ -534,7 +627,7 @@ impl Storage {
             let (blob, path, size_bytes, last_access) = row?;
             entries.push(CacheEntry {
                 hash: hash_from_blob(blob)?,
-                path: PathBuf::from(path),
+                path: path_from_bytes(&path),
                 size_bytes: size_bytes as u64,
                 last_access,
             });
@@ -561,7 +654,7 @@ impl Storage {
                  root = excluded.root, blocks = excluded.blocks,
                  hashed_at = excluded.hashed_at",
             params![
-                path.to_string_lossy(),
+                path_to_bytes(path),
                 mtime,
                 hash.size_bytes as i64,
                 hash.root.0.as_slice(),
@@ -580,7 +673,7 @@ impl Storage {
             .prepare("SELECT path, mtime, size_bytes, root, blocks FROM hash_cache")?;
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, Vec<u8>>(3)?,
@@ -589,15 +682,17 @@ impl Storage {
         })?;
         let mut entries = Vec::new();
         for row in rows {
-            let (path, mtime, size_bytes, root, blocks) = row?;
+            let (path_bytes, mtime, size_bytes, root, blocks) = row?;
+            let path = path_from_bytes(&path_bytes);
             if !blocks.len().is_multiple_of(16) {
                 return Err(StorageError::Corrupt(format!(
-                    "hash_cache blocks blob len {} for {path}",
-                    blocks.len()
+                    "hash_cache blocks blob len {} for {}",
+                    blocks.len(),
+                    path.display()
                 )));
             }
             entries.push(CachedHash {
-                path: PathBuf::from(path),
+                path,
                 mtime,
                 hash: Ed2kFileHash {
                     root: hash_from_blob(root)?,
@@ -620,7 +715,7 @@ impl Storage {
     pub fn remove_hash_cache(&self, path: &Path) -> Result<()> {
         self.conn.execute(
             "DELETE FROM hash_cache WHERE path = ?1",
-            params![path.to_string_lossy()],
+            params![path_to_bytes(path)],
         )?;
         Ok(())
     }
@@ -634,7 +729,7 @@ impl Storage {
              VALUES (?1, ?2, ?3)
              ON CONFLICT (hash) DO UPDATE
              SET local_path = excluded.local_path, mapped_at = excluded.mapped_at",
-            params![hash.0.as_slice(), local_path.to_string_lossy(), now],
+            params![hash.0.as_slice(), path_to_bytes(local_path), now],
         )?;
         Ok(())
     }
@@ -646,10 +741,10 @@ impl Storage {
             .query_row(
                 "SELECT local_path FROM manual_mappings WHERE hash = ?1",
                 params![hash.0.as_slice()],
-                |row| row.get::<_, String>(0),
+                |row| row.get::<_, Vec<u8>>(0),
             )
             .optional()?
-            .map(PathBuf::from))
+            .map(|b| path_from_bytes(&b)))
     }
 
     /// All manual mappings (loaded once at session start; the session
@@ -659,7 +754,7 @@ impl Storage {
             .conn
             .prepare("SELECT hash, local_path FROM manual_mappings")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?;
         let mut mappings = Vec::new();
         for row in rows {
@@ -667,7 +762,7 @@ impl Storage {
             let Ok(hash) = <[u8; 16]>::try_from(hash.as_slice()) else {
                 continue;
             };
-            mappings.push((Ed2kHash(hash), PathBuf::from(path)));
+            mappings.push((Ed2kHash(hash), path_from_bytes(&path)));
         }
         Ok(mappings)
     }
@@ -688,7 +783,7 @@ impl Storage {
              VALUES (?1, ?2, ?3)
              ON CONFLICT (series_key) DO UPDATE
              SET dir = excluded.dir, used_at = excluded.used_at",
-            params![key.as_db_key(), dir.to_string_lossy(), now],
+            params![key.as_db_key(), path_to_bytes(dir), now],
         )?;
         Ok(())
     }
@@ -700,10 +795,10 @@ impl Storage {
             .query_row(
                 "SELECT dir FROM series_map_dirs WHERE series_key = ?1",
                 params![key.as_db_key()],
-                |row| row.get::<_, String>(0),
+                |row| row.get::<_, Vec<u8>>(0),
             )
             .optional()?
-            .map(PathBuf::from))
+            .map(|b| path_from_bytes(&b)))
     }
 
     // ---- TOFU certificate fingerprints.
@@ -1022,6 +1117,108 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// Paths containing non-UTF-8 bytes (legal on Linux) must round-trip
+    /// through every path column without `to_string_lossy()` corruption
+    /// (2026-06-26 review). Regression: the columns were TEXT and writes
+    /// went through `to_string_lossy()`, so a stored path desynced from
+    /// disk and two distinct paths could collide on the lossy form.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_paths_round_trip_losslessly() {
+        use dessplay_core::hash::{Ed2kBlockHash, Ed2kFileHash};
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // 0xff/0xfe are not valid UTF-8; this PathBuf has no `to_str()`.
+        let bad = PathBuf::from(OsStr::from_bytes(b"/media/\xff\xfeanime/ep.mkv"));
+        assert!(bad.to_str().is_none(), "test path must be non-UTF-8");
+
+        let mut storage = Storage::open_in_memory().unwrap();
+
+        // media_roots.path
+        storage.set_media_roots(std::slice::from_ref(&bad)).unwrap();
+        assert_eq!(storage.media_roots().unwrap(), vec![bad.clone()]);
+
+        // cache_entries.path
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hash(1),
+                path: bad.clone(),
+                size_bytes: 10,
+                last_access: 5,
+            })
+            .unwrap();
+        assert_eq!(storage.cache_entries().unwrap()[0].path, bad);
+
+        // hash_cache.path (incl. the DELETE key matching the same path)
+        let fh = Ed2kFileHash {
+            root: hash(2),
+            blocks: vec![Ed2kBlockHash([7u8; 16])],
+            size_bytes: 10,
+        };
+        storage.upsert_hash_cache(&bad, 100, &fh, 200).unwrap();
+        let cached = storage.hash_cache().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].path, bad);
+        storage.remove_hash_cache(&bad).unwrap();
+        assert!(storage.hash_cache().unwrap().is_empty());
+
+        // manual_mappings.local_path (single + bulk read)
+        storage.set_manual_mapping(hash(3), &bad, 1).unwrap();
+        assert_eq!(storage.manual_mapping(hash(3)).unwrap(), Some(bad.clone()));
+        assert_eq!(
+            storage.manual_mappings().unwrap(),
+            vec![(hash(3), bad.clone())]
+        );
+
+        // series_map_dirs.dir
+        let key = SeriesKey::AniDb(AniDbSeriesId(9));
+        storage.set_series_map_dir(&key, &bad, 1).unwrap();
+        assert_eq!(storage.series_map_dir(&key).unwrap(), Some(bad.clone()));
+
+        // Two distinct non-UTF-8 paths that collapse to the SAME lossy
+        // string must both persist — previously this violated the
+        // media_roots UNIQUE(path) constraint and failed the whole txn.
+        let a = PathBuf::from(OsStr::from_bytes(b"/x/\xff"));
+        let b = PathBuf::from(OsStr::from_bytes(b"/x/\xfe"));
+        assert_eq!(a.to_string_lossy(), b.to_string_lossy());
+        storage.set_media_roots(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(storage.media_roots().unwrap(), vec![a, b]);
+    }
+
+    /// The v3 TEXT->BLOB path migration must carry existing (UTF-8) rows
+    /// across unchanged: `CAST(path AS BLOB)` yields the UTF-8 bytes the
+    /// new reader expects. Guards the append-only data copy.
+    #[test]
+    fn v3_migration_preserves_existing_utf8_paths() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Apply through v2 (the pre-BLOB schema) and insert UTF-8 rows the
+        // way the old code did (TEXT paths).
+        migrate(&conn, &MIGRATIONS[..2]).unwrap();
+        conn.execute(
+            "INSERT INTO media_roots (position, path) VALUES (0, '/anime/frieren')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO hash_cache (path, mtime, size_bytes, root, blocks, hashed_at)
+             VALUES ('/anime/ep1.mkv', 1, 2, ?1, ?2, 3)",
+            params![[9u8; 16].as_slice(), [7u8; 16].as_slice()],
+        )
+        .unwrap();
+
+        // Upgrade to v3 and read back through the BLOB-aware API.
+        migrate(&conn, MIGRATIONS).unwrap();
+        let storage = Storage { conn };
+        assert_eq!(
+            storage.media_roots().unwrap(),
+            vec![PathBuf::from("/anime/frieren")]
+        );
+        let cached = storage.hash_cache().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].path, PathBuf::from("/anime/ep1.mkv"));
     }
 
     /// The Phase 2 milestone: CRDT state and config survive a process
