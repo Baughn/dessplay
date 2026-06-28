@@ -624,3 +624,63 @@ pub fn run_cluster(events: &[ClusterEvent]) -> Cluster {
     cluster.flush();
     cluster
 }
+
+/// Outcome of delivering an op log through the simulated **datagram lane**
+/// ([`deliver_via_datagram_lane`]).
+#[derive(Clone, Debug)]
+pub struct DatagramLaneOutcome {
+    /// The replica after the lane went quiescent.
+    pub replica: CrdtState,
+    /// How many times an offered op was held back by the per-origin gap
+    /// check (`apply_if_orderly` returned `false`). A positive value means
+    /// the gap-detection branch was actually exercised; it is `0` for a
+    /// log of purely order-free ops, which never hit the gap check.
+    pub held: usize,
+    /// Ops still undelivered when the lane went quiescent. For a complete
+    /// log (every map op an `Up`, plus order-free ops) this is always `0`:
+    /// every op eventually reaches its in-sequence slot. A non-zero value
+    /// means an op could never apply — a real stall, which a test should
+    /// flag.
+    pub undelivered: usize,
+}
+
+/// Deliver a server-ordered `log` to a fresh replica through a simulated
+/// **datagram lane**, the unreliable, possibly-reordered counterpart to
+/// [`Cluster`]'s reliable in-order delivery.
+///
+/// Every op is offered via [`CrdtState::apply_if_orderly`] in `order`
+/// (indices into `log` — an arbitrary reorder, typically a shuffled
+/// permutation). Any op the per-origin gap check drops is retried on a
+/// later pass, modelling the reliable control stream that always carries
+/// a second copy of a lost/early datagram. Unlike the reliable path,
+/// *every* delivery here — including the eventually-successful ones — goes
+/// through the datagram fast path, so the gap-detection logic is exercised
+/// end to end. The lane stops once it is quiescent (no op applied in a
+/// full pass).
+pub fn deliver_via_datagram_lane(log: &[CrdtOp], order: &[usize]) -> DatagramLaneOutcome {
+    let mut replica = CrdtState::new();
+    let mut pending: std::collections::VecDeque<usize> =
+        order.iter().copied().filter(|&i| i < log.len()).collect();
+    let mut held = 0usize;
+    loop {
+        let mut progressed = false;
+        // One pass over the currently-pending ops, in offer order.
+        for _ in 0..pending.len() {
+            let Some(i) = pending.pop_front() else { break };
+            if replica.apply_if_orderly(log[i].clone()) {
+                progressed = true;
+            } else {
+                held += 1;
+                pending.push_back(i);
+            }
+        }
+        if pending.is_empty() || !progressed {
+            break;
+        }
+    }
+    DatagramLaneOutcome {
+        replica,
+        held,
+        undelivered: pending.len(),
+    }
+}
