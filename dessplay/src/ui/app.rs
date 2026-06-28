@@ -865,11 +865,16 @@ impl Ui {
                 Some(UserAction::Mutate(Mutation::PutListEntry { id, entry }))
             }
             Msg::ToggleAway(user) => {
-                let currently_away = matches!(
+                // The `a` toggle only clears an Away *we* set (design.md,
+                // Keyboard Shortcuts: "clear an Away you set"). An Away set by
+                // someone else is cleared by the marked user's own "I'm here"
+                // action -- pressing `a` on it instead (re-)marks them Away by
+                // us rather than silently overriding the other setter.
+                let cleared_by_me = matches!(
                     self.snapshot.view.manual_override.get(&user),
-                    Some(Some(ManualState::Away { .. }))
+                    Some(Some(ManualState::Away { set_by })) if *set_by == self.me
                 );
-                let state = if currently_away {
+                let state = if cleared_by_me {
                     None
                 } else {
                     Some(ManualState::Away {

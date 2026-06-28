@@ -650,6 +650,38 @@ fn users_pane_toggles_away() {
     );
 }
 
+/// Regression: pressing `a` on a peer must NOT clear an Away that *someone
+/// else* set -- the spec scopes the clear to "an Away you set" (an Away set
+/// by another user is cleared only by the marked user's own "I'm here"
+/// action). Pressing `a` on it instead re-marks them Away by us.
+#[test]
+fn users_pane_a_does_not_clear_anothers_away() {
+    let mut state = CrdtState::new();
+    state.set_manual_override(
+        A,
+        ts(1),
+        UserId::new("baughn"),
+        Some(ManualState::Away {
+            set_by: UserId::new("nero"),
+        }),
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("baughn"), peer("kim")]));
+    ui.handle(key(Key::Tab));
+    ui.handle(key(Key::Tab)); // Users
+    // baughn is Away, but set by nero (not me=kim): `a` re-marks (set_by me),
+    // it does not clear someone else's Away.
+    assert_eq!(
+        ui.handle(key(Key::Char('a'))),
+        vec![UserAction::Mutate(Mutation::SetManualOverride {
+            user: UserId::new("baughn"),
+            state: Some(ManualState::Away {
+                set_by: UserId::new("kim"),
+            }),
+        })]
+    );
+}
+
 #[test]
 fn the_list_renders_and_edits() {
     let mut state = CrdtState::new();
