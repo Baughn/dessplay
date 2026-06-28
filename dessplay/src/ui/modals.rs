@@ -46,8 +46,16 @@ macro_rules! passive_modal {
 
 /// The centered overlay area: `percent` of the frame, clamped.
 pub fn overlay(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let width = (area.width * percent_x / 100).max(20).min(area.width);
-    let height = (area.height * percent_y / 100).max(8).min(area.height);
+    // Widen to u32 for the multiply: `area.width * percent` overflows u16 on
+    // a very wide terminal (panic in debug, garbage rect in release). The
+    // result is clamped back below `area.width`, so the final `as u16` is
+    // always in range.
+    let width = (u32::from(area.width) * u32::from(percent_x) / 100)
+        .max(20)
+        .min(u32::from(area.width)) as u16;
+    let height = (u32::from(area.height) * u32::from(percent_y) / 100)
+        .max(8)
+        .min(u32::from(area.height)) as u16;
     Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height - height) / 2,
@@ -1470,6 +1478,23 @@ mod tests {
         assert_eq!(partial.missing_essentials(), vec!["a password"]);
         // Fully populated: nothing missing, saveable.
         assert!(saveable_settings().missing_essentials().is_empty());
+    }
+
+    #[test]
+    fn overlay_does_not_overflow_on_a_very_wide_terminal() {
+        // Regression: the percent multiply must be widened past u16 before
+        // dividing. On a very wide/tall terminal `area.width * percent / 100`
+        // overflows u16 (panic in debug, garbage rect in release) — e.g.
+        // 2000 cols * 70 = 140000 > u16::MAX. The result must stay clamped to
+        // the frame.
+        let area = Rect::new(0, 0, 2000, 2000);
+        let rect = overlay(area, 70, 70);
+        assert_eq!(rect.width, 1400);
+        assert_eq!(rect.height, 1400);
+        assert!(rect.width <= area.width && rect.height <= area.height);
+        // Centered within the frame.
+        assert_eq!(rect.x, (area.width - rect.width) / 2);
+        assert_eq!(rect.y, (area.height - rect.height) / 2);
     }
 
     #[test]

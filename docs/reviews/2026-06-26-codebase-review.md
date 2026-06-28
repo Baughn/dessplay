@@ -731,6 +731,8 @@ Verified in /home/svein/dev/dessplay/dessplay/src/ui/modals.rs. ListEditModal::o
 
 - **Suggested fix:** Widen the intermediate to u32 (e.g. `(area.width as u32 * percent_x as u32 / 100) as u16`) before clamping.
 
+**Status (2026-06-28): fixed.** `overlay()` now widens both `area.width * percent_x` and `area.height * percent_y` to `u32` before the `/ 100` and clamp, casting back to `u16` only after the `.min(area.width)` clamp guarantees the value is in range. Regression test `overlay_does_not_overflow_on_a_very_wide_terminal` (modals.rs) builds a 2000×2000 `Rect` and asserts a centered, clamped `1400×1400` overlay; before the fix it panicked with `panic_const_mul_overflow` inside `overlay` (debug overflow-checks).
+
 <details><summary>Verification trail — code pointers</summary>
 
 modals.rs:49-50 compute `area.width * percent_x / 100` and `area.height * percent_y / 100`. Rust parses this as `(area.width * percent_x) / 100`, so the multiply is done in u16 (Rect.width/height are u16 — confirmed in ratatui-core-0.1.1 src/layout/rect.rs:136-140). For percent_x=70 the product exceeds u16::MAX (65535) once area.width>=937 (937*70=65590); at 60% (ListEditModal/AniDbSearchModal, overlay(area,60,60) at lines 1029/1114) once area.width>=1093 — matching the claim's thresholds precisely. The `.max(20).min(area.width)` clamp runs after the multiply, so it does not prevent the overflow. Cargo.toml defines no `[profile.dev]` overriding overflow-checks, so dev builds (default overflow-checks=on) panic and release builds (default off) silently wrap to a garbage rect. No guard or design note mitigates it. Reachability requires a ~937+ column/row terminal, which is rare; the claim states this and rates it low, which is correct.
