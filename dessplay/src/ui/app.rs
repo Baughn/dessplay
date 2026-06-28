@@ -11,7 +11,8 @@ use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::franchise::{self, FranchiseKey};
 use dessplay_core::net::PeerInfo;
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, ManualState, PlaybackIntent, SeriesWatchState, UserId, encode_action,
+    AniDbSeriesId, Ed2kHash, ListEntryId, ManualState, NextEpState, PlaybackIntent,
+    SeriesListEntry, SeriesWatchState, UserId, encode_action,
 };
 use tuirealm::component::AppComponent;
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
@@ -674,6 +675,15 @@ impl Ui {
                 self.refresh_keybar();
                 return actions;
             }
+            Some(Msg::ListEntrySaved(id, entry, next_ep)) => {
+                let actions =
+                    self.save_list_entry(*id, (**entry).clone(), next_ep.as_deref().cloned());
+                for action in &actions {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return actions;
+            }
             _ => {}
         }
         let action = msg.and_then(|msg| self.update(msg));
@@ -770,14 +780,38 @@ impl Ui {
         actions
     }
 
+    /// Save a List edit: write the entry, and -- only when the user
+    /// actually changed `next_ep`/`available` -- the separate progress
+    /// register. Keeping the `SetNextEp` write conditional preserves the
+    /// reason the register is split out (design.md, The List): a note edit
+    /// must not clobber a concurrent server EOF auto-advance, and vice
+    /// versa. Two mutations, so this routes through `handle()` rather than
+    /// the single-action `update()`.
+    fn save_list_entry(
+        &mut self,
+        id: ListEntryId,
+        entry: SeriesListEntry,
+        next_ep: Option<NextEpState>,
+    ) -> Vec<UserAction> {
+        self.pop_modal();
+        self.sync_focus_attr();
+        let mut actions = vec![UserAction::Mutate(Mutation::PutListEntry { id, entry })];
+        if let Some(next_ep) = next_ep {
+            actions.push(UserAction::Mutate(Mutation::SetNextEp { id, next_ep }));
+        }
+        actions
+    }
+
     /// The Elm update: messages become internal changes or actions.
     fn update(&mut self, msg: Msg) -> Option<UserAction> {
         match msg {
             Msg::None => None,
-            // `Msg::SendChat`, `Msg::Command`, and `Msg::PlaySelected` are
-            // intercepted in `handle()` (they can each yield several
-            // actions); they never reach `update()`.
-            Msg::SendChat(_) | Msg::Command(_) | Msg::PlaySelected(_) => None,
+            // `Msg::SendChat`, `Msg::Command`, `Msg::PlaySelected`, and
+            // `Msg::ListEntrySaved` are intercepted in `handle()` (they can
+            // each yield several actions); they never reach `update()`.
+            Msg::SendChat(_) | Msg::Command(_) | Msg::PlaySelected(_) | Msg::ListEntrySaved(..) => {
+                None
+            }
             Msg::CycleSeriesMode | Msg::ToggleSeriesSort | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
@@ -788,7 +822,14 @@ impl Ui {
             }
             Msg::EditListEntry(id) => {
                 let entry = self.snapshot.view.list_entries.get(&id)?.clone();
-                self.push_modal(Modal::ListEdit(ListEditModal::new(id, entry)));
+                let next_ep = self
+                    .snapshot
+                    .view
+                    .list_next_ep
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default();
+                self.push_modal(Modal::ListEdit(ListEditModal::new(id, entry, next_ep)));
                 None
             }
             Msg::LinkListEntry(id) => {
@@ -984,14 +1025,6 @@ impl Ui {
                     self.me = UserId::new(name.clone());
                 }
                 Some(UserAction::SaveSettings(settings, roots))
-            }
-            Msg::ListEntrySaved(id, entry) => {
-                self.pop_modal();
-                self.sync_focus_attr();
-                Some(UserAction::Mutate(Mutation::PutListEntry {
-                    id,
-                    entry: *entry,
-                }))
             }
             Msg::FocusNext => {
                 self.focus = self.focus.next();

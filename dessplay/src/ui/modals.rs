@@ -15,7 +15,7 @@ use tuirealm::ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListStat
 use tuirealm::state::{State, StateValue};
 
 use dessplay_core::net::AniDbSearchHit;
-use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, SeriesListEntry};
+use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, NextEpState, SeriesListEntry};
 
 use super::components::{LIST_PAGE_STEP, ctrl, plain, step_by, typed};
 use super::msg::Msg;
@@ -943,28 +943,51 @@ const LIST_FIELDS: &[&str] = &[
     "Status",
     "Status note",
     "Source",
+    "Next ep",
+    "Available",
 ];
 const LIST_FIELD_STATUS: usize = 5;
+const LIST_FIELD_NEXT_EP: usize = 8;
+const LIST_FIELD_AVAILABLE: usize = 9;
 
 /// Edit one List entry's fields (watchers are edited via import or a
 /// later refinement).
+///
+/// `next_ep`/`available` ([`NextEpState`]) live in a separate CRDT
+/// register from the rest of the entry, so the server's EOF auto-advance
+/// and a user's note edits never clobber each other. The modal edits a
+/// working copy and reports it on save only when it actually changed (see
+/// `next_ep_change`), preserving that separation.
 pub struct ListEditModal {
     /// The entry being edited.
     pub id: ListEntryId,
     entry: SeriesListEntry,
+    /// Working copy of the progress register.
+    next_ep: NextEpState,
+    /// The progress register as loaded, for change detection on save.
+    original_next_ep: NextEpState,
     sel: usize,
     editor: Option<(usize, FieldEditor)>,
 }
 
 impl ListEditModal {
-    /// Open on an entry.
-    pub fn new(id: ListEntryId, entry: SeriesListEntry) -> Self {
+    /// Open on an entry plus its current progress register.
+    pub fn new(id: ListEntryId, entry: SeriesListEntry, next_ep: NextEpState) -> Self {
         Self {
             id,
             entry,
+            original_next_ep: next_ep.clone(),
+            next_ep,
             sel: 0,
             editor: None,
         }
+    }
+
+    /// The edited progress register, or `None` if the user left both
+    /// `next_ep` and `available` untouched (so saving an unrelated field
+    /// never writes — and thus never clobbers — the shared register).
+    fn next_ep_change(&self) -> Option<NextEpState> {
+        (self.next_ep != self.original_next_ep).then(|| self.next_ep.clone())
     }
 
     fn field_value(&self, index: usize) -> String {
@@ -977,6 +1000,8 @@ impl ListEditModal {
             5 => format!("{:?}", self.entry.status),
             6 => self.entry.status_note.clone().unwrap_or_default(),
             7 => self.entry.source.clone().unwrap_or_default(),
+            LIST_FIELD_NEXT_EP => self.next_ep.next_ep.clone().unwrap_or_default(),
+            LIST_FIELD_AVAILABLE => if self.next_ep.available { "yes" } else { "no" }.to_string(),
             _ => String::new(),
         }
     }
@@ -998,8 +1023,13 @@ impl ListEditModal {
             4 => self.entry.recommender = opt,
             6 => self.entry.status_note = opt,
             7 => self.entry.source = opt,
+            LIST_FIELD_NEXT_EP => self.next_ep.next_ep = opt,
             _ => {}
         }
+    }
+
+    fn toggle_available(&mut self) {
+        self.next_ep.available = !self.next_ep.available;
     }
 
     fn cycle_status(&mut self) {
@@ -1223,7 +1253,11 @@ impl AppComponent<Msg, NoUserEvent> for ListEditModal {
             return Some(Msg::None);
         }
         if ctrl(ev) == Some(Key::Char('s')) {
-            return Some(Msg::ListEntrySaved(self.id, Box::new(self.entry.clone())));
+            return Some(Msg::ListEntrySaved(
+                self.id,
+                Box::new(self.entry.clone()),
+                self.next_ep_change().map(Box::new),
+            ));
         }
         match plain(ev)? {
             Key::Up => {
@@ -1235,10 +1269,10 @@ impl AppComponent<Msg, NoUserEvent> for ListEditModal {
                 Some(Msg::None)
             }
             Key::Enter => {
-                if self.sel == LIST_FIELD_STATUS {
-                    self.cycle_status();
-                } else {
-                    self.editor = Some((self.sel, FieldEditor::new(&self.field_value(self.sel))));
+                match self.sel {
+                    LIST_FIELD_STATUS => self.cycle_status(),
+                    LIST_FIELD_AVAILABLE => self.toggle_available(),
+                    sel => self.editor = Some((sel, FieldEditor::new(&self.field_value(sel)))),
                 }
                 Some(Msg::None)
             }

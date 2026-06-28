@@ -7,7 +7,9 @@
 use std::path::PathBuf;
 
 use dessplay_core::franchise::FranchiseKey;
-use dessplay_core::types::{AniDbSeriesId, Ed2kHash, ListEntryId, SeriesListEntry, UserId};
+use dessplay_core::types::{
+    AniDbSeriesId, Ed2kHash, ListEntryId, NextEpState, SeriesListEntry, UserId,
+};
 
 use crate::config::Settings;
 
@@ -81,8 +83,10 @@ pub enum Msg {
     OpenDirPicker,
     /// Settings modal: save these settings + media roots.
     SettingsSaved(Box<Settings>, Vec<PathBuf>),
-    /// List edit modal: save this entry.
-    ListEntrySaved(ListEntryId, Box<SeriesListEntry>),
+    /// List edit modal: save this entry, plus the edited progress register
+    /// (`Some` only when next_ep/available actually changed — that register
+    /// is written separately so it never clobbers a concurrent auto-advance).
+    ListEntrySaved(ListEntryId, Box<SeriesListEntry>, Option<Box<NextEpState>>),
     /// AniDB search modal: run this search.
     AniDbSearchRequested(String),
     /// AniDB search modal: link the entry to this series.

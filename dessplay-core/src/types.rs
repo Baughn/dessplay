@@ -442,7 +442,7 @@ pub struct SeriesListEntry {
 /// Fast-changing progress state for a List entry, kept separate from
 /// [`SeriesListEntry`] so server auto-advance never clobbers concurrent
 /// note edits.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct NextEpState {
     /// Free text: "12", "S3-05", "Sisters", "movie 5?".
     pub next_ep: Option<String>,

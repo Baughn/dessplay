@@ -13,8 +13,8 @@ use dessplay::ui::msg::UserAction;
 use dessplay_core::net::{PeerInfo, Presence, Role};
 use dessplay_core::playlist::NewPlaylistEntry;
 use dessplay_core::types::{
-    ActorId, Ed2kHash, ListEntryId, ListStatus, ManualState, PlaybackIntent, SeriesListEntry,
-    SharedTimestamp, UserId,
+    ActorId, Ed2kHash, ListEntryId, ListStatus, ManualState, NextEpState, PlaybackIntent,
+    SeriesListEntry, SharedTimestamp, UserId,
 };
 use dessplay_core::{CrdtState, StateView};
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
@@ -691,6 +691,151 @@ fn the_list_renders_and_edits() {
     assert_eq!(entry.name, "Frieren!");
     assert_eq!(entry.status, ListStatus::Active);
     assert!(!ui.modal_open());
+}
+
+/// The List edit modal must expose the `next_ep` free-text field and the
+/// `available` (✓/✖) toggle so the documented "maintained by hand" path
+/// exists. Opening on an entry shows its current values; editing next_ep
+/// and toggling available, then saving, emits a `SetNextEp` mutation with
+/// the new values alongside the `PutListEntry` write.
+#[test]
+fn list_edit_modal_edits_next_ep_and_available() {
+    let mut state = CrdtState::new();
+    state.put_list_entry(
+        A,
+        ts(1),
+        ListEntryId(7),
+        SeriesListEntry {
+            name: "Frieren".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::CurrentSeason,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+        },
+    );
+    state.set_next_ep(
+        A,
+        ts(2),
+        ListEntryId(7),
+        NextEpState {
+            next_ep: Some("11".into()),
+            available: false,
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+
+    ui.handle(key(Key::Tab)); // Series
+    ui.handle(key(Key::Char('m'))); // All
+    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Down)); // heading -> entry
+    ui.handle(key(Key::Enter)); // open the edit modal
+    assert!(ui.modal_open());
+
+    // The modal must surface the current next_ep / available values.
+    let screen = render(&mut ui, 100, 40);
+    assert!(screen.contains("Next ep"), "{screen}");
+    assert!(screen.contains("11"), "current next_ep not shown: {screen}");
+    assert!(screen.contains("Available"), "{screen}");
+
+    // Move to the Next ep field, edit "11" -> "12".
+    for _ in 0..8 {
+        ui.handle(key(Key::Down));
+    }
+    ui.handle(key(Key::Enter)); // open the field editor (prefilled "11")
+    ui.handle(key(Key::Backspace));
+    ui.handle(key(Key::Backspace));
+    type_str(&mut ui, "12");
+    ui.handle(key(Key::Enter)); // commit the field
+
+    // Move to Available and toggle it on.
+    ui.handle(key(Key::Down));
+    ui.handle(key(Key::Enter)); // toggle available
+
+    let actions = ui.handle(ctrl('s'));
+    let next_ep = actions
+        .iter()
+        .find_map(|a| match a {
+            UserAction::Mutate(Mutation::SetNextEp { id, next_ep }) if *id == ListEntryId(7) => {
+                Some(next_ep.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a SetNextEp mutation, got {actions:?}"));
+    assert_eq!(next_ep.next_ep.as_deref(), Some("12"));
+    assert!(next_ep.available, "available should have been toggled on");
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, UserAction::Mutate(Mutation::PutListEntry { .. }))),
+        "the entry itself should still be saved: {actions:?}"
+    );
+    assert!(!ui.modal_open());
+}
+
+/// Saving the List edit modal without touching next_ep / available must
+/// NOT emit a `SetNextEp` mutation — that register is kept apart so a note
+/// edit never clobbers a concurrent server EOF auto-advance.
+#[test]
+fn list_edit_modal_save_without_next_ep_change_emits_no_set_next_ep() {
+    let mut state = CrdtState::new();
+    state.put_list_entry(
+        A,
+        ts(1),
+        ListEntryId(7),
+        SeriesListEntry {
+            name: "Frieren".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::CurrentSeason,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+        },
+    );
+    state.set_next_ep(
+        A,
+        ts(2),
+        ListEntryId(7),
+        NextEpState {
+            next_ep: Some("11".into()),
+            available: false,
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+
+    ui.handle(key(Key::Tab)); // Series
+    ui.handle(key(Key::Char('m'))); // All
+    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Down)); // heading -> entry
+    ui.handle(key(Key::Enter)); // open the edit modal
+
+    // Edit only the Name field, leave next_ep / available untouched.
+    ui.handle(key(Key::Enter)); // edit Name
+    type_str(&mut ui, "!");
+    ui.handle(key(Key::Enter)); // commit
+    let actions = ui.handle(ctrl('s'));
+    assert!(
+        actions
+            .iter()
+            .all(|a| !matches!(a, UserAction::Mutate(Mutation::SetNextEp { .. }))),
+        "an unrelated edit must not write next_ep: {actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, UserAction::Mutate(Mutation::PutListEntry { .. }))),
+        "the entry edit should still save: {actions:?}"
+    );
 }
 
 #[test]
