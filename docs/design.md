@@ -1488,6 +1488,14 @@ for it to come back. Interactive-only; seeders have no player.
   matches the now-playing entry is **adopted** -- see
   [Manual File Mapping](#manual-file-mapping).
 - EOF (file ended; reported to the server, which owns the transition)
+- Load failure (the file could not be **opened** — gone, unreadable,
+  undecodable). `loadfile` is accepted asynchronously, so this is *not* a
+  command error: mpv reports it later as an `end-file` with `reason: error`.
+  It flips the file to Missing and re-resolves (the
+  [player-load-failure guard](#download-cache-and-retention)) — the path we
+  held may be stale (the file moved between media roots). Without observing
+  this event, dessplay would believe a load that mpv silently dropped and
+  unpause on a file it never opened, showing only the forced media title.
 - Exit (clean or crash)
 
 The user/programmatic distinction is made on **our** side — mpv does not

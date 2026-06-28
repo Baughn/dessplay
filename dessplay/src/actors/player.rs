@@ -602,6 +602,21 @@ impl<F: PlayerFactory> Actor<F> {
                     let _ = self.outputs.send(PlayerOutput::Eof { file: *file }).await;
                 }
             }
+            PlayerEvent::LoadFailed => {
+                // mpv accepted the loadfile (so `load()` returned Ok) but the
+                // file could not be opened — the path we held is likely stale
+                // (the file moved between media roots). Report it so the
+                // session forgets the local copy, flips the file to Missing,
+                // and re-resolves; without this the group unpaused on a file
+                // mpv never loaded, showing only the forced media title.
+                if let Some((file, _, _)) = &self.current {
+                    tracing::warn!("player failed to open the loaded file");
+                    let _ = self
+                        .outputs
+                        .send(PlayerOutput::LoadFailed { file: *file })
+                        .await;
+                }
+            }
             PlayerEvent::Exited { clean } => {
                 return self.handle_player_death(clean).await;
             }
@@ -955,6 +970,25 @@ mod tests {
         assert_eq!(
             expect_output(&mut outputs).await,
             PlayerOutput::LoadFailed { file: FILE }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_open_failure_after_a_successful_load_command_is_reported() {
+        // The load *command* succeeded (mpv accepted loadfile — the rig is
+        // fully loaded), so the command-error path never fires. The file
+        // then fails to open: mpv emits end-file reason=error, surfaced as
+        // PlayerEvent::LoadFailed. The actor must map it to the current
+        // file and report it upstream so the session re-resolves a stale
+        // path — the regression behind "unpaused on a file mpv never
+        // loaded, showing only the forced title".
+        let (_commands, mut outputs, control) = loaded_rig().await;
+        let _ = drain_outputs(&mut outputs);
+        control.events.send(PlayerEvent::LoadFailed).unwrap();
+        settle().await;
+        assert_eq!(
+            drain_outputs(&mut outputs),
+            vec![PlayerOutput::LoadFailed { file: FILE }]
         );
     }
 

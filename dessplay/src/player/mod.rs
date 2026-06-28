@@ -60,6 +60,15 @@ pub enum PlayerEvent {
     },
     /// A loaded file finished opening and can be controlled.
     Loaded,
+    /// A load **failed to open** — mpv accepted the `loadfile` command (so
+    /// [`Player::load`] returned `Ok`) but the file then could not be
+    /// opened (gone, unreadable, undecodable): mpv's `end-file` with
+    /// `reason: "error"`. The actor maps this to the current file and
+    /// reports it upstream so the session flips that file to Missing and
+    /// re-resolves — the path we held may be stale (the file moved between
+    /// media roots). Distinct from [`Eof`](PlayerEvent::Eof), which is a
+    /// clean play-to-end.
+    LoadFailed,
     /// The player's loaded file path changed (mpv's `path` property). Fires
     /// for our own `loadfile` *and* when the user loads a file directly
     /// (e.g. drag-and-drop into the mpv window); the actor decides which by

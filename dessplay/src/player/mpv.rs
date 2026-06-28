@@ -16,6 +16,9 @@
 //!   `get_property time-pos` (the property observation alone may be
 //!   stale mid-seek).
 //! - `eof-reached` becoming true → [`PlayerEvent::Eof`].
+//! - `end-file` with `reason: error` → [`PlayerEvent::LoadFailed`] — a
+//!   file mpv accepted the `loadfile` for but could not open (the path
+//!   may be stale); the actor flips it to Missing and re-resolves.
 //! - process exit → [`PlayerEvent::Exited`] (clean iff status 0).
 //!
 //! Echo suppression is *not* done here — the actor above sorts our
@@ -506,6 +509,25 @@ fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<Pl
             state.eof_reached = false;
             vec![PlayerEvent::Loaded]
         }
+        "end-file" => {
+            // `loadfile` is accepted asynchronously, so a file that cannot
+            // be opened (gone, unreadable, undecodable) is not a command
+            // error — it surfaces here with reason "error". Report it so the
+            // session re-resolves a stale path. Other reasons (a clean "eof",
+            // the replace "stop" of the prior file, a "quit") are handled
+            // elsewhere or are not news, and are left untouched — clearing
+            // `loading` for them could unblock a *new* load's pre-load pause
+            // swallowing (the old file's "stop" arrives while we are already
+            // loading the next). On error there is no `file-loaded` to clear
+            // `loading`, so we clear it here; a stuck flag would otherwise
+            // swallow later user pauses as pre-load mechanics.
+            if msg.get("reason").and_then(Value::as_str) == Some("error") {
+                loading.store(false, Ordering::Relaxed);
+                vec![PlayerEvent::LoadFailed]
+            } else {
+                vec![]
+            }
+        }
         _ => vec![],
     }
 }
@@ -819,6 +841,45 @@ mod tests {
                 &mut state,
                 false
             ),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn end_file_error_reports_a_load_failure_and_clears_loading() {
+        // mpv accepted our loadfile (so load() returned Ok and `loading` is
+        // set), but the file could not be opened — it reports `end-file`
+        // with reason "error". That must surface as a LoadFailed (so the
+        // session re-resolves), and clear `loading` (no `file-loaded` will
+        // ever arrive to clear it, and a stuck flag swallows later pauses).
+        let mut state = Translate::default();
+        let loading = AtomicBool::new(true);
+        let out = translate(
+            &serde_json::from_str(
+                r#"{"event":"end-file","reason":"error","file_error":"loading failed"}"#,
+            )
+            .unwrap(),
+            &mut state,
+            &loading,
+        );
+        assert_eq!(out, vec![PlayerEvent::LoadFailed]);
+        assert!(
+            !loading.load(Ordering::Relaxed),
+            "load is over, even failed"
+        );
+    }
+
+    #[test]
+    fn end_file_eof_or_stop_is_not_a_load_failure() {
+        // A clean play-to-end (reason "eof") is handled via the eof-reached
+        // property, and a replace/stop is not news — neither is a failure.
+        let mut state = Translate::default();
+        assert_eq!(
+            ev(r#"{"event":"end-file","reason":"eof"}"#, &mut state, false),
+            vec![]
+        );
+        assert_eq!(
+            ev(r#"{"event":"end-file","reason":"stop"}"#, &mut state, false),
             vec![]
         );
     }
