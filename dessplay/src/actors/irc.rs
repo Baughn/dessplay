@@ -123,11 +123,34 @@ pub enum IrcEvent {
 
 /// Run the bridge until [`IrcCommand::Shutdown`] (or the command channel
 /// closes). Owns the reconnection loop and the live config.
+///
+/// A thin wrapper over [`run_with_connector`] with the production TCP/TLS
+/// connector; the generic seam lets the reconnect loop be driven over an
+/// in-memory duplex pipe (with paused tokio time) in tests.
 pub async fn run(
+    config: IrcConfig,
+    commands: mpsc::Receiver<IrcCommand>,
+    events: mpsc::Sender<IrcEvent>,
+) {
+    run_with_connector(config, commands, events, |cfg| async move {
+        connect(&cfg).await
+    })
+    .await
+}
+
+/// The reconnection state machine, generic over how a connection is
+/// established (`connect`). `connect` is called once per attempt with a
+/// clone of the live config and yields a stream or a failure reason.
+async fn run_with_connector<S, C, F>(
     mut config: IrcConfig,
     mut commands: mpsc::Receiver<IrcCommand>,
     events: mpsc::Sender<IrcEvent>,
-) {
+    mut connect: C,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+    C: FnMut(IrcConfig) -> F,
+    F: std::future::Future<Output = Result<S, String>>,
+{
     let mut backoff = INITIAL_BACKOFF;
     // The current nick persists across reconnects so a 433 disambiguation
     // sticks; reset to the configured nick whenever the config changes.
@@ -147,7 +170,7 @@ pub async fn run(
         }
 
         tracing::info!(server = %config.server, port = config.port, nick = %nick, "connecting to IRC");
-        match connect(&config).await {
+        match connect(config.clone()).await {
             Ok(stream) => {
                 match run_session(stream, &config, &mut nick, &mut commands, &events).await {
                     SessionEnd::Shutdown => return,
@@ -173,21 +196,55 @@ pub async fn run(
             Err(e) => tracing::warn!(error = %e, "IRC connection attempt failed"),
         }
 
-        // Wait before reconnecting, but stay responsive to commands.
+        // Wait out the backoff before reconnecting, staying responsive to
+        // Shutdown/Reconfigure. A dropped SendChat must NOT abort the wait
+        // (that would defeat capped backoff — see `wait_backoff`).
+        match wait_backoff(backoff, &mut commands).await {
+            WaitOutcome::Elapsed => {}
+            WaitOutcome::Shutdown => return,
+            WaitOutcome::Reconfigure(c) => {
+                config = *c;
+                nick = config.nick.clone();
+                backoff = INITIAL_BACKOFF;
+                continue;
+            }
+        }
+        backoff = grow_backoff(backoff);
+    }
+}
+
+/// How a [`wait_backoff`] reconnect-wait ended.
+enum WaitOutcome {
+    /// The full backoff elapsed; grow it and retry the connection.
+    Elapsed,
+    /// Shutdown requested (or the command channel closed); exit the actor.
+    Shutdown,
+    /// Settings changed; adopt the new config and reconnect (or idle).
+    Reconfigure(Box<IrcConfig>),
+}
+
+/// Wait out the reconnect `backoff`, staying responsive to commands.
+///
+/// Only [`IrcCommand::Shutdown`] and [`IrcCommand::Reconfigure`] interrupt
+/// the wait. A [`IrcCommand::SendChat`] arriving while we are disconnected
+/// is dropped (the bridge is lossy while down) **without aborting the
+/// wait**: otherwise an actively-chatting user during an outage would wake
+/// the wait on every line and force an immediate reconnect, collapsing the
+/// capped exponential backoff into a reconnect storm. The sleep future is
+/// created once and polled across iterations, so a dropped SendChat
+/// neither shortens nor extends the remaining wait.
+async fn wait_backoff(backoff: Duration, commands: &mut mpsc::Receiver<IrcCommand>) -> WaitOutcome {
+    let sleep = tokio::time::sleep(backoff);
+    tokio::pin!(sleep);
+    loop {
         tokio::select! {
-            _ = tokio::time::sleep(backoff) => {}
+            _ = &mut sleep => return WaitOutcome::Elapsed,
             cmd = commands.recv() => match cmd {
-                None | Some(IrcCommand::Shutdown) => return,
-                Some(IrcCommand::Reconfigure(c)) => {
-                    config = *c;
-                    nick = config.nick.clone();
-                    backoff = INITIAL_BACKOFF;
-                    continue;
-                }
+                None | Some(IrcCommand::Shutdown) => return WaitOutcome::Shutdown,
+                Some(IrcCommand::Reconfigure(c)) => return WaitOutcome::Reconfigure(c),
                 Some(IrcCommand::SendChat(_)) => {}
             },
         }
-        backoff = grow_backoff(backoff);
     }
 }
 
@@ -889,5 +946,348 @@ mod tests {
         cmd.send(IrcCommand::Shutdown).await.unwrap();
         assert_eq!(next_line(&mut lines).await, "QUIT :leaving");
         assert!(matches!(handle.await.unwrap(), SessionEnd::Shutdown));
+    }
+
+    // --- Reconnect-loop tests: drive `run()` over an injected connector
+    // with paused tokio time. The connector hands `run_with_connector` a
+    // fresh duplex pipe (or a failure) per attempt, so the outer
+    // reconnection state machine — backoff pacing, the disabled-idle loop,
+    // live Reconfigure, and Disconnected gating — is exercised end to end
+    // without a real socket. ---
+
+    /// The boxed connect future the injector yields. Boxing erases the
+    /// per-call future type so the injector can be a plain named closure.
+    type BoxConnFut = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<tokio::io::DuplexStream, String>> + Send>,
+    >;
+
+    /// Whether a scripted connect attempt should succeed or fail.
+    #[derive(Clone, Copy)]
+    enum Conn {
+        Ok,
+        Fail,
+    }
+
+    /// The server side of one injected connection, with helpers to drive
+    /// the IRC handshake from the test.
+    struct ServerSide {
+        lines: tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        write: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    }
+
+    impl ServerSide {
+        async fn recv_line(&mut self) -> String {
+            tokio::time::timeout(Duration::from_secs(5), self.lines.next_line())
+                .await
+                .expect("timed out reading a line")
+                .expect("io error")
+                .expect("stream closed")
+        }
+
+        async fn send(&mut self, line: &str) {
+            self.write
+                .write_all(format!("{line}\r\n").as_bytes())
+                .await
+                .unwrap();
+        }
+
+        /// Consume NICK + USER, reply with RPL_WELCOME (001), then consume
+        /// the JOIN — the full client-side handshake.
+        async fn register_and_join(&mut self, nick: &str, channel: &str) {
+            assert_eq!(self.recv_line().await, format!("NICK {nick}"));
+            let _ = self.recv_line().await; // USER
+            self.send(&format!(":srv 001 {nick} :Welcome")).await;
+            assert_eq!(self.recv_line().await, format!("JOIN {channel}"));
+        }
+    }
+
+    /// Build a connect injector for `run_with_connector`. Each attempt pops
+    /// the next scripted outcome (exhausted => `Ok`, so the bridge keeps
+    /// serving); every attempt pings `attempts`, and each successful
+    /// connection ships its server side to `servers` for the test to drive.
+    fn injector(
+        script: Vec<Conn>,
+        attempts: mpsc::Sender<()>,
+        servers: mpsc::Sender<ServerSide>,
+    ) -> impl FnMut(IrcConfig) -> BoxConnFut {
+        let mut script = script.into_iter();
+        move |_cfg| {
+            let outcome = script.next().unwrap_or(Conn::Ok);
+            let attempts = attempts.clone();
+            match outcome {
+                Conn::Fail => Box::pin(async move {
+                    let _ = attempts.send(()).await;
+                    Err("connection refused".to_string())
+                }),
+                Conn::Ok => {
+                    let (client, server) = tokio::io::duplex(8192);
+                    let (sr, sw) = tokio::io::split(server);
+                    let srv = ServerSide {
+                        lines: BufReader::new(sr).lines(),
+                        write: sw,
+                    };
+                    let servers = servers.clone();
+                    Box::pin(async move {
+                        let _ = attempts.send(()).await;
+                        let _ = servers.send(srv).await;
+                        Ok(client)
+                    })
+                }
+            }
+        }
+    }
+
+    /// Regression test for the capped-backoff bypass: a SendChat arriving
+    /// during the reconnect-backoff wait must be dropped *without* aborting
+    /// the wait. Before the fix the dropped SendChat ended the select and
+    /// forced an immediate reconnect (a reconnect storm while a user keeps
+    /// typing during an outage).
+    #[tokio::test(start_paused = true)]
+    async fn send_chat_during_backoff_does_not_abort_the_wait() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, _ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(8);
+        let (srv_tx, _srv_rx) = mpsc::channel(8);
+        // Always-failing connector: the bridge can never establish, so
+        // run() lives in the reconnect-backoff wait.
+        let connector = injector(vec![Conn::Fail; 8], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        // First attempt fires and fails; run() enters the backoff wait.
+        att_rx.recv().await.unwrap();
+
+        // A chat line arrives while we're disconnected.
+        cmd_tx
+            .send(IrcCommand::SendChat("typing while IRC is down".into()))
+            .await
+            .unwrap();
+
+        // It must NOT trigger an immediate reconnect: no second attempt
+        // before the backoff actually elapses.
+        let immediate = tokio::time::timeout(INITIAL_BACKOFF / 2, att_rx.recv()).await;
+        assert!(
+            immediate.is_err(),
+            "SendChat aborted the backoff wait and forced an immediate reconnect"
+        );
+
+        // The reconnect still happens once the full backoff has elapsed.
+        let after = tokio::time::timeout(INITIAL_BACKOFF, att_rx.recv()).await;
+        assert!(
+            after.is_ok(),
+            "the reconnect should still fire after the backoff elapses"
+        );
+    }
+
+    /// Capped exponential backoff across repeated failed connects: the gap
+    /// between attempts doubles from INITIAL_BACKOFF and saturates at
+    /// MAX_BACKOFF. Awaiting each attempt advances virtual time through the
+    /// backoff sleep (paused-time auto-advance), so recv timestamps are the
+    /// real attempt times.
+    #[tokio::test(start_paused = true)]
+    async fn backoff_grows_and_caps_across_failed_connects() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, _ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(16);
+        let (srv_tx, _srv_rx) = mpsc::channel(8);
+        let connector = injector(vec![Conn::Fail; 16], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        let start = tokio::time::Instant::now();
+        let mut times = Vec::new();
+        for _ in 0..8 {
+            att_rx.recv().await.unwrap();
+            times.push(start.elapsed());
+        }
+        let gaps: Vec<u64> = times.windows(2).map(|w| (w[1] - w[0]).as_secs()).collect();
+        // 2, 4, 8, 16, 32, then capped at 60 (MAX_BACKOFF).
+        assert_eq!(gaps, vec![2, 4, 8, 16, 32, 60, 60]);
+    }
+
+    /// A drop of an *established* (registered) session emits Disconnected
+    /// and resets the backoff to INITIAL_BACKOFF, so the reconnect after a
+    /// real connection is prompt even if earlier failures had grown it.
+    #[tokio::test(start_paused = true)]
+    async fn registered_drop_emits_disconnected_and_resets_backoff() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(16);
+        let (srv_tx, mut srv_rx) = mpsc::channel(8);
+        // Two failures grow the backoff (2 -> 4 -> 8) before a real connect.
+        let connector = injector(vec![Conn::Fail, Conn::Fail, Conn::Ok], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        let start = tokio::time::Instant::now();
+        let mut attempt_at = Vec::new();
+        // attempts 1 & 2 fail (t=0, t=2); attempt 3 (t=6) succeeds.
+        for _ in 0..3 {
+            att_rx.recv().await.unwrap();
+            attempt_at.push(start.elapsed());
+        }
+        let mut srv = srv_rx.recv().await.unwrap();
+        srv.register_and_join("BaughnDess", "#dess").await;
+        assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
+
+        // The established connection drops -> Disconnected + backoff reset.
+        drop(srv);
+        assert!(matches!(
+            ev_rx.recv().await,
+            Some(IrcEvent::Disconnected { .. })
+        ));
+        att_rx.recv().await.unwrap();
+        attempt_at.push(start.elapsed());
+
+        assert_eq!(attempt_at[0].as_secs(), 0);
+        assert_eq!(attempt_at[1].as_secs(), 2);
+        assert_eq!(attempt_at[2].as_secs(), 6);
+        // Reset: the post-drop reconnect waits INITIAL_BACKOFF (2s), not
+        // the grown 8s — so attempt 4 lands ~2s after the drop, not ~8s.
+        let reset_gap = (attempt_at[3] - attempt_at[2]).as_secs();
+        assert_eq!(
+            reset_gap, 2,
+            "backoff did not reset after a registered drop"
+        );
+    }
+
+    /// A drop *before* registration (001 never reached) is a failed retry,
+    /// not a real disconnect: it must stay silent (no Disconnected event)
+    /// so a flapping/refusing server doesn't spam chat with system lines.
+    #[tokio::test(start_paused = true)]
+    async fn unregistered_drop_does_not_emit_disconnected() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(16);
+        let (srv_tx, mut srv_rx) = mpsc::channel(8);
+        let connector = injector(vec![Conn::Ok, Conn::Ok], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        // First connection: drop it before sending 001 (never registered).
+        att_rx.recv().await.unwrap();
+        let mut srv = srv_rx.recv().await.unwrap();
+        assert_eq!(srv.recv_line().await, "NICK BaughnDess");
+        let _ = srv.recv_line().await; // USER
+        drop(srv); // EOF before registration
+
+        // The next observable thing is the second connect attempt; no
+        // Disconnected event is ever emitted for the unregistered drop.
+        att_rx.recv().await.unwrap();
+        let ev = tokio::time::timeout(Duration::from_millis(1), ev_rx.recv()).await;
+        assert!(
+            ev.is_err(),
+            "an unregistered drop must not emit Disconnected"
+        );
+    }
+
+    /// A disabled config idles with no socket: SendChat is dropped and no
+    /// connection is attempted until a Reconfigure re-enables the bridge.
+    #[tokio::test(start_paused = true)]
+    async fn disabled_config_idles_until_reconfigured() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(8);
+        let (srv_tx, mut srv_rx) = mpsc::channel(8);
+        let disabled = IrcConfig {
+            enabled: false,
+            ..test_config()
+        };
+        let connector = injector(vec![Conn::Ok; 4], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(disabled, cmd_rx, ev_tx, connector));
+
+        // A SendChat while disabled is dropped and never opens a socket.
+        cmd_tx
+            .send(IrcCommand::SendChat("nobody home".into()))
+            .await
+            .unwrap();
+        let connected = tokio::time::timeout(Duration::from_secs(30), att_rx.recv()).await;
+        assert!(connected.is_err(), "a disabled bridge must not connect");
+
+        // Re-enabling via Reconfigure brings the bridge up.
+        cmd_tx
+            .send(IrcCommand::Reconfigure(Box::new(test_config())))
+            .await
+            .unwrap();
+        att_rx.recv().await.unwrap();
+        let mut srv = srv_rx.recv().await.unwrap();
+        srv.register_and_join("BaughnDess", "#dess").await;
+        assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
+    }
+
+    /// Reconfigure while connected: QUIT the live session and reconnect
+    /// promptly with the new config (here, a new channel to JOIN).
+    #[tokio::test(start_paused = true)]
+    async fn reconfigure_while_connected_quits_and_reconnects() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(8);
+        let (srv_tx, mut srv_rx) = mpsc::channel(8);
+        let connector = injector(vec![Conn::Ok; 4], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        att_rx.recv().await.unwrap();
+        let mut srv1 = srv_rx.recv().await.unwrap();
+        srv1.register_and_join("BaughnDess", "#dess").await;
+        assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
+
+        let mut new = test_config();
+        new.channel = "#other".into();
+        cmd_tx
+            .send(IrcCommand::Reconfigure(Box::new(new)))
+            .await
+            .unwrap();
+        assert_eq!(srv1.recv_line().await, "QUIT :reconnecting");
+
+        att_rx.recv().await.unwrap();
+        let mut srv2 = srv_rx.recv().await.unwrap();
+        srv2.register_and_join("BaughnDess", "#other").await;
+        assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
+    }
+
+    /// Reconfigure to disabled while connected: QUIT the live session and
+    /// then idle — no reconnect is attempted.
+    #[tokio::test(start_paused = true)]
+    async fn reconfigure_to_disabled_quits_and_idles() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(8);
+        let (srv_tx, mut srv_rx) = mpsc::channel(8);
+        let connector = injector(vec![Conn::Ok; 4], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        att_rx.recv().await.unwrap();
+        let mut srv = srv_rx.recv().await.unwrap();
+        srv.register_and_join("BaughnDess", "#dess").await;
+        assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
+
+        let disabled = IrcConfig {
+            enabled: false,
+            ..test_config()
+        };
+        cmd_tx
+            .send(IrcCommand::Reconfigure(Box::new(disabled)))
+            .await
+            .unwrap();
+        assert_eq!(srv.recv_line().await, "QUIT :reconnecting");
+
+        let again = tokio::time::timeout(Duration::from_secs(120), att_rx.recv()).await;
+        assert!(again.is_err(), "a disabled bridge must not reconnect");
+    }
+
+    /// PING is answered with a matching PONG through the full run() path
+    /// (connect -> register -> in-session).
+    #[tokio::test(start_paused = true)]
+    async fn run_answers_ping_after_connecting() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(8);
+        let (srv_tx, mut srv_rx) = mpsc::channel(8);
+        let connector = injector(vec![Conn::Ok], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        att_rx.recv().await.unwrap();
+        let mut srv = srv_rx.recv().await.unwrap();
+        srv.register_and_join("BaughnDess", "#dess").await;
+        assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
+
+        srv.send("PING :tantalum.rizon.net").await;
+        assert_eq!(srv.recv_line().await, "PONG :tantalum.rizon.net");
     }
 }
