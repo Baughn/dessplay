@@ -780,6 +780,17 @@ Net: the defect (flag-sourced values are not isolated from persisted Settings) i
 
 </details>
 
+### 🟠 MEDIUM · `--media-root` flag/env override gets persisted on the next settings save (same class as the username leak)
+
+**`dessplay/src/run.rs:121-127, 577, 635, 977-990`** · _bug_ · _discovered 2026-06-28 while fixing the `--username` leak above; not part of the original review pass_
+
+`resolve_media_roots` (run.rs:121-127) returns the `--media-root` flag values when any are given, **replacing** the stored roots entirely, and that merged list is handed to the UI (run.rs:635). On any `SaveSettings` — including unrelated saves like an F2 subtitle-mode cycle — run.rs:984 calls `storage.set_media_roots(&roots)` with the UI's current roots, which still carry the flag override. So launching once with `--media-root /tmp/x` and later saving anything **permanently overwrites the stored media roots** with the transient flag value. This is the identical leak class to the `--username` finding above and violates the same invariant (design.md, Data Storage: "flags/env override at runtime but are never persisted"); the `resolve_media_roots` comment even claims the roots are never persisted. It was deliberately left out of the username fix because the roots-editing flow needs its own touched-vs-override handling: unlike the single username field, the settings modal genuinely edits the roots list, so a fix must distinguish "user edited the roots" (persist) from "untouched flag override present" (don't persist) — likely the same runtime-overlay shape as the username fix (hand the UI the stored roots as the persistable base; use the override-merged roots only for runtime scanning).
+
+- **Spec:** design.md Data Storage: "Command-line flags and environment variables override stored settings at runtime but are never persisted."
+- **Suggested fix:** apply the same approach-(a) separation used for `--username`: keep the override-merged roots as a runtime-only value for scanning, and persist only the stored base plus genuine in-modal edits. Add a regression test mirroring `flag_username_override_survives_a_settings_save` for media roots.
+
+**Status (2026-06-28): open.** Confirmed real (verified inline: `resolve_media_roots` replace semantics + the `set_media_roots(&roots)` save path at run.rs:984). Queued with the remaining Medium findings.
+
 ### ⚪ LOW · --pipeline-depth help text and run.rs doc state default 16, but production default is 48
 
 **`dessplay/src/main.rs:44-45`** · _bug_
