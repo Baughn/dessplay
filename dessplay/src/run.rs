@@ -113,17 +113,65 @@ fn resolve_cache_dir(args: &HeadlessArgs) -> Result<PathBuf, String> {
     }
 }
 
-/// Resolve the media roots: the repeatable `--media-root` flag wins when
-/// non-empty, else the `stored` roots. A non-empty flag overrides the
-/// settings-DB roots for this run only (never persisted), mirroring how
-/// `--username` / `--server` override their stored settings. A seeder
-/// has no stored roots, so it always uses the flag.
+/// Resolve the *runtime* media roots: the repeatable `--media-root` flag
+/// wins when non-empty, else the `stored` roots. A non-empty flag overrides
+/// the settings-DB roots for this run only, mirroring how `--username` /
+/// `--server` override their stored settings. A seeder has no stored roots,
+/// so it always uses the flag.
+///
+/// These are the roots the file actor actually uses at runtime (library
+/// scan, file resolution, serving). They are deliberately distinct from the
+/// *persistable* base computed by [`resolve_runtime_media_roots`]: the flag
+/// override must never be written back to the database.
 fn resolve_media_roots(flag: &[PathBuf], stored: Vec<PathBuf>) -> Vec<PathBuf> {
     if flag.is_empty() {
         stored
     } else {
         flag.to_vec()
     }
+}
+
+/// The media-roots analogue of [`resolve_runtime_identity`]: split the
+/// `--media-root` override and the stored roots into the runtime roots and
+/// the *persistable* base, the single chokepoint that keeps a one-off
+/// `--media-root` out of the database.
+///
+/// The repeatable `--media-root` flag is a runtime override: it decides the
+/// roots the file actor scans/serves/resolves from, but per design.md (Data
+/// Storage: "Command-line flags and environment variables override stored
+/// settings at runtime but are never persisted") it must never be written
+/// back. So the *persistable base* keeps the stored roots and only takes the
+/// flag as a first-run prefill (when nothing is stored — the settings modal
+/// then turns it into an editable default the user confirms before it
+/// persists). The UI is seeded with, and a later settings save writes, this
+/// persistable base (or roots the user actually edited in the modal), never
+/// an untouched flag override. The runtime roots still honour the flag (flag
+/// wins when non-empty, else stored).
+fn resolve_runtime_media_roots(flag: &[PathBuf], stored: Vec<PathBuf>) -> RuntimeMediaRoots {
+    let runtime = resolve_media_roots(flag, stored.clone());
+    // Persistable base: keep the stored roots; only prefill with the flag
+    // when nothing is stored, so a later settings save cannot persist a
+    // one-off override.
+    let persistable = if stored.is_empty() {
+        flag.to_vec()
+    } else {
+        stored
+    };
+    RuntimeMediaRoots {
+        runtime,
+        persistable,
+    }
+}
+
+/// The split produced by [`resolve_runtime_media_roots`].
+struct RuntimeMediaRoots {
+    /// Roots the file actor uses at runtime (scan/serve/resolve); honours the
+    /// `--media-root` override.
+    runtime: Vec<PathBuf>,
+    /// Roots seeded into the UI and persisted on save: the stored base, or
+    /// the flag as a first-run prefill when nothing is stored. Never an
+    /// untouched override.
+    persistable: Vec<PathBuf>,
 }
 
 /// The peer-download tuning shared by every mode that downloads: the
@@ -571,9 +619,13 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         .load_settings()
         .map_err(|e| format!("loading settings: {e}"))?;
     // `--media-root` overrides the stored roots for this run (never
-    // persisted). Applied before `needs_setup` so a flag-supplied run is
-    // not forced into first-run setup merely because the DB has no roots.
-    let media_roots = resolve_media_roots(
+    // persisted): `resolve_runtime_media_roots` returns the runtime roots
+    // (used by the file actor) alongside the *persistable* base (seeded into
+    // the UI and written on save — the stored value, or a first-run prefill,
+    // never an untouched override). The runtime roots feed `needs_setup` so a
+    // flag-supplied run is not forced into first-run setup merely because the
+    // DB has no roots.
+    let media_roots = resolve_runtime_media_roots(
         &args.media_roots,
         setup_storage
             .media_roots()
@@ -583,7 +635,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         elapsed_ms = phase.elapsed().as_millis() as u64,
         "storage opened and settings loaded"
     );
-    let needs_setup = settings.needs_setup() || media_roots.is_empty();
+    let needs_setup = settings.needs_setup() || media_roots.runtime.is_empty();
+    // True when an override shadows existing stored roots (the media-roots
+    // analogue of `identity_locked`): while set, the file actor keeps the
+    // runtime override even after first-run setup confirms stored roots.
+    let roots_locked = media_roots.persistable != media_roots.runtime;
     // Resolve the one identity used for the UI, the session, and auth.
     // These MUST agree: the UI keys your own manual-override write by
     // this name, while the Users pane derives your row from the server's
@@ -629,10 +685,15 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
 
     // The UI runs on its own threads; this task bridges it to the
     // actors.
+    // The UI is seeded with the persistable base, never the runtime
+    // override: the settings modal shows it, and any save (including an
+    // unrelated F2 subtitle cycle) carries it back, so a one-off
+    // `--media-root` can never be written to the DB. The runtime override
+    // drives the file actor instead (see `file_media_roots` below).
     let ui = Ui::with_setup(
         UserId::new(runtime_username.clone().unwrap_or_default()),
         settings.clone(),
-        media_roots,
+        media_roots.persistable.clone(),
         needs_setup,
     );
     let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
@@ -707,12 +768,22 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // process itself only spawns when something first loads; the file
     // actor (its own storage handle — WAL handles concurrency) runs
     // from the start.
-    let media_roots = resolve_media_roots(
-        &args.media_roots,
-        setup_storage
-            .media_roots()
-            .map_err(|e| format!("loading media roots: {e}"))?,
-    );
+    //
+    // The roots now in the database after any first-run save: the persistable
+    // base (stored roots, or what the user confirmed during setup). It also
+    // seeds the running session's roots-change detection below.
+    let persisted_roots = setup_storage
+        .media_roots()
+        .map_err(|e| format!("loading media roots: {e}"))?;
+    // The roots the file actor scans/serves: the runtime `--media-root`
+    // override, or — on a first run with no shadowing override — the roots
+    // the user just confirmed (mirroring `me` following the confirmed
+    // username at first run; `roots_locked` keeps the override otherwise).
+    let file_media_roots = if needs_setup && !roots_locked {
+        persisted_roots.clone()
+    } else {
+        media_roots.runtime.clone()
+    };
     let file_storage =
         Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
     let player_factory = match &args.attach_mpv {
@@ -725,7 +796,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         system_clock(),
         crate::actors::file::FileConfig {
             storage: file_storage,
-            media_roots,
+            media_roots: file_media_roots,
             retention: settings.cache_retention,
             cache_dir,
             clock: system_clock(),
@@ -760,6 +831,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         db_path,
         me,
         settings,
+        media_roots: persisted_roots,
         observed_fingerprint: Box::new(move || connector.observed_fingerprint()),
         pin_pending: setup.first_use,
         server_addr: setup.server_addr_str.clone(),
@@ -848,6 +920,11 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     pub me: UserId,
     /// Current settings (updated by in-session saves).
     pub settings: crate::config::Settings,
+    /// The persistable media-root base currently in the DB / shown by the
+    /// UI. A settings save only pushes roots into the running file actor when
+    /// the saved roots differ from this — so an unrelated save (e.g. an F2
+    /// subtitle cycle) does not clobber an active `--media-root` override.
+    pub media_roots: Vec<PathBuf>,
     /// Observed TLS fingerprint for first-use pinning (`None` until a
     /// connection exists, and always `None` on non-QUIC transports).
     pub observed_fingerprint: Box<dyn Fn() -> Option<Vec<u8>> + Send>,
@@ -978,6 +1055,13 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             if let Err(e) = self.storage.save_settings(&saved) {
                                 tracing::error!("saving settings: {e}");
                             }
+                            // Persist the roots the user confirmed: the
+                            // persistable base, or edits made in the settings
+                            // modal. The UI is seeded with the persistable
+                            // base (run.rs), never the `--media-root`
+                            // override, so a save can never write a one-off
+                            // override back to the DB (design.md: flags
+                            // "override ... but are never persisted").
                             // set_media_roots needs &mut; reopen briefly.
                             match Storage::open(&self.db_path) {
                                 Ok(mut storage) => {
@@ -987,7 +1071,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 }
                                 Err(e) => tracing::error!("opening storage: {e}"),
                             }
-                            self.shell.set_media_roots(roots).await;
+                            // Only push roots into the running file actor when
+                            // they actually changed (a genuine settings-modal
+                            // edit). An unrelated save (e.g. an F2 subtitle
+                            // cycle) carries the unchanged persistable base,
+                            // so an active `--media-root` runtime override
+                            // stays in effect.
+                            if roots != self.media_roots {
+                                self.shell.set_media_roots(roots.clone()).await;
+                                self.media_roots = roots;
+                            }
                             self.shell.set_retention(saved.cache_retention).await;
                             self.shell.set_auto_download(saved.auto_download);
                             self.settings = *saved;
@@ -1549,6 +1642,96 @@ mod tests {
         );
         // Empty flag falls through to the stored roots.
         assert_eq!(resolve_media_roots(&[], stored.clone()), stored);
+    }
+
+    #[test]
+    fn media_root_override_is_not_folded_into_persistable_base() {
+        // A real stored set of roots, launched with `--media-root /flag`.
+        let stored = vec![PathBuf::from("/real")];
+        let split = resolve_runtime_media_roots(&[PathBuf::from("/flag")], stored);
+        // The runtime roots honour the override (so `--media-root` still
+        // takes effect: the file actor scans /flag)...
+        assert_eq!(
+            split.runtime,
+            vec![PathBuf::from("/flag")],
+            "the runtime roots must honour the --media-root override"
+        );
+        // ...but the persistable base keeps the stored roots, so a later
+        // settings save cannot write the one-off flag back to the DB
+        // (design.md: flags/env "override ... but are never persisted").
+        assert_eq!(
+            split.persistable,
+            vec![PathBuf::from("/real")],
+            "an untouched --media-root override must never be persisted"
+        );
+    }
+
+    #[test]
+    fn media_root_override_survives_a_settings_save() {
+        // End-to-end through storage: stored [/real], launched with
+        // `--media-root /flag`, then any settings save (e.g. an F2 subtitle
+        // cycle persisting the in-memory roots verbatim) must leave the
+        // stored roots [/real] — not [/flag].
+        let mut storage = Storage::open_in_memory().unwrap();
+        storage.set_media_roots(&[PathBuf::from("/real")]).unwrap();
+
+        let split =
+            resolve_runtime_media_roots(&[PathBuf::from("/flag")], storage.media_roots().unwrap());
+        assert_eq!(
+            split.runtime,
+            vec![PathBuf::from("/flag")],
+            "runtime roots use the override"
+        );
+
+        // The UI holds the persistable base and carries it on the next save.
+        storage.set_media_roots(&split.persistable).unwrap();
+        assert_eq!(
+            storage.media_roots().unwrap(),
+            vec![PathBuf::from("/real")],
+            "a one-off --media-root must never be persisted (design.md)"
+        );
+    }
+
+    #[test]
+    fn user_edited_media_roots_still_persist() {
+        // The converse no-regression: roots the user actually changes in the
+        // settings modal DO persist (only an untouched override is
+        // suppressed).
+        let mut storage = Storage::open_in_memory().unwrap();
+        storage.set_media_roots(&[PathBuf::from("/real")]).unwrap();
+
+        let split =
+            resolve_runtime_media_roots(&[PathBuf::from("/flag")], storage.media_roots().unwrap());
+        // The user opens the settings screen (seeded with the persistable
+        // base) and adds a root.
+        let mut edited = split.persistable.clone();
+        edited.push(PathBuf::from("/added"));
+        storage.set_media_roots(&edited).unwrap();
+        assert_eq!(
+            storage.media_roots().unwrap(),
+            vec![PathBuf::from("/real"), PathBuf::from("/added")],
+            "a deliberate settings-screen edit must persist"
+        );
+    }
+
+    #[test]
+    fn first_run_prefills_media_roots_from_flag() {
+        // No stored roots (first run): the flag seeds both the runtime roots
+        // and the persistable base — there is no stored value to clobber, and
+        // the settings modal turns the prefill into an editable default the
+        // user confirms before it persists.
+        let split = resolve_runtime_media_roots(&[PathBuf::from("/flag")], vec![]);
+        assert_eq!(split.runtime, vec![PathBuf::from("/flag")]);
+        assert_eq!(
+            split.persistable,
+            vec![PathBuf::from("/flag")],
+            "with nothing stored, the flag is a legitimate first-run prefill"
+        );
+
+        // First run with no flag either: nothing to scan, nothing to seed.
+        let split = resolve_runtime_media_roots(&[], vec![]);
+        assert!(split.runtime.is_empty());
+        assert!(split.persistable.is_empty());
     }
 
     #[test]

@@ -204,6 +204,7 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
         db_path: dir.path().join("session.db"),
         me: UserId::new(name),
         settings: Settings::default(),
+        media_roots: Vec::new(),
         observed_fingerprint: Box::new(|| None),
         pin_pending: false,
         server_addr: "sim".into(),

@@ -96,6 +96,7 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
         db_path: db_dir.join(format!("{name}.db")),
         me: UserId::new(name),
         settings: Settings::default(),
+        media_roots: Vec::new(),
         observed_fingerprint: Box::new(|| None),
         pin_pending: false,
         server_addr: "sim".into(),
