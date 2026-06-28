@@ -187,6 +187,15 @@ pub struct Ui {
     franchise_cache: franchise::FranchiseCache,
     settings: Settings,
     media_roots: Vec<PathBuf>,
+    /// True when `me` is a runtime `--username` override that differs from
+    /// the persisted `settings.username` (set at construction). While set,
+    /// a settings save must NOT move `self.me` onto the settings-screen
+    /// value — the override stays the identity, and the stored name is left
+    /// untouched (run.rs keeps it out of the persisted settings). Without
+    /// this, opening F3 and saving in an overridden session would key our
+    /// own writes under the stored name and our readiness would stop
+    /// showing (the 2026-06-14 identity-agreement invariant).
+    identity_locked: bool,
 }
 
 impl Ui {
@@ -207,6 +216,14 @@ impl Ui {
         media_roots: Vec<PathBuf>,
         open_settings: bool,
     ) -> Self {
+        // Identity is locked when a runtime override (a `--username` flag)
+        // gives us a `me` that differs from the persisted username; a
+        // settings save then must not move the identity (see the field doc
+        // and run.rs's matching `identity_locked`).
+        let identity_locked = settings
+            .username
+            .as_deref()
+            .is_some_and(|stored| me.0 != stored);
         let mut ui = Self {
             me,
             chat: ChatPane::default(),
@@ -226,6 +243,7 @@ impl Ui {
             franchise_cache: franchise::FranchiseCache::default(),
             settings: settings.clone(),
             media_roots: media_roots.clone(),
+            identity_locked,
         };
         ui.chat.set_me(ui.me.to_string());
         if open_settings {
@@ -955,8 +973,14 @@ impl Ui {
                 self.media_roots = roots.clone();
                 // The mode may have flipped Intermixed membership.
                 self.refresh_chat();
-                // First-run setup may have changed who we are.
-                if let Some(name) = &settings.username {
+                // First-run setup may have changed who we are — adopt the
+                // saved username. But when the identity is locked to a
+                // runtime `--username` override, the saved (persisted) name
+                // is deliberately the *stored* value, not our identity, so
+                // leave `self.me` on the override (see `identity_locked`).
+                if !self.identity_locked
+                    && let Some(name) = &settings.username
+                {
                     self.me = UserId::new(name.clone());
                 }
                 Some(UserAction::SaveSettings(settings, roots))
@@ -1769,6 +1793,70 @@ mod tests {
                 .iter()
                 .any(|a| matches!(a, UserAction::SaveSettings(..))),
             "save should emit a SaveSettings action",
+        );
+    }
+
+    #[test]
+    fn locked_identity_is_not_moved_by_a_settings_save() {
+        // `me` ("foo") is a runtime `--username` override that differs from
+        // the persisted username ("real"): a settings save must keep the
+        // identity on the override and must persist the stored name, never
+        // the override (the run.rs side keeps it out of `settings`).
+        let settings = Settings {
+            username: Some("real".into()),
+            password: Some("hunter2".into()),
+            ..Default::default()
+        };
+        let mut ui = Ui::with_setup(
+            UserId::new("foo"),
+            settings,
+            vec![PathBuf::from("/anime")],
+            true,
+        );
+        assert!(ui.identity_locked, "an override should lock the identity");
+
+        // Walk to the [Save] row and activate it.
+        for _ in 0..30 {
+            ui.handle(key(Key::Down));
+        }
+        let actions = ui.handle(key(Key::Enter));
+
+        // The identity stays the override...
+        assert_eq!(
+            ui.me,
+            UserId::new("foo"),
+            "a settings save must not move a locked identity"
+        );
+        // ...and what gets persisted is the stored username, not the override.
+        let saved = actions
+            .iter()
+            .find_map(|a| match a {
+                UserAction::SaveSettings(s, _) => Some(s),
+                _ => None,
+            })
+            .expect("a SaveSettings action");
+        assert_eq!(saved.username, Some("real".into()));
+    }
+
+    #[test]
+    fn unlocked_identity_follows_a_settings_save() {
+        // No override: `me` matches the persisted username, so first-run
+        // setup (confirming/editing the name) is free to update the
+        // identity — the lock guard does not engage.
+        let settings = Settings {
+            username: Some("kim".into()),
+            password: Some("hunter2".into()),
+            ..Default::default()
+        };
+        let ui = Ui::with_setup(
+            UserId::new("kim"),
+            settings,
+            vec![PathBuf::from("/anime")],
+            true,
+        );
+        assert!(
+            !ui.identity_locked,
+            "without an override the identity is not locked"
         );
     }
 

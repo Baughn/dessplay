@@ -170,6 +170,38 @@ fn resolve_username(
     flag.or(stored).or(env_user)
 }
 
+/// Split the stored settings + the username override into the runtime
+/// identity and the *persistable* settings, the single chokepoint that
+/// keeps a one-off `--username` out of the database.
+///
+/// The `--username` flag (and the `$USER` / `%USERNAME%` fallback) is a
+/// runtime override: it decides the identity used for the UI, session, and
+/// auth — which MUST agree (2026-06-14) — but per design.md (Data Storage:
+/// "Command-line flags and environment variables override stored settings
+/// at runtime but are never persisted") it must never be written back. So
+/// this leaves `settings.username` at its **stored** value and only
+/// *prefills* it (flag, then `$USER`) when nothing is stored — i.e.
+/// first-run, where the settings modal turns the prefill into an editable
+/// default the user confirms before it persists. A later settings save can
+/// therefore only ever write the stored value or one the user actually
+/// typed, never an untouched flag override. The returned identity still
+/// honours the flag (flag > stored > `$USER`).
+fn resolve_runtime_identity(
+    settings: &mut crate::config::Settings,
+    flag_username: Option<String>,
+    env_user: Option<String>,
+) -> Option<String> {
+    let stored = settings.username.take();
+    // Runtime identity: flag wins, then stored, then $USER.
+    let identity = resolve_username(flag_username.clone(), stored.clone(), env_user.clone());
+    // Persistable username: keep the stored value; only prefill (flag, then
+    // $USER) when nothing is stored. The flag NEVER overrides a stored
+    // username here, so a later settings save cannot persist a one-off
+    // override.
+    settings.username = stored.or(flag_username).or(env_user);
+    identity
+}
+
 /// Everything needed to spawn a client against the configured server:
 /// the resolved connector, identity, and the settings/TOFU storage
 /// handle. Shared by the headless run and the importer.
@@ -556,16 +588,26 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // These MUST agree: the UI keys your own manual-override write by
     // this name, while the Users pane derives your row from the server's
     // PeerList (the auth name) — if they diverge your own readiness
-    // never shows (2026-06-14).
-    settings.username = resolve_username(
-        args.username.clone(),
-        settings.username.clone(),
+    // never shows (2026-06-14). The flag/env override is kept *out* of the
+    // persistable settings (design.md: "flags/env override ... but are
+    // never persisted"); `resolve_runtime_identity` returns the runtime
+    // identity while leaving `settings.username` at the stored value (only
+    // a first-run prefill is folded in, where the modal confirms it).
+    let env_user = std::env::var("USER")
+        .ok()
         // $USER on Linux/macOS, %USERNAME% on Windows — so the username
         // field starts pre-filled (and the modal saveable) on every OS.
-        std::env::var("USER")
-            .ok()
-            .or_else(|| std::env::var("USERNAME").ok()),
-    );
+        .or_else(|| std::env::var("USERNAME").ok());
+    let runtime_username = resolve_runtime_identity(&mut settings, args.username.clone(), env_user);
+    // The identity is "locked" to the runtime override whenever it differs
+    // from the persistable username (a `--username` flag over a stored
+    // name). While locked, neither this bootstrap nor the UI may move the
+    // identity onto a settings-screen value — see the matching guard in
+    // `Ui` (app.rs, SettingsSaved) that keeps `self.me` fixed on save.
+    let identity_locked = settings
+        .username
+        .as_deref()
+        .is_some_and(|stored| Some(stored) != runtime_username.as_deref());
     // Track (and log) where the settings password came from — never
     // the password itself.
     let password_source = if settings.password.is_some() {
@@ -588,7 +630,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // The UI runs on its own threads; this task bridges it to the
     // actors.
     let ui = Ui::with_setup(
-        UserId::new(settings.username.clone().unwrap_or_default()),
+        UserId::new(runtime_username.clone().unwrap_or_default()),
         settings.clone(),
         media_roots,
         needs_setup,
@@ -625,11 +667,18 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             }
         }
     }
+    // The session/auth identity, mirroring the UI's `self.me`: when the
+    // user established it in the first-run modal (identity not locked to a
+    // runtime override), follow the confirmed username; otherwise the
+    // runtime override stands (and was never folded into the persisted
+    // settings).
     let me = UserId::new(
-        settings
-            .username
-            .clone()
-            .ok_or("settings saved without a username")?,
+        if needs_setup && !identity_locked {
+            settings.username.clone()
+        } else {
+            runtime_username
+        }
+        .ok_or("settings saved without a username")?,
     );
 
     let setup = prepare(&args).await?;
@@ -1372,6 +1421,103 @@ mod tests {
         assert_eq!(resolve_username(None, None, s("env")), s("env"));
         // Nothing at all.
         assert_eq!(resolve_username(None, None, None), None);
+    }
+
+    #[test]
+    fn flag_username_override_is_not_folded_into_persistable_settings() {
+        // A real stored identity, launched with `--username Foo` (and a
+        // $USER that must be ignored because a name is already stored).
+        let mut settings = crate::config::Settings {
+            username: Some("Real".into()),
+            password: Some("pw".into()),
+            ..Default::default()
+        };
+        let identity =
+            resolve_runtime_identity(&mut settings, Some("Foo".into()), Some("envuser".into()));
+        // The runtime identity honours the override...
+        assert_eq!(identity, Some("Foo".into()));
+        // ...but the persistable settings keep the stored username, so a
+        // later settings save cannot write the one-off flag back to the DB
+        // (design.md: flags/env "override ... but are never persisted").
+        assert_eq!(settings.username, Some("Real".into()));
+    }
+
+    #[test]
+    fn flag_username_override_survives_a_settings_save() {
+        // End-to-end through storage: stored "Real", launched with
+        // `--username Foo`, then any settings save (e.g. an F2 subtitle
+        // cycle persisting the in-memory settings verbatim) must leave the
+        // stored username "Real" — not "Foo".
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .save_settings(&crate::config::Settings {
+                username: Some("Real".into()),
+                password: Some("pw".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let mut settings = storage.load_settings().unwrap();
+        let identity =
+            resolve_runtime_identity(&mut settings, Some("Foo".into()), Some("envuser".into()));
+        assert_eq!(
+            identity,
+            Some("Foo".into()),
+            "runtime identity uses the override"
+        );
+
+        // The UI holds `settings` and persists it verbatim on the next save.
+        storage.save_settings(&settings).unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().username,
+            Some("Real".into()),
+            "a one-off --username must never be persisted (design.md)"
+        );
+    }
+
+    #[test]
+    fn user_edited_username_still_persists() {
+        // The converse no-regression: a username the user actually changes
+        // in the settings screen DOES persist (only an untouched override
+        // is suppressed).
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .save_settings(&crate::config::Settings {
+                username: Some("Real".into()),
+                password: Some("pw".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let mut settings = storage.load_settings().unwrap();
+        let _ = resolve_runtime_identity(&mut settings, Some("Foo".into()), Some("envuser".into()));
+        // The user opens the settings screen and types a new name.
+        settings.username = Some("Chosen".into());
+        storage.save_settings(&settings).unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().username,
+            Some("Chosen".into()),
+            "a deliberate settings-screen edit must persist"
+        );
+    }
+
+    #[test]
+    fn first_run_prefills_username_from_flag_then_env() {
+        // No stored username (first run): the flag, then $USER, seeds the
+        // settings modal's editable default — which the user confirms, so
+        // it persists. Both the identity and the persistable value carry it
+        // (there is no stored value to clobber).
+        let mut settings = crate::config::Settings::default();
+        let identity =
+            resolve_runtime_identity(&mut settings, Some("Foo".into()), Some("envuser".into()));
+        assert_eq!(identity, Some("Foo".into()));
+        assert_eq!(settings.username, Some("Foo".into()));
+
+        // Flag absent: fall back to $USER.
+        let mut settings = crate::config::Settings::default();
+        let identity = resolve_runtime_identity(&mut settings, None, Some("envuser".into()));
+        assert_eq!(identity, Some("envuser".into()));
+        assert_eq!(settings.username, Some("envuser".into()));
     }
 
     #[test]
