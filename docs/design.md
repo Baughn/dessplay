@@ -1659,10 +1659,10 @@ For v1, this is acceptable. Future improvements could include:
   file state tracking, and content verification use this as the unique
   identifier for a file. This means a file must be hashed before it can be
   added to the playlist. Computed with the eMule/AniDB ("red") ed2k
-  variant — files whose size is an exact multiple of the 9,728,000-byte
-  block size include a trailing empty-block hash — for compatibility with
-  AniDB FILE lookups. Per-block MD4 hashes are kept alongside the root for
-  transfer verification.
+  variant — files whose size is an exact non-zero multiple of the
+  9,728,000-byte block size include a trailing empty-block hash — for
+  compatibility with AniDB FILE lookups. Per-block MD4 hashes are kept
+  alongside the root for transfer verification.
 
 - **Rooms**: A rendezvous server can in theory host multiple rooms. For v1,
   there is a single implicit room per server. Multi-room support is future work.
