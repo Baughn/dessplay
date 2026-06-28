@@ -110,6 +110,7 @@ async fn positions_survive_total_datagram_loss() {
             &kim,
             Mutation::SetPlaybackPosition {
                 position_millis: i * 100,
+                file: hash(1),
             },
         )
         .await;
@@ -257,6 +258,7 @@ async fn chaos_converges_after_quiesce() {
                         &clients[who],
                         Mutation::SetPlaybackPosition {
                             position_millis: round as u64 * 100,
+                            file: hash(1),
                         },
                     )
                     .await;

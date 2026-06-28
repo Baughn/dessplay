@@ -13,7 +13,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use dessplay_core::types::{
-    ActorId, ChatMessage, Ed2kHash, PlaybackPosition, SeriesWatchState, SharedTimestamp, UserId,
+    ActorId, ChatMessage, Ed2kHash, SeriesWatchState, SharedTimestamp, UserId,
 };
 use dessplay_core::{CrdtState, wire};
 
@@ -29,7 +29,11 @@ fn hash(i: u8) -> Ed2kHash {
 
 /// A state populated across a spread of fields, with an **empty**
 /// `acknowledged_absent` — so its postcard encoding ends with exactly the
-/// one-byte empty-GSet that the v1 layout lacks.
+/// one-byte empty-GSet that the v1 layout lacks. `playback_position` is
+/// left **empty**: an empty map encodes identically whether its value is
+/// the current `PlaybackPosition` or the old `PlaybackPositionV1` (no entry
+/// bytes carry the value layout), so stripping the trailing byte still
+/// reproduces a faithful pre-`file` v1 blob.
 fn sample_state() -> CrdtState {
     let mut state = CrdtState::new();
     state.set_now_playing(A, ts(1), Some(hash(1)));
@@ -61,15 +65,6 @@ fn sample_state() -> CrdtState {
         sender: UserId::new("baughn"),
         text: "hi".into(),
     });
-    state.set_playback_position(
-        A,
-        ts(7),
-        UserId::new("kim"),
-        PlaybackPosition {
-            position_millis: 123,
-            timestamp: ts(7),
-        },
-    );
     state
 }
 

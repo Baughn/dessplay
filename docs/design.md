@@ -400,15 +400,25 @@ how many users are connected.
    one, so the group converges on the front.
 
    Eligibility -- for both the leader election and validating a user
-   authority -- is restricted to peers that have **this file** loaded
-   (`playback_position` carries no file tag, so "same file" is read from
-   `file_availability`). This deliberately excludes absent users, users on a
-   different file, and users watching a placeholder (file missing / still
-   downloading / not watching) -- their position is stale or for another file
-   and must never elect a bogus leader or be followed as authority. *Without
-   the leader fallback the player ran open-loop under Server authority: any
-   initial offset (e.g. a player that started late, or a brief decode stall)
-   sat uncorrected for the whole episode, since no `SyncTo` was ever issued.*
+   authority -- is restricted to peers whose position is **for this file**.
+   Two gates, both required: the peer advertises `FileAvailability::Ready`
+   for now-playing, **and** their `PlaybackPosition` carries a `file` tag
+   equal to now-playing. The file tag is the load-bearing one: `Ready` alone
+   is *not* sufficient because it is set on **prefetch** (a peer advertises
+   Ready for next week's episode long before it plays it), so right after a
+   now-playing transition a peer can be Ready for the new file while its
+   position register still holds the *previous* file's sample. Following that
+   stale value latched the whole group forward onto it (leader election only
+   moves forward, so nobody pulled back to 0:00) -- the new file came up at
+   the previous file's position instead of T=0, on both EOF-advance and
+   manual selection. The tag is a clock-free identity check; it deliberately
+   excludes absent users, users on a different file, and users watching a
+   placeholder (file missing / still downloading / not watching) -- their
+   position is stale or for another file and must never elect a bogus leader
+   or be followed as authority. *Without the leader fallback the player ran
+   open-loop under Server authority: any initial offset (e.g. a player that
+   started late, or a brief decode stall) sat uncorrected for the whole
+   episode, since no `SyncTo` was ever issued.*
 6. Seeks are debounced (1500ms) -- only broadcast after the user stops scrubbing
 7. **EOF** advances the synced now-playing pointer to the next playlist entry.
    The server initiates this (it is the authoritative entity for "file ended"):

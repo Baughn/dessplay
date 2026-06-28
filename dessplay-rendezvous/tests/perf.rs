@@ -256,6 +256,7 @@ fn start_position_flood(
                 .send(SyncCommand::Mutate(Box::new(
                     Mutation::SetPlaybackPosition {
                         position_millis: pos,
+                        file: hash(1),
                     },
                 )))
                 .await

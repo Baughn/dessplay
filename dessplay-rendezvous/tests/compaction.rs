@@ -219,6 +219,7 @@ async fn chaos_with_compaction_converges() {
                         &clients[who],
                         Mutation::SetPlaybackPosition {
                             position_millis: round as u64 * 100,
+                            file: hash(1),
                         },
                     )
                     .await;

@@ -564,6 +564,17 @@ truly lost -- the replicated state just stays bounded.
 `PlaybackPosition` contains:
 - `position_millis: u64` -- milliseconds as integer (avoids float Eq/Ord issues)
 - `timestamp: SharedTimestamp`
+- `file: Ed2kHash` -- the file the sample was taken against. Drift correction
+  follows a peer's position only when this equals now-playing, so a *stale*
+  sample left over from the previous file (a peer advertises
+  `FileAvailability::Ready` for the next episode on **prefetch**, before its
+  player loads it) cannot elect a bogus leader after a now-playing
+  transition. The tag is a **clock-free** identity check -- comparing a
+  peer's sample timestamp against the now-playing write time would be
+  unsound, since `SharedTimestamp`s are only reliably ordered *within* one
+  machine, not across the loosely-NTP-synced fleet. Appending this field is a
+  forward-compatible snapshot change: pre-`file` blobs decode via the
+  `CrdtStateV2` fallback, which drops their (ephemeral) positions.
 
 Updated at high frequency: every 100ms during playback, every 1s when paused.
 These updates are **not persisted to SQLite on every update**. The server

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 993e7046fc15afe19ec91985eb36bdf97945edb50c34d045686fa63f246f7620 # shrinks to specs = [(false, Some(0), false)], authority_sel = 2
+cc 62ebafd5cc1c23e9cba5aa977e02d2e2113402d4104d96915a7aada9e7682d85 # shrinks to specs = [(true, Some(0), true, true)], authority_sel = 0

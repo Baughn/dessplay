@@ -132,6 +132,7 @@ fn position_op(name: &str, position_millis: u64) -> CrdtOp {
         PlaybackPosition {
             position_millis,
             timestamp: ts,
+            file: Ed2kHash([1; 16]),
         },
     )
 }

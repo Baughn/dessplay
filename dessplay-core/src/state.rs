@@ -202,12 +202,80 @@ pub struct StateSnapshot {
     pub state: CrdtState,
 }
 
-/// The previous on-disk/wire layout of [`CrdtState`], before
-/// `acknowledged_absent` was appended. postcard snapshots have no version
-/// tag, so [`CrdtState::decode_snapshot`] falls back to decoding this
-/// (a strict field prefix of the current struct) and upgrading it. Frozen:
-/// it is a record of the v1 format, not live state. Drop it once no blob
-/// predating `acknowledged_absent` can plausibly still be on disk.
+/// The old wire/disk layout of [`PlaybackPosition`], before the `file`
+/// tag was appended. The snapshot fallbacks decode pre-`file` blobs with
+/// this and then **drop** the positions: they are ephemeral (sampled
+/// ~1/s, rebroadcast within a second of reconnecting), so nothing of value
+/// is lost, and it avoids ever decoding old-layout position bytes with the
+/// new (longer) layout — which postcard, being non-self-describing, cannot
+/// detect. See [`CrdtState::decode_snapshot`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
+#[allow(dead_code)] // fields consumed only by (de)serialization
+struct PlaybackPositionV1 {
+    position_millis: u64,
+    timestamp: SharedTimestamp,
+}
+
+/// The on-disk/wire layout of [`CrdtState`] **before** the `file` tag was
+/// appended to [`PlaybackPosition`] (but after `acknowledged_absent`).
+/// Identical to the current struct except `playback_position` uses the old
+/// [`PlaybackPositionV1`] value. Frozen: a record of the format, not live
+/// state.
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Default, Serialize))]
+struct CrdtStateV2 {
+    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
+    watched: LwwMap<Ed2kHash, bool>,
+    now_playing: LwwCell<Option<Ed2kHash>>,
+    seek_authority: LwwCell<SeekAuthority>,
+    playback_intent: LwwCell<PlaybackIntent>,
+    series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
+    manual_override: LwwMap<UserId, Option<ManualState>>,
+    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
+    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
+    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
+    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_next_ep: LwwMap<ListEntryId, NextEpState>,
+    lookup_requests: GSet<FileHashInfo>,
+    chat: GList<ChatMessage>,
+    // Consumed only to advance the decoder; dropped on migration.
+    #[allow(dead_code)]
+    playback_position: LwwMap<UserId, PlaybackPositionV1>,
+    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+}
+
+impl From<CrdtStateV2> for CrdtState {
+    fn from(v2: CrdtStateV2) -> Self {
+        CrdtState {
+            playlist: v2.playlist,
+            watched: v2.watched,
+            now_playing: v2.now_playing,
+            seek_authority: v2.seek_authority,
+            playback_intent: v2.playback_intent,
+            series_preference: v2.series_preference,
+            manual_override: v2.manual_override,
+            file_availability: v2.file_availability,
+            anidb_metadata: v2.anidb_metadata,
+            series_relations: v2.series_relations,
+            file_catalog: v2.file_catalog,
+            list_entries: v2.list_entries,
+            list_next_ep: v2.list_next_ep,
+            lookup_requests: v2.lookup_requests,
+            chat: v2.chat,
+            playback_position: LwwMap::new(), // ephemeral; dropped on migration
+            acknowledged_absent: v2.acknowledged_absent,
+        }
+    }
+}
+
+/// The on-disk/wire layout of [`CrdtState`] before `acknowledged_absent`
+/// was appended (and before the `file` tag). postcard snapshots have no
+/// version tag, so [`CrdtState::decode_snapshot`] falls back to decoding
+/// this (a strict field prefix of [`CrdtStateV2`]) and upgrading it.
+/// Frozen. Drop it once no blob predating `acknowledged_absent` can
+/// plausibly still be on disk.
 #[derive(Deserialize)]
 struct CrdtStateV1 {
     playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
@@ -225,7 +293,9 @@ struct CrdtStateV1 {
     list_next_ep: LwwMap<ListEntryId, NextEpState>,
     lookup_requests: GSet<FileHashInfo>,
     chat: GList<ChatMessage>,
-    playback_position: LwwMap<UserId, PlaybackPosition>,
+    // Consumed only to advance the decoder; dropped on migration.
+    #[allow(dead_code)]
+    playback_position: LwwMap<UserId, PlaybackPositionV1>,
 }
 
 impl From<CrdtStateV1> for CrdtState {
@@ -246,7 +316,7 @@ impl From<CrdtStateV1> for CrdtState {
             list_next_ep: v1.list_next_ep,
             lookup_requests: v1.lookup_requests,
             chat: v1.chat,
-            playback_position: v1.playback_position,
+            playback_position: LwwMap::new(), // ephemeral; dropped on migration
             acknowledged_absent: GSet::new(),
         }
     }
@@ -255,15 +325,18 @@ impl From<CrdtStateV1> for CrdtState {
 impl CrdtState {
     /// Decode a persisted snapshot blob, migrating an older on-disk layout
     /// forward. The postcard blob carries no version tag, so try the
-    /// current layout first and, on failure, decode the previous layout
-    /// ([`CrdtStateV1`], which lacks `acknowledged_absent`) and upgrade it.
-    /// A blob that is neither (genuinely corrupt) surfaces the *original*
-    /// error, so callers still see a real codec failure.
+    /// current layout first and, on failure, fall back through the previous
+    /// layouts: [`CrdtStateV2`] (before the `file` tag on
+    /// [`PlaybackPosition`]), then [`CrdtStateV1`] (also before
+    /// `acknowledged_absent`). Both drop their ephemeral playback positions.
+    /// A blob that is none of these (genuinely corrupt) surfaces the
+    /// *original* error, so callers still see a real codec failure.
     pub fn decode_snapshot(blob: &[u8]) -> Result<CrdtState, crate::wire::WireError> {
         match crate::wire::decode::<CrdtState>(blob) {
             Ok(state) => Ok(state),
-            Err(primary) => crate::wire::decode::<CrdtStateV1>(blob)
+            Err(primary) => crate::wire::decode::<CrdtStateV2>(blob)
                 .map(CrdtState::from)
+                .or_else(|_| crate::wire::decode::<CrdtStateV1>(blob).map(CrdtState::from))
                 .map_err(|_| primary),
         }
     }
@@ -865,6 +938,38 @@ mod tests {
             sender: UserId::new(who),
             text: text.into(),
         }
+    }
+
+    /// A real pre-`file` snapshot has *old-layout* positions ([pos, ts], no
+    /// file tag). Decoding it must fall through the current layout (which
+    /// would mis-read the shorter entries) to the `CrdtStateV2` fallback,
+    /// which reads the old layout exactly and drops the ephemeral positions.
+    #[test]
+    fn legacy_blob_with_old_layout_positions_decodes_and_drops_them() {
+        let mut playback_position = LwwMap::new();
+        map_put(
+            &mut playback_position,
+            A1,
+            ts(7),
+            UserId::new("kim"),
+            PlaybackPositionV1 {
+                position_millis: 123,
+                timestamp: ts(7),
+            },
+        );
+        let mut now_playing = LwwCell::new();
+        now_playing.apply(now_playing.write(ts(1), Some(hash(1))));
+        let legacy = CrdtStateV2 {
+            now_playing,
+            playback_position,
+            ..Default::default()
+        };
+        let blob = crate::wire::encode(&legacy).unwrap();
+
+        let decoded = CrdtState::decode_snapshot(&blob).expect("legacy blob must decode");
+        // Durable state survives; the ephemeral positions are dropped.
+        assert_eq!(decoded.view().now_playing, Some(hash(1)));
+        assert!(decoded.view().playback_position.is_empty());
     }
 
     #[test]

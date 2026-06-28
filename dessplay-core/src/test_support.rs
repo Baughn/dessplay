@@ -427,6 +427,9 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
             PlaybackPosition {
                 position_millis: *millis as u64,
                 timestamp: ts,
+                // Convergence fuzzing exercises the position register, not
+                // drift; a fixed file keeps it deterministic.
+                file: file(0),
             },
         ),
     };

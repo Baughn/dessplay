@@ -380,10 +380,14 @@ impl NarratorState {
 }
 
 /// The followed (seek-authority) position sample for `authority`, if it
-/// has published a position.
+/// has published a position **for the now-playing file**. A sample tagged
+/// for a previous file is stale (the authority just changed files) and must
+/// not be surfaced as a "skipped to" position. See [`same_file_positions`].
 fn current_seek_sample(view: &StateView, authority: &UserId) -> Option<(u64, u64)> {
+    let now_playing = view.now_playing?;
     view.playback_position
         .get(authority)
+        .filter(|p| p.file == now_playing)
         .map(|p| (p.position_millis, p.timestamp.0))
 }
 
@@ -396,17 +400,26 @@ fn current_interactive(peers: &[PeerInfo]) -> BTreeMap<UserId, dessplay_core::ne
         .collect()
 }
 
-/// Present interactive peers that have the now-playing file *loaded*
-/// (they advertise [`FileAvailability::Ready`] for it) paired with their
-/// latest reported position. This is the only set drift correction keys
-/// on: it excludes peers who are absent, on a different file, or watching
-/// a placeholder (file missing / still downloading / not watching) —
-/// their `playback_position` entry is stale or for some other file and
-/// must never elect a bogus leader or inflate the measured spread.
+/// Present interactive peers whose latest reported position is **for the
+/// now-playing file**, paired with that position. This is the only set
+/// drift correction keys on: it excludes peers who are absent, on a
+/// different file, or watching a placeholder (file missing / still
+/// downloading / not watching) — their position is stale or for some other
+/// file and must never elect a bogus leader or inflate the measured spread.
 ///
-/// `playback_position` carries no file tag (a position sample drops the
-/// file it was taken against), so "same file loaded" is read from
-/// `file_availability`, which is keyed by `(user, file)`.
+/// Two independent gates, both required:
+/// - `file_availability == Ready` for the now-playing file (they hold the
+///   real video), and
+/// - the position's **own `file` tag** equals now-playing.
+///
+/// The file tag is the load-bearing one. `Ready` alone is **not** enough:
+/// it is set on prefetch (see `on_resolved`), so right after a now-playing
+/// transition a peer can advertise Ready for the *new* file while its
+/// position register still holds the *previous* file's sample — and a
+/// single follow of that stale value latches the whole group forward onto
+/// it (leader election only moves forward). The tag is a clock-free
+/// identity check; the previous reliance on `Ready` alone was the
+/// stale-position bug. See [`PlaybackPosition::file`].
 fn same_file_positions(
     view: &StateView,
     peers: &[PeerInfo],
@@ -422,6 +435,7 @@ fn same_file_positions(
                 == Some(&FileAvailability::Ready)
         })
         .filter_map(|(user, _)| view.playback_position.get(&user).map(|p| (user, *p)))
+        .filter(|(_, p)| p.file == now_playing)
         .collect()
 }
 
@@ -1101,9 +1115,14 @@ impl PlayerWiring {
         let leader = same_file_positions(view, peers)
             .into_iter()
             .max_by_key(|(_, p)| p.position_millis)?;
+        // Our own threshold counts only a position tagged for the
+        // now-playing file. A stale sample from a previous file would make
+        // us *under*-follow (think we are further ahead than we are) right
+        // after a transition; treat it as 0 (we just loaded the new file).
         let mine = view
             .playback_position
             .get(&self.me)
+            .filter(|p| view.now_playing == Some(p.file))
             .map_or(0, |p| p.position_millis);
         if leader.0 == self.me || leader.1.position_millis <= mine {
             None
@@ -1476,20 +1495,24 @@ impl PlayerWiring {
                 }),
             ],
             PlayerOutput::UserSeeked { position_millis } => {
-                if !self.holds_now_playing(view) {
+                match view.now_playing.filter(|_| self.holds_now_playing(view)) {
                     // A seek while a placeholder / stale frame is loaded (a
                     // file dragged into mpv, or a scrubbed placeholder) must
                     // not take seek authority or publish a position for the
                     // real file — it would make the group follow a frozen
                     // placeholder. See `holds_now_playing`.
-                    vec![]
-                } else {
-                    vec![
+                    None => vec![],
+                    // `holds_now_playing` guarantees `now_playing` is the file
+                    // we hold, so it tags the published position.
+                    Some(file) => vec![
                         Directive::Mutate(Mutation::SetSeekAuthority {
                             authority: SeekAuthority::User(self.me.clone()),
                         }),
-                        Directive::Mutate(Mutation::SetPlaybackPosition { position_millis }),
-                    ]
+                        Directive::Mutate(Mutation::SetPlaybackPosition {
+                            position_millis,
+                            file,
+                        }),
+                    ],
                 }
             }
             PlayerOutput::PositionTick {
@@ -1515,6 +1538,7 @@ impl PlayerWiring {
                 } else {
                     let mut out = vec![Directive::Mutate(Mutation::SetPlaybackPosition {
                         position_millis,
+                        file,
                     })];
                     out.extend(self.maybe_record_watched(view, position_millis));
                     out
@@ -2696,6 +2720,7 @@ mod tests {
         let pos = |p: u64, t: u64| PlaybackPosition {
             position_millis: p,
             timestamp: ts(t),
+            file: hash(1),
         };
 
         let mut state = playing_state();
@@ -3134,6 +3159,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 60_000,
                 timestamp: ts(11),
+                file: hash(1),
             },
         );
         // The authority must be a valid same-file source to be followed:
@@ -3182,6 +3208,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 70_000,
                 timestamp: ts(21),
+                file: hash(1),
             },
         );
         let directives = wiring.on_state(&state.view(), &[peer("kim"), peer("baughn")]);
@@ -3219,6 +3246,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 600_000,
                 timestamp: ts(6),
+                file: hash(1),
             },
         );
 
@@ -3239,6 +3267,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 9_000_000,
                 timestamp: ts(8),
+                file: hash(2),
             },
         );
 
@@ -3251,6 +3280,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 100_000,
                 timestamp: ts(10),
+                file: hash(1),
             },
         );
 
@@ -3304,6 +3334,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 100_000,
                 timestamp: ts(6),
+                file: hash(1),
             },
         );
         // us (kim): ahead.
@@ -3315,6 +3346,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 600_000,
                 timestamp: ts(8),
+                file: hash(1),
             },
         );
 
@@ -3359,6 +3391,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 5_000,
                 timestamp: ts(5),
+                file: hash(2),
             },
         );
         // baughn: a valid same-file leader, far ahead.
@@ -3376,6 +3409,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 600_000,
                 timestamp: ts(7),
+                file: hash(1),
             },
         );
         // us (kim): Ready, behind.
@@ -3387,6 +3421,7 @@ mod tests {
             PlaybackPosition {
                 position_millis: 100_000,
                 timestamp: ts(9),
+                file: hash(1),
             },
         );
 
@@ -3459,7 +3494,8 @@ mod tests {
             credited.iter().any(|d| matches!(
                 d,
                 Directive::Mutate(Mutation::SetPlaybackPosition {
-                    position_millis: 90_000
+                    position_millis: 90_000,
+                    ..
                 })
             )),
             "a tick for the real now-playing video must still be published"
@@ -3580,11 +3616,16 @@ mod tests {
         /// a not-watching user's frozen position" bug.
         #[test]
         fn position_reference_is_always_a_valid_same_file_source(
-            // (ready?, position?, present?) for up to four candidate peers.
+            // (ready?, position?, present?, stale-file?) for up to four
+            // candidate peers. `stale-file?` tags the peer's position against
+            // a *different* file (hash(2)) than now-playing (hash(1)) -- the
+            // prefetch race: a peer advertises Ready for the new file while
+            // its position register still holds the previous file's sample.
             specs in proptest::collection::vec(
                 (
                     proptest::bool::ANY,
                     proptest::option::of(0u64..1_000_000),
+                    proptest::bool::ANY,
                     proptest::bool::ANY,
                 ),
                 0..4,
@@ -3597,18 +3638,21 @@ mod tests {
             let mut state = playing_state(); // now_playing hash(1), intent Playing
             let mut t = 100u64;
             let mut peers = Vec::new();
-            for (i, (ready, pos, present)) in specs.iter().enumerate() {
+            for (i, (ready, pos, present, stale)) in specs.iter().enumerate() {
                 let user = UserId::new(names[i]);
                 if *ready {
                     state.set_file_availability(A, ts(t), user.clone(), hash(1), FileAvailability::Ready);
                     t += 1;
                 }
                 if let Some(p) = pos {
+                    // hash(2) = a stale sample for a *previous* file; hash(1) =
+                    // the real now-playing video.
+                    let pos_file = if *stale { hash(2) } else { hash(1) };
                     state.set_playback_position(
                         A,
                         ts(t),
                         user.clone(),
-                        PlaybackPosition { position_millis: *p, timestamp: ts(t) },
+                        PlaybackPosition { position_millis: *p, timestamp: ts(t), file: pos_file },
                     );
                     t += 1;
                 }
@@ -3625,11 +3669,26 @@ mod tests {
             let wiring = PlayerWiring::new(me());
 
             let eligible = same_file_positions(&view, &peers);
-            if let Some((u, _)) = wiring.position_reference(&view, &peers) {
+            // The invariant the stale-position bug violated: an eligible
+            // (same-file) position is tagged for the now-playing file, never a
+            // stale sample left over from a previous file. `Ready` alone does
+            // not imply it -- it is set on prefetch (see `on_resolved`).
+            for (u, p) in &eligible {
+                proptest::prop_assert_eq!(
+                    p.file, hash(1),
+                    "same_file_positions included {}'s position tagged for {:?}, not now-playing {:?}",
+                    u, p.file, hash(1)
+                );
+            }
+            if let Some((u, p)) = wiring.position_reference(&view, &peers) {
                 proptest::prop_assert!(
                     eligible.iter().any(|(eu, _)| *eu == u),
                     "position_reference returned {u}, not a valid same-file source; eligible = {:?}",
                     eligible.iter().map(|(e, _)| e.to_string()).collect::<Vec<_>>(),
+                );
+                proptest::prop_assert_eq!(
+                    p.file, hash(1),
+                    "position_reference followed {}'s stale position (file {:?})", u, p.file
                 );
             }
         }
@@ -3769,7 +3828,8 @@ mod tests {
         assert!(directives.iter().any(|d| matches!(
             d,
             Directive::Mutate(Mutation::SetPlaybackPosition {
-                position_millis: 90_000
+                position_millis: 90_000,
+                ..
             })
         )));
     }

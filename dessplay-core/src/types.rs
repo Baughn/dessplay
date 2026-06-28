@@ -545,4 +545,13 @@ pub struct PlaybackPosition {
     pub position_millis: u64,
     /// Shared-clock time the position was sampled at.
     pub timestamp: SharedTimestamp,
+    /// The file this position was sampled against. Drift correction keys on
+    /// this to ignore a peer's *stale* position from a previous file after a
+    /// now-playing transition: `file_availability::Ready` alone is set on
+    /// prefetch (see `on_resolved`), so a peer can advertise Ready for the new
+    /// file while its position register still holds the previous file's
+    /// position. The file tag is a clock-free identity check -- no cross-PC
+    /// `SharedTimestamp` comparison, which would be unsound (see
+    /// docs/sync-state.md, playback-position).
+    pub file: Ed2kHash,
 }

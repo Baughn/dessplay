@@ -157,6 +157,10 @@ pub enum Mutation {
     SetPlaybackPosition {
         /// Position within the file, milliseconds.
         position_millis: u64,
+        /// The file the position was sampled against (tags the synced
+        /// position so a stale sample from a previous file is ignored after
+        /// a now-playing transition).
+        file: Ed2kHash,
     },
     /// Backfill a playlist entry's duration (probed by the player when
     /// the adder didn't provide one).
@@ -546,13 +550,17 @@ impl SyncActor {
                 sender: user,
                 text,
             }),
-            Mutation::SetPlaybackPosition { position_millis } => self.state.set_playback_position(
+            Mutation::SetPlaybackPosition {
+                position_millis,
+                file,
+            } => self.state.set_playback_position(
                 actor,
                 ts,
                 user,
                 PlaybackPosition {
                     position_millis,
                     timestamp: ts,
+                    file,
                 },
             ),
             Mutation::SetPlaylistDuration {
@@ -948,6 +956,7 @@ mod tests {
                 .send(SyncCommand::Mutate(Box::new(
                     Mutation::SetPlaybackPosition {
                         position_millis: millis,
+                        file: Ed2kHash([1; 16]),
                     },
                 )))
                 .await
@@ -996,6 +1005,7 @@ mod tests {
                 .send(SyncCommand::Mutate(Box::new(
                     Mutation::SetPlaybackPosition {
                         position_millis: i * 100,
+                        file: Ed2kHash([1; 16]),
                     },
                 )))
                 .await

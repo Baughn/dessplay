@@ -413,6 +413,7 @@ mod tests {
                 PlaybackPosition {
                     position_millis: tick * 1000,
                     timestamp: ts(100 + tick),
+                    file: Ed2kHash([1; 16]),
                 },
             );
             assert_eq!(cache.get(&state.view()), expected.as_slice());
