@@ -68,10 +68,11 @@ impl SeederTransfer {
     /// React to a fresh playlist/peer view: resolve new entries, and
     /// (re)start downloads for everything still missing that a peer has.
     pub async fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) {
+        // Resolve each entry once, in playlist order, to learn whether we
+        // already hold it (media roots incl. the cache); the file actor
+        // caches the result.
         for entry in &view.playlist {
             let file = entry.hash;
-            // Resolve each entry once to learn whether we already hold
-            // it (media roots incl. the cache); the file actor caches.
             if self.resolve_kicked.insert(file) {
                 let _ = self
                     .file
@@ -81,8 +82,14 @@ impl SeederTransfer {
                     })
                     .await;
             }
-            // Download anything we've found missing, from peers that have
-            // it. `StartDownload` is idempotent (refreshes sources).
+        }
+        // Start downloads for everything still missing that a peer has,
+        // **unwatched entries first** then in playlist order (design.md,
+        // Seeder Behavior): under bandwidth saturation the seeder must
+        // finish the next episode the group needs before its watched
+        // back-catalog. `StartDownload` is idempotent (refreshes sources).
+        for entry in download_order(view) {
+            let file = entry.hash;
             if self.have.get(&file) == Some(&false) {
                 let sources = self.sources(view, peers, file);
                 if !sources.is_empty() {
@@ -190,6 +197,18 @@ impl SeederTransfer {
     }
 }
 
+/// The order a seeder starts downloads in: **unwatched entries first**,
+/// then in playlist order (design.md, Seeder Behavior). `view.playlist` is
+/// already in playlist (display) order; a *stable* sort on the group
+/// watched flag (`false` < `true`) keeps that order within each group, so
+/// the next unwatched episode is fetched ahead of watched back-catalog
+/// when bandwidth is scarce.
+fn download_order(view: &StateView) -> Vec<&dessplay_core::playlist::PlaylistEntry> {
+    let mut ordered: Vec<_> = view.playlist.iter().collect();
+    ordered.sort_by_key(|entry| view.watched.get(&entry.hash).copied().unwrap_or(false));
+    ordered
+}
+
 /// Build the seeder's [`FileConfig`]: retention is `infinite` and the
 /// hash cache persists in `storage`. Prior downloads are re-discovered
 /// at startup by the file actor's cache reconciliation (the cache is
@@ -249,5 +268,45 @@ mod tests {
             download,
         );
         assert_eq!(config.download.pipeline_depth, 32);
+    }
+
+    /// The seeder must fetch unwatched entries before watched ones, in
+    /// playlist order within each group (design.md, Seeder Behavior).
+    /// Regression: `on_state` iterated plain playlist order, so watched
+    /// back-catalog (which sits at earlier positions, since EOF leaves
+    /// finished entries in place) could complete before the next episode.
+    #[test]
+    fn download_order_puts_unwatched_first_then_playlist_order() {
+        use dessplay_core::playlist::NewPlaylistEntry;
+        use dessplay_core::state::CrdtState;
+        use dessplay_core::types::SharedTimestamp;
+
+        const A: dessplay_core::types::ActorId = dessplay_core::types::ActorId(1);
+        let hash = |i: u8| Ed2kHash([i; 16]);
+        let entry = |i: u8| NewPlaylistEntry {
+            hash: hash(i),
+            added_by: UserId::new("baughn"),
+            filename: format!("ep{i}.mkv"),
+            size_bytes: 1000,
+            duration_millis: None,
+        };
+
+        // Playlist order: 1, 2, 3, 4. Mark 1 and 3 watched.
+        let mut state = CrdtState::new();
+        for i in 1..=4 {
+            state.push_playlist_entry(A, SharedTimestamp(i as u64), entry(i));
+        }
+        state.set_watched(A, SharedTimestamp(10), hash(1), true);
+        state.set_watched(A, SharedTimestamp(11), hash(3), true);
+        let view = state.view();
+
+        // Sanity: the raw playlist is watched-history-first (1,2,3,4).
+        let raw: Vec<u8> = view.playlist.iter().map(|e| e.hash.0[0]).collect();
+        assert_eq!(raw, vec![1, 2, 3, 4]);
+
+        // download_order: unwatched (2,4) first, then watched (1,3), each
+        // preserving playlist order.
+        let order: Vec<u8> = download_order(&view).iter().map(|e| e.hash.0[0]).collect();
+        assert_eq!(order, vec![2, 4, 1, 3]);
     }
 }
