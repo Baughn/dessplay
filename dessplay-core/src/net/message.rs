@@ -13,8 +13,12 @@ use serde::{Deserialize, Serialize};
 use crate::state::{CrdtOp, StateSnapshot};
 use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 
-/// Top-level wire message. Phase 9 adds a `Relay` variant for file
-/// transfer envelopes.
+/// Top-level wire message: only control traffic. File-transfer relay
+/// envelopes are **not** a `WireMessage` variant -- they are framed as
+/// `RelayEnvelope` (see `net::transfer`) on a dedicated relay stream,
+/// kept off the control channel so bulk transfer never head-of-line-
+/// blocks state sync (docs/network-design.md, Transfer Stream / Relay
+/// Envelope).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WireMessage {
     /// Client <-> server control traffic.
