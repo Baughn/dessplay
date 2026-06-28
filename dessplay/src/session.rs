@@ -628,6 +628,16 @@ impl PlayerWiring {
                 if was.is_none() && now == list_implied_pref(view, series, user) {
                     continue;
                 }
+                // Coalesce the become_ready (Ctrl-R / /ready) action: it
+                // clears the manual override AND flips NotWatching -> Maybe
+                // in one action. The override-clear already narrates ("X
+                // unpaused" / "X is back"), so suppress the redundant "set to
+                // maybe" when this same user's override was cleared in this
+                // same diff (design.md, System Messages: one line per action).
+                // Derived from synced state (prev/view), so consistent across
+                // clients.
+                let override_cleared = prev.manual_override.get(user).cloned().flatten().is_some()
+                    && view.manual_override.get(user).cloned().flatten().is_none();
                 let name = &meta.series_name;
                 match now {
                     Some(SeriesWatchState::NotWatching) => {
@@ -636,9 +646,10 @@ impl PlayerWiring {
                     Some(SeriesWatchState::Watching) => {
                         lines.push(format!("{user} is committed to {name} (by {user})"))
                     }
-                    Some(SeriesWatchState::Maybe) => {
+                    Some(SeriesWatchState::Maybe) if !override_cleared => {
                         lines.push(format!("{user} set {name} to maybe (by {user})"))
                     }
+                    Some(SeriesWatchState::Maybe) => {}
                     None => {}
                 }
             }
@@ -2432,6 +2443,38 @@ mod tests {
             narrate_diff(&v_away, &peers, &v_back, &peers),
             ["baughn is back"]
         );
+    }
+
+    #[test]
+    fn narrator_become_ready_narrates_one_line() {
+        // Regression: Ctrl-R / /ready (become_ready) is a single action that
+        // writes BOTH a manual-override clear AND a NotWatching -> Maybe flip
+        // of the now-playing series. The narrator must emit ONE line, not
+        // "baughn unpaused" + "baughn set ... to maybe" (design.md, System
+        // Messages: "one line per action, not one per register").
+        let baughn = UserId::new("baughn");
+        let series = dessplay_core::types::AniDbSeriesId(7);
+        let peers = [peer("kim"), peer("baughn")];
+
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        // Stuck Paused + auto-NotWatching (e.g. a missing unknown-series file).
+        state.set_manual_override(A, ts(10), baughn.clone(), Some(ManualState::Paused));
+        state.set_series_preference(
+            A,
+            ts(11),
+            baughn.clone(),
+            series,
+            SeriesWatchState::NotWatching,
+        );
+        let v0 = state.view();
+
+        // One become_ready action: clear the override AND flip to Maybe.
+        state.set_manual_override(A, ts(12), baughn.clone(), None);
+        state.set_series_preference(A, ts(13), baughn.clone(), series, SeriesWatchState::Maybe);
+        let v1 = state.view();
+
+        assert_eq!(narrate_diff(&v0, &peers, &v1, &peers), ["baughn unpaused"]);
     }
 
     #[test]
