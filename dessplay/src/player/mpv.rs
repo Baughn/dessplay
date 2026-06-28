@@ -696,6 +696,10 @@ impl PlayerFactory for MpvFactory {
             Mode::Attach { socket } => MpvPlayer::attach(socket.clone()).await,
         }
     }
+
+    fn is_attach(&self) -> bool {
+        matches!(self.mode, Mode::Attach { .. })
+    }
 }
 
 #[cfg(test)]

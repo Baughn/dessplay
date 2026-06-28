@@ -129,4 +129,21 @@ pub trait PlayerFactory: Send + 'static {
 
     /// Spawn a fresh player instance.
     fn spawn(&mut self) -> impl Future<Output = Result<Self::Player, PlayerError>> + Send;
+
+    /// True when this factory **attaches** to a player the user owns (the
+    /// `--attach-mpv` dev aid) rather than spawning one we own.
+    ///
+    /// It changes how the actor treats a player going away. A *spawned*
+    /// player dying is a real crash: relaunch, and escalate (global pause
+    /// on the second death in [`CRASH_FATAL_WINDOW`], give up on the
+    /// third). An *attached* player closing its socket is a transient
+    /// **detach** — the user quit or restarted their own mpv — so the
+    /// actor never counts it as a crash and waits (indefinitely, with
+    /// capped backoff) for it to come back. See design.md, Player
+    /// Integration / Attach mode.
+    ///
+    /// [`CRASH_FATAL_WINDOW`]: crate::actors::player::CRASH_FATAL_WINDOW
+    fn is_attach(&self) -> bool {
+        false
+    }
 }

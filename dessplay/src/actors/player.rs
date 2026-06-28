@@ -63,6 +63,11 @@ pub const CRASH_FATAL_WINDOW: Duration = Duration::from_secs(30);
 /// last, and the actor gives up relaunching until a new file is loaded —
 /// otherwise a file that reliably kills the player loops forever.
 pub const CRASH_GIVE_UP_COUNT: u32 = 3;
+/// Attach mode: first delay before re-probing the user's mpv socket after
+/// it goes away (it usually comes back quickly).
+pub const REATTACH_BACKOFF_INITIAL: Duration = Duration::from_millis(500);
+/// Attach mode: the re-attach backoff never grows past this.
+pub const REATTACH_BACKOFF_MAX: Duration = Duration::from_secs(10);
 
 /// Commands from the main loop.
 #[derive(Debug)]
@@ -205,8 +210,19 @@ struct Actor<F: PlayerFactory> {
     eof_reported: bool,
     last_death: Option<Instant>,
     /// Deaths in a row, each within [`CRASH_FATAL_WINDOW`] of the last.
-    /// Reset when a different file is loaded.
+    /// Reset when a different file is loaded. Spawn mode only.
     consecutive_crashes: u32,
+    /// True when the player is an *attached* user-owned mpv rather than
+    /// one we spawned (see [`PlayerFactory::is_attach`]). A death is then a
+    /// transient detach to wait out, never a crash to escalate.
+    attach_mode: bool,
+    /// Attach mode: when `Some`, the player is gone and the actor is
+    /// waiting to re-attach at this instant. The run loop drives the
+    /// retry; `None` whenever a player is connected.
+    reattach_at: Option<Instant>,
+    /// Attach mode: current delay between re-attach attempts (capped
+    /// backoff), reset to [`REATTACH_BACKOFF_INITIAL`] on a fresh detach.
+    reattach_backoff: Duration,
 }
 
 /// Run the player actor until `commands` closes or [`PlayerCommand::Shutdown`].
@@ -216,6 +232,7 @@ pub async fn run<F: PlayerFactory>(
     mut commands: mpsc::Receiver<PlayerCommand>,
     outputs: mpsc::Sender<PlayerOutput>,
 ) {
+    let attach_mode = factory.is_attach();
     let mut actor = Actor {
         factory,
         outputs,
@@ -235,23 +252,36 @@ pub async fn run<F: PlayerFactory>(
         eof_reported: false,
         last_death: None,
         consecutive_crashes: 0,
+        attach_mode,
+        reattach_at: None,
+        reattach_backoff: REATTACH_BACKOFF_INITIAL,
     };
 
     match actor.factory.spawn().await {
-        Ok(player) => actor.player = Some(player),
+        Ok(player) => {
+            actor.player = Some(player);
+            tracing::info!("player launched");
+        }
+        // Attach mode: the user's mpv isn't up yet. That is not fatal —
+        // wait for it to come up rather than pausing the group and exiting
+        // (design.md: attach mode waits for mpv to come back).
+        Err(e) if actor.attach_mode => {
+            tracing::info!("attached mpv not up yet ({e}); waiting for it to appear");
+            actor.begin_reattach();
+        }
         Err(e) => {
             tracing::error!("cannot launch the player: {e}");
             let _ = actor.outputs.send(PlayerOutput::FatalCrash).await;
             return;
         }
     }
-    tracing::info!("player launched");
 
     let mut cadence = tokio::time::interval(POSITION_CADENCE_PLAYING);
     cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         let debounce_at = actor.pending_user_seek.map(|(_, at)| at + SEEK_DEBOUNCE);
+        let reattach_at = actor.reattach_at;
         tokio::select! {
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { break };
@@ -273,6 +303,14 @@ pub async fn run<F: PlayerFactory>(
                 if debounce_at.is_some() =>
             {
                 actor.flush_user_seek().await;
+            }
+            // Attach mode: re-probe the user's mpv socket. While waiting,
+            // the player is None so the event arm is idle and commands
+            // (Shutdown, Load) still flow.
+            _ = tokio::time::sleep_until(reattach_at.unwrap_or_else(Instant::now)),
+                if reattach_at.is_some() =>
+            {
+                actor.try_reattach().await;
             }
         }
     }
@@ -345,9 +383,11 @@ impl<F: PlayerFactory> Actor<F> {
                     // A new file is a clean slate for the crash-loop counter.
                     self.consecutive_crashes = 0;
                     self.last_death = None;
-                    if self.player.is_none() {
+                    if self.player.is_none() && self.reattach_at.is_none() {
                         // We gave up relaunching after a crash loop; a new
                         // file is the recovery trigger — bring a player back.
+                        // (Skipped while a re-attach is already scheduled: the
+                        // pending retry will pick up this new `current`.)
                         match self.factory.spawn().await {
                             Ok(player) => {
                                 tracing::info!("relaunching player for the new file");
@@ -631,9 +671,77 @@ impl<F: PlayerFactory> Actor<F> {
         }
     }
 
-    /// Relaunch after the player went away. Returns false when the
-    /// actor should exit (relaunch impossible).
+    /// The player went away. In attach mode this is a transient detach to
+    /// wait out; in spawn mode it is a crash to escalate. Returns false
+    /// when the actor should exit (spawn-mode relaunch impossible).
     async fn handle_player_death(&mut self, clean: bool) -> bool {
+        // The player is gone either way: drop it and the echo bookkeeping.
+        self.player = None;
+        self.pending_pause_echoes.clear();
+        self.pending_seek_echoes = 0;
+        self.pending_user_seek = None;
+        self.believed_pause = None;
+
+        if self.attach_mode {
+            // Attach mode: the user closed/restarted their own mpv (the
+            // socket closed). This is not a crash — never count it, never
+            // pause the group; just wait for it to come back. The run loop
+            // drives the retry via `reattach_at`.
+            tracing::info!("attached mpv detached; waiting for it to return");
+            self.begin_reattach();
+            return true;
+        }
+
+        self.handle_crash(clean).await
+    }
+
+    /// Enter the attach-mode "waiting to re-attach" state: remember the
+    /// resume position, drop volatile playback state, and schedule the
+    /// first re-attach attempt now. [`Self::try_reattach`] takes it from
+    /// there.
+    fn begin_reattach(&mut self) {
+        self.restore_millis = self.estimate_now();
+        self.speed = 1.0;
+        self.estimate = None;
+        self.reattach_backoff = REATTACH_BACKOFF_INITIAL;
+        self.reattach_at = Some(Instant::now());
+    }
+
+    /// Attach mode: one attempt to re-attach to the user's mpv. On success
+    /// reloads the current file (position/pause restored on `Loaded`); on
+    /// failure reschedules with capped backoff so the actor keeps waiting
+    /// indefinitely instead of giving up.
+    async fn try_reattach(&mut self) {
+        self.reattach_at = None;
+        match self.factory.spawn().await {
+            Ok(player) => {
+                tracing::info!("re-attached to mpv");
+                self.reattach_backoff = REATTACH_BACKOFF_INITIAL;
+                self.player = Some(player);
+                if let Some((_, path, title)) = self.current.clone()
+                    && let Some(player) = &self.player
+                    && let Err(e) = player.load(&path, title.as_deref()).await
+                {
+                    tracing::warn!("reload after re-attach failed: {e}");
+                }
+                // Position and pause state are restored on Loaded.
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "attached mpv still down ({e}); retrying in {:?}",
+                    self.reattach_backoff
+                );
+                self.reattach_at = Some(Instant::now() + self.reattach_backoff);
+                self.reattach_backoff = (self.reattach_backoff * 2).min(REATTACH_BACKOFF_MAX);
+            }
+        }
+    }
+
+    /// Spawn mode: a player we own died. Escalate per design.md — silent
+    /// relaunch, a global pause + chat notice on the second death within
+    /// [`CRASH_FATAL_WINDOW`], and give up on the third. Returns false
+    /// when the actor should exit (relaunch impossible).
+    async fn handle_crash(&mut self, clean: bool) -> bool {
         // A clean exit is still unexpected (a deliberate quit goes
         // through Shutdown, which exits before this runs) — the user
         // closed mpv but the session needs a player, so relaunch either
@@ -643,11 +751,6 @@ impl<F: PlayerFactory> Actor<F> {
         } else {
             tracing::warn!("player crashed; relaunching");
         }
-        self.player = None;
-        self.pending_pause_echoes.clear();
-        self.pending_seek_echoes = 0;
-        self.pending_user_seek = None;
-        self.believed_pause = None;
 
         let now = Instant::now();
         let recent = self
@@ -720,9 +823,16 @@ mod tests {
         mocks: Vec<MockPlayer>,
         clock: Clock,
     ) -> (mpsc::Sender<PlayerCommand>, mpsc::Receiver<PlayerOutput>) {
+        start_factory(MockFactory::new(mocks), clock)
+    }
+
+    fn start_factory(
+        factory: MockFactory,
+        clock: Clock,
+    ) -> (mpsc::Sender<PlayerCommand>, mpsc::Receiver<PlayerOutput>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (out_tx, out_rx) = mpsc::channel(1024);
-        tokio::spawn(run(MockFactory::new(mocks), clock, cmd_rx, out_tx));
+        tokio::spawn(run(factory, clock, cmd_rx, out_tx));
         (cmd_tx, out_rx)
     }
 
@@ -823,6 +933,9 @@ mod tests {
             eof_reported: false,
             last_death: None,
             consecutive_crashes: 0,
+            attach_mode: false,
+            reattach_at: None,
+            reattach_backoff: REATTACH_BACKOFF_INITIAL,
         };
         (actor, out_rx)
     }
@@ -1454,6 +1567,96 @@ mod tests {
         expect_command(&mut c3).await;
         settle().await;
         assert_eq!(drain_outputs(&mut outputs), vec![]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attach_mode_socket_close_is_a_transient_detach_not_a_crash() {
+        // In attach mode the user owns mpv; closing/restarting it closes the
+        // socket -> Exited{clean:true}. That is a transient *detach*, not a
+        // crash: it must never be counted toward the crash-escalation, so two
+        // quick restarts do NOT fire FatalCrash (a *synced* "my player crashed
+        // — pausing" chat that pauses the whole group), and three do NOT give
+        // up. The actor simply re-attaches each time.
+        let (p1, c1) = MockPlayer::pair();
+        let (p2, mut c2) = MockPlayer::pair();
+        let (p3, mut c3) = MockPlayer::pair();
+        let (commands, mut outputs) =
+            start_factory(MockFactory::attach([p1, p2, p3]), fixed_clock(0));
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE,
+                path: "/media/ep1.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        settle().await;
+
+        // The user restarts their mpv: socket closes.
+        c1.events.send(PlayerEvent::Exited { clean: true }).unwrap();
+        assert_eq!(
+            expect_command(&mut c2).await,
+            MockCommand::Load("/media/ep1.mkv".into(), None),
+            "re-attach must reload the current file"
+        );
+        settle().await;
+
+        // And again, immediately (well within CRASH_FATAL_WINDOW).
+        c2.events.send(PlayerEvent::Exited { clean: true }).unwrap();
+        assert_eq!(
+            expect_command(&mut c3).await,
+            MockCommand::Load("/media/ep1.mkv".into(), None),
+            "re-attach must reload the current file on the second detach too"
+        );
+        settle().await;
+
+        assert_eq!(
+            drain_outputs(&mut outputs),
+            vec![],
+            "attach-mode detaches must not escalate to FatalCrash/GaveUp"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attach_mode_waits_indefinitely_for_mpv_to_return() {
+        // After a detach the user's mpv stays down far longer than the 10s
+        // socket-wait deadline. The actor must keep retrying (capped backoff),
+        // never emit FatalCrash, never exit — and re-attach + reload once mpv
+        // comes back.
+        let (p1, c1) = MockPlayer::pair();
+        let (p2, mut c2) = MockPlayer::pair();
+        let factory = MockFactory::attach([p1])
+            .then_down()
+            .then_down()
+            .then_down()
+            .then_up(p2);
+        let (commands, mut outputs) = start_factory(factory, fixed_clock(0));
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE,
+                path: "/media/ep1.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        settle().await;
+
+        // mpv goes away and stays down across several retry attempts.
+        c1.events.send(PlayerEvent::Exited { clean: true }).unwrap();
+        // Far past the old 10s SOCKET_WAIT deadline.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            drain_outputs(&mut outputs),
+            vec![],
+            "a down attached mpv must not escalate to a crash or give-up"
+        );
+        // mpv returned on a later retry: the actor re-attached and reloaded.
+        assert_eq!(
+            expect_command(&mut c2).await,
+            MockCommand::Load("/media/ep1.mkv".into(), None),
+            "the actor must re-attach and restore the file once mpv returns"
+        );
     }
 
     #[tokio::test(start_paused = true)]
