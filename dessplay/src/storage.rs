@@ -339,7 +339,6 @@ impl Storage {
 
     /// Persist the latest full-state snapshot (single implicit room).
     pub fn save_state(&self, snapshot: &StateSnapshot, now: i64) -> Result<()> {
-        let started = std::time::Instant::now();
         let blob = wire::encode(&snapshot.state)?;
         let bytes = blob.len();
         self.conn.execute(
@@ -350,18 +349,15 @@ impl Storage {
                  saved_at = excluded.saved_at",
             params![snapshot.epoch.0 as i64, blob, now],
         )?;
-        tracing::debug!(
-            epoch = snapshot.epoch.0,
-            bytes,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "state snapshot saved"
-        );
+        // No timing field here: storage never reads the clock (module doc;
+        // design.md, Schema) -- `Instant::now()` is a clock read, and the
+        // invariant keeps the layer fully deterministic for tests.
+        tracing::debug!(epoch = snapshot.epoch.0, bytes, "state snapshot saved");
         Ok(())
     }
 
     /// Load the stored snapshot, if any.
     pub fn load_state(&self) -> Result<Option<StateSnapshot>> {
-        let started = std::time::Instant::now();
         let row: Option<(i64, Vec<u8>)> = self
             .conn
             .query_row(
@@ -375,12 +371,8 @@ impl Storage {
             return Ok(None);
         };
         let state = CrdtState::decode_snapshot(&blob)?;
-        tracing::debug!(
-            epoch,
-            bytes = blob.len(),
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "state snapshot loaded"
-        );
+        // No timing field here either -- see save_state.
+        tracing::debug!(epoch, bytes = blob.len(), "state snapshot loaded");
         Ok(Some(StateSnapshot {
             epoch: Epoch(epoch as u64),
             state,
