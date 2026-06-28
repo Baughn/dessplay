@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 21aaadad1e2fa69e18f8e53cb96da1129c122a4009e521b8a63e0d31473ee957 # shrinks to steps = [ScriptStep { actor: 0, ts: 0, op: SetNowPlaying { file: None } }], seed = 0
+cc f3cfcdd3e835a705f669938a73a6feb4e279e976b5f7ffe395791edb3bf2f35f # shrinks to events = [ClientOp { client: 1, ts: 0, op: SetNowPlaying { file: None } }, ClientOp { client: 233, ts: 0, op: SetNowPlaying { file: None } }, ClientOp { client: 0, ts: 0, op: AddPlaylist { file: 0, after: None } }, ClientOp { client: 0, ts: 0, op: AddPlaylist { file: 0, after: None } }, ClientOp { client: 0, ts: 0, op: AddPlaylist { file: 0, after: None } }, ClientOp { client: 0, ts: 0, op: AddPlaylist { file: 0, after: None } }, ClientOp { client: 0, ts: 0, op: SetMetadata { file: 0, known: false, series: 63 } }, ServerPoll { lane: 67 }, ServerPoll { lane: 62 }, ClientOp { client: 213, ts: 20, op: SetIntent { playing: false } }, ServerOp { ts: 11, op: SetManualOverride { user: 229, kind: 98, set_by: 20 } }, ServerOp { ts: 6, op: PutListEntry { entry: 239, status: 255, note: 68 } }, ServerPoll { lane: 52 }, ClientOp { client: 166, ts: 23, op: SetWatched { file: 35, watched: false } }, ServerPoll { lane: 169 }, ClientOp { client: 255, ts: 6, op: SetNextEp { entry: 51, ep: 32, available: true } }, ServerPoll { lane: 55 }, ClientOp { client: 253, ts: 13, op: SetFileAvailability { user: 196, file: 64, kind: 16, progress_bps: 39182 } }, ServerPoll { lane: 193 }, ServerPoll { lane: 243 }], seed = 713400673409861715

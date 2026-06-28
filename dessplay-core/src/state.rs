@@ -733,6 +733,73 @@ impl CrdtState {
             }
         }
     }
+
+    /// Apply an op the server received from a client, returning whether it
+    /// should **re-fan-out** this copy to the other peers.
+    ///
+    /// Every ordinary op is sent *eager* — once on the reliable control
+    /// stream and once as a datagram — so the server receives two copies and
+    /// must broadcast the op only once (sync-state.md, Operation Broadcast:
+    /// "the server deduplicates, applies, and broadcasts").
+    ///
+    /// - **Map ops** carry per-origin dot sequencing. On the datagram fast
+    ///   path an out-of-sequence op is *dropped* (not applied ahead of an
+    ///   undelivered earlier dot, which would silently mask the gap — its
+    ///   reliable copy fills it); only an in-sequence (new) op rebroadcasts.
+    ///   On the reliable path they apply unconditionally (the gap-fill
+    ///   fallback) and rebroadcast, advancing every peer's clock.
+    /// - **Order-free ops** (registers, the two GSets, chat) have no
+    ///   sequencing and apply unconditionally either way, but rebroadcast
+    ///   only when they *change* the resolved state — so the second
+    ///   (no-op) copy of an eager op isn't fanned out again.
+    pub fn apply_for_broadcast(&mut self, op: CrdtOp, via_datagram: bool) -> bool {
+        match op {
+            // Order-free: change-detected, identically on both transports.
+            CrdtOp::NowPlaying(op) => register_changed(&mut self.now_playing, op),
+            CrdtOp::SeekAuthority(op) => register_changed(&mut self.seek_authority, op),
+            CrdtOp::PlaybackIntent(op) => register_changed(&mut self.playback_intent, op),
+            CrdtOp::LookupRequest(info) => gset_changed(&mut self.lookup_requests, info),
+            CrdtOp::AcknowledgeAbsent(key) => gset_changed(&mut self.acknowledged_absent, key),
+            CrdtOp::Chat(op) => glist_changed(&mut self.chat, op),
+            // Map ops: datagram drops gaps (`apply_if_orderly`); reliable
+            // applies unconditionally. Either way an applied map op
+            // rebroadcasts.
+            map_op if via_datagram => self.apply_if_orderly(map_op),
+            map_op => {
+                self.apply(map_op);
+                true
+            }
+        }
+    }
+}
+
+/// Apply a register op, reporting whether it changed the resolved winner.
+/// Compares the full `(timestamp, value)` winner, not just the value: an
+/// LWW write that only advances the timestamp (same value) must still
+/// propagate, or a later concurrent write could resolve differently on a
+/// replica that never saw it.
+fn register_changed<V: Ord + Clone>(cell: &mut LwwCell<V>, op: Lww<V>) -> bool {
+    let before = cell.read().cloned();
+    cell.apply(op);
+    cell.read() != before.as_ref()
+}
+
+/// Apply a GSet insert, reporting whether the element was new.
+fn gset_changed<T: Ord>(set: &mut GSet<T>, element: T) -> bool {
+    if set.contains(&element) {
+        false
+    } else {
+        set.apply(element);
+        true
+    }
+}
+
+/// Apply a GList insert, reporting whether it added a new entry. A duplicate
+/// identifier is idempotent (BTreeSet dedup) and leaves the length unchanged.
+fn glist_changed<T: Ord + Clone>(list: &mut GList<T>, op: glist::Op<T>) -> bool {
+    let before = list.len();
+    list.apply(op);
+    list.len() != before
 }
 
 /// The fully resolved, plain-data view of a [`CrdtState`].

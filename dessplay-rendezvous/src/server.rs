@@ -931,20 +931,25 @@ async fn serve_authed<T: Transport>(
                         // and pushes a merge if it had anything to say.
                         tracing::warn!("dropping stale-epoch op from {username:?}");
                         false
-                    } else if via_datagram {
-                        // Unordered path: refuse anything that could
-                        // mask a per-origin gap.
-                        state.apply_if_orderly(op.clone())
                     } else {
-                        state.apply(op.clone());
-                        true
+                        // Apply and decide whether to re-fan-out. Every
+                        // eager op arrives twice (reliable + datagram); only
+                        // the copy that actually advances state is
+                        // rebroadcast, so we don't broadcast each op twice.
+                        // The datagram path also drops out-of-sequence map
+                        // ops (its reliable copy fills the gap).
+                        state.apply_for_broadcast(op.clone(), via_datagram)
                     }
                 };
                 if !applied {
                     continue;
                 }
                 shared.dirty.store(true, Ordering::SeqCst);
-                let now_playing_changed = matches!(op, CrdtOp::NowPlaying(_)) && !via_datagram;
+                // `applied` already means "this copy changed now-playing":
+                // both transports route through change-detecting applies, so
+                // whichever copy effected the change (and only that one)
+                // reaches here, taking seek authority exactly once.
+                let now_playing_changed = matches!(op, CrdtOp::NowPlaying(_));
                 // Mirror the inbound transport: a 100ms datagram position
                 // is relayed datagram-only, never re-fanned-out reliably.
                 let transport = relay_transport(&op, via_datagram);

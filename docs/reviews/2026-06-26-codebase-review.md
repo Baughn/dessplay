@@ -165,6 +165,36 @@ Each ordinary (non-position) op is sent eager = both the reliable control stream
 - **Spec:** sync-state.md, Operation Broadcast step 4: 'The server deduplicates, applies, and broadcasts to other clients.'
 - **Suggested fix:** Have the apply paths report whether the op actually changed state (CrdtState::apply / apply_if_orderly returning a 'changed' bool, e.g. compare view_hash or check the register/GSet pre/post), and gate broadcast_op on that, so the second (no-op) copy of an eager op is not rebroadcast.
 
+**Status (2026-06-28): fixed.** The server's StateOp handler now routes both
+copies of an inbound op through one new method,
+`CrdtState::apply_for_broadcast(op, via_datagram)`
+(`dessplay-core/src/state.rs`), which **applies and returns whether the op
+should be re-fanned-out** — and `broadcast_op` is gated on that bool. Order-free
+ops (the three standalone registers, the lookup/ack GSets, chat) rebroadcast
+only when they **change the resolved state**: a register write that doesn't beat
+the current winner, a GSet element already present, or a chat insert with a
+duplicate identifier all report `false`, so the eager op's reliable and datagram
+copies fan out **once**, not twice. Change detection compares the full
+`(timestamp, value)` Lww winner (not just the value) — an LWW write that only
+advances the timestamp still propagates, so a later concurrent write can't
+resolve differently on a replica that never saw it (convergence-safe; the only
+dropped writes are non-winning, and future LWW resolution only ever compares
+against the winner). Map ops are unchanged: the datagram path still drops
+out-of-sequence ops via `apply_if_orderly` (gap-fill comes from the reliable
+copy) and an applied map op always rebroadcasts to advance peers' clocks — so
+`apply_if_orderly`'s existing "was it applied" contract (and the
+`datagram_ordering` suite that pins it) is untouched. The now-playing
+seek-authority side effect now keys on `applied` (the op genuinely changed
+now-playing) rather than `!via_datagram`, so it still fires **exactly once** on
+whichever copy effected the change. Regression test
+`dessplay-rendezvous/tests/op_rebroadcast.rs`
+(`an_eager_order_free_op_is_rebroadcast_once`) drives raw `SimTransport` peers,
+sends one chat op as both a reliable control copy and a datagram copy, and
+asserts the relay reaches the other peer **once** over the reliable stream
+(pre-fix it arrived twice — `control == 2`, test failed; post-fix `control ==
+1`). The sibling `position_relay` and full `dessplay-core` convergence /
+`datagram_ordering` suites stay green.
+
 <details><summary>Verification trail — code pointers</summary>
 
 The code mechanism is real and reproduces exactly as described. Verified chain: (1) sync.rs:599 dispatches every non-position op as NetworkCommand::SendEager; (2) network.rs:289-301 send_eager sends the op on the reliable control stream AND as a datagram (when it fits — small order-free ops fit); (3) server.rs:779-781 surfaces Control and Datagram as two separate StateOp events feeding the same ServerControl::StateOp arm; (4) on the reliable path server.rs:855-857 does `state.apply(op.clone()); true` (applied hardcoded true); (5) on the datagram path for order-free types, state.rs:730-733 (`CrdtOp::NowPlaying | SeekAuthority | PlaybackIntent | LookupRequest | Chat | AcknowledgeAbsent`) does `self.apply(op); true` — unconditionally true even when the value was already present; (6) server.rs:860-867 only gates on `applied` then calls broadcast_op, which (server.rs:214-235) has no op-identity dedup and re-sends reliable+datagram to every other conn. So when both copies of an order-free eager op arrive, the server broadcasts it twice. Map ops are guarded by next_in_sequence (state.rs:687-699), so their datagram-after-reliable duplicate returns false and is suppressed — exactly the asymmetry the claim identifies. This contradicts sync-state.md:608 ('The server deduplicates, applies, and broadcasts to other clients'). Severity low is correct: client application is idempotent so convergence is unaffected (sync-state.md:712-714 notes datagrams are a pure optimization). I down-weight the claim's 'doubles steady-state op traffic' framing — steady-state high-frequency traffic is playback positions, which are CrdtOp::PlaybackPosition, a guarded MAP op (state.rs:723) whose duplicates ARE suppressed; only the low-frequency order-free control ops (chat, now-playing, seek authority, intent, lookup, ack) are double-broadcast. Real and actionable but minor; low stands.
