@@ -201,9 +201,14 @@ async fn committed_absent_user_blocks_until_acknowledged() {
     eventually(&[&kim], Duration::from_secs(30), |snaps| snaps[0].playing()).await;
 }
 
-/// Graceful quit: removed immediately (no Lost stage), playback pauses.
+/// Graceful quit: straight to Departed (no Lost stage), still listed,
+/// playback pauses. A clean quit is an *immediate departure*, not a
+/// registry removal — so the quitter stays visible on the dim departed
+/// line, exactly like a peer that timed out (design.md, Presence). The
+/// gating consequence (a committed quitter keeps blocking) is covered by
+/// `committed_user_blocks_after_graceful_quit`.
 #[tokio::test(start_paused = true)]
-async fn graceful_quit_pauses_and_removes() {
+async fn graceful_quit_pauses_and_departs() {
     let harness = Harness::new(0x5EED);
     let (kim, baughn) = playing_session(&harness).await;
 
@@ -211,9 +216,92 @@ async fn graceful_quit_pauses_and_removes() {
 
     eventually(&[&baughn], Duration::from_secs(30), |snaps| {
         let s = &snaps[0];
-        s.peer("kim").is_none() && s.view.playback_intent == PlaybackIntent::Paused && !s.playing()
+        s.peer("kim")
+            .is_some_and(|p| p.presence == Presence::Departed)
+            && s.view.playback_intent == PlaybackIntent::Paused
+            && !s.playing()
     })
     .await;
+}
+
+/// A *committed* (Watching) user who **gracefully quits** keeps gating,
+/// exactly like one who times out into Departed: design.md (User States)
+/// has the group wait for a committed user even when absent — "Lost,
+/// Departed, or quit". Regression: a Goodbye used to delete the peer
+/// outright, so a committed quitter silently vanished from the Users pane
+/// *and* stopped blocking — playback would resume the moment they left.
+#[tokio::test(start_paused = true)]
+async fn committed_user_blocks_after_graceful_quit() {
+    let harness = Harness::new(0x5EED);
+    let (kim, baughn) = playing_session(&harness).await;
+
+    // Link the now-playing file to a series and have baughn commit to it.
+    let series = AniDbSeriesId(42);
+    let baughn_id = UserId::new("baughn");
+    mutate(
+        &kim,
+        Mutation::SetAniDbMetadata {
+            hash: hash(1),
+            metadata: Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(series),
+                episode_number: Some("1".into()),
+            }),
+        },
+    )
+    .await;
+    mutate(
+        &baughn,
+        Mutation::SetSeriesPreference {
+            user: baughn_id.clone(),
+            series,
+            pref: SeriesWatchState::Watching,
+        },
+    )
+    .await;
+    eventually(&[&kim], Duration::from_secs(30), |snaps| {
+        snaps[0]
+            .view
+            .series_preference
+            .get(&(baughn_id.clone(), series))
+            == Some(&SeriesWatchState::Watching)
+    })
+    .await;
+
+    // Baughn quits gracefully — Departed at once (no 60s Lost ladder),
+    // still listed.
+    quit(&baughn).await;
+    eventually(&[&kim], Duration::from_secs(30), |snaps| {
+        snaps[0]
+            .peer("baughn")
+            .is_some_and(|p| p.presence == Presence::Departed)
+    })
+    .await;
+
+    // Even forcing intent back to Playing, the committed quitter blocks —
+    // a Maybe user here would not (see the ladder test); commitment is the
+    // difference, and a clean quit does not waive it.
+    mutate(
+        &kim,
+        Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Playing,
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snap = snapshot_of(&kim).await;
+    assert!(
+        !snap.playing(),
+        "committed quitter baughn must block playback"
+    );
+    assert!(
+        dessplay_core::derive::playback_blockers(&snap.view, &snap.peers)
+            .iter()
+            .any(|b| b.user == baughn_id
+                && b.reason == dessplay_core::derive::BlockReason::CommittedAbsent),
+        "baughn must show as a committed-absent blocker after quitting"
+    );
 }
 
 /// A lost (or quitting) seeder never pauses anyone, and shows up with
@@ -298,8 +386,13 @@ async fn authority_rescued_from_quitting_user() {
     .await;
 
     quit(&kim).await;
+    // The quitter departs (still listed) and the server reclaims authority
+    // at once — a clean quit is a final departure, no waiting for the Lost
+    // ladder.
     eventually(&[&baughn], Duration::from_secs(30), |snaps| {
-        snaps[0].peer("kim").is_none()
+        snaps[0]
+            .peer("kim")
+            .is_some_and(|p| p.presence == Presence::Departed)
             && snaps[0].view.seek_authority == Some(SeekAuthority::Server)
     })
     .await;

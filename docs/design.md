@@ -574,7 +574,7 @@ mechanism that already posts command feedback and archive results).
 | **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
 | **Joined** | `PeerList`: a peer becomes Present | "Nero joined" | Local |
 | **Connection lost** | `PeerList`: a peer becomes Lost | "Nero's connection dropped -- everyone paused" | Local |
-| **Left** | `PeerList`: Departed, or a graceful `Goodbye` | "Nero left" | Local |
+| **Left** | `PeerList`: a peer becomes Departed (a timeout *or* a graceful `Goodbye`, which now departs in place) | "Nero left" | Local |
 | **Back** | `PeerList`: Lost -> Present | "Nero is back" | Local |
 | **Paused** | manual-override map: None -> Paused | "Baughn paused" | Local |
 | **Resumed** | manual-override cleared (Paused -> None) | "Baughn unpaused" | Local |
@@ -707,10 +707,18 @@ Additional rules:
 - **Brief glitches (< 30s) are invisible.** Everyone keeps watching; the
   shared clock keeps players aligned, and slew correction absorbs small drift
   on recovery.
-- **Graceful quit** (`/quit`, Ctrl-C): the user is removed immediately
-  (no Lost stage). If playback was running, it pauses (server sets intent
-  to Paused) -- leaving mid-episode should not be silent. At session end
-  this is a no-op.
+- **Graceful quit** (`/quit`, Ctrl-C): an *immediate departure* -- the
+  user goes straight to **Departed** (skipping the 30s Lost / 60s ladder),
+  but stays listed exactly like a peer that timed out: shown on the dim
+  "departed" line, and -- if **committed** (Watching) to the now-playing
+  series -- still gating until the group acknowledges past them. Skipping
+  the Lost stage is the *only* thing a clean quit buys over a silent
+  disconnect; it does not waive a commitment (design's User States: the
+  group waits for a committed user even when absent, "Lost, Departed, or
+  quit"). If playback was running, it pauses (server sets intent to
+  Paused) -- leaving mid-episode should not be silent -- and the server
+  reclaims seek authority at once (a clean quit is final, unlike a Lost
+  that may recover). At session end this is a no-op.
 - **Return**: a reconnecting user re-enters as Present, syncs state, and is
   gated normally again. Playback does not auto-resume (intent is still
   Paused from when they were Lost).

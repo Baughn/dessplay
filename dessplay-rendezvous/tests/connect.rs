@@ -252,10 +252,15 @@ async fn graceful_shutdown_updates_peer_list() {
 
     kim.commands.send(NetworkCommand::Shutdown).await.unwrap();
 
-    // Dagger sees the peer list shrink back to one.
+    // Dagger sees kim depart *in place*: still listed, now Departed (a
+    // clean quit is an immediate departure, not a registry removal).
     expect_event(&mut dag, Duration::from_secs(10), |e| match e {
-        NetworkEvent::PeerList(peers) if peers.len() == 1 => {
-            (peers[0].username == UserId::new("dagger")).then_some(())
+        NetworkEvent::PeerList(peers) => {
+            let kim = peers.iter().find(|p| p.username == UserId::new("kim"));
+            let dagger = peers.iter().find(|p| p.username == UserId::new("dagger"));
+            (kim.is_some_and(|p| p.presence == Presence::Departed)
+                && dagger.is_some_and(|p| p.presence == Presence::Present))
+            .then_some(())
         }
         _ => None,
     })

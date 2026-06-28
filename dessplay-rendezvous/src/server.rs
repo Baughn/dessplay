@@ -650,7 +650,8 @@ async fn sweep_departed<T: Transport>(shared: &Shared<T>) {
 
 /// How an authenticated connection ended.
 enum AuthedEnd {
-    /// The client said Goodbye: remove immediately, no Lost stage.
+    /// The client said Goodbye: depart immediately (Present -> Departed),
+    /// skipping the Lost stage but staying listed.
     Goodbye,
     /// The connection died: the user becomes Lost.
     Lost(String),
@@ -776,8 +777,18 @@ async fn serve_connection<T: Transport>(
         match registry.peers.get_mut(&username) {
             Some(entry) if entry.conn_id == conn_id => {
                 match end {
+                    // A clean quit is an *immediate departure*, not a
+                    // registry removal: the peer stays listed as Departed
+                    // (the dim "left" line), and a committed (Watching)
+                    // quitter keeps gating until acknowledged — design.md
+                    // (User States) waits for a committed user even when
+                    // absent, "Lost, Departed, or quit". Skipping the Lost
+                    // stage is the only thing a Goodbye buys over a timeout.
                     AuthedEnd::Goodbye => {
-                        registry.peers.remove(&username);
+                        entry.conn = None;
+                        entry.relay_tx = None;
+                        entry.info.presence = Presence::Departed;
+                        entry.lost_at = Some(clock());
                     }
                     AuthedEnd::Lost(_) => {
                         entry.conn = None;
