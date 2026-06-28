@@ -767,18 +767,22 @@ impl Ui {
     /// Paused, so the new file comes up paused at the start and the group
     /// presses play when ready. (The server resets seek authority to
     /// Server on the now-playing op, the other half of the transition.)
-    /// Re-selecting the already-playing entry is not a transition, so it
-    /// must not pause.
+    ///
+    /// Re-selecting the already-playing entry is not a transition, so it is
+    /// a true no-op: emitting even a same-value `SetNowPlaying` would make
+    /// the server reset seek authority back to Server (it resets on *any*
+    /// non-datagram NowPlaying op, value-change or not), yanking it from
+    /// whoever just seeked.
     fn play_selected(&self, hash: Ed2kHash) -> Vec<UserAction> {
-        let mut actions = vec![UserAction::Mutate(Mutation::SetNowPlaying {
-            file: Some(hash),
-        })];
-        if self.snapshot.view.now_playing != Some(hash) {
-            actions.push(UserAction::Mutate(Mutation::SetPlaybackIntent {
-                intent: PlaybackIntent::Paused,
-            }));
+        if self.snapshot.view.now_playing == Some(hash) {
+            return Vec::new();
         }
-        actions
+        vec![
+            UserAction::Mutate(Mutation::SetNowPlaying { file: Some(hash) }),
+            UserAction::Mutate(Mutation::SetPlaybackIntent {
+                intent: PlaybackIntent::Paused,
+            }),
+        ]
     }
 
     /// Save a List edit: write the entry, and -- only when the user

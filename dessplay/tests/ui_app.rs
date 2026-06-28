@@ -367,9 +367,12 @@ fn playlist_actions() {
 }
 
 /// Selecting a *different* entry pauses (EOF parity); re-selecting the
-/// already-playing entry is not a transition, so it must not pause.
+/// already-playing entry is not a transition, so it is a true no-op -- it
+/// must neither pause nor re-emit `SetNowPlaying` (a redundant NowPlaying op
+/// makes the server reset seek authority back to Server, yanking it from
+/// whoever just seeked).
 #[test]
-fn selecting_now_playing_entry_does_not_pause() {
+fn reselecting_now_playing_entry_is_a_noop() {
     let mut state = CrdtState::new();
     state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
     state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
@@ -380,13 +383,9 @@ fn selecting_now_playing_entry_does_not_pause() {
     for _ in 0..3 {
         ui.handle(key(Key::Tab)); // focus the Playlist pane
     }
-    // Enter on the currently-playing row: re-assert now-playing only, no pause.
-    assert_eq!(
-        ui.handle(key(Key::Enter)),
-        vec![UserAction::Mutate(Mutation::SetNowPlaying {
-            file: Some(hash(1))
-        })]
-    );
+    // Enter on the currently-playing row: a no-op, no actions at all (so seek
+    // authority is left untouched).
+    assert_eq!(ui.handle(key(Key::Enter)), vec![]);
     // Enter on a different row: a real transition, so it also pauses.
     ui.handle(key(Key::Down));
     assert_eq!(
