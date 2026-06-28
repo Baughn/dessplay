@@ -398,10 +398,23 @@ mod tests {
             SeriesWatchState::NotWatching,
         );
         state.set_manual_override(SERVER, ts(5), UserId::new("kim"), Some(ManualState::Paused));
+        let view = state.view();
+        // Display side: the manual Paused override wins for `user_state`.
         assert_eq!(
-            user_state(&state.view(), &UserId::new("kim")),
+            user_state(&view, &UserId::new("kim")),
             DerivedUserState::Paused
         );
+        // Gating side (the subtle precedence inversion): `playback_blockers`
+        // short-circuits NotWatching to None *before* the manual-pause check,
+        // so a *present* NotWatching user never gates playback even when also
+        // manually Paused (design.md User States: "NotWatching … never gates
+        // playback on it, present or absent"). This is the opposite of the
+        // display side above, and was previously unasserted.
+        assert!(
+            playback_blockers(&view, &[present("kim")]).is_empty(),
+            "a present NotWatching user must not block, even when manually Paused"
+        );
+        assert!(playback_active(&view, &[present("kim")]));
     }
 
     #[test]
