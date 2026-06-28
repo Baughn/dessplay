@@ -998,6 +998,20 @@ impl ListEditModal {
         (self.next_ep != self.original_next_ep).then(|| self.next_ep.clone())
     }
 
+    /// Index of the selectable `[Save]` row (after the fields, last row).
+    fn save_index(&self) -> usize {
+        LIST_FIELDS.len()
+    }
+
+    /// Build the save message for the current working copy.
+    fn save_msg(&self) -> Msg {
+        Msg::ListEntrySaved(
+            self.id,
+            Box::new(self.entry.clone()),
+            self.next_ep_change().map(Box::new),
+        )
+    }
+
     fn field_value(&self, index: usize) -> String {
         match index {
             0 => self.entry.name.clone(),
@@ -1056,23 +1070,24 @@ impl ListEditModal {
 
     /// Keys for the keybinding bar.
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("Enter", "Edit/Cycle"),
-            ("Ctrl-s", "Save"),
-            ("Esc", "Cancel"),
-        ]
+        // Mirror SettingsModal: a capital `S` (and the `[Save]` row) are the
+        // reliable save paths; Ctrl-s is kept as a working alias but not
+        // advertised, since it is eaten as XOFF on terminals lacking the
+        // enhanced keyboard protocol.
+        vec![("Enter", "Edit/Cycle"), ("S", "Save"), ("Esc", "Cancel")]
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         let modal = overlay(area, 60, 60);
         frame.render_widget(Clear, modal);
-        let items: Vec<ListItem> = LIST_FIELDS
+        let mut items: Vec<ListItem> = LIST_FIELDS
             .iter()
             .enumerate()
             .map(|(index, label)| {
                 ListItem::new(format!("{label:>12}: {}", self.field_value(index)))
             })
             .collect();
+        items.push(ListItem::new("[Save]"));
         let mut state = ListState::default();
         state.select(Some(self.sel));
         frame.render_stateful_widget(
@@ -1260,12 +1275,12 @@ impl AppComponent<Msg, NoUserEvent> for ListEditModal {
             }
             return Some(Msg::None);
         }
-        if ctrl(ev) == Some(Key::Char('s')) {
-            return Some(Msg::ListEntrySaved(
-                self.id,
-                Box::new(self.entry.clone()),
-                self.next_ep_change().map(Box::new),
-            ));
+        // Ctrl-s is kept as an alias for terminals where it survives; capital
+        // `S` and the `[Save]` row are the reliable paths (the SettingsModal
+        // pattern, avoiding the Ctrl-S == XOFF trap). `typed` must precede the
+        // `plain` match, which would otherwise not see the shifted form.
+        if ctrl(ev) == Some(Key::Char('s')) || typed(ev) == Some('S') {
+            return Some(self.save_msg());
         }
         match plain(ev)? {
             Key::Up => {
@@ -1273,13 +1288,14 @@ impl AppComponent<Msg, NoUserEvent> for ListEditModal {
                 Some(Msg::None)
             }
             Key::Down => {
-                self.sel = (self.sel + 1).min(LIST_FIELDS.len() - 1);
+                self.sel = (self.sel + 1).min(self.save_index());
                 Some(Msg::None)
             }
             Key::Enter => {
                 match self.sel {
                     LIST_FIELD_STATUS => self.cycle_status(),
                     LIST_FIELD_AVAILABLE => self.toggle_available(),
+                    sel if sel == self.save_index() => return Some(self.save_msg()),
                     sel => self.editor = Some((sel, FieldEditor::new(&self.field_value(sel)))),
                 }
                 Some(Msg::None)
@@ -1478,6 +1494,52 @@ mod tests {
         assert_eq!(partial.missing_essentials(), vec!["a password"]);
         // Fully populated: nothing missing, saveable.
         assert!(saveable_settings().missing_essentials().is_empty());
+    }
+
+    fn sample_list_entry() -> SeriesListEntry {
+        SeriesListEntry {
+            name: "Frieren".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+        }
+    }
+
+    #[test]
+    fn list_edit_modal_saves_via_capital_s_and_save_row() {
+        // Regression: the List edit modal must have a save path that does not
+        // rely on Ctrl-S (eaten as XOFF on terminals without the enhanced
+        // keyboard protocol), mirroring the SettingsModal. Capital `S`, the
+        // `[Save]` row, and Ctrl-s (alias) all save.
+        let mut modal =
+            ListEditModal::new(ListEntryId(7), sample_list_entry(), NextEpState::default());
+        assert!(matches!(
+            modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT)),
+            Some(Msg::ListEntrySaved(ListEntryId(7), _, _))
+        ));
+
+        // The `[Save]` row (after the fields) saves on Enter.
+        let mut modal =
+            ListEditModal::new(ListEntryId(7), sample_list_entry(), NextEpState::default());
+        modal.sel = modal.save_index();
+        assert!(matches!(
+            modal.on(&enter()),
+            Some(Msg::ListEntrySaved(ListEntryId(7), _, _))
+        ));
+
+        // Ctrl-s is retained as a working alias.
+        let mut modal =
+            ListEditModal::new(ListEntryId(7), sample_list_entry(), NextEpState::default());
+        assert!(matches!(
+            modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL)),
+            Some(Msg::ListEntrySaved(..))
+        ));
     }
 
     #[test]

@@ -739,6 +739,47 @@ fn the_list_renders_and_edits() {
     assert!(!ui.modal_open());
 }
 
+/// The List edit modal must be saveable without Ctrl-S (eaten as XOFF on
+/// basic terminals): capital `S` saves and closes the modal end-to-end.
+#[test]
+fn list_edit_modal_saves_on_capital_s() {
+    let mut state = CrdtState::new();
+    state.put_list_entry(
+        A,
+        ts(1),
+        ListEntryId(7),
+        SeriesListEntry {
+            name: "Frieren".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+
+    ui.handle(key(Key::Tab)); // Series
+    ui.handle(key(Key::Char('m'))); // All
+    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Down)); // heading -> entry
+    ui.handle(key(Key::Enter)); // open the edit modal
+    assert!(ui.modal_open());
+
+    // Capital `S` saves and closes the modal.
+    let actions = ui.handle(shift('S'));
+    let [UserAction::Mutate(Mutation::PutListEntry { id, .. })] = actions.as_slice() else {
+        panic!("expected PutListEntry from capital S, got {actions:?}");
+    };
+    assert_eq!(*id, ListEntryId(7));
+    assert!(!ui.modal_open());
+}
+
 /// The List edit modal must expose the `next_ep` free-text field and the
 /// `available` (✓/✖) toggle so the documented "maintained by hand" path
 /// exists. Opening on an entry shows its current values; editing next_ep
