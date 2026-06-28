@@ -75,6 +75,14 @@ impl QuicTransport {
         control_send: quinn::SendStream,
         mut control_recv: quinn::RecvStream,
     ) -> Self {
+        // Elevate the control stream above bulk transfer/relay streams on
+        // *both* endpoints. The server is the relay hub, so server->client
+        // carries both bulk ChunkData and state-sync control traffic to a
+        // downloading peer; setting it here (rather than only on the client
+        // connect path) keeps a bulk download from starving state sync in
+        // that direction too. Best-effort: a stream already closing yields
+        // ClosedStream, which is harmless.
+        let _ = control_send.set_priority(CONTROL_PRIORITY);
         let (frame_tx, frame_rx) = mpsc::channel(64);
         tokio::spawn(async move {
             loop {
@@ -252,7 +260,6 @@ impl Connector for QuicConnector {
             .open_bi()
             .await
             .map_err(setup("opening control stream"))?;
-        let _ = send.set_priority(CONTROL_PRIORITY);
         tracing::debug!(
             elapsed_ms = started.elapsed().as_millis() as u64,
             "control stream open"
@@ -331,5 +338,55 @@ impl Listener for QuicListener {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use crate::net::tofu::load_or_generate_cert;
+
+    /// Both endpoints must elevate the control stream above bulk
+    /// transfer/relay streams. The server is the relay hub, so the
+    /// historical bug — `set_priority` wired only into the client connect
+    /// path — let a bulk download to a peer add latency to that peer's
+    /// server->client state sync. Real localhost QUIC: connect a client to
+    /// a listener and read the priority back off *each* side's control send
+    /// stream.
+    #[tokio::test]
+    async fn both_endpoints_prioritize_the_control_stream() {
+        let cert_dir = tempfile::tempdir().unwrap();
+        let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
+        let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        let connector = QuicConnector::new(server_addr, "dessplay", None).unwrap();
+        // The control stream opens lazily, so the server's `accept_bi`
+        // (inside `accept`) only fires once the client writes a frame on
+        // it — send one after connecting to unblock the accept.
+        let client_fut = async {
+            let client = connector.connect().await.unwrap();
+            client.send_control(b"hello").await.unwrap();
+            client
+        };
+        let (client, accepted) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(client_fut, listener.accept())
+        })
+        .await
+        .expect("connect/accept budget exhausted");
+        let (server, _addr) = accepted.unwrap();
+
+        let client_priority = client.control_send.lock().await.priority().unwrap();
+        let server_priority = server.control_send.lock().await.priority().unwrap();
+        assert_eq!(
+            client_priority, CONTROL_PRIORITY,
+            "client control stream priority"
+        );
+        assert_eq!(
+            server_priority, CONTROL_PRIORITY,
+            "server control stream priority (the relay-hub direction)"
+        );
     }
 }
