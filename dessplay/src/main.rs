@@ -40,7 +40,7 @@ struct Cli {
     #[arg(long)]
     db: Option<std::path::PathBuf>,
 
-    /// Outstanding chunk requests per source for downloads (default 16).
+    /// Outstanding chunk requests per source for downloads (default 48).
     #[arg(long)]
     pipeline_depth: Option<u32>,
 
@@ -181,4 +181,35 @@ fn main() -> color_eyre::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use clap::CommandFactory;
+
+    /// The `--pipeline-depth` help must state the real production default
+    /// (48, set in `run::download_config`), not the stale 16. Regression
+    /// for the help/code drift in the 2026-06-26 review.
+    #[test]
+    fn pipeline_depth_help_states_the_production_default() {
+        // Normalize line-wrapping so the assertion doesn't depend on the
+        // terminal width clap renders at.
+        let help: String = Cli::command()
+            .render_long_help()
+            .to_string()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            help.contains("default 48"),
+            "--pipeline-depth help should state the production default 48:\n{help}"
+        );
+        assert!(
+            !help.contains("default 16"),
+            "--pipeline-depth help still states the stale default 16:\n{help}"
+        );
+    }
 }

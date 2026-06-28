@@ -35,8 +35,10 @@ use crate::chunkstore::ChunkStore;
 /// Tunables for the download scheduler.
 #[derive(Clone, Copy, Debug)]
 pub struct DownloadConfig {
-    /// Outstanding chunk requests per source (the `--pipeline-depth`
-    /// flag; default 16).
+    /// Outstanding chunk requests per source, set from the
+    /// `--pipeline-depth` flag. The production default (supplied by
+    /// `run::download_config`) is 48; this struct's `Default` is 16 and
+    /// is only used by tests.
     pub pipeline_depth: u32,
     /// Concurrent source peers per download.
     pub max_sources: u32,

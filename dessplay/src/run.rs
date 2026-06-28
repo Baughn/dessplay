@@ -175,7 +175,7 @@ struct RuntimeMediaRoots {
 }
 
 /// The peer-download tuning shared by every mode that downloads: the
-/// `--pipeline-depth` flag, or the default of 16. Interactive clients
+/// `--pipeline-depth` flag, or the default of 48. Interactive clients
 /// and seeders both build their [`crate::download::DownloadConfig`] from
 /// this, so the flag means the same thing everywhere.
 fn download_config(args: &HeadlessArgs) -> crate::download::DownloadConfig {
