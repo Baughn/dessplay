@@ -1481,6 +1481,37 @@ mod tests {
     }
 
     #[test]
+    fn media_roots_reorder_with_shift_jk() {
+        // design.md and the code agree: media roots reorder with `J`/`K` (and
+        // lowercase `j`/`k`), NOT Ctrl-J/Ctrl-K (which collide with LF in
+        // terminals lacking the enhanced keyboard protocol). The cursor
+        // follows the moved root, mirroring the playlist pane.
+        let settings = Settings {
+            username: Some("nero".into()),
+            password: Some("hunter2".into()),
+            ..Default::default()
+        };
+        let mut modal =
+            SettingsModal::new(settings, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        // Put the cursor on the first media root.
+        modal.sel = FIXED_FIELDS;
+        // `J` (shifted) moves it down; the cursor carries with it.
+        assert_eq!(
+            modal.on(&key(Key::Char('J'), KeyModifiers::SHIFT)),
+            Some(Msg::None)
+        );
+        assert_eq!(modal.roots, vec![PathBuf::from("/b"), PathBuf::from("/a")]);
+        assert_eq!(modal.sel, FIXED_FIELDS + 1);
+        // Lowercase `k` moves it back up.
+        assert_eq!(
+            modal.on(&key(Key::Char('k'), KeyModifiers::NONE)),
+            Some(Msg::None)
+        );
+        assert_eq!(modal.roots, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(modal.sel, FIXED_FIELDS);
+    }
+
+    #[test]
     fn overlay_does_not_overflow_on_a_very_wide_terminal() {
         // Regression: the percent multiply must be widened past u16 before
         // dividing. On a very wide/tall terminal `area.width * percent / 100`

@@ -47,7 +47,10 @@ The settings screen includes several required settings:
   Paused on connection. When on, the user starts as Ready.
 - Media roots (Selected by file browser; at least one must be selected).
   The topmost media directory is listed as "download target" (blue text on the right).
-  Media roots can be reordered with ctrl-j/ctrl-k.
+  Media roots can be reordered with `J`/`K` (or `j`/`k`) -- bare letters
+  rather than Ctrl-J/Ctrl-K, which collide with control codes (Ctrl-J ==
+  LF) in terminals lacking the enhanced keyboard protocol, consistent with
+  the playlist pane's reorder keys.
 
 Optional settings (sensible defaults, editable later):
 - Cache retention (duration; `0` = delete watched downloads at end of session,
