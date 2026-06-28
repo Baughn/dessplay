@@ -434,6 +434,45 @@ mod tests {
             cache.recomputes, 2,
             "a metadata change must recompute the grouping"
         );
+
+        // A series_relations-only change must recompute too, and the new
+        // grouping must reflect it -- guarding the relations half of the
+        // fingerprint. The relations graph fills in over hours while file
+        // metadata is already settled, so a sequel edge can arrive that
+        // merges two previously-separate file-bearing franchises (here
+        // Overlord ts(2) + KonoSuba ts(200), two singletons before the
+        // edge, one franchise after). No metadata changes here, so a
+        // fingerprint that omitted series_relations would reuse the stale
+        // two-franchise grouping and never recompute.
+        state.set_series_relations(
+            a,
+            ts(300),
+            AniDbSeriesId(10816),
+            relations("Overlord", Some(2015), &[(RelationKind::Sequel, 11261)]),
+        );
+        {
+            let merged = cache.get(&state.view());
+            assert_eq!(
+                merged.len(),
+                1,
+                "the sequel edge must merge Overlord and KonoSuba into one \
+                 franchise: {merged:#?}"
+            );
+            assert_eq!(
+                merged[0].series,
+                vec![AniDbSeriesId(10816), AniDbSeriesId(11261)],
+                "both file-bearing seasons belong to the merged franchise"
+            );
+            assert_eq!(
+                merged[0].files.len(),
+                2,
+                "the merged franchise holds both files"
+            );
+        }
+        assert_eq!(
+            cache.recomputes, 3,
+            "a series_relations change must recompute the grouping"
+        );
     }
 
     #[test]
