@@ -171,6 +171,15 @@ pub enum FileCommand {
         /// The message.
         message: Box<dessplay_core::net::PeerMessage>,
     },
+    /// A local copy vanished under us mid-session (the player failed to
+    /// load it). Drop it from the servable set, prune its cache/hash
+    /// bookkeeping, and flip availability to Missing so it re-resolves —
+    /// the same "drop + prune + re-resolve" guard the serve path runs
+    /// (design.md, Download Cache: two runtime guards).
+    ForgetLocalFile {
+        /// The file whose local copy is gone.
+        file: Ed2kHash,
+    },
 }
 
 /// A file the library scan has identified. The mtime rides to the server's
@@ -628,6 +637,7 @@ impl Actor {
             FileCommand::PeerMessage { from, message } => {
                 self.on_peer_message(from, *message).await;
             }
+            FileCommand::ForgetLocalFile { file } => self.lost_local_file(file).await,
         }
     }
 
@@ -2819,6 +2829,83 @@ mod tests {
             }
             other => panic!("expected Missing, not a peer advertisement: {other:?}"),
         }
+    }
+
+    /// The load-failure runtime guard: `ForgetLocalFile` must do the same
+    /// "drop + prune + flip to Missing" the serve-time guard does, so the
+    /// file actor's bookkeeping (cache_entries, hash_cache) is pruned and
+    /// the file re-resolves — not just flipped to Missing in synced state.
+    #[tokio::test]
+    async fn forget_local_file_drops_and_prunes_bookkeeping() {
+        let cache = tempfile::tempdir().unwrap();
+        let contents = b"held then gone".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        let cached_path = cache.path().join(hashed.root.to_string());
+        std::fs::write(&cached_path, contents).unwrap();
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hashed.root,
+                path: cached_path.clone(),
+                size_bytes: contents.len() as u64,
+                last_access: 1,
+            })
+            .unwrap();
+        let metadata = std::fs::metadata(&cached_path).unwrap();
+        storage
+            .upsert_hash_cache(&cached_path, mtime_millis(&metadata).unwrap(), &hashed, 1)
+            .unwrap();
+
+        let mut rig = spawn_rig_at(
+            storage,
+            vec![],
+            CacheRetention::default(),
+            cache.path().into(),
+        );
+        // Round-trip a resolve so startup reconciliation has registered the
+        // cached file as a servable local copy before we forget it.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hashed.root,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_output(&mut rig).await,
+            FileOutput::Resolved {
+                resolution: Resolution::Verified(_),
+                ..
+            }
+        ));
+
+        // The player failed to load it (gone under us): forget the copy.
+        rig.commands
+            .send(FileCommand::ForgetLocalFile { file: hashed.root })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Availability { file, availability } => {
+                assert_eq!(file, hashed.root);
+                assert_eq!(availability, FileAvailability::Missing);
+            }
+            other => panic!("expected Missing after forget: {other:?}"),
+        }
+
+        // Bookkeeping pruned, mirroring the serve-time guard.
+        let check = Storage::open(&db_path).unwrap();
+        assert!(
+            check.cache_entries().unwrap().is_empty(),
+            "forget must prune the cache entry"
+        );
+        assert!(
+            check.hash_cache().unwrap().is_empty(),
+            "forget must prune the hash_cache row"
+        );
+        drop(cache);
     }
 
     #[tokio::test]

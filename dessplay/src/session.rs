@@ -170,6 +170,17 @@ pub enum Directive {
         /// Hashes the group has watched.
         group_watched: HashSet<Ed2kHash>,
     },
+    /// Tell the file actor a local copy vanished under us (a player load
+    /// failure): drop it from the servable set, prune its cache/hash
+    /// bookkeeping, and flip availability to Missing so it re-resolves —
+    /// the file-actor half of the load-failure runtime guard, mirroring
+    /// the serve-time guard (design.md, Download Cache: two runtime guards
+    /// both "drop the local copy, prune its bookkeeping, and flip ... to
+    /// Missing so it re-resolves").
+    ForgetLocalFile {
+        /// The file whose local copy is gone.
+        file: Ed2kHash,
+    },
     /// Adopt a file the user loaded directly into the player (drag-and-drop)
     /// whose name matches the now-playing entry: register it as a manual
     /// mapping so it resolves Ready and clears a Missing now-playing file
@@ -1543,10 +1554,16 @@ impl PlayerWiring {
                     self.loaded = None;
                 }
                 self.resolved.remove(&file);
-                let mut out = vec![Directive::Mutate(Mutation::SetFileAvailability {
-                    file,
-                    availability: FileAvailability::Missing,
-                })];
+                let mut out = vec![
+                    // Drop the file actor's stale local copy and prune its
+                    // cache/hash bookkeeping (the serve-time guard's
+                    // "drop + prune"); it also flips availability to Missing.
+                    Directive::ForgetLocalFile { file },
+                    Directive::Mutate(Mutation::SetFileAvailability {
+                        file,
+                        availability: FileAvailability::Missing,
+                    }),
+                ];
                 if let Some(entry) = view.playlist.iter().find(|entry| entry.hash == file) {
                     self.pending_resolve.insert(file);
                     out.push(Directive::Resolve {
@@ -1888,6 +1905,9 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         .file
                         .send(FileCommand::RenderPlaceholder { file, lines })
                         .await;
+                }
+                Directive::ForgetLocalFile { file } => {
+                    let _ = self.file.send(FileCommand::ForgetLocalFile { file }).await;
                 }
                 Directive::AdoptDraggedFile { file, path, series } => {
                     // Same sink as the M-key map: persist the mapping, then
@@ -2812,6 +2832,14 @@ mod tests {
                 Directive::Resolve { file, filename } if *file == hash(1) && filename == "ep1.mkv"
             )),
             "load failure must re-resolve the file: {out:?}"
+        );
+        // It must also tell the file actor to drop + prune its bookkeeping,
+        // mirroring the serve-time guard (design.md: both runtime guards
+        // "drop the local copy, prune its bookkeeping, ... re-resolve").
+        assert!(
+            out.iter()
+                .any(|d| matches!(d, Directive::ForgetLocalFile { file } if *file == hash(1))),
+            "load failure must forget/prune the local copy: {out:?}"
         );
     }
 
