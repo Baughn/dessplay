@@ -1352,8 +1352,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
     }
 }
 
-/// `dessplay --dump`: print settings and the stored state, then exit.
-pub fn run_dump(args: &HeadlessArgs) -> Result<(), String> {
+/// `dessplay --dump`: print settings and the stored state as JSON on
+/// stdout (logs go to stderr), then exit. `sections` trims the output to
+/// the named [`crate::dump::SECTIONS`]; empty means all.
+pub fn run_dump(args: &HeadlessArgs, sections: &[String]) -> Result<(), String> {
+    let selection = crate::dump::Selection::parse(sections)?;
     let path = match &args.db_path {
         Some(path) => path.clone(),
         None => Storage::default_path().ok_or("cannot determine the data directory")?,
@@ -1362,19 +1365,18 @@ pub fn run_dump(args: &HeadlessArgs) -> Result<(), String> {
     let settings = storage
         .load_settings()
         .map_err(|e| format!("loading settings: {e}"))?;
-    println!("database: {}", path.display());
-    println!("settings: {settings:#?}");
-    println!(
-        "media roots: {:#?}",
-        storage.media_roots().map_err(|e| e.to_string())?
-    );
-    match storage.load_state().map_err(|e| e.to_string())? {
-        None => println!("no stored state"),
-        Some(snapshot) => {
-            println!("epoch: {:?}", snapshot.epoch);
-            println!("state: {:#?}", snapshot.state.view());
-        }
-    }
+    let media_roots = storage.media_roots().map_err(|e| e.to_string())?;
+    let snapshot = load_state_tolerant(&storage)?;
+    let doc = crate::dump::build(
+        &path.display().to_string(),
+        &settings,
+        &media_roots,
+        snapshot.as_ref(),
+        &selection,
+    )
+    .map_err(|e| format!("rendering state as JSON: {e}"))?;
+    let json = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    println!("{json}");
     Ok(())
 }
 

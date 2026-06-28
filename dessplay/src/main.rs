@@ -68,9 +68,20 @@ struct Cli {
     #[arg(long, value_name = "SOCKET")]
     attach_mpv: Option<std::path::PathBuf>,
 
-    /// Print stored settings and CRDT state, then exit.
+    /// Print stored settings and CRDT state as JSON on stdout, then exit
+    /// (logs go to stderr). Use `--section` to trim the output.
     #[arg(long)]
     dump: bool,
+
+    /// Restrict `--dump` to these sections (repeatable). Valid names:
+    /// settings, media_roots, playlist, watched, now_playing,
+    /// seek_authority, playback_intent, series_preference,
+    /// manual_override, file_availability, anidb_metadata,
+    /// series_relations, file_catalog, list_entries, list_next_ep,
+    /// lookup_requests, chat, playback_position, acknowledged_absent.
+    /// Omit to dump everything.
+    #[arg(long = "section", value_name = "SECTION", requires = "dump")]
+    section: Vec<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -131,6 +142,13 @@ fn main() -> color_eyre::Result<()> {
                 .init(),
         }
         tracing::info!("dessplay {} starting", env!("CARGO_PKG_VERSION"));
+    } else if cli.dump {
+        // `--dump` writes JSON to stdout; keep logs off it so the output
+        // is machine-parseable.
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
     } else {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
@@ -157,7 +175,7 @@ fn main() -> color_eyre::Result<()> {
         attach_mpv: cli.attach_mpv,
     };
     if cli.dump {
-        if let Err(message) = run_dump(&args) {
+        if let Err(message) = run_dump(&args, &cli.section) {
             eprintln!("error: {message}");
             std::process::exit(1);
         }

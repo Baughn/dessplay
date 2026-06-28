@@ -15,6 +15,7 @@ pub mod chunkstore;
 pub mod client;
 pub mod config;
 pub mod download;
+pub mod dump;
 pub mod import;
 pub mod instance_lock;
 pub mod placeholder;
