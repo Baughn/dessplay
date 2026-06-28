@@ -560,6 +560,54 @@ impl ServerStorage {
         Ok(())
     }
 
+    /// Re-arm "settled" ANIME (relations) lookups whose series id is
+    /// **absent** from `present` — the set of series that actually have
+    /// replicated relations. This is the relations-graph analogue of
+    /// [`Self::rearm_settled_without_metadata`]: a settled row
+    /// (`next_attempt = NEVER`) means the ANIME lookup ran and recorded its
+    /// attempt durably in SQLite, but on a hit the relations write lived
+    /// only in the periodically-snapshotted CRDT state and was lost to a
+    /// restart before it persisted. The series is then orphaned —
+    /// `enqueue_anime` is `INSERT OR IGNORE` so re-discovery is a no-op
+    /// against the tombstone, and `due_anime` never returns it, so its
+    /// franchise grouping stays broken forever (it falls back to grouping
+    /// by parsed name).
+    ///
+    /// We reset such rows to due now, so the next pass looks them up again.
+    /// A definitive "no such anime" miss also settles with no relations and
+    /// is therefore re-armed and re-polled once; that is rare (relation
+    /// targets generally exist) and simply re-settles. Returns the re-armed
+    /// series ids, for logging.
+    pub fn rearm_settled_anime_without_relations(
+        &self,
+        present: &std::collections::BTreeSet<AniDbSeriesId>,
+        now: i64,
+    ) -> Result<Vec<AniDbSeriesId>> {
+        let orphaned: Vec<i64> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT aid FROM anime_queue WHERE next_attempt = ?1")?;
+            let rows = stmt.query_map(params![NEVER], |row| row.get::<_, i64>(0))?;
+            let mut out = Vec::new();
+            for row in rows {
+                let aid = row?;
+                if !present.contains(&AniDbSeriesId(aid as u32)) {
+                    out.push(aid);
+                }
+            }
+            out
+        };
+        let mut rearmed = Vec::with_capacity(orphaned.len());
+        for aid in orphaned {
+            self.conn.execute(
+                "UPDATE anime_queue SET next_attempt = ?2 WHERE aid = ?1",
+                params![aid, now],
+            )?;
+            rearmed.push(AniDbSeriesId(aid as u32));
+        }
+        Ok(rearmed)
+    }
+
     /// The earliest scheduled attempt across both lookup queues
     /// (settled [`NEVER`] tombstones excluded). Lets the worker sleep
     /// until something is actually due.
@@ -1025,6 +1073,47 @@ mod tests {
         assert!(storage.due_anime(i64::MAX - 1, 10).unwrap().is_empty());
         storage.enqueue_anime(series, 300).unwrap();
         assert!(storage.due_anime(i64::MAX - 1, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rearm_resets_settled_anime_whose_relations_were_lost() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        // aid 1: settled (NEVER) but relations lost (the orphan).
+        // aid 2: settled and relations present (healthy).
+        // aid 3: a pending timeout retry (not settled) — must be left alone.
+        for aid in [1u32, 2] {
+            storage.enqueue_anime(AniDbSeriesId(aid), 100).unwrap();
+            storage
+                .record_anime_attempt(AniDbSeriesId(aid), 100, NEVER)
+                .unwrap();
+        }
+        storage.enqueue_anime(AniDbSeriesId(3), 100).unwrap();
+        storage
+            .record_anime_attempt(AniDbSeriesId(3), 100, 700_000)
+            .unwrap();
+
+        // Only aid 2 actually has replicated relations.
+        let present = std::collections::BTreeSet::from([AniDbSeriesId(2)]);
+        let rearmed = storage
+            .rearm_settled_anime_without_relations(&present, 200)
+            .unwrap();
+        assert_eq!(rearmed, vec![AniDbSeriesId(1)]);
+
+        let due: Vec<_> = storage
+            .due_anime(200, 10)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.series)
+            .collect();
+        assert!(due.contains(&AniDbSeriesId(1)), "orphan must be due now");
+        assert!(
+            !due.contains(&AniDbSeriesId(2)),
+            "healthy row must stay settled"
+        );
+        assert!(
+            !due.contains(&AniDbSeriesId(3)),
+            "a pending (non-settled) row must not be disturbed"
+        );
     }
 
     fn title(aid: u32, kind: u8, title: &str) -> TitleRow {

@@ -1071,6 +1071,30 @@ CORE BUG CONFIRMED. server.rs:374-380: `storage.as_ref().and_then(|s| s.load_sta
 - **Spec:** docs/design.md "Durability reconciliation" (lines 1239-1246): the design only specifies re-arming for the FILE queue (`anidb_queue` rows marked has_data with no metadata). The same restart-window argument applies to ANIME relations (also a durable SQLite settle plus a snapshot-only CRDT write), but neither the spec nor the code covers it. The code side looks wrong (missing reconciliation); the doc is silent on the anime queue.
 - **Suggested fix:** Add an anime analogue of `rearm_settled_without_metadata`: at startup, re-arm (set next_attempt = now) any settled `anime_queue` row whose aid is absent from the loaded `series_relations` map, and call it from `reconcile_settled_lookups`. Alternatively, write relations durably to SQLite alongside the queue settle so the CRDT write is no longer the only copy.
 
+**Status (2026-06-28): fixed.** Implemented the suggested anime analogue.
+New `ServerStorage::rearm_settled_anime_without_relations(present, now)`
+(`dessplay-rendezvous/src/storage.rs`) mirrors the FILE-queue reconcile: it
+resets every settled (`next_attempt = NEVER`) `anime_queue` row whose aid is
+**absent** from the loaded `series_relations` to due-now, so the orphaned
+series is looked up again and its franchise grouping heals. `reconcile_settled_lookups`
+(`dessplay-rendezvous/src/anidb/worker.rs`, still called once at startup) now
+runs **both** reconciles — files (metadata) and anime (relations) — keyed off
+the same loaded view; it no longer early-returns between them. A pending
+(non-`NEVER`) timeout-retry row is left untouched, and a definitive "no such
+anime" miss (which also settles with no relations) is re-armed and re-polled
+once on restart — accepted, since such misses are rare (relation targets
+generally exist) and simply re-settle; distinguishing them would need a
+`has_data`-style column the anime queue doesn't have. Two regression tests
+(both confirmed failing before the fix): worker-level
+`reconcile_rearms_settled_anime_whose_relations_were_lost` drives the real
+worker reconcile over an in-memory `AniDbHost` (a settled row with lost
+relations becomes due; one with present relations stays settled), and
+storage-level `rearm_resets_settled_anime_whose_relations_were_lost` pins the
+SQLite method directly (orphan re-armed, healthy row untouched, pending row not
+disturbed). docs/design.md's "Durability reconciliation" paragraph only
+specified the FILE case; the symmetric ANIME case is now covered in code (doc
+left as-is — the existing paragraph's restart-window argument already applies).
+
 <details><summary>Verification trail — code pointers</summary>
 
 The asymmetry and race described are real and independently verified against the code. (1) FILE queue: reconcile_settled_lookups (worker.rs:223-245) is called once at startup (worker.rs:77) and re-arms anidb_queue rows via rearm_settled_without_metadata (storage.rs:481-511). A crate-wide grep shows NO analogous reconcile for anime_queue — its only ops are enqueue_anime, due_anime, record_anime_attempt. (2) The restart window is real: in lookup_anime on a hit (worker.rs:382-410), host.write_relations writes to in-memory CRDT state (server.rs:332-338 server_write, snapshotted only periodically per server.rs:351), while record_anime_attempt(series, now_i, NEVER) (storage.rs:548-561) durably UPDATEs SQLite immediately. A restart between the durable settle and the next snapshot loses relations but keeps the NEVER tombstone. (3) The tombstone is permanent: enqueue_anime is INSERT OR IGNORE (storage.rs:517-524), due_anime filters next_attempt <= now (storage.rs:527-532), so NEVER (=i64::MAX) never re-emits — confirmed by the anime_queue_lifecycle test (storage.rs:1024-1027) which asserts re-enqueue after a NEVER settle stays a no-op. wanted_series (worker.rs:248-261) keeps re-deriving the aid each pass but seed_queues (worker.rs:136-148) re-enqueue is a no-op against the tombstone. (4) Compaction (compact_state, server.rs:1073) operates on CRDT state and never touches anime_queue, so no self-heal. (5) Spec: docs/design.md 'Durability reconciliation' covers only the anidb_queue/has_data FILE case; the symmetric ANIME case is genuinely uncovered. Severity 'low' is correct: impact is degraded franchise grouping in the browser (fallback to parsed-name grouping), often self-mitigated by a neighboring series' bidirectional relation re-merging the component on the client; no effect on playback, sync correctness, or persisted state; narrow trigger window.

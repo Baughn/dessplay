@@ -210,36 +210,55 @@ async fn apply_series_hints<H: AniDbHost>(host: &H) {
     }
 }
 
-/// One-time startup reconciliation: re-arm "settled" file lookups whose
-/// metadata is missing from the replicated state. A successful lookup
-/// records its queue attempt durably in SQLite (settled, recheck in a
-/// week) but writes the metadata only into the periodically-snapshotted
-/// CRDT state; a restart in that window loses the metadata yet keeps the
-/// settled row, orphaning the file for a week (no metadata, no near-term
-/// retry). Making the queue honest at startup heals such files — and any
-/// future occurrence — on the next pass. NoData rows self-heal on their
-/// short ladder and are left alone. See
-/// [`ServerStorage::rearm_settled_without_metadata`].
+/// One-time startup reconciliation: re-arm "settled" lookups whose result
+/// is missing from the replicated state. A successful lookup records its
+/// queue attempt durably in SQLite (settled) but writes the result only
+/// into the periodically-snapshotted CRDT state; a restart in that window
+/// keeps the settled row yet loses the result, orphaning the entry (no
+/// data, no near-term retry). Making both queues honest at startup heals
+/// such entries — and any future occurrence — on the next pass.
+///
+/// - **FILE queue**: re-arm `has_data` rows whose metadata is gone. NoData
+///   rows self-heal on their short ladder and are left alone. See
+///   [`ServerStorage::rearm_settled_without_metadata`].
+/// - **ANIME queue**: re-arm settled rows whose relations are gone — the
+///   same restart window, but for the relations graph (a permanent
+///   tombstone with no `has_data` marker; see
+///   [`ServerStorage::rearm_settled_anime_without_relations`]).
 fn reconcile_settled_lookups<H: AniDbHost>(host: &H) {
     let now = host.now();
-    let present: BTreeSet<Ed2kHash> = host
-        .view()
+    let view = host.view();
+
+    let present: BTreeSet<Ed2kHash> = view
         .anidb_metadata
         .iter()
         .filter_map(|(hash, meta)| meta.as_ref().map(|_| *hash))
         .collect();
-    let Some(rearmed) = store(host, "reconcile settled lookups", |s| {
+    if let Some(rearmed) = store(host, "reconcile settled lookups", |s| {
         s.rearm_settled_without_metadata(&present, now as i64)
-    }) else {
-        return;
-    };
-    if !rearmed.is_empty() {
+    }) && !rearmed.is_empty()
+    {
         tracing::warn!(
             count = rearmed.len(),
             "re-armed AniDB lookups settled but missing metadata (lost to a restart)"
         );
         for file in rearmed {
             tracing::info!(file = %file, "re-arming orphaned lookup");
+        }
+    }
+
+    let present_relations: BTreeSet<AniDbSeriesId> =
+        view.series_relations.keys().copied().collect();
+    if let Some(rearmed) = store(host, "reconcile settled anime", |s| {
+        s.rearm_settled_anime_without_relations(&present_relations, now as i64)
+    }) && !rearmed.is_empty()
+    {
+        tracing::warn!(
+            count = rearmed.len(),
+            "re-armed AniDB relations settled but missing from state (lost to a restart)"
+        );
+        for series in rearmed {
+            tracing::info!(aid = series.0, "re-arming orphaned relations lookup");
         }
     }
 }
@@ -775,6 +794,56 @@ mod tests {
         assert!(
             !due_hashes.contains(&hash(2)),
             "a settled lookup with metadata must stay settled"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_rearms_settled_anime_whose_relations_were_lost() {
+        // aid 1: an ANIME lookup settled (next_attempt = NEVER) but its
+        // relations write was lost to a restart before the CRDT snapshot ->
+        // must be re-armed. aid 2: settled AND present in the relations
+        // view -> left alone. Mirrors the FILE-queue reconcile.
+        let host = MockHost::new();
+        let now = host.now() as i64;
+        host.with_storage(|s| {
+            for aid in [1u32, 2] {
+                s.enqueue_anime(AniDbSeriesId(aid), now).unwrap();
+                // Settle as a hit (NEVER).
+                s.record_anime_attempt(AniDbSeriesId(aid), now, crate::storage::NEVER)
+                    .unwrap();
+            }
+        });
+        // Only aid 2's relations survived the restart.
+        host.write_relations(
+            AniDbSeriesId(2),
+            SeriesRelations {
+                title: "Known".into(),
+                year: Some(2023),
+                episode_count: Some(12),
+                relations: Default::default(),
+            },
+        )
+        .await;
+        // Both settled: nothing due now.
+        assert!(
+            host.with_storage(|s| s.due_anime(now, 10).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+
+        reconcile_settled_lookups(&host);
+
+        let due = host
+            .with_storage(|s| s.due_anime(host.now() as i64, 10).unwrap())
+            .unwrap();
+        let due_aids: Vec<_> = due.iter().map(|e| e.series).collect();
+        assert!(
+            due_aids.contains(&AniDbSeriesId(1)),
+            "a relations-less orphan must re-arm"
+        );
+        assert!(
+            !due_aids.contains(&AniDbSeriesId(2)),
+            "a settled anime row with relations must stay settled"
         );
     }
 
