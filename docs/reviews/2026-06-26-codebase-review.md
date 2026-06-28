@@ -671,6 +671,8 @@ is_bridge_nick slices `nick[n - BRIDGE_SUFFIX.len()..]` where n is the byte leng
 - **Spec:** design.md IRC Bridge: 'Messages from IRC nicks that do not end in Dess are shown locally' — the *Dess filter must tolerate arbitrary IRC nicks without crashing.
 - **Suggested fix:** Compare on bytes instead of slicing the str: e.g. `nick.as_bytes()` ends_with check (`let s = BRIDGE_SUFFIX.as_bytes(); nb.len() >= s.len() && nb[nb.len()-s.len()..].eq_ignore_ascii_case(s)`), or use `nick.get(n-4..)` and handle None.
 
+**Status (2026-06-28): fixed.** `is_bridge_nick` (`dessplay/src/actors/irc.rs`) now compares on `nick.as_bytes()` with `<[u8]>::eq_ignore_ascii_case` against the `BRIDGE_SUFFIX` bytes, so a multi-byte UTF-8 nick whose tail offset is not a char boundary no longer panics (the old `nick[n - 4..]` str-slice). Classification is unchanged for ASCII nicks (the suffix is ASCII). Regression test `is_bridge_nick_tolerates_non_ascii_nicks` (irc.rs) drives the exact crash input from the finding (`"\u{1F600}x"`, a 4-byte emoji + `x` whose n-4 offset lands inside the emoji) plus a non-ASCII nick that genuinely ends in Dess (`"Gödess"` → matched) and one ending in a multibyte char (`"Nerö"` → not matched); it PANICKED before the fix (`byte index 1 is not a char boundary`) and passes after.
+
 <details><summary>Verification trail — code pointers</summary>
 
 Verified the code defect and the full reachability/consequence chain in /home/svein/dev/dessplay/dessplay/src/actors/irc.rs.

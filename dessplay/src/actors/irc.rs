@@ -529,8 +529,11 @@ pub(crate) fn derive_nick(username: &str) -> String {
 /// "Goddess") is also dropped. Accepted — refining it would require the
 /// dessplay roster, which this actor deliberately does not hold.
 pub(crate) fn is_bridge_nick(nick: &str) -> bool {
-    let n = nick.len();
-    n >= BRIDGE_SUFFIX.len() && nick[n - BRIDGE_SUFFIX.len()..].eq_ignore_ascii_case(BRIDGE_SUFFIX)
+    // Compare on bytes so a multi-byte UTF-8 nick whose tail offset is not a
+    // char boundary never panics (a crafted PRIVMSG nick is untrusted input).
+    let nb = nick.as_bytes();
+    let suffix = BRIDGE_SUFFIX.as_bytes();
+    nb.len() >= suffix.len() && nb[nb.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
 /// Pick the next nick after a 433 collision, keeping the `Dess` suffix
@@ -718,6 +721,19 @@ mod tests {
         assert!(!is_bridge_nick("Des"));
         // Documented false positive.
         assert!(is_bridge_nick("Goddess"));
+    }
+
+    #[test]
+    fn is_bridge_nick_tolerates_non_ascii_nicks() {
+        // A multi-byte char straddling the byte offset a naive
+        // `nick[n - 4..]` slice would cut at must not panic. "😀x" is a
+        // 4-byte emoji followed by 'x' (len 5); n-4 == 1 lands inside the
+        // emoji, which is not a char boundary.
+        assert!(!is_bridge_nick("\u{1F600}x"));
+        // A non-ASCII nick that genuinely ends in Dess is still matched.
+        assert!(is_bridge_nick("G\u{f6}dess"));
+        // ...and one ending in a multibyte char is not (and does not panic).
+        assert!(!is_bridge_nick("Ner\u{f6}"));
     }
 
     #[test]
