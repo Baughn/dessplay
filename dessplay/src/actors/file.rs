@@ -1294,6 +1294,12 @@ impl Actor {
         if let Err(e) = self.storage.remove_hash_cache(&entry.path) {
             tracing::error!("hash-cache cleanup after archive: {e}");
         }
+        // The archived file is still a held, servable copy -- only its
+        // path changed. Re-point the servable map at the new location, in
+        // lockstep with the hash_cache re-key below; leaving `local_files`
+        // on the now-deleted cache path makes the serve path read a dead
+        // file and flip us to Missing for a file we still hold.
+        self.local_files.insert(file, dest.to_path_buf());
         let mut cache = (*self.hash_cache).clone();
         if let Some((_, hash)) = cache.remove(&entry.path) {
             let now = (self.clock)() as i64;
@@ -2344,6 +2350,91 @@ mod tests {
             .unwrap();
         match next_output(&mut rig).await {
             FileOutput::Archived { result, .. } => assert!(result.is_err()),
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+
+    /// Regression: archiving a cached download must keep it servable. The
+    /// file is still held (now at its library path), so a peer that picked
+    /// us as a source must still get its block hashes -- and we must NOT
+    /// spuriously flip our own availability to Missing. The bug: archive
+    /// re-keyed `hash_cache` to the new path but forgot `local_files`, so
+    /// the serve path read the now-deleted cache path, saw it gone, and
+    /// called `lost_local_file` -> Missing (gating the whole group if the
+    /// archived file is now-playing).
+    #[tokio::test]
+    async fn archived_file_stays_servable_to_peers() {
+        let cache = tempfile::tempdir().unwrap();
+        let library = tempfile::tempdir().unwrap();
+        let contents = b"a cached episode".as_slice();
+        let cached_path = write(cache.path(), "ep1.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hashed.root,
+                path: cached_path.clone(),
+                size_bytes: contents.len() as u64,
+                last_access: 1,
+            })
+            .unwrap();
+        let metadata = std::fs::metadata(&cached_path).unwrap();
+        storage
+            .upsert_hash_cache(&cached_path, mtime_millis(&metadata).unwrap(), &hashed, 1)
+            .unwrap();
+
+        let dest = library.path().join("Frieren/ep1.mkv");
+        let mut rig = spawn_rig(
+            storage,
+            vec![library.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+
+        // Archive moves <cache>/ep1.mkv -> <library>/Frieren/ep1.mkv.
+        // Startup reconciliation has already registered the cache file as a
+        // servable copy before the command loop runs, so the move must
+        // re-point that registration at `dest`.
+        rig.commands
+            .send(FileCommand::Archive {
+                file: hashed.root,
+                series_name: Some("Frieren".into()),
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Archived { result, .. } => assert_eq!(result.unwrap(), dest),
+            other => panic!("unexpected output: {other:?}"),
+        }
+        assert!(dest.is_file());
+        assert!(!cached_path.exists());
+
+        // A peer that advertised-Ready picked us as a source asks for the
+        // block hashes. We still hold the file (at `dest`), so we serve it.
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file: hashed.root }),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::SendPeer { message, .. } => match *message {
+                PeerMessage::BlockHashes { file, .. } => assert_eq!(file, hashed.root),
+                other => panic!("expected block hashes, got {other:?}"),
+            },
+            FileOutput::Availability { availability, .. } => panic!(
+                "archived file spuriously flipped to {availability:?} on a peer serve request"
+            ),
+            other => panic!("unexpected output: {other:?}"),
+        }
+        // The follow-up complete-bitfield advertisement confirms we still
+        // present as a full source for the archived file.
+        match next_output(&mut rig).await {
+            FileOutput::SendPeer { message, .. } => {
+                assert!(matches!(*message, PeerMessage::FileAvailability { .. }));
+            }
             other => panic!("unexpected output: {other:?}"),
         }
     }
