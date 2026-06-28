@@ -254,9 +254,15 @@ pub fn import_sheet(
             name: name.to_string(),
             nero_name: cell(&record, columns.nero_name),
             genre: cell(&record, columns.genre),
+            // A "Progress?" section relabel points status_note at a column
+            // that may also be a notes column (e.g. the Ivory sheet's "Extra
+            // Notes"). Read it only as the status note, never duplicated into
+            // notes. Excluding here (rather than mutating columns.notes) auto-
+            // restores the notes role once a later section clears status_note.
             notes: columns
                 .notes
                 .iter()
+                .filter(|&&index| Some(index) != columns.status_note)
                 .filter_map(|&index| cell(&record, Some(index)))
                 .collect(),
             recommender: cell(&record, columns.recommender),
@@ -590,6 +596,13 @@ mod tests {
         let shirobako = find(&report, "Shirobako");
         assert_eq!(shirobako.entry.status, ListStatus::Hiatus);
         assert_eq!(shirobako.entry.status_note.as_deref(), Some("13"));
+        // The Progress? relabel *re-labels* the column as the status note;
+        // the value must not also land in `notes` (no stray duplicate).
+        assert!(
+            shirobako.entry.notes.is_empty(),
+            "Progress? value duplicated into notes: {:?}",
+            shirobako.entry.notes
+        );
 
         // The nameless short-list slot is reported, not silently lost.
         assert!(
