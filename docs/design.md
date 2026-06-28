@@ -415,8 +415,8 @@ how many users are connected.
    clients whose player reaches end-of-file send an `EofReached { file }` report
    to the server; when the server receives the first report matching the current
    now-playing file from a present, watching user -- Ready (committed) or
-   Maybe, but not a seeder and not one whose derived state is Not Watching
-   or Away -- it marks the file watched,
+   Maybe, but not a seeder and not one whose derived state is Not Watching,
+   Away, or (manually) Paused -- it marks the file watched,
    advances now-playing, sets playback intent to Paused (the next episode
    loads paused; anyone presses play when ready), and takes seek authority.
    Later duplicate reports no

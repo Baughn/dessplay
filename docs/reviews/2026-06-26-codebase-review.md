@@ -1007,6 +1007,22 @@ handle_eof advances now-playing for DerivedUserState::Ready | Maybe | Paused (li
 - **Spec:** design.md Playback Rules (EOF): 'the first report matching the current now-playing file from a present, watching user -- Ready (committed) or Maybe, but not a seeder and not one whose derived state is Not Watching or Away'.
 - **Suggested fix:** Either drop Paused from the accepting arm to match the doc's 'Ready or Maybe', or update the EOF spec sentence to state that any present watcher except NotWatching/Away advances (matching the code comment's reasoning).
 
+**Status (2026-06-28): fixed.** Aligned the code to the spec's positive list:
+`handle_eof` (`dessplay-rendezvous/src/server.rs`) now advances only on a
+present **watching** reporter — `DerivedUserState::Ready` (committed) or
+`Maybe` — and returns for `Paused | NotWatching | Away`. A manually-Paused user
+is not actively watching, so they no longer advance the group (this was the
+near-unreachable broader case the old comment justified). The contradictory
+half of the doc was reconciled too: `docs/design.md` (Playback Rules / EOF) now
+excludes "Not Watching, Away, or (manually) Paused", matching both the positive
+"Ready or Maybe" list and the code. Regression test `eof.rs ::
+eof_ignores_a_manually_paused_reporter`: baughn manually pauses (derived
+`Paused`) and reports EOF — now-playing must **not** advance (pre-fix it
+advanced to the next entry — test failed) — then kim (present, `Maybe`) reports
+and the transition runs as before (no regression to the Ready/Maybe path; the
+existing `eof_advances_pauses_and_is_idempotent` and
+`eof_ignores_non_watching_reporters` stay green).
+
 <details><summary>Verification trail — code pointers</summary>
 
 server.rs:973-979 — handle_eof returns early only for DerivedUserState::NotWatching | Away (line 974); line 978 accepts Ready | Maybe | Paused, with an explicit comment (975-977) that Paused is intentionally admitted. The DerivedUserState enum (dessplay-core/src/derive.rs:22-39) has exactly {Ready, Maybe, Paused, Away, NotWatching}, so the code's accepted set is {Ready, Maybe, Paused}. design.md lines 406-408 give two enumerations for the qualifying reporter: a positive one ("Ready (committed) or Maybe") that omits Paused, and a negative one ("not one whose derived state is Not Watching or Away") that matches the code exactly. The doc thus contradicts itself, and the code follows the negative reading while diverging from the positive list — a real, narrow code/doc mismatch. It is intentional in code (the comment justifies Paused), and near-unreachable at runtime as the claim notes, so the fix is reconciling the doc's stale positive enumeration. Low severity is accurate; not a behavioral bug.

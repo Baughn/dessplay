@@ -7,8 +7,8 @@ use std::time::Duration;
 use common::*;
 use dessplay::actors::sync::Mutation;
 use dessplay_core::types::{
-    AniDbMetadata, AniDbSeriesId, MetadataSource, PlaybackIntent, SeekAuthority, SeriesWatchState,
-    UserId,
+    AniDbMetadata, AniDbSeriesId, ManualState, MetadataSource, PlaybackIntent, SeekAuthority,
+    SeriesWatchState, UserId,
 };
 
 /// Two clients, a two-entry playlist, entry 1 playing.
@@ -139,6 +139,51 @@ async fn eof_ignores_non_watching_reporters() {
 
     // Baughn (present, watching) reports: the transition runs.
     report_eof(&baughn, hash(1)).await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps.iter().all(|s| s.view.now_playing == Some(hash(2)))
+    })
+    .await;
+}
+
+/// A present but manually-Paused reporter does not advance the group: the
+/// EOF transition admits only a present *watching* reporter — Ready
+/// (committed) or Maybe — per docs/design.md, Playback Rules. A Maybe
+/// reporter still advances afterwards. (Pre-fix `handle_eof` also accepted
+/// Paused, so baughn's report below advanced the file.)
+#[tokio::test(start_paused = true)]
+async fn eof_ignores_a_manually_paused_reporter() {
+    let harness = Harness::new(0x5EED);
+    let (kim, baughn) = session(&harness).await;
+
+    // baughn manually pauses -> derived state Paused.
+    mutate(
+        &baughn,
+        Mutation::SetManualOverride {
+            user: UserId::new("baughn"),
+            state: Some(ManualState::Paused),
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps.iter().all(|s| {
+            s.view.manual_override.get(&UserId::new("baughn")) == Some(&Some(ManualState::Paused))
+        })
+    })
+    .await;
+
+    // baughn (Paused) reports EOF: ignored, the file does not advance.
+    report_eof(&baughn, hash(1)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snap = snapshot_of(&kim).await;
+    assert_eq!(
+        snap.view.now_playing,
+        Some(hash(1)),
+        "a manually-paused reporter must not advance now-playing"
+    );
+    assert_eq!(snap.view.watched.get(&hash(1)), None);
+
+    // kim (present, Maybe) reports: the transition runs.
+    report_eof(&kim, hash(1)).await;
     eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
         snaps.iter().all(|s| s.view.now_playing == Some(hash(2)))
     })

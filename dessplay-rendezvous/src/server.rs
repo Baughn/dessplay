@@ -1066,11 +1066,15 @@ async fn handle_eof<T: Transport>(
             return; // duplicate or stale report
         }
         match derive::user_state(&view, reporter) {
-            DerivedUserState::NotWatching | DerivedUserState::Away { .. } => return,
-            // A present watcher advances now-playing — committed (Ready)
-            // or opportunistic (Maybe), and even if manually Paused (they
-            // still watched this file to the end).
-            DerivedUserState::Ready | DerivedUserState::Maybe | DerivedUserState::Paused => {}
+            // Only a present *watching* reporter advances the group —
+            // committed (Ready) or opportunistic (Maybe), per
+            // docs/design.md, Playback Rules / EOF. A manually-Paused
+            // reporter is not actively watching, and NotWatching/Away never
+            // gate, so none of them advance now-playing.
+            DerivedUserState::Ready | DerivedUserState::Maybe => {}
+            DerivedUserState::Paused
+            | DerivedUserState::NotWatching
+            | DerivedUserState::Away { .. } => return,
         }
         let next = view
             .playlist
