@@ -745,7 +745,13 @@ impl SyncActor {
                         ServerControl::RequestMerge,
                     )))
                     .await;
-                    let _ = self.events.send(SyncEvent::Diverged).await;
+                    // Diverged is an edge-triggered "you may want to react"
+                    // signal, exactly like StateChanged in `changed()`: a
+                    // stalled (or absent) consumer must never block the sync
+                    // actor. The RequestMerge above is already queued to the
+                    // network actor regardless of whether the UI observes
+                    // this, so dropping it when the channel is full is safe.
+                    let _ = self.events.try_send(SyncEvent::Diverged);
                 }
             }
             other => {
@@ -1051,6 +1057,67 @@ mod tests {
                 SyncEvent::StateChanged => continue,
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn divergence_never_wedges_a_stalled_consumer() {
+        // A stalled (or absent) UI: rig.events is held but never drained.
+        // The same hazard slow_ui_consumer_never_wedges_the_sync_actor
+        // guards for StateChanged — but the Diverged send must obey the
+        // same non-blocking contract, or two consecutive hash mismatches
+        // arriving while the events channel is full deadlock the actor.
+        let mut rig = rig();
+        go_online(&mut rig).await;
+
+        // Flood remote ops to fill (and keep full) the undrained events
+        // channel: each op fires a StateChanged.
+        let mut origin = CrdtState::new();
+        for i in 0..200u64 {
+            let op = origin.append_chat(dessplay_core::ChatMessage {
+                timestamp: SharedTimestamp(i + 1),
+                sender: UserId::new("kim"),
+                text: format!("m{i}"),
+            });
+            rig.commands
+                .send(SyncCommand::Server {
+                    msg: Box::new(ServerControl::StateOp {
+                        epoch: Epoch(0),
+                        op,
+                    }),
+                    via_datagram: false,
+                })
+                .await
+                .unwrap();
+        }
+
+        // Two consecutive hash mismatches → divergence, which sends
+        // SyncEvent::Diverged. With a blocking send and a full, undrained
+        // channel this wedges the actor; with try_send it does not.
+        let bogus = ServerControl::StateHash {
+            epoch: Epoch(0),
+            hash: [0xAB; 32],
+        };
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(bogus.clone()),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(bogus),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+
+        // The actor must still answer queries (RequestMerge already queued
+        // to the net actor regardless of whether the UI observes Diverged).
+        let view = tokio::time::timeout(Duration::from_secs(30), view_of(&rig))
+            .await
+            .expect("sync actor wedged by a blocking Diverged send on a full event channel");
+        assert_eq!(view.chat.len(), 200);
     }
 
     #[tokio::test(start_paused = true)]
