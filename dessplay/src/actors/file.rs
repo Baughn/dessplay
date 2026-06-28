@@ -982,6 +982,14 @@ impl Actor {
                 // A verified local copy can be served to peers.
                 if let Resolution::Verified(path) = &resolution {
                     self.local_files.insert(file, path.clone());
+                    // Resolving (loading) a file is an "access": bump the
+                    // cache entry's last_access so retention runs from last
+                    // access, not download time (design.md Download Cache).
+                    // A no-op for media-root files, which have no cache row.
+                    let now = (self.clock)() as i64;
+                    if let Err(e) = self.storage.touch_cache_entry(file, now) {
+                        tracing::warn!("touch cache entry on resolve: {e}");
+                    }
                 }
                 let _ = self
                     .out
@@ -2105,6 +2113,81 @@ mod tests {
             .await
             .expect("output timeout")
             .expect("actor gone")
+    }
+
+    /// Spec (Download Cache and Retention): an evictable file is deleted
+    /// `cache_retention` after its *last access*. last_access is written at
+    /// download time; resolving (loading) a cached file again must bump it,
+    /// or the retention window wrongly runs from download time and a
+    /// re-watched file is evicted on schedule regardless.
+    #[tokio::test]
+    async fn resolving_a_cached_file_bumps_last_access() {
+        let cache = tempfile::tempdir().unwrap();
+        let contents = b"a cached episode".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        // The download cache is hash-named.
+        let cached_path = cache.path().join(hashed.root.to_string());
+        std::fs::write(&cached_path, contents).unwrap();
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        // Downloaded "long ago": last_access == 1.
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hashed.root,
+                path: cached_path.clone(),
+                size_bytes: contents.len() as u64,
+                last_access: 1,
+            })
+            .unwrap();
+        let metadata = std::fs::metadata(&cached_path).unwrap();
+        storage
+            .upsert_hash_cache(&cached_path, mtime_millis(&metadata).unwrap(), &hashed, 1)
+            .unwrap();
+
+        let mut rig = spawn_rig_at(
+            storage,
+            vec![],
+            CacheRetention::default(),
+            cache.path().to_path_buf(),
+        );
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hashed.root,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { resolution, .. } => {
+                assert!(matches!(resolution, Resolution::Verified(_)));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        // last_access bumped from download time (1) to the resolve clock.
+        let now: i64 = 1_700_000_000_000;
+        let check = Storage::open(&db_path).unwrap();
+        let rows = check.cache_entries().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].last_access, now,
+            "resolving a cached file must bump last_access"
+        );
+
+        // ...so eviction is deferred: a watched file under the default
+        // Keep(1 week) retention, "downloaded" long ago, is NOT evictable,
+        // because its last access is now.
+        let week = Duration::from_secs(7 * 24 * 3600);
+        assert!(!evictable(
+            now,
+            CacheRetention::Keep(week),
+            &rows[0],
+            true,
+            false,
+        ));
+        drop(cache);
     }
 
     #[tokio::test]
