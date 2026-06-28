@@ -612,14 +612,20 @@ impl PlayerWiring {
                     continue;
                 }
                 let (user, _) = &key;
-                // Skip our own List-derived auto-write — but *only* the
-                // initial `None -> auto` transition it produces, not every
-                // later change. The auto-write only ever fires when no
-                // preference exists yet (`!has_pref`), so `was.is_none()`
-                // is its signature; a subsequent manual /watch / /maybe /
-                // /skip is a value->value diff and must still narrate.
-                if user == &self.me && was.is_none() && self.watcher_prefs_written.contains(&series)
-                {
+                // Skip a List-derived auto-write — but *only* the initial
+                // `None -> value` transition it produces, not every later
+                // change. The auto-write fires once per (user, linked
+                // series) and writes the value the synced List entry implies
+                // for that user (Watching for a watcher, NotWatching
+                // otherwise). `was.is_none()` is its signature; a subsequent
+                // manual /watch / /maybe / /skip is a value->value diff and
+                // still narrates. Deriving the implied value from the synced
+                // `list_entries` (rather than the per-client
+                // `watcher_prefs_written`) is what keeps narration a pure
+                // function of synced state: every client suppresses the same
+                // lines (design.md, System Messages — "every client diffs
+                // the same synced inputs ... narrates the same lines").
+                if was.is_none() && now == list_implied_pref(view, series, user) {
                     continue;
                 }
                 let name = &meta.series_name;
@@ -2111,6 +2117,30 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     }
 }
 
+/// The series-watch preference a linked List entry implies for `user`: a
+/// watcher commits (Watching — the group waits for them even when absent),
+/// a non-watcher skips (NotWatching). The List link is the declarative
+/// commitment route (design.md, The List), so the per-series auto-write
+/// derived from it is *not* a user action and must not narrate. Returns
+/// `None` when no linked entry with a non-empty watchers set covers
+/// `series` (so a genuine first manual preference still narrates). Computed
+/// purely from synced state, so every client suppresses identically.
+fn list_implied_pref(
+    view: &StateView,
+    series: AniDbSeriesId,
+    user: &UserId,
+) -> Option<SeriesWatchState> {
+    view.list_entries.values().find_map(|entry| {
+        (entry.anidb_series_id == Some(series) && !entry.watchers.is_empty()).then(|| {
+            if entry.watchers.contains(user) {
+                SeriesWatchState::Watching
+            } else {
+                SeriesWatchState::NotWatching
+            }
+        })
+    })
+}
+
 /// Build the playlist-add mutation for an add-by-hash, taking the file's
 /// identity from the synced catalog. `Err` (with a user notice) when the
 /// catalog has no entry yet — no client has requested a lookup for this
@@ -2507,6 +2537,64 @@ mod tests {
         assert_eq!(
             system_texts(&manual),
             ["kim set to not-watching Some Show (by kim)"]
+        );
+    }
+
+    #[test]
+    fn narrator_list_auto_write_is_consistent_across_clients() {
+        // Regression: narration must be a pure function of *synced* state.
+        // A List entry linked to the now-playing series auto-writes each
+        // watcher's own preference, which syncs to everyone. The
+        // suppression of that auto-write must be derived from the synced
+        // List (not per-client local state), or every client narrates a
+        // DIFFERENT set of lines for the SAME synced inputs — violating
+        // "every client diffs the same synced inputs, every client narrates
+        // the same lines" (design.md, System Messages).
+        use dessplay_core::types::ListEntryId;
+        let series = dessplay_core::types::AniDbSeriesId(7);
+        let baughn = UserId::new("baughn");
+        let kim = UserId::new("kim");
+        let peers = [peer("baughn"), peer("kim")];
+
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        state.put_list_entry(
+            A,
+            ts(10),
+            ListEntryId(1),
+            list_entry(Some(7), &["baughn", "kim"]),
+        );
+        let v0 = state.view();
+
+        // Both watchers' clients write their own List-derived preference
+        // (Watching, since both are watchers); both syncs reach everyone.
+        state.set_series_preference(
+            A,
+            ts(11),
+            baughn.clone(),
+            series,
+            SeriesWatchState::Watching,
+        );
+        state.set_series_preference(A, ts(12), kim.clone(), series, SeriesWatchState::Watching);
+        let v1 = state.view();
+
+        // Two different clients diffing the identical synced transition.
+        let mut w_baughn = PlayerWiring::new(baughn.clone());
+        w_baughn.on_state(&v0, &peers);
+        let baughn_lines = system_texts(&w_baughn.on_state(&v1, &peers));
+
+        let mut w_kim = PlayerWiring::new(kim.clone());
+        w_kim.on_state(&v0, &peers);
+        let kim_lines = system_texts(&w_kim.on_state(&v1, &peers));
+
+        assert_eq!(
+            baughn_lines, kim_lines,
+            "clients narrated different lines for the same synced transition"
+        );
+        // ...and specifically, the List auto-writes are silent on both.
+        assert!(
+            baughn_lines.is_empty(),
+            "List-derived auto-writes must not narrate: {baughn_lines:?}"
         );
     }
 
