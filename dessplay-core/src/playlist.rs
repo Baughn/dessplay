@@ -2,10 +2,14 @@
 //!
 //! Entries live in the playlist map keyed by file hash; display order is
 //! the LWW-resolved entries sorted by `(position, hash)`. Adding and
-//! moving compute a fresh `Identifier` between the relevant neighbors;
-//! the server reassigns small fresh identifiers at compaction
-//! ([`CrdtState::rebalance_playlist`]) to stop the underlying rationals
-//! from growing without bound.
+//! moving compute a fresh `Identifier` between the relevant neighbors.
+//! The underlying rationals are kept from growing without bound by the
+//! server's daily compaction, which rebuilds the playlist from its
+//! resolved order with flat `0, 1, 2, ...` identifiers via
+//! [`CrdtState::push_playlist_entry`] (see [`crate::compact::rebuild`]).
+//! [`CrdtState::rebalance_playlist`] does the same reassignment in place
+//! and is exercised by the playlist property/fuzz suites, but it is not
+//! the live compaction path.
 
 use crdts::Identifier;
 
