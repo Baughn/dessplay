@@ -332,11 +332,20 @@ impl Downloads {
             return vec![]; // already have them
         }
         if !d.store.block_hashes_match(d.root, &hashes) {
-            tracing::warn!(%from, "block hashes don't match the file root; ignoring source");
-            // Leave Pending; another solicited source's reply can still
-            // validate. (Promptly re-asking the *same* bad peer is a
-            // separate, out-of-scope improvement.)
-            return vec![];
+            tracing::warn!(%from, "block hashes don't match the file root; dropping source");
+            // The source's block hashes disagree with the file root, so it
+            // holds a *different* file: it can supply neither valid hashes
+            // nor valid chunks (its advertised bitfield is bogus). Drop it
+            // exactly like a snubbed source -- avoiding it, discarding its
+            // bitfield so it is never picked for chunks, and freeing its
+            // slot -- then re-solicit so a *different* source supplies the
+            // hashes. (If it is still a synced Ready candidate, `set_sources`
+            // re-adds it fresh next round, just as for a snub: an honest peer
+            // that transiently erred gets another chance, while a
+            // persistently-broken one self-limits to one ask per refresh and
+            // never blocks a good source from completing the download.)
+            d.sources.remove(&from);
+            return self.progress_and_refill(file, now);
         }
         tracing::debug!(blocks = hashes.len(), "block hashes validated");
         d.block_hashes = BlockHashes::Have(hashes);
@@ -1284,5 +1293,104 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A source whose block hashes don't validate against the file root
+    /// holds a *different* file: it can serve neither valid hashes nor
+    /// valid chunks, so it must be dropped and never asked for chunks --
+    /// even if it advertised a full bitfield. Pre-fix the bad source was
+    /// left in the source set, so once a *good* source validated the block
+    /// hashes the scheduler happily requested chunks from the liar's bogus
+    /// bitfield (looping on the bad peer and wasting the relay uplink).
+    #[test]
+    fn an_invalid_block_hash_source_is_dropped_and_not_asked_for_chunks() {
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, DownloadConfig::default());
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("liar"), peer("seed")],
+            0,
+            1000,
+        );
+        // 'liar' advertises it has the whole file...
+        r.downloads.on_peer_message(
+            peer("liar"),
+            PeerMessage::FileAvailability {
+                file: r.file,
+                bitfield: r.full_bitfield(),
+            },
+            1100,
+        );
+        // ...but serves block hashes that don't match the file root.
+        r.downloads.on_peer_message(
+            peer("liar"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: vec![Ed2kBlockHash([0; 16]); r.hash.blocks.len()],
+            },
+            1100,
+        );
+        // A good source then supplies valid block hashes -> validated, so
+        // chunk requests begin.
+        let actions = r.downloads.on_peer_message(
+            peer("seed"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            1200,
+        );
+        // The liar must never be asked for a chunk: its bogus bitfield is
+        // gone with it.
+        let to_liar: Vec<_> = requests(&actions)
+            .into_iter()
+            .filter(|(p, _)| p == "liar")
+            .collect();
+        assert!(
+            to_liar.is_empty(),
+            "a bad-block-hash source must be dropped, not asked for chunks: {actions:?}"
+        );
+    }
+
+    /// End-to-end: when the *only* solicited source returns invalid block
+    /// hashes, a later-arriving good source must still carry the download
+    /// to completion (the bad source is dropped and re-solicitation pursues
+    /// the survivor). Pre-fix the bad source lingered with `solicited`
+    /// latched true, so it was never re-asked and -- with no good source
+    /// yet -- the download could wedge; this guards the re-solicit path.
+    #[test]
+    fn download_completes_after_a_source_serves_invalid_block_hashes() {
+        let mut r = rig(ED2K_BLOCK_SIZE as usize + 5000, DownloadConfig::default());
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("liar")],
+            0,
+            1000,
+        );
+        // 'liar' serves bogus block hashes and is dropped.
+        r.downloads.on_peer_message(
+            peer("liar"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: vec![Ed2kBlockHash([0; 16]); r.hash.blocks.len()],
+            },
+            1100,
+        );
+        // A good source 'seed' joins and must complete the transfer.
+        let actions = r.downloads.set_sources(r.file, vec![peer("seed")], 0, 1200);
+        let present: HashSet<String> = ["seed"].into_iter().map(String::from).collect();
+        let path = r
+            .drive_to_complete(&present, actions, 1300)
+            .expect("a good source must complete the download after a bad-hash source");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            r.bytes,
+            "assembled file matches"
+        );
     }
 }
