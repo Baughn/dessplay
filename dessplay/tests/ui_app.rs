@@ -402,6 +402,21 @@ fn selecting_now_playing_entry_does_not_pause() {
     );
 }
 
+/// Toggling the All-Series sort with `s` must persist the choice (a
+/// `SaveSettings` carrying the new sort), so it survives a restart
+/// (design.md: "Sort mode for All Series is persisted across sessions").
+#[test]
+fn all_series_sort_toggle_persists() {
+    let mut ui = ui();
+    ui.handle(key(Key::Tab)); // Chat -> Series
+    ui.handle(key(Key::Char('m'))); // Recent -> All
+    let actions = ui.handle(key(Key::Char('s'))); // toggle sort to Year
+    let [UserAction::SaveSettings(saved, _)] = actions.as_slice() else {
+        panic!("expected a SaveSettings, got {actions:?}");
+    };
+    assert_eq!(saved.series_sort, dessplay::ui::props::SeriesSort::Year);
+}
+
 #[test]
 fn add_file_via_browser_produces_hash_and_add() {
     let dir = tempfile::tempdir().unwrap();

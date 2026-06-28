@@ -247,6 +247,7 @@ impl Ui {
             identity_locked,
         };
         ui.chat.set_me(ui.me.to_string());
+        ui.series.set_sort(settings.series_sort);
         if open_settings {
             ui.push_modal(Modal::Settings(SettingsModal::new(settings, media_roots)));
         }
@@ -812,9 +813,21 @@ impl Ui {
             Msg::SendChat(_) | Msg::Command(_) | Msg::PlaySelected(_) | Msg::ListEntrySaved(..) => {
                 None
             }
-            Msg::CycleSeriesMode | Msg::ToggleSeriesSort | Msg::SeriesFilterChanged => {
+            Msg::CycleSeriesMode | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
+            }
+            // The series pane already flipped its own sort; mirror it into the
+            // persisted settings and save, so it survives a restart (design.md,
+            // Adding Files to the Playlist: "Sort mode for All Series is
+            // persisted across sessions").
+            Msg::ToggleSeriesSort => {
+                self.settings.series_sort = self.series.sort();
+                self.refresh_series();
+                Some(UserAction::SaveSettings(
+                    Box::new(self.settings.clone()),
+                    self.media_roots.clone(),
+                ))
             }
             Msg::BrowseFranchise(key) => {
                 self.open_episode_browser(key);
@@ -1486,6 +1499,19 @@ mod tests {
         let mut ui = ui_with_view(StateView::default());
         ui.subtitle_mode = SubtitleMode::Intermixed;
         ui
+    }
+
+    #[test]
+    fn series_sort_initializes_from_settings() {
+        // Regression: the All-Series sort must be seeded from the persisted
+        // setting at startup, not always reset to Title (design.md: "Sort mode
+        // for All Series is persisted across sessions").
+        let settings = Settings {
+            series_sort: props::SeriesSort::Year,
+            ..Settings::default()
+        };
+        let ui = Ui::with_setup(me(), settings, vec![], false);
+        assert_eq!(ui.series.sort(), props::SeriesSort::Year);
     }
 
     #[test]

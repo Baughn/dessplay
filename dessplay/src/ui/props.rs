@@ -476,6 +476,25 @@ pub enum SeriesSort {
     Year,
 }
 
+impl SeriesSort {
+    /// Stable string for persistence in the settings table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SeriesSort::Title => "title",
+            SeriesSort::Year => "year",
+        }
+    }
+
+    /// Parse a persisted value; `None` for an unrecognized string.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "title" => Some(SeriesSort::Title),
+            "year" => Some(SeriesSort::Year),
+            _ => None,
+        }
+    }
+}
+
 /// One franchise row (Recent / All modes).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FranchiseRow {

@@ -1099,6 +1099,11 @@ impl SeriesPane {
         self.sort
     }
 
+    /// Seed the sort order (from the persisted setting at startup).
+    pub fn set_sort(&mut self, sort: SeriesSort) {
+        self.sort = sort;
+    }
+
     /// Current type-to-filter text (Recent / All modes).
     pub fn filter(&self) -> &str {
         &self.filter

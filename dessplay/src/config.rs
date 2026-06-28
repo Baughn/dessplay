@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use crate::storage::{Result, Storage, StorageError};
+use crate::ui::props::SeriesSort;
 
 /// Which video player to drive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -202,6 +203,9 @@ pub struct Settings {
     pub upload_limit: Option<u64>,
     /// How local player subtitles are surfaced in the chat pane.
     pub subtitle_mode: SubtitleMode,
+    /// Sort order for the All Series browser mode (toggled with `s`).
+    /// Local-only display preference; persisted across sessions.
+    pub series_sort: SeriesSort,
     /// Whether to automatically fetch files from peers (prefetch window
     /// and the missing now-playing file). When false the client never
     /// downloads — it relies on its own library (design.md,
@@ -230,6 +234,7 @@ impl Default for Settings {
             cache_retention: CacheRetention::default(),
             upload_limit: None,
             subtitle_mode: SubtitleMode::default(),
+            series_sort: SeriesSort::default(),
             auto_download: true,
             irc_enabled: true,
             irc_server: "irc.rizon.net".into(),
@@ -293,6 +298,12 @@ impl Settings {
                     _ => defaults.subtitle_mode,
                 },
             },
+            series_sort: match storage.setting("series_sort")? {
+                Some(value) => SeriesSort::parse(&value).ok_or_else(|| {
+                    StorageError::Corrupt(format!("unknown series_sort {value:?}"))
+                })?,
+                None => defaults.series_sort,
+            },
             auto_download: storage
                 .setting("auto_download")?
                 .map(|value| parse_bool("auto_download", &value))
@@ -336,6 +347,7 @@ impl Settings {
             self.upload_limit.map(|limit| limit.to_string()).as_deref(),
         )?;
         storage.set_setting("subtitle_mode", Some(self.subtitle_mode.as_str()))?;
+        storage.set_setting("series_sort", Some(self.series_sort.as_str()))?;
         storage.set_setting(
             "auto_download",
             Some(if self.auto_download { "true" } else { "false" }),
@@ -378,6 +390,7 @@ mod tests {
             cache_retention: CacheRetention::Infinite,
             upload_limit: Some(1_000_000),
             subtitle_mode: SubtitleMode::Intermixed,
+            series_sort: SeriesSort::Year,
             auto_download: false,
             irc_enabled: false,
             irc_server: "irc.example.org".into(),
