@@ -266,36 +266,49 @@ fn playlist_title(view: &StateView, file: Ed2kHash) -> Option<String> {
 }
 
 /// Text for the not-watching placeholder image (design.md, Placeholder
-/// Image): the filename, the explanation, and who *is* watching.
+/// Image): the filename, the explanation, and the current session status
+/// (who *is* watching, and who *isn't*). "Watching" is only the actively-
+/// watching peers (Ready / a present Maybe); paused, away, and
+/// not-watching peers are listed separately so the status isn't
+/// misstated. Seeders are excluded, as everywhere else.
 fn placeholder_lines(view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> Vec<String> {
+    use derive::DerivedUserState;
     let filename = view
         .playlist
         .iter()
         .find(|e| e.hash == file)
         .map(|e| e.state.filename.clone())
         .unwrap_or_else(|| file.to_string());
-    let watching: Vec<String> = peers
+    let mut watching: Vec<String> = Vec::new();
+    let mut not_watching: Vec<String> = Vec::new();
+    for p in peers
         .iter()
-        .filter(|p| {
-            p.role == dessplay_core::net::Role::Interactive
-                && !matches!(
-                    derive::user_state(view, &p.username),
-                    derive::DerivedUserState::NotWatching
-                )
-        })
-        .map(|p| p.username.to_string())
-        .collect();
-    let status = if watching.is_empty() {
+        .filter(|p| p.role == dessplay_core::net::Role::Interactive)
+    {
+        match derive::user_state(view, &p.username) {
+            DerivedUserState::Ready | DerivedUserState::Maybe => {
+                watching.push(p.username.to_string())
+            }
+            DerivedUserState::Paused
+            | DerivedUserState::Away { .. }
+            | DerivedUserState::NotWatching => not_watching.push(p.username.to_string()),
+        }
+    }
+    let watching_line = if watching.is_empty() {
         "Nobody is watching this".to_string()
     } else {
         format!("Watching: {}", watching.join(", "))
     };
-    vec![
+    let mut lines = vec![
         filename,
         "You don't have this file".to_string(),
         String::new(),
-        status,
-    ]
+        watching_line,
+    ];
+    if !not_watching.is_empty() {
+        lines.push(format!("Not watching: {}", not_watching.join(", ")));
+    }
+    lines
 }
 
 /// More than this many narration lines in a single diff is read as a
@@ -3822,6 +3835,50 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
+    }
+
+    #[test]
+    fn placeholder_lists_who_is_and_isnt_watching() {
+        let series = dessplay_core::types::AniDbSeriesId(7);
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        // ben paused, cat away, dan not-watching the now-playing series;
+        // ann keeps the Maybe default (actively watching).
+        state.set_manual_override(A, ts(10), UserId::new("ben"), Some(ManualState::Paused));
+        state.set_manual_override(
+            A,
+            ts(11),
+            UserId::new("cat"),
+            Some(ManualState::Away {
+                set_by: UserId::new("kim"),
+            }),
+        );
+        state.set_series_preference(
+            A,
+            ts(12),
+            UserId::new("dan"),
+            series,
+            SeriesWatchState::NotWatching,
+        );
+        let view = state.view();
+
+        // A seeder is never listed (excluded like everywhere else).
+        let peers = [
+            peer("ann"),
+            peer("ben"),
+            peer("cat"),
+            peer("dan"),
+            seeder("nas"),
+        ];
+        let lines = placeholder_lines(&view, &peers, hash(1));
+
+        assert_eq!(lines[0], "ep1.mkv");
+        assert_eq!(lines[1], "You don't have this file");
+        assert_eq!(lines[2], "");
+        // Only the actively-watching peer (Maybe) is "watching"; paused /
+        // away / not-watching peers go under "Not watching".
+        assert_eq!(lines[3], "Watching: ann");
+        assert_eq!(lines[4], "Not watching: ben, cat, dan");
     }
 
     #[test]
