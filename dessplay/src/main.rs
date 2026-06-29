@@ -105,13 +105,6 @@ enum Command {
     },
 }
 
-/// Where interactive-mode logs go (the TUI owns the screen).
-fn log_path() -> Option<std::path::PathBuf> {
-    let dir = dirs::data_dir()?.join("dessplay");
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join("dessplay.log"))
-}
-
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     load_dotenv();
@@ -122,18 +115,22 @@ fn main() -> color_eyre::Result<()> {
     // are completely invisible.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let log = if interactive { log_path() } else { None };
+    let log_dir = if interactive {
+        dessplay::logging::log_dir()
+    } else {
+        None
+    };
     if interactive {
-        match log.as_ref().and_then(|path| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()
-        }) {
-            Some(file) => tracing_subscriber::fmt()
+        // Split logs into one file per biblical day and drop anything
+        // older than a week (and the legacy unitary dessplay.log) before
+        // opening today's file.
+        if let Some(dir) = &log_dir {
+            dessplay::logging::trim_old_logs(dir, dessplay::logging::today_biblical(), 7);
+        }
+        match log_dir.clone() {
+            Some(dir) => tracing_subscriber::fmt()
                 .with_env_filter(filter)
-                .with_writer(std::sync::Mutex::new(file))
+                .with_writer(dessplay::logging::BiblicalDailyWriter::new(dir))
                 .with_ansi(false)
                 .init(),
             None => tracing_subscriber::fmt()
@@ -193,8 +190,11 @@ fn main() -> color_eyre::Result<()> {
     };
     if let Err(message) = result {
         eprintln!("error: {message}");
-        if let Some(path) = log {
-            eprintln!("(log: {})", path.display());
+        if let Some(dir) = &log_dir {
+            eprintln!(
+                "(log: {})",
+                dessplay::logging::current_log_path(dir).display()
+            );
         }
         std::process::exit(1);
     }

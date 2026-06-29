@@ -368,15 +368,10 @@ pub fn day_separator(millis: u64) -> ChatLine {
     }
 }
 
-/// The "biblical" calendar day for `millis`: the local date after
-/// shifting the boundary to 09:00 (the small hours belong to the prior
-/// evening's session — design.md, System Messages). Two timestamps are
-/// the same day iff this is equal. `None` for an out-of-range timestamp.
-pub fn biblical_date(millis: u64) -> Option<chrono::NaiveDate> {
-    use chrono::{Local, TimeZone};
-    let dt = Local.timestamp_millis_opt(millis as i64).single()?;
-    Some((dt - chrono::Duration::hours(9)).date_naive())
-}
+/// The "biblical" calendar day for a timestamp (09:00-local boundary).
+/// Defined in [`crate::timeutil`] so non-UI code (daily log rotation)
+/// can share it; re-exported here for the chat day separators.
+pub use crate::timeutil::biblical_date;
 
 /// Build a local subtitle chat line for Intermixed mode: the displayed
 /// time is the in-video position (`video_millis`), but interleaving uses
