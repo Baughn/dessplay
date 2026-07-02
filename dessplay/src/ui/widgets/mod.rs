@@ -14,10 +14,12 @@
 //! keeps the door open for the future non-terminal UI
 //! (ui-architecture.md, Web Renderer).
 
+pub mod form;
 pub mod keys;
 pub mod line;
 pub mod list;
 
-pub(crate) use keys::{ctrl, plain, typed};
+pub(crate) use keys::{plain, typed};
+pub use form::{CharOutcome, Form, FormEvent, FormModel, RowAction, overlay};
 pub use line::{LineBuffer, TextField};
 pub use list::{ListCursor, render_list};

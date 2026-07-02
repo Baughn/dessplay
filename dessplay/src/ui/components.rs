@@ -56,7 +56,7 @@ macro_rules! passive_component {
 // The key-event matchers live in widgets::keys (with the terminal
 // compatibility policy); re-exported here so panes, modals, and the
 // dispatcher keep one import path.
-pub(crate) use super::widgets::{ctrl, plain, typed};
+pub(crate) use super::widgets::{plain, typed};
 
 // ---- Chat pane ---------------------------------------------------------
 

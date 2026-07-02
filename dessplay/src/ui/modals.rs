@@ -17,10 +17,10 @@ use tuirealm::state::State;
 use dessplay_core::net::AniDbSearchHit;
 use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, NextEpState, SeriesListEntry};
 
-use super::components::{ctrl, plain, typed};
+use super::components::plain;
 use super::msg::Msg;
 use super::theme;
-use super::widgets::{ListCursor, TextField, render_list};
+use super::widgets::{CharOutcome, Form, FormEvent, FormModel, ListCursor, RowAction, TextField, render_list};
 use crate::config::Settings;
 
 /// Like `passive_component!` but without a focus field (modals are
@@ -45,25 +45,9 @@ macro_rules! passive_modal {
     };
 }
 
-/// The centered overlay area: `percent` of the frame, clamped.
-pub fn overlay(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    // Widen to u32 for the multiply: `area.width * percent` overflows u16 on
-    // a very wide terminal (panic in debug, garbage rect in release). The
-    // result is clamped back below `area.width`, so the final `as u16` is
-    // always in range.
-    let width = (u32::from(area.width) * u32::from(percent_x) / 100)
-        .max(20)
-        .min(u32::from(area.width)) as u16;
-    let height = (u32::from(area.height) * u32::from(percent_y) / 100)
-        .max(8)
-        .min(u32::from(area.height)) as u16;
-    Rect {
-        x: area.x + (area.width - width) / 2,
-        y: area.y + (area.height - height) / 2,
-        width,
-        height,
-    }
-}
+// The centered-overlay helper lives with the Form widget; re-exported so
+// existing `modals::overlay` callers (and tests) keep their import path.
+pub use super::widgets::overlay;
 
 /// A one-line text editor for modal fields: a [`TextField`] plus the
 /// modal commit protocol. Editing behavior (word motion, word kill,
@@ -440,51 +424,59 @@ const FIELD_IRC_TLS: usize = 9;
 const FIELD_IRC_CHANNEL: usize = 10;
 const FIXED_FIELDS: usize = 11;
 
-/// First-run and later settings editing.
+/// First-run and later settings editing: a [`Form`] over the working
+/// settings and media roots. All form behavior (cursor, editor, save
+/// keys) is the shared widget; this file only declares the rows.
 pub struct SettingsModal {
+    form: Form<SettingsForm>,
+}
+
+/// The settings form model: working copies, committed on save.
+pub struct SettingsForm {
     /// The working copy.
     pub settings: Settings,
     /// Working media roots (position 0 is the download target).
     pub roots: Vec<PathBuf>,
-    sel: usize,
-    editor: Option<(usize, FieldEditor)>,
 }
 
 impl SettingsModal {
     /// Open with current values.
     pub fn new(settings: Settings, roots: Vec<PathBuf>) -> Self {
         Self {
-            settings,
-            roots,
-            sel: 0,
-            editor: None,
+            form: Form::new(SettingsForm { settings, roots }),
         }
     }
 
     /// A directory was picked for a new media root.
     pub fn add_root(&mut self, root: PathBuf) {
-        if !self.roots.contains(&root) {
-            self.roots.push(root);
+        if !self.form.model.roots.contains(&root) {
+            self.form.model.roots.push(root);
         }
     }
 
-    fn field_count(&self) -> usize {
-        FIXED_FIELDS + self.roots.len() + 2
+    /// Keys for the keybinding bar.
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("Enter", "Edit/Toggle"),
+            ("d", "Remove root"),
+            ("J/K", "Reorder"),
+            ("S", "Save"),
+            ("Esc", "Cancel"),
+        ]
     }
 
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
+        self.form.render(frame, area);
+    }
+}
+
+impl SettingsForm {
     /// Index of the `[Add media root]` row.
     fn add_root_index(&self) -> usize {
         FIXED_FIELDS + self.roots.len()
     }
 
-    /// Index of the `[Save]` row (the last row).
-    fn save_index(&self) -> usize {
-        FIXED_FIELDS + self.roots.len() + 1
-    }
-
     /// Essentials still missing for a save, in display order. Empty == saveable.
-    /// Drives both the save gate and the `[Save]` row's "needs …" hint, so the
-    /// UI explains *why* it can't save rather than silently refusing.
     fn missing_essentials(&self) -> Vec<&'static str> {
         let mut missing = Vec::new();
         if self.settings.username.is_none() {
@@ -500,14 +492,9 @@ impl SettingsModal {
     }
 
     /// Can the current working copy be saved? (username, password, ≥1 root)
+    #[cfg(test)]
     fn can_save(&self) -> bool {
         self.missing_essentials().is_empty()
-    }
-
-    /// Build the save message if the essentials are present, else `None`.
-    fn try_save(&self) -> Option<Msg> {
-        self.can_save()
-            .then(|| Msg::SettingsSaved(Box::new(self.settings.clone()), self.roots.clone()))
     }
 
     fn field_value(&self, index: usize) -> String {
@@ -518,6 +505,83 @@ impl SettingsModal {
             FIELD_IRC_SERVER => self.settings.irc_server.clone(),
             FIELD_IRC_CHANNEL => self.settings.irc_channel.clone(),
             _ => String::new(),
+        }
+    }
+}
+
+impl FormModel for SettingsForm {
+    type Out = Msg;
+
+    fn title(&self) -> String {
+        "Settings".to_string()
+    }
+
+    fn rows(&self) -> Vec<Line<'static>> {
+        let mask = |s: &str| "*".repeat(s.chars().count());
+        let yes_no = |b: bool| if b { "yes" } else { "no" };
+        let mut lines: Vec<Line<'static>> = vec![
+            format!("Username:  {}", self.field_value(FIELD_USERNAME)).into(),
+            format!("Server:    {}", self.field_value(FIELD_SERVER)).into(),
+            format!("Password:  {}", mask(&self.field_value(FIELD_PASSWORD))).into(),
+            format!(
+                "Ready on startup: {}",
+                yes_no(self.settings.ready_on_startup)
+            )
+            .into(),
+            format!("Subtitles: {}", self.settings.subtitle_mode.label()).into(),
+            format!("Cache: {}", self.settings.cache_retention.label()).into(),
+            format!("Auto-download: {}", yes_no(self.settings.auto_download)).into(),
+            format!("IRC bridge: {}", yes_no(self.settings.irc_enabled)).into(),
+            format!("IRC server:  {}", self.field_value(FIELD_IRC_SERVER)).into(),
+            format!("IRC TLS:     {}", yes_no(self.settings.irc_tls)).into(),
+            format!("IRC channel: {}", self.field_value(FIELD_IRC_CHANNEL)).into(),
+        ];
+        for (index, root) in self.roots.iter().enumerate() {
+            let marker = if index == 0 { " (download target)" } else { "" };
+            lines.push(Line::from(vec![
+                Span::raw(format!("Media root: {}", root.display())),
+                Span::styled(marker, theme::tone_style(super::props::Tone::Transfer)),
+            ]));
+        }
+        lines.push(Line::from(Span::styled(
+            "[Add media root]",
+            theme::dim(),
+        )));
+        lines
+    }
+
+    fn activate(&mut self, index: usize) -> RowAction<Msg> {
+        match index {
+            FIELD_USERNAME | FIELD_SERVER | FIELD_PASSWORD | FIELD_IRC_SERVER
+            | FIELD_IRC_CHANNEL => RowAction::Edit {
+                current: self.field_value(index),
+            },
+            FIELD_READY => {
+                self.settings.ready_on_startup = !self.settings.ready_on_startup;
+                RowAction::Handled
+            }
+            FIELD_IRC_ENABLED => {
+                self.settings.irc_enabled = !self.settings.irc_enabled;
+                RowAction::Handled
+            }
+            FIELD_IRC_TLS => {
+                self.settings.irc_tls = !self.settings.irc_tls;
+                RowAction::Handled
+            }
+            FIELD_SUBTITLE => {
+                self.settings.subtitle_mode = self.settings.subtitle_mode.next();
+                RowAction::Handled
+            }
+            FIELD_CACHE => {
+                self.settings.cache_retention = self.settings.cache_retention.next();
+                RowAction::Handled
+            }
+            FIELD_AUTO_DOWNLOAD => {
+                self.settings.auto_download = !self.settings.auto_download;
+                RowAction::Handled
+            }
+            index if index == self.add_root_index() => RowAction::Out(Msg::OpenDirPicker),
+            _ => RowAction::Handled,
         }
     }
 
@@ -537,114 +601,44 @@ impl SettingsModal {
         }
     }
 
-    /// Keys for the keybinding bar.
-    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("Enter", "Edit/Toggle"),
-            ("d", "Remove root"),
-            ("J/K", "Reorder"),
-            ("S", "Save"),
-            ("Esc", "Cancel"),
-        ]
+    /// `J`/`K` (and lowercase) reorder the selected media root, carrying the
+    /// cursor with it; `d` removes it. Bare letters rather than
+    /// Ctrl-J/Ctrl-K, which collide with control codes (Ctrl-J == LF) in
+    /// terminals lacking the enhanced keyboard protocol.
+    fn on_char(&mut self, index: usize, c: char) -> CharOutcome {
+        if index < FIXED_FIELDS {
+            return CharOutcome::Ignored;
+        }
+        let root = index - FIXED_FIELDS;
+        match c {
+            'j' | 'J' | 'k' | 'K' => {
+                let down = matches!(c, 'j' | 'J');
+                let target = if down { root + 1 } else { root.wrapping_sub(1) };
+                if root < self.roots.len() && target < self.roots.len() {
+                    self.roots.swap(root, target);
+                    return CharOutcome::MoveTo(FIXED_FIELDS + target);
+                }
+                CharOutcome::Handled
+            }
+            'd' => {
+                if root < self.roots.len() {
+                    self.roots.remove(root);
+                }
+                CharOutcome::Handled
+            }
+            _ => CharOutcome::Ignored,
+        }
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let modal = overlay(area, 70, 70);
-        frame.render_widget(Clear, modal);
-        let mut lines: Vec<ListItem> = Vec::new();
-        let mask = |s: &str| "*".repeat(s.chars().count());
-        let rows: Vec<String> = vec![
-            format!("Username:  {}", self.field_value(FIELD_USERNAME)),
-            format!("Server:    {}", self.field_value(FIELD_SERVER)),
-            format!("Password:  {}", mask(&self.field_value(FIELD_PASSWORD))),
-            format!(
-                "Ready on startup: {}",
-                if self.settings.ready_on_startup {
-                    "yes"
-                } else {
-                    "no"
-                }
-            ),
-            format!("Subtitles: {}", self.settings.subtitle_mode.label()),
-            format!("Cache: {}", self.settings.cache_retention.label()),
-            format!(
-                "Auto-download: {}",
-                if self.settings.auto_download {
-                    "yes"
-                } else {
-                    "no"
-                }
-            ),
-            format!(
-                "IRC bridge: {}",
-                if self.settings.irc_enabled {
-                    "yes"
-                } else {
-                    "no"
-                }
-            ),
-            format!("IRC server:  {}", self.field_value(FIELD_IRC_SERVER)),
-            format!(
-                "IRC TLS:     {}",
-                if self.settings.irc_tls { "yes" } else { "no" }
-            ),
-            format!("IRC channel: {}", self.field_value(FIELD_IRC_CHANNEL)),
-        ];
-        for row in rows {
-            lines.push(ListItem::new(row));
-        }
-        for (index, root) in self.roots.iter().enumerate() {
-            let marker = if index == 0 { " (download target)" } else { "" };
-            lines.push(ListItem::new(Line::from(vec![
-                Span::raw(format!("Media root: {}", root.display())),
-                Span::styled(marker, theme::tone_style(super::props::Tone::Transfer)),
-            ])));
-        }
-        lines.push(ListItem::new(Span::styled(
-            "[Add media root]",
-            theme::dim(),
-        )));
-        // Saving needs no Ctrl combo: a plain `[Save]` row, alongside the
-        // capital-`S` key (avoids the Ctrl-S == XOFF terminal trap). When the
-        // essentials are missing the row is dim and spells out *what* is
-        // needed, so a refused save explains itself instead of doing nothing.
-        // The List's own highlight handles the selection cursor, so the
-        // enabled row is just normal text.
+    /// The "needs …" gate: drives both the save refusal and the `[Save]`
+    /// row's hint, so a refused save explains itself.
+    fn save_hint(&self) -> Option<String> {
         let missing = self.missing_essentials();
-        let (save_label, save_style) = if missing.is_empty() {
-            ("[Save]".to_string(), tuirealm::props::Style::default())
-        } else {
-            (
-                format!("[Save] — needs {}", missing.join(", ")),
-                theme::dim(),
-            )
-        };
-        lines.push(ListItem::new(Span::styled(save_label, save_style)));
+        (!missing.is_empty()).then(|| missing.join(", "))
+    }
 
-        let mut state = ListState::default();
-        state.select(Some(self.sel));
-        frame.render_stateful_widget(
-            List::new(lines)
-                .highlight_style(theme::highlight_style())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border_style(true))
-                        .title("Settings"),
-                ),
-            modal,
-            &mut state,
-        );
-        if let Some((_, editor)) = &mut self.editor {
-            let edit_area = Rect {
-                x: modal.x + 2,
-                y: modal.y + modal.height.saturating_sub(4),
-                width: modal.width.saturating_sub(4),
-                height: 3,
-            };
-            frame.render_widget(Clear, edit_area);
-            editor.view(frame, edit_area);
-        }
+    fn save(&self) -> Msg {
+        Msg::SettingsSaved(Box::new(self.settings.clone()), self.roots.clone())
     }
 }
 
@@ -652,99 +646,11 @@ passive_modal!(SettingsModal);
 
 impl AppComponent<Msg, NoUserEvent> for SettingsModal {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        // An active text editor swallows everything.
-        if let Some((index, editor)) = &mut self.editor {
-            if let Some(commit) = editor.on(ev) {
-                let (index, editor) = (*index, self.editor.take()?.1);
-                if commit {
-                    self.commit(index, editor.text());
-                }
-            }
-            return Some(Msg::None);
-        }
-        // Ctrl-S is kept as an alias for terminals where it isn't eaten as
-        // XOFF; capital `S` and the `[Save]` row are the reliable paths.
-        if ctrl(ev) == Some(Key::Char('s')) {
-            return Some(self.try_save().unwrap_or(Msg::None));
-        }
-        // Letters reach us through `typed` (it sees both the unshifted and the
-        // shifted form): `S` saves, `J`/`K` (and lowercase `j`/`k`) reorder the
-        // selected media root, carrying the cursor with it. Bare letters rather
-        // than Ctrl-J/Ctrl-K, which collide with control codes (Ctrl-J == LF)
-        // in terminals lacking the enhanced keyboard protocol. `typed` must
-        // come before the `plain` match below, which would swallow these.
-        match typed(ev) {
-            Some('S') => return Some(self.try_save().unwrap_or(Msg::None)),
-            Some(c @ ('j' | 'J' | 'k' | 'K')) if self.sel >= FIXED_FIELDS => {
-                let index = self.sel - FIXED_FIELDS;
-                let down = matches!(c, 'j' | 'J');
-                let target = if down {
-                    index + 1
-                } else {
-                    index.wrapping_sub(1)
-                };
-                if index < self.roots.len() && target < self.roots.len() {
-                    self.roots.swap(index, target);
-                    self.sel = FIXED_FIELDS + target;
-                }
-                return Some(Msg::None);
-            }
-            _ => {}
-        }
-        match plain(ev)? {
-            Key::Up => {
-                self.sel = self.sel.saturating_sub(1);
-                Some(Msg::None)
-            }
-            Key::Down => {
-                self.sel = (self.sel + 1).min(self.field_count() - 1);
-                Some(Msg::None)
-            }
-            Key::Enter => {
-                match self.sel {
-                    FIELD_USERNAME | FIELD_SERVER | FIELD_PASSWORD | FIELD_IRC_SERVER
-                    | FIELD_IRC_CHANNEL => {
-                        self.editor =
-                            Some((self.sel, FieldEditor::new(&self.field_value(self.sel))));
-                    }
-                    FIELD_READY => {
-                        self.settings.ready_on_startup = !self.settings.ready_on_startup;
-                    }
-                    FIELD_IRC_ENABLED => {
-                        self.settings.irc_enabled = !self.settings.irc_enabled;
-                    }
-                    FIELD_IRC_TLS => {
-                        self.settings.irc_tls = !self.settings.irc_tls;
-                    }
-                    FIELD_SUBTITLE => {
-                        self.settings.subtitle_mode = self.settings.subtitle_mode.next();
-                    }
-                    FIELD_CACHE => {
-                        self.settings.cache_retention = self.settings.cache_retention.next();
-                    }
-                    FIELD_AUTO_DOWNLOAD => {
-                        self.settings.auto_download = !self.settings.auto_download;
-                    }
-                    index if index == self.add_root_index() => {
-                        return Some(Msg::OpenDirPicker);
-                    }
-                    index if index == self.save_index() => {
-                        return Some(self.try_save().unwrap_or(Msg::None));
-                    }
-                    _ => {}
-                }
-                Some(Msg::None)
-            }
-            Key::Char('d') if self.sel >= FIXED_FIELDS => {
-                let index = self.sel - FIXED_FIELDS;
-                if index < self.roots.len() {
-                    self.roots.remove(index);
-                    self.sel = self.sel.min(self.field_count() - 1);
-                }
-                Some(Msg::None)
-            }
-            Key::Esc => Some(Msg::CloseModal),
-            _ => None,
+        match self.form.on(ev) {
+            FormEvent::Handled => Some(Msg::None),
+            FormEvent::Out(msg) => Some(msg),
+            FormEvent::Cancelled => Some(Msg::CloseModal),
+            FormEvent::Ignored => None,
         }
     }
 }
@@ -894,57 +800,60 @@ const LIST_FIELD_NEXT_EP: usize = 8;
 const LIST_FIELD_AVAILABLE: usize = 9;
 
 /// Edit one List entry's fields (watchers are edited via import or a
-/// later refinement).
+/// later refinement): a [`Form`] over the entry plus its progress
+/// register.
 ///
 /// `next_ep`/`available` ([`NextEpState`]) live in a separate CRDT
 /// register from the rest of the entry, so the server's EOF auto-advance
-/// and a user's note edits never clobber each other. The modal edits a
+/// and a user's note edits never clobber each other. The form edits a
 /// working copy and reports it on save only when it actually changed (see
 /// `next_ep_change`), preserving that separation.
 pub struct ListEditModal {
+    form: Form<ListEditForm>,
+}
+
+/// The List-entry form model.
+struct ListEditForm {
     /// The entry being edited.
-    pub id: ListEntryId,
+    id: ListEntryId,
     entry: SeriesListEntry,
     /// Working copy of the progress register.
     next_ep: NextEpState,
     /// The progress register as loaded, for change detection on save.
     original_next_ep: NextEpState,
-    sel: usize,
-    editor: Option<(usize, FieldEditor)>,
 }
 
 impl ListEditModal {
     /// Open on an entry plus its current progress register.
     pub fn new(id: ListEntryId, entry: SeriesListEntry, next_ep: NextEpState) -> Self {
         Self {
-            id,
-            entry,
-            original_next_ep: next_ep.clone(),
-            next_ep,
-            sel: 0,
-            editor: None,
+            form: Form::new(ListEditForm {
+                id,
+                entry,
+                original_next_ep: next_ep.clone(),
+                next_ep,
+            }),
         }
     }
 
+    /// Keys for the keybinding bar. Capital `S` (and the `[Save]` row) are
+    /// the reliable save paths; Ctrl-s works but is not advertised (eaten
+    /// as XOFF on terminals lacking the enhanced keyboard protocol).
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("Enter", "Edit/Cycle"), ("S", "Save"), ("Esc", "Cancel")]
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
+        self.form.render(frame, area);
+    }
+}
+
+impl ListEditForm {
     /// The edited progress register, or `None` if the user left both
     /// `next_ep` and `available` untouched (so saving an unrelated field
     /// never writes — and thus never clobbers — the shared register).
     fn next_ep_change(&self) -> Option<NextEpState> {
         (self.next_ep != self.original_next_ep).then(|| self.next_ep.clone())
-    }
-
-    /// Index of the selectable `[Save]` row (after the fields, last row).
-    fn save_index(&self) -> usize {
-        LIST_FIELDS.len()
-    }
-
-    /// Build the save message for the current working copy.
-    fn save_msg(&self) -> Msg {
-        Msg::ListEntrySaved(
-            self.id,
-            Box::new(self.entry.clone()),
-            self.next_ep_change().map(Box::new),
-        )
     }
 
     fn field_value(&self, index: usize) -> String {
@@ -960,6 +869,54 @@ impl ListEditModal {
             LIST_FIELD_NEXT_EP => self.next_ep.next_ep.clone().unwrap_or_default(),
             LIST_FIELD_AVAILABLE => if self.next_ep.available { "yes" } else { "no" }.to_string(),
             _ => String::new(),
+        }
+    }
+
+    fn cycle_status(&mut self) {
+        use ListStatus::*;
+        self.entry.status = match self.entry.status {
+            ShortList => Planned,
+            Planned => Active,
+            Active => CurrentSeason,
+            CurrentSeason => Waiting,
+            Waiting => Hiatus,
+            Hiatus => Finished,
+            Finished => Dropped,
+            Dropped => ShortList,
+        };
+    }
+}
+
+impl FormModel for ListEditForm {
+    type Out = Msg;
+
+    fn title(&self) -> String {
+        format!("Edit — {}", self.entry.name)
+    }
+
+    fn rows(&self) -> Vec<Line<'static>> {
+        LIST_FIELDS
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                Line::raw(format!("{label:>12}: {}", self.field_value(index)))
+            })
+            .collect()
+    }
+
+    fn activate(&mut self, index: usize) -> RowAction<Msg> {
+        match index {
+            LIST_FIELD_STATUS => {
+                self.cycle_status();
+                RowAction::Handled
+            }
+            LIST_FIELD_AVAILABLE => {
+                self.next_ep.available = !self.next_ep.available;
+                RowAction::Handled
+            }
+            index => RowAction::Edit {
+                current: self.field_value(index),
+            },
         }
     }
 
@@ -985,68 +942,16 @@ impl ListEditModal {
         }
     }
 
-    fn toggle_available(&mut self) {
-        self.next_ep.available = !self.next_ep.available;
+    fn save(&self) -> Msg {
+        Msg::ListEntrySaved(
+            self.id,
+            Box::new(self.entry.clone()),
+            self.next_ep_change().map(Box::new),
+        )
     }
 
-    fn cycle_status(&mut self) {
-        use ListStatus::*;
-        self.entry.status = match self.entry.status {
-            ShortList => Planned,
-            Planned => Active,
-            Active => CurrentSeason,
-            CurrentSeason => Waiting,
-            Waiting => Hiatus,
-            Hiatus => Finished,
-            Finished => Dropped,
-            Dropped => ShortList,
-        };
-    }
-
-    /// Keys for the keybinding bar.
-    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        // Mirror SettingsModal: a capital `S` (and the `[Save]` row) are the
-        // reliable save paths; Ctrl-s is kept as a working alias but not
-        // advertised, since it is eaten as XOFF on terminals lacking the
-        // enhanced keyboard protocol.
-        vec![("Enter", "Edit/Cycle"), ("S", "Save"), ("Esc", "Cancel")]
-    }
-
-    fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let modal = overlay(area, 60, 60);
-        frame.render_widget(Clear, modal);
-        let mut items: Vec<ListItem> = LIST_FIELDS
-            .iter()
-            .enumerate()
-            .map(|(index, label)| {
-                ListItem::new(format!("{label:>12}: {}", self.field_value(index)))
-            })
-            .collect();
-        items.push(ListItem::new("[Save]"));
-        let mut state = ListState::default();
-        state.select(Some(self.sel));
-        frame.render_stateful_widget(
-            List::new(items)
-                .highlight_style(theme::highlight_style())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border_style(true))
-                        .title(format!("Edit — {}", self.entry.name)),
-                ),
-            modal,
-            &mut state,
-        );
-        if let Some((_, editor)) = &mut self.editor {
-            let edit_area = Rect {
-                x: modal.x + 2,
-                y: modal.y + modal.height.saturating_sub(4),
-                width: modal.width.saturating_sub(4),
-                height: 3,
-            };
-            frame.render_widget(Clear, edit_area);
-            editor.view(frame, edit_area);
-        }
+    fn overlay_percent(&self) -> (u16, u16) {
+        (60, 60)
     }
 }
 
@@ -1198,42 +1103,11 @@ passive_modal!(ListEditModal);
 
 impl AppComponent<Msg, NoUserEvent> for ListEditModal {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        if let Some((index, editor)) = &mut self.editor {
-            if let Some(commit) = editor.on(ev) {
-                let (index, editor) = (*index, self.editor.take()?.1);
-                if commit {
-                    self.commit(index, editor.text());
-                }
-            }
-            return Some(Msg::None);
-        }
-        // Ctrl-s is kept as an alias for terminals where it survives; capital
-        // `S` and the `[Save]` row are the reliable paths (the SettingsModal
-        // pattern, avoiding the Ctrl-S == XOFF trap). `typed` must precede the
-        // `plain` match, which would otherwise not see the shifted form.
-        if ctrl(ev) == Some(Key::Char('s')) || typed(ev) == Some('S') {
-            return Some(self.save_msg());
-        }
-        match plain(ev)? {
-            Key::Up => {
-                self.sel = self.sel.saturating_sub(1);
-                Some(Msg::None)
-            }
-            Key::Down => {
-                self.sel = (self.sel + 1).min(self.save_index());
-                Some(Msg::None)
-            }
-            Key::Enter => {
-                match self.sel {
-                    LIST_FIELD_STATUS => self.cycle_status(),
-                    LIST_FIELD_AVAILABLE => self.toggle_available(),
-                    sel if sel == self.save_index() => return Some(self.save_msg()),
-                    sel => self.editor = Some((sel, FieldEditor::new(&self.field_value(sel)))),
-                }
-                Some(Msg::None)
-            }
-            Key::Esc => Some(Msg::CloseModal),
-            _ => None,
+        match self.form.on(ev) {
+            FormEvent::Handled => Some(Msg::None),
+            FormEvent::Out(msg) => Some(msg),
+            FormEvent::Cancelled => Some(Msg::CloseModal),
+            FormEvent::Ignored => None,
         }
     }
 }
@@ -1269,7 +1143,7 @@ mod tests {
         let mut modal = SettingsModal::new(crate::config::Settings::default(), vec![]);
         // Default retention is one week.
         assert_eq!(
-            modal.settings.cache_retention,
+            modal.form.model.settings.cache_retention,
             crate::config::CacheRetention::default()
         );
         // Move the cursor onto the Cache field and cycle it.
@@ -1278,7 +1152,7 @@ mod tests {
         }
         modal.on(&enter());
         assert_eq!(
-            modal.settings.cache_retention,
+            modal.form.model.settings.cache_retention,
             crate::config::CacheRetention::default().next()
         );
     }
@@ -1405,7 +1279,7 @@ mod tests {
     #[test]
     fn enter_on_save_row_saves() {
         let mut modal = saveable_settings();
-        modal.sel = modal.save_index();
+        modal.form.select(modal.form.save_index());
         assert!(is_save(&modal.on(&enter())));
     }
 
@@ -1414,7 +1288,7 @@ mod tests {
         // A blank modal is missing all three; the hint names them in order.
         let blank = SettingsModal::new(Settings::default(), vec![]);
         assert_eq!(
-            blank.missing_essentials(),
+            blank.form.model.missing_essentials(),
             vec!["a username", "a password", "a media root"]
         );
         // Fill username + root; only the password remains.
@@ -1423,9 +1297,9 @@ mod tests {
             ..Default::default()
         };
         let partial = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
-        assert_eq!(partial.missing_essentials(), vec!["a password"]);
+        assert_eq!(partial.form.model.missing_essentials(), vec!["a password"]);
         // Fully populated: nothing missing, saveable.
-        assert!(saveable_settings().missing_essentials().is_empty());
+        assert!(saveable_settings().form.model.missing_essentials().is_empty());
     }
 
     fn sample_list_entry() -> SeriesListEntry {
@@ -1459,7 +1333,7 @@ mod tests {
         // The `[Save]` row (after the fields) saves on Enter.
         let mut modal =
             ListEditModal::new(ListEntryId(7), sample_list_entry(), NextEpState::default());
-        modal.sel = modal.save_index();
+        modal.form.select(modal.form.save_index());
         assert!(matches!(
             modal.on(&enter()),
             Some(Msg::ListEntrySaved(ListEntryId(7), _, _))
@@ -1488,21 +1362,21 @@ mod tests {
         let mut modal =
             SettingsModal::new(settings, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
         // Put the cursor on the first media root.
-        modal.sel = FIXED_FIELDS;
+        modal.form.select(FIXED_FIELDS);
         // `J` (shifted) moves it down; the cursor carries with it.
         assert_eq!(
             modal.on(&key(Key::Char('J'), KeyModifiers::SHIFT)),
             Some(Msg::None)
         );
-        assert_eq!(modal.roots, vec![PathBuf::from("/b"), PathBuf::from("/a")]);
-        assert_eq!(modal.sel, FIXED_FIELDS + 1);
+        assert_eq!(modal.form.model.roots, vec![PathBuf::from("/b"), PathBuf::from("/a")]);
+        assert_eq!(modal.form.selected(), FIXED_FIELDS + 1);
         // Lowercase `k` moves it back up.
         assert_eq!(
             modal.on(&key(Key::Char('k'), KeyModifiers::NONE)),
             Some(Msg::None)
         );
-        assert_eq!(modal.roots, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
-        assert_eq!(modal.sel, FIXED_FIELDS);
+        assert_eq!(modal.form.model.roots, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(modal.form.selected(), FIXED_FIELDS);
     }
 
     #[test]
@@ -1530,8 +1404,8 @@ mod tests {
             ..Default::default()
         };
         let mut modal = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
-        let save_row = modal.save_index();
-        assert!(!modal.can_save());
+        let save_row = modal.form.save_index();
+        assert!(!modal.form.model.can_save());
         assert_eq!(
             modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT)),
             Some(Msg::None)
@@ -1540,7 +1414,7 @@ mod tests {
             modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL)),
             Some(Msg::None)
         );
-        modal.sel = save_row;
+        modal.form.select(save_row);
         assert_eq!(modal.on(&enter()), Some(Msg::None));
     }
 }
