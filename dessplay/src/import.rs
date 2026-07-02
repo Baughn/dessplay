@@ -384,6 +384,10 @@ pub struct ImportOutcome {
     /// Existing entries (matched by name, case-insensitive) updated in
     /// place — re-imports don't duplicate The List.
     pub updated: usize,
+    /// Series that appeared on more than one imported sheet and were
+    /// collapsed onto a single entry (the later row overwrote the earlier).
+    /// Surfaced so the user can reconcile a status conflict between sheets.
+    pub collapsed: Vec<String>,
 }
 
 /// Submit a parsed report through a connected client. Existing entries
@@ -395,7 +399,7 @@ pub async fn submit(
     report: &ImportReport,
 ) -> Result<ImportOutcome, String> {
     use crate::actors::sync::{Mutation, SyncCommand};
-    use dessplay_core::types::ListEntryId;
+    use dessplay_core::types::{AniDbSeriesId, ListEntryId};
     use std::time::Duration;
 
     let view = async |handle: &crate::client::ClientHandle| {
@@ -428,28 +432,42 @@ pub async fn submit(
     }
 
     let existing = view(handle).await?;
-    let find_existing = |name: &str| {
-        existing
-            .list_entries
-            .iter()
-            .find(|(_, entry)| entry.name.eq_ignore_ascii_case(name))
-            .map(|(id, entry)| (*id, entry.clone()))
-    };
+    // Name (case-insensitive) -> (entry id, its AniDB link, was-it-created
+    // in this run). Seeded from the current List so a re-import matches
+    // existing entries, and *grown as we go* so a series named on more than
+    // one sheet collapses onto one entry instead of creating a duplicate the
+    // frozen snapshot could never see (the bug: matching only the pre-loop
+    // snapshot left each same-named row to mint its own random id).
+    let mut seen: std::collections::HashMap<String, (ListEntryId, Option<AniDbSeriesId>, bool)> =
+        std::collections::HashMap::new();
+    for (id, entry) in &existing.list_entries {
+        seen.entry(entry.name.to_ascii_lowercase())
+            .or_insert((*id, entry.anidb_series_id, false));
+    }
 
     let mut outcome = ImportOutcome::default();
     let mut expected: Vec<(ListEntryId, String)> = Vec::new();
     for imported in &report.entries {
         let mut entry = imported.entry.clone();
-        let id = match find_existing(&entry.name) {
-            Some((id, old)) => {
-                // A manual AniDB link outlives re-imports.
-                entry.anidb_series_id = entry.anidb_series_id.or(old.anidb_series_id);
+        let key = entry.name.to_ascii_lowercase();
+        let id = match seen.get(&key).copied() {
+            Some((id, old_anidb, created_this_run)) => {
+                // A manually-set AniDB link outlives re-imports (imports
+                // arrive unlinked, so `old_anidb` only ever comes from an
+                // existing entry).
+                entry.anidb_series_id = entry.anidb_series_id.or(old_anidb);
                 outcome.updated += 1;
+                if created_this_run {
+                    // Two sheets named the same series: the later row wins.
+                    outcome.collapsed.push(entry.name.clone());
+                }
                 id
             }
             None => {
+                let id = ListEntryId::from_bytes(rand::random());
+                seen.insert(key, (id, entry.anidb_series_id, true));
                 outcome.created += 1;
-                ListEntryId::from_bytes(rand::random())
+                id
             }
         };
         expected.push((id, entry.name.clone()));

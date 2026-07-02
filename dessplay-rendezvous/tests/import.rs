@@ -24,7 +24,9 @@ fn parse_fixtures() -> ImportReport {
 }
 
 /// The full spreadsheet lands, replicates, and a re-import updates
-/// instead of duplicating.
+/// instead of duplicating -- including a series that appears on more than
+/// one sheet, which must collapse onto a single entry rather than mint a
+/// duplicate the pre-loop snapshot could never match.
 #[tokio::test(start_paused = true)]
 async fn import_submits_and_reimport_updates() {
     let harness = Harness::new(0x5EED);
@@ -34,14 +36,32 @@ async fn import_submits_and_reimport_updates() {
     let report = parse_fixtures();
     let total = report.entries.len();
     assert!(total > 200, "fixtures shrank? {total}");
+    // The real fixtures name some series on two sheets (e.g. Steins;Gate,
+    // Dr. Stone). Those rows must collapse to one entry per distinct name.
+    let unique = report
+        .entries
+        .iter()
+        .map(|e| e.entry.name.to_ascii_lowercase())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let dups = total - unique;
+    assert!(
+        dups > 0,
+        "fixtures should contain cross-sheet duplicate names ({total} rows, {unique} unique)"
+    );
 
     let outcome = submit(&kim, &report).await.expect("submit");
-    assert_eq!(outcome.created, total);
-    assert_eq!(outcome.updated, 0);
+    assert_eq!(outcome.created, unique, "one entry per distinct name");
+    assert_eq!(outcome.updated, dups, "duplicate-named rows collapse");
+    assert_eq!(
+        outcome.collapsed.len(),
+        dups,
+        "each same-run collapse is surfaced"
+    );
 
-    // Everyone sees The List, including next-ep progress.
+    // Everyone sees The List (one entry per distinct name), incl. next-ep.
     let snaps = eventually(&[&kim, &baughn], Duration::from_secs(60), |snaps| {
-        snaps.iter().all(|s| s.view.list_entries.len() == total) && snaps[0].view == snaps[1].view
+        snaps.iter().all(|s| s.view.list_entries.len() == unique) && snaps[0].view == snaps[1].view
     })
     .await;
     let view = &snaps[0].view;
@@ -63,12 +83,15 @@ async fn import_submits_and_reimport_updates() {
         Some("Sisters")
     );
 
-    // Re-import: everything matches by name, nothing duplicates.
+    // Re-import: every row matches an existing entry by name, nothing
+    // duplicates, and no fresh same-run collapse is reported (the duplicate
+    // rows now match the already-present entry, not one created this run).
     let outcome = submit(&kim, &parse_fixtures()).await.expect("re-submit");
     assert_eq!(outcome.created, 0);
     assert_eq!(outcome.updated, total);
+    assert!(outcome.collapsed.is_empty());
     eventually(&[&kim, &baughn], Duration::from_secs(60), |snaps| {
-        snaps.iter().all(|s| s.view.list_entries.len() == total)
+        snaps.iter().all(|s| s.view.list_entries.len() == unique)
     })
     .await;
 }

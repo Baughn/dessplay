@@ -1434,6 +1434,16 @@ pub async fn run_import(
     );
     let outcome = crate::import::submit(&handle, &report).await?;
     println!("created {}, updated {}", outcome.created, outcome.updated);
+    if !outcome.collapsed.is_empty() {
+        println!(
+            "\n{} series appeared on more than one sheet and were collapsed \
+             onto one entry (the later row won — check the status):",
+            outcome.collapsed.len()
+        );
+        for name in &outcome.collapsed {
+            println!("  {name}");
+        }
+    }
 
     let _ = handle.network.send(NetworkCommand::Shutdown).await;
     let _ = handle.sync.send(SyncCommand::Shutdown).await;
