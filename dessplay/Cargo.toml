@@ -26,7 +26,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tuirealm = { workspace = true }
 crossterm = { workspace = true }
-tui-realm-stdlib = { workspace = true }
 image = { workspace = true }
 ab_glyph = { workspace = true }
 strsim = { workspace = true }

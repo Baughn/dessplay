@@ -9,3 +9,4 @@ pub mod msg;
 pub mod props;
 pub mod shell;
 pub mod theme;
+pub mod widgets;

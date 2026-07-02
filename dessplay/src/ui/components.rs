@@ -4,22 +4,23 @@
 //! `Input`, but not tui-realm's threaded event listener — see
 //! ui-architecture.md, Framework Choice.)
 
-use tuirealm::command::{Cmd, CmdResult, Direction, Position};
+use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
-use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
+use tuirealm::event::{Event, Key, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute, QueryResult};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Constraint, Layout, Rect};
 use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
-use tuirealm::state::{State, StateValue};
+use tuirealm::state::State;
 
 use super::msg::Msg;
 use super::props::{
     ChatLine, FranchiseRow, ListGroup, PlaylistProps, SeriesSort, StatusProps, Tone, UsersProps,
 };
 use super::theme;
+use super::widgets::{LineBuffer, TextField};
 
 /// A key the pane responds to, for the keybinding bar.
 pub type Keybinding = (&'static str, &'static str);
@@ -52,56 +53,10 @@ macro_rules! passive_component {
     };
 }
 
-/// Match helper: a plain (modifier-less) key press.
-pub(crate) fn plain(ev: &Event<NoUserEvent>) -> Option<Key> {
-    match ev {
-        Event::Keyboard(KeyEvent { code, modifiers }) if *modifiers == KeyModifiers::NONE => {
-            Some(*code)
-        }
-        _ => None,
-    }
-}
-
-/// Match helper: a Ctrl-modified key press.
-pub(crate) fn ctrl(ev: &Event<NoUserEvent>) -> Option<Key> {
-    match ev {
-        Event::Keyboard(KeyEvent { code, modifiers }) if *modifiers == KeyModifiers::CONTROL => {
-            Some(*code)
-        }
-        _ => None,
-    }
-}
-
-/// Match helper for word navigation/deletion: a key carrying *either* the
-/// Ctrl or the Alt modifier. Desktop terminals send Ctrl for Ctrl-arrow;
-/// macOS terminals (ghostty) send Alt for Option-arrow and are unreliable
-/// about Ctrl-arrow — accepting both makes word motion work everywhere, and
-/// matches the Alt-arrow/Alt-Backspace muscle memory from macOS line editing.
-/// `.contains` (rather than `==`) also tolerates the extra modifier bits the
-/// kitty keyboard protocol can set alongside Ctrl. The modifiers are returned
-/// so callers can keep a binding Ctrl-only where Alt would collide (e.g. `w`).
-pub(crate) fn word_mod(ev: &Event<NoUserEvent>) -> Option<(Key, KeyModifiers)> {
-    match ev {
-        Event::Keyboard(KeyEvent { code, modifiers })
-            if modifiers.contains(KeyModifiers::CONTROL)
-                || modifiers.contains(KeyModifiers::ALT) =>
-        {
-            Some((*code, *modifiers))
-        }
-        _ => None,
-    }
-}
-
-/// Is this a typed character (with or without shift)?
-pub(crate) fn typed(ev: &Event<NoUserEvent>) -> Option<char> {
-    match ev {
-        Event::Keyboard(KeyEvent {
-            code: Key::Char(c),
-            modifiers,
-        }) if *modifiers == KeyModifiers::NONE || *modifiers == KeyModifiers::SHIFT => Some(*c),
-        _ => None,
-    }
-}
+// The key-event matchers live in widgets::keys (with the terminal
+// compatibility policy); re-exported here so panes, modals, and the
+// dispatcher keep one import path.
+pub(crate) use super::widgets::{ctrl, plain, typed};
 
 /// How many rows PgUp/PgDown jump in list panes.
 pub(crate) const LIST_PAGE_STEP: usize = 10;
@@ -109,33 +64,6 @@ pub(crate) const LIST_PAGE_STEP: usize = 10;
 /// Selection cursor over `len` rows.
 fn step(sel: usize, len: usize, down: bool) -> usize {
     step_by(sel, len, down, 1)
-}
-
-/// First index at or left of `cursor` that starts the word being left:
-/// skip any whitespace to the left, then skip the word to the left.
-fn word_boundary_left(chars: &[char], cursor: usize) -> usize {
-    let mut i = cursor.min(chars.len());
-    while i > 0 && chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    while i > 0 && !chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    i
-}
-
-/// First index at or right of `cursor` past the next word: skip any
-/// whitespace to the right, then skip the word to the right.
-fn word_boundary_right(chars: &[char], cursor: usize) -> usize {
-    let n = chars.len();
-    let mut i = cursor.min(n);
-    while i < n && chars[i].is_whitespace() {
-        i += 1;
-    }
-    while i < n && !chars[i].is_whitespace() {
-        i += 1;
-    }
-    i
 }
 
 /// Selection cursor over `len` rows, moved by `delta` (used for PgUp/PgDown).
@@ -164,7 +92,7 @@ const CHAT_SUGGESTION_MAX: u16 = 11;
 /// Chat log + always-visible input line.
 pub struct ChatPane {
     lines: Vec<ChatLine>,
-    input: tui_realm_stdlib::components::Input,
+    input: TextField,
     focused: bool,
     /// Visual lines scrolled up from the bottom (0 = pinned to newest).
     scroll_offset: usize,
@@ -205,9 +133,7 @@ impl Default for ChatPane {
     fn default() -> Self {
         Self {
             lines: Vec::new(),
-            input: tui_realm_stdlib::components::Input::default()
-                .borders(tuirealm::props::Borders::default())
-                .placeholder("say something…"),
+            input: TextField::new("say something…"),
             focused: false,
             scroll_offset: 0,
             sent_history: Vec::new(),
@@ -276,22 +202,14 @@ impl ChatPane {
 
     /// Current input text.
     fn text(&self) -> String {
-        match self.input.state() {
-            State::Single(StateValue::String(text)) => text,
-            _ => String::new(),
-        }
+        self.input.text()
     }
 
-    /// Clear the input line.
+    /// Clear the input line (cursor and scroll reset with it —
+    /// [`LineBuffer`] guarantees a cleared field never renders from a
+    /// stale column).
     fn clear(&mut self) {
-        self.input
-            .attr(Attribute::Value, AttrValue::String(String::new()));
-        // Setting Value resets the cursor but NOT the stdlib Input's
-        // horizontal scroll offset; without this a previously-scrolled line
-        // would render the next line from a stale column. GoTo(Begin) runs
-        // cursor_at_begin(), which zeroes the offset. (Same trick set_input
-        // uses with GoTo(End).)
-        let _ = self.input.perform(Cmd::GoTo(Position::Begin));
+        self.input.clear();
     }
 
     /// Keys shown in the keybinding bar.
@@ -306,37 +224,7 @@ impl ChatPane {
 
     /// Load `text` into the input and park the cursor at its end.
     fn set_input(&mut self, text: String) {
-        self.input.attr(Attribute::Value, AttrValue::String(text));
-        let _ = self.input.perform(Cmd::GoTo(Position::End));
-    }
-
-    /// Move the cursor left by one word. Driven through single-step Moves so
-    /// the stdlib's horizontal-scroll bookkeeping stays correct.
-    fn move_word_left(&mut self) {
-        let cursor = self.input.states.cursor;
-        let target = word_boundary_left(&self.input.states.input, cursor);
-        for _ in target..cursor {
-            let _ = self.input.perform(Cmd::Move(Direction::Left));
-        }
-    }
-
-    /// Move the cursor right by one word.
-    fn move_word_right(&mut self) {
-        let cursor = self.input.states.cursor;
-        let target = word_boundary_right(&self.input.states.input, cursor);
-        for _ in cursor..target {
-            let _ = self.input.perform(Cmd::Move(Direction::Right));
-        }
-    }
-
-    /// Delete the word before the cursor (Ctrl-W / Ctrl-Backspace). Driven
-    /// through stdlib backspaces so the scroll offset tracks down with it.
-    fn kill_word_left(&mut self) {
-        let cursor = self.input.states.cursor;
-        let target = word_boundary_left(&self.input.states.input, cursor);
-        for _ in target..cursor {
-            let _ = self.input.perform(Cmd::Delete);
-        }
+        self.input.set_text(&text);
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -405,23 +293,7 @@ impl ChatPane {
             ),
             log_area,
         );
-        // Match the input border to the rest of the pane's focus color. The
-        // stdlib Input uses its `Borders` color only when active and its
-        // `UnfocusedBorderStyle` otherwise, so set both and forward focus
-        // (which also makes the text cursor visible while typing).
-        self.input.attr(
-            Attribute::Borders,
-            AttrValue::Borders(
-                tuirealm::props::Borders::default().color(theme::border_color(true)),
-            ),
-        );
-        self.input.attr(
-            Attribute::UnfocusedBorderStyle,
-            AttrValue::Style(Style::default().fg(theme::border_color(false))),
-        );
-        self.input
-            .attr(Attribute::Focus, AttrValue::Flag(self.focused));
-        self.input.view(frame, input_area);
+        self.input.render(frame, input_area, self.focused, false);
     }
 }
 
@@ -694,114 +566,76 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
         // cycling), so every event reaching this method is a non-Tab key:
         // any of them ends an in-flight completion cycle.
         self.completion = None;
-        let cmd = match typed(ev) {
-            Some(c) => {
-                // Editing detaches from history recall (shell behavior).
+        if let Some(c) = typed(ev) {
+            // Typing detaches from history recall (shell behavior).
+            self.history_pos = None;
+            self.input.insert(c);
+            return Some(Msg::None);
+        }
+        // The chat's own keys: send, clear, log scrolling, history recall.
+        // Everything else falls through to the shared editing vocabulary.
+        match plain(ev) {
+            Some(Key::Enter) => {
+                let text = self.text().trim().to_string();
+                if text.is_empty() {
+                    return None;
+                }
+                self.clear();
+                self.sent_history.push(text.clone());
                 self.history_pos = None;
-                Cmd::Type(c)
+                self.scroll_offset = 0; // jump to newest so you see it
+                return Some(if text.starts_with('/') {
+                    Msg::Command(text)
+                } else {
+                    Msg::SendChat(text)
+                });
             }
-            None => {
-                if let Some((key, mods)) = word_mod(ev) {
-                    match key {
-                        Key::Left => self.move_word_left(),
-                        Key::Right => self.move_word_right(),
-                        // macOS terminals (ghostty) don't send Alt-arrow for
-                        // Option-Left/Right — they emit the readline word-motion
-                        // bytes Alt-b / Alt-f. Bind those (Alt-only; Ctrl-B /
-                        // Ctrl-F are char-wise motion in readline, not ours).
-                        Key::Char('b') if mods.contains(KeyModifiers::ALT) => self.move_word_left(),
-                        Key::Char('f') if mods.contains(KeyModifiers::ALT) => {
-                            self.move_word_right()
-                        }
-                        // Ctrl-Backspace / Alt-Backspace kill the previous word
-                        // (Alt-Backspace is the macOS delete-word habit).
-                        Key::Backspace => self.kill_word_left(),
-                        // Ctrl-W also kills, but only under Ctrl — Alt-W is a
-                        // typed character on macOS, not a word kill.
-                        Key::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
-                            self.kill_word_left()
-                        }
-                        // Ctrl-A / Ctrl-E jump to the start / end of the line
-                        // (readline / emacs habit; Home / End below do the same).
-                        // Ctrl-only — Alt-a / Alt-e are typed characters on macOS.
-                        Key::Char('a') if mods.contains(KeyModifiers::CONTROL) => {
-                            let _ = self.input.perform(Cmd::GoTo(Position::Begin));
-                        }
-                        Key::Char('e') if mods.contains(KeyModifiers::CONTROL) => {
-                            let _ = self.input.perform(Cmd::GoTo(Position::End));
-                        }
-                        // Any other Ctrl/Alt combo isn't ours; fall through to
-                        // the plain-key match (which rejects modified keys).
-                        _ => return None,
-                    }
-                    return Some(Msg::None);
-                }
-                match plain(ev)? {
-                    Key::Enter => {
-                        let text = self.text().trim().to_string();
-                        if text.is_empty() {
-                            return None;
-                        }
-                        self.clear();
-                        self.sent_history.push(text.clone());
-                        self.history_pos = None;
-                        self.scroll_offset = 0; // jump to newest so you see it
-                        return Some(if text.starts_with('/') {
-                            Msg::Command(text)
-                        } else {
-                            Msg::SendChat(text)
-                        });
-                    }
-                    Key::Esc => {
-                        self.clear();
-                        self.history_pos = None;
-                        return Some(Msg::None);
-                    }
-                    Key::PageUp => {
-                        self.scroll_offset += CHAT_PAGE_STEP;
-                        return Some(Msg::None);
-                    }
-                    Key::PageDown => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_PAGE_STEP);
-                        return Some(Msg::None);
-                    }
-                    Key::Up => {
-                        // Recall an older message I sent into the input.
-                        if self.sent_history.is_empty() {
-                            return None;
-                        }
-                        let pos = match self.history_pos {
-                            None => self.sent_history.len() - 1,
-                            Some(p) => p.saturating_sub(1),
-                        };
-                        self.history_pos = Some(pos);
-                        self.set_input(self.sent_history[pos].clone());
-                        return Some(Msg::None);
-                    }
-                    Key::Down => {
-                        // Walk back toward the newest, then to an empty draft.
-                        let pos = self.history_pos?;
-                        if pos + 1 < self.sent_history.len() {
-                            self.history_pos = Some(pos + 1);
-                            self.set_input(self.sent_history[pos + 1].clone());
-                        } else {
-                            self.history_pos = None;
-                            self.clear();
-                        }
-                        return Some(Msg::None);
-                    }
-                    Key::Backspace => Cmd::Delete, // stdlib: Delete = backspace
-                    Key::Delete => Cmd::Cancel,    // stdlib: Cancel = delete-forward
-                    Key::Left => Cmd::Move(Direction::Left),
-                    Key::Right => Cmd::Move(Direction::Right),
-                    Key::Home => Cmd::GoTo(Position::Begin),
-                    Key::End => Cmd::GoTo(Position::End),
-                    _ => return None,
-                }
+            Some(Key::Esc) => {
+                self.clear();
+                self.history_pos = None;
+                return Some(Msg::None);
             }
-        };
-        let _ = self.input.perform(cmd);
-        Some(Msg::None)
+            Some(Key::PageUp) => {
+                self.scroll_offset += CHAT_PAGE_STEP;
+                return Some(Msg::None);
+            }
+            Some(Key::PageDown) => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_PAGE_STEP);
+                return Some(Msg::None);
+            }
+            Some(Key::Up) => {
+                // Recall an older message I sent into the input.
+                if self.sent_history.is_empty() {
+                    return None;
+                }
+                let pos = match self.history_pos {
+                    None => self.sent_history.len() - 1,
+                    Some(p) => p.saturating_sub(1),
+                };
+                self.history_pos = Some(pos);
+                self.set_input(self.sent_history[pos].clone());
+                return Some(Msg::None);
+            }
+            Some(Key::Down) => {
+                // Walk back toward the newest, then to an empty draft.
+                let pos = self.history_pos?;
+                if pos + 1 < self.sent_history.len() {
+                    self.history_pos = Some(pos + 1);
+                    self.set_input(self.sent_history[pos + 1].clone());
+                } else {
+                    self.history_pos = None;
+                    self.clear();
+                }
+                return Some(Msg::None);
+            }
+            _ => {}
+        }
+        // Cursor motion, deletion, word ops — the vocabulary every text
+        // field shares (widgets::LineBuffer::edit).
+        if self.input.edit(ev) {
+            return Some(Msg::None);
+        }
+        None
     }
 }
 
@@ -1076,8 +910,9 @@ pub struct SeriesPane {
     expanded: std::collections::BTreeMap<&'static str, bool>,
     /// Filter text for Recent / All modes (case-insensitive substring on
     /// title). A non-empty filter also drops Recent's watched-only
-    /// default. Empty in The List mode.
-    filter: String,
+    /// default. Empty in The List mode. A full [`LineBuffer`], so the
+    /// filter edits exactly like every other text field.
+    filter: LineBuffer,
     /// Whether we're editing the filter. Gated behind `/` (rather than
     /// typing directly) so the bare `m` / `s` mode/sort keys stay live —
     /// and reliable: Ctrl-modified letters collide with control codes
@@ -1105,8 +940,8 @@ impl SeriesPane {
     }
 
     /// Current type-to-filter text (Recent / All modes).
-    pub fn filter(&self) -> &str {
-        &self.filter
+    pub fn filter(&self) -> String {
+        self.filter.text()
     }
 
     /// Replace franchise rows (Recent / All modes).
@@ -1187,12 +1022,35 @@ impl SeriesPane {
         };
         // Surface the filter so typing is visible (no silent state); show
         // the `/` cue the moment filtering starts, even before any text.
-        let title =
-            if self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty()) {
-                format!("{base}  /{}", self.filter)
+        // While editing, the filter's cursor renders as a reversed cell —
+        // it is a full text field (word motion, Home/End), not append-only.
+        let title: Line = if self.mode != SeriesMode::TheList
+            && (self.filtering || !self.filter.is_empty())
+        {
+            let mut spans = vec![Span::raw(format!("{base}  /"))];
+            if self.filtering {
+                let text = self.filter.text();
+                let cursor = self.filter.cursor();
+                let pre: String = text.chars().take(cursor).collect();
+                let at: String = text
+                    .chars()
+                    .nth(cursor)
+                    .map(String::from)
+                    .unwrap_or_else(|| " ".into());
+                let post: String = text.chars().skip(cursor + 1).collect();
+                spans.push(Span::raw(pre));
+                spans.push(Span::styled(
+                    at,
+                    Style::default().add_modifier(tuirealm::ratatui::style::Modifier::REVERSED),
+                ));
+                spans.push(Span::raw(post));
             } else {
-                base.to_string()
-            };
+                spans.push(Span::raw(self.filter.text()));
+            }
+            Line::from(spans)
+        } else {
+            Line::from(base)
+        };
         let items: Vec<ListItem> = match self.mode {
             SeriesMode::Recent | SeriesMode::All => self
                 .franchises
@@ -1262,54 +1120,62 @@ passive_component!(SeriesPane);
 
 impl AppComponent<Msg, NoUserEvent> for SeriesPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        // Filter editing (entered with `/`): printable keys narrow the
-        // list, Backspace deletes, Esc clears and exits. Up/Down and Enter
-        // still navigate / select the filtered list. Mode and sort keys
-        // are intentionally inert here so any letter can be typed.
+        // Filter editing (entered with `/`): the filter is a full text
+        // field — typing narrows the list, and the whole shared editing
+        // vocabulary (cursor motion, word ops, Delete) works in it.
+        // Up/Down and Enter still navigate / select the filtered list.
+        // Mode and sort keys are intentionally inert here so any letter
+        // can be typed.
         if self.filtering {
-            if let Some(c) = typed(ev) {
-                self.filter.push(c);
-                self.sel = 0;
-                return Some(Msg::SeriesFilterChanged);
-            }
-            return match plain(ev)? {
-                // Backspace deletes a filter character; on an empty filter it
-                // exits filtering entirely (the escape hatch, alongside Esc).
-                Key::Backspace => {
-                    if self.filter.pop().is_none() {
-                        self.filtering = false;
-                    }
+            match plain(ev) {
+                // Backspace on an *empty* filter exits filtering entirely
+                // (the escape hatch, alongside Esc); with text present it
+                // edits like any other field, via the vocabulary below.
+                Some(Key::Backspace) if self.filter.is_empty() => {
+                    self.filtering = false;
                     self.sel = 0;
-                    Some(Msg::SeriesFilterChanged)
+                    return Some(Msg::SeriesFilterChanged);
                 }
-                Key::Esc => {
+                Some(Key::Esc) => {
                     self.filter.clear();
                     self.filtering = false;
                     self.sel = 0;
-                    Some(Msg::SeriesFilterChanged)
+                    return Some(Msg::SeriesFilterChanged);
                 }
-                Key::Up => {
+                Some(Key::Up) => {
                     self.sel = step(self.sel, self.len(), false);
-                    Some(Msg::None)
+                    return Some(Msg::None);
                 }
-                Key::Down => {
+                Some(Key::Down) => {
                     self.sel = step(self.sel, self.len(), true);
-                    Some(Msg::None)
+                    return Some(Msg::None);
                 }
-                Key::PageUp => {
+                Some(Key::PageUp) => {
                     self.sel = step_by(self.sel, self.len(), false, LIST_PAGE_STEP);
-                    Some(Msg::None)
+                    return Some(Msg::None);
                 }
-                Key::PageDown => {
+                Some(Key::PageDown) => {
                     self.sel = step_by(self.sel, self.len(), true, LIST_PAGE_STEP);
-                    Some(Msg::None)
+                    return Some(Msg::None);
                 }
-                Key::Enter => {
+                Some(Key::Enter) => {
                     let row = self.franchises.get(self.sel)?;
-                    Some(Msg::BrowseFranchise(row.key.clone()))
+                    return Some(Msg::BrowseFranchise(row.key.clone()));
                 }
-                _ => None,
-            };
+                _ => {}
+            }
+            // Only a text *change* re-filters and resets the selection;
+            // bare cursor motion inside the filter keeps it.
+            let before = self.filter.text();
+            if self.filter.edit(ev) {
+                return Some(if self.filter.text() == before {
+                    Msg::None
+                } else {
+                    self.sel = 0;
+                    Msg::SeriesFilterChanged
+                });
+            }
+            return None;
         }
         match plain(ev)? {
             Key::Up => {
@@ -1513,6 +1379,7 @@ impl AppComponent<Msg, NoUserEvent> for KeyBar {
 #[cfg(test)]
 mod series_pane_tests {
     use super::*;
+    use tuirealm::event::{KeyEvent, KeyModifiers};
 
     fn key(code: Key) -> Event<NoUserEvent> {
         Event::Keyboard(KeyEvent {
@@ -1653,6 +1520,7 @@ mod series_pane_tests {
 #[cfg(test)]
 mod playlist_pane_tests {
     use super::*;
+    use tuirealm::event::{KeyEvent, KeyModifiers};
     use crate::ui::props::PlaylistRow;
     use dessplay_core::types::Ed2kHash;
 
@@ -1818,6 +1686,7 @@ mod chat_wrap_tests {
 #[cfg(test)]
 mod chat_input_tests {
     use super::*;
+    use tuirealm::event::{KeyEvent, KeyModifiers};
 
     fn key(code: Key) -> Event<NoUserEvent> {
         Event::Keyboard(KeyEvent {
@@ -1855,40 +1724,44 @@ mod chat_input_tests {
 
     /// Regression: a scrolled input line must reset its horizontal scroll
     /// offset when sent, so the next line is not rendered from a stale column.
+    /// (The reset now lives in `LineBuffer::clear`; this pins the chat-level
+    /// wiring.)
     #[test]
     fn enter_resets_display_offset() {
         let mut pane = focused_pane();
         type_str(&mut pane, "a fairly long line that would scroll");
-        // `display_offset` only grows during rendering (last_width is unset in
-        // tests); simulate a scrolled line directly.
-        pane.input.states.display_offset = 12;
+        // Rendering in a narrow window scrolls the buffer.
+        pane.input.buffer_mut().scroll(12);
+        assert!(pane.input.buffer().offset() > 0);
         let msg = pane.on(&key(Key::Enter));
         assert!(matches!(msg, Some(Msg::SendChat(_))));
-        assert_eq!(pane.input.states.display_offset, 0);
+        assert_eq!(pane.input.buffer().offset(), 0);
         assert_eq!(pane.text(), "");
     }
 
     #[test]
     fn esc_resets_display_offset() {
         let mut pane = focused_pane();
-        type_str(&mut pane, "some text");
-        pane.input.states.display_offset = 5;
+        type_str(&mut pane, "a fairly long line that would scroll");
+        pane.input.buffer_mut().scroll(12);
+        assert!(pane.input.buffer().offset() > 0);
         pane.on(&key(Key::Esc));
-        assert_eq!(pane.input.states.display_offset, 0);
+        assert_eq!(pane.input.buffer().offset(), 0);
         assert_eq!(pane.text(), "");
     }
 
-    /// Backspacing the whole line away leaves the offset at zero (relies on
-    /// stdlib `backspace()` tracking the offset down with the cursor).
+    /// Backspacing the whole line away leaves nothing scrolled: the next
+    /// render reconciliation snaps the window back to the start.
     #[test]
     fn backspace_to_empty_resets_display_offset() {
         let mut pane = focused_pane();
         type_str(&mut pane, "hello");
+        pane.input.buffer_mut().scroll(3);
         for _ in 0.."hello".len() {
             pane.on(&key(Key::Backspace));
         }
         assert_eq!(pane.text(), "");
-        assert_eq!(pane.input.states.display_offset, 0);
+        assert_eq!(pane.input.buffer_mut().scroll(3), 0);
     }
 
     #[test]
@@ -1897,13 +1770,13 @@ mod chat_input_tests {
         type_str(&mut pane, "the quick brown");
         // Cursor parks at end (15). Word-left lands on the start of "brown".
         pane.on(&ctrl(Key::Left));
-        assert_eq!(pane.input.states.cursor, 10);
+        assert_eq!(pane.input.buffer().cursor(), 10);
         pane.on(&ctrl(Key::Left));
-        assert_eq!(pane.input.states.cursor, 4); // start of "quick"
+        assert_eq!(pane.input.buffer().cursor(), 4); // start of "quick"
         pane.on(&ctrl(Key::Left));
-        assert_eq!(pane.input.states.cursor, 0); // start of "the"
+        assert_eq!(pane.input.buffer().cursor(), 0); // start of "the"
         pane.on(&ctrl(Key::Left));
-        assert_eq!(pane.input.states.cursor, 0); // clamped
+        assert_eq!(pane.input.buffer().cursor(), 0); // clamped
     }
 
     #[test]
@@ -1912,15 +1785,15 @@ mod chat_input_tests {
         type_str(&mut pane, "the quick brown");
         // Move cursor to the start first.
         pane.on(&key(Key::Home));
-        assert_eq!(pane.input.states.cursor, 0);
+        assert_eq!(pane.input.buffer().cursor(), 0);
         pane.on(&ctrl(Key::Right));
-        assert_eq!(pane.input.states.cursor, 3); // end of "the"
+        assert_eq!(pane.input.buffer().cursor(), 3); // end of "the"
         pane.on(&ctrl(Key::Right));
-        assert_eq!(pane.input.states.cursor, 9); // end of "quick"
+        assert_eq!(pane.input.buffer().cursor(), 9); // end of "quick"
         pane.on(&ctrl(Key::Right));
-        assert_eq!(pane.input.states.cursor, 15); // end of "brown"
+        assert_eq!(pane.input.buffer().cursor(), 15); // end of "brown"
         pane.on(&ctrl(Key::Right));
-        assert_eq!(pane.input.states.cursor, 15); // clamped
+        assert_eq!(pane.input.buffer().cursor(), 15); // clamped
     }
 
     /// Alt-Left/Right move by word too — macOS terminals (ghostty) send Alt
@@ -1930,11 +1803,11 @@ mod chat_input_tests {
         let mut pane = focused_pane();
         type_str(&mut pane, "the quick brown");
         pane.on(&alt(Key::Left));
-        assert_eq!(pane.input.states.cursor, 10); // start of "brown"
+        assert_eq!(pane.input.buffer().cursor(), 10); // start of "brown"
         pane.on(&alt(Key::Left));
-        assert_eq!(pane.input.states.cursor, 4); // start of "quick"
+        assert_eq!(pane.input.buffer().cursor(), 4); // start of "quick"
         pane.on(&alt(Key::Right));
-        assert_eq!(pane.input.states.cursor, 9); // end of "quick"
+        assert_eq!(pane.input.buffer().cursor(), 9); // end of "quick"
     }
 
     /// macOS terminals (ghostty) emit Option-Left/Right as the readline
@@ -1944,11 +1817,11 @@ mod chat_input_tests {
         let mut pane = focused_pane();
         type_str(&mut pane, "the quick brown");
         pane.on(&alt(Key::Char('b')));
-        assert_eq!(pane.input.states.cursor, 10); // start of "brown"
+        assert_eq!(pane.input.buffer().cursor(), 10); // start of "brown"
         pane.on(&alt(Key::Char('b')));
-        assert_eq!(pane.input.states.cursor, 4); // start of "quick"
+        assert_eq!(pane.input.buffer().cursor(), 4); // start of "quick"
         pane.on(&alt(Key::Char('f')));
-        assert_eq!(pane.input.states.cursor, 9); // end of "quick"
+        assert_eq!(pane.input.buffer().cursor(), 9); // end of "quick"
     }
 
     /// Ctrl-B / Ctrl-F are char-wise in readline, not word motion — they must
@@ -1957,10 +1830,10 @@ mod chat_input_tests {
     fn ctrl_b_f_are_not_word_motion() {
         let mut pane = focused_pane();
         type_str(&mut pane, "the quick brown");
-        let before = pane.input.states.cursor;
+        let before = pane.input.buffer().cursor();
         pane.on(&ctrl(Key::Char('b')));
         pane.on(&ctrl(Key::Char('f')));
-        assert_eq!(pane.input.states.cursor, before);
+        assert_eq!(pane.input.buffer().cursor(), before);
         assert_eq!(pane.text(), "the quick brown");
     }
 
@@ -1973,9 +1846,9 @@ mod chat_input_tests {
         type_str(&mut pane, "the quick brown");
         // Cursor parks at the end (15).
         pane.on(&ctrl(Key::Char('a')));
-        assert_eq!(pane.input.states.cursor, 0);
+        assert_eq!(pane.input.buffer().cursor(), 0);
         pane.on(&ctrl(Key::Char('e')));
-        assert_eq!(pane.input.states.cursor, 15);
+        assert_eq!(pane.input.buffer().cursor(), 15);
         // Neither was typed into the buffer.
         assert_eq!(pane.text(), "the quick brown");
     }
@@ -2012,7 +1885,7 @@ mod chat_input_tests {
             modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         });
         pane.on(&ev);
-        assert_eq!(pane.input.states.cursor, 10); // start of "brown"
+        assert_eq!(pane.input.buffer().cursor(), 10); // start of "brown"
     }
 
     #[test]
@@ -2043,42 +1916,28 @@ mod chat_input_tests {
         assert_eq!(pane.text(), "");
     }
 
+    /// Mid-line editing goes through the shared vocabulary: Delete removes
+    /// forward, and typed characters land at the cursor, not the end.
     #[test]
-    fn word_boundary_left_cases() {
-        let chars: Vec<char> = "the quick".chars().collect();
-        assert_eq!(word_boundary_left(&chars, 9), 4); // from end → start of "quick"
-        assert_eq!(word_boundary_left(&chars, 4), 0); // from start of "quick" → "the"
-        assert_eq!(word_boundary_left(&chars, 0), 0); // clamped
-        // Mid-word.
-        assert_eq!(word_boundary_left(&chars, 6), 4);
-        // Leading spaces: word-left from the end stops at the word start.
-        let spaced: Vec<char> = "   hi".chars().collect();
-        assert_eq!(word_boundary_left(&spaced, 5), 3);
-        // From the word start, skipping the leading spaces reaches 0.
-        assert_eq!(word_boundary_left(&spaced, 3), 0);
-        // Empty.
-        assert_eq!(word_boundary_left(&[], 0), 0);
-    }
-
-    #[test]
-    fn word_boundary_right_cases() {
-        let chars: Vec<char> = "the quick".chars().collect();
-        assert_eq!(word_boundary_right(&chars, 0), 3); // → end of "the"
-        assert_eq!(word_boundary_right(&chars, 3), 9); // → end of "quick"
-        assert_eq!(word_boundary_right(&chars, 9), 9); // clamped
-        // Mid-word.
-        assert_eq!(word_boundary_right(&chars, 1), 3);
-        // Trailing spaces.
-        let spaced: Vec<char> = "hi   ".chars().collect();
-        assert_eq!(word_boundary_right(&spaced, 0), 2);
-        // Empty.
-        assert_eq!(word_boundary_right(&[], 0), 0);
+    fn mid_line_insert_and_delete() {
+        let mut pane = focused_pane();
+        type_str(&mut pane, "helo world");
+        pane.on(&key(Key::Home));
+        pane.on(&key(Key::Right));
+        pane.on(&key(Key::Right));
+        pane.on(&key(Key::Char('l')));
+        assert_eq!(pane.text(), "hello world");
+        pane.on(&key(Key::End));
+        pane.on(&ctrl(Key::Left));
+        pane.on(&key(Key::Delete));
+        assert_eq!(pane.text(), "hello orld");
     }
 }
 
 #[cfg(test)]
 mod chat_completion_tests {
     use super::*;
+    use tuirealm::event::{KeyEvent, KeyModifiers};
     use tuirealm::ratatui::style::Modifier;
 
     fn names() -> Vec<String> {

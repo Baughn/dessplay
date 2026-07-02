@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tuirealm::command::{Cmd, CmdResult, Direction, Position};
+use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute, QueryResult};
@@ -12,7 +12,7 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
-use tuirealm::state::{State, StateValue};
+use tuirealm::state::State;
 
 use dessplay_core::net::AniDbSearchHit;
 use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, NextEpState, SeriesListEntry};
@@ -20,6 +20,7 @@ use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, NextEpState, Serie
 use super::components::{LIST_PAGE_STEP, ctrl, plain, step_by, typed};
 use super::msg::Msg;
 use super::theme;
+use super::widgets::TextField;
 use crate::config::Settings;
 
 /// Like `passive_component!` but without a focus field (modals are
@@ -64,66 +65,38 @@ pub fn overlay(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     }
 }
 
-/// A one-line text editor for modal fields, backed by the stdlib Input.
+/// A one-line text editor for modal fields: a [`TextField`] plus the
+/// modal commit protocol. Editing behavior (word motion, word kill,
+/// scroll discipline) is the shared vocabulary — identical to the chat
+/// input by construction.
 struct FieldEditor {
-    input: tui_realm_stdlib::components::Input,
+    input: TextField,
 }
 
 impl FieldEditor {
     fn new(initial: &str) -> Self {
-        let mut input = tui_realm_stdlib::components::Input::default()
-            .borders(tuirealm::props::Borders::default());
-        input.attr(Attribute::Value, AttrValue::String(initial.to_string()));
-        input.attr(Attribute::Focus, AttrValue::Flag(true));
-        Self { input }
+        Self {
+            input: TextField::with_text(initial),
+        }
     }
 
     fn text(&self) -> String {
-        match self.input.state() {
-            State::Single(StateValue::String(text)) => text,
-            _ => String::new(),
-        }
+        self.input.text()
     }
 
     /// Feed an event; `Some(committed)` when editing ends.
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<bool> {
-        if let Some(c) = typed(ev) {
-            let _ = self.input.perform(Cmd::Type(c));
-            return None;
+        match plain(ev) {
+            Some(Key::Enter) => return Some(true),
+            Some(Key::Esc) => return Some(false),
+            _ => {}
         }
-        match plain(ev)? {
-            Key::Enter => Some(true),
-            Key::Esc => Some(false),
-            Key::Backspace => {
-                let _ = self.input.perform(Cmd::Delete);
-                None
-            }
-            Key::Delete => {
-                let _ = self.input.perform(Cmd::Cancel);
-                None
-            }
-            Key::Left => {
-                let _ = self.input.perform(Cmd::Move(Direction::Left));
-                None
-            }
-            Key::Right => {
-                let _ = self.input.perform(Cmd::Move(Direction::Right));
-                None
-            }
-            Key::Home => {
-                let _ = self.input.perform(Cmd::GoTo(Position::Begin));
-                None
-            }
-            Key::End => {
-                let _ = self.input.perform(Cmd::GoTo(Position::End));
-                None
-            }
-            _ => None,
-        }
+        self.input.edit(ev);
+        None
     }
 
     fn view(&mut self, frame: &mut Frame, area: Rect) {
-        self.input.view(frame, area);
+        self.input.render(frame, area, true, false);
     }
 }
 

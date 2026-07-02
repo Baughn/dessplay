@@ -488,7 +488,7 @@ impl Ui {
             franchises,
             self.series.sort(),
             recency,
-            self.series.filter(),
+            &self.series.filter(),
         );
         self.series.set_franchises(rows);
     }
