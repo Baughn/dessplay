@@ -375,6 +375,13 @@ impl<F: PlayerFactory> Actor<F> {
                 self.eof_reported = false;
                 self.restore_millis = None;
                 self.pending_user_seek = None;
+                // A loadfile replaces the file/position, so any pause/seek
+                // echoes still awaited from the previous file'''s commands are
+                // moot -- and a leftover seek echo would silently swallow the
+                // user'''s next real seek on the new file. Clear them like
+                // handle_player_death does.
+                self.pending_pause_echoes.clear();
+                self.pending_seek_echoes = 0;
                 self.estimate = None;
                 // The load contract says the file opens paused.
                 self.believed_pause = Some(true);
@@ -832,6 +839,7 @@ mod tests {
     use crate::player::mock::{MockCommand, MockControl, MockFactory, MockPlayer};
 
     const FILE: Ed2kHash = Ed2kHash([7; 16]);
+    const FILE2: Ed2kHash = Ed2kHash([8; 16]);
     const BUDGET: Duration = Duration::from_secs(5);
 
     fn start(
@@ -1222,6 +1230,69 @@ mod tests {
                 position_millis: 90_000
             }],
             "scrubbing must coalesce to the final position"
+        );
+    }
+
+    /// Regression: a loadfile must clear the commanded-seek echo counter.
+    /// A programmatic seek (here a drift hard-seek) arms a pending seek
+    /// echo; if a new file loads before that echo arrives, the stale
+    /// counter would swallow the user's next real seek on the new file as
+    /// if it were the echo. Before the fix, Load reset most state but left
+    /// the echo counters (handle_player_death cleared them; Load didn't).
+    #[tokio::test(start_paused = true)]
+    async fn load_clears_a_pending_seek_echo() {
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+
+        // A >3s drift hard-seek issues a programmatic seek and arms a
+        // pending echo; the manual mock does not ack, so it stays
+        // outstanding.
+        commands
+            .send(PlayerCommand::SyncTo {
+                position_millis: 20_000,
+                timestamp: SharedTimestamp(1_000_000),
+                playing: false,
+            })
+            .await
+            .unwrap();
+        settle().await;
+        assert_eq!(control.drain_commands(), vec![MockCommand::Seek(20_000)]);
+
+        // A new file loads before that echo ever comes back.
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE2,
+                path: "/media/ep2.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Load("/media/ep2.mkv".into(), None)
+        );
+        control.events.send(PlayerEvent::Loaded).unwrap();
+        control
+            .events
+            .send(PlayerEvent::Position { position_millis: 0 })
+            .unwrap();
+        settle().await;
+        let _ = drain_outputs(&mut outputs);
+
+        // The user scrubs on the new file. With the stale echo cleared it
+        // surfaces as a UserSeeked instead of being swallowed.
+        control
+            .events
+            .send(PlayerEvent::Seeked {
+                position_millis: 55_000,
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1600)).await;
+        assert_eq!(
+            drain_outputs(&mut outputs),
+            vec![PlayerOutput::UserSeeked {
+                position_millis: 55_000
+            }],
+            "the user's seek on the new file was swallowed as a stale echo"
         );
     }
 
