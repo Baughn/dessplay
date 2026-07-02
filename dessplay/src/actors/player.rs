@@ -68,6 +68,14 @@ pub const CRASH_GIVE_UP_COUNT: u32 = 3;
 pub const REATTACH_BACKOFF_INITIAL: Duration = Duration::from_millis(500);
 /// Attach mode: the re-attach backoff never grows past this.
 pub const REATTACH_BACKOFF_MAX: Duration = Duration::from_secs(10);
+/// Attach mode: how long a single re-attach probe may run before it is
+/// abandoned and rescheduled. An attach-mode spawn does `wait_for_socket`,
+/// which otherwise loops against its own ~10s deadline; awaiting that inline
+/// in the run loop's `select!` would park the whole actor (Shutdown, Load,
+/// SyncTo, the cadence tick) for the full wait. A short bound keeps the loop
+/// responsive — a live socket attaches well within it; a dead one fails fast
+/// and backs off.
+pub const REATTACH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Commands from the main loop.
 #[derive(Debug)]
@@ -745,28 +753,35 @@ impl<F: PlayerFactory> Actor<F> {
     /// indefinitely instead of giving up.
     async fn try_reattach(&mut self) {
         self.reattach_at = None;
-        match self.factory.spawn().await {
-            Ok(player) => {
-                tracing::info!("re-attached to mpv");
-                self.reattach_backoff = REATTACH_BACKOFF_INITIAL;
-                self.player = Some(player);
-                if let Some((_, path, title)) = self.current.clone()
-                    && let Some(player) = &self.player
-                    && let Err(e) = player.load(&path, title.as_deref()).await
-                {
-                    tracing::warn!("reload after re-attach failed: {e}");
-                }
-                // Position and pause state are restored on Loaded.
+        // Bound the probe so a down socket cannot park the run loop for the
+        // full `wait_for_socket` deadline (see `REATTACH_PROBE_TIMEOUT`).
+        let spawned = tokio::time::timeout(REATTACH_PROBE_TIMEOUT, self.factory.spawn()).await;
+        if let Ok(Ok(player)) = spawned {
+            tracing::info!("re-attached to mpv");
+            self.reattach_backoff = REATTACH_BACKOFF_INITIAL;
+            self.player = Some(player);
+            if let Some((_, path, title)) = self.current.clone()
+                && let Some(player) = &self.player
+                && let Err(e) = player.load(&path, title.as_deref()).await
+            {
+                tracing::warn!("reload after re-attach failed: {e}");
             }
-            Err(e) => {
-                tracing::debug!(
-                    "attached mpv still down ({e}); retrying in {:?}",
-                    self.reattach_backoff
-                );
-                self.reattach_at = Some(Instant::now() + self.reattach_backoff);
-                self.reattach_backoff = (self.reattach_backoff * 2).min(REATTACH_BACKOFF_MAX);
-            }
+            // Position and pause state are restored on Loaded.
+            return;
         }
+        match spawned {
+            Ok(Err(e)) => tracing::debug!(
+                "attached mpv still down ({e}); retrying in {:?}",
+                self.reattach_backoff
+            ),
+            // Err(_) = the probe itself timed out (socket never came up).
+            _ => tracing::debug!(
+                "attached mpv probe timed out; retrying in {:?}",
+                self.reattach_backoff
+            ),
+        }
+        self.reattach_at = Some(Instant::now() + self.reattach_backoff);
+        self.reattach_backoff = (self.reattach_backoff * 2).min(REATTACH_BACKOFF_MAX);
     }
 
     /// Spawn mode: a player we own died. Escalate per design.md — silent
@@ -1771,6 +1786,45 @@ mod tests {
             expect_command(&mut c2).await,
             MockCommand::Load("/media/ep1.mkv".into(), None),
             "the actor must re-attach and restore the file once mpv returns"
+        );
+    }
+
+    /// Regression: a re-attach probe that hangs (a down socket in
+    /// `wait_for_socket`) must not park the run loop. A Shutdown issued while
+    /// the probe is in flight has to be serviced — the probe is bounded by
+    /// `REATTACH_PROBE_TIMEOUT`. Unbounded, the hung spawn awaited inline in
+    /// the `select!` arm would block every other command indefinitely.
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_reattach_probe_does_not_block_shutdown() {
+        let (p1, c1) = MockPlayer::pair();
+        // Initial attach uses p1; the first re-attach probe hangs forever.
+        let factory = MockFactory::attach([p1]).then_hang();
+        let (commands, mut outputs) = start_factory(factory, fixed_clock(0));
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE,
+                path: "/media/ep1.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        settle().await;
+
+        // mpv detaches; the actor begins re-attaching and the next probe hangs.
+        c1.events.send(PlayerEvent::Exited { clean: true }).unwrap();
+        settle().await;
+
+        // Shutdown arrives while the probe is hung. It must be serviced: the
+        // actor exits and its outputs channel closes. Unbounded, the hung
+        // probe would park the select loop and this would time out.
+        commands.send(PlayerCommand::Shutdown).await.unwrap();
+        let exited = tokio::time::timeout(Duration::from_secs(30), async {
+            while outputs.recv().await.is_some() {}
+        })
+        .await;
+        assert!(
+            exited.is_ok(),
+            "Shutdown was not serviced while a re-attach probe hung"
         );
     }
 

@@ -180,6 +180,10 @@ enum SpawnOutcome {
     /// attach mode this models the user's mpv socket still being down,
     /// so the actor's re-attach retry can be exercised deterministically.
     Down,
+    /// `spawn` never resolves — models an attach spawn stuck in
+    /// `wait_for_socket` against a socket that never comes up, so the
+    /// re-attach probe's timeout bound can be exercised.
+    Hang,
 }
 
 /// A [`PlayerFactory`] that hands out pre-built mocks — one per spawn,
@@ -229,6 +233,13 @@ impl MockFactory {
         self.outcomes.push_back(SpawnOutcome::Up(player));
         self
     }
+
+    /// Queue a spawn that never resolves (models a hung `wait_for_socket`).
+    /// Builder-style; exercises the re-attach probe's timeout bound.
+    pub fn then_hang(mut self) -> Self {
+        self.outcomes.push_back(SpawnOutcome::Hang);
+        self
+    }
 }
 
 impl PlayerFactory for MockFactory {
@@ -239,6 +250,11 @@ impl PlayerFactory for MockFactory {
         match self.outcomes.pop_front() {
             Some(SpawnOutcome::Up(player)) => Ok(player),
             Some(SpawnOutcome::Down) => Err(PlayerError::Setup("mock mpv still down".into())),
+            Some(SpawnOutcome::Hang) => {
+                // Never resolves: the caller's timeout must fire.
+                std::future::pending::<()>().await;
+                unreachable!("pending() never resolves")
+            }
             None => Err(PlayerError::Setup("mock factory exhausted".into())),
         }
     }
