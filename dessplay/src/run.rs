@@ -187,20 +187,27 @@ fn download_config(args: &HeadlessArgs) -> crate::download::DownloadConfig {
 
 /// Append the default port unless the address already has one. A
 /// `host:port` has exactly one colon; a bracketed IPv6 literal carries
-/// its port after `]:`; multiple colons without brackets is a bare
-/// IPv6 literal that needs wrapping.
+/// its port after `]:` (and if it has none, just needs `:port` appended,
+/// *not* another pair of brackets); multiple colons without brackets is a
+/// bare IPv6 literal that needs wrapping.
 fn with_default_port(server: &str) -> String {
-    let has_port = match server.matches(':').count() {
-        0 => false,
-        1 => true,
-        _ => server.starts_with('[') && server.contains("]:"),
-    };
-    if has_port {
-        server.to_string()
-    } else if server.contains(':') {
-        format!("[{server}]:{DEFAULT_PORT}")
-    } else {
-        format!("{server}:{DEFAULT_PORT}")
+    // An already-bracketed literal: keep it as-is if it has a port after
+    // `]:`, otherwise append the port directly (wrapping it again would
+    // produce a malformed `[[::1]]:port`).
+    if server.starts_with('[') {
+        return if server.contains("]:") {
+            server.to_string()
+        } else {
+            format!("{server}:{DEFAULT_PORT}")
+        };
+    }
+    match server.matches(':').count() {
+        // host:port — already has one.
+        1 => server.to_string(),
+        // A bare, unbracketed IPv6 literal (2+ colons) needs wrapping.
+        n if n >= 2 => format!("[{server}]:{DEFAULT_PORT}"),
+        // A bare hostname or IPv4.
+        _ => format!("{server}:{DEFAULT_PORT}"),
     }
 }
 
@@ -1510,6 +1517,10 @@ mod tests {
         assert_eq!(with_default_port("10.0.0.1:7000"), "10.0.0.1:7000");
         assert_eq!(with_default_port("::1"), "[::1]:9876");
         assert_eq!(with_default_port("[::1]:7000"), "[::1]:7000");
+        // A bracketed IPv6 literal *without* a port must gain `:port`
+        // directly, not another pair of brackets ([[::1]]:9876 was the bug).
+        assert_eq!(with_default_port("[::1]"), "[::1]:9876");
+        assert_eq!(with_default_port("[fe80::1]"), "[fe80::1]:9876");
     }
 
     #[test]
