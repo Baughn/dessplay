@@ -1,8 +1,13 @@
 # Proposal: UI componentization
 
-Status: **PROPOSAL — not yet discussed or approved.** Written 2026-07-02.
-Once decided, the accepted parts move into ui-architecture.md and this file
-records the decisions.
+Status: **ACCEPTED and implemented, 2026-07-02.** All four phases landed
+(LineBuffer/TextField, ListCursor, Form, Keymap); ui-architecture.md
+("Shared Widgets") is the living documentation. Decisions taken: own
+LineBuffer (no `tui-input` dependency; `tui-realm-stdlib` dropped);
+behavior parity plus the cheap consistency wins (word ops + offset
+discipline in all fields, PgUp/PgDn in all lists); the series filter is a
+full TextField. The file-browser filter (#20) and sort modes (#8) did not
+land — they are now drop-ins over the shared widgets.
 
 ## Motivation
 

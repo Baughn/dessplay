@@ -15,11 +15,13 @@
 //! (ui-architecture.md, Web Renderer).
 
 pub mod form;
+pub mod keymap;
 pub mod keys;
 pub mod line;
 pub mod list;
 
-pub(crate) use keys::{plain, typed};
 pub use form::{CharOutcome, Form, FormEvent, FormModel, RowAction, overlay};
+pub use keymap::{BarEntry, Binding, KeyPattern, Keymap};
+pub(crate) use keys::{plain, typed};
 pub use line::{LineBuffer, TextField};
 pub use list::{ListCursor, render_list};

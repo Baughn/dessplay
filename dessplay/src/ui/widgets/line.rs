@@ -362,7 +362,10 @@ impl TextField {
             self.buf.scroll(width);
             let (chars, cursor_col) = self.buf.visible(width);
             let render_char = |c: &char| if masked { '*' } else { *c };
-            let pre: String = chars[..cursor_col.min(chars.len())].iter().map(render_char).collect();
+            let pre: String = chars[..cursor_col.min(chars.len())]
+                .iter()
+                .map(render_char)
+                .collect();
             let (at, post): (String, String) = if cursor_col < chars.len() {
                 (
                     render_char(&chars[cursor_col]).to_string(),

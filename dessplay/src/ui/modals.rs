@@ -20,7 +20,10 @@ use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, NextEpState, Serie
 use super::components::plain;
 use super::msg::Msg;
 use super::theme;
-use super::widgets::{CharOutcome, Form, FormEvent, FormModel, ListCursor, RowAction, TextField, render_list};
+use super::widgets::{
+    Binding, CharOutcome, Form, FormEvent, FormModel, KeyPattern, Keymap, ListCursor, RowAction,
+    TextField, render_list,
+};
 use crate::config::Settings;
 
 /// Like `passive_component!` but without a focus field (modals are
@@ -314,22 +317,65 @@ impl FileBrowser {
         }
     }
 
-    /// Keys for the keybinding bar.
-    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+    /// The active keymap (per purpose — labels differ, and `s` exists
+    /// only in the directory picker).
+    fn keymap(&self) -> &'static Keymap<FileBrowser, Msg> {
         match self.purpose {
-            BrowseFor::File => vec![("Enter", "Open/Add"), ("Bksp", "Up"), ("Esc", "Cancel")],
-            BrowseFor::Map { .. } => {
-                vec![("Enter", "Open/Map"), ("Bksp", "Up"), ("Esc", "Cancel")]
-            }
-            BrowseFor::Directory => {
-                vec![
-                    ("Enter", "Open"),
-                    ("s", "Select here"),
-                    ("Bksp", "Up"),
-                    ("Esc", "Cancel"),
-                ]
-            }
+            BrowseFor::File => &BROWSER_FILE_KEYMAP,
+            BrowseFor::Map { .. } => &BROWSER_MAP_KEYMAP,
+            BrowseFor::Directory => &BROWSER_DIR_KEYMAP,
         }
+    }
+
+    /// Keys for the keybinding bar (derived from the active keymap).
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        self.keymap().bar()
+    }
+
+    /// Enter: open a directory, act on a synthetic row, or choose a file.
+    fn act_enter(&mut self) -> Option<Msg> {
+        let row = self.entries.get(self.cursor.index())?;
+        match row.kind {
+            RowKind::Select => return self.cwd.clone().map(Msg::DirChosen),
+            RowKind::Parent => {
+                self.ascend();
+                return Some(Msg::None);
+            }
+            RowKind::Entry => {}
+        }
+        if row.is_dir {
+            self.cwd = Some(row.path.clone());
+            self.refresh();
+            return Some(Msg::None);
+        }
+        match &self.purpose {
+            BrowseFor::Map { file, .. } => Some(Msg::FileMapped {
+                file: *file,
+                path: row.path.clone(),
+            }),
+            _ => Some(Msg::FileChosen {
+                path: row.path.clone(),
+                after: self.after,
+            }),
+        }
+    }
+
+    /// `s` (directory picker): confirm the current directory.
+    fn act_select_here(&mut self) -> Option<Msg> {
+        self.cwd.clone().map(Msg::DirChosen)
+    }
+
+    /// Backspace: up one level; from the roots listing, close.
+    fn act_up(&mut self) -> Option<Msg> {
+        if self.ascend() {
+            Some(Msg::None)
+        } else {
+            Some(Msg::CloseModal)
+        }
+    }
+
+    fn act_close(&mut self) -> Option<Msg> {
+        Some(Msg::CloseModal)
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -360,52 +406,76 @@ passive_modal!(FileBrowser);
 
 impl AppComponent<Msg, NoUserEvent> for FileBrowser {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        let key = plain(ev)?;
-        if self.cursor.nav(key, self.entries.len()) {
+        if let Some(key) = plain(ev)
+            && self.cursor.nav(key, self.entries.len())
+        {
             return Some(Msg::None);
         }
-        match key {
-            Key::Enter => {
-                let row = self.entries.get(self.cursor.index())?;
-                match row.kind {
-                    RowKind::Select => return self.cwd.clone().map(Msg::DirChosen),
-                    RowKind::Parent => {
-                        self.ascend();
-                        return Some(Msg::None);
-                    }
-                    RowKind::Entry => {}
-                }
-                if row.is_dir {
-                    self.cwd = Some(row.path.clone());
-                    self.refresh();
-                    return Some(Msg::None);
-                }
-                match &self.purpose {
-                    BrowseFor::Map { file, .. } => Some(Msg::FileMapped {
-                        file: *file,
-                        path: row.path.clone(),
-                    }),
-                    _ => Some(Msg::FileChosen {
-                        path: row.path.clone(),
-                        after: self.after,
-                    }),
-                }
-            }
-            Key::Char('s') if matches!(self.purpose, BrowseFor::Directory) => {
-                self.cwd.clone().map(Msg::DirChosen)
-            }
-            Key::Backspace => {
-                if self.ascend() {
-                    Some(Msg::None)
-                } else {
-                    Some(Msg::CloseModal)
-                }
-            }
-            Key::Esc => Some(Msg::CloseModal),
-            _ => None,
-        }
+        self.keymap().dispatch(self, ev)
     }
 }
+
+/// Playlist-add browser bindings.
+static BROWSER_FILE_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Open/Add")),
+        action: FileBrowser::act_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Backspace),
+        bar: Some(("Bksp", "Up")),
+        action: FileBrowser::act_up,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Cancel")),
+        action: FileBrowser::act_close,
+    },
+]);
+
+/// Manual-mapping browser bindings (same keys, mapping labels).
+static BROWSER_MAP_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Open/Map")),
+        action: FileBrowser::act_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Backspace),
+        bar: Some(("Bksp", "Up")),
+        action: FileBrowser::act_up,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Cancel")),
+        action: FileBrowser::act_close,
+    },
+]);
+
+/// Directory-picker bindings: adds `s` ("select here").
+static BROWSER_DIR_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Open")),
+        action: FileBrowser::act_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Char('s'),
+        bar: Some(("s", "Select here")),
+        action: FileBrowser::act_select_here,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Backspace),
+        bar: Some(("Bksp", "Up")),
+        action: FileBrowser::act_up,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Cancel")),
+        action: FileBrowser::act_close,
+    },
+]);
 
 // ---- Settings ----------------------------------------------------------
 
@@ -454,15 +524,9 @@ impl SettingsModal {
         }
     }
 
-    /// Keys for the keybinding bar.
+    /// Keys for the keybinding bar (derived from the Form).
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("Enter", "Edit/Toggle"),
-            ("d", "Remove root"),
-            ("J/K", "Reorder"),
-            ("S", "Save"),
-            ("Esc", "Cancel"),
-        ]
+        self.form.bar()
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -543,10 +607,7 @@ impl FormModel for SettingsForm {
                 Span::styled(marker, theme::tone_style(super::props::Tone::Transfer)),
             ]));
         }
-        lines.push(Line::from(Span::styled(
-            "[Add media root]",
-            theme::dim(),
-        )));
+        lines.push(Line::from(Span::styled("[Add media root]", theme::dim())));
         lines
     }
 
@@ -630,6 +691,14 @@ impl FormModel for SettingsForm {
         }
     }
 
+    fn enter_label(&self) -> &'static str {
+        "Edit/Toggle"
+    }
+
+    fn extra_bar(&self) -> Vec<super::widgets::BarEntry> {
+        vec![("d", "Remove root"), ("J/K", "Reorder")]
+    }
+
     /// The "needs …" gate: drives both the save refusal and the `[Save]`
     /// row's hint, so a refused save explains itself.
     fn save_hint(&self) -> Option<String> {
@@ -689,9 +758,42 @@ impl EpisodeBrowser {
         }
     }
 
-    /// Keys for the keybinding bar.
+    /// Keys for the keybinding bar (derived from the keymap).
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("Enter", "Open"), ("Bksp", "Back"), ("Esc", "Close")]
+        EPISODES_KEYMAP.bar()
+    }
+
+    /// Enter: open the selected season, or choose the selected episode
+    /// (added to the playlist by hash — if we hold the file it resolves
+    /// Ready; if not, it's added from the file catalog and downloads).
+    fn act_enter(&mut self) -> Option<Msg> {
+        match self.open {
+            None => {
+                if !self.seasons.is_empty() {
+                    self.open = Some(self.cursor.index());
+                    self.cursor.reset();
+                }
+                Some(Msg::None)
+            }
+            Some(index) => match self.seasons[index].episodes.get(self.cursor.index()) {
+                Some((hash, _)) => Some(Msg::EpisodeChosen { hash: *hash }),
+                None => Some(Msg::None),
+            },
+        }
+    }
+
+    /// Backspace: episodes -> seasons; from the seasons list, close.
+    fn act_back(&mut self) -> Option<Msg> {
+        if self.open.take().is_some() {
+            self.cursor.reset();
+            Some(Msg::None)
+        } else {
+            Some(Msg::CloseModal)
+        }
+    }
+
+    fn act_close(&mut self) -> Option<Msg> {
+        Some(Msg::CloseModal)
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -743,43 +845,33 @@ passive_modal!(EpisodeBrowser);
 
 impl AppComponent<Msg, NoUserEvent> for EpisodeBrowser {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        let key = plain(ev)?;
-        if self.cursor.nav(key, self.len()) {
+        if let Some(key) = plain(ev)
+            && self.cursor.nav(key, self.len())
+        {
             return Some(Msg::None);
         }
-        match key {
-            Key::Enter => {
-                match self.open {
-                    // On the season list: open the selected season.
-                    None => {
-                        if !self.seasons.is_empty() {
-                            self.open = Some(self.cursor.index());
-                            self.cursor.reset();
-                        }
-                        Some(Msg::None)
-                    }
-                    // On an episode: add it to the playlist by hash. If we
-                    // hold the file it resolves Ready; if not, it's added
-                    // from the file catalog and downloads.
-                    Some(index) => match self.seasons[index].episodes.get(self.cursor.index()) {
-                        Some((hash, _)) => Some(Msg::EpisodeChosen { hash: *hash }),
-                        None => Some(Msg::None),
-                    },
-                }
-            }
-            Key::Backspace => {
-                if self.open.take().is_some() {
-                    self.cursor.reset();
-                    Some(Msg::None)
-                } else {
-                    Some(Msg::CloseModal)
-                }
-            }
-            Key::Esc => Some(Msg::CloseModal),
-            _ => None,
-        }
+        EPISODES_KEYMAP.dispatch(self, ev)
     }
 }
+
+/// Episode-browser bindings.
+static EPISODES_KEYMAP: Keymap<EpisodeBrowser, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Open")),
+        action: EpisodeBrowser::act_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Backspace),
+        bar: Some(("Bksp", "Back")),
+        action: EpisodeBrowser::act_back,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Close")),
+        action: EpisodeBrowser::act_close,
+    },
+]);
 
 // ---- List entry editor -------------------------------------------------
 
@@ -836,11 +928,9 @@ impl ListEditModal {
         }
     }
 
-    /// Keys for the keybinding bar. Capital `S` (and the `[Save]` row) are
-    /// the reliable save paths; Ctrl-s works but is not advertised (eaten
-    /// as XOFF on terminals lacking the enhanced keyboard protocol).
+    /// Keys for the keybinding bar (derived from the Form).
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("Enter", "Edit/Cycle"), ("S", "Save"), ("Esc", "Cancel")]
+        self.form.bar()
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -898,9 +988,7 @@ impl FormModel for ListEditForm {
         LIST_FIELDS
             .iter()
             .enumerate()
-            .map(|(index, label)| {
-                Line::raw(format!("{label:>12}: {}", self.field_value(index)))
-            })
+            .map(|(index, label)| Line::raw(format!("{label:>12}: {}", self.field_value(index))))
             .collect()
     }
 
@@ -948,6 +1036,10 @@ impl FormModel for ListEditForm {
             Box::new(self.entry.clone()),
             self.next_ep_change().map(Box::new),
         )
+    }
+
+    fn enter_label(&self) -> &'static str {
+        "Edit/Cycle"
     }
 
     fn overlay_percent(&self) -> (u16, u16) {
@@ -998,9 +1090,32 @@ impl AniDbSearchModal {
         self.cursor.reset();
     }
 
-    /// Keys for the keybinding bar.
+    /// Keys for the keybinding bar: the keymap's entries with the
+    /// structural results-navigation entry slotted after Enter.
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("Enter", "Search/Link"), ("↑↓", "Pick"), ("Esc", "Cancel")]
+        let mut items = SEARCH_KEYMAP.bar();
+        items.insert(1, ("↑↓", "Pick"));
+        items
+    }
+
+    /// Enter on fresh results links; otherwise it (re-)searches.
+    fn act_enter(&mut self) -> Option<Msg> {
+        let query = self.editor.text();
+        if self.answered.as_deref() == Some(query.as_str())
+            && let Some(hit) = self.results.get(self.cursor.index())
+        {
+            return Some(Msg::ListEntryLinked(self.id, hit.series));
+        }
+        if query.trim().is_empty() {
+            return Some(Msg::None);
+        }
+        self.searching = true;
+        self.answered = None;
+        Some(Msg::AniDbSearchRequested(query))
+    }
+
+    fn act_close(&mut self) -> Option<Msg> {
+        Some(Msg::CloseModal)
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -1069,35 +1184,34 @@ passive_modal!(AniDbSearchModal);
 
 impl AppComponent<Msg, NoUserEvent> for AniDbSearchModal {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        if let Some(key) = plain(ev) {
-            if self.cursor.nav(key, self.results.len()) {
-                return Some(Msg::None);
-            }
-            match key {
-                Key::Esc => return Some(Msg::CloseModal),
-                Key::Enter => {
-                    let query = self.editor.text();
-                    // Enter on fresh results links; otherwise it searches.
-                    if self.answered.as_deref() == Some(query.as_str())
-                        && let Some(hit) = self.results.get(self.cursor.index())
-                    {
-                        return Some(Msg::ListEntryLinked(self.id, hit.series));
-                    }
-                    if query.trim().is_empty() {
-                        return Some(Msg::None);
-                    }
-                    self.searching = true;
-                    self.answered = None;
-                    return Some(Msg::AniDbSearchRequested(query));
-                }
-                _ => {}
-            }
+        if let Some(key) = plain(ev)
+            && self.cursor.nav(key, self.results.len())
+        {
+            return Some(Msg::None);
+        }
+        if let Some(msg) = SEARCH_KEYMAP.dispatch(self, ev) {
+            return Some(msg);
         }
         // Everything else edits the query (which stales any results).
         self.editor.on(ev);
         Some(Msg::None)
     }
 }
+
+/// AniDB-search bindings (results navigation is the structural
+/// ListCursor; query editing is the fall-through).
+static SEARCH_KEYMAP: Keymap<AniDbSearchModal, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Search/Link")),
+        action: AniDbSearchModal::act_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Cancel")),
+        action: AniDbSearchModal::act_close,
+    },
+]);
 
 passive_modal!(ListEditModal);
 
@@ -1299,7 +1413,13 @@ mod tests {
         let partial = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
         assert_eq!(partial.form.model.missing_essentials(), vec!["a password"]);
         // Fully populated: nothing missing, saveable.
-        assert!(saveable_settings().form.model.missing_essentials().is_empty());
+        assert!(
+            saveable_settings()
+                .form
+                .model
+                .missing_essentials()
+                .is_empty()
+        );
     }
 
     fn sample_list_entry() -> SeriesListEntry {
@@ -1368,14 +1488,20 @@ mod tests {
             modal.on(&key(Key::Char('J'), KeyModifiers::SHIFT)),
             Some(Msg::None)
         );
-        assert_eq!(modal.form.model.roots, vec![PathBuf::from("/b"), PathBuf::from("/a")]);
+        assert_eq!(
+            modal.form.model.roots,
+            vec![PathBuf::from("/b"), PathBuf::from("/a")]
+        );
         assert_eq!(modal.form.selected(), FIXED_FIELDS + 1);
         // Lowercase `k` moves it back up.
         assert_eq!(
             modal.on(&key(Key::Char('k'), KeyModifiers::NONE)),
             Some(Msg::None)
         );
-        assert_eq!(modal.form.model.roots, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(
+            modal.form.model.roots,
+            vec![PathBuf::from("/a"), PathBuf::from("/b")]
+        );
         assert_eq!(modal.form.selected(), FIXED_FIELDS);
     }
 

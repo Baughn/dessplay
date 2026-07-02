@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-06-12
+Last updated: 2026-07-02
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -24,11 +24,14 @@ message flow, and how the UI integrates with the actor system.
 **tui-realm** provides:
 - **Elm architecture**: Components have Props (input data), State (internal),
   and produce Msg (output). Unidirectional data flow.
-- **Pre-built components**: `tui-realm-stdlib` (the chat/field `Input`).
 - **ratatui ecosystem**: Can use any ratatui widget inside a tui-realm
   component.
 - **Test helpers**: `tuirealm::testing` renders components to strings for
   insta snapshots.
+
+We do **not** use `tui-realm-stdlib`: its `Input` was replaced by our own
+[`LineBuffer`](#shared-widgets) after its horizontal-scroll bookkeeping
+required repeated workarounds (dependency dropped 2026-07-02).
 
 **Deviation (Phase 6):** we use tui-realm's *component model*
 (`Component`/`AppComponent`, `Event`, `Cmd`) but **not its `Application`
@@ -62,6 +65,34 @@ Application
 +-- PlayerStatus (progress bar + info)
 +-- KeybindingBar (derived from active focus)
 ```
+
+### Shared Widgets
+
+Every pane and modal is built on the interaction primitives in
+`ui/widgets/`, each implemented exactly once. This is load-bearing
+architecture, not tidiness: "not all the text fields work the same way"
+was a recurring bug class (word navigation and the scroll-offset reset
+each landed in the chat input and silently missed the modal fields).
+A behavior that exists in one place cannot drift.
+
+| Widget | Job | Guarantee |
+|--------|-----|-----------|
+| `LineBuffer` / `TextField` (`widgets/line.rs`) | The one line editor: text, cursor, horizontal scroll as pure state; `TextField` adds the bordered box, placeholder, cursor cell | The full editing vocabulary (word motion via Ctrl/Alt-arrows and Alt-b/f, word kill via Ctrl-W and Ctrl/Alt-Backspace, Ctrl-A/E, Home/End) works in **every** field — chat input, modal field editors, the series filter. Scroll invariants (`offset <= cursor <= len`, reset on set/clear) are property-tested; the "field renders from a stale column" bug class is unrepresentable |
+| `ListCursor` (`widgets/list.rs`) | The one selection cursor + the standard bordered list render | Up/Down/PgUp/PgDn and edge clamping behave identically in every list (panes, browsers, forms, search results) |
+| `Form` / `FormModel` (`widgets/form.rs`) | Field modals as data: a model declares rows and what Enter means per row (edit / toggle / cycle / emit); the Form owns the cursor, the pop-up editor, the save triple (capital `S`, the `[Save]` row with its "needs …" hint, the unadvertised Ctrl-S alias — capital-S exists because Ctrl-S is XOFF in terminals lacking the enhanced keyboard protocol), and Esc | Settings and the List-entry editor are declarations; a new field or form cannot behave differently from its neighbors |
+| `Keymap` (`widgets/keymap.rs`) | Bindings as data: (pattern, bar entry, action method), one table per component or mode | The keybinding bar and the dispatch derive from the same table — a key shown in the bar always dispatches; a dispatched key is advertised or deliberately hidden. Actions return `None` to *decline* (guards), letting the event fall through to the structural layers |
+| `widgets/keys.rs` | Key-event matchers | The terminal-compatibility policy lives in one place: bare letters over Ctrl-letters (Ctrl-J == LF, Ctrl-M == Enter, Ctrl-S == XOFF without the enhanced keyboard protocol); Ctrl *and* Alt accepted for word ops (macOS terminals send Alt); `.contains` matching for kitty's extra modifier bits |
+
+Event routing inside a component is layered, most-specific first:
+
+```
+typed chars (text fields / filters)  ->  ListCursor::nav (lists)
+    ->  Keymap::dispatch (component keys)  ->  LineBuffer::edit (editing fall-through)
+```
+
+The widgets are pure state machines — events in, messages out, rendering
+a separate function over their state — which is what keeps them portable
+to a future non-terminal renderer (see [Web Renderer](#web-renderer-future)).
 
 ### Component Definition Pattern
 
@@ -270,16 +301,12 @@ when no hashes remain.
 ## Keybinding Bar
 
 The keybinding bar is **derived** from the currently focused component and
-any active modal. It is not manually maintained.
-
-Each component declares its keybindings as metadata:
-
-```rust
-struct KeybindingInfo {
-    key: &'static str,    // "Enter", "Tab", "Ctrl-C"
-    label: &'static str,  // "Send", "Next pane", "Quit"
-}
-```
+any active modal. It is not manually maintained — and per component it is
+derived from the same `Keymap` table that dispatches the keys (or from
+the `Form` for form modals), so the bar cannot claim a binding that does
+not exist. Structural entries (list navigation, "type to filter") are
+appended by the component exactly when the corresponding shared widget is
+in play.
 
 Each pane (and modal) exposes `keybindings()`; the dispatcher rebuilds
 the `KeyBar` items from the focused component (or topmost modal) plus
@@ -391,4 +418,7 @@ any UI framework. A future web UI could:
 4. Use the same semantic color scheme and layout proportions
 
 The tui-realm components are terminal-specific, but the state-to-props
-mapping logic (snapshot -> display data) could be shared.
+mapping logic (snapshot -> display data) could be shared — and the
+[shared widgets](#shared-widgets) (line editing, selection, forms,
+keymaps) are pure state machines whose interaction logic ports as-is;
+only their `render` functions are ratatui-bound.

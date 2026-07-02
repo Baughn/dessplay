@@ -24,7 +24,9 @@ The rendezvous server and the primary seeder run on **tsugumi.local** as systemd
 
 This project uses **jujutsu** (`jj`) for revision control, not raw git. Use `jj` commands for commits, branches, and history operations.
 
-When asked to commit, use `jj commit`, not `jj describe`. Don't bother to check the diff; I don't mix changes.
+Commit work units when convenient, but don't try too hard to split overlapping changes. Run `cargo fmt` before committing.
+
+Use `jj commit`, not `jj describe`. Don't bother to check the diff; I don't mix changes.
 
 # Bug fixing
 

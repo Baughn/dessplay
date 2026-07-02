@@ -20,7 +20,7 @@ use super::props::{
     ChatLine, FranchiseRow, ListGroup, PlaylistProps, SeriesSort, StatusProps, Tone, UsersProps,
 };
 use super::theme;
-use super::widgets::{LineBuffer, ListCursor, TextField, render_list};
+use super::widgets::{Binding, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, render_list};
 
 /// A key the pane responds to, for the keybinding bar.
 pub type Keybinding = (&'static str, &'static str);
@@ -192,14 +192,71 @@ impl ChatPane {
         self.input.clear();
     }
 
-    /// Keys shown in the keybinding bar.
+    /// Keys shown in the keybinding bar (derived from the keymap).
     pub fn keybindings(&self) -> Vec<Keybinding> {
-        vec![
-            ("Enter", "Send"),
-            ("PgUp/Dn", "Scroll"),
-            ("↑↓", "History"),
-            ("Esc", "Clear"),
-        ]
+        CHAT_KEYMAP.bar()
+    }
+
+    /// Enter: send the input as chat or a `/command`. Declines on empty.
+    fn act_send(&mut self) -> Option<Msg> {
+        let text = self.text().trim().to_string();
+        if text.is_empty() {
+            return None;
+        }
+        self.clear();
+        self.sent_history.push(text.clone());
+        self.history_pos = None;
+        self.scroll_offset = 0; // jump to newest so you see it
+        Some(if text.starts_with('/') {
+            Msg::Command(text)
+        } else {
+            Msg::SendChat(text)
+        })
+    }
+
+    /// Esc: clear the input (and drop out of history recall).
+    fn act_clear(&mut self) -> Option<Msg> {
+        self.clear();
+        self.history_pos = None;
+        Some(Msg::None)
+    }
+
+    fn act_scroll_up(&mut self) -> Option<Msg> {
+        self.scroll_offset += CHAT_PAGE_STEP;
+        Some(Msg::None)
+    }
+
+    fn act_scroll_down(&mut self) -> Option<Msg> {
+        self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_PAGE_STEP);
+        Some(Msg::None)
+    }
+
+    /// Up: recall an older message I sent. Declines with no history.
+    fn act_history_prev(&mut self) -> Option<Msg> {
+        if self.sent_history.is_empty() {
+            return None;
+        }
+        let pos = match self.history_pos {
+            None => self.sent_history.len() - 1,
+            Some(p) => p.saturating_sub(1),
+        };
+        self.history_pos = Some(pos);
+        self.set_input(self.sent_history[pos].clone());
+        Some(Msg::None)
+    }
+
+    /// Down: walk back toward the newest, then to an empty draft.
+    /// Declines when not recalling.
+    fn act_history_next(&mut self) -> Option<Msg> {
+        let pos = self.history_pos?;
+        if pos + 1 < self.sent_history.len() {
+            self.history_pos = Some(pos + 1);
+            self.set_input(self.sent_history[pos + 1].clone());
+        } else {
+            self.history_pos = None;
+            self.clear();
+        }
+        Some(Msg::None)
     }
 
     /// Load `text` into the input and park the cursor at its end.
@@ -552,63 +609,8 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
             self.input.insert(c);
             return Some(Msg::None);
         }
-        // The chat's own keys: send, clear, log scrolling, history recall.
-        // Everything else falls through to the shared editing vocabulary.
-        match plain(ev) {
-            Some(Key::Enter) => {
-                let text = self.text().trim().to_string();
-                if text.is_empty() {
-                    return None;
-                }
-                self.clear();
-                self.sent_history.push(text.clone());
-                self.history_pos = None;
-                self.scroll_offset = 0; // jump to newest so you see it
-                return Some(if text.starts_with('/') {
-                    Msg::Command(text)
-                } else {
-                    Msg::SendChat(text)
-                });
-            }
-            Some(Key::Esc) => {
-                self.clear();
-                self.history_pos = None;
-                return Some(Msg::None);
-            }
-            Some(Key::PageUp) => {
-                self.scroll_offset += CHAT_PAGE_STEP;
-                return Some(Msg::None);
-            }
-            Some(Key::PageDown) => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_PAGE_STEP);
-                return Some(Msg::None);
-            }
-            Some(Key::Up) => {
-                // Recall an older message I sent into the input.
-                if self.sent_history.is_empty() {
-                    return None;
-                }
-                let pos = match self.history_pos {
-                    None => self.sent_history.len() - 1,
-                    Some(p) => p.saturating_sub(1),
-                };
-                self.history_pos = Some(pos);
-                self.set_input(self.sent_history[pos].clone());
-                return Some(Msg::None);
-            }
-            Some(Key::Down) => {
-                // Walk back toward the newest, then to an empty draft.
-                let pos = self.history_pos?;
-                if pos + 1 < self.sent_history.len() {
-                    self.history_pos = Some(pos + 1);
-                    self.set_input(self.sent_history[pos + 1].clone());
-                } else {
-                    self.history_pos = None;
-                    self.clear();
-                }
-                return Some(Msg::None);
-            }
-            _ => {}
+        if let Some(msg) = CHAT_KEYMAP.dispatch(self, ev) {
+            return Some(msg);
         }
         // Cursor motion, deletion, word ops — the vocabulary every text
         // field shares (widgets::LineBuffer::edit).
@@ -618,6 +620,41 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
         None
     }
 }
+
+/// Chat bindings: dispatch and the keybinding bar derive from this one
+/// table, so the bar cannot lie about what the keys do.
+static CHAT_KEYMAP: Keymap<ChatPane, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Send")),
+        action: ChatPane::act_send,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::PageUp),
+        bar: Some(("PgUp/Dn", "Scroll")),
+        action: ChatPane::act_scroll_up,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::PageDown),
+        bar: None,
+        action: ChatPane::act_scroll_down,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Up),
+        bar: Some(("↑↓", "History")),
+        action: ChatPane::act_history_prev,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Down),
+        bar: None,
+        action: ChatPane::act_history_next,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Clear")),
+        action: ChatPane::act_clear,
+    },
+]);
 
 // ---- Users pane --------------------------------------------------------
 
@@ -636,9 +673,20 @@ impl UsersPane {
         self.cursor.clamp(self.props.rows.len());
     }
 
-    /// Keys shown in the keybinding bar.
+    /// Keys shown in the keybinding bar: the structural list-navigation
+    /// entry plus the keymap's own.
     pub fn keybindings(&self) -> Vec<Keybinding> {
-        vec![("↑↓", "Select"), ("a", "Mark away")]
+        let mut items = vec![("↑↓", "Select")];
+        items.extend(USERS_KEYMAP.bar());
+        items
+    }
+
+    /// `a`: mark the selected user Away (or clear an Away we set).
+    fn act_away(&mut self) -> Option<Msg> {
+        let row = self.props.rows.get(self.cursor.index())?;
+        Some(Msg::ToggleAway(dessplay_core::types::UserId::new(
+            row.name.clone(),
+        )))
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -665,8 +713,7 @@ impl UsersPane {
                 theme::tone_style(Tone::Muted),
             )));
         }
-        let selected =
-            (self.focused && !self.props.rows.is_empty()).then(|| self.cursor.index());
+        let selected = (self.focused && !self.props.rows.is_empty()).then(|| self.cursor.index());
         render_list(frame, area, "Users", items, selected, self.focused);
     }
 }
@@ -675,21 +722,21 @@ passive_component!(UsersPane);
 
 impl AppComponent<Msg, NoUserEvent> for UsersPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        let key = plain(ev)?;
-        if self.cursor.nav(key, self.props.rows.len()) {
+        if let Some(key) = plain(ev)
+            && self.cursor.nav(key, self.props.rows.len())
+        {
             return Some(Msg::None);
         }
-        match key {
-            Key::Char('a') => {
-                let row = self.props.rows.get(self.cursor.index())?;
-                Some(Msg::ToggleAway(dessplay_core::types::UserId::new(
-                    row.name.clone(),
-                )))
-            }
-            _ => None,
-        }
+        USERS_KEYMAP.dispatch(self, ev)
     }
 }
+
+/// Users-pane bindings.
+static USERS_KEYMAP: Keymap<UsersPane, Msg> = Keymap(&[Binding {
+    pattern: KeyPattern::Char('a'),
+    bar: Some(("a", "Mark away")),
+    action: UsersPane::act_away,
+}]);
 
 // ---- Playlist pane -----------------------------------------------------
 
@@ -713,17 +760,67 @@ impl PlaylistPane {
         self.props.rows.get(self.cursor.index()).map(|row| row.hash)
     }
 
-    /// Keys shown in the keybinding bar.
+    /// Keys shown in the keybinding bar (derived from the keymap).
     pub fn keybindings(&self) -> Vec<Keybinding> {
-        vec![
-            ("Enter", "Play"),
-            ("a", "Add"),
-            ("d", "Remove"),
-            ("w", "Watch"),
-            ("J/K", "Move"),
-            ("M", "Map"),
-            ("A", "Archive"),
-        ]
+        PLAYLIST_KEYMAP.bar()
+    }
+
+    /// Enter: play the selected entry, or add on the [Add New] row.
+    fn act_play(&mut self) -> Option<Msg> {
+        Some(match self.selected_hash() {
+            Some(hash) => Msg::PlaySelected(hash),
+            None => Msg::AddFileAfter(None),
+        })
+    }
+
+    fn act_add(&mut self) -> Option<Msg> {
+        Some(Msg::AddFileAfter(self.selected_hash()))
+    }
+
+    fn act_remove(&mut self) -> Option<Msg> {
+        self.selected_hash().map(Msg::RemoveEntry)
+    }
+
+    /// `w`: cycle the entry's series watch state: Watching -> Maybe ->
+    /// NotWatching -> ...
+    fn act_watch(&mut self) -> Option<Msg> {
+        self.selected_hash().map(Msg::CycleSeriesWatch)
+    }
+
+    /// `j`/`J`: move the selected entry down, carrying the cursor with it
+    /// so repeated presses keep moving the same episode (the reorder is
+    /// reflected via the forced UI refresh, so the cursor lands on the
+    /// moved entry). Declines on the bottom row / [Add New].
+    fn act_move_down(&mut self) -> Option<Msg> {
+        let hash = self.selected_hash()?;
+        let index = self.cursor.index();
+        if index + 1 >= self.props.rows.len() {
+            return None; // already the bottom row
+        }
+        self.cursor.set(index + 1);
+        Some(Msg::MoveDown(hash))
+    }
+
+    /// `k`/`K`: move the selected entry up (see `act_move_down`).
+    fn act_move_up(&mut self) -> Option<Msg> {
+        let hash = self.selected_hash()?;
+        let index = self.cursor.index();
+        if index == 0 {
+            return None; // already the top row
+        }
+        self.cursor.set(index - 1);
+        Some(Msg::MoveUp(hash))
+    }
+
+    /// `M`: manually map the entry to a local file.
+    fn act_map(&mut self) -> Option<Msg> {
+        self.selected_hash().map(Msg::MapFile)
+    }
+
+    /// `A`: archive — only cache-only ("temporary") rows.
+    fn act_archive(&mut self) -> Option<Msg> {
+        let row = self.props.rows.get(self.cursor.index())?;
+        row.temporary.then_some(Msg::ArchiveFile(row.hash))
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -769,63 +866,62 @@ passive_component!(PlaylistPane);
 
 impl AppComponent<Msg, NoUserEvent> for PlaylistPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        // Letters reach us through `typed` (it sees both the unshifted and the
-        // shifted form): `j`/`J` and `k`/`K` reorder, `A` archives, `M` maps.
-        // Reorder and Map use bare letters rather than Ctrl-J/Ctrl-K/Ctrl-M
-        // because those collide with control codes (Ctrl-J == LF, Ctrl-M ==
-        // Enter) in terminals lacking the enhanced keyboard protocol.
-        match typed(ev) {
-            // Move the selected entry down / up, carrying the cursor with it so
-            // repeated presses keep moving the same episode. The cursor update
-            // mirrors app.rs's no-op guards (MoveDown stops at the bottom real
-            // row, MoveUp at the top); the reorder is reflected immediately via
-            // the forced UI refresh, so the cursor lands on the moved entry.
-            Some('j' | 'J') => {
-                let hash = self.selected_hash()?;
-                let index = self.cursor.index();
-                if index + 1 >= self.props.rows.len() {
-                    return None; // already the bottom row
-                }
-                self.cursor.set(index + 1);
-                return Some(Msg::MoveDown(hash));
-            }
-            Some('k' | 'K') => {
-                let hash = self.selected_hash()?;
-                let index = self.cursor.index();
-                if index == 0 {
-                    return None; // already the top row
-                }
-                self.cursor.set(index - 1);
-                return Some(Msg::MoveUp(hash));
-            }
-            // Only cache-only ("temporary") rows can be archived.
-            Some('A') => {
-                let row = self.props.rows.get(self.cursor.index())?;
-                return row.temporary.then_some(Msg::ArchiveFile(row.hash));
-            }
-            Some('M') => return self.selected_hash().map(Msg::MapFile),
-            _ => {}
-        }
-        let key = plain(ev)?;
         // Rows plus the trailing [Add New].
-        if self.cursor.nav(key, self.props.rows.len() + 1) {
+        if let Some(key) = plain(ev)
+            && self.cursor.nav(key, self.props.rows.len() + 1)
+        {
             return Some(Msg::None);
         }
-        match key {
-            Key::Enter => match self.selected_hash() {
-                Some(hash) => Some(Msg::PlaySelected(hash)),
-                // The [Add New] row: append.
-                None => Some(Msg::AddFileAfter(None)),
-            },
-            Key::Char('a') => Some(Msg::AddFileAfter(self.selected_hash())),
-            Key::Char('d') => self.selected_hash().map(Msg::RemoveEntry),
-            // Cycle this entry's series watch state: Watching -> Maybe ->
-            // NotWatching -> ...
-            Key::Char('w') => self.selected_hash().map(Msg::CycleSeriesWatch),
-            _ => None,
-        }
+        PLAYLIST_KEYMAP.dispatch(self, ev)
     }
 }
+
+/// Playlist bindings. Reorder and Map use bare letters rather than
+/// Ctrl-J/Ctrl-K/Ctrl-M because those collide with control codes
+/// (Ctrl-J == LF, Ctrl-M == Enter) in terminals lacking the enhanced
+/// keyboard protocol.
+static PLAYLIST_KEYMAP: Keymap<PlaylistPane, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Play")),
+        action: PlaylistPane::act_play,
+    },
+    Binding {
+        pattern: KeyPattern::Char('a'),
+        bar: Some(("a", "Add")),
+        action: PlaylistPane::act_add,
+    },
+    Binding {
+        pattern: KeyPattern::Char('d'),
+        bar: Some(("d", "Remove")),
+        action: PlaylistPane::act_remove,
+    },
+    Binding {
+        pattern: KeyPattern::Char('w'),
+        bar: Some(("w", "Watch")),
+        action: PlaylistPane::act_watch,
+    },
+    Binding {
+        pattern: KeyPattern::Chars(&['j', 'J']),
+        bar: Some(("J/K", "Move")),
+        action: PlaylistPane::act_move_down,
+    },
+    Binding {
+        pattern: KeyPattern::Chars(&['k', 'K']),
+        bar: None,
+        action: PlaylistPane::act_move_up,
+    },
+    Binding {
+        pattern: KeyPattern::Char('M'),
+        bar: Some(("M", "Map")),
+        action: PlaylistPane::act_map,
+    },
+    Binding {
+        pattern: KeyPattern::Char('A'),
+        bar: Some(("A", "Archive")),
+        action: PlaylistPane::act_archive,
+    },
+]);
 
 // ---- Series pane -------------------------------------------------------
 
@@ -936,29 +1032,132 @@ impl SeriesPane {
         self.cursor.clamp(self.len());
     }
 
-    /// Keys shown in the keybinding bar.
-    pub fn keybindings(&self) -> Vec<Keybinding> {
-        // While editing the filter, printable keys go to the filter; only
-        // navigation / Esc / Enter act.
+    /// The active keymap: per mode, with a dedicated one while the
+    /// filter is being edited (letters must type, not bind).
+    fn keymap(&self) -> &'static Keymap<SeriesPane, Msg> {
         if self.filtering {
-            return vec![("type", "Filter"), ("Esc", "Clear"), ("Enter", "Browse")];
-        }
-        match self.mode {
-            SeriesMode::Recent => vec![("m", "Mode"), ("/", "Filter"), ("Enter", "Browse")],
-            SeriesMode::All => vec![
-                ("m", "Mode"),
-                ("s", "Sort"),
-                ("/", "Filter"),
-                ("Enter", "Browse"),
-            ],
-            SeriesMode::TheList => {
-                vec![
-                    ("m", "Mode"),
-                    ("Enter", "Open"),
-                    ("e", "Edit"),
-                    ("l", "Link"),
-                ]
+            &SERIES_FILTERING_KEYMAP
+        } else {
+            match self.mode {
+                SeriesMode::Recent => &SERIES_RECENT_KEYMAP,
+                SeriesMode::All => &SERIES_ALL_KEYMAP,
+                SeriesMode::TheList => &SERIES_LIST_KEYMAP,
             }
+        }
+    }
+
+    /// Keys shown in the keybinding bar: derived from the active keymap,
+    /// plus the structural "type to filter" entry while filtering (the
+    /// edit fall-through exists exactly when `filtering` is set).
+    pub fn keybindings(&self) -> Vec<Keybinding> {
+        let mut items = if self.filtering {
+            vec![("type", "Filter")]
+        } else {
+            Vec::new()
+        };
+        items.extend(self.keymap().bar());
+        items
+    }
+
+    /// `m`: cycle Recent -> All -> The List.
+    fn act_mode(&mut self) -> Option<Msg> {
+        self.mode = match self.mode {
+            SeriesMode::Recent => SeriesMode::All,
+            SeriesMode::All => SeriesMode::TheList,
+            SeriesMode::TheList => SeriesMode::Recent,
+        };
+        self.filter.clear();
+        self.cursor.reset();
+        Some(Msg::CycleSeriesMode)
+    }
+
+    /// `s` (All mode): toggle title/year sort.
+    fn act_sort(&mut self) -> Option<Msg> {
+        self.sort = match self.sort {
+            SeriesSort::Title => SeriesSort::Year,
+            SeriesSort::Year => SeriesSort::Title,
+        };
+        Some(Msg::ToggleSeriesSort)
+    }
+
+    /// `/`: begin editing the filter.
+    fn act_filter_start(&mut self) -> Option<Msg> {
+        self.filtering = true;
+        Some(Msg::None)
+    }
+
+    /// Esc outside filter editing: clear a set filter. Declines when no
+    /// filter is set.
+    fn act_filter_clear(&mut self) -> Option<Msg> {
+        if self.filter.is_empty() {
+            return None;
+        }
+        self.filter.clear();
+        self.cursor.reset();
+        Some(Msg::SeriesFilterChanged)
+    }
+
+    /// Backspace while filtering: on an *empty* filter, exit filtering
+    /// (the escape hatch alongside Esc). With text present it declines so
+    /// the shared editor deletes a character instead.
+    fn act_filter_backspace_exit(&mut self) -> Option<Msg> {
+        if !self.filter.is_empty() {
+            return None;
+        }
+        self.filtering = false;
+        self.cursor.reset();
+        Some(Msg::SeriesFilterChanged)
+    }
+
+    /// Esc while filtering: clear the filter and stop editing it.
+    fn act_filter_esc(&mut self) -> Option<Msg> {
+        self.filter.clear();
+        self.filtering = false;
+        self.cursor.reset();
+        Some(Msg::SeriesFilterChanged)
+    }
+
+    /// Enter (Recent / All, filtering or not): browse the franchise.
+    fn act_browse(&mut self) -> Option<Msg> {
+        let row = self.franchises.get(self.cursor.index())?;
+        Some(Msg::BrowseFranchise(row.key.clone()))
+    }
+
+    /// Enter (The List): toggle a heading, open a linked entry, or edit
+    /// an unlinked one.
+    fn act_list_enter(&mut self) -> Option<Msg> {
+        match self.nav_rows().get(self.cursor.index())? {
+            ListNavRow::Heading(g) => {
+                let group = &self.groups[*g];
+                let now = self.expanded(group);
+                self.expanded.insert(group.heading, !now);
+                Some(Msg::None)
+            }
+            ListNavRow::Entry(g, e) => {
+                let entry = &self.groups[*g].rows[*e];
+                match entry.series_id {
+                    Some(series) => Some(Msg::BrowseFranchise(
+                        dessplay_core::franchise::FranchiseKey::Series(series),
+                    )),
+                    None => Some(Msg::EditListEntry(entry.id)),
+                }
+            }
+        }
+    }
+
+    /// `e` (The List): edit the selected entry.
+    fn act_list_edit(&mut self) -> Option<Msg> {
+        match self.nav_rows().get(self.cursor.index())? {
+            ListNavRow::Entry(g, e) => Some(Msg::EditListEntry(self.groups[*g].rows[*e].id)),
+            ListNavRow::Heading(_) => None,
+        }
+    }
+
+    /// `l` (The List): link the selected entry to AniDB.
+    fn act_list_link(&mut self) -> Option<Msg> {
+        match self.nav_rows().get(self.cursor.index())? {
+            ListNavRow::Entry(g, e) => Some(Msg::LinkListEntry(self.groups[*g].rows[*e].id)),
+            ListNavRow::Heading(_) => None,
         }
     }
 
@@ -972,33 +1171,32 @@ impl SeriesPane {
         // the `/` cue the moment filtering starts, even before any text.
         // While editing, the filter's cursor renders as a reversed cell —
         // it is a full text field (word motion, Home/End), not append-only.
-        let title: Line = if self.mode != SeriesMode::TheList
-            && (self.filtering || !self.filter.is_empty())
-        {
-            let mut spans = vec![Span::raw(format!("{base}  /"))];
-            if self.filtering {
-                let text = self.filter.text();
-                let cursor = self.filter.cursor();
-                let pre: String = text.chars().take(cursor).collect();
-                let at: String = text
-                    .chars()
-                    .nth(cursor)
-                    .map(String::from)
-                    .unwrap_or_else(|| " ".into());
-                let post: String = text.chars().skip(cursor + 1).collect();
-                spans.push(Span::raw(pre));
-                spans.push(Span::styled(
-                    at,
-                    Style::default().add_modifier(tuirealm::ratatui::style::Modifier::REVERSED),
-                ));
-                spans.push(Span::raw(post));
+        let title: Line =
+            if self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty()) {
+                let mut spans = vec![Span::raw(format!("{base}  /"))];
+                if self.filtering {
+                    let text = self.filter.text();
+                    let cursor = self.filter.cursor();
+                    let pre: String = text.chars().take(cursor).collect();
+                    let at: String = text
+                        .chars()
+                        .nth(cursor)
+                        .map(String::from)
+                        .unwrap_or_else(|| " ".into());
+                    let post: String = text.chars().skip(cursor + 1).collect();
+                    spans.push(Span::raw(pre));
+                    spans.push(Span::styled(
+                        at,
+                        Style::default().add_modifier(tuirealm::ratatui::style::Modifier::REVERSED),
+                    ));
+                    spans.push(Span::raw(post));
+                } else {
+                    spans.push(Span::raw(self.filter.text()));
+                }
+                Line::from(spans)
             } else {
-                spans.push(Span::raw(self.filter.text()));
-            }
-            Line::from(spans)
-        } else {
-            Line::from(base)
-        };
+                Line::from(base)
+            };
         let items: Vec<ListItem> = match self.mode {
             SeriesMode::Recent | SeriesMode::All => self
                 .franchises
@@ -1054,41 +1252,19 @@ passive_component!(SeriesPane);
 
 impl AppComponent<Msg, NoUserEvent> for SeriesPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        // Filter editing (entered with `/`): the filter is a full text
-        // field — typing narrows the list, and the whole shared editing
-        // vocabulary (cursor motion, word ops, Delete) works in it.
-        // Up/Down and Enter still navigate / select the filtered list.
-        // Mode and sort keys are intentionally inert here so any letter
-        // can be typed.
+        if let Some(key) = plain(ev)
+            && self.cursor.nav(key, self.len())
+        {
+            return Some(Msg::None);
+        }
+        if let Some(msg) = self.keymap().dispatch(self, ev) {
+            return Some(msg);
+        }
+        // While filtering, everything else edits the filter text — the
+        // shared vocabulary (word ops included). Only a text *change*
+        // re-filters and resets the selection; bare cursor motion inside
+        // the filter keeps it.
         if self.filtering {
-            if let Some(key) = plain(ev) {
-                if self.cursor.nav(key, self.len()) {
-                    return Some(Msg::None);
-                }
-                match key {
-                    // Backspace on an *empty* filter exits filtering entirely
-                    // (the escape hatch, alongside Esc); with text present it
-                    // edits like any other field, via the vocabulary below.
-                    Key::Backspace if self.filter.is_empty() => {
-                        self.filtering = false;
-                        self.cursor.reset();
-                        return Some(Msg::SeriesFilterChanged);
-                    }
-                    Key::Esc => {
-                        self.filter.clear();
-                        self.filtering = false;
-                        self.cursor.reset();
-                        return Some(Msg::SeriesFilterChanged);
-                    }
-                    Key::Enter => {
-                        let row = self.franchises.get(self.cursor.index())?;
-                        return Some(Msg::BrowseFranchise(row.key.clone()));
-                    }
-                    _ => {}
-                }
-            }
-            // Only a text *change* re-filters and resets the selection;
-            // bare cursor motion inside the filter keeps it.
             let before = self.filter.text();
             if self.filter.edit(ev) {
                 return Some(if self.filter.text() == before {
@@ -1098,84 +1274,111 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                     Msg::SeriesFilterChanged
                 });
             }
-            return None;
         }
-        let key = plain(ev)?;
-        if self.cursor.nav(key, self.len()) {
-            return Some(Msg::None);
-        }
-        match key {
-            Key::Char('m') => {
-                self.mode = match self.mode {
-                    SeriesMode::Recent => SeriesMode::All,
-                    SeriesMode::All => SeriesMode::TheList,
-                    SeriesMode::TheList => SeriesMode::Recent,
-                };
-                self.filter.clear();
-                self.cursor.reset();
-                Some(Msg::CycleSeriesMode)
-            }
-            Key::Char('s') if self.mode == SeriesMode::All => {
-                self.sort = match self.sort {
-                    SeriesSort::Title => SeriesSort::Year,
-                    SeriesSort::Year => SeriesSort::Title,
-                };
-                Some(Msg::ToggleSeriesSort)
-            }
-            // `/` begins filtering (Recent / All only).
-            Key::Char('/') if self.mode != SeriesMode::TheList => {
-                self.filtering = true;
-                Some(Msg::None)
-            }
-            // A set-but-not-editing filter: Esc clears it.
-            Key::Esc if self.mode != SeriesMode::TheList && !self.filter.is_empty() => {
-                self.filter.clear();
-                self.cursor.reset();
-                Some(Msg::SeriesFilterChanged)
-            }
-            Key::Enter => match self.mode {
-                SeriesMode::Recent | SeriesMode::All => {
-                    let row = self.franchises.get(self.cursor.index())?;
-                    Some(Msg::BrowseFranchise(row.key.clone()))
-                }
-                SeriesMode::TheList => match self.nav_rows().get(self.cursor.index())? {
-                    ListNavRow::Heading(g) => {
-                        let group = &self.groups[*g];
-                        let now = self.expanded(group);
-                        self.expanded.insert(group.heading, !now);
-                        Some(Msg::None)
-                    }
-                    ListNavRow::Entry(g, e) => {
-                        let entry = &self.groups[*g].rows[*e];
-                        match entry.series_id {
-                            Some(series) => Some(Msg::BrowseFranchise(
-                                dessplay_core::franchise::FranchiseKey::Series(series),
-                            )),
-                            None => Some(Msg::EditListEntry(entry.id)),
-                        }
-                    }
-                },
-            },
-            Key::Char('e') if self.mode == SeriesMode::TheList => {
-                match self.nav_rows().get(self.cursor.index())? {
-                    ListNavRow::Entry(g, e) => {
-                        Some(Msg::EditListEntry(self.groups[*g].rows[*e].id))
-                    }
-                    ListNavRow::Heading(_) => None,
-                }
-            }
-            Key::Char('l') if self.mode == SeriesMode::TheList => {
-                match self.nav_rows().get(self.cursor.index())? {
-                    ListNavRow::Entry(g, e) => {
-                        Some(Msg::LinkListEntry(self.groups[*g].rows[*e].id))
-                    }
-                    ListNavRow::Heading(_) => None,
-                }
-            }
-            _ => None,
-        }
+        None
     }
 }
+
+/// While editing the filter: letters type (no Char bindings here), the
+/// bindings below act. Mode and sort keys are deliberately absent so any
+/// letter can be typed.
+static SERIES_FILTERING_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Backspace),
+        bar: None,
+        action: SeriesPane::act_filter_backspace_exit,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Clear")),
+        action: SeriesPane::act_filter_esc,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Browse")),
+        action: SeriesPane::act_browse,
+    },
+]);
+
+/// Recent mode. Filtering is gated behind `/` so the bare `m`/`s` keys
+/// stay live — and reliable: Ctrl-modified letters collide with control
+/// codes (Ctrl-M == Enter) in terminals lacking the enhanced keyboard
+/// protocol.
+static SERIES_RECENT_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Char('m'),
+        bar: Some(("m", "Mode")),
+        action: SeriesPane::act_mode,
+    },
+    Binding {
+        pattern: KeyPattern::Char('/'),
+        bar: Some(("/", "Filter")),
+        action: SeriesPane::act_filter_start,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: None,
+        action: SeriesPane::act_filter_clear,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Browse")),
+        action: SeriesPane::act_browse,
+    },
+]);
+
+/// All mode: Recent plus the sort toggle.
+static SERIES_ALL_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Char('m'),
+        bar: Some(("m", "Mode")),
+        action: SeriesPane::act_mode,
+    },
+    Binding {
+        pattern: KeyPattern::Char('s'),
+        bar: Some(("s", "Sort")),
+        action: SeriesPane::act_sort,
+    },
+    Binding {
+        pattern: KeyPattern::Char('/'),
+        bar: Some(("/", "Filter")),
+        action: SeriesPane::act_filter_start,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: None,
+        action: SeriesPane::act_filter_clear,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Browse")),
+        action: SeriesPane::act_browse,
+    },
+]);
+
+/// The List mode: no filter (`/` deliberately unbound so it stays inert).
+static SERIES_LIST_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Char('m'),
+        bar: Some(("m", "Mode")),
+        action: SeriesPane::act_mode,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Open")),
+        action: SeriesPane::act_list_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Char('e'),
+        bar: Some(("e", "Edit")),
+        action: SeriesPane::act_list_edit,
+    },
+    Binding {
+        pattern: KeyPattern::Char('l'),
+        bar: Some(("l", "Link")),
+        action: SeriesPane::act_list_link,
+    },
+]);
 
 // ---- Player status -----------------------------------------------------
 
@@ -1432,9 +1635,9 @@ mod series_pane_tests {
 #[cfg(test)]
 mod playlist_pane_tests {
     use super::*;
-    use tuirealm::event::{KeyEvent, KeyModifiers};
     use crate::ui::props::PlaylistRow;
     use dessplay_core::types::Ed2kHash;
+    use tuirealm::event::{KeyEvent, KeyModifiers};
 
     fn shifted(c: char) -> Event<NoUserEvent> {
         Event::Keyboard(KeyEvent {
@@ -1535,10 +1738,12 @@ mod playlist_pane_tests {
     fn page_keys_jump_playlist_selection() {
         use crate::ui::widgets::list::PAGE_STEP;
         let (mut p, hashes) = pane_with_rows(30);
-        let page = |code| Event::Keyboard(KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-        });
+        let page = |code| {
+            Event::Keyboard(KeyEvent {
+                code,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
         p.on(&page(Key::PageDown));
         assert_eq!(p.selected_hash(), Some(hashes[PAGE_STEP]));
         p.on(&page(Key::PageUp));

@@ -87,6 +87,19 @@ pub trait FormModel {
         CharOutcome::Ignored
     }
 
+    /// The keybinding-bar label for Enter (what activating a row means
+    /// in this form).
+    fn enter_label(&self) -> &'static str {
+        "Edit"
+    }
+
+    /// Extra advertised keys, matching what [`FormModel::on_char`]
+    /// handles. Declared on the model, next to the handler, so the two
+    /// stay in one place.
+    fn extra_bar(&self) -> Vec<super::keymap::BarEntry> {
+        Vec::new()
+    }
+
     /// Why the form cannot save right now (`None` = saveable). Drives
     /// both the save gate and the `[Save]` row's "needs …" hint, so a
     /// refused save always explains itself.
@@ -152,6 +165,19 @@ impl<M: FormModel> Form<M> {
     /// The row the cursor is on.
     pub fn selected(&self) -> usize {
         self.cursor.index()
+    }
+
+    /// The keybinding bar: Enter (model-labeled), the model's extra keys,
+    /// then the save/cancel keys the form itself owns. Derived from the
+    /// same widget that dispatches them, so a form's bar cannot drift
+    /// from Form behavior. (Ctrl-S works too but is unadvertised — see
+    /// the module docs.)
+    pub fn bar(&self) -> Vec<super::keymap::BarEntry> {
+        let mut items = vec![("Enter", self.model.enter_label())];
+        items.extend(self.model.extra_bar());
+        items.push(("S", "Save"));
+        items.push(("Esc", "Cancel"));
+        items
     }
 
     fn try_save(&self) -> FormEvent<M::Out> {
@@ -235,8 +261,7 @@ impl<M: FormModel> Form<M> {
         let (px, py) = self.model.overlay_percent();
         let modal = overlay(area, px, py);
         frame.render_widget(Clear, modal);
-        let mut items: Vec<ListItem> =
-            self.model.rows().into_iter().map(ListItem::new).collect();
+        let mut items: Vec<ListItem> = self.model.rows().into_iter().map(ListItem::new).collect();
         let save_line = match self.model.save_hint() {
             None => Line::raw("[Save]"),
             Some(hint) => Line::styled(format!("[Save] — needs {hint}"), theme::dim()),
