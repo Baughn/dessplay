@@ -1524,6 +1524,109 @@ mod tests {
         state.view()
     }
 
+    /// A now-playing file (series 7) that `user` is **committed** (Watching)
+    /// to — so an absent `user` is a committed-absent blocker of it.
+    fn committed_now_playing_state(user: &UserId) -> StateView {
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(
+            A,
+            SharedTimestamp(1),
+            dessplay_core::playlist::NewPlaylistEntry {
+                hash: Ed2kHash([1; 16]),
+                added_by: UserId::new("baughn"),
+                filename: "ep1.mkv".into(),
+                size_bytes: 1,
+                duration_millis: None,
+            },
+        );
+        state.set_now_playing(A, SharedTimestamp(2), Some(Ed2kHash([1; 16])));
+        state.set_playback_intent(A, SharedTimestamp(3), PlaybackIntent::Paused);
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(4),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show".into(),
+                series_id: Some(AniDbSeriesId(7)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        state.set_series_preference(
+            A,
+            SharedTimestamp(5),
+            user.clone(),
+            AniDbSeriesId(7),
+            SeriesWatchState::Watching,
+        );
+        state.view()
+    }
+
+    fn peer_info(name: &str, presence: dessplay_core::net::Presence) -> PeerInfo {
+        PeerInfo {
+            username: UserId::new(name),
+            role: dessplay_core::net::Role::Interactive,
+            presence,
+            addresses: vec![],
+            connected_since: 0,
+        }
+    }
+
+    /// `/ack` on a committed-but-absent blocker acknowledges each such
+    /// blocker (a per-file one-shot) and latches playback intent Playing.
+    #[test]
+    fn ack_acknowledges_committed_absent_blockers_and_latches_playing() {
+        use dessplay_core::net::Presence;
+        let baughn = UserId::new("baughn");
+        let mut ui = ui_with_view(committed_now_playing_state(&baughn));
+        // baughn is committed to the now-playing series but has departed.
+        ui.snapshot.peers = vec![
+            peer_info("kim", Presence::Present),
+            peer_info("baughn", Presence::Departed),
+        ];
+        let actions = ui.command("/ack");
+        assert_eq!(
+            mutations(&actions),
+            vec![
+                &Mutation::AcknowledgeAbsent {
+                    file: Ed2kHash([1; 16]),
+                    user: baughn,
+                },
+                &Mutation::SetPlaybackIntent {
+                    intent: PlaybackIntent::Playing,
+                },
+            ]
+        );
+    }
+
+    /// `/ack` when no one is a committed-absent blocker (everyone present) is
+    /// a local notice with no mutations.
+    #[test]
+    fn ack_with_no_committed_absent_blockers_is_a_notice() {
+        use dessplay_core::net::Presence;
+        let baughn = UserId::new("baughn");
+        let mut ui = ui_with_view(committed_now_playing_state(&baughn));
+        ui.snapshot.peers = vec![
+            peer_info("kim", Presence::Present),
+            peer_info("baughn", Presence::Present),
+        ];
+        let actions = ui.command("/ack");
+        assert!(
+            mutations(&actions).is_empty(),
+            "a present committed user is not a committed-absent blocker"
+        );
+        assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
+    /// `/ack` with nothing playing is a local notice.
+    #[test]
+    fn ack_with_nothing_playing_is_a_notice() {
+        let mut ui = ui_with_view(StateView::default());
+        let actions = ui.command("/ack");
+        assert!(mutations(&actions).is_empty());
+        assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
     fn chat_msg(t: u64, who: &str, text: &str) -> dessplay_core::types::ChatMessage {
         dessplay_core::types::ChatMessage {
             timestamp: SharedTimestamp(t),
