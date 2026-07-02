@@ -1198,4 +1198,89 @@ mod tests {
             .unwrap();
         assert_eq!(view_of(&rig).await.now_playing, Some(hash(7)));
     }
+
+    /// Regression coverage for the epoch-adoption-via-*snapshot* reconnect
+    /// path. On a post-compaction reconnect the server sends a higher-epoch
+    /// `StateSnapshot`; the actor must (1) adopt it wholesale, discarding
+    /// stale local state absent from it, (2) replay the offline buffer onto
+    /// the adopted state so unsent edits survive, (3) push those edits up as
+    /// a `StateMerge`, and (4) advance the epoch and open the gates. The only
+    /// prior snapshot test drove a fresh (never-`Connected`) actor, so link
+    /// stayed `Down` and `synced()`'s replay/push never ran on this path.
+    #[tokio::test(start_paused = true)]
+    async fn snapshot_reconnect_discards_stale_replays_offline_and_advances_epoch() {
+        let mut rig = rig();
+
+        // Stale local state from a previous session: adopt an epoch-0
+        // snapshot (now-playing hash(1)) while still Down. synced()
+        // early-returns on Down, so this only seeds self.state — the gates
+        // stay closed and nothing is pushed.
+        let mut prev = CrdtState::new();
+        prev.set_now_playing(ActorId::SERVER, SharedTimestamp(1), Some(hash(1)));
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(ServerControl::StateSnapshot(StateSnapshot {
+                    epoch: Epoch(0),
+                    state: prev,
+                })),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(view_of(&rig).await.now_playing, Some(hash(1)));
+
+        // An edit made while offline: it applies locally AND buffers, but
+        // nothing goes out (we're Down).
+        rig.commands
+            .send(SyncCommand::Mutate(Box::new(Mutation::Chat {
+                text: "offline edit".into(),
+            })))
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(rig.net.try_recv().is_err(), "nothing sent while offline");
+
+        // Reconnect: Connected -> AwaitingSync, then a higher-epoch snapshot
+        // that knows nothing of hash(1) or our offline chat (post-compaction).
+        rig.commands.send(SyncCommand::Connected).await.unwrap();
+        let mut server = CrdtState::new();
+        server.set_now_playing(ActorId::SERVER, SharedTimestamp(10), Some(hash(2)));
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(ServerControl::StateSnapshot(StateSnapshot {
+                    epoch: Epoch(4),
+                    state: server,
+                })),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+
+        // The upward merge push carries the adopted server state PLUS the
+        // replayed offline edit — proof unsent ops survive the snapshot path.
+        let push = rig.net.recv().await.unwrap();
+        let NetworkCommand::SendReliable(msg) = push else {
+            panic!("expected reliable push, got {push:?}");
+        };
+        let ServerControl::StateMerge(snapshot) = *msg else {
+            panic!("expected upward merge, got {msg:?}");
+        };
+        let pushed = snapshot.state.view();
+        assert_eq!(
+            pushed.now_playing,
+            Some(hash(2)),
+            "adopted the server's now-playing"
+        );
+        assert_eq!(pushed.chat.len(), 1, "offline edit replayed into the push");
+        assert_eq!(snapshot.epoch, Epoch(4));
+
+        // Local view: stale hash(1) discarded, server hash(2) adopted, the
+        // offline chat restored, epoch advanced.
+        let view = view_of(&rig).await;
+        assert_eq!(view.now_playing, Some(hash(2)));
+        assert_eq!(view.chat.len(), 1);
+        let (tx, rx) = oneshot::channel();
+        rig.commands.send(SyncCommand::GetEpoch(tx)).await.unwrap();
+        assert_eq!(rx.await.unwrap(), Epoch(4));
+    }
 }
