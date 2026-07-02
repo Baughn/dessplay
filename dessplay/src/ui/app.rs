@@ -1361,15 +1361,7 @@ impl Ui {
         if self.hashing.is_empty() {
             return;
         }
-        let area = frame.area();
-        let height = (self.hashing.len() as u16 * 2 + 2).min(area.height);
-        let width = (area.width * 3 / 5).clamp(20.min(area.width), area.width);
-        let overlay = Rect {
-            x: area.x + (area.width - width) / 2,
-            y: area.y + (area.height - height) / 2,
-            width,
-            height,
-        };
+        let overlay = hash_overlay_rect(frame.area(), self.hashing.len());
         frame.render_widget(Clear, overlay);
         frame.render_widget(
             Block::default()
@@ -1426,6 +1418,26 @@ impl Ui {
     }
 }
 
+/// The centered rect for the playlist-add hashing overlay: 60% of the
+/// frame width (min 20), two rows per in-flight file plus a border.
+///
+/// The arithmetic is done in u32: `area.width * 3` overflows u16 on an
+/// extremely wide terminal (panic in debug, garbage rect in release) — the
+/// same class of bug fixed in `modals::overlay`. Both dimensions are
+/// clamped back under the frame, so the final `as u16` is always in range.
+fn hash_overlay_rect(area: tuirealm::ratatui::layout::Rect, n_hashing: usize) -> tuirealm::ratatui::layout::Rect {
+    let aw = u32::from(area.width);
+    let ah = u32::from(area.height);
+    let height = ((n_hashing as u32) * 2 + 2).min(ah) as u16;
+    let width = (aw * 3 / 5).clamp(20u32.min(aw), aw) as u16;
+    tuirealm::ratatui::layout::Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1437,6 +1449,22 @@ mod tests {
     };
 
     const A: ActorId = ActorId::SERVER;
+
+    /// Regression: the hashing-overlay rect must not overflow u16 when the
+    /// terminal is extremely wide. `area.width * 3` overflowed u16 (panic in
+    /// debug, garbage rect in release) — e.g. 30000 * 3 = 90000 > u16::MAX.
+    /// The result must stay clamped to the frame.
+    #[test]
+    fn hash_overlay_rect_does_not_overflow_on_a_very_wide_terminal() {
+        use tuirealm::ratatui::layout::Rect;
+        let area = Rect::new(0, 0, 30000, 30000);
+        let rect = hash_overlay_rect(area, 3);
+        assert_eq!(rect.width, 18000); // 30000 * 3 / 5
+        assert_eq!(rect.height, 8); // 3 files * 2 + 2
+        assert!(rect.width <= area.width && rect.height <= area.height);
+        assert_eq!(rect.x, (area.width - rect.width) / 2);
+        assert_eq!(rect.y, (area.height - rect.height) / 2);
+    }
 
     fn me() -> UserId {
         UserId::new("kim")
