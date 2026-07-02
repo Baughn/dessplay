@@ -1458,6 +1458,12 @@ impl Actor {
             let mut cache = (*self.hash_cache).clone();
             cache.remove(&entry.path);
             self.hash_cache = Arc::new(cache);
+            // Drop it from the in-memory servable set too: the file is gone
+            // from disk, so we must not keep advertising/serving it. Without
+            // this, local_files still points at the deleted path until a
+            // serve request or re-resolve self-heals it (a redundant serve
+            // attempt + a spurious Missing re-emit).
+            self.local_files.remove(&entry.hash);
             evicted.push(entry.hash);
         }
         if !evicted.is_empty() {
@@ -2788,6 +2794,91 @@ mod tests {
         assert!(!watched_path.exists());
         assert!(protected_path.exists());
         assert!(unwatched_path.exists());
+    }
+
+    /// Regression: an eviction pass must drop the evicted file from the
+    /// in-memory servable set (local_files), not just the DB and hash cache.
+    /// Before the fix local_files still pointed at the deleted path, so a
+    /// peer's block-hash request for the evicted file found it "held", hit
+    /// the now-missing path, and re-emitted a spurious Missing.
+    #[tokio::test]
+    async fn eviction_drops_the_file_from_the_servable_set() {
+        let cache = tempfile::tempdir().unwrap();
+        let contents = b"a watched episode".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        let cached_path = cache.path().join(hashed.root.to_string());
+        std::fs::write(&cached_path, contents).unwrap();
+
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hashed.root,
+                path: cached_path.clone(),
+                size_bytes: contents.len() as u64,
+                last_access: 0,
+            })
+            .unwrap();
+        let mtime = mtime_millis(&std::fs::metadata(&cached_path).unwrap()).unwrap();
+        storage
+            .upsert_hash_cache(&cached_path, mtime, &hashed, 0)
+            .unwrap();
+        // Personally watched, so it is evictable under AfterWatch retention.
+        storage
+            .record_watched(&WatchRecord {
+                hash: hashed.root,
+                series_id: None,
+                series_name: None,
+                filename: "ep.mkv".into(),
+                watched_at: 1,
+            })
+            .unwrap();
+
+        let mut rig = spawn_rig_at(
+            storage,
+            vec![],
+            CacheRetention::AfterWatch,
+            cache.path().into(),
+        );
+        rig.commands
+            .send(FileCommand::RunEviction {
+                protected: HashSet::new(),
+                group_watched: HashSet::new(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Evicted { files } => assert_eq!(files, vec![hashed.root]),
+            other => panic!("unexpected output: {other:?}"),
+        }
+        assert!(!cached_path.exists());
+
+        // A peer solicits the evicted file, then we issue an unrelated
+        // Resolve as a sentinel. Post-fix the serve request is a silent bail
+        // (we no longer hold it), so the sentinel's Resolved is the next
+        // output; pre-fix the stale servable entry re-emitted a Missing for
+        // the evicted hash first.
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file: hashed.root }),
+            })
+            .await
+            .unwrap();
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hash(9),
+                filename: "sentinel.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { file, .. } => assert_eq!(
+                file,
+                hash(9),
+                "serve request for the evicted file produced a spurious output"
+            ),
+            other => panic!("evicted file still in the servable set: {other:?}"),
+        }
     }
 
     // ---- DB-vs-filesystem reconciliation (Phase 9A hardening).
