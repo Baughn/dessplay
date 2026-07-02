@@ -11,9 +11,12 @@
 //! ~2x op fan-out (sync-state.md, Operation Broadcast: "the server
 //! deduplicates, applies, and broadcasts").
 //!
-//! Map ops were already deduplicated by per-origin dot sequencing
-//! (`next_in_sequence`); the leak was order-free ops, exercised here with a
-//! chat op (a GList insert, no playback side effects).
+//! This end-to-end test exercises the order-free leak with a chat op (a
+//! GList insert, no playback side effects). The map-op arm has its own
+//! asymmetry — the reliable path used to return `true` unconditionally, so a
+//! *datagram-first* map op rebroadcast twice — covered by the deterministic
+//! unit test `eager_map_op_rebroadcasts_once_on_either_transport_first` in
+//! `dessplay-core/src/state.rs`.
 
 use std::sync::Arc;
 use std::time::Duration;

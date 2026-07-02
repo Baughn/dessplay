@@ -807,6 +807,60 @@ impl CrdtState {
         }
     }
 
+    /// Apply a map op received on the **reliable** control stream, returning
+    /// whether it advanced this origin's dot clock (i.e. was genuinely new).
+    ///
+    /// Unlike the datagram path this applies even out-of-sequence — reliable
+    /// delivery is the gap-fill fallback — but a copy whose dot we have
+    /// *already* seen (its eager datagram twin arrived first and applied) is
+    /// an idempotent no-op and must **not** rebroadcast a second time. This
+    /// mirrors the change-detection the datagram arm gets from
+    /// [`Self::apply_if_orderly`], closing the datagram-first double-broadcast.
+    fn apply_map_reliable(&mut self, op: CrdtOp) -> bool {
+        /// The op carries a dot beyond what we've applied for its origin.
+        fn advances<K, V>(map: &LwwMap<K, V>, op: &LwwMapOp<K, V>) -> bool
+        where
+            K: Ord + Clone + Debug,
+            V: Ord + Clone + Debug,
+        {
+            match op {
+                crdts::map::Op::Up { dot, .. } => {
+                    map.read_ctx().add_clock.get(&dot.actor) < dot.counter
+                }
+                // We never send Rm; an out-of-band one is dropped.
+                crdts::map::Op::Rm { .. } => false,
+            }
+        }
+
+        macro_rules! reliable {
+            ($field:ident, $op:expr) => {{
+                let advanced = advances(&self.$field, &$op);
+                self.$field.apply($op);
+                advanced
+            }};
+        }
+
+        match op {
+            CrdtOp::Playlist(op) => reliable!(playlist, op),
+            CrdtOp::Watched(op) => reliable!(watched, op),
+            CrdtOp::SeriesPreference(op) => reliable!(series_preference, op),
+            CrdtOp::ManualOverride(op) => reliable!(manual_override, op),
+            CrdtOp::FileAvailability(op) => reliable!(file_availability, op),
+            CrdtOp::AniDbMetadata(op) => reliable!(anidb_metadata, op),
+            CrdtOp::SeriesRelations(op) => reliable!(series_relations, op),
+            CrdtOp::FileCatalog(op) => reliable!(file_catalog, op),
+            CrdtOp::ListEntry(op) => reliable!(list_entries, op),
+            CrdtOp::ListNextEp(op) => reliable!(list_next_ep, op),
+            CrdtOp::PlaybackPosition(op) => reliable!(playback_position, op),
+            // Order-free types are handled by the caller before the map arm;
+            // reached only defensively, they apply and rebroadcast.
+            other => {
+                self.apply(other);
+                true
+            }
+        }
+    }
+
     /// Apply an op the server received from a client, returning whether it
     /// should **re-fan-out** this copy to the other peers.
     ///
@@ -835,13 +889,12 @@ impl CrdtState {
             CrdtOp::AcknowledgeAbsent(key) => gset_changed(&mut self.acknowledged_absent, key),
             CrdtOp::Chat(op) => glist_changed(&mut self.chat, op),
             // Map ops: datagram drops gaps (`apply_if_orderly`); reliable
-            // applies unconditionally. Either way an applied map op
-            // rebroadcasts.
+            // applies unconditionally but gap-fills (`apply_map_reliable`).
+            // Both change-detect on the origin dot clock, so an eager op's
+            // second copy (whichever transport lost the race) is a no-op and
+            // is not fanned out twice.
             map_op if via_datagram => self.apply_if_orderly(map_op),
-            map_op => {
-                self.apply(map_op);
-                true
-            }
+            map_op => self.apply_map_reliable(map_op),
         }
     }
 }
@@ -980,6 +1033,48 @@ mod tests {
         state.append_chat(msg(3, "a", "third"));
         let texts: Vec<String> = state.view().chat.into_iter().map(|m| m.text).collect();
         assert_eq!(texts, vec!["first", "second", "third"]);
+    }
+
+    /// Regression: an eager *map* op (a reliable control copy AND a datagram
+    /// copy of the same op) must rebroadcast exactly once regardless of which
+    /// transport the server processes first. The reliable arm used to return
+    /// `true` unconditionally, so a datagram-first map op applied and
+    /// rebroadcast, then its reliable twin re-applied as a no-op and
+    /// rebroadcast a second time — doubled relay egress for the whole map-op
+    /// class.
+    #[test]
+    fn eager_map_op_rebroadcasts_once_on_either_transport_first() {
+        let mut client = CrdtState::new();
+        let op = client.set_file_availability(
+            A1,
+            ts(1),
+            UserId::new("kim"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+
+        // Datagram copy first: new → rebroadcast; the reliable twin is an
+        // idempotent no-op → must NOT rebroadcast again.
+        let mut server = CrdtState::new();
+        assert!(
+            server.apply_for_broadcast(op.clone(), true),
+            "the datagram copy is new"
+        );
+        assert!(
+            !server.apply_for_broadcast(op.clone(), false),
+            "the reliable twin of an already-applied map op must not rebroadcast"
+        );
+
+        // Symmetric — reliable copy first, then the datagram twin is a no-op.
+        let mut server = CrdtState::new();
+        assert!(
+            server.apply_for_broadcast(op.clone(), false),
+            "the reliable copy is new"
+        );
+        assert!(
+            !server.apply_for_broadcast(op.clone(), true),
+            "the datagram twin of an already-applied map op must not rebroadcast"
+        );
     }
 
     #[test]
