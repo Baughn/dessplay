@@ -97,6 +97,12 @@ pub enum PlayerCommand {
         /// Whether video is running (extrapolation only applies then).
         playing: bool,
     },
+    /// Release any in-progress drift slew — reset playback rate to 1.0.
+    /// Drift correction is reactive (it only touches speed inside a
+    /// `SyncTo`); when the position reference drops (the followed peer
+    /// departs and we become the leader, or we take seek authority) no
+    /// `SyncTo` is emitted, so nothing else restores the rate.
+    ReleaseSlew,
     /// Updated shared-clock offset (server minus local), from time sync.
     ClockOffset(i64),
     /// Display a message on the video.
@@ -428,6 +434,10 @@ impl<F: PlayerFactory> Actor<F> {
             } => {
                 self.drift_correct(position_millis, timestamp, playing)
                     .await;
+            }
+            PlayerCommand::ReleaseSlew => {
+                // Idempotent: set_speed early-returns when already 1.0.
+                self.set_speed(1.0).await;
             }
             PlayerCommand::ClockOffset(offset_millis) => {
                 self.offset_millis = offset_millis;

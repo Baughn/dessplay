@@ -1343,6 +1343,15 @@ impl PlayerWiring {
                     playing: active,
                 }));
             }
+        } else if self.last_synced.take().is_some() {
+            // We were following a position reference and just lost it (the
+            // peer we chased departed and we became the leader, or we took
+            // seek authority). Drift correction is reactive — with no
+            // SyncTo, nothing else releases an in-progress slew, so the
+            // group would keep chasing our ~2%-fast reported position.
+            // Release it explicitly; a returning reference re-syncs (we
+            // cleared `last_synced`, so the next sample is not deduped away).
+            out.push(Directive::Player(PlayerCommand::ReleaseSlew));
         }
 
         // Drift visibility: log the spread across same-file peers, and warn
@@ -3486,6 +3495,72 @@ mod tests {
             vec![600_000],
             "must follow the valid same-file leader, never the not-watching \
              authority's frozen position (5_000)"
+        );
+    }
+
+    /// Regression: when the followed position reference drops (the leader
+    /// departs and we become the furthest-ahead same-file peer), the client
+    /// must release any in-progress drift slew back to 1.0x. Drift correction
+    /// is reactive — it only touches speed inside a SyncTo — so with no
+    /// reference nothing else restores the rate, and the whole group would
+    /// chase our ~2%-fast reported position.
+    #[test]
+    fn losing_the_position_reference_releases_the_slew() {
+        let mut state = playing_state();
+        // baughn: a valid same-file leader, far ahead of us.
+        state.set_file_availability(A, ts(6), UserId::new("baughn"), hash(1), FileAvailability::Ready);
+        state.set_playback_position(
+            A,
+            ts(7),
+            UserId::new("baughn"),
+            PlaybackPosition {
+                position_millis: 600_000,
+                timestamp: ts(7),
+                file: hash(1),
+            },
+        );
+        // us (kim): Ready, behind — we would slew forward to catch up.
+        state.set_file_availability(A, ts(8), me(), hash(1), FileAvailability::Ready);
+        state.set_playback_position(
+            A,
+            ts(9),
+            me(),
+            PlaybackPosition {
+                position_millis: 100_000,
+                timestamp: ts(9),
+                file: hash(1),
+            },
+        );
+
+        let mut wiring = PlayerWiring::new(me());
+        let view = state.view();
+        let peers = [peer("kim"), peer("baughn")];
+        wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            &view,
+            &peers,
+        );
+
+        // Frame 1: we follow baughn (the leader) — a SyncTo, and we'd slew.
+        let d1 = wiring.on_state(&view, &peers);
+        assert!(
+            player_cmds(&d1)
+                .iter()
+                .any(|c| matches!(c, PlayerCommand::SyncTo { .. })),
+            "should follow the leader"
+        );
+
+        // Frame 2: baughn departs. We are now the furthest-ahead same-file
+        // peer (the leader follows no one), so the reference drops and the
+        // slew must be released.
+        let peers = [peer("kim"), peer_p("baughn", Presence::Departed)];
+        let d2 = wiring.on_state(&view, &peers);
+        assert!(
+            player_cmds(&d2)
+                .iter()
+                .any(|c| matches!(c, PlayerCommand::ReleaseSlew)),
+            "losing the position reference must release the slew"
         );
     }
 
