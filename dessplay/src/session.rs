@@ -554,8 +554,18 @@ impl PlayerWiring {
 
         // Seek > 5s by the authority, on the *same* file (a new file
         // resets the position domain and is covered by the line above).
-        // Authority flips to a user only via a seek, so a fresh sample on
-        // an unchanged file is itself a jump candidate.
+        //
+        // Intentional: only the *second and later* seeks in an episode
+        // narrate. The block needs both a current and a `prev` seek sample,
+        // and `prev.seek_sample` is `None` while the Server holds authority
+        // (the default after every EOF-advance / manual now-playing change).
+        // The first user seek is a Server->User transition, so `prev` is
+        // `None` and no line is emitted. We deliberately do *not* fabricate a
+        // baseline for it: under Server authority the group follows the
+        // leader (the furthest-ahead peer), whose position jitters as the
+        // leader changes, so diffing the first seek against it would emit
+        // *false* "skipped to" lines — a worse break of the same-lines
+        // invariant than a silently-missed first seek. (Audit 2026-07-01 #11.)
         if prev.now_playing == view.now_playing
             && let Some(SeekAuthority::User(authority)) = &view.seek_authority
             && let (Some((pos, ts)), Some((prev_pos, prev_ts))) =
@@ -3508,7 +3518,13 @@ mod tests {
     fn losing_the_position_reference_releases_the_slew() {
         let mut state = playing_state();
         // baughn: a valid same-file leader, far ahead of us.
-        state.set_file_availability(A, ts(6), UserId::new("baughn"), hash(1), FileAvailability::Ready);
+        state.set_file_availability(
+            A,
+            ts(6),
+            UserId::new("baughn"),
+            hash(1),
+            FileAvailability::Ready,
+        );
         state.set_playback_position(
             A,
             ts(7),

@@ -590,7 +590,12 @@ pub(crate) fn format_privmsg(channel: &str, text: &str) -> Vec<String> {
         if segment.is_empty() {
             continue;
         }
-        // A CTCP message must not be split mid-control.
+        // A CTCP message (a `/me` action, `\x01ACTION …\x01`) is sent whole
+        // even when over-long. Intentional: splitting it would either break
+        // the `\x01` framing or emit several separate emotes ("* Baughn
+        // wave", "* Baughn s") for one action — so an over-long emote is left
+        // to the IRC server's 512-byte truncation, the conventional client
+        // behavior. Plain text is still chunked below. (Audit 2026-07-01 #13.)
         if segment.starts_with('\u{1}') || segment.len() <= MAX_PRIVMSG_TEXT {
             out.push(format!("PRIVMSG {channel} :{segment}"));
         } else {

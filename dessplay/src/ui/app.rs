@@ -1425,7 +1425,10 @@ impl Ui {
 /// extremely wide terminal (panic in debug, garbage rect in release) — the
 /// same class of bug fixed in `modals::overlay`. Both dimensions are
 /// clamped back under the frame, so the final `as u16` is always in range.
-fn hash_overlay_rect(area: tuirealm::ratatui::layout::Rect, n_hashing: usize) -> tuirealm::ratatui::layout::Rect {
+fn hash_overlay_rect(
+    area: tuirealm::ratatui::layout::Rect,
+    n_hashing: usize,
+) -> tuirealm::ratatui::layout::Rect {
     let aw = u32::from(area.width);
     let ah = u32::from(area.height);
     let height = ((n_hashing as u32) * 2 + 2).min(ah) as u16;

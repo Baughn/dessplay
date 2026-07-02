@@ -535,8 +535,11 @@ chat pane. It is **on by default**; defaults are `irc.rizon.net`, TLS
   events, subtitles, and narrator/system lines are never forwarded. A
   `/me` action goes out as a real IRC CTCP ACTION (the wire form is
   identical to DessPlay's inline `"\x01ACTION …\x01"`, so it forwards
-  verbatim). Long lines are split to fit IRC's 512-byte limit; newlines
-  become separate messages.
+  verbatim). Long plain lines are split to fit IRC's 512-byte limit; newlines
+  become separate messages. A `/me` **CTCP action is never split** -- chunking
+  it would break the `\x01` framing or emit several separate emotes for one
+  action, so an over-long emote is left to the server's 512-byte truncation
+  (the conventional client behavior); intentional.
 - **Inbound.** Messages from IRC nicks that do **not** end in `Dess` are
   shown locally, rendered like normal chat (per-nick color, mention
   highlight) but with a dim `irc` tag so they aren't mistaken for
@@ -584,7 +587,7 @@ mechanism that already posts command feedback and archive results).
 |-------|--------------|--------------|----------|
 | **Player crashed** (died twice in 30s) | the crashing client writes a chat message | "Baughn: my player crashed -- pausing" | **Synced** (a real chat message: persisted, shows the sender, late joiners see it) |
 | **Player gave up** (died three times in 30s) | the crashing client writes a chat message | "Baughn: my player keeps crashing -- giving up until someone picks another file" | **Synced** (a real chat message; same rationale as Player crashed) |
-| **Seek** (> 5s jump) | seek-authority + the authority's position | "Baughn skipped to 12:34" | Local |
+| **Seek** (> 5s jump) | seek-authority + the authority's position | "Baughn skipped to 12:34" | Local (only the *second and later* seeks in an episode -- the first is a Server->User authority flip with no prior sample to diff, and following the leader for a baseline would emit false jumps; intentional) |
 | **New file** (manual select) | now-playing register change, no watched flip | "Now playing: [Frieren] - 02.mkv" | Local (the *what* persists in the playlist pane) |
 | **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
 | **Joined** | `PeerList`: a peer becomes Present | "Nero joined" | Local |
