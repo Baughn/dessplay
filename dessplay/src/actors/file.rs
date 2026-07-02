@@ -348,6 +348,17 @@ enum Done {
         /// Its hash, or why not.
         result: std::io::Result<Ed2kFileHash>,
     },
+    /// A manually-mapped file finished hashing (so we can serve it).
+    ManualHashed {
+        /// The playlist hash the mapping is for.
+        file: Ed2kHash,
+        /// The mapped path that was hashed.
+        path: PathBuf,
+        /// Its mtime at hash time (cache validity key).
+        mtime: Option<i64>,
+        /// Its hash, or why not.
+        result: std::io::Result<Ed2kFileHash>,
+    },
 }
 
 /// A media-root file the scan needs to hash (cache miss or changed).
@@ -854,10 +865,19 @@ impl Actor {
         }
         let Some((_, hashed)) = self.hash_cache.get(&path) else {
             // We have the file but not its block hashes cached; skip
-            // (a re-hash-on-demand path is possible future work).
+            // (a re-hash-on-demand path is possible future work). A manual
+            // mapping populates this via hash_manual_mapping.
             tracing::debug!(%file, "asked for block hashes we haven't cached");
             return;
         };
+        if hashed.root != file {
+            // The path we hold hashes to something other than what was
+            // requested (e.g. a manual mapping to a different encode). Never
+            // serve those block hashes under this file's identity.
+            tracing::debug!(%file, actual = %hashed.root,
+                "cached hashes don't match the requested file; not serving");
+            return;
+        }
         let blocks = hashed.blocks.clone();
         let size = hashed.size_bytes;
         tracing::debug!(%file, %to, blocks = blocks.len(), "serving block hashes");
@@ -1013,6 +1033,33 @@ impl Actor {
                 }
                 let _ = self.out.send(FileOutput::Hash(HashEvent::Done(add))).await;
             }
+            Done::ManualHashed {
+                file,
+                path,
+                mtime,
+                result,
+            } => match (result, mtime) {
+                (Ok(hashed), Some(mtime)) if hashed.root == file => {
+                    // Content matches the mapped hash: cache it so we can
+                    // serve block hashes to peers.
+                    self.commit_fresh_hashes(vec![(path, mtime, hashed)]);
+                }
+                (Ok(hashed), _) => {
+                    // The user mapped a file whose content differs from the
+                    // playlist entry (a different encode). Fine for their own
+                    // playback (filename-trusted), but we must not serve it to
+                    // peers under this file's identity, so we don't cache it.
+                    tracing::info!(
+                        path = %path.display(),
+                        mapped = %file,
+                        actual = %hashed.root,
+                        "manual mapping content differs from the entry; won't serve to peers"
+                    );
+                }
+                (Err(e), _) => {
+                    tracing::debug!(path = %path.display(), "hashing manual mapping failed: {e}");
+                }
+            },
             Done::Placeholder { file, result } => match result {
                 Ok(path) => {
                     let _ = self
@@ -1138,11 +1185,13 @@ impl Actor {
         // the user explicitly chose that file (design.md).
         if let Some(path) = self.manual.get(&file) {
             if path.is_file() {
+                let path = path.clone();
+                self.hash_manual_mapping(file, path.clone());
                 let _ = self
                     .out
                     .send(FileOutput::Resolved {
                         file,
-                        resolution: Resolution::Verified(path.clone()),
+                        resolution: Resolution::Verified(path),
                     })
                     .await;
                 return;
@@ -1259,6 +1308,7 @@ impl Actor {
         tracing::info!(path = %path.display(), "manual mapping set");
         self.manual.insert(file, path.clone());
         self.local_files.insert(file, path.clone());
+        self.hash_manual_mapping(file, path.clone());
         let _ = self
             .out
             .send(FileOutput::Resolved {
@@ -1266,6 +1316,35 @@ impl Actor {
                 resolution: Resolution::Verified(path),
             })
             .await;
+    }
+
+    /// Hash a manually-mapped file in the background so we can serve its
+    /// block hashes to peers. A manual mapping is filename-trusted and
+    /// often lives outside the media roots, so neither `resolve` nor the
+    /// library scan ever hashes it — without this we advertise the file
+    /// `Ready` but `serve_block_hashes` has nothing to send, wedging any
+    /// downloader that picks us as a source (design.md File Matching 4a: a
+    /// manual map is a servable local copy). The hash is committed (in
+    /// `Done::ManualHashed`) only if it actually matches the mapped hash,
+    /// so a different encode is never served under this file's identity.
+    fn hash_manual_mapping(&self, file: Ed2kHash, path: PathBuf) {
+        // Already cached with matching content? Nothing to do.
+        if let Some((_, hashed)) = self.hash_cache.get(&path)
+            && hashed.root == file
+        {
+            return;
+        }
+        let done_tx = self.done_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let mtime = std::fs::metadata(&path).ok().as_ref().and_then(mtime_millis);
+            let result = std::fs::File::open(&path).and_then(ed2k_hash_reader);
+            let _ = done_tx.blocking_send(Done::ManualHashed {
+                file,
+                path,
+                mtime,
+                result,
+            });
+        });
     }
 
     async fn archive(&mut self, file: Ed2kHash, series_name: Option<String>, filename: String) {
@@ -2304,6 +2383,128 @@ mod tests {
                 .unwrap(),
             path.parent().unwrap()
         );
+    }
+
+    /// Regression: a manually-mapped file must be servable to peers. A manual
+    /// mapping is filename-trusted and often lives outside the media roots, so
+    /// neither resolve nor the library scan ever hashes it. Before the fix the
+    /// holder advertised the file Ready but never cached its block hashes, so
+    /// serve_block_hashes silently bailed and any downloader that picked this
+    /// holder wedged. Now the mapping is hashed in the background and served.
+    #[tokio::test]
+    async fn manual_mapping_becomes_servable_to_peers() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"the real episode bytes".as_slice();
+        // Named differently from the playlist entry and outside any root.
+        let path = write(root.path(), "renamed.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+
+        let mut rig = spawn_rig(
+            Storage::open_in_memory().unwrap(),
+            vec![], // path is in no media root
+            CacheRetention::default(),
+        );
+        rig.commands
+            .send(FileCommand::SetManualMapping {
+                file: hashed.root,
+                path: path.clone(),
+                series: None,
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { file, resolution } => {
+                assert_eq!(file, hashed.root);
+                assert_eq!(resolution, Resolution::Verified(path));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        // The hash runs on the blocking pool (no virtual-time hook), so poll
+        // the serve path until the mapping is cached — a tiny file, so this
+        // resolves near-instantly; the budget only guards against a genuine
+        // never-servable regression.
+        let mut served = false;
+        for _ in 0..100 {
+            rig.commands
+                .send(FileCommand::PeerMessage {
+                    from: PeerId::new("peer7"),
+                    message: Box::new(PeerMessage::BlockHashRequest { file: hashed.root }),
+                })
+                .await
+                .unwrap();
+            match tokio::time::timeout(Duration::from_millis(50), next_output(&mut rig)).await {
+                Ok(FileOutput::SendPeer { message, .. }) => match *message {
+                    PeerMessage::BlockHashes { file, hashes } => {
+                        assert_eq!(file, hashed.root);
+                        assert_eq!(hashes.len(), hashed.blocks.len());
+                        served = true;
+                        break;
+                    }
+                    // A stray follow-up bitfield from an earlier serve: ignore.
+                    PeerMessage::FileAvailability { .. } => {}
+                    other => panic!("unexpected peer message: {other:?}"),
+                },
+                Ok(other) => panic!("unexpected output: {other:?}"),
+                Err(_) => {} // not hashed yet; retry
+            }
+        }
+        assert!(served, "manual mapping never became servable to peers");
+    }
+
+    /// Regression: block hashes must never be served under a file's identity
+    /// when the local copy hashes to something else (a manual map to a
+    /// different encode). Before the guard, serve_block_hashes handed the
+    /// mapped file's block hashes to a downloader requesting a different hash,
+    /// propagating a mismatched encode to the group.
+    #[tokio::test]
+    async fn block_hashes_not_served_for_mismatched_content() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"some other encode".as_slice();
+        let path = write(root.path(), "other.mkv", contents);
+        let real = ed2k_hash_bytes(contents);
+
+        // The path is already known to hash to `real` (e.g. a prior scan).
+        let storage = Storage::open_in_memory().unwrap();
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        storage.upsert_hash_cache(&path, mtime, &real, 1).unwrap();
+
+        let mut rig = spawn_rig(storage, vec![], CacheRetention::default());
+        // Map a *different* playlist hash to this file (content mismatch).
+        let requested = hash(1);
+        assert_ne!(requested, real.root);
+        rig.commands
+            .send(FileCommand::SetManualMapping {
+                file: requested,
+                path: path.clone(),
+                series: None,
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { resolution, .. } => {
+                assert_eq!(resolution, Resolution::Verified(path));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        // A peer solicits the requested (mismatched) hash. We must not serve.
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file: requested }),
+            })
+            .await
+            .unwrap();
+        // No output at all: the guard drops it. (A served response would be a
+        // SendPeer here.)
+        match tokio::time::timeout(Duration::from_millis(200), next_output(&mut rig)).await {
+            Err(_) => {} // expected: nothing served
+            Ok(FileOutput::SendPeer { message, .. }) => {
+                panic!("served block hashes for mismatched content: {message:?}")
+            }
+            Ok(other) => panic!("unexpected output: {other:?}"),
+        }
     }
 
     #[tokio::test]

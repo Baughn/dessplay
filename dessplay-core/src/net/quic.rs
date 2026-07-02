@@ -375,7 +375,9 @@ fn spawn_acceptor(
                     Ok(Ok((send, recv))) => {
                         // A send error means the listener was dropped; let
                         // the connection drop with it.
-                        let _ = tx.send((QuicTransport::new(conn, send, recv), remote)).await;
+                        let _ = tx
+                            .send((QuicTransport::new(conn, send, recv), remote))
+                            .await;
                     }
                     Ok(Err(e)) => {
                         tracing::debug!(%remote, error = %e, "peer never opened a control stream");
