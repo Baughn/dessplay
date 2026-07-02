@@ -31,6 +31,14 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Control stream priority (transfer streams use the default 0).
 pub const CONTROL_PRIORITY: i32 = 100;
 
+/// How long a completed handshake may wait for the client to open its
+/// control stream before the connection is dropped. The idle timeout
+/// cannot bound this — the server's keep-alives keep refreshing it, so a
+/// peer that finishes the TLS handshake and never opens the control stream
+/// would otherwise linger indefinitely. Kept well above a healthy client's
+/// "open immediately after handshake" latency.
+pub const CONTROL_STREAM_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Per-stream flow control window. Sized for pushing video chunks over
 /// a ~250Mbit, tens-of-ms path with headroom, not for request/response.
 pub const STREAM_RECEIVE_WINDOW: u64 = 16 * 1024 * 1024;
@@ -271,10 +279,23 @@ impl Connector for QuicConnector {
 /// Accepts client connections on the rendezvous server.
 pub struct QuicListener {
     endpoint: quinn::Endpoint,
+    /// Connections whose handshake *and* control stream have both
+    /// completed, produced by the background acceptor task. Draining a
+    /// queue of already-ready connections (rather than doing the handshake
+    /// and control-stream wait inline in `accept`) is what keeps one slow
+    /// or malicious peer from wedging the accept path for everyone else.
+    ready: Mutex<mpsc::Receiver<(QuicTransport, SocketAddr)>>,
+    /// The acceptor task; aborted on drop so dropping the listener releases
+    /// the endpoint (the task holds the other endpoint clone).
+    acceptor: tokio::task::JoinHandle<()>,
 }
 
 impl QuicListener {
     /// Bind a server endpoint with the given persistent certificate.
+    ///
+    /// Must be called from within a tokio runtime: it spawns a background
+    /// acceptor task (and quinn binds its socket through the active
+    /// runtime).
     pub fn bind(
         addr: SocketAddr,
         cert: CertificateDer<'static>,
@@ -296,7 +317,12 @@ impl QuicListener {
 
         let endpoint =
             quinn::Endpoint::server(server_config, addr).map_err(setup("binding endpoint"))?;
-        Ok(Self { endpoint })
+        let (acceptor, ready) = spawn_acceptor(endpoint.clone());
+        Ok(Self {
+            endpoint,
+            ready: Mutex::new(ready),
+            acceptor,
+        })
     }
 
     /// The bound local address (useful with port 0 in tests).
@@ -305,39 +331,83 @@ impl QuicListener {
     }
 }
 
+impl Drop for QuicListener {
+    fn drop(&mut self) {
+        self.acceptor.abort();
+    }
+}
+
+/// Background acceptor: pull each `Incoming` off the endpoint and hand it to
+/// its own task for the handshake and the wait for the client's control
+/// stream, so neither step happens on the hot accept path. A peer that
+/// stalls at either step delays only its own task; completed connections are
+/// delivered over the returned channel. This is the fix for the accept-loop
+/// wedge — previously the handshake and `accept_bi` ran inline in `accept`,
+/// so a single peer that completed the handshake and never opened a control
+/// stream blocked every subsequent connection (and the idle timeout could
+/// not save it, since keep-alives refresh it).
+fn spawn_acceptor(
+    endpoint: quinn::Endpoint,
+) -> (
+    tokio::task::JoinHandle<()>,
+    mpsc::Receiver<(QuicTransport, SocketAddr)>,
+) {
+    let (tx, rx) = mpsc::channel(32);
+    let handle = tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let remote = incoming.remote_address();
+                let conn = match incoming.await {
+                    Ok(conn) => conn,
+                    // Handshake failure (bad ALPN, TOFU abort...): not fatal
+                    // for the listener.
+                    Err(e) => {
+                        tracing::debug!(%remote, error = %e, "incoming handshake failed");
+                        return;
+                    }
+                };
+                tracing::debug!(%remote, "incoming handshake complete");
+                // The client opens the control stream immediately after the
+                // handshake; bound the wait explicitly so a peer that never
+                // does is reclaimed rather than held forever.
+                match tokio::time::timeout(CONTROL_STREAM_TIMEOUT, conn.accept_bi()).await {
+                    Ok(Ok((send, recv))) => {
+                        // A send error means the listener was dropped; let
+                        // the connection drop with it.
+                        let _ = tx.send((QuicTransport::new(conn, send, recv), remote)).await;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::debug!(%remote, error = %e, "peer never opened a control stream");
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            %remote,
+                            "control stream not opened within timeout; dropping"
+                        );
+                        conn.close(0u32.into(), b"control-stream timeout");
+                    }
+                }
+            });
+        }
+        tracing::debug!("listener endpoint closed; acceptor stopping");
+    });
+    (handle, rx)
+}
+
 impl Listener for QuicListener {
     type Conn = QuicTransport;
 
     async fn accept(&self) -> Result<(QuicTransport, SocketAddr), TransportError> {
-        loop {
-            let incoming = self
-                .endpoint
-                .accept()
-                .await
-                .ok_or_else(|| TransportError::Setup("endpoint closed".into()))?;
-            let remote = incoming.remote_address();
-            let conn = match incoming.await {
-                Ok(conn) => conn,
-                // Handshake failure (bad ALPN, TOFU abort...): not fatal
-                // for the listener.
-                Err(e) => {
-                    tracing::debug!(%remote, error = %e, "incoming handshake failed");
-                    continue;
-                }
-            };
-            tracing::debug!(%remote, "incoming handshake complete");
-            // The client opens the control stream; a peer that never
-            // does would block accept, so guard with the idle timeout.
-            match conn.accept_bi().await {
-                Ok((send, recv)) => {
-                    return Ok((QuicTransport::new(conn, send, recv), remote));
-                }
-                Err(e) => {
-                    tracing::debug!(%remote, error = %e, "peer never opened a control stream");
-                    continue;
-                }
-            }
-        }
+        // Just drain the next ready connection; all the handshake and
+        // control-stream work happens off-path in the background acceptor
+        // (see `spawn_acceptor`). A closed channel means the endpoint closed.
+        self.ready
+            .lock()
+            .await
+            .recv()
+            .await
+            .ok_or_else(|| TransportError::Setup("endpoint closed".into()))
     }
 }
 
@@ -388,5 +458,50 @@ mod tests {
             server_priority, CONTROL_PRIORITY,
             "server control stream priority (the relay-hub direction)"
         );
+    }
+
+    /// Regression: a peer that completes the QUIC handshake but never opens
+    /// its control stream must not wedge the accept path. Before the
+    /// background-acceptor fix, `accept` ran the handshake and `accept_bi`
+    /// inline, so this idle peer blocked every subsequent connection
+    /// forever (the idle timeout never fires — keep-alives refresh it). A
+    /// well-behaved client connecting afterwards must still be accepted.
+    #[tokio::test]
+    async fn idle_peer_does_not_block_the_accept_loop() {
+        let cert_dir = tempfile::tempdir().unwrap();
+        let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
+        let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        let connector = QuicConnector::new(server_addr, "dessplay", None).unwrap();
+
+        // The "attacker": completes the handshake (and locally opens the
+        // control stream via `connect`) but never *writes* a frame on it, so
+        // the server's `accept_bi` never observes the stream. Held alive for
+        // the duration so its connection stays up.
+        let _idle = connector.connect().await.unwrap();
+
+        // A normal client connects and sends its first control frame.
+        let normal_connector = QuicConnector::new(server_addr, "dessplay", None).unwrap();
+        let normal = normal_connector.connect().await.unwrap();
+        normal.send_control(b"hello").await.unwrap();
+
+        // The listener must hand back the normal client despite the idle one
+        // still occupying a connection. Bounded well under CONTROL_STREAM_TIMEOUT
+        // so we are asserting the idle peer was skipped, not merely reclaimed.
+        let (accepted, _remote) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("accept blocked behind the idle peer")
+            .expect("accept failed");
+
+        // Confirm it is really the normal client: its "hello" frame arrives.
+        let event = tokio::time::timeout(Duration::from_secs(5), accepted.recv())
+            .await
+            .expect("recv timed out")
+            .expect("recv failed");
+        match event {
+            TransportEvent::Control(payload) => assert_eq!(payload, b"hello"),
+            other => panic!("expected the normal client's control frame, got {other:?}"),
+        }
     }
 }
