@@ -331,6 +331,11 @@ file, re-hashes only those whose `(mtime, size)` changed, and reports the
 indexed hashes so the session can insert `lookup_requests` for any that still
 lack metadata (see "Media Library Scanning" in design.md). The hash cache
 doubles as the library index, so this also pre-warms playlist-add resolves.
+Scan *hashing* defers while transfer traffic (serving or downloading) is
+recent and resumes when it goes quiet (design.md, Media Library Scanning
+— #21). The actor also watches **mismatched resolutions** for quiescence
+(design.md, Content Hash — #26): a 1s `stat` poll per watched file,
+re-resolving once a changed file holds still.
 
 Spawned and driven by the `SessionShell` (Phase 7's session policy
 layer): the shell sends `FileCommand`s and receives `FileOutput`s on one

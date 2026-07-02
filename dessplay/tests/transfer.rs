@@ -57,6 +57,7 @@ fn spawn_actor(name: &str, media_files: &[(&str, &[u8])]) -> Actor {
             download: DownloadConfig::default(),
             upload_limit: None,
             scan_interval: None,
+            scan_transfer_quiet: dessplay::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
         },
         cmd_rx,
         out_tx,

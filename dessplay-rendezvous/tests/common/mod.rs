@@ -118,6 +118,7 @@ impl Harness {
                 download: dessplay::download::DownloadConfig::default(),
                 upload_limit: None,
                 scan_interval: None,
+                scan_transfer_quiet: dessplay::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
             },
             true, // auto_download
             handle.sync.clone(),

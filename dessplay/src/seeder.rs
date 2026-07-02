@@ -19,7 +19,9 @@ use dessplay_core::state::StateView;
 use dessplay_core::types::{Ed2kHash, FileAvailability, UserId};
 use tokio::sync::mpsc;
 
-use crate::actors::file::{FileCommand, FileConfig, FileOutput, Resolution, run};
+use crate::actors::file::{
+    FileCommand, FileConfig, FileOutput, Resolution, SCAN_TRANSFER_QUIET_DEFAULT, run,
+};
 use crate::actors::network::NetworkCommand;
 use crate::actors::sync::{Mutation, SyncCommand};
 
@@ -238,6 +240,7 @@ pub fn seeder_file_config(
         upload_limit,
         // A seeder's store is large and stable: scan daily, not minutely.
         scan_interval: Some(std::time::Duration::from_secs(24 * 60 * 60)),
+        scan_transfer_quiet: SCAN_TRANSFER_QUIET_DEFAULT,
     }
 }
 

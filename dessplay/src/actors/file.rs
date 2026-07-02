@@ -314,12 +314,24 @@ pub struct FileConfig {
     /// at startup). `None` disables scanning entirely (tests). Interactive
     /// clients use ~60s; a seeder, whose store is large and stable, ~24h.
     pub scan_interval: Option<std::time::Duration>,
+    /// How long after the last transfer traffic (serving or downloading)
+    /// scan *hashing* stays deferred (#21). Indexing is bulk disk work
+    /// with no deadline; transfers are latency-sensitive (a silent
+    /// source is snubbed at 30s), so hashing yields and resumes once
+    /// transfers go quiet. Use [`SCAN_TRANSFER_QUIET_DEFAULT`].
+    pub scan_transfer_quiet: std::time::Duration,
 }
+
+/// Production default for [`FileConfig::scan_transfer_quiet`].
+pub const SCAN_TRANSFER_QUIET_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Completions from blocking subtasks.
 enum Done {
     Resolved {
         file: Ed2kHash,
+        /// The filename that was searched for — kept so a mismatch can
+        /// be re-resolved later without the session re-asking (#26).
+        filename: String,
         resolution: Resolution,
         /// Hashes computed along the way, to commit to the cache.
         fresh: Vec<(PathBuf, i64, Ed2kFileHash)>,
@@ -469,9 +481,44 @@ struct Actor {
     scan_failed: usize,
     /// Files between info-level progress checkpoints (~20 over the scan).
     scan_log_step: usize,
+    /// Mismatched resolutions being watched for quiescence (#26):
+    /// name-matched files whose contents didn't hash — usually a copy or
+    /// external download still being written into a media root.
+    rechecks: HashMap<Ed2kHash, Recheck>,
+    /// When transfer traffic (serving or downloading) last happened;
+    /// scan hashing defers within [`FileConfig::scan_transfer_quiet`] of
+    /// it (#21).
+    last_transfer_activity: Option<std::time::Instant>,
+    scan_transfer_quiet: std::time::Duration,
+    /// One "deferring" log line per deferral episode, not per tick.
+    scan_defer_logged: bool,
     out: mpsc::Sender<FileOutput>,
     done_tx: mpsc::Sender<Done>,
 }
+
+/// One watched mismatch (#26): poll the path's `(mtime, size)` about
+/// once a second; once it holds still — and differs from the state the
+/// failed hash saw — re-resolve. A stable mismatch (a different encode)
+/// never re-hashes: its hash-cache row still matches the disk.
+struct Recheck {
+    path: PathBuf,
+    filename: String,
+    /// `(mtime, size)` at the last poll.
+    observed: Option<(i64, u64)>,
+    /// Consecutive polls with `observed` unchanged.
+    quiet_polls: u32,
+    last_poll: std::time::Instant,
+    /// Watch-episode deadline; after this the entry is dropped (the
+    /// periodic library scan remains the long-tail safety net).
+    deadline: std::time::Instant,
+}
+
+/// Recheck poll cadence (cheap: one `stat` per watched file).
+const RECHECK_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+/// Consecutive unchanged polls before a changed file counts as quiet.
+const RECHECK_QUIET_POLLS: u32 = 2;
+/// How long a mismatch stays watched before the watch is dropped.
+const RECHECK_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// A file's mtime in unix millis (the hash-cache validity key).
 fn mtime_millis(metadata: &std::fs::Metadata) -> Option<i64> {
@@ -560,6 +607,10 @@ impl Actor {
             scan_started: None,
             scan_failed: 0,
             scan_log_step: 1,
+            rechecks: HashMap::new(),
+            last_transfer_activity: None,
+            scan_transfer_quiet: config.scan_transfer_quiet,
+            scan_defer_logged: false,
             out,
             done_tx,
         })
@@ -661,6 +712,75 @@ impl Actor {
         let actions = self.downloads.tick((self.clock)());
         self.run_download_actions(actions).await;
         self.drain_serve_queue().await;
+        self.poll_rechecks().await;
+        // Resume deferred scan hashing once transfers go quiet (#21).
+        self.pump_library_scan();
+    }
+
+    /// Poll watched mismatches (#26): about one `stat` per second per
+    /// watched file. A file whose `(mtime, size)` changed since the
+    /// failed hash and then held still for a couple of polls is
+    /// re-resolved; one that never changes (a genuine different encode)
+    /// is never re-hashed and its watch expires.
+    async fn poll_rechecks(&mut self) {
+        let now = std::time::Instant::now();
+        let due: Vec<Ed2kHash> = self
+            .rechecks
+            .iter()
+            .filter(|(_, r)| now.duration_since(r.last_poll) >= RECHECK_POLL)
+            .map(|(file, _)| *file)
+            .collect();
+        for file in due {
+            let Some(r) = self.rechecks.get_mut(&file) else {
+                continue;
+            };
+            r.last_poll = now;
+            if now >= r.deadline {
+                tracing::debug!(%file, path = %r.path.display(),
+                    "mismatch watch expired without the file changing");
+                self.rechecks.remove(&file);
+                continue;
+            }
+            let stat = std::fs::metadata(&r.path)
+                .ok()
+                .and_then(|m| Some((mtime_millis(&m)?, m.len())));
+            let Some(stat) = stat else {
+                // Gone from under us; a later scan or resolve handles it.
+                self.rechecks.remove(&file);
+                continue;
+            };
+            if r.observed == Some(stat) {
+                r.quiet_polls += 1;
+                // The hash-cache row is keyed by the (mtime, size) the
+                // failed hash read; matching it means the contents are
+                // already known-mismatched — nothing new to check.
+                let hashed_state = self
+                    .hash_cache
+                    .get(&r.path)
+                    .map(|(mtime, h)| (*mtime, h.size_bytes));
+                if r.quiet_polls >= RECHECK_QUIET_POLLS && hashed_state != Some(stat) {
+                    let filename = r.filename.clone();
+                    tracing::info!(%file, path = %r.path.display(),
+                        "mismatched file quiesced after changing; re-checking");
+                    self.rechecks.remove(&file);
+                    self.resolve(file, filename).await;
+                }
+            } else {
+                r.observed = Some(stat);
+                r.quiet_polls = 0;
+            }
+        }
+    }
+
+    /// Note transfer traffic; scan hashing defers while it's recent.
+    fn note_transfer_activity(&mut self) {
+        self.last_transfer_activity = Some(std::time::Instant::now());
+    }
+
+    /// Whether transfer traffic happened within the deferral window.
+    fn transfer_recent(&self) -> bool {
+        self.last_transfer_activity
+            .is_some_and(|at| at.elapsed() < self.scan_transfer_quiet)
     }
 
     /// The cache path a download assembles into.
@@ -699,14 +819,29 @@ impl Actor {
 
     /// Hash the next worklist file, if any and none is already in flight.
     /// One at a time, so the initial whole-library hash is a background
-    /// trickle that never floods the blocking pool.
+    /// trickle that never floods the blocking pool. Deferred entirely
+    /// while transfer traffic is recent (#21): indexing has no deadline,
+    /// but a source slowed to a crawl by scan disk I/O gets snubbed at
+    /// 30s and the download stalls. `on_tick` re-pumps, so a deferred
+    /// worklist resumes once transfers go quiet.
     fn pump_library_scan(&mut self) {
         if self.scan_hashing {
+            return;
+        }
+        if !self.scan_worklist.is_empty() && self.transfer_recent() {
+            if !self.scan_defer_logged {
+                self.scan_defer_logged = true;
+                tracing::info!(
+                    pending = self.scan_worklist.len(),
+                    "deferring library hashing while transfers are active"
+                );
+            }
             return;
         }
         let Some(item) = self.scan_worklist.pop_front() else {
             return;
         };
+        self.scan_defer_logged = false;
         self.scan_hashing = true;
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
@@ -718,6 +853,9 @@ impl Actor {
     /// Route an incoming peer message: serve-side requests are answered
     /// from our local copies; the rest feed the download scheduler.
     async fn on_peer_message(&mut self, from: PeerId, message: PeerMessage) {
+        // Any peer traffic — requests we serve, chunks we receive — is
+        // transfer activity that defers scan hashing (#21).
+        self.note_transfer_activity();
         match message {
             PeerMessage::BlockHashRequest { file } => self.serve_block_hashes(from, file).await,
             PeerMessage::ChunkRequest { file, chunks } => {
@@ -741,6 +879,9 @@ impl Actor {
     /// Apply the scheduler's actions: relay messages, write progress
     /// (≤1/s), and record completions as servable local copies.
     async fn run_download_actions(&mut self, actions: Vec<DownloadAction>) {
+        if !actions.is_empty() {
+            self.note_transfer_activity();
+        }
         for action in actions {
             match action {
                 DownloadAction::Send { to, message } => {
@@ -1013,6 +1154,7 @@ impl Actor {
         match done {
             Done::Resolved {
                 file,
+                filename,
                 resolution,
                 fresh,
             } => {
@@ -1027,6 +1169,31 @@ impl Actor {
                     let now = (self.clock)() as i64;
                     if let Err(e) = self.storage.touch_cache_entry(file, now) {
                         tracing::warn!("touch cache entry on resolve: {e}");
+                    }
+                }
+                // A mismatch is watched for quiescence (#26): the usual
+                // cause is a copy/external download still being written,
+                // which verifies a few seconds after it finishes. Any
+                // other outcome ends the watch.
+                match &resolution {
+                    Resolution::HashMismatch(path) => {
+                        let now = std::time::Instant::now();
+                        let entry = self.rechecks.entry(file).or_insert_with(|| Recheck {
+                            path: path.clone(),
+                            filename: filename.clone(),
+                            observed: None,
+                            quiet_polls: 0,
+                            last_poll: now,
+                            deadline: now + RECHECK_WINDOW,
+                        });
+                        // A re-resolve that still mismatches keeps its
+                        // original episode deadline (no immortal watch).
+                        entry.path = path.clone();
+                        entry.filename = filename;
+                        entry.quiet_polls = 0;
+                    }
+                    Resolution::Verified(_) | Resolution::NotFound => {
+                        self.rechecks.remove(&file);
                     }
                 }
                 let _ = self
@@ -1256,6 +1423,7 @@ impl Actor {
             );
             let _ = done_tx.blocking_send(Done::Resolved {
                 file,
+                filename,
                 resolution,
                 fresh,
             });
@@ -2246,6 +2414,8 @@ mod tests {
                 upload_limit: None,
                 // No timer-driven scan in tests; drive via RescanLibrary.
                 scan_interval: None,
+                // Short deferral window so recheck/deferral tests run fast.
+                scan_transfer_quiet: Duration::from_secs(2),
             },
             cmd_rx,
             out_tx,
@@ -3568,6 +3738,188 @@ mod tests {
         }
         for s in ["RahXephon", "Sousou no Frieren", "K-On!", "Re Zero"] {
             assert!(!is_structural_dir(s), "{s:?} should look like a title");
+        }
+    }
+
+    /// #26: a name-matched file whose contents mismatch because it is
+    /// still being written (an external download/copy landing in a media
+    /// root) is re-checked on its own once its mtime/size hold still —
+    /// resolving Verified within seconds, not at the next library scan
+    /// a minute later.
+    #[tokio::test]
+    async fn mismatched_candidate_reresolves_after_the_write_quiesces() {
+        let root = tempfile::tempdir().unwrap();
+        let full = b"a complete episode file with real contents".as_slice();
+        let hashed = ed2k_hash_bytes(full);
+        // The file exists under the right name but is truncated mid-write.
+        let path = root.path().join("ep1.mkv");
+        std::fs::write(&path, &full[..8]).unwrap();
+
+        let db = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&db.path().join("test.db")).unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hashed.root,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { resolution, .. } => {
+                assert!(matches!(resolution, Resolution::HashMismatch(_)));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        // The "download" finishes. No new Resolve command is sent — the
+        // actor must notice by itself once the file goes quiet.
+        std::fs::write(&path, full).unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved {
+                    file,
+                    resolution: Resolution::Verified(_),
+                } if file == hashed.root => break,
+                FileOutput::Resolved { resolution, .. } => {
+                    panic!("re-check produced {resolution:?}, expected Verified")
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// #26 guard: a *stable* mismatch (a different encode, not a file
+    /// mid-write) is never re-hashed — its cache row still matches its
+    /// on-disk state, so there is nothing new to check.
+    #[tokio::test]
+    async fn stable_mismatch_is_not_rehashed() {
+        let root = tempfile::tempdir().unwrap();
+        let wanted = ed2k_hash_bytes(b"the version the playlist wants");
+        let path = root.path().join("ep1.mkv");
+        std::fs::write(&path, b"a different encode, complete and quiet").unwrap();
+
+        let db = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&db.path().join("test.db")).unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: wanted.root,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { resolution, .. } => {
+                assert!(matches!(resolution, Resolution::HashMismatch(_)));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        // Give the recheck poller ample time to (wrongly) fire.
+        let extra = tokio::time::timeout(Duration::from_secs(4), rig.outputs.recv()).await;
+        assert!(
+            extra.is_err(),
+            "a quiet, unchanged mismatch produced {extra:?}"
+        );
+    }
+
+    /// #21: scan *hashing* defers while transfer traffic is active —
+    /// indexing is bulk disk work with no deadline, transfers are
+    /// latency-sensitive (a silent source is snubbed at 30s) — and
+    /// resumes once transfers go quiet.
+    #[tokio::test]
+    async fn scan_hashing_defers_while_transfers_are_active() {
+        let root = tempfile::tempdir().unwrap();
+        // A servable, already-indexed file...
+        let served = b"an episode being served to a peer".as_slice();
+        let served_hash = ed2k_hash_bytes(served);
+        let served_path = root.path().join("ep1.mkv");
+        std::fs::write(&served_path, served).unwrap();
+        // ...and a new file the scan will want to hash.
+        let fresh = b"a brand new file for the scan".as_slice();
+        let fresh_hash = ed2k_hash_bytes(fresh);
+        std::fs::write(root.path().join("ep2.mkv"), fresh).unwrap();
+
+        let db = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&db.path().join("test.db")).unwrap();
+        // Pre-index ep1 so the walk's worklist is exactly ep2.
+        let metadata = std::fs::metadata(&served_path).unwrap();
+        storage
+            .upsert_hash_cache(
+                &served_path,
+                mtime_millis(&metadata).unwrap(),
+                &served_hash,
+                1,
+            )
+            .unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+
+        // Make ep1 servable (a Verified local copy)…
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: served_hash.root,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { resolution, .. } => {
+                assert!(matches!(resolution, Resolution::Verified(_)));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        // …and serve a chunk: transfer traffic is now active.
+        let peer = dessplay_core::net::PeerId::from(dessplay_core::types::UserId::new("kim"));
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: peer,
+                message: Box::new(dessplay_core::net::PeerMessage::ChunkRequest {
+                    file: served_hash.root,
+                    chunks: vec![0],
+                }),
+            })
+            .await
+            .unwrap();
+
+        // Scan now. The walk runs (it's cheap), but ep2's hash defers.
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        let deferred_until = std::time::Instant::now() + Duration::from_millis(800);
+        while std::time::Instant::now() < deferred_until {
+            let Ok(Some(output)) =
+                tokio::time::timeout(Duration::from_millis(100), rig.outputs.recv()).await
+            else {
+                continue;
+            };
+            if let FileOutput::LibraryIndexed { files } = &output {
+                assert!(
+                    !files.iter().any(|f| f.hash == fresh_hash.root),
+                    "scan hashed ep2 while a transfer was active"
+                );
+            }
+        }
+
+        // Transfers stop; after the quiet window the hash runs.
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::LibraryIndexed { files }
+                    if files.iter().any(|f| f.hash == fresh_hash.root) =>
+                {
+                    break;
+                }
+                _ => continue,
+            }
         }
     }
 }

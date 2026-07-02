@@ -1122,6 +1122,11 @@ no longer filled only on demand.
 - **Periodically** the client re-walks the roots and re-hashes only changed
   files. Interactive clients rescan about once a minute; a seeder, whose store
   is large and stable, rescans once a day.
+- **Hashing yields to transfers (#21).** Scan hashing is bulk disk work
+  with no deadline, while transfers are latency-sensitive (a source that
+  serves nothing for 30s is snubbed) — so while transfer traffic (serving
+  or downloading) is active, scan hashing defers, resuming ~10s after the
+  traffic goes quiet. The walk itself (stat-only) still runs.
 - **The walk also prunes**: an index row whose file has vanished from under
   the roots (moved or deleted behind the app's back) is removed — the disk
   is the truth, the index follows it. Without this a moved file kept its old
@@ -1423,8 +1428,18 @@ Before playback can unpause:
 2. Compare with other Ready users
 
 If hash mismatch: File State is set to Missing, cannot participate until resolved.
-File mtime is stored in memory. Hash is recomputed whenever mtime changes, until
-there is a match.
+
+**Mismatch re-check (#26).** A name-matched file that fails the hash is
+usually a copy or external download still being written into a media
+root — the hash ran mid-write. The file actor watches such files: it
+polls the path's `(mtime, size)` about once a second (a cheap `stat`),
+and once the file has changed *since the failed hash* and then held
+still for a couple of polls, it re-resolves — so the entry flips to
+Ready seconds after the write finishes, not at the next library scan a
+minute later. A mismatch that never changes (a genuine different encode)
+is never re-hashed — its hash-cache row still matches the disk — and its
+watch expires after 10 minutes; the periodic scan remains the long-tail
+safety net.
 
 This is skipped for manually-mapped files (user explicitly chose a different file).
 

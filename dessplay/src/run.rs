@@ -811,6 +811,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             upload_limit: settings.upload_limit,
             // Interactive clients re-scan the library about once a minute.
             scan_interval: Some(std::time::Duration::from_secs(60)),
+            scan_transfer_quiet: crate::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
         },
         settings.auto_download,
         handle.sync.clone(),

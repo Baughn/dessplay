@@ -796,6 +796,28 @@ on the OSD is readable under bursts.
 
 ## Phase 14: File Responsiveness (#26, #21)
 
+**Status: complete (2026-07-03).** Notes and deviations:
+
+- **#26** landed as a mismatch *watch* in the FileActor: 1s `stat` polls,
+  re-resolve after 2 quiet polls — but **only if the file changed since
+  the failed hash** (the hash-cache row, keyed by `(mtime, size)` at hash
+  time, is the comparator). A stable mismatch — a genuine different
+  encode — is never re-hashed, and its watch expires after 10 minutes
+  (regression test `stable_mismatch_is_not_rehashed` pins the guard).
+  `Done::Resolved` gained the filename so the actor can re-resolve
+  without the session re-asking.
+- **#21**: no live stall was ever captured, so the fix targets the
+  nameable structural mechanism: scan hashing saturates the disk while
+  transfers are latency-sensitive (a source silent for 30s is snubbed
+  and its chunks requeued — with the seeder as only source, that loops
+  for the whole indexing run). Scan **hashing** now defers while
+  transfer traffic is recent (`FileConfig::scan_transfer_quiet`, default
+  10s) and resumes via the 250ms tick; the stat-only walk still runs.
+  One `info` line per deferral episode confirms the behavior in field
+  logs. If a stall recurs *with* this fix, the existing handshake
+  logging (debug) is the next diagnostic.
+- Both regression tests were written first and confirmed failing.
+
 **Goal**: Files that are *becoming* available stop looking broken.
 
 ### What gets built
