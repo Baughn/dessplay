@@ -1015,6 +1015,29 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // pending -- no redundant tick flush needed.
                             ui_dirty = false;
                         }
+                        Some(UserAction::Browse(request)) => {
+                            // Gather what the file browser needs but the UI
+                            // thread can't read: the library index (recursive
+                            // search, greying, cursor placement), personal
+                            // watch history, and the mapping browser's
+                            // per-series start directory. Cheap lean queries,
+                            // paid only on a browser-open keypress — always
+                            // fresh, no cached copy to invalidate.
+                            let files = self.storage.library_paths().unwrap_or_default();
+                            let watched = self.storage.watched_hashes().unwrap_or_default();
+                            let start = match &request {
+                                crate::ui::msg::BrowseRequest::Map {
+                                    series: Some(key), ..
+                                } => self.storage.series_map_dir(key).ok().flatten(),
+                                _ => None,
+                            };
+                            let _ = self.ui.try_send(UiInput::Browse {
+                                request,
+                                files,
+                                watched,
+                                start,
+                            });
+                        }
                         Some(UserAction::HashAndAdd { path, after }) => {
                             // Hashing is seconds per gigabyte: background
                             // work in the file actor, completed in the

@@ -100,6 +100,26 @@ impl LineBuffer {
         self.offset
     }
 
+    /// The buffer as inline spans with a REVERSED cell at the cursor —
+    /// for surfacing a filter inside a pane or modal title (where a full
+    /// [`TextField`] box doesn't fit). No horizontal scrolling: titles
+    /// hold short filter strings.
+    pub fn cursor_spans(&self) -> Vec<Span<'static>> {
+        let cursor = self.cursor;
+        let pre: String = self.chars.iter().take(cursor).collect();
+        let at: String = self
+            .chars
+            .get(cursor)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| " ".into());
+        let post: String = self.chars.iter().skip(cursor + 1).collect();
+        vec![
+            Span::raw(pre),
+            Span::styled(at, Style::default().add_modifier(Modifier::REVERSED)),
+            Span::raw(post),
+        ]
+    }
+
     /// Replace the contents; cursor to the end, scroll reset.
     pub fn set_text(&mut self, text: &str) {
         self.chars = text.chars().collect();

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use dessplay::actors::sync::Mutation;
 use dessplay::config::Settings;
 use dessplay::ui::app::{Ui, UiSnapshot};
-use dessplay::ui::msg::UserAction;
+use dessplay::ui::msg::{BrowseRequest, UserAction};
 use dessplay_core::net::{PeerInfo, Presence, Role};
 use dessplay_core::playlist::NewPlaylistEntry;
 use dessplay_core::types::{
@@ -433,8 +433,20 @@ fn add_file_via_browser_produces_hash_and_add() {
     for _ in 0..3 {
         ui.handle(key(Key::Tab));
     }
-    // [Add New] is the only row in an empty playlist.
-    assert!(ui.handle(key(Key::Enter)).is_empty());
+    // [Add New] is the only row in an empty playlist. Opening asks the
+    // main loop for the library index; the answer opens the browser.
+    let actions = ui.handle(key(Key::Enter));
+    assert_eq!(
+        actions,
+        vec![UserAction::Browse(BrowseRequest::Add { after: None })]
+    );
+    assert!(!ui.modal_open());
+    ui.open_file_browser(
+        BrowseRequest::Add { after: None },
+        vec![],
+        Default::default(),
+        None,
+    );
     assert!(ui.modal_open());
     // Roots list -> the temp dir -> the file.
     assert!(ui.handle(key(Key::Enter)).is_empty());
@@ -447,6 +459,115 @@ fn add_file_via_browser_produces_hash_and_add() {
         }]
     );
     assert!(!ui.modal_open());
+}
+
+/// `a` on a playlist entry with a local copy: the browser opens in that
+/// file's directory with the cursor on it, so the next episode is one
+/// keypress away.
+#[test]
+fn add_browser_opens_at_the_selected_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Anime");
+    std::fs::create_dir_all(root.join("Frieren")).unwrap();
+    for name in ["ep1.mkv", "ep2.mkv"] {
+        std::fs::write(root.join("Frieren").join(name), b"x").unwrap();
+    }
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    let mut ui = Ui::new(
+        UserId::new("kim"),
+        Settings {
+            username: Some("kim".into()),
+            password: Some("x".into()),
+            ..Settings::default()
+        },
+        vec![root.clone()],
+    );
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab)); // focus Playlist (cursor on ep1's row)
+    }
+    let actions = ui.handle(key(Key::Char('a')));
+    assert_eq!(
+        actions,
+        vec![UserAction::Browse(BrowseRequest::Add {
+            after: Some(hash(1))
+        })]
+    );
+    ui.open_file_browser(
+        BrowseRequest::Add {
+            after: Some(hash(1)),
+        },
+        vec![
+            (root.join("Frieren").join("ep1.mkv"), hash(1)),
+            (root.join("Frieren").join("ep2.mkv"), hash(2)),
+        ],
+        [hash(1)].into_iter().collect(), // ep1 personally watched
+        None,
+    );
+    assert!(ui.modal_open());
+    // The cursor starts on ep1 itself; Down+Enter picks its neighbour
+    // without any directory navigation.
+    ui.handle(key(Key::Down));
+    let actions = ui.handle(key(Key::Enter));
+    assert_eq!(
+        actions,
+        vec![UserAction::HashAndAdd {
+            path: root.join("Frieren").join("ep2.mkv"),
+            after: Some(hash(1)),
+        }]
+    );
+}
+
+/// Type-to-search in the add browser: typing filters the whole library
+/// recursively, directories list first as root-relative paths, and
+/// Enter on a directory clears the search and browses it.
+#[test]
+fn add_browser_type_to_search_finds_deep_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Anime");
+    let deep = root.join("Purgatory").join("Haibane Renmei");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("ep1.mkv"), b"x").unwrap();
+    let mut ui = Ui::new(
+        UserId::new("kim"),
+        Settings {
+            username: Some("kim".into()),
+            password: Some("x".into()),
+            ..Settings::default()
+        },
+        vec![root.clone()],
+    );
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab));
+    }
+    ui.handle(key(Key::Enter)); // [Add New] -> Browse request
+    ui.open_file_browser(
+        BrowseRequest::Add { after: None },
+        vec![(deep.join("ep1.mkv"), hash(1))],
+        Default::default(),
+        None,
+    );
+    // Search is case-insensitive over root-relative paths; the deep
+    // directory matches without any navigation.
+    type_str(&mut ui, "haibane");
+    let screen = render(&mut ui, 100, 30);
+    assert!(
+        screen.contains("Anime/Purgatory/Haibane Renmei"),
+        "{screen}"
+    );
+    // Enter on the directory row clears the search and browses it: the
+    // next Enter picks the file inside (proving cwd moved there).
+    assert!(ui.handle(key(Key::Enter)).is_empty());
+    let actions = ui.handle(key(Key::Enter));
+    assert_eq!(
+        actions,
+        vec![UserAction::HashAndAdd {
+            path: deep.join("ep1.mkv"),
+            after: None,
+        }]
+    );
 }
 
 #[test]
@@ -593,8 +714,30 @@ fn map_file_opens_browser_ranked_by_edit_distance_and_maps() {
     for _ in 0..3 {
         ui.handle(key(Key::Tab)); // focus Playlist
     }
-    // `M` opens the mapping browser (at the media roots).
-    assert!(ui.handle(shift('M')).is_empty());
+    // `M` requests the mapping browser; the main loop answers with the
+    // library (and would supply the series' last-used directory).
+    let series = Some(dessplay::storage::SeriesKey::AniDb(
+        dessplay_core::types::AniDbSeriesId(42),
+    ));
+    let actions = ui.handle(shift('M'));
+    assert_eq!(
+        actions,
+        vec![UserAction::Browse(BrowseRequest::Map {
+            file: hash(1),
+            target: "ep1.mkv".into(),
+            series: series.clone(),
+        })]
+    );
+    ui.open_file_browser(
+        BrowseRequest::Map {
+            file: hash(1),
+            target: "ep1.mkv".into(),
+            series,
+        },
+        vec![],
+        Default::default(),
+        None,
+    );
     assert!(ui.modal_open());
     // Enter the only root directory.
     assert!(ui.handle(key(Key::Enter)).is_empty());

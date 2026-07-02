@@ -58,6 +58,12 @@ pub fn user_style(name: &str) -> Style {
     Style::default().fg(PALETTE[(hash % PALETTE.len() as u64) as usize])
 }
 
+/// Style for a directory row in the file browser (files stay plain, so
+/// directories read at a glance).
+pub fn directory() -> Style {
+    Style::default().fg(Color::Cyan)
+}
+
 /// Style for selection highlight within a focused pane.
 pub fn highlight_style() -> Style {
     Style::default().add_modifier(Modifier::REVERSED)

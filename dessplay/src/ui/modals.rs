@@ -21,8 +21,8 @@ use super::components::plain;
 use super::msg::Msg;
 use super::theme;
 use super::widgets::{
-    Binding, CharOutcome, Form, FormEvent, FormModel, KeyPattern, Keymap, ListCursor, RowAction,
-    TextField, render_list,
+    Binding, CharOutcome, Form, FormEvent, FormModel, KeyPattern, Keymap, LineBuffer, ListCursor,
+    RowAction, TextField, render_list,
 };
 use crate::config::Settings;
 
@@ -88,11 +88,17 @@ impl FieldEditor {
 }
 
 /// Render a selectable list as a modal overlay.
-fn render_modal_list(frame: &mut Frame, area: Rect, title: &str, items: Vec<ListItem>, sel: usize) {
+fn render_modal_list<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    title: impl Into<Line<'a>>,
+    items: Vec<ListItem<'a>>,
+    sel: usize,
+) {
     let area = overlay(area, 70, 70);
     frame.render_widget(Clear, area);
     let selected = (!items.is_empty()).then_some(sel);
-    render_list(frame, area, title.to_string(), items, selected, true);
+    render_list(frame, area, title, items, selected, true);
 }
 
 // ---- File browser ------------------------------------------------------
@@ -123,6 +129,9 @@ enum RowKind {
     Parent,
     /// A real file/directory at `path`.
     Entry,
+    /// An informational row (e.g. the search-overflow marker); Enter
+    /// does nothing.
+    Note,
 }
 
 struct DirRow {
@@ -130,7 +139,132 @@ struct DirRow {
     path: PathBuf,
     is_dir: bool,
     kind: RowKind,
+    /// The file has been watched (personally or by the group): greyed
+    /// out, matching the playlist's muting.
+    watched: bool,
 }
+
+/// One indexed file the browser's search spans: absolute path, its
+/// display string (media-root name + relative path, e.g.
+/// `Anime/Purgatory/Haibane Renmei/ep01.mkv`), and its hash.
+struct LibraryFile {
+    path: PathBuf,
+    display: String,
+    hash: Ed2kHash,
+}
+
+/// A directory implied by the indexed files' ancestors, with the same
+/// root-relative display form.
+struct LibraryDir {
+    path: PathBuf,
+    display: String,
+}
+
+/// The library index slice a file browser searches: every indexed file
+/// under a media root (paths outside the roots — e.g. hash-named
+/// download-cache blobs — are dropped), the directories those files
+/// imply, and the watched set for greying. Built once per browser open
+/// from data the main loop supplies (the UI thread has no storage).
+#[derive(Default)]
+pub struct BrowserLibrary {
+    files: Vec<LibraryFile>,
+    dirs: Vec<LibraryDir>,
+    /// Path → hash, to grey watched files in the directory listing too.
+    by_path: std::collections::HashMap<PathBuf, Ed2kHash>,
+    watched: std::collections::BTreeSet<Ed2kHash>,
+}
+
+impl BrowserLibrary {
+    /// Index `files` (path + ed2k root) against `roots`. Display strings
+    /// keep the root's own name as the leading component so entries from
+    /// different media roots stay distinguishable.
+    pub fn new(
+        roots: &[PathBuf],
+        files: Vec<(PathBuf, Ed2kHash)>,
+        watched: std::collections::BTreeSet<Ed2kHash>,
+    ) -> Self {
+        fn root_label(root: &Path) -> String {
+            root.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.display().to_string())
+        }
+        let mut lib_files = Vec::new();
+        let mut dirs: std::collections::BTreeMap<PathBuf, String> =
+            std::collections::BTreeMap::new();
+        let mut by_path = std::collections::HashMap::new();
+        for (path, hash) in files {
+            let Some(root) = roots.iter().find(|root| path.starts_with(root)) else {
+                continue;
+            };
+            let label = root_label(root);
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let display = format!("{label}/{}", rel.display());
+            // Every ancestor directory up to (and including) the root is
+            // searchable — deep hierarchies are the point of the
+            // recursive search.
+            for dir in path.ancestors().skip(1) {
+                if !dir.starts_with(root) {
+                    break;
+                }
+                let display = match dir.strip_prefix(root) {
+                    Ok(rel) if !rel.as_os_str().is_empty() => {
+                        format!("{label}/{}", rel.display())
+                    }
+                    _ => label.clone(),
+                };
+                dirs.insert(dir.to_path_buf(), display);
+            }
+            by_path.insert(path.clone(), hash);
+            lib_files.push(LibraryFile {
+                path,
+                display,
+                hash,
+            });
+        }
+        lib_files.sort_by(|a, b| {
+            a.display
+                .to_lowercase()
+                .cmp(&b.display.to_lowercase())
+                .then_with(|| a.display.cmp(&b.display))
+        });
+        let mut dirs: Vec<LibraryDir> = dirs
+            .into_iter()
+            .map(|(path, display)| LibraryDir { path, display })
+            .collect();
+        dirs.sort_by(|a, b| {
+            a.display
+                .to_lowercase()
+                .cmp(&b.display.to_lowercase())
+                .then_with(|| a.display.cmp(&b.display))
+        });
+        Self {
+            files: lib_files,
+            dirs,
+            by_path,
+            watched,
+        }
+    }
+
+    /// A local path holding `hash`, if the index knows one.
+    fn path_of(&self, hash: Ed2kHash) -> Option<PathBuf> {
+        self.files
+            .iter()
+            .find(|file| file.hash == hash)
+            .map(|file| file.path.clone())
+    }
+
+    /// Has this path's file been watched (path known to the index)?
+    fn is_watched_path(&self, path: &Path) -> bool {
+        self.by_path
+            .get(path)
+            .is_some_and(|hash| self.watched.contains(hash))
+    }
+}
+
+/// Search results are capped so a one-letter query over a large library
+/// doesn't build tens of thousands of rows per keystroke; the overflow
+/// is announced in a trailing note row, never silently dropped.
+const SEARCH_CAP: usize = 500;
 
 /// Browse the media roots (or the whole filesystem for directory
 /// selection).
@@ -143,11 +277,19 @@ pub struct FileBrowser {
     cwd: Option<PathBuf>,
     entries: Vec<DirRow>,
     cursor: ListCursor,
+    /// The library index (search, greying, cursor placement).
+    library: BrowserLibrary,
+    /// Type-to-search filter; non-empty switches the listing to the
+    /// recursive search results.
+    filter: LineBuffer,
 }
 
 impl FileBrowser {
-    /// Browse for a file to add to the playlist.
-    pub fn for_file(roots: Vec<PathBuf>, after: Option<Ed2kHash>) -> Self {
+    /// Browse for a file to add to the playlist. When the anchor entry
+    /// has a local copy, opens in its directory with the cursor on it —
+    /// `a` is usually pressed on the just-watched episode to queue the
+    /// next one, which then sits a keypress away.
+    pub fn for_file(roots: Vec<PathBuf>, after: Option<Ed2kHash>, library: BrowserLibrary) -> Self {
         let mut browser = Self {
             purpose: BrowseFor::File,
             after,
@@ -155,8 +297,19 @@ impl FileBrowser {
             cwd: None,
             entries: Vec::new(),
             cursor: ListCursor::default(),
+            library,
+            filter: LineBuffer::default(),
         };
         browser.refresh();
+        if let Some(anchor) = after
+            && let Some(path) = browser.library.path_of(anchor)
+        {
+            browser.cwd = path.parent().map(Path::to_path_buf);
+            browser.refresh();
+            if let Some(index) = browser.entries.iter().position(|row| row.path == path) {
+                browser.cursor.set(index);
+            }
+        }
         browser
     }
 
@@ -168,6 +321,7 @@ impl FileBrowser {
         file: Ed2kHash,
         target: String,
         start: Option<PathBuf>,
+        library: BrowserLibrary,
     ) -> Self {
         let mut browser = Self {
             purpose: BrowseFor::Map { file, target },
@@ -176,12 +330,16 @@ impl FileBrowser {
             cwd: start,
             entries: Vec::new(),
             cursor: ListCursor::default(),
+            library,
+            filter: LineBuffer::default(),
         };
         browser.refresh();
         browser
     }
 
     /// Browse for a directory (media-root picker). Starts at `$HOME`.
+    /// No library index: the picker spans the whole filesystem, and its
+    /// `s` binding must stay a key, so it has no type-to-search.
     pub fn for_directory() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let mut browser = Self {
@@ -191,14 +349,73 @@ impl FileBrowser {
             cwd: Some(home),
             entries: Vec::new(),
             cursor: ListCursor::default(),
+            library: BrowserLibrary::default(),
+            filter: LineBuffer::default(),
         };
         browser.refresh();
         browser
     }
 
+    /// Does this browser support type-to-search? (Everything but the
+    /// directory picker.)
+    fn searchable(&self) -> bool {
+        !matches!(self.purpose, BrowseFor::Directory)
+    }
+
+    /// Is the recursive search active (non-empty filter)?
+    fn searching(&self) -> bool {
+        !self.filter.is_empty()
+    }
+
+    /// Rebuild [`Self::entries`] as the recursive search results:
+    /// matching directories first (selecting one clears the search and
+    /// browses it), then matching files, both as root-relative paths.
+    fn refresh_search(&mut self) {
+        let query = self.filter.text().to_lowercase();
+        let mut rows: Vec<DirRow> = Vec::new();
+        for dir in &self.library.dirs {
+            if dir.display.to_lowercase().contains(&query) {
+                rows.push(DirRow {
+                    name: dir.display.clone(),
+                    path: dir.path.clone(),
+                    is_dir: true,
+                    kind: RowKind::Entry,
+                    watched: false,
+                });
+            }
+        }
+        for file in &self.library.files {
+            if file.display.to_lowercase().contains(&query) {
+                rows.push(DirRow {
+                    name: file.display.clone(),
+                    path: file.path.clone(),
+                    is_dir: false,
+                    kind: RowKind::Entry,
+                    watched: self.library.watched.contains(&file.hash),
+                });
+            }
+        }
+        let overflow = rows.len().saturating_sub(SEARCH_CAP);
+        if overflow > 0 {
+            rows.truncate(SEARCH_CAP);
+            rows.push(DirRow {
+                name: format!("… {overflow} more — keep typing"),
+                path: PathBuf::new(),
+                is_dir: false,
+                kind: RowKind::Note,
+                watched: false,
+            });
+        }
+        self.entries = rows;
+    }
+
     fn refresh(&mut self) {
         self.entries.clear();
         self.cursor.reset();
+        if self.searching() {
+            self.refresh_search();
+            return;
+        }
         match &self.cwd {
             None => {
                 for root in &self.roots {
@@ -207,6 +424,7 @@ impl FileBrowser {
                         path: root.clone(),
                         is_dir: true,
                         kind: RowKind::Entry,
+                        watched: false,
                     });
                 }
             }
@@ -235,11 +453,14 @@ impl FileBrowser {
                         if matches!(self.purpose, BrowseFor::Directory) && !is_dir {
                             return None;
                         }
+                        let path = entry.path();
+                        let watched = self.library.is_watched_path(&path);
                         Some(DirRow {
                             name,
-                            path: entry.path(),
+                            path,
                             is_dir,
                             kind: RowKind::Entry,
+                            watched,
                         })
                     })
                     .collect();
@@ -278,6 +499,7 @@ impl FileBrowser {
                             path: dir.clone(),
                             is_dir: true,
                             kind: RowKind::Parent,
+                            watched: false,
                         },
                     );
                     rows.insert(
@@ -287,6 +509,7 @@ impl FileBrowser {
                             path: dir.clone(),
                             is_dir: false,
                             kind: RowKind::Select,
+                            watched: false,
                         },
                     );
                 }
@@ -318,8 +541,13 @@ impl FileBrowser {
     }
 
     /// The active keymap (per purpose — labels differ, and `s` exists
-    /// only in the directory picker).
+    /// only in the directory picker), with a dedicated one while the
+    /// search filter has text (Esc must clear, not close; Backspace must
+    /// delete, not ascend).
     fn keymap(&self) -> &'static Keymap<FileBrowser, Msg> {
+        if self.searching() {
+            return &BROWSER_SEARCH_KEYMAP;
+        }
         match self.purpose {
             BrowseFor::File => &BROWSER_FILE_KEYMAP,
             BrowseFor::Map { .. } => &BROWSER_MAP_KEYMAP,
@@ -327,12 +555,22 @@ impl FileBrowser {
         }
     }
 
-    /// Keys for the keybinding bar (derived from the active keymap).
+    /// Keys for the keybinding bar: derived from the active keymap, plus
+    /// the structural type-to-search entry where the editor fall-through
+    /// exists.
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        self.keymap().bar()
+        let mut items = if self.searchable() {
+            vec![("type", "Search")]
+        } else {
+            Vec::new()
+        };
+        items.extend(self.keymap().bar());
+        items
     }
 
     /// Enter: open a directory, act on a synthetic row, or choose a file.
+    /// Opening a directory from search results clears the search — the
+    /// user has navigated somewhere.
     fn act_enter(&mut self) -> Option<Msg> {
         let row = self.entries.get(self.cursor.index())?;
         match row.kind {
@@ -341,10 +579,12 @@ impl FileBrowser {
                 self.ascend();
                 return Some(Msg::None);
             }
+            RowKind::Note => return Some(Msg::None),
             RowKind::Entry => {}
         }
         if row.is_dir {
             self.cwd = Some(row.path.clone());
+            self.filter.clear();
             self.refresh();
             return Some(Msg::None);
         }
@@ -378,27 +618,58 @@ impl FileBrowser {
         Some(Msg::CloseModal)
     }
 
+    /// Esc while searching: clear the search, back to the listing.
+    fn act_search_clear(&mut self) -> Option<Msg> {
+        self.filter.clear();
+        self.refresh();
+        Some(Msg::None)
+    }
+
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let title = match (&self.cwd, &self.purpose) {
-            (None, _) => "Media roots".to_string(),
-            (Some(dir), BrowseFor::File) => format!("Add file — {}", dir.display()),
-            (Some(dir), BrowseFor::Directory) => format!("Pick directory — {}", dir.display()),
-            (Some(dir), BrowseFor::Map { target, .. }) => {
-                format!("Map “{target}” — {}", dir.display())
+        let title: Line = if self.searching() {
+            // Surface the search text with a cursor cell — it is a full
+            // text field (word motion, Home/End), like every other.
+            let label = match &self.purpose {
+                BrowseFor::File => "Add file".to_string(),
+                BrowseFor::Directory => "Pick directory".to_string(),
+                BrowseFor::Map { target, .. } => format!("Map “{target}”"),
+            };
+            let mut spans = vec![Span::raw(format!("{label}  /"))];
+            spans.extend(self.filter.cursor_spans());
+            Line::from(spans)
+        } else {
+            match (&self.cwd, &self.purpose) {
+                (None, _) => "Media roots".to_string(),
+                (Some(dir), BrowseFor::File) => format!("Add file — {}", dir.display()),
+                (Some(dir), BrowseFor::Directory) => {
+                    format!("Pick directory — {}", dir.display())
+                }
+                (Some(dir), BrowseFor::Map { target, .. }) => {
+                    format!("Map “{target}” — {}", dir.display())
+                }
             }
+            .into()
         };
         let items: Vec<ListItem> = self
             .entries
             .iter()
             .map(|row| match row.kind {
                 RowKind::Select | RowKind::Parent => ListItem::new(row.name.clone()),
+                RowKind::Note => ListItem::new(Span::styled(row.name.clone(), theme::dim())),
                 RowKind::Entry => {
                     let prefix = if row.is_dir { "▸ " } else { "  " };
-                    ListItem::new(format!("{prefix}{}", row.name))
+                    let style = if row.is_dir {
+                        theme::directory()
+                    } else if row.watched {
+                        theme::tone_style(super::props::Tone::Muted)
+                    } else {
+                        tuirealm::ratatui::style::Style::default()
+                    };
+                    ListItem::new(Span::styled(format!("{prefix}{}", row.name), style))
                 }
             })
             .collect();
-        render_modal_list(frame, area, &title, items, self.cursor.index());
+        render_modal_list(frame, area, title, items, self.cursor.index());
     }
 }
 
@@ -411,7 +682,22 @@ impl AppComponent<Msg, NoUserEvent> for FileBrowser {
         {
             return Some(Msg::None);
         }
-        self.keymap().dispatch(self, ev)
+        if let Some(msg) = self.keymap().dispatch(self, ev) {
+            return Some(msg);
+        }
+        // Type-to-search fall-through: any editing key feeds the filter
+        // (never in the directory picker — `s` is a binding there, and
+        // the whole-filesystem tree has no index to search).
+        if self.searchable() {
+            let before = self.filter.text();
+            if self.filter.edit(ev) {
+                if self.filter.text() != before {
+                    self.refresh();
+                }
+                return Some(Msg::None);
+            }
+        }
+        None
     }
 }
 
@@ -450,6 +736,22 @@ static BROWSER_MAP_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
         pattern: KeyPattern::Plain(Key::Esc),
         bar: Some(("Esc", "Cancel")),
         action: FileBrowser::act_close,
+    },
+]);
+
+/// Bindings while the recursive search has text (File and Map browsers):
+/// Esc clears the search instead of closing, and Backspace is left to
+/// the filter editor (delete a character) instead of ascending.
+static BROWSER_SEARCH_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Open")),
+        action: FileBrowser::act_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Clear")),
+        action: FileBrowser::act_search_clear,
     },
 ]);
 
@@ -830,7 +1132,7 @@ impl EpisodeBrowser {
                 )
             }
         };
-        render_modal_list(frame, area, &title, items, self.cursor.index());
+        render_modal_list(frame, area, title.as_str(), items, self.cursor.index());
     }
 
     fn len(&self) -> usize {
@@ -1334,9 +1636,166 @@ mod tests {
             hash(1),
             "target.mkv".into(),
             Some(tmp.path().to_path_buf()),
+            BrowserLibrary::default(),
         );
         let link = browser.entries.iter().find(|r| r.name == "link").unwrap();
         assert!(link.is_dir, "symlinked directory must list as a directory");
+    }
+
+    /// A library over one root ("<tmp>/Anime") with a deep file and a
+    /// shallow one; hash(1) is watched.
+    fn library(root: &Path) -> BrowserLibrary {
+        BrowserLibrary::new(
+            &[root.to_path_buf()],
+            vec![
+                (
+                    root.join("Purgatory").join("Haibane Renmei").join("e1.mkv"),
+                    hash(1),
+                ),
+                (root.join("Frieren").join("f1.mkv"), hash(2)),
+            ],
+            [hash(1)].into_iter().collect(),
+        )
+    }
+
+    #[test]
+    fn search_lists_directories_first_as_relative_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Anime");
+        let mut browser = FileBrowser::for_file(vec![root.clone()], None, library(&root));
+        for c in "haibane".chars() {
+            browser.on(&key(Key::Char(c), KeyModifiers::NONE));
+        }
+        // The deep directory matches by substring, case-insensitively,
+        // and lists before the matching file; both display as
+        // root-relative paths.
+        let names: Vec<&str> = browser.entries.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Anime/Purgatory/Haibane Renmei",
+                "Anime/Purgatory/Haibane Renmei/e1.mkv",
+            ]
+        );
+        assert!(browser.entries[0].is_dir);
+        assert!(!browser.entries[1].is_dir);
+        // The watched file is greyed (the playlist's muting, here too).
+        assert!(browser.entries[1].watched);
+    }
+
+    #[test]
+    fn search_esc_clears_and_backspace_deletes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Anime");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut browser = FileBrowser::for_file(vec![root.clone()], None, library(&root));
+        browser.on(&key(Key::Char('f'), KeyModifiers::NONE));
+        browser.on(&key(Key::Char('x'), KeyModifiers::NONE));
+        // "fx" matches nothing.
+        assert!(browser.entries.is_empty());
+        // Backspace edits the filter (it must not ascend while searching).
+        browser.on(&key(Key::Backspace, KeyModifiers::NONE));
+        assert_eq!(
+            browser.entries.iter().filter(|r| !r.is_dir).count(),
+            1,
+            "\"f\" matches the Frieren file"
+        );
+        // Esc clears the search (it must not close the modal) and
+        // returns to the directory listing.
+        assert_eq!(
+            browser.on(&key(Key::Esc, KeyModifiers::NONE)),
+            Some(Msg::None)
+        );
+        assert!(!browser.searching());
+    }
+
+    #[test]
+    fn search_enter_on_directory_clears_and_browses_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Anime");
+        let deep = root.join("Purgatory").join("Haibane Renmei");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("e1.mkv"), b"x").unwrap();
+        let mut browser = FileBrowser::for_file(vec![root.clone()], None, library(&root));
+        for c in "haibane".chars() {
+            browser.on(&key(Key::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(browser.on(&enter()), Some(Msg::None));
+        assert!(!browser.searching());
+        assert_eq!(browser.cwd.as_deref(), Some(deep.as_path()));
+    }
+
+    #[test]
+    fn directory_picker_has_no_type_to_search() {
+        // `s` must stay "select here" in the directory picker; typed
+        // characters never start a search there.
+        let mut browser = FileBrowser::for_directory();
+        assert!(
+            browser
+                .on(&key(Key::Char('x'), KeyModifiers::NONE))
+                .is_none()
+        );
+        assert!(!browser.searching());
+    }
+
+    #[test]
+    fn add_browser_cursor_starts_on_the_anchor_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Anime");
+        let dir = root.join("Frieren");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["f1.mkv", "f2.mkv"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let library = BrowserLibrary::new(
+            std::slice::from_ref(&root),
+            vec![(dir.join("f2.mkv"), hash(2))],
+            Default::default(),
+        );
+        let browser = FileBrowser::for_file(vec![root.clone()], Some(hash(2)), library);
+        // Opened in the anchor's directory, cursor on the anchor itself.
+        assert_eq!(browser.cwd.as_deref(), Some(dir.as_path()));
+        assert_eq!(browser.entries[browser.cursor.index()].name, "f2.mkv");
+    }
+
+    #[test]
+    fn add_browser_without_local_anchor_opens_at_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Anime");
+        std::fs::create_dir_all(&root).unwrap();
+        let browser = FileBrowser::for_file(
+            vec![root.clone()],
+            Some(hash(9)), // not in the library
+            library(&root),
+        );
+        assert_eq!(browser.cwd, None, "no local copy: the roots listing");
+    }
+
+    #[test]
+    fn search_overflow_is_announced_not_silent() {
+        let root = PathBuf::from("/anime");
+        let files: Vec<(PathBuf, Ed2kHash)> = (0..(super::SEARCH_CAP as u32 + 10))
+            .map(|i| {
+                (
+                    root.join(format!("show{i}/ep{i}.mkv")),
+                    Ed2kHash({
+                        let mut b = [0u8; 16];
+                        b[..4].copy_from_slice(&i.to_le_bytes());
+                        b
+                    }),
+                )
+            })
+            .collect();
+        let library = BrowserLibrary::new(std::slice::from_ref(&root), files, Default::default());
+        let mut browser = FileBrowser::for_file(vec![root], None, library);
+        browser.on(&key(Key::Char('e'), KeyModifiers::NONE));
+        assert_eq!(browser.entries.len(), super::SEARCH_CAP + 1);
+        let last = browser.entries.last().unwrap();
+        assert!(matches!(last.kind, RowKind::Note));
+        assert!(last.name.contains("more"), "{}", last.name);
+        // Enter on the note row does nothing.
+        browser.cursor.set(super::SEARCH_CAP);
+        assert_eq!(browser.on(&enter()), Some(Msg::None));
     }
 
     #[test]

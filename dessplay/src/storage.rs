@@ -537,6 +537,18 @@ impl Storage {
             .transpose()
     }
 
+    /// Every personally-watched file hash. The file browser greys these
+    /// out (alongside the group's watched flags).
+    pub fn watched_hashes(&self) -> Result<std::collections::BTreeSet<Ed2kHash>> {
+        let mut stmt = self.conn.prepare("SELECT hash FROM watch_history")?;
+        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut hashes = std::collections::BTreeSet::new();
+        for row in rows {
+            hashes.insert(hash_from_blob(row?)?);
+        }
+        Ok(hashes)
+    }
+
     /// "Known series": has any file from this series ever been watched?
     pub fn series_known(&self, key: &SeriesKey) -> Result<bool> {
         let count: i64 = match key {
@@ -721,6 +733,22 @@ impl Storage {
                     size_bytes: size_bytes as u64,
                 },
             });
+        }
+        Ok(entries)
+    }
+
+    /// Every indexed file as (path, ed2k root) — the lean projection of
+    /// [`Self::hash_cache`] (no per-block blobs), sized for the file
+    /// browser's recursive search on every browser open.
+    pub fn library_paths(&self) -> Result<Vec<(PathBuf, Ed2kHash)>> {
+        let mut stmt = self.conn.prepare("SELECT path, root FROM hash_cache")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (path_bytes, root) = row?;
+            entries.push((path_from_bytes(&path_bytes), hash_from_blob(root)?));
         }
         Ok(entries)
     }
@@ -1115,6 +1143,42 @@ mod tests {
             .remove_hash_cache(Path::new("/anime/ep1.mkv"))
             .unwrap();
         assert!(storage.hash_cache().unwrap().is_empty());
+    }
+
+    #[test]
+    fn library_paths_is_the_lean_hash_cache_projection() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert!(storage.library_paths().unwrap().is_empty());
+
+        let hashed = dessplay_core::hash::ed2k_hash_bytes(b"episode contents");
+        storage
+            .upsert_hash_cache(Path::new("/anime/ep1.mkv"), 1_000, &hashed, 50)
+            .unwrap();
+        assert_eq!(
+            storage.library_paths().unwrap(),
+            vec![(PathBuf::from("/anime/ep1.mkv"), hashed.root)]
+        );
+    }
+
+    #[test]
+    fn watched_hashes_collects_all_history() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert!(storage.watched_hashes().unwrap().is_empty());
+        for n in [1u8, 2] {
+            storage
+                .record_watched(&WatchRecord {
+                    hash: hash(n),
+                    series_id: None,
+                    series_name: None,
+                    filename: format!("ep{n}.mkv"),
+                    watched_at: n as i64,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            storage.watched_hashes().unwrap(),
+            [hash(1), hash(2)].into_iter().collect()
+        );
     }
 
     #[test]

@@ -6,8 +6,9 @@ Status: **ACCEPTED and implemented, 2026-07-02.** All four phases landed
 LineBuffer (no `tui-input` dependency; `tui-realm-stdlib` dropped);
 behavior parity plus the cheap consistency wins (word ops + offset
 discipline in all fields, PgUp/PgDn in all lists); the series filter is a
-full TextField. The file-browser filter (#20) and sort modes (#8) did not
-land — they are now drop-ins over the shared widgets.
+full TextField. The file-browser search (#20) landed the same day as the
+first drop-in over the shared widgets (recursive type-to-search, a
+`LineBuffer` + the browser keymaps); sort modes (#8) remain a drop-in.
 
 ## Motivation
 

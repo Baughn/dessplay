@@ -25,9 +25,10 @@ use super::components::{
     ChatPane, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
 };
 use super::modals::{
-    AniDbSearchModal, EpisodeBrowser, FileBrowser, ListEditModal, Season, SettingsModal,
+    AniDbSearchModal, BrowserLibrary, EpisodeBrowser, FileBrowser, ListEditModal, Season,
+    SettingsModal,
 };
-use super::msg::{Msg, UserAction};
+use super::msg::{BrowseRequest, Msg, UserAction};
 use super::props;
 use crate::actors::sync::Mutation;
 use crate::config::{Settings, SubtitleMode};
@@ -75,6 +76,13 @@ fn log_action(action: &UserAction) {
         }
         UserAction::Archive { filename, .. } => {
             tracing::debug!(%filename, "user action: Archive");
+        }
+        UserAction::Browse(request) => {
+            let kind = match request {
+                crate::ui::msg::BrowseRequest::Add { .. } => "Add",
+                crate::ui::msg::BrowseRequest::Map { .. } => "Map",
+            };
+            tracing::debug!(kind, "user action: Browse");
         }
         UserAction::Notice(text) => tracing::debug!(%text, "user action: Notice"),
         UserAction::Quit => tracing::debug!("user action: Quit"),
@@ -447,6 +455,44 @@ impl Ui {
         if let Some(Modal::AniDbSearch(modal)) = self.modals.last_mut() {
             modal.set_results(query, results);
         }
+    }
+
+    /// Open a file browser: the main loop's answer to
+    /// [`UserAction::Browse`], carrying the library index (every indexed
+    /// `(path, hash)` under a media root), the personally-watched hashes,
+    /// and — for the mapping browser — the series' last-used directory.
+    /// Group-watched flags are unioned in here (they live in the synced
+    /// view, which the main loop doesn't re-read for this).
+    pub fn open_file_browser(
+        &mut self,
+        request: BrowseRequest,
+        files: Vec<(PathBuf, Ed2kHash)>,
+        mut watched: BTreeSet<Ed2kHash>,
+        start: Option<PathBuf>,
+    ) {
+        watched.extend(
+            self.snapshot
+                .view
+                .watched
+                .iter()
+                .filter(|(_, flag)| **flag)
+                .map(|(hash, _)| *hash),
+        );
+        let library = BrowserLibrary::new(&self.media_roots, files, watched);
+        let browser = match request {
+            BrowseRequest::Add { after } => {
+                FileBrowser::for_file(self.media_roots.clone(), after, library)
+            }
+            BrowseRequest::Map { file, target, .. } => {
+                FileBrowser::for_mapping(self.media_roots.clone(), file, target, start, library)
+            }
+        };
+        // A double-press races two requests; the second answer replaces
+        // the first browser instead of stacking on it.
+        if matches!(self.modals.last(), Some(Modal::Files(_))) {
+            self.pop_modal();
+        }
+        self.push_modal(Modal::Files(browser));
     }
 
     /// Replace the snapshot and recompute every pane's props.
@@ -887,11 +933,11 @@ impl Ui {
                 }))
             }
             Msg::AddFileAfter(after) => {
-                self.push_modal(Modal::Files(FileBrowser::for_file(
-                    self.media_roots.clone(),
-                    after,
-                )));
-                None
+                // The browser wants the library index (recursive search,
+                // watched greying, cursor placement), which lives in
+                // storage — ask the main loop; the answer arrives as
+                // [`UiInput::Browse`] and opens the modal.
+                Some(UserAction::Browse(BrowseRequest::Add { after }))
             }
             Msg::MoveUp(hash) => {
                 let index = self.playlist_index(hash)?;
@@ -914,10 +960,6 @@ impl Ui {
             }
             Msg::RemoveEntry(hash) => Some(UserAction::Mutate(Mutation::RemovePlaylist { hash })),
             Msg::MapFile(hash) => {
-                // Open the mapping browser at the media roots (the
-                // per-series last-used directory is FileActor state, not
-                // in the snapshot yet — edit-distance ranking surfaces
-                // the right file regardless).
                 let entry = self
                     .snapshot
                     .view
@@ -925,13 +967,13 @@ impl Ui {
                     .iter()
                     .find(|e| e.hash == hash)?;
                 let target = entry.state.filename.clone();
-                self.push_modal(Modal::Files(FileBrowser::for_mapping(
-                    self.media_roots.clone(),
-                    hash,
+                // The series key lets the main loop start the browser at
+                // the series' last-used mapping directory.
+                Some(UserAction::Browse(BrowseRequest::Map {
+                    file: hash,
                     target,
-                    None,
-                )));
-                None
+                    series: self.series_key_of(hash),
+                }))
             }
             Msg::FileMapped { file, path } => {
                 self.pop_modal();

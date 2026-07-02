@@ -1175,21 +1175,7 @@ impl SeriesPane {
             if self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty()) {
                 let mut spans = vec![Span::raw(format!("{base}  /"))];
                 if self.filtering {
-                    let text = self.filter.text();
-                    let cursor = self.filter.cursor();
-                    let pre: String = text.chars().take(cursor).collect();
-                    let at: String = text
-                        .chars()
-                        .nth(cursor)
-                        .map(String::from)
-                        .unwrap_or_else(|| " ".into());
-                    let post: String = text.chars().skip(cursor + 1).collect();
-                    spans.push(Span::raw(pre));
-                    spans.push(Span::styled(
-                        at,
-                        Style::default().add_modifier(tuirealm::ratatui::style::Modifier::REVERSED),
-                    ));
-                    spans.push(Span::raw(post));
+                    spans.extend(self.filter.cursor_spans());
                 } else {
                     spans.push(Span::raw(self.filter.text()));
                 }

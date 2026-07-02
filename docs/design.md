@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-06-25
+Last updated: 2026-07-02
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -119,8 +119,25 @@ sync state with each other. See [network-design.md](network-design.md).
 **From scratch:**
 1. Press `Tab` to focus the **Playlist** pane (bottom-right)
 2. Press `a` to add a file
-3. Navigate your media root directories
-4. Select file to add. (Enter)
+3. The browser opens **on the selected entry's local file** when it has
+   one (pressing `a` on the just-watched episode is the common way to
+   queue the next one, which then sits a keypress away); otherwise it
+   opens at the media roots
+4. Navigate your media root directories — directories are colorized,
+   and files you (or the group) have watched are greyed out, matching
+   the playlist's muting
+5. Or **type to search**: any typed text filters the *whole library
+   index* recursively (case-insensitive substring over root-relative
+   paths, so deep hierarchies don't hide anything). Matching directories
+   list first — e.g. `haibane` finds `Anime/Purgatory/Haibane Renmei` —
+   then matching files; selecting a directory clears the search and
+   browses it. `Esc` clears the search; Backspace edits it. The search
+   spans the client's **library index** (see
+   [Media Library Scanning](#media-library-scanning)), so files not yet
+   indexed are found by navigation, not search. The manual-map browser
+   searches the same way; the media-root *directory picker* does not
+   (its `s` key stays live, and the whole filesystem has no index).
+6. Select file to add. (Enter)
 
 **Reordering:**
 1. Focus the **Playlist** pane
@@ -152,9 +169,8 @@ When someone adds a file, everyone needs to find their local copy:
 4a. You can manually map to a different file:
    - Select the red entry, press `M` to open browser
    - Browser opens to the directory most recently used for files from that
-     series (Phase 9A: opens at the media roots for now — that per-series
-     directory is file-actor state not yet surfaced to the UI; the
-     edit-distance ranking surfaces the right file regardless)
+     series (the main loop supplies it from `series_map_dirs` when the
+     browser is requested; unknown series open at the media roots)
    - Files are sorted by edit distance to the target filename
 4b. You can manually set yourself to "not watching" on a file that's Missing
    (e.g. a known series but you don't have this episode yet). This clears the
@@ -936,6 +952,12 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Enter` | Episode Browser | Select season / add episode to playlist |
 | `PgUp` / `PgDn` | Episode Browser | Move the selection by a page |
 | `Esc` / `Backspace` | Episode Browser | Go back (episodes -> seasons -> close) |
+| `Enter` | File Browser | Open directory / choose file (add or map) |
+| `Backspace` | File Browser | Up one level (from the roots listing, close); while searching, delete a search character |
+| `Esc` | File Browser | Cancel; while searching, clear the search |
+| _printable_ | File Browser (add / map) | Type-to-search the library recursively (root-relative paths, directories first); not in the directory picker |
+| `PgUp` / `PgDn` | File Browser | Move the selection by a page |
+| `s` | File Browser (directory picker) | Select the current directory |
 | `a` | Users | Mark selected user as Away (or clear an Away you set) |
 | `Enter` | Playlist | Play selected entry (or open file browser on [Add New]) |
 | `a` | Playlist | Add file (insert after selected entry) |

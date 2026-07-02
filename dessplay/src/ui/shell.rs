@@ -63,6 +63,20 @@ pub enum UiInput {
         /// True if the message was a CTCP ACTION (an emote).
         action: bool,
     },
+    /// The answer to a [`UserAction::Browse`]: the library index and
+    /// watched set the file browser needs, echoing the request. Opens
+    /// the browser modal.
+    Browse {
+        /// The request being answered (which browser, and its anchor).
+        request: crate::ui::msg::BrowseRequest,
+        /// Every indexed file: (path, ed2k root) from the hash cache.
+        files: Vec<(std::path::PathBuf, dessplay_core::types::Ed2kHash)>,
+        /// Personally-watched hashes (the group's flags are unioned in
+        /// UI-side from the synced view).
+        watched: std::collections::BTreeSet<dessplay_core::types::Ed2kHash>,
+        /// Mapping browser: the series' last-used directory.
+        start: Option<std::path::PathBuf>,
+    },
     /// AniDB name-search results (delivered to the search modal).
     SearchResults {
         /// The query these results answer.
@@ -166,6 +180,12 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 text,
                 action,
             } => ui.push_irc(timestamp, sender, text, action),
+            UiInput::Browse {
+                request,
+                files,
+                watched,
+                start,
+            } => ui.open_file_browser(request, files, watched, start),
             UiInput::SearchResults { query, results } => ui.set_search_results(&query, results),
             UiInput::Probe(cell) => {
                 // Stamp the moment we dequeued this input — measured by a

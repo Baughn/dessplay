@@ -326,7 +326,17 @@ dynamically. When a modal is active:
 4. Closing the modal restores focus to the previous component
 
 Modal types:
-- **FileBrowser**: Navigate media roots, select file
+- **FileBrowser**: Navigate media roots, select a file (playlist add or
+  manual map), with recursive type-to-search over the library index.
+  Opening it is a **round trip**: the UI thread has no storage access,
+  so `AddFileAfter`/`MapFile` emit `UserAction::Browse` and the main
+  loop answers with `UiInput::Browse` carrying the library listing
+  (lean `(path, hash)` pairs), the personally-watched hashes, and the
+  mapping browser's per-series start directory; `Ui::open_file_browser`
+  unions in the group's watched flags from the snapshot and pushes the
+  modal. Fetch-on-open keeps the data fresh with nothing to invalidate,
+  and keeps the per-tick `UiSnapshot` lean (the library index can be
+  large)
 - **Settings**: First-run and later configuration
 - **EpisodeBrowser**: Browse franchise seasons/episodes
 - **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)

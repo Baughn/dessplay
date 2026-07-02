@@ -150,11 +150,37 @@ impl Msg {
     }
 }
 
+/// What a file browser is being opened for. The UI sends this with
+/// [`UserAction::Browse`]; the main loop echoes it back alongside the
+/// library listing so the answer opens the right browser.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BrowseRequest {
+    /// The playlist-add browser (`a`, or Enter on [Add New]).
+    Add {
+        /// Anchor entry; `None` = append at the end.
+        after: Option<Ed2kHash>,
+    },
+    /// The manual-mapping browser (`M`).
+    Map {
+        /// The playlist entry being mapped.
+        file: Ed2kHash,
+        /// Target filename, for the edit-distance sort.
+        target: String,
+        /// Series key for the per-series last-used directory.
+        series: Option<crate::storage::SeriesKey>,
+    },
+}
+
 /// Actions leaving the UI toward the main loop / actors.
 #[derive(Debug, PartialEq)]
 pub enum UserAction {
     /// Apply a state mutation through the sync actor.
     Mutate(crate::actors::sync::Mutation),
+    /// Open a file browser: the UI has no storage access, so the main
+    /// loop gathers the library listing (and the watched set, and the
+    /// mapping browser's start directory) and answers with
+    /// [`crate::ui::shell::UiInput::Browse`].
+    Browse(BrowseRequest),
     /// Hash this file (blocking work) and add it to the playlist after
     /// the anchor.
     HashAndAdd {
