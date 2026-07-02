@@ -352,6 +352,10 @@ struct NarratorState {
     peers: BTreeMap<UserId, dessplay_core::net::Presence>,
     /// Per-file acknowledgements of committed-absent users.
     acknowledged_absent: std::collections::BTreeSet<(dessplay_core::types::Ed2kHash, UserId)>,
+    /// Whether the video was actually playing (derived state) at capture
+    /// time. Drives the paused-vs-unready wording: "paused"/"unpaused"
+    /// are reserved for transitions that stop/start real playback.
+    active: bool,
 }
 
 impl NarratorState {
@@ -378,6 +382,7 @@ impl NarratorState {
             series_preference: view.series_preference.clone(),
             peers: current_interactive(peers),
             acknowledged_absent: view.acknowledged_absent.clone(),
+            active: derive::playback_active(view, peers),
         }
     }
 }
@@ -579,12 +584,25 @@ impl PlayerWiring {
                     0
                 };
             if pos.abs_diff(expected) > SEEK_NARRATE_MILLIS {
-                lines.push(format!("{authority} skipped to {}", fmt_mmss(pos)));
+                // From -> to (#2): "from" is where playback would have
+                // been (the previous sample extrapolated), not the raw
+                // previous sample — under paused playback they coincide.
+                lines.push(format!(
+                    "{authority} skipped {} → {}",
+                    fmt_mmss(expected),
+                    fmt_mmss(pos)
+                ));
             }
         }
 
         // Manual override changes (pause / resume / away / back), keyed by
-        // the affected user; Away carries who set it.
+        // the affected user; Away carries who set it. "Paused"/"unpaused"
+        // are reserved for transitions that actually stop/start the video
+        // (#17): a pause while nothing was playing is "not ready", and a
+        // play press that doesn't start playback (others still block) is
+        // "ready" — the intent latch means playback then starts without a
+        // further override change, narrated by whoever clears last.
+        let active_now = derive::playback_active(view, peers);
         let users = prev
             .manual_override
             .keys()
@@ -597,7 +615,11 @@ impl PlayerWiring {
                 continue;
             }
             match now {
-                Some(ManualState::Paused) => lines.push(format!("{user} paused")),
+                Some(ManualState::Paused) => lines.push(if prev.active {
+                    format!("{user} paused")
+                } else {
+                    format!("{user} is not ready")
+                }),
                 Some(ManualState::Away { set_by })
                     if !matches!(was, Some(ManualState::Away { .. })) =>
                 {
@@ -608,7 +630,8 @@ impl PlayerWiring {
                     });
                 }
                 None => lines.push(match was {
-                    Some(ManualState::Paused) => format!("{user} unpaused"),
+                    Some(ManualState::Paused) if active_now => format!("{user} unpaused"),
+                    Some(ManualState::Paused) => format!("{user} is ready"),
                     _ => format!("{user} is back"),
                 }),
                 _ => {}
@@ -2492,6 +2515,44 @@ mod tests {
     }
 
     #[test]
+    fn narrator_reserves_pause_words_for_real_playback_changes() {
+        // #17: "paused"/"unpaused" only when video actually stops/starts.
+        let baughn = UserId::new("baughn");
+        let kim = UserId::new("kim");
+        let peers = [peer("kim"), peer("baughn")];
+
+        // Nothing is playing (intent Paused): marking yourself paused is
+        // "not ready", not "paused".
+        let mut state = playing_state();
+        state.set_playback_intent(A, ts(5), PlaybackIntent::Paused);
+        let v0 = state.view();
+        state.set_manual_override(A, ts(10), baughn.clone(), Some(ManualState::Paused));
+        let v1 = state.view();
+        assert_eq!(
+            narrate_diff(&v0, &peers, &v1, &peers),
+            ["baughn is not ready"]
+        );
+
+        // Clearing your pause while someone else still blocks: playback
+        // does not start, so it reads "is ready", not "unpaused".
+        let mut state = playing_state();
+        state.set_manual_override(A, ts(10), baughn.clone(), Some(ManualState::Paused));
+        state.set_manual_override(A, ts(11), kim.clone(), Some(ManualState::Paused));
+        let v0 = state.view();
+        state.set_manual_override(A, ts(12), baughn.clone(), None);
+        let v1 = state.view();
+        assert_eq!(narrate_diff(&v0, &peers, &v1, &peers), ["baughn is ready"]);
+
+        // The real transitions keep the real words (also covered by
+        // narrator_pause_resume_away_back): kim's clear starts playback.
+        let v2 = {
+            state.set_manual_override(A, ts(13), kim.clone(), None);
+            state.view()
+        };
+        assert_eq!(narrate_diff(&v1, &peers, &v2, &peers), ["kim unpaused"]);
+    }
+
+    #[test]
     fn narrator_become_ready_narrates_one_line() {
         // Regression: Ctrl-R / /ready (become_ready) is a single action that
         // writes BOTH a manual-override clear AND a NotWatching -> Maybe flip
@@ -2750,12 +2811,13 @@ mod tests {
         state.set_playback_position(A, ts(6), baughn.clone(), pos(1_000, 10_000));
         let v0 = state.view();
 
-        // A 59s jump well past 100ms of elapsed time -> narrated.
+        // A 59s jump well past 100ms of elapsed time -> narrated, with
+        // the from-position extrapolated to the moment of the seek (#2).
         state.set_playback_position(A, ts(7), baughn.clone(), pos(60_000, 10_100));
         let v_jump = state.view();
         assert_eq!(
             narrate_diff(&v0, &peers, &v_jump, &peers),
-            ["baughn skipped to 1:00"]
+            ["baughn skipped 0:01 → 1:00"]
         );
 
         // A sub-5s move -> not narrated.

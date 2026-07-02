@@ -272,7 +272,7 @@ Their ready state is decided by a combination of the above; this only exists in 
 | State | Color | Meaning |
 |-------|-------|---------|
 | Ready | Green | (Ready, or a present Maybe) & Ready |
-| Paused | Red | Paused & Any |
+| Paused | Yellow | Paused & Any (blocks like red; yellow says "a friend paused", not "something is broken") |
 | Away | Gray | Away & Any (shows who set it) |
 | Not watching | Gray | Not watching & Any |
 | Committed, away | Red | Watching (committed) & **absent** (Lost/Departed) -- blocks; acknowledge to play past |
@@ -292,7 +292,7 @@ and they are Ready, blue while a Ready peer is still fetching, and red
 otherwise (the download is visible; the red says they still won't be
 watching right now).
 
-Departed users (see [Presence](#presence)) are shown on a dim "departed"
+Departed users (see [Presence](#presence)) are shown on a dim "offline"
 line -- **except** a committed (Watching) absent user, who keeps gating
 the now-playing file and is surfaced as a "committed, away" blocker until
 they return or the group [acknowledges](#playback-rules) past them.
@@ -526,7 +526,10 @@ This prevents sync issues from different encodes/versions.
     sending one also clears your own Away. The action is carried inline in
     the message text using the CTCP `ACTION` convention
     (`"\x01ACTION waves\x01"`), so no separate message type or schema change
-    is needed -- only the display sites decode it.
+    is needed -- only the display sites decode it. In the chat log the
+    action phrase renders **grey** (terminals have no italics, so colour
+    marks the emote); the sender keeps its palette colour and mentions
+    still highlight through it.
   - `/settings` -- open the settings screen (also `F3`)
 
 ### IRC Bridge
@@ -603,15 +606,15 @@ mechanism that already posts command feedback and archive results).
 |-------|--------------|--------------|----------|
 | **Player crashed** (died twice in 30s) | the crashing client writes a chat message | "Baughn: my player crashed -- pausing" | **Synced** (a real chat message: persisted, shows the sender, late joiners see it) |
 | **Player gave up** (died three times in 30s) | the crashing client writes a chat message | "Baughn: my player keeps crashing -- giving up until someone picks another file" | **Synced** (a real chat message; same rationale as Player crashed) |
-| **Seek** (> 5s jump) | seek-authority + the authority's position | "Baughn skipped to 12:34" | Local (only the *second and later* seeks in an episode -- the first is a Server->User authority flip with no prior sample to diff, and following the leader for a baseline would emit false jumps; intentional) |
+| **Seek** (> 5s jump) | seek-authority + the authority's position | "Baughn skipped 08:12 → 12:34" (from = the previous sample extrapolated to the seek) | Local (only the *second and later* seeks in an episode -- the first is a Server->User authority flip with no prior sample to diff, and following the leader for a baseline would emit false jumps; intentional) |
 | **New file** (manual select) | now-playing register change, no watched flip | "Now playing: [Frieren] - 02.mkv" | Local (the *what* persists in the playlist pane) |
 | **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
 | **Joined** | `PeerList`: a peer becomes Present | "Nero joined" | Local |
 | **Connection lost** | `PeerList`: a peer becomes Lost | "Nero's connection dropped -- everyone paused" | Local |
 | **Left** | `PeerList`: a peer becomes Departed (a timeout *or* a graceful `Goodbye`, which now departs in place) | "Nero left" | Local |
 | **Back** | `PeerList`: Lost -> Present | "Nero is back" | Local |
-| **Paused** | manual-override map: None -> Paused | "Baughn paused" | Local |
-| **Resumed** | manual-override cleared (Paused -> None) | "Baughn unpaused" | Local |
+| **Paused** | manual-override map: None -> Paused | "Baughn paused" — or "Baughn is not ready" when nothing was actually playing (pause/unpause words are reserved for real video stops/starts) | Local |
+| **Resumed** | manual-override cleared (Paused -> None) | "Baughn unpaused" — or "Baughn is ready" when others still block (playback then starts on the last blocker's clear, which narrates the "unpaused") | Local |
 | **Away** | manual-override map -> Away | "Kim is away" / "Baughn marked Kim away" | Local |
 | **Not watching** | series-preference map -> NotWatching (now-playing series) | "Kim set to not-watching Frieren (by Kim)" | Local |
 | **Watching (committed)** | series-preference map -> Watching (now-playing series) | "Kim is committed to Frieren (by Kim)" | Local |
@@ -734,7 +737,7 @@ A user's presence degrades in three stages:
 |-------|---------|--------|
 | **Present** | Normal operation | Counted in playback gating |
 | **Lost** | 30s without traffic (QUIC idle timeout; clients keep-alive every 10s, and position updates double as liveness) | Everyone pauses (server forces playback intent to Paused); system message in chat |
-| **Departed** | 60s without traffic | Removed from gating and from the active Users list (shown on a dim "departed" line). Playback **stays paused** -- the intent register holds Paused until a human presses play; the usual response is to switch shows. No auto-unpause. |
+| **Departed** | 60s without traffic | Removed from gating and from the active Users list (shown on a dim "offline" line). Playback **stays paused** -- the intent register holds Paused until a human presses play; the usual response is to switch shows. No auto-unpause. |
 
 Additional rules:
 
@@ -744,7 +747,7 @@ Additional rules:
 - **Graceful quit** (`/quit`, Ctrl-C): an *immediate departure* -- the
   user goes straight to **Departed** (skipping the 30s Lost / 60s ladder),
   but stays listed exactly like a peer that timed out: shown on the dim
-  "departed" line, and -- if **committed** (Watching) to the now-playing
+  "offline" line, and -- if **committed** (Watching) to the now-playing
   series -- still gating until the group acknowledges past them. Skipping
   the Lost stage is the *only* thing a clean quit buys over a silent
   disconnect; it does not waive a commitment (design's User States: the

@@ -415,14 +415,19 @@ fn mention_completion_candidates<'a>(
 /// word that matches an online username (trailing punctuation stripped before
 /// matching but kept as plain text). Mentions of `me` are additionally
 /// reversed so a ping stands out. Spacing is preserved verbatim.
-fn highlight_mentions(chunk: &str, usernames: &[String], me: &str) -> Vec<Span<'static>> {
+fn highlight_mentions(
+    chunk: &str,
+    usernames: &[String],
+    me: &str,
+    base: Style,
+) -> Vec<Span<'static>> {
     use tuirealm::ratatui::style::Modifier;
     let mut spans: Vec<Span<'static>> = Vec::new();
     // Walk space-separated tokens, re-emitting the single spaces between them.
     let mut first = true;
     for token in chunk.split(' ') {
         if !first {
-            spans.push(Span::raw(" "));
+            spans.push(Span::styled(" ", base));
         }
         first = false;
         if token.is_empty() {
@@ -442,10 +447,10 @@ fn highlight_mentions(chunk: &str, usernames: &[String], me: &str) -> Vec<Span<'
                 }
                 spans.push(Span::styled(candidate.to_string(), style));
                 if !punct.is_empty() {
-                    spans.push(Span::raw(punct.to_string()));
+                    spans.push(Span::styled(punct.to_string(), base));
                 }
             }
-            None => spans.push(Span::raw(token.to_string())),
+            None => spans.push(Span::styled(token.to_string(), base)),
         }
     }
     spans
@@ -541,7 +546,10 @@ fn wrap_chat_line(
             .into_iter()
             .enumerate()
             .map(|(i, chunk)| {
-                let body = highlight_mentions(&chunk, usernames, me);
+                // The action phrase renders grey (#27) — the terminal has
+                // no italics, so colour is what marks an emote. Mentions
+                // still highlight through it.
+                let body = highlight_mentions(&chunk, usernames, me, theme::dim());
                 if i == 0 {
                     let mut spans = vec![Span::styled(time.clone(), theme::dim())];
                     if !tag.is_empty() {
@@ -576,7 +584,7 @@ fn wrap_chat_line(
             .into_iter()
             .enumerate()
             .map(|(i, chunk)| {
-                let body = highlight_mentions(&chunk, usernames, me);
+                let body = highlight_mentions(&chunk, usernames, me, Style::default());
                 if i == 0 {
                     let mut spans = vec![Span::styled(time.clone(), theme::dim())];
                     if !tag.is_empty() {
@@ -703,7 +711,7 @@ impl UsersPane {
             .collect();
         if !self.props.departed.is_empty() {
             items.push(ListItem::new(Span::styled(
-                format!("departed: {}", self.props.departed.join(", ")),
+                format!("offline: {}", self.props.departed.join(", ")),
                 theme::tone_style(Tone::Muted),
             )));
         }
@@ -2157,7 +2165,7 @@ mod chat_completion_tests {
 
     #[test]
     fn plain_text_has_no_styled_mentions() {
-        let spans = highlight_mentions("just some words", &names(), "Baughn");
+        let spans = highlight_mentions("just some words", &names(), "Baughn", Style::default());
         assert!(
             spans.iter().all(|s| s.style.fg.is_none()),
             "no word should be colored"
@@ -2169,7 +2177,7 @@ mod chat_completion_tests {
 
     #[test]
     fn leading_mention_with_colon_is_highlighted_punct_plain() {
-        let spans = highlight_mentions("Baughn: hi", &names(), "Nero");
+        let spans = highlight_mentions("Baughn: hi", &names(), "Nero", Style::default());
         assert!(span_is_styled_user(&spans[0], "Baughn"));
         // The colon is a separate, unstyled span.
         assert_eq!(spans[1].content, ":");
@@ -2178,7 +2186,7 @@ mod chat_completion_tests {
 
     #[test]
     fn mid_sentence_mention_only_styles_the_name() {
-        let spans = highlight_mentions("ask Nero please", &names(), "Baughn");
+        let spans = highlight_mentions("ask Nero please", &names(), "Baughn", Style::default());
         let styled: Vec<_> = spans.iter().filter(|s| s.style.fg.is_some()).collect();
         assert_eq!(styled.len(), 1);
         assert!(span_is_styled_user(styled[0], "Nero"));
@@ -2186,7 +2194,7 @@ mod chat_completion_tests {
 
     #[test]
     fn own_mention_is_additionally_reversed() {
-        let spans = highlight_mentions("hi Baughn", &names(), "Baughn");
+        let spans = highlight_mentions("hi Baughn", &names(), "Baughn", Style::default());
         assert!(
             spans.iter().any(|s| s.content == "Baughn"
                 && s.style.add_modifier.contains(Modifier::REVERSED)),
@@ -2197,7 +2205,7 @@ mod chat_completion_tests {
     #[test]
     fn prefix_of_a_name_is_not_a_mention() {
         // "Bau" is a completion prefix but not an exact name — never styled.
-        let spans = highlight_mentions("Bau is short", &names(), "Nero");
+        let spans = highlight_mentions("Bau is short", &names(), "Nero", Style::default());
         assert!(spans.iter().all(|s| s.style.fg.is_none()));
     }
 }

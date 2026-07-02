@@ -678,6 +678,25 @@ reason. Later phases bump the version freely.
 
 ## Phase 12: State Wording & Narrator Polish (#17, #29, #27, #2, #18; closes #12)
 
+**Status: complete (2026-07-02).** Notes and deviations:
+
+- The pause-word rule is decided by **derived playback**: `NarratorState`
+  now captures `playback_active` per snapshot; a pause narrates "X is not
+  ready" unless video was actually playing, and an override-clear
+  narrates "X is ready" unless playback actually starts (the last
+  blocker's clear gets the "unpaused").
+- The seek line's from-position is the previous sample **extrapolated**
+  to the seek moment (equal to the raw sample when paused).
+- `Tone::Paused` (yellow) covers only the plain manually-paused row;
+  downloading-while-paused stays red per the Ready States table.
+- The `/me` grey render keeps the sender's palette colour and mention
+  highlighting (a `base` style parameter on the mention highlighter).
+- "Offline" is a label-only rename; `Presence::Departed` and the
+  `UsersProps::departed` field keep their names.
+- #12 closed by `excused_users_never_block` in `dessplay-core::derive`
+  tests: Away/NotWatching/seeder users never block, property-tested over
+  presence × override × preference × availability.
+
 **Goal**: Stop conflating "paused the video" with "not ready to watch",
 in both the narrator's language and the Users pane's colors.
 

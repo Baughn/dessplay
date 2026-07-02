@@ -20,8 +20,12 @@ use crate::storage::SeriesKey;
 pub enum Tone {
     /// Green: ready / downloading-but-playable.
     Good,
-    /// Red: blocking playback (paused, missing, lost).
+    /// Red: blocking playback (missing file, committed-absent).
     Blocked,
+    /// Yellow: manually paused. Blocks like red, but a paused friend is
+    /// a different situation from a missing file (#18) — the attribution
+    /// stays, the colour stops crying wolf.
+    Paused,
     /// Blue: transferring, not yet playable.
     Transfer,
     /// Gray: away / not watching.
@@ -129,7 +133,7 @@ pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
                         }
                     }
                     (Some(bps), _) => (format!("downloading {}%", bps / 100), Tone::Blocked),
-                    (None, DerivedUserState::Paused) => ("paused".to_string(), Tone::Blocked),
+                    (None, DerivedUserState::Paused) => ("paused".to_string(), Tone::Paused),
                     (None, DerivedUserState::Away { set_by }) => {
                         (format!("away, set by {set_by}"), Tone::Idle)
                     }
@@ -965,7 +969,9 @@ mod tests {
             .map(|row| (row.name.as_str(), row))
             .collect();
         assert_eq!(by_name["kim"].tone, Tone::Good);
-        assert_eq!(by_name["paused"].tone, Tone::Blocked);
+        // #18: manually Paused is its own (yellow) state, distinct from
+        // the red blockers — a paused friend is not a missing file.
+        assert_eq!(by_name["paused"].tone, Tone::Paused);
         assert_eq!(by_name["afk"].label, "away, set by kim");
         assert_eq!(by_name["afk"].tone, Tone::Idle);
         assert_eq!(by_name["downloader"].label, "downloading 15%");

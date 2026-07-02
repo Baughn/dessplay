@@ -9,6 +9,7 @@ pub fn tone_style(tone: Tone) -> Style {
     match tone {
         Tone::Good => Style::default().fg(Color::Green),
         Tone::Blocked => Style::default().fg(Color::Red),
+        Tone::Paused => Style::default().fg(Color::Yellow),
         Tone::Transfer => Style::default().fg(Color::Blue),
         Tone::Idle => Style::default().fg(Color::DarkGray),
         Tone::Muted => Style::default().add_modifier(Modifier::DIM),
