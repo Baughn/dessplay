@@ -192,8 +192,6 @@ fn cell(record: &[String], index: Option<usize>) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-const DROP_MARKER: &str = r"(?i)abandon|drop";
-
 /// Parse one exported sheet. `label` names the file in warnings.
 pub fn import_sheet(
     content: &str,
@@ -212,7 +210,6 @@ pub fn import_sheet(
         .map(str::to_string)
         .collect();
     let (kind, mut columns) = detect(&headers);
-    let drop_marker = regex_lite(DROP_MARKER);
 
     let mut status = match kind {
         SheetKind::Active => ListStatus::Active,
@@ -301,8 +298,8 @@ pub fn import_sheet(
         // Drop detection: the Genre column doubles as the drop reason
         // on the finished sheet ("Abandoned after 4 eps", "3 (drop)").
         if kind == SheetKind::Finished {
-            let marked = entry.genre.as_deref().is_some_and(&drop_marker)
-                || entry.notes.iter().any(|note| drop_marker(note));
+            let marked = entry.genre.as_deref().is_some_and(is_drop_marker)
+                || entry.notes.iter().any(|note| is_drop_marker(note));
             if marked {
                 if entry.status != ListStatus::Dropped {
                     report.warnings.push(format!(
@@ -311,7 +308,7 @@ pub fn import_sheet(
                     ));
                     entry.status = ListStatus::Dropped;
                 }
-                if let Some(genre) = entry.genre.take_if(|g| drop_marker(g)) {
+                if let Some(genre) = entry.genre.take_if(|g| is_drop_marker(g)) {
                     entry.status_note = Some(genre);
                 }
             } else if entry.status == ListStatus::Dropped && entry.status_note.is_none() {
@@ -510,13 +507,13 @@ pub async fn submit(
     }
 }
 
-/// A tiny case-insensitive "abandon|drop" matcher — not worth a regex
-/// dependency.
-fn regex_lite(_pattern: &str) -> impl Fn(&str) -> bool {
-    |text: &str| {
-        let lower = text.to_lowercase();
-        lower.contains("abandon") || lower.contains("drop")
-    }
+/// Case-insensitive "abandon"/"drop" match on the finished/dropped sheet's
+/// genre/notes column (design.md: `/abandon|drop/i`). A full regex isn't
+/// worth the dependency, so the terms are matched directly — no decoy
+/// pattern string that could silently drift from what is matched.
+fn is_drop_marker(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("abandon") || lower.contains("drop")
 }
 
 #[cfg(test)]
