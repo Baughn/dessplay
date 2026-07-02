@@ -360,11 +360,14 @@ impl NarratorState {
         let now_playing_watched = view
             .now_playing
             .is_some_and(|f| view.watched.get(&f) == Some(&true));
-        let seek_sample = match (&view.now_playing, &view.seek_authority) {
-            (Some(_), Some(SeekAuthority::User(user))) => view
-                .playback_position
-                .get(user)
-                .map(|p| (p.position_millis, p.timestamp.0)),
+        // Filter the authority's sample by file tag, exactly as the
+        // "current" side does (`current_seek_sample`): a sample still tagged
+        // for a previous file is stale (the authority just changed files)
+        // and must not become a `prev` baseline the fresh sample is diffed
+        // against — that fabricated a phantom "skipped to" once the tag
+        // caught up (bc4607c guarded only the current side).
+        let seek_sample = match &view.seek_authority {
+            Some(SeekAuthority::User(user)) => current_seek_sample(view, user),
             _ => None,
         };
         NarratorState {
@@ -2744,6 +2747,39 @@ mod tests {
         state.set_playback_position(A, ts(7), baughn.clone(), pos(3_000, 10_100));
         let v_small = state.view();
         assert!(narrate_diff(&v0, &peers, &v_small, &peers).is_empty());
+    }
+
+    /// Regression: a `prev` seek sample still tagged for a *previous* file
+    /// (the authority's position register lagging a now-playing transition)
+    /// must be filtered out at capture, exactly as the current side is —
+    /// otherwise, once the tag catches up, `expected = stale_prev + elapsed`
+    /// fabricates a phantom "skipped to" line, and the timing-dependent lag
+    /// makes one client narrate it while another does not.
+    #[test]
+    fn narrator_ignores_a_stale_wrong_file_prev_seek_sample() {
+        let baughn = UserId::new("baughn");
+        let peers = [peer("kim"), peer("baughn")];
+        let posf = |p: u64, t: u64, f: u8| PlaybackPosition {
+            position_millis: p,
+            timestamp: ts(t),
+            file: hash(f),
+        };
+
+        // now-playing is hash(1) throughout; baughn holds seek authority.
+        let mut state = playing_state();
+        state.set_seek_authority(A, ts(5), SeekAuthority::User(baughn.clone()));
+        // prev: baughn's position register still holds the *previous* file's
+        // sample (hash(2)), lagging the transition to now-playing hash(1).
+        state.set_playback_position(A, ts(6), baughn.clone(), posf(60_000, 10_000, 2));
+        let v0 = state.view();
+        // current: the register catches up to now-playing (hash(1)) at 0:01.
+        state.set_playback_position(A, ts(7), baughn.clone(), posf(1_000, 10_100, 1));
+        let v1 = state.view();
+
+        assert!(
+            narrate_diff(&v0, &peers, &v1, &peers).is_empty(),
+            "a wrong-file prev seek sample must be filtered, not diffed into a phantom skip"
+        );
     }
 
     #[test]
