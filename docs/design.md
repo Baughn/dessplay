@@ -344,12 +344,17 @@ how many users are connected.
 
    The intent is a synced register (`LwwCell<PlaybackIntent>`,
    `Playing | Paused`) written by users (play/pause actions) and the server
-   (forced to Paused on Lost, on graceful quit during playback, on
-   departure, and on EOF-advance) -- it is the latch that keeps playback
-   paused after a blocker leaves, instead of silently auto-resuming. (The
-   server forces this Paused on **any** Lost, committed or not; gating then
-   decides whether pressing play resumes -- for an absent Maybe user it
-   does, for a committed one it does not until acknowledged.)
+   (forced to Paused on Lost, on graceful quit during playback, and on
+   EOF-advance) -- it is the latch that keeps playback paused after a
+   blocker leaves, instead of silently auto-resuming. (The server forces
+   this Paused on **any** Lost, committed or not; gating then decides
+   whether pressing play resumes -- for an absent Maybe user it does, for a
+   committed one it does not until acknowledged.) The **timeout-ladder**
+   Lost->Departed promotion does *not* re-force Paused: the peer was already
+   paused at its Lost transition 30s earlier, and re-pausing would clobber a
+   resume the present users legitimately made during the Lost window (an
+   absent Maybe user is non-blocking). Only the graceful-quit *immediate*
+   departure (which skips Lost) force-pauses.
 
    **Acknowledging a committed-absent blocker** is a deliberate per-file
    one-shot: it records `(now-playing file, absent user)` in a synced set
@@ -1003,7 +1008,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Standalone register; last seeker is position authority |
-| Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/quit/departure/EOF-advance |
+| Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion -- already paused at Lost) |
 | Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>` | Compound key; `Watching \| NotWatching \| Maybe`, absent entry = Maybe |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
 | Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Per-file one-shot: play past a committed-absent user; cleared on compaction |

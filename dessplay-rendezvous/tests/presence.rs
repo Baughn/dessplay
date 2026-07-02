@@ -106,6 +106,58 @@ async fn presence_ladder_lost_departed_return() {
     .await;
 }
 
+/// Regression: the Lost->Departed sweep must not re-pause a group that
+/// legitimately resumed during the Lost window. A timeout-ladder departure
+/// was already force-paused at its Lost transition; re-pausing at Departed
+/// would clobber a present user's resume (an absent *Maybe* peer does not
+/// gate) with a strictly-later Lamport stamp.
+#[tokio::test(start_paused = true)]
+async fn departed_sweep_does_not_repause_a_resumed_group() {
+    let harness = Harness::new(0x5EED);
+    let (_kim, baughn) = playing_session(&harness).await;
+
+    // Kim's connection dies -> Lost -> the server force-pauses everyone.
+    harness.isolate("kim");
+    eventually(&[&baughn], Duration::from_secs(30), |snaps| {
+        let s = &snaps[0];
+        s.peer("kim").is_some_and(|p| p.presence == Presence::Lost)
+            && s.view.playback_intent == PlaybackIntent::Paused
+    })
+    .await;
+
+    // During the Lost window baughn resumes: kim is an absent *Maybe* user
+    // (the default), which does not gate while absent, so this is legal.
+    mutate(
+        &baughn,
+        Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Playing,
+        },
+    )
+    .await;
+    eventually(&[&baughn], Duration::from_secs(10), |snaps| {
+        snaps[0].playing()
+    })
+    .await;
+
+    // Kim ages into Departed. The sweep must NOT clobber baughn's resume.
+    eventually(&[&baughn], Duration::from_secs(60), |snaps| {
+        snaps[0]
+            .peer("kim")
+            .is_some_and(|p| p.presence == Presence::Departed)
+    })
+    .await;
+    let snap = snapshot_of(&baughn).await;
+    assert_eq!(
+        snap.view.playback_intent,
+        PlaybackIntent::Playing,
+        "the Departed sweep re-paused a group that had legitimately resumed"
+    );
+    assert!(
+        snap.playing(),
+        "playback must stay running through the Departed sweep"
+    );
+}
+
 /// A *committed* (Watching) user gates across absence: once Departed they
 /// keep blocking playback (unlike a default Maybe user), until the group
 /// acknowledges past them for the current file — a per-file one-shot.

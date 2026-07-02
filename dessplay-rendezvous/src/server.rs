@@ -642,7 +642,16 @@ async fn sweep_departed<T: Transport>(shared: &Shared<T>) {
     for (user, role) in promoted {
         tracing::info!("{user:?} departed");
         if role == Role::Interactive {
-            shared.force_pause().await;
+            // No force_pause here. A timeout-ladder departure was already
+            // force-paused at its Lost transition 30s earlier; the peer is
+            // only promoted here from Presence::Lost. Re-pausing would
+            // clobber a legitimate resume that the *present* users made
+            // during the Lost window -- an absent Maybe/NotWatching/Away
+            // peer is non-blocking, so pressing play then is valid -- with
+            // a strictly-later Lamport stamp that wins the LWW. Departed
+            // only changes gating. (The graceful-quit path force-pauses on
+            // its own immediate-departure arm, which never enters Lost.)
+            // We still reclaim seek authority from a departed holder.
             shared.take_authority_from(&user).await;
         }
     }
