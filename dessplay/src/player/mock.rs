@@ -35,8 +35,8 @@ pub enum MockCommand {
     Seek(u64),
     /// `set_speed(speed)`.
     SetSpeed(f64),
-    /// `show_osd(text)`.
-    ShowOsd(String),
+    /// `set_osd_overlay(id, data)`; `None` clears the overlay.
+    SetOsdOverlay(u64, Option<String>),
     /// `shutdown()`.
     Shutdown,
 }
@@ -153,8 +153,8 @@ impl Player for MockPlayer {
         self.send(MockCommand::SetSpeed(speed))
     }
 
-    async fn show_osd(&self, text: &str) -> Result<(), PlayerError> {
-        self.send(MockCommand::ShowOsd(text.to_string()))
+    async fn set_osd_overlay(&self, id: u64, data: Option<&str>) -> Result<(), PlayerError> {
+        self.send(MockCommand::SetOsdOverlay(id, data.map(str::to_string)))
     }
 
     async fn recv(&self) -> Result<PlayerEvent, PlayerError> {

@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-06-25
+Last updated: 2026-07-03
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -223,7 +223,10 @@ crash supervision (relaunch via a `PlayerFactory`).
   picks the drift band (ignore / slew via mpv `speed` / hard seek) per
   design.md Playback Rules. Suspended while the local user is scrubbing.
 - `ClockOffset(i64)` -- shared-clock offset updates (for extrapolation)
-- `ShowOsd(text)` -- display message on video
+- `ShowOsd(text)` -- append a chat message to the rolling OSD log (the
+  actor owns retention/expiry and renders it as one `osd-overlay` slot)
+- `SetBlockerOverlay(text?)` -- set or clear the persistent "Waiting
+  for ..." summary (its own `osd-overlay` slot; re-applied on relaunch)
 - `Shutdown`
 
 **Produces** (`PlayerOutput`):

@@ -86,6 +86,17 @@ async fn pause_in_one_player_pauses_everyone() {
         })
     })
     .await;
+
+    // Everyone — the blocker included — gets the persistent "Waiting
+    // for …" OSD overlay (#14), derived identically on each client.
+    for client in [&mut kim, &mut baughn] {
+        client
+            .expect_player_command(BUDGET, |cmd| {
+                matches!(cmd, MockCommand::SetOsdOverlay(_, Some(text))
+                    if text.contains("Waiting for baughn (paused)"))
+            })
+            .await;
+    }
 }
 
 /// A user seek on kim's player takes seek authority and drags baughn's

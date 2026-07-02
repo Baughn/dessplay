@@ -125,8 +125,13 @@ async fn full_journey_against_real_mpv() {
     })
     .await;
 
-    // OSD is fire-and-forget; just not an error.
-    player.show_osd("dessplay test").await.unwrap();
+    // Overlay round trip: set and remove must both be accepted (mpv
+    // rejects malformed osd-overlay arguments with a command error).
+    player
+        .set_osd_overlay(1, Some("{\\an7\\fs26}dessplay test"))
+        .await
+        .unwrap();
+    player.set_osd_overlay(1, None).await.unwrap();
 
     // Clean shutdown.
     player.shutdown().await;

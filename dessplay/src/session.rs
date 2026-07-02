@@ -208,6 +208,11 @@ pub struct PlayerWiring {
     last_synced: Option<(UserId, dessplay_core::types::PlaybackPosition)>,
     /// Chat messages already shown as OSD.
     chat_seen: Option<usize>,
+    /// The blocker-summary overlay as last sent: `(loaded file, text)`.
+    /// The loaded file is part of the key so a fresh player (spawned by
+    /// a Load in the same directive batch) gets the overlay re-sent —
+    /// commands before the first load land on no player.
+    blocker_overlay_sent: (Option<Ed2kHash>, Option<String>),
     /// AniDB lookups already requested this session (the request is a
     /// GSet insert; this just avoids re-sending every snapshot).
     lookups_requested: HashSet<Ed2kHash>,
@@ -468,6 +473,38 @@ fn now_playing_name(view: &StateView, file: Ed2kHash) -> String {
         .unwrap_or_else(|| file.to_string())
 }
 
+/// The "Waiting for …" OSD line: every current blocker with a short
+/// reason, in peer-list (username) order. `None` when nobody blocks.
+fn blocker_summary(view: &StateView, peers: &[PeerInfo]) -> Option<String> {
+    let blockers = derive::playback_blockers(view, peers);
+    if blockers.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = blockers
+        .iter()
+        .map(|b| {
+            let reason = match b.reason {
+                derive::BlockReason::Paused => "paused".to_string(),
+                derive::BlockReason::FileMissing => "missing file".to_string(),
+                derive::BlockReason::Downloading => {
+                    let progress = view.now_playing.and_then(|file| {
+                        view.file_availability.get(&(b.user.clone(), file)).copied()
+                    });
+                    match progress {
+                        Some(FileAvailability::Downloading { progress_bps }) => {
+                            format!("downloading {}%", progress_bps / 100)
+                        }
+                        _ => "downloading".to_string(),
+                    }
+                }
+                derive::BlockReason::CommittedAbsent => "committed, away".to_string(),
+            };
+            format!("{} ({reason})", b.user)
+        })
+        .collect();
+    Some(format!("Waiting for {}", parts.join(", ")))
+}
+
 /// The narration line for a single presence transition, if any.
 fn presence_line(
     user: &UserId,
@@ -500,6 +537,7 @@ impl PlayerWiring {
             loaded: None,
             last_synced: None,
             chat_seen: None,
+            blocker_overlay_sent: (None, None),
             lookups_requested: HashSet::new(),
             watcher_prefs_written: HashSet::new(),
             watched_recorded: HashSet::new(),
@@ -1395,12 +1433,30 @@ impl PlayerWiring {
             self.drift_high_snapshots = 0;
         }
 
+        // The persistent "Waiting for …" blocker summary (#14): shown to
+        // everyone — including the blockers — whenever someone gates the
+        // now-playing file, cleared the moment nobody does. Deduped, but
+        // keyed on the loaded file too: a Load in this same batch spawns
+        // the player, and commands sent before it landed on nothing.
+        let summary = view.now_playing.and_then(|_| blocker_summary(view, peers));
+        let key = (self.loaded, summary);
+        if self.blocker_overlay_sent != key {
+            out.push(Directive::Player(PlayerCommand::SetBlockerOverlay(
+                key.1.clone(),
+            )));
+            self.blocker_overlay_sent = key;
+        }
+
         // New chat messages go to the OSD. The first view's backlog is
         // history, not news.
         match self.chat_seen {
             None => self.chat_seen = Some(view.chat.len()),
             Some(seen) => {
                 for msg in view.chat.iter().skip(seen) {
+                    // Your own words don't need echoing back at you (#30).
+                    if msg.sender == self.me {
+                        continue;
+                    }
                     let osd = match decode_action(&msg.text) {
                         Some(phrase) => format!("* {} {}", msg.sender, phrase),
                         None => format!("{}: {}", msg.sender, msg.text),
@@ -3913,6 +3969,74 @@ mod tests {
             })
             .collect();
         assert_eq!(osd, vec!["baughn: hello!"]);
+    }
+
+    #[test]
+    fn own_chat_messages_are_not_echoed_to_the_osd() {
+        // #30: your own words don't need showing back at you.
+        let mut state = playing_state();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&state.view(), &[peer("kim")]);
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(6),
+            sender: me(),
+            text: "my own line".into(),
+        });
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(7),
+            sender: UserId::new("baughn"),
+            text: "a reply".into(),
+        });
+        let out = wiring.on_state(&state.view(), &[peer("kim")]);
+        let osd: Vec<_> = player_cmds(&out)
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                PlayerCommand::ShowOsd(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(osd, vec!["baughn: a reply"]);
+    }
+
+    #[test]
+    fn blocker_overlay_tracks_blockers_and_clears() {
+        // #14: the "Waiting for …" summary is set while someone blocks
+        // (shown to everyone, blocker included) and cleared when the last
+        // blocker goes.
+        let baughn = UserId::new("baughn");
+        let peers = [peer("kim"), peer("baughn")];
+        let mut state = playing_state();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&state.view(), &peers);
+
+        state.set_manual_override(A, ts(10), baughn.clone(), Some(ManualState::Paused));
+        let out = wiring.on_state(&state.view(), &peers);
+        assert!(
+            player_cmds(&out).iter().any(|cmd| matches!(
+                cmd,
+                PlayerCommand::SetBlockerOverlay(Some(text))
+                    if text == "Waiting for baughn (paused)"
+            )),
+            "expected the waiting overlay, got {out:?}"
+        );
+
+        // Unchanged blockers: no re-send.
+        let repeat = wiring.on_state(&state.view(), &peers);
+        assert!(
+            !player_cmds(&repeat)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::SetBlockerOverlay(_))),
+            "unchanged overlay must not be re-sent"
+        );
+
+        state.set_manual_override(A, ts(11), baughn.clone(), None);
+        let cleared = wiring.on_state(&state.view(), &peers);
+        assert!(
+            player_cmds(&cleared)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::SetBlockerOverlay(None))),
+            "expected the overlay to clear, got {cleared:?}"
+        );
     }
 
     #[test]

@@ -245,8 +245,16 @@ impl Player for MpvPlayer {
         self.command(json!(["set_property", "speed", speed])).await
     }
 
-    async fn show_osd(&self, text: &str) -> Result<(), PlayerError> {
-        self.command(json!(["show-text", text, 4000])).await
+    async fn set_osd_overlay(&self, id: u64, data: Option<&str>) -> Result<(), PlayerError> {
+        match data {
+            Some(data) => {
+                self.command(json!(["osd-overlay", id, "ass-events", data]))
+                    .await
+            }
+            // Removal is format "none" with the same id; mpv still
+            // requires the data argument.
+            None => self.command(json!(["osd-overlay", id, "none", ""])).await,
+        }
     }
 
     async fn recv(&self) -> Result<PlayerEvent, PlayerError> {

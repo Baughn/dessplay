@@ -120,8 +120,17 @@ pub trait Player: Send + Sync + 'static {
     /// Set the playback speed (drift slew; 1.0 = normal).
     fn set_speed(&self, speed: f64) -> impl Future<Output = Result<(), PlayerError>> + Send;
 
-    /// Display a message on the video (OSD).
-    fn show_osd(&self, text: &str) -> impl Future<Output = Result<(), PlayerError>> + Send;
+    /// Set (or clear, with `None`) a persistent OSD overlay. `id`
+    /// namespaces independent overlays (the rolling chat log vs the
+    /// blocker summary); `data` is raw ASS event text (mpv
+    /// `osd-overlay`). Unlike a timed `show-text`, an overlay stays
+    /// until rewritten or cleared, so the two never clobber each other
+    /// and nothing auto-expires under the reader.
+    fn set_osd_overlay(
+        &self,
+        id: u64,
+        data: Option<&str>,
+    ) -> impl Future<Output = Result<(), PlayerError>> + Send;
 
     /// Receive the next observation. Cancel-safe; one reader task.
     fn recv(&self) -> impl Future<Output = Result<PlayerEvent, PlayerError>> + Send;

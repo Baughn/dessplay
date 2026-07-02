@@ -735,6 +735,28 @@ longer looks like a missing-file blocker.
 
 ## Phase 13: Player OSD Rework (#16, #30, #14)
 
+**Status: complete (2026-07-03).** Notes and deviations:
+
+- `Player::show_osd` was **replaced** by `set_osd_overlay(id, data)` —
+  nothing else used the timed `show-text`, and the single-slot model was
+  the bug. Two slots: chat log (id 1, top-left) and blocker summary
+  (id 2, top-right); minimal ASS styling (`{\an7/\an9\fs26}`), braces
+  and backslashes sanitized. Verified against real mpv (`mpv-tests`).
+- The chat OSD has **no message-count display budget** — pure
+  per-message 8s retention (the request was "minimum retention time");
+  an 8-line cap guards pathological bursts only. Buffer + expiry live in
+  the PlayerActor, which re-applies non-empty overlays after every
+  relaunch/re-attach (fresh mpv slots are clean, so empty ones are
+  skipped — this also keeps relaunch's first command the reload).
+- The session's blocker producer keys its dedup on `(loaded file,
+  text)`: a Load in the same directive batch spawns the player, and
+  overlay commands sent before it land on nothing.
+- The blocker text reuses `derive::playback_blockers` (which already
+  existed) — no derivation moved out of `ui/props.rs`; the props code
+  only shares the underlying derive, exactly as before.
+- The design sentence "how many users are connected" on the OSD was
+  dropped in favor of the Waiting-for line (the count lives in the TUI).
+
 **Goal**: The video OSD becomes trustworthy: chat lines don't vanish
 mid-read, your own lines don't echo, and the design.md blocker summary
 (never implemented — confirmed 2026-07-02) finally exists as a

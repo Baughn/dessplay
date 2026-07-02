@@ -63,6 +63,18 @@ pub const CRASH_FATAL_WINDOW: Duration = Duration::from_secs(30);
 /// last, and the actor gives up relaunching until a new file is loaded —
 /// otherwise a file that reliably kills the player loops forever.
 pub const CRASH_GIVE_UP_COUNT: u32 = 3;
+
+/// mpv overlay slot for the rolling chat-message log.
+const OSD_CHAT_OVERLAY_ID: u64 = 1;
+/// mpv overlay slot for the "Waiting for …" blocker summary.
+const OSD_BLOCKER_OVERLAY_ID: u64 = 2;
+/// Minimum time each chat message stays on the OSD. Messages expire
+/// individually, so a burst never erases an unread line early (#16).
+pub const OSD_CHAT_RETENTION: Duration = Duration::from_secs(8);
+/// Upper bound on simultaneously shown chat messages — a guard against
+/// pathological bursts, not a display budget (older lines have had the
+/// least-recent chance to be read).
+const OSD_CHAT_MAX: usize = 8;
 /// Attach mode: first delay before re-probing the user's mpv socket after
 /// it goes away (it usually comes back quickly).
 pub const REATTACH_BACKOFF_INITIAL: Duration = Duration::from_millis(500);
@@ -113,8 +125,13 @@ pub enum PlayerCommand {
     ReleaseSlew,
     /// Updated shared-clock offset (server minus local), from time sync.
     ClockOffset(i64),
-    /// Display a message on the video.
+    /// Append a chat message to the rolling OSD log (it stays at least
+    /// [`OSD_CHAT_RETENTION`], alongside the other recent messages).
     ShowOsd(String),
+    /// Set (or clear) the persistent "Waiting for …" blocker summary.
+    /// Plain text; the actor owns the ASS formatting and re-applies the
+    /// overlay across player relaunches.
+    SetBlockerOverlay(Option<String>),
     /// Quit the player and exit the actor.
     Shutdown,
 }
@@ -237,6 +254,12 @@ struct Actor<F: PlayerFactory> {
     /// Attach mode: current delay between re-attach attempts (capped
     /// backoff), reset to [`REATTACH_BACKOFF_INITIAL`] on a fresh detach.
     reattach_backoff: Duration,
+    /// The rolling chat OSD: `(rendered line, expires_at)`, oldest
+    /// first. Retention is constant, so the front always expires first.
+    osd_chat: VecDeque<(String, Instant)>,
+    /// The current blocker summary (plain text), kept so it survives a
+    /// player relaunch.
+    blocker_overlay: Option<String>,
 }
 
 /// Run the player actor until `commands` closes or [`PlayerCommand::Shutdown`].
@@ -269,6 +292,8 @@ pub async fn run<F: PlayerFactory>(
         attach_mode,
         reattach_at: None,
         reattach_backoff: REATTACH_BACKOFF_INITIAL,
+        osd_chat: VecDeque::new(),
+        blocker_overlay: None,
     };
 
     match actor.factory.spawn().await {
@@ -296,6 +321,8 @@ pub async fn run<F: PlayerFactory>(
     loop {
         let debounce_at = actor.pending_user_seek.map(|(_, at)| at + SEEK_DEBOUNCE);
         let reattach_at = actor.reattach_at;
+        // Constant retention means the oldest chat line expires first.
+        let osd_expiry_at = actor.osd_chat.front().map(|(_, at)| *at);
         tokio::select! {
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { break };
@@ -325,6 +352,11 @@ pub async fn run<F: PlayerFactory>(
                 if reattach_at.is_some() =>
             {
                 actor.try_reattach().await;
+            }
+            _ = tokio::time::sleep_until(osd_expiry_at.unwrap_or_else(Instant::now)),
+                if osd_expiry_at.is_some() =>
+            {
+                actor.expire_osd_chat().await;
             }
         }
     }
@@ -413,6 +445,7 @@ impl<F: PlayerFactory> Actor<F> {
                             Ok(player) => {
                                 tracing::info!("relaunching player for the new file");
                                 self.player = Some(player);
+                                self.reapply_overlays().await;
                             }
                             Err(e) => {
                                 tracing::error!("could not relaunch the player: {e}");
@@ -451,13 +484,83 @@ impl<F: PlayerFactory> Actor<F> {
                 self.offset_millis = offset_millis;
             }
             PlayerCommand::ShowOsd(text) => {
-                if let Some(player) = &self.player
-                    && let Err(e) = player.show_osd(&text).await
-                {
-                    tracing::debug!("osd failed: {e}");
+                self.osd_chat
+                    .push_back((text, Instant::now() + OSD_CHAT_RETENTION));
+                while self.osd_chat.len() > OSD_CHAT_MAX {
+                    self.osd_chat.pop_front();
                 }
+                self.render_chat_overlay().await;
+            }
+            PlayerCommand::SetBlockerOverlay(text) => {
+                self.blocker_overlay = text;
+                self.render_blocker_overlay().await;
             }
             PlayerCommand::Shutdown => {}
+        }
+    }
+
+    /// Escape a plain text line for use inside an ASS overlay event:
+    /// override-block braces are swapped for parens (ASS has no reliable
+    /// in-band escape for them) and newlines become spaces (one visual
+    /// line per message; `\N` is reserved for joining messages).
+    fn ass_escape(text: &str) -> String {
+        text.replace('{', "(")
+            .replace('}', ")")
+            .replace(['\n', '\r'], " ")
+            .replace('\\', "\u{ff3c}") // full-width \: a bare one starts an ASS tag
+    }
+
+    /// Push (or clear) one overlay slot on the running player, if any.
+    async fn apply_overlay(&mut self, id: u64, data: Option<String>) {
+        if let Some(player) = &self.player
+            && let Err(e) = player.set_osd_overlay(id, data.as_deref()).await
+        {
+            tracing::debug!(id, "osd overlay failed: {e}");
+        }
+    }
+
+    /// Render the rolling chat log into its overlay slot: top-left,
+    /// oldest first, one line per message.
+    async fn render_chat_overlay(&mut self) {
+        let data = (!self.osd_chat.is_empty()).then(|| {
+            let lines: Vec<String> = self
+                .osd_chat
+                .iter()
+                .map(|(text, _)| Self::ass_escape(text))
+                .collect();
+            format!("{{\\an7\\fs26}}{}", lines.join("\\N"))
+        });
+        self.apply_overlay(OSD_CHAT_OVERLAY_ID, data).await;
+    }
+
+    /// Render the blocker summary into its overlay slot: top-right, one
+    /// line, present exactly while someone blocks.
+    async fn render_blocker_overlay(&mut self) {
+        let data = self
+            .blocker_overlay
+            .as_deref()
+            .map(|text| format!("{{\\an9\\fs26}}{}", Self::ass_escape(text)));
+        self.apply_overlay(OSD_BLOCKER_OVERLAY_ID, data).await;
+    }
+
+    /// Drop expired chat lines and re-render.
+    async fn expire_osd_chat(&mut self) {
+        let now = Instant::now();
+        while self.osd_chat.front().is_some_and(|(_, at)| *at <= now) {
+            self.osd_chat.pop_front();
+        }
+        self.render_chat_overlay().await;
+    }
+
+    /// Re-push overlays onto a freshly (re)launched player — a new mpv
+    /// process starts with clean overlay slots, so empty ones need no
+    /// clearing command.
+    async fn reapply_overlays(&mut self) {
+        if !self.osd_chat.is_empty() {
+            self.render_chat_overlay().await;
+        }
+        if self.blocker_overlay.is_some() {
+            self.render_blocker_overlay().await;
         }
     }
 
@@ -760,6 +863,7 @@ impl<F: PlayerFactory> Actor<F> {
             tracing::info!("re-attached to mpv");
             self.reattach_backoff = REATTACH_BACKOFF_INITIAL;
             self.player = Some(player);
+            self.reapply_overlays().await;
             if let Some((_, path, title)) = self.current.clone()
                 && let Some(player) = &self.player
                 && let Err(e) = player.load(&path, title.as_deref()).await
@@ -836,6 +940,7 @@ impl<F: PlayerFactory> Actor<F> {
         match self.factory.spawn().await {
             Ok(player) => {
                 self.player = Some(player);
+                self.reapply_overlays().await;
                 if let Some((_, path, title)) = self.current.clone()
                     && let Some(player) = &self.player
                     && let Err(e) = player.load(&path, title.as_deref()).await
@@ -984,6 +1089,8 @@ mod tests {
             attach_mode: false,
             reattach_at: None,
             reattach_backoff: REATTACH_BACKOFF_INITIAL,
+            osd_chat: VecDeque::new(),
+            blocker_overlay: None,
         };
         (actor, out_rx)
     }
@@ -1887,7 +1994,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn osd_passes_through_to_the_player() {
+    async fn osd_chat_rolls_up_and_expires_individually() {
         let (commands, _outputs, mut control) = loaded_rig().await;
         commands
             .send(PlayerCommand::ShowOsd("Baughn: hello".into()))
@@ -1895,7 +2002,111 @@ mod tests {
             .unwrap();
         assert_eq!(
             expect_command(&mut control).await,
-            MockCommand::ShowOsd("Baughn: hello".into())
+            MockCommand::SetOsdOverlay(1, Some("{\\an7\\fs26}Baughn: hello".into()))
         );
+        // A second message joins the first instead of replacing it (#16).
+        tokio::time::advance(Duration::from_secs(2)).await;
+        commands
+            .send(PlayerCommand::ShowOsd("Nero: hi".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::SetOsdOverlay(1, Some("{\\an7\\fs26}Baughn: hello\\NNero: hi".into()))
+        );
+        // The first expires alone at its own 8s mark…
+        tokio::time::advance(
+            OSD_CHAT_RETENTION - Duration::from_secs(2) + Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::SetOsdOverlay(1, Some("{\\an7\\fs26}Nero: hi".into()))
+        );
+        // …and the second's expiry clears the overlay.
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::SetOsdOverlay(1, None)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn blocker_overlay_sets_clears_and_survives_relaunch() {
+        let (first, mut control) = MockPlayer::pair();
+        let (second, mut control2) = MockPlayer::pair();
+        let (commands, _outputs) = start(vec![first, second], fixed_clock(1_000_000));
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE,
+                path: "/media/ep1.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        control.events.send(PlayerEvent::Loaded).unwrap();
+        settle().await;
+        commands
+            .send(PlayerCommand::SetBlockerOverlay(Some(
+                "Waiting for kim (paused)".into(),
+            )))
+            .await
+            .unwrap();
+        let sent = drain_until(&mut control, |cmd| {
+            matches!(cmd, MockCommand::SetOsdOverlay(2, Some(_)))
+        })
+        .await;
+        assert_eq!(
+            sent,
+            MockCommand::SetOsdOverlay(2, Some("{\\an9\\fs26}Waiting for kim (paused)".into()))
+        );
+
+        // Crash: the relaunched player gets the overlay re-applied — a
+        // fresh mpv process starts with clean overlay slots. (A first
+        // death relaunches silently, so no output is expected here.)
+        control
+            .events
+            .send(PlayerEvent::Exited { clean: false })
+            .unwrap();
+        let reapplied = drain_until(&mut control2, |cmd| {
+            matches!(cmd, MockCommand::SetOsdOverlay(2, Some(_)))
+        })
+        .await;
+        assert_eq!(
+            reapplied,
+            MockCommand::SetOsdOverlay(2, Some("{\\an9\\fs26}Waiting for kim (paused)".into()))
+        );
+
+        // Clearing propagates as a removal.
+        commands
+            .send(PlayerCommand::SetBlockerOverlay(None))
+            .await
+            .unwrap();
+        let cleared = drain_until(&mut control2, |cmd| {
+            matches!(cmd, MockCommand::SetOsdOverlay(2, None))
+        })
+        .await;
+        assert_eq!(cleared, MockCommand::SetOsdOverlay(2, None));
+    }
+
+    /// Pump commands (advancing paused time) until one matches.
+    async fn drain_until(
+        control: &mut MockControl,
+        pred: impl Fn(&MockCommand) -> bool,
+    ) -> MockCommand {
+        let deadline = tokio::time::Instant::now() + BUDGET;
+        loop {
+            if let Some(cmd) = control.try_command() {
+                if pred(&cmd) {
+                    return cmd;
+                }
+                continue;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no matching command within budget"
+            );
+            tokio::time::advance(Duration::from_millis(20)).await;
+        }
     }
 }

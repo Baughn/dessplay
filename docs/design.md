@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -298,8 +298,14 @@ the now-playing file and is surfaced as a "committed, away" blocker until
 they return or the group [acknowledges](#playback-rules) past them.
 Seeders are not listed as users; they appear on a separate dim "seeders:" line.
 
-The OSD on the video player shows a summary: Which users are unready (in any form),
-how many users are connected.
+The video player carries a persistent **"Waiting for …" OSD overlay**
+whenever someone blocks playback of the now-playing file: every blocker
+with a short reason ("Waiting for Kim (downloading 34%), Nero (paused)"),
+derived from the same gating derivation as the Users pane so the two can
+never disagree. It is shown to **everyone** — including the blockers
+themselves — and cleared the moment nobody blocks. Implemented as an mpv
+`osd-overlay` (top-right), independent of the chat OSD, so chat traffic
+never hides it and it survives player relaunches.
 
 **How states change:**
 
@@ -478,7 +484,12 @@ This prevents sync issues from different encodes/versions.
 
 - Type in the chat input (always visible at bottom of chat pane)
 - Press Enter to send
-- Messages appear in the chat pane AND as OSD in the video player
+- Messages appear in the chat pane AND as OSD in the video player — a
+  rolling overlay (top-left) holding the recent messages: each line stays
+  a minimum of 8 seconds and expires individually, so a burst never
+  erases an unread line (mpv `osd-overlay`, not the single-slot timed
+  `show-text`, which each new message would clobber). Your **own**
+  messages are not echoed to your OSD
 - **Username tab-completion**: pressing `Tab` completes the word at the end
   of the input when it is a non-empty, case-insensitive prefix of an online
   username (present or lost interactive peers; seeders and departed users
@@ -1522,7 +1533,12 @@ for it to come back. Interactive-only; seeders have no player.
 - `set_property speed <factor>`: Slew playback rate for drift correction
   (±2% max; mpv's pitch correction makes this inaudible)
 - `get_property time-pos`: Query current position
-- `show-text <message>`: Display OSD message
+- `osd-overlay <id> ...`: Persistent OSD overlays — one slot for the
+  rolling chat log (top-left, per-message 8s minimum retention), one for
+  the "Waiting for …" blocker summary (top-right). Overlays stay until
+  rewritten or cleared and are re-applied after a player relaunch;
+  independent slots mean chat and the blocker line never clobber each
+  other (the old timed `show-text` was a single slot and did)
 
 ### Events from Player
 
