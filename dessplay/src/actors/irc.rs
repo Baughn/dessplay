@@ -191,6 +191,16 @@ async fn run_with_connector<S, C, F>(
                             backoff = INITIAL_BACKOFF;
                         }
                     }
+                    SessionEnd::Rejected { reason } => {
+                        tracing::info!(reason = %reason, "IRC session rejected; backing off");
+                        let _ = events.send(IrcEvent::Disconnected { reason }).await;
+                        // Deliberately do NOT reset the backoff: a persistent
+                        // rejection (e.g. a +R channel we never authenticate
+                        // to) would otherwise reconnect every INITIAL_BACKOFF
+                        // forever, spamming chat with Connected/Disconnected
+                        // pairs. Letting the backoff grow spaces retries out
+                        // toward MAX_BACKOFF; a Reconfigure resets it.
+                    }
                 }
             }
             Err(e) => tracing::warn!(error = %e, "IRC connection attempt failed"),
@@ -262,6 +272,14 @@ pub(crate) enum SessionEnd {
         reason: String,
         /// Whether registration (`001`) completed.
         registered: bool,
+    },
+    /// The server accepted registration but *rejected* the session
+    /// persistently -- a channel-join failure (banned, invite-only, +R,
+    /// key, full) or a post-`001` `ERROR`. Retrying immediately would just
+    /// be rejected again, so unlike `Lost` this must NOT reset the backoff.
+    Rejected {
+        /// Human-readable reason.
+        reason: String,
     },
 }
 
@@ -375,13 +393,21 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
                     }
                     "ERROR" => {
                         let reason = parsed.params.last().cloned().unwrap_or_else(|| "ERROR".into());
+                        // Post-registration ERROR is a persistent rejection;
+                        // a pre-registration one is just a failed attempt that
+                        // should back off like any other.
+                        if registered {
+                            return SessionEnd::Rejected { reason };
+                        }
                         return SessionEnd::Lost { reason, registered };
                     }
-                    // Channel-join failures (banned, invite-only, +R, key, full).
+                    // Channel-join failures (banned, invite-only, +R, key,
+                    // full). These only arrive after JOIN, i.e. post-`001`, so
+                    // the session is registered but persistently rejected.
                     "473" | "474" | "475" | "471" | "477" => {
                         let reason = parsed.params.last().cloned()
                             .unwrap_or_else(|| format!("cannot join {}", config.channel));
-                        return SessionEnd::Lost { reason, registered };
+                        return SessionEnd::Rejected { reason };
                     }
                     _ => {}
                 }
@@ -1015,6 +1041,16 @@ mod tests {
             self.send(&format!(":srv 001 {nick} :Welcome")).await;
             assert_eq!(self.recv_line().await, format!("JOIN {channel}"));
         }
+
+        /// Register and consume the JOIN, then reject it with 477 (the
+        /// +R "must be identified" case) — a persistent join rejection.
+        async fn register_and_reject(&mut self, nick: &str, channel: &str) {
+            self.register_and_join(nick, channel).await;
+            self.send(&format!(
+                ":srv 477 {nick} {channel} :Cannot join channel (+R)"
+            ))
+            .await;
+        }
     }
 
     /// Build a connect injector for `run_with_connector`. Each attempt pops
@@ -1161,6 +1197,49 @@ mod tests {
         assert_eq!(
             reset_gap, 2,
             "backoff did not reset after a registered drop"
+        );
+    }
+
+    /// Regression: a persistent channel-join rejection (e.g. +R) must back
+    /// off, not reconnect every INITIAL_BACKOFF forever. Before the fix the
+    /// 477 returned SessionEnd::Lost { registered: true }, which reset the
+    /// backoff each cycle — a ~2s Connected/Disconnected spam loop. Now it
+    /// returns SessionEnd::Rejected, which surfaces Disconnected but leaves
+    /// the backoff growing.
+    #[tokio::test(start_paused = true)]
+    async fn rejected_join_backs_off_instead_of_looping() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(16);
+        let (att_tx, mut att_rx) = mpsc::channel(16);
+        let (srv_tx, mut srv_rx) = mpsc::channel(8);
+        // Every attempt connects and registers, but the JOIN is rejected.
+        let connector = injector(vec![Conn::Ok; 8], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        let start = tokio::time::Instant::now();
+        let mut attempt_at = Vec::new();
+        for _ in 0..4 {
+            att_rx.recv().await.unwrap();
+            attempt_at.push(start.elapsed());
+            let mut srv = srv_rx.recv().await.unwrap();
+            srv.register_and_reject("BaughnDess", "#dess").await;
+            // Each rejected cycle surfaces Connected (001) then Disconnected.
+            assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
+            assert!(matches!(
+                ev_rx.recv().await,
+                Some(IrcEvent::Disconnected { .. })
+            ));
+        }
+
+        let gaps: Vec<u64> = attempt_at
+            .windows(2)
+            .map(|w| (w[1] - w[0]).as_secs())
+            .collect();
+        // Backoff grows (2, 4, 8) rather than a fixed-2s reconnect storm.
+        assert_eq!(
+            gaps,
+            vec![2, 4, 8],
+            "a rejected join must back off, not loop at INITIAL_BACKOFF"
         );
     }
 
