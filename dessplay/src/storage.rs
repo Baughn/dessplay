@@ -16,6 +16,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use dessplay_core::hash::Ed2kFileHash;
 use dessplay_core::types::{AniDbSeriesId, Ed2kHash, Epoch};
@@ -24,6 +25,11 @@ use dessplay_core::{CrdtState, StateSnapshot, wire};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::Settings;
+
+/// How long a contended writer waits for the write lock before giving up
+/// with SQLITE_BUSY. Generous: writes are small and infrequent, and the
+/// several same-process connections rarely collide.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Storage errors. SQLite failures, snapshot (de)serialization failures,
 /// or corrupt rows.
@@ -350,6 +356,14 @@ impl Storage {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // run_interactive opens several independent write connections to the
+        // same file (sync actor, file actor, session, settings) on different
+        // tokio tasks. WAL removes reader/writer contention but not
+        // writer/writer: with the default busy_timeout of 0 a second
+        // concurrent write transaction returns SQLITE_BUSY immediately, and
+        // callers log-and-drop the write (a lost hash-cache / watch-history /
+        // snapshot row). A timeout makes a contended writer wait and retry.
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         migrate(&conn, MIGRATIONS)?;
         Ok(Self { conn })
     }
@@ -874,6 +888,22 @@ mod tests {
         migrate(&conn, &with_extra).unwrap();
         conn.execute("INSERT INTO phase_two_test (x) VALUES (1)", [])
             .unwrap();
+    }
+
+    /// Regression: every connection must carry a non-zero busy_timeout, so a
+    /// contended writer waits instead of dropping the write with SQLITE_BUSY.
+    /// (A full concurrency reproduction would need a timing-dependent sleep to
+    /// order two threads; this guards the config invariant deterministically —
+    /// remove the busy_timeout line and it fails.)
+    #[test]
+    fn connections_have_a_busy_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&dir.path().join("t.db")).unwrap();
+        let millis: i64 = storage
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(millis, BUSY_TIMEOUT.as_millis() as i64);
     }
 
     #[test]
