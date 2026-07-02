@@ -441,6 +441,7 @@ impl Downloads {
             return vec![];
         };
         let timeout = self.config.snub_timeout_millis;
+        let need_hashes = matches!(d.block_hashes, BlockHashes::Pending);
         let mut actions = Vec::new();
         let snubbed: Vec<PeerId> = d
             .sources
@@ -462,6 +463,34 @@ impl Downloads {
                 // Drop it; set_sources re-adds (with a fresh clock, and
                 // re-solicited) if it's still a candidate next round.
                 d.sources.remove(&peer);
+            }
+        }
+        // Block-hash-stage stall: a source we solicited for block hashes but
+        // that never answered (so it has no in-flight chunks, and the
+        // chunk-stage snub above skips it) while we still need the hashes.
+        // Re-ask it. Without this a lone source whose `BlockHashRequest` or
+        // reply was lost -- or that briefly dropped during a sub-Lost
+        // reconnect and returned -- leaves the download stuck at Pending
+        // forever: it is never re-solicited (the `solicited` flag latches
+        // and is only cleared by removing the source) and never snubbed
+        // (empty in-flight). Re-soliciting in place (rather than dropping and
+        // waiting for set_sources to re-add) recovers even with no state
+        // snapshots, since the file actor's own timer drives `tick`.
+        if need_hashes {
+            for (peer, src) in d.sources.iter_mut() {
+                if src.solicited
+                    && src.in_flight.is_empty()
+                    && now.saturating_sub(src.last_progress) >= timeout
+                {
+                    // Re-arm the clock so the next re-ask is another timeout
+                    // away, not every tick.
+                    src.last_progress = now;
+                    tracing::debug!(%peer, "re-soliciting block hashes from a stalled source");
+                    actions.push(DownloadAction::Send {
+                        to: peer.clone(),
+                        message: PeerMessage::BlockHashRequest { file },
+                    });
+                }
             }
         }
         actions
@@ -831,6 +860,50 @@ mod tests {
         // Only a block-hash request goes out first — no chunk requests.
         assert_eq!(block_hash_requests(&actions), vec!["seed"]);
         assert!(requests(&actions).is_empty());
+    }
+
+    /// Regression: a lone source solicited for block hashes that stays
+    /// silent (its request or reply was lost, or it briefly dropped and
+    /// returned) must be re-solicited after the snub timeout, not leave the
+    /// download wedged at the Pending stage forever. The stall was invisible
+    /// to the chunk-stage snub (no in-flight chunks) and the `solicited` flag
+    /// latched, so it was never re-asked.
+    #[test]
+    fn stalled_block_hash_source_is_re_solicited() {
+        let config = DownloadConfig::default();
+        let timeout = config.snub_timeout_millis;
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
+        let actions = r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("seed")],
+            0,
+            1000,
+        );
+        // The initial solicitation goes out; the source then stays silent.
+        assert_eq!(block_hash_requests(&actions), vec!["seed"]);
+
+        // Before the timeout, no re-ask.
+        let early = r.downloads.tick(1000 + timeout - 1);
+        assert!(
+            block_hash_requests(&early).is_empty(),
+            "re-asked before the snub timeout"
+        );
+
+        // After the timeout, the stalled Pending source is re-solicited.
+        let late = r.downloads.tick(1000 + timeout + 1);
+        assert_eq!(
+            block_hash_requests(&late),
+            vec!["seed"],
+            "a stalled block-hash source was never re-solicited"
+        );
+
+        // Answering the re-solicitation drives the download to completion.
+        let present = HashSet::from(["seed".to_string()]);
+        let path = r.drive_to_complete(&present, late, 1000 + timeout + 2);
+        assert_eq!(path.as_deref(), Some(r.path.as_path()));
     }
 
     #[test]

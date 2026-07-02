@@ -1336,7 +1336,10 @@ impl Actor {
         }
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
-            let mtime = std::fs::metadata(&path).ok().as_ref().and_then(mtime_millis);
+            let mtime = std::fs::metadata(&path)
+                .ok()
+                .as_ref()
+                .and_then(mtime_millis);
             let result = std::fs::File::open(&path).and_then(ed2k_hash_reader);
             let _ = done_tx.blocking_send(Done::ManualHashed {
                 file,
