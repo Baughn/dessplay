@@ -17,8 +17,8 @@ use std::time::Duration;
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::framing::{read_frame, write_frame};
 use dessplay_core::net::{
-    AniDbSearchHit, BiStream, Listener, PeerInfo, Presence, RelayEnvelope, Role, ServerControl,
-    Transport, TransportEvent, WireMessage,
+    AniDbSearchHit, BiStream, Listener, PROTOCOL_VERSION, PeerInfo, Presence, RelayEnvelope, Role,
+    ServerControl, Transport, TransportEvent, WireMessage,
 };
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
@@ -603,6 +603,24 @@ async fn send_control<T: Transport>(conn: &T, msg: &ServerControl) -> bool {
     conn.send_control(&frame).await.is_ok()
 }
 
+/// Send a terminal rejection, then wait (bounded) for the client to act
+/// on it before closing: closing immediately can discard the unflushed
+/// frame, leaving the client with a generic connection loss it would
+/// retry forever (the Goodbye pattern, server-side).
+async fn reject_and_close<T: Transport>(conn: &T, msg: &ServerControl, reason: &str) {
+    send_control(conn, msg).await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match conn.recv().await {
+                Ok(TransportEvent::Closed { .. }) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+    })
+    .await;
+    conn.close(reason).await;
+}
+
 /// Push the current peer list (all presence stages) to every live
 /// connection.
 async fn broadcast_peer_list<T: Transport>(shared: &Shared<T>) {
@@ -675,6 +693,21 @@ async fn serve_connection<T: Transport>(
 ) {
     let clock = Arc::clone(&shared.clock);
     // ---- Await Auth (bounded).
+    enum AuthOutcome {
+        Auth {
+            username: UserId,
+            password: String,
+            role: Role,
+            epoch: Epoch,
+            protocol_version: u32,
+        },
+        /// A control frame that does not decode as `Auth` — the
+        /// signature of a pre-versioning client, whose `Auth` is a
+        /// strict prefix of the current shape (or of plain garbage).
+        Undecodable,
+        /// Closed, or a decodable-but-wrong first message.
+        Dead,
+    }
     let auth = tokio::time::timeout(config.auth_timeout, async {
         loop {
             match conn.recv().await {
@@ -685,39 +718,79 @@ async fn serve_connection<T: Transport>(
                             password,
                             role,
                             epoch,
-                        })) => return Some((username, password, role, epoch)),
-                        Ok(_) | Err(_) => return None, // protocol violation
+                            protocol_version,
+                        })) => {
+                            return AuthOutcome::Auth {
+                                username,
+                                password,
+                                role,
+                                epoch,
+                                protocol_version,
+                            };
+                        }
+                        Ok(_) => return AuthOutcome::Dead, // protocol violation
+                        Err(_) => return AuthOutcome::Undecodable,
                     }
                 }
-                Ok(TransportEvent::Closed { .. }) | Err(_) => return None,
+                Ok(TransportEvent::Closed { .. }) | Err(_) => return AuthOutcome::Dead,
                 Ok(_) => continue, // ignore datagrams/streams pre-auth
             }
         }
     })
     .await;
 
-    let Ok(Some((username, password, role, client_epoch))) = auth else {
-        tracing::debug!(%remote, "connection closed before authenticating");
-        conn.close("authentication required").await;
-        return;
+    let (username, password, role, client_epoch) = match auth {
+        Err(_) | Ok(AuthOutcome::Dead) => {
+            tracing::debug!(%remote, "connection closed before authenticating");
+            conn.close("authentication required").await;
+            return;
+        }
+        Ok(AuthOutcome::Undecodable) => {
+            // An old binary cannot decode ProtocolMismatch; AuthFailed
+            // has kept its discriminant since v0, so it at least fails
+            // fast with a readable (if generic) refusal.
+            tracing::warn!(%remote, "undecodable Auth: pre-versioning client (or garbage)");
+            reject_and_close(
+                &*conn,
+                &ServerControl::AuthFailed,
+                "protocol version too old",
+            )
+            .await;
+            return;
+        }
+        Ok(AuthOutcome::Auth {
+            username,
+            password,
+            role,
+            epoch,
+            protocol_version,
+        }) => {
+            // Version before password: a mismatched client should hear
+            // "update" even when its stored password is also stale.
+            if protocol_version != PROTOCOL_VERSION {
+                tracing::warn!(
+                    user = %username.0,
+                    %remote,
+                    client_version = protocol_version,
+                    server_version = PROTOCOL_VERSION,
+                    "auth refused: protocol version mismatch"
+                );
+                reject_and_close(
+                    &*conn,
+                    &ServerControl::ProtocolMismatch {
+                        server_version: PROTOCOL_VERSION,
+                    },
+                    "protocol version mismatch",
+                )
+                .await;
+                return;
+            }
+            (username, password, role, epoch)
+        }
     };
     if password != config.password {
         tracing::warn!(user = %username.0, %remote, "auth failed: bad password");
-        send_control(&*conn, &ServerControl::AuthFailed).await;
-        // Wait for the client to act on the rejection before closing:
-        // closing immediately can discard the unflushed frame, leaving
-        // the client with a generic connection loss it would retry
-        // forever (the Goodbye pattern, server-side).
-        let _ = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                match conn.recv().await {
-                    Ok(TransportEvent::Closed { .. }) | Err(_) => break,
-                    Ok(_) => continue,
-                }
-            }
-        })
-        .await;
-        conn.close("bad password").await;
+        reject_and_close(&*conn, &ServerControl::AuthFailed, "bad password").await;
         return;
     }
 

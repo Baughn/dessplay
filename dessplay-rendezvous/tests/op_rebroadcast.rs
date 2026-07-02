@@ -22,7 +22,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dessplay_core::net::sim::{EndpointId, SimNetwork, SimTransport};
-use dessplay_core::net::{Connector, Role, ServerControl, Transport, TransportEvent, WireMessage};
+use dessplay_core::net::{
+    Connector, PROTOCOL_VERSION, Role, ServerControl, Transport, TransportEvent, WireMessage,
+};
 use dessplay_core::types::{ChatMessage, Epoch, SharedTimestamp, UserId};
 use dessplay_core::{CrdtOp, CrdtState, wire};
 use dessplay_rendezvous::server::{self, ServerConfig};
@@ -70,6 +72,7 @@ async fn connect_authed(
         password: PASSWORD.into(),
         role: Role::Interactive,
         epoch: Epoch(0),
+        protocol_version: PROTOCOL_VERSION,
     });
     conn.send_control(&wire::encode(&auth).unwrap())
         .await

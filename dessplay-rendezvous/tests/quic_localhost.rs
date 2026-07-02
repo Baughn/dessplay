@@ -108,11 +108,11 @@ async fn two_clients_connect_over_real_quic() {
     }
 }
 
-/// A wrong password must surface as AuthFailed — a clean, terminal
-/// exit — not as a generic connection loss followed by infinite
-/// retries. Real QUIC only: closing right after sending AuthFailed
-/// discards the unflushed frame, which the simulated transport is too
-/// polite to reproduce.
+/// A wrong password must surface as a Rejected event — a clean,
+/// terminal exit — not as a generic connection loss followed by
+/// infinite retries. Real QUIC only: closing right after sending the
+/// refusal discards the unflushed frame, which the simulated transport
+/// is too polite to reproduce.
 #[tokio::test]
 async fn wrong_password_fails_cleanly_over_real_quic() {
     let cert_dir = tempfile::tempdir().unwrap();
@@ -142,11 +142,11 @@ async fn wrong_password_fails_cleanly_over_real_quic() {
         event_tx,
     ));
 
-    // The first terminal-ish event must be AuthFailed; a Disconnected
+    // The first terminal-ish event must be Rejected; a Disconnected
     // means the rejection got eaten by the close and the client would
     // retry forever.
     expect_event(&mut events, Duration::from_secs(10), |e| match e {
-        NetworkEvent::AuthFailed => Some(()),
+        NetworkEvent::Rejected { .. } => Some(()),
         NetworkEvent::Disconnected { reason } => {
             panic!("rejection arrived as a generic disconnect: {reason}")
         }

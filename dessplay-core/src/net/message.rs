@@ -13,6 +13,15 @@ use serde::{Deserialize, Serialize};
 use crate::state::{CrdtOp, StateSnapshot};
 use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 
+/// The wire protocol version, checked at auth time (design.md request
+/// #23). Bump on **any** change to wire messages, `CrdtOp`, or the
+/// encoding of a CRDT value type. Append enum variants and struct
+/// fields, never reorder or remove — and never reshape `Auth` itself:
+/// its stability is what lets a mismatched future client still be
+/// decoded and answered with a readable [`ServerControl::ProtocolMismatch`]
+/// instead of a silent decode failure.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as
 /// `RelayEnvelope` (see `net::transfer`) on a dedicated relay stream,
@@ -76,6 +85,12 @@ pub enum ServerControl {
         role: Role,
         /// Last known epoch; drives snapshot-vs-merge on the server.
         epoch: Epoch,
+        /// The client's [`PROTOCOL_VERSION`]. Deliberately the *last*
+        /// field: a pre-versioning client's `Auth` is a strict prefix
+        /// of this shape, so it fails decode cleanly and the server can
+        /// answer with the (old-decodable) `AuthFailed` rather than a
+        /// `ProtocolMismatch` the old binary cannot read.
+        protocol_version: u32,
     },
     /// NTP-style probe. Sent as a datagram when supported.
     TimeSyncRequest {
@@ -163,6 +178,17 @@ pub enum ServerControl {
         /// Best matches, one per series.
         results: Vec<AniDbSearchHit>,
     },
+
+    // ---- Protocol version gate
+    /// Server -> client: your `Auth` carried a different
+    /// [`PROTOCOL_VERSION`]; admission refused. The server closes the
+    /// connection after sending; the client must not retry. Appended
+    /// after the pre-existing variants so their discriminants never
+    /// move.
+    ProtocolMismatch {
+        /// The server's [`PROTOCOL_VERSION`].
+        server_version: u32,
+    },
 }
 
 /// One AniDB name-search result.
@@ -197,6 +223,7 @@ impl ServerControl {
             ServerControl::RequestMerge => "RequestMerge",
             ServerControl::AniDbSearch { .. } => "AniDbSearch",
             ServerControl::AniDbSearchResults { .. } => "AniDbSearchResults",
+            ServerControl::ProtocolMismatch { .. } => "ProtocolMismatch",
         }
     }
 }

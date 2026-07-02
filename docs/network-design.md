@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-06-18
+Last updated: 2026-07-02
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -152,6 +152,11 @@ enum ServerControl {
         password: String,
         role: Role,        // Interactive | Seeder
         epoch: u64,        // last known epoch; drives snapshot-vs-merge below
+        /// The client's PROTOCOL_VERSION (see Protocol Versioning below).
+        /// Deliberately the last field: a pre-versioning client's Auth is
+        /// a strict prefix of this shape, so it fails decode cleanly and
+        /// can be told apart from garbage.
+        protocol_version: u32,
     },
     TimeSyncRequest { client_send: u64 },
     /// Player reached end of file. A report, not state -- the server owns
@@ -196,6 +201,11 @@ enum ServerControl {
     /// Client -> server: view hashes mismatched twice in a row; please
     /// send a StateMerge.
     RequestMerge,
+
+    /// Server -> client: your Auth carried a different PROTOCOL_VERSION;
+    /// admission refused, connection closed. The client exits with a
+    /// "please update" message instead of retrying.
+    ProtocolMismatch { server_version: u32 },
 }
 
 enum Role { Interactive, Seeder }
@@ -270,6 +280,30 @@ connection ("superseded by a new connection") and registers the new one.
 This is the reconnect-before-timeout path: a client that crashes and
 restarts must not be locked out by its own zombie connection. With five
 trusted friends, impersonation is out of scope (see the threat model).
+
+### Protocol Versioning
+
+`Auth` carries the client's `PROTOCOL_VERSION` (a constant in
+`dessplay-core::net`). The server refuses a mismatch **before** checking
+the password (a stale client should hear "update", not "bad password"):
+it sends `ProtocolMismatch { server_version }`, waits briefly for the
+client to act on it (the same flush-before-close dance as `AuthFailed`),
+and closes. The client surfaces the message and exits without retrying.
+
+A **pre-versioning** client (from before the field existed) cannot be
+answered with `ProtocolMismatch` -- its binary predates the variant. It
+is recognized instead by its `Auth` failing to decode: the version field
+is deliberately the *last* field, so the old shape is a strict prefix of
+the new one and dies with a clean truncation error. Such clients get
+`AuthFailed`, whose discriminant has never moved -- a generic refusal,
+but a decodable and terminal one.
+
+**Bump policy:** increment `PROTOCOL_VERSION` on *any* change to wire
+messages, `CrdtOp`, or the encoding of a replicated value type. Append
+enum variants and struct fields, never reorder or remove; and never
+reshape `Auth` itself -- its stability is what keeps a future mismatched
+client distinguishable from garbage and refusable with a readable
+message.
 
 ---
 

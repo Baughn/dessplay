@@ -7,8 +7,12 @@ use std::time::Duration;
 
 use dessplay::actors::network::{self, NetworkCommand, NetworkConfig, NetworkEvent};
 use dessplay_core::net::sim::{EndpointId, LinkConfig, SimNetwork};
-use dessplay_core::net::{Presence, Role};
-use dessplay_core::types::UserId;
+use dessplay_core::net::{
+    Connector, PROTOCOL_VERSION, Presence, Role, ServerControl, Transport, TransportEvent,
+    WireMessage,
+};
+use dessplay_core::types::{Epoch, UserId};
+use dessplay_core::wire;
 use dessplay_rendezvous::server::{self, ServerConfig};
 use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc;
@@ -38,12 +42,33 @@ fn spawn_client(
     role: Role,
     clock_skew: i64,
 ) -> TestClient {
+    spawn_client_versioned(
+        net,
+        name,
+        server_id,
+        password,
+        role,
+        clock_skew,
+        PROTOCOL_VERSION,
+    )
+}
+
+fn spawn_client_versioned(
+    net: &SimNetwork,
+    name: &str,
+    server_id: &EndpointId,
+    password: &str,
+    role: Role,
+    clock_skew: i64,
+    protocol_version: u32,
+) -> TestClient {
     let connector = Arc::new(net.connector(&EndpointId::new(name), server_id));
     let (command_tx, command_rx) = mpsc::channel(8);
     let (event_tx, event_rx) = mpsc::channel(64);
     let config = NetworkConfig {
         time_sync_interval: Duration::from_secs(30),
         reconnect_backoff: Duration::from_secs(2),
+        protocol_version,
         ..NetworkConfig::new(
             UserId::new(name),
             password.into(),
@@ -181,9 +206,94 @@ async fn bad_password_is_rejected() {
     let (net, server_id) = setup();
     let mut client = spawn_client(&net, "mallory", &server_id, "wrong", Role::Interactive, 0);
     expect_event(&mut client, Duration::from_secs(5), |e| {
-        matches!(e, NetworkEvent::AuthFailed).then_some(())
+        matches!(e, NetworkEvent::Rejected { .. }).then_some(())
     })
     .await;
+    // Terminal: the actor exits (dropping its event channel) instead of
+    // entering the reconnect loop.
+    assert!(client.events.recv().await.is_none());
+}
+
+/// A client declaring a different `PROTOCOL_VERSION` is refused with a
+/// readable "please update" message and does not retry (#23).
+#[tokio::test(start_paused = true)]
+async fn mismatched_protocol_version_is_refused() {
+    let (net, server_id) = setup();
+    let mut client = spawn_client_versioned(
+        &net,
+        "kim",
+        &server_id,
+        PASSWORD,
+        Role::Interactive,
+        0,
+        PROTOCOL_VERSION + 1,
+    );
+    let message = expect_event(&mut client, Duration::from_secs(5), |e| match e {
+        NetworkEvent::Rejected { message } => Some(message.clone()),
+        NetworkEvent::Connected { .. } => panic!("mismatched client was admitted"),
+        _ => None,
+    })
+    .await;
+    assert!(
+        message.contains("update"),
+        "refusal is not actionable: {message}"
+    );
+    // Terminal: no reconnect loop.
+    assert!(client.events.recv().await.is_none());
+}
+
+/// The `Auth` shape from before the protocol version gate: a strict
+/// prefix of the current one. Encoding it puts on the wire exactly what
+/// a pre-versioning binary would send.
+#[derive(serde::Serialize)]
+enum PreVersioningControl {
+    Auth {
+        username: UserId,
+        password: String,
+        role: Role,
+        epoch: Epoch,
+    },
+}
+#[derive(serde::Serialize)]
+enum PreVersioningWire {
+    Control(PreVersioningControl),
+}
+
+/// A pre-versioning client's `Auth` fails decode on the new server and
+/// must be answered with `AuthFailed` — the one refusal its binary can
+/// still decode — rather than a silent close (#23).
+#[tokio::test(start_paused = true)]
+async fn pre_versioning_client_gets_auth_failed() {
+    let (net, server_id) = setup();
+    let conn = net
+        .connector(&EndpointId::new("old-kim"), &server_id)
+        .connect()
+        .await
+        .expect("connect");
+    let frame = wire::encode(&PreVersioningWire::Control(PreVersioningControl::Auth {
+        username: UserId::new("old-kim"),
+        password: PASSWORD.into(),
+        role: Role::Interactive,
+        epoch: Epoch(0),
+    }))
+    .expect("encode");
+    conn.send_control(&frame).await.expect("send auth");
+    loop {
+        match conn.recv().await.expect("recv") {
+            TransportEvent::Control(bytes) => {
+                let WireMessage::Control(msg) =
+                    wire::decode::<WireMessage>(&bytes).expect("decode reply");
+                assert!(
+                    matches!(msg, ServerControl::AuthFailed),
+                    "expected AuthFailed, got {}",
+                    msg.variant_name()
+                );
+                break;
+            }
+            TransportEvent::Closed { .. } => panic!("closed without a refusal"),
+            _ => continue,
+        }
+    }
 }
 
 #[tokio::test(start_paused = true)]

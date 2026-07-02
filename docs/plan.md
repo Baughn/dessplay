@@ -630,6 +630,22 @@ Stable, production-ready. All documented failure modes handled.
 
 ## Phase 11: Protocol Version Gate (#23)
 
+**Status: complete (2026-07-02).** Notes and deviations:
+
+- `NetworkEvent::AuthFailed` was renamed to `Rejected { message }` (and
+  `SessionEnd` follows): a protocol mismatch is not an auth failure, and
+  the variant now carries the human-readable refusal to the terminal
+  verbatim — including the "please update dessplay" text.
+- `NetworkConfig` gained a `protocol_version` field (defaulting to
+  `PROTOCOL_VERSION`) so the sim test drives the *real* client actor
+  into the *real* server's refusal with a mismatched version.
+- An undecodable first control frame (the pre-versioning signature) is
+  now answered with `AuthFailed` before closing, where it previously got
+  a silent close; a decodable-but-wrong first message still closes
+  silently as a protocol violation.
+- Policy documented in network-design.md (Protocol Versioning): version
+  before password; append, never reorder; never reshape `Auth`.
+
 **Goal**: Refuse mismatched clients with a clear message, so every later
 wire/schema change is a clean flag-day instead of silent decode garbage.
 

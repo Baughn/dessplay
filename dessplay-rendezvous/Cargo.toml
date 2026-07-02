@@ -18,6 +18,7 @@ flate2 = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 rand = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 dessplay-core = { path = "../dessplay-core", features = ["test-support"] }
 # The connection tests drive the real client NetworkActor against this

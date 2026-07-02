@@ -13,7 +13,9 @@ pub mod tofu;
 pub mod transfer;
 pub mod transport;
 
-pub use message::{AniDbSearchHit, PeerInfo, Presence, Role, ServerControl, WireMessage};
+pub use message::{
+    AniDbSearchHit, PROTOCOL_VERSION, PeerInfo, Presence, Role, ServerControl, WireMessage,
+};
 pub use transfer::{
     Bitfield, CHUNK_SIZE, CHUNKS_PER_BLOCK, PeerId, PeerMessage, RelayEnvelope, chunk_count,
     chunk_range,

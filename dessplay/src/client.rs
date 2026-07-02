@@ -131,7 +131,7 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
                     offset_millis: *offset_millis,
                 }),
                 NetworkEvent::PeerList(_)
-                | NetworkEvent::AuthFailed
+                | NetworkEvent::Rejected { .. }
                 | NetworkEvent::SearchResults { .. }
                 | NetworkEvent::Peer { .. } => None,
             };

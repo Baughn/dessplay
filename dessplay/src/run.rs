@@ -548,8 +548,8 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                             }
                         }
                     }
-                    ClientEvent::Network(NetworkEvent::AuthFailed) => {
-                        return Err("the server rejected the password".into());
+                    ClientEvent::Network(NetworkEvent::Rejected { message }) => {
+                        return Err(message.clone());
                     }
                     ClientEvent::Network(NetworkEvent::Disconnected { reason }) => {
                         tracing::warn!("disconnected ({reason}); retrying");
@@ -854,8 +854,8 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // must never hold the process hostage.
     let _ = input_tx.try_send(UiInput::Shutdown);
     let _ = ui_thread.join();
-    if end == SessionEnd::AuthFailed {
-        return Err("the server rejected the password".into());
+    if let SessionEnd::Rejected(message) = &end {
+        return Err(message.clone());
     }
     let hashes_in_flight = session.shell.hashes_in_flight();
     if hashes_in_flight > 0 {
@@ -891,12 +891,13 @@ fn display_name(path: &std::path::Path) -> String {
 }
 
 /// Why the bridge loop ended.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SessionEnd {
     /// The user quit (or a UI/event channel closed underneath us).
     Quit,
-    /// The server rejected the password — terminal.
-    AuthFailed,
+    /// The server refused us admission (bad password, protocol version
+    /// mismatch) — terminal; the message is shown to the user.
+    Rejected(String),
 }
 
 /// The interactive bridge loop: actors on one side, UI channels on the
@@ -1137,8 +1138,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 event = self.handle.events.recv() => {
                     let Some(event) = event else { return SessionEnd::Quit };
                     match &event {
-                        ClientEvent::Network(NetworkEvent::AuthFailed) => {
-                            return SessionEnd::AuthFailed;
+                        ClientEvent::Network(NetworkEvent::Rejected { message }) => {
+                            return SessionEnd::Rejected(message.clone());
                         }
                         ClientEvent::Network(NetworkEvent::Connected { .. }) => {
                             if first_connected {

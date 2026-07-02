@@ -16,8 +16,8 @@ use std::time::Duration;
 use dessplay_core::net::framing::{read_frame, write_frame};
 use dessplay_core::net::timesync::TimeSync;
 use dessplay_core::net::{
-    Connector, PeerId, PeerMessage, RelayEnvelope, Role, ServerControl, Transport, TransportError,
-    TransportEvent, WireMessage,
+    Connector, PROTOCOL_VERSION, PeerId, PeerMessage, RelayEnvelope, Role, ServerControl,
+    Transport, TransportError, TransportEvent, WireMessage,
 };
 use dessplay_core::types::{Epoch, UserId};
 use dessplay_core::wire;
@@ -74,8 +74,12 @@ pub enum NetworkEvent {
         /// Our address as observed by the server.
         observed_addr: SocketAddr,
     },
-    /// The server rejected our password. Terminal — the actor exits.
-    AuthFailed,
+    /// The server refused us admission (bad password, or a protocol
+    /// version mismatch). Terminal — the actor exits without retrying.
+    Rejected {
+        /// Human-readable refusal, shown to the user verbatim.
+        message: String,
+    },
     /// A fresh peer list.
     PeerList(Vec<dessplay_core::net::PeerInfo>),
     /// A state-sync message from the server (op, merge, snapshot,
@@ -131,6 +135,10 @@ pub struct NetworkConfig {
     pub time_sync_interval: Duration,
     /// Delay between reconnection attempts.
     pub reconnect_backoff: Duration,
+    /// The version declared in `Auth`. Always [`PROTOCOL_VERSION`] in
+    /// production; overridable so tests can drive the real actor into
+    /// the server's mismatch refusal.
+    pub protocol_version: u32,
 }
 
 impl NetworkConfig {
@@ -150,6 +158,7 @@ impl NetworkConfig {
             clock,
             time_sync_interval: Duration::from_secs(30),
             reconnect_backoff: Duration::from_secs(2),
+            protocol_version: PROTOCOL_VERSION,
         }
     }
 }
@@ -205,9 +214,9 @@ pub async fn run<C: Connector>(
                         conn.close("shutting down").await;
                         return;
                     }
-                    ConnectionEnd::AuthFailed => {
-                        tracing::warn!("server rejected our password");
-                        let _ = events.send(NetworkEvent::AuthFailed).await;
+                    ConnectionEnd::Rejected(message) => {
+                        tracing::warn!("server refused us: {message}");
+                        let _ = events.send(NetworkEvent::Rejected { message }).await;
                         return;
                     }
                     ConnectionEnd::Lost(reason) => {
@@ -242,7 +251,8 @@ pub async fn run<C: Connector>(
 
 enum ConnectionEnd {
     Shutdown,
-    AuthFailed,
+    /// Terminal refusal (bad password, protocol mismatch): no retry.
+    Rejected(String),
     Lost(String),
 }
 
@@ -344,6 +354,7 @@ async fn run_connection<T: Transport>(
         password: config.password.clone(),
         role: config.role,
         epoch: Epoch(config.epoch.load(Ordering::SeqCst)),
+        protocol_version: config.protocol_version,
     };
     if let Err(e) = send_control(conn, &auth).await {
         return ConnectionEnd::Lost(e.to_string());
@@ -416,7 +427,16 @@ async fn run_connection<T: Transport>(
                             Err(e) => tracing::warn!("opening relay stream: {e}"),
                         }
                     }
-                    ServerControl::AuthFailed => return ConnectionEnd::AuthFailed,
+                    ServerControl::AuthFailed => {
+                        return ConnectionEnd::Rejected("the server rejected the password".into());
+                    }
+                    ServerControl::ProtocolMismatch { server_version } => {
+                        return ConnectionEnd::Rejected(format!(
+                            "protocol version mismatch: the server speaks v{server_version}, \
+                             this client v{} — please update dessplay",
+                            config.protocol_version
+                        ));
+                    }
                     ServerControl::PeerList { peers } => {
                         let _ = events.send(NetworkEvent::PeerList(peers)).await;
                     }
