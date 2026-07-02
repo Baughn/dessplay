@@ -81,9 +81,17 @@ pub async fn run<H: AniDbHost>(host: H, api: Arc<dyn AniDbApi>, titles: Arc<dyn 
     loop {
         let now = host.now();
         refresh_titles_if_due(&host, &titles, now, &mut titles_due).await;
-        seed_queues(&host, now);
-        populate_catalog(&host).await;
-        apply_series_hints(&host).await;
+        // Resolve the replicated state once per pass and share it. On the
+        // real server host.view() locks the state mutex and clones the whole
+        // CrdtState; the three seeders below used to each clone it, three
+        // full-state clones under the hot lock every ~2s during draining --
+        // costly on a terabyte-scale seeder. None of the three depend on
+        // another's writes within a pass (catalog vs metadata vs storage
+        // queues), so one snapshot is correct.
+        let view = host.view();
+        seed_queues(&host, &view, now);
+        populate_catalog(&host, &view).await;
+        apply_series_hints(&host, &view).await;
         match step(&host, &*api, now).await {
             Ok(true) => {} // did work; the client paces the next send
             Ok(false) => {
@@ -133,9 +141,8 @@ fn store<H: AniDbHost, R>(
 /// not-yet-fetched series ids (from metadata and List links) into the
 /// anime queue. All inserts are idempotent against existing schedules
 /// and tombstones.
-fn seed_queues<H: AniDbHost>(host: &H, now: u64) {
-    let view = host.view();
-    let wanted = wanted_series(&view);
+fn seed_queues<H: AniDbHost>(host: &H, view: &StateView, now: u64) {
+    let wanted = wanted_series(view);
     store(host, "seeding queues", |storage| {
         for info in &view.lookup_requests {
             storage.enqueue_lookup(info, now as i64)?;
@@ -152,8 +159,7 @@ fn seed_queues<H: AniDbHost>(host: &H, now: u64) {
 /// it to the playlist and download it. Write-if-absent: requests re-arm
 /// after compaction, but the catalog persists, so we never rewrite an
 /// existing entry (which would spam ops and clobber a filled duration).
-async fn populate_catalog<H: AniDbHost>(host: &H) {
-    let view = host.view();
+async fn populate_catalog<H: AniDbHost>(host: &H, view: &StateView) {
     for info in &view.lookup_requests {
         if view.file_catalog.contains_key(&info.hash) {
             continue;
@@ -180,11 +186,10 @@ async fn populate_catalog<H: AniDbHost>(host: &H) {
 /// filename-derived entry whose series name no longer matches the hint. A
 /// real AniDB hit is never touched; once a name matches its hint there is
 /// nothing to write, so this quiesces.
-async fn apply_series_hints<H: AniDbHost>(host: &H) {
+async fn apply_series_hints<H: AniDbHost>(host: &H, view: &StateView) {
     let Some(hints) = store(host, "reading series hints", |s| s.series_hints()) else {
         return;
     };
-    let view = host.view();
     for (hash, hint) in hints {
         let hint = hint.trim();
         if hint.is_empty() {
@@ -727,7 +732,7 @@ mod tests {
         // catalog, so a client without the file can still add it.
         let host = MockHost::new();
         request(&host, 1, "Frieren - 01.mkv");
-        populate_catalog(&host).await;
+        populate_catalog(&host, &host.view()).await;
         let entry = host.view().file_catalog.get(&hash(1)).cloned();
         assert_eq!(
             entry,
@@ -854,7 +859,7 @@ mod tests {
         // a filled duration and spam ops).
         let host = MockHost::new();
         request(&host, 1, "Frieren - 01.mkv");
-        populate_catalog(&host).await;
+        populate_catalog(&host, &host.view()).await;
         // Simulate a later duration fill.
         host.mutate(|state, ts| {
             state.set_file_catalog(
@@ -870,7 +875,7 @@ mod tests {
         });
         // Re-arm the request and populate again.
         request(&host, 1, "Frieren - 01.mkv");
-        populate_catalog(&host).await;
+        populate_catalog(&host, &host.view()).await;
         let entry = host.view().file_catalog.get(&hash(1)).cloned().unwrap();
         assert_eq!(entry.duration_millis, Some(1_440_000));
     }
@@ -1071,7 +1076,7 @@ mod tests {
         // timestamp than the frozen one and wins the LWW merge (in
         // production minutes pass between the two).
         tokio::time::advance(Duration::from_secs(1)).await;
-        apply_series_hints(&host).await;
+        apply_series_hints(&host, &host.view()).await;
 
         let view = host.view();
         let name = |i: u8| {
