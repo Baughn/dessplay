@@ -1,8 +1,8 @@
 //! The main panes: hand-rendered ratatui widgets behind tui-realm's
 //! `Component`/`AppComponent` traits, driven by typed props from
-//! [`super::props`]. (We use the component model and the stdlib's
-//! `Input`, but not tui-realm's threaded event listener — see
-//! ui-architecture.md, Framework Choice.)
+//! [`super::props`] and built on the shared interaction primitives in
+//! [`super::widgets`]. (We use the component model but not tui-realm's
+//! threaded event listener — see ui-architecture.md, Framework Choice.)
 
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
@@ -12,7 +12,7 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Constraint, Layout, Rect};
 use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use tuirealm::state::State;
 
 use super::msg::Msg;
@@ -20,7 +20,7 @@ use super::props::{
     ChatLine, FranchiseRow, ListGroup, PlaylistProps, SeriesSort, StatusProps, Tone, UsersProps,
 };
 use super::theme;
-use super::widgets::{LineBuffer, TextField};
+use super::widgets::{LineBuffer, ListCursor, TextField, render_list};
 
 /// A key the pane responds to, for the keybinding bar.
 pub type Keybinding = (&'static str, &'static str);
@@ -57,26 +57,6 @@ macro_rules! passive_component {
 // compatibility policy); re-exported here so panes, modals, and the
 // dispatcher keep one import path.
 pub(crate) use super::widgets::{ctrl, plain, typed};
-
-/// How many rows PgUp/PgDown jump in list panes.
-pub(crate) const LIST_PAGE_STEP: usize = 10;
-
-/// Selection cursor over `len` rows.
-fn step(sel: usize, len: usize, down: bool) -> usize {
-    step_by(sel, len, down, 1)
-}
-
-/// Selection cursor over `len` rows, moved by `delta` (used for PgUp/PgDown).
-pub(crate) fn step_by(sel: usize, len: usize, down: bool, delta: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    if down {
-        (sel + delta).min(len - 1)
-    } else {
-        sel.saturating_sub(delta)
-    }
-}
 
 // ---- Chat pane ---------------------------------------------------------
 
@@ -645,7 +625,7 @@ impl AppComponent<Msg, NoUserEvent> for ChatPane {
 #[derive(Default)]
 pub struct UsersPane {
     props: UsersProps,
-    sel: usize,
+    cursor: ListCursor,
     focused: bool,
 }
 
@@ -653,7 +633,7 @@ impl UsersPane {
     /// Replace props, clamping the selection.
     pub fn set_props(&mut self, props: UsersProps) {
         self.props = props;
-        self.sel = self.sel.min(self.props.rows.len().saturating_sub(1));
+        self.cursor.clamp(self.props.rows.len());
     }
 
     /// Keys shown in the keybinding bar.
@@ -685,22 +665,9 @@ impl UsersPane {
                 theme::tone_style(Tone::Muted),
             )));
         }
-        let mut state = ListState::default();
-        if self.focused && !self.props.rows.is_empty() {
-            state.select(Some(self.sel));
-        }
-        frame.render_stateful_widget(
-            List::new(items)
-                .highlight_style(theme::highlight_style())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border_style(self.focused))
-                        .title("Users"),
-                ),
-            area,
-            &mut state,
-        );
+        let selected =
+            (self.focused && !self.props.rows.is_empty()).then(|| self.cursor.index());
+        render_list(frame, area, "Users", items, selected, self.focused);
     }
 }
 
@@ -708,17 +675,13 @@ passive_component!(UsersPane);
 
 impl AppComponent<Msg, NoUserEvent> for UsersPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        match plain(ev)? {
-            Key::Up => {
-                self.sel = step(self.sel, self.props.rows.len(), false);
-                Some(Msg::None)
-            }
-            Key::Down => {
-                self.sel = step(self.sel, self.props.rows.len(), true);
-                Some(Msg::None)
-            }
+        let key = plain(ev)?;
+        if self.cursor.nav(key, self.props.rows.len()) {
+            return Some(Msg::None);
+        }
+        match key {
             Key::Char('a') => {
-                let row = self.props.rows.get(self.sel)?;
+                let row = self.props.rows.get(self.cursor.index())?;
                 Some(Msg::ToggleAway(dessplay_core::types::UserId::new(
                     row.name.clone(),
                 )))
@@ -734,7 +697,7 @@ impl AppComponent<Msg, NoUserEvent> for UsersPane {
 #[derive(Default)]
 pub struct PlaylistPane {
     props: PlaylistProps,
-    sel: usize,
+    cursor: ListCursor,
     focused: bool,
 }
 
@@ -742,12 +705,12 @@ impl PlaylistPane {
     /// Replace props, clamping the selection (rows + the Add New row).
     pub fn set_props(&mut self, props: PlaylistProps) {
         self.props = props;
-        self.sel = self.sel.min(self.props.rows.len());
+        self.cursor.clamp(self.props.rows.len() + 1);
     }
 
     /// The hash under the cursor, if it's a real row.
     fn selected_hash(&self) -> Option<dessplay_core::types::Ed2kHash> {
-        self.props.rows.get(self.sel).map(|row| row.hash)
+        self.props.rows.get(self.cursor.index()).map(|row| row.hash)
     }
 
     /// Keys shown in the keybinding bar.
@@ -797,22 +760,8 @@ impl PlaylistPane {
             })
             .collect();
         items.push(ListItem::new(Span::styled("  [Add New]", theme::dim())));
-        let mut state = ListState::default();
-        if self.focused {
-            state.select(Some(self.sel));
-        }
-        frame.render_stateful_widget(
-            List::new(items)
-                .highlight_style(theme::highlight_style())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border_style(self.focused))
-                        .title("Playlist"),
-                ),
-            area,
-            &mut state,
-        );
+        let selected = self.focused.then(|| self.cursor.index());
+        render_list(frame, area, "Playlist", items, selected, self.focused);
     }
 }
 
@@ -830,40 +779,39 @@ impl AppComponent<Msg, NoUserEvent> for PlaylistPane {
             // repeated presses keep moving the same episode. The cursor update
             // mirrors app.rs's no-op guards (MoveDown stops at the bottom real
             // row, MoveUp at the top); the reorder is reflected immediately via
-            // the forced UI refresh, so `self.sel` lands on the moved entry.
+            // the forced UI refresh, so the cursor lands on the moved entry.
             Some('j' | 'J') => {
                 let hash = self.selected_hash()?;
-                if self.sel + 1 >= self.props.rows.len() {
+                let index = self.cursor.index();
+                if index + 1 >= self.props.rows.len() {
                     return None; // already the bottom row
                 }
-                self.sel += 1;
+                self.cursor.set(index + 1);
                 return Some(Msg::MoveDown(hash));
             }
             Some('k' | 'K') => {
                 let hash = self.selected_hash()?;
-                if self.sel == 0 {
+                let index = self.cursor.index();
+                if index == 0 {
                     return None; // already the top row
                 }
-                self.sel -= 1;
+                self.cursor.set(index - 1);
                 return Some(Msg::MoveUp(hash));
             }
             // Only cache-only ("temporary") rows can be archived.
             Some('A') => {
-                let row = self.props.rows.get(self.sel)?;
+                let row = self.props.rows.get(self.cursor.index())?;
                 return row.temporary.then_some(Msg::ArchiveFile(row.hash));
             }
             Some('M') => return self.selected_hash().map(Msg::MapFile),
             _ => {}
         }
-        match plain(ev)? {
-            Key::Up => {
-                self.sel = step(self.sel, self.props.rows.len() + 1, false);
-                Some(Msg::None)
-            }
-            Key::Down => {
-                self.sel = step(self.sel, self.props.rows.len() + 1, true);
-                Some(Msg::None)
-            }
+        let key = plain(ev)?;
+        // Rows plus the trailing [Add New].
+        if self.cursor.nav(key, self.props.rows.len() + 1) {
+            return Some(Msg::None);
+        }
+        match key {
             Key::Enter => match self.selected_hash() {
                 Some(hash) => Some(Msg::PlaySelected(hash)),
                 // The [Add New] row: append.
@@ -919,7 +867,7 @@ pub struct SeriesPane {
     /// (Ctrl-M == Enter) in terminals without the enhanced keyboard
     /// protocol, so they can't be used for the binding.
     filtering: bool,
-    sel: usize,
+    cursor: ListCursor,
     focused: bool,
 }
 
@@ -985,7 +933,7 @@ impl SeriesPane {
     }
 
     fn clamp(&mut self) {
-        self.sel = self.sel.min(self.len().saturating_sub(1));
+        self.cursor.clamp(self.len());
     }
 
     /// Keys shown in the keybinding bar.
@@ -1097,22 +1045,8 @@ impl SeriesPane {
                 })
                 .collect(),
         };
-        let mut state = ListState::default();
-        if self.focused && !items.is_empty() {
-            state.select(Some(self.sel));
-        }
-        frame.render_stateful_widget(
-            List::new(items)
-                .highlight_style(theme::highlight_style())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border_style(self.focused))
-                        .title(title),
-                ),
-            area,
-            &mut state,
-        );
+        let selected = (self.focused && !items.is_empty()).then(|| self.cursor.index());
+        render_list(frame, area, title, items, selected, self.focused);
     }
 }
 
@@ -1127,42 +1061,31 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
         // Mode and sort keys are intentionally inert here so any letter
         // can be typed.
         if self.filtering {
-            match plain(ev) {
-                // Backspace on an *empty* filter exits filtering entirely
-                // (the escape hatch, alongside Esc); with text present it
-                // edits like any other field, via the vocabulary below.
-                Some(Key::Backspace) if self.filter.is_empty() => {
-                    self.filtering = false;
-                    self.sel = 0;
-                    return Some(Msg::SeriesFilterChanged);
-                }
-                Some(Key::Esc) => {
-                    self.filter.clear();
-                    self.filtering = false;
-                    self.sel = 0;
-                    return Some(Msg::SeriesFilterChanged);
-                }
-                Some(Key::Up) => {
-                    self.sel = step(self.sel, self.len(), false);
+            if let Some(key) = plain(ev) {
+                if self.cursor.nav(key, self.len()) {
                     return Some(Msg::None);
                 }
-                Some(Key::Down) => {
-                    self.sel = step(self.sel, self.len(), true);
-                    return Some(Msg::None);
+                match key {
+                    // Backspace on an *empty* filter exits filtering entirely
+                    // (the escape hatch, alongside Esc); with text present it
+                    // edits like any other field, via the vocabulary below.
+                    Key::Backspace if self.filter.is_empty() => {
+                        self.filtering = false;
+                        self.cursor.reset();
+                        return Some(Msg::SeriesFilterChanged);
+                    }
+                    Key::Esc => {
+                        self.filter.clear();
+                        self.filtering = false;
+                        self.cursor.reset();
+                        return Some(Msg::SeriesFilterChanged);
+                    }
+                    Key::Enter => {
+                        let row = self.franchises.get(self.cursor.index())?;
+                        return Some(Msg::BrowseFranchise(row.key.clone()));
+                    }
+                    _ => {}
                 }
-                Some(Key::PageUp) => {
-                    self.sel = step_by(self.sel, self.len(), false, LIST_PAGE_STEP);
-                    return Some(Msg::None);
-                }
-                Some(Key::PageDown) => {
-                    self.sel = step_by(self.sel, self.len(), true, LIST_PAGE_STEP);
-                    return Some(Msg::None);
-                }
-                Some(Key::Enter) => {
-                    let row = self.franchises.get(self.sel)?;
-                    return Some(Msg::BrowseFranchise(row.key.clone()));
-                }
-                _ => {}
             }
             // Only a text *change* re-filters and resets the selection;
             // bare cursor motion inside the filter keeps it.
@@ -1171,29 +1094,17 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                 return Some(if self.filter.text() == before {
                     Msg::None
                 } else {
-                    self.sel = 0;
+                    self.cursor.reset();
                     Msg::SeriesFilterChanged
                 });
             }
             return None;
         }
-        match plain(ev)? {
-            Key::Up => {
-                self.sel = step(self.sel, self.len(), false);
-                Some(Msg::None)
-            }
-            Key::Down => {
-                self.sel = step(self.sel, self.len(), true);
-                Some(Msg::None)
-            }
-            Key::PageUp => {
-                self.sel = step_by(self.sel, self.len(), false, LIST_PAGE_STEP);
-                Some(Msg::None)
-            }
-            Key::PageDown => {
-                self.sel = step_by(self.sel, self.len(), true, LIST_PAGE_STEP);
-                Some(Msg::None)
-            }
+        let key = plain(ev)?;
+        if self.cursor.nav(key, self.len()) {
+            return Some(Msg::None);
+        }
+        match key {
             Key::Char('m') => {
                 self.mode = match self.mode {
                     SeriesMode::Recent => SeriesMode::All,
@@ -1201,7 +1112,7 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                     SeriesMode::TheList => SeriesMode::Recent,
                 };
                 self.filter.clear();
-                self.sel = 0;
+                self.cursor.reset();
                 Some(Msg::CycleSeriesMode)
             }
             Key::Char('s') if self.mode == SeriesMode::All => {
@@ -1219,15 +1130,15 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
             // A set-but-not-editing filter: Esc clears it.
             Key::Esc if self.mode != SeriesMode::TheList && !self.filter.is_empty() => {
                 self.filter.clear();
-                self.sel = 0;
+                self.cursor.reset();
                 Some(Msg::SeriesFilterChanged)
             }
             Key::Enter => match self.mode {
                 SeriesMode::Recent | SeriesMode::All => {
-                    let row = self.franchises.get(self.sel)?;
+                    let row = self.franchises.get(self.cursor.index())?;
                     Some(Msg::BrowseFranchise(row.key.clone()))
                 }
-                SeriesMode::TheList => match self.nav_rows().get(self.sel)? {
+                SeriesMode::TheList => match self.nav_rows().get(self.cursor.index())? {
                     ListNavRow::Heading(g) => {
                         let group = &self.groups[*g];
                         let now = self.expanded(group);
@@ -1246,7 +1157,7 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                 },
             },
             Key::Char('e') if self.mode == SeriesMode::TheList => {
-                match self.nav_rows().get(self.sel)? {
+                match self.nav_rows().get(self.cursor.index())? {
                     ListNavRow::Entry(g, e) => {
                         Some(Msg::EditListEntry(self.groups[*g].rows[*e].id))
                     }
@@ -1254,7 +1165,7 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
                 }
             }
             Key::Char('l') if self.mode == SeriesMode::TheList => {
-                match self.nav_rows().get(self.sel)? {
+                match self.nav_rows().get(self.cursor.index())? {
                     ListNavRow::Entry(g, e) => {
                         Some(Msg::LinkListEntry(self.groups[*g].rows[*e].id))
                     }
@@ -1379,6 +1290,7 @@ impl AppComponent<Msg, NoUserEvent> for KeyBar {
 #[cfg(test)]
 mod series_pane_tests {
     use super::*;
+    use crate::ui::widgets::list::PAGE_STEP;
     use tuirealm::event::{KeyEvent, KeyModifiers};
 
     fn key(code: Key) -> Event<NoUserEvent> {
@@ -1477,7 +1389,7 @@ mod series_pane_tests {
         assert_eq!(
             p.on(&key(Key::Enter)),
             Some(Msg::BrowseFranchise(
-                dessplay_core::franchise::FranchiseKey::Name(LIST_PAGE_STEP.to_string())
+                dessplay_core::franchise::FranchiseKey::Name(PAGE_STEP.to_string())
             ))
         );
 
@@ -1496,7 +1408,7 @@ mod series_pane_tests {
         assert_eq!(
             p.on(&key(Key::Enter)),
             Some(Msg::BrowseFranchise(
-                dessplay_core::franchise::FranchiseKey::Name(LIST_PAGE_STEP.to_string())
+                dessplay_core::franchise::FranchiseKey::Name(PAGE_STEP.to_string())
             ))
         );
     }
@@ -1616,19 +1528,36 @@ mod playlist_pane_tests {
         assert_eq!(p.on(&ctrl_key('m')), None);
     }
 
+    /// PgUp/PgDn page the playlist selection — the page keys work in every
+    /// list by construction (widgets::ListCursor), where they previously
+    /// existed in some panes and not others.
+    #[test]
+    fn page_keys_jump_playlist_selection() {
+        use crate::ui::widgets::list::PAGE_STEP;
+        let (mut p, hashes) = pane_with_rows(30);
+        let page = |code| Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        });
+        p.on(&page(Key::PageDown));
+        assert_eq!(p.selected_hash(), Some(hashes[PAGE_STEP]));
+        p.on(&page(Key::PageUp));
+        assert_eq!(p.selected_hash(), Some(hashes[0]));
+    }
+
     /// The cursor follows the moved entry across the reorder: after `J` advances
-    /// `sel` and the app pushes the reordered props, `sel` lands on the same
+    /// the cursor and the app pushes the reordered props, it lands on the same
     /// entry, so repeated `J` keeps carrying it down.
     #[test]
     fn cursor_follows_moved_entry() {
         let (mut p, h) = pane_with_rows(3); // [0,1,2], sel=0
         assert_eq!(p.on(&typed_char('J')), Some(Msg::MoveDown(h[0])));
         apply_reorder(&mut p, h[0], 1); // -> [1,0,2]
-        assert_eq!(p.sel, 1);
+        assert_eq!(p.cursor.index(), 1);
         assert_eq!(p.selected_hash(), Some(h[0])); // still on the moved entry
         assert_eq!(p.on(&typed_char('J')), Some(Msg::MoveDown(h[0])));
         apply_reorder(&mut p, h[0], 2); // -> [1,2,0]
-        assert_eq!(p.sel, 2);
+        assert_eq!(p.cursor.index(), 2);
         assert_eq!(p.selected_hash(), Some(h[0]));
     }
 }

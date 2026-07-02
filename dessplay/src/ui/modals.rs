@@ -17,10 +17,10 @@ use tuirealm::state::State;
 use dessplay_core::net::AniDbSearchHit;
 use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, NextEpState, SeriesListEntry};
 
-use super::components::{LIST_PAGE_STEP, ctrl, plain, step_by, typed};
+use super::components::{ctrl, plain, typed};
 use super::msg::Msg;
 use super::theme;
-use super::widgets::TextField;
+use super::widgets::{ListCursor, TextField, render_list};
 use crate::config::Settings;
 
 /// Like `passive_component!` but without a focus field (modals are
@@ -104,22 +104,8 @@ impl FieldEditor {
 fn render_modal_list(frame: &mut Frame, area: Rect, title: &str, items: Vec<ListItem>, sel: usize) {
     let area = overlay(area, 70, 70);
     frame.render_widget(Clear, area);
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(sel));
-    }
-    frame.render_stateful_widget(
-        List::new(items)
-            .highlight_style(theme::highlight_style())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::border_style(true))
-                    .title(title.to_string()),
-            ),
-        area,
-        &mut state,
-    );
+    let selected = (!items.is_empty()).then_some(sel);
+    render_list(frame, area, title.to_string(), items, selected, true);
 }
 
 // ---- File browser ------------------------------------------------------
@@ -169,7 +155,7 @@ pub struct FileBrowser {
     /// `None` = listing the roots themselves.
     cwd: Option<PathBuf>,
     entries: Vec<DirRow>,
-    sel: usize,
+    cursor: ListCursor,
 }
 
 impl FileBrowser {
@@ -181,7 +167,7 @@ impl FileBrowser {
             roots,
             cwd: None,
             entries: Vec::new(),
-            sel: 0,
+            cursor: ListCursor::default(),
         };
         browser.refresh();
         browser
@@ -202,7 +188,7 @@ impl FileBrowser {
             roots,
             cwd: start,
             entries: Vec::new(),
-            sel: 0,
+            cursor: ListCursor::default(),
         };
         browser.refresh();
         browser
@@ -217,7 +203,7 @@ impl FileBrowser {
             roots: vec![home.clone()],
             cwd: Some(home),
             entries: Vec::new(),
-            sel: 0,
+            cursor: ListCursor::default(),
         };
         browser.refresh();
         browser
@@ -225,7 +211,7 @@ impl FileBrowser {
 
     fn refresh(&mut self) {
         self.entries.clear();
-        self.sel = 0;
+        self.cursor.reset();
         match &self.cwd {
             None => {
                 for root in &self.roots {
@@ -382,7 +368,7 @@ impl FileBrowser {
                 }
             })
             .collect();
-        render_modal_list(frame, area, &title, items, self.sel);
+        render_modal_list(frame, area, &title, items, self.cursor.index());
     }
 }
 
@@ -390,25 +376,13 @@ passive_modal!(FileBrowser);
 
 impl AppComponent<Msg, NoUserEvent> for FileBrowser {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        match plain(ev)? {
-            Key::Up => {
-                self.sel = step_by(self.sel, self.entries.len(), false, 1);
-                Some(Msg::None)
-            }
-            Key::Down => {
-                self.sel = step_by(self.sel, self.entries.len(), true, 1);
-                Some(Msg::None)
-            }
-            Key::PageUp => {
-                self.sel = step_by(self.sel, self.entries.len(), false, LIST_PAGE_STEP);
-                Some(Msg::None)
-            }
-            Key::PageDown => {
-                self.sel = step_by(self.sel, self.entries.len(), true, LIST_PAGE_STEP);
-                Some(Msg::None)
-            }
+        let key = plain(ev)?;
+        if self.cursor.nav(key, self.entries.len()) {
+            return Some(Msg::None);
+        }
+        match key {
             Key::Enter => {
-                let row = self.entries.get(self.sel)?;
+                let row = self.entries.get(self.cursor.index())?;
                 match row.kind {
                     RowKind::Select => return self.cwd.clone().map(Msg::DirChosen),
                     RowKind::Parent => {
@@ -793,7 +767,7 @@ pub struct EpisodeBrowser {
     seasons: Vec<Season>,
     /// `Some(index)` = episode view for that season.
     open: Option<usize>,
-    sel: usize,
+    cursor: ListCursor,
 }
 
 impl EpisodeBrowser {
@@ -805,7 +779,7 @@ impl EpisodeBrowser {
             title,
             seasons,
             open,
-            sel: 0,
+            cursor: ListCursor::default(),
         }
     }
 
@@ -848,7 +822,7 @@ impl EpisodeBrowser {
                 )
             }
         };
-        render_modal_list(frame, area, &title, items, self.sel);
+        render_modal_list(frame, area, &title, items, self.cursor.index());
     }
 
     fn len(&self) -> usize {
@@ -863,37 +837,25 @@ passive_modal!(EpisodeBrowser);
 
 impl AppComponent<Msg, NoUserEvent> for EpisodeBrowser {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        match plain(ev)? {
-            Key::Up => {
-                self.sel = step_by(self.sel, self.len(), false, 1);
-                Some(Msg::None)
-            }
-            Key::Down => {
-                self.sel = step_by(self.sel, self.len(), true, 1);
-                Some(Msg::None)
-            }
-            Key::PageUp => {
-                self.sel = step_by(self.sel, self.len(), false, LIST_PAGE_STEP);
-                Some(Msg::None)
-            }
-            Key::PageDown => {
-                self.sel = step_by(self.sel, self.len(), true, LIST_PAGE_STEP);
-                Some(Msg::None)
-            }
+        let key = plain(ev)?;
+        if self.cursor.nav(key, self.len()) {
+            return Some(Msg::None);
+        }
+        match key {
             Key::Enter => {
                 match self.open {
                     // On the season list: open the selected season.
                     None => {
                         if !self.seasons.is_empty() {
-                            self.open = Some(self.sel);
-                            self.sel = 0;
+                            self.open = Some(self.cursor.index());
+                            self.cursor.reset();
                         }
                         Some(Msg::None)
                     }
                     // On an episode: add it to the playlist by hash. If we
                     // hold the file it resolves Ready; if not, it's added
                     // from the file catalog and downloads.
-                    Some(index) => match self.seasons[index].episodes.get(self.sel) {
+                    Some(index) => match self.seasons[index].episodes.get(self.cursor.index()) {
                         Some((hash, _)) => Some(Msg::EpisodeChosen { hash: *hash }),
                         None => Some(Msg::None),
                     },
@@ -901,7 +863,7 @@ impl AppComponent<Msg, NoUserEvent> for EpisodeBrowser {
             }
             Key::Backspace => {
                 if self.open.take().is_some() {
-                    self.sel = 0;
+                    self.cursor.reset();
                     Some(Msg::None)
                 } else {
                     Some(Msg::CloseModal)
@@ -1101,7 +1063,7 @@ pub struct AniDbSearchModal {
     results: Vec<AniDbSearchHit>,
     /// A search is in flight.
     searching: bool,
-    sel: usize,
+    cursor: ListCursor,
 }
 
 impl AniDbSearchModal {
@@ -1115,7 +1077,7 @@ impl AniDbSearchModal {
             answered: None,
             results: Vec::new(),
             searching: true,
-            sel: 0,
+            cursor: ListCursor::default(),
         }
     }
 
@@ -1128,7 +1090,7 @@ impl AniDbSearchModal {
         self.answered = Some(query.to_string());
         self.results = results;
         self.searching = false;
-        self.sel = 0;
+        self.cursor.reset();
     }
 
     /// Keys for the keybinding bar.
@@ -1188,7 +1150,7 @@ impl AniDbSearchModal {
             .collect();
         let mut state = ListState::default();
         if !self.results.is_empty() {
-            state.select(Some(self.sel));
+            state.select(Some(self.cursor.index()));
         }
         frame.render_stateful_widget(
             List::new(items).highlight_style(theme::highlight_style()),
@@ -1202,32 +1164,29 @@ passive_modal!(AniDbSearchModal);
 
 impl AppComponent<Msg, NoUserEvent> for AniDbSearchModal {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        match plain(ev) {
-            Some(Key::Esc) => return Some(Msg::CloseModal),
-            Some(Key::Up) => {
-                self.sel = self.sel.saturating_sub(1);
+        if let Some(key) = plain(ev) {
+            if self.cursor.nav(key, self.results.len()) {
                 return Some(Msg::None);
             }
-            Some(Key::Down) => {
-                self.sel = (self.sel + 1).min(self.results.len().saturating_sub(1));
-                return Some(Msg::None);
-            }
-            Some(Key::Enter) => {
-                let query = self.editor.text();
-                // Enter on fresh results links; otherwise it searches.
-                if self.answered.as_deref() == Some(query.as_str())
-                    && let Some(hit) = self.results.get(self.sel)
-                {
-                    return Some(Msg::ListEntryLinked(self.id, hit.series));
+            match key {
+                Key::Esc => return Some(Msg::CloseModal),
+                Key::Enter => {
+                    let query = self.editor.text();
+                    // Enter on fresh results links; otherwise it searches.
+                    if self.answered.as_deref() == Some(query.as_str())
+                        && let Some(hit) = self.results.get(self.cursor.index())
+                    {
+                        return Some(Msg::ListEntryLinked(self.id, hit.series));
+                    }
+                    if query.trim().is_empty() {
+                        return Some(Msg::None);
+                    }
+                    self.searching = true;
+                    self.answered = None;
+                    return Some(Msg::AniDbSearchRequested(query));
                 }
-                if query.trim().is_empty() {
-                    return Some(Msg::None);
-                }
-                self.searching = true;
-                self.answered = None;
-                return Some(Msg::AniDbSearchRequested(query));
+                _ => {}
             }
-            _ => {}
         }
         // Everything else edits the query (which stales any results).
         self.editor.on(ev);
@@ -1351,7 +1310,7 @@ mod tests {
         // The media-root picker surfaces "[Select]" and ".." as the first
         // two rows, with the cursor on "[Select]".
         let browser = FileBrowser::for_directory();
-        assert_eq!(browser.sel, 0);
+        assert_eq!(browser.cursor.index(), 0);
         assert!(matches!(browser.entries[0].kind, RowKind::Select));
         assert_eq!(browser.entries[0].name, "[Select]");
         assert!(matches!(browser.entries[1].kind, RowKind::Parent));
