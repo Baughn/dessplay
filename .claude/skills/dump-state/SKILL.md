@@ -142,3 +142,30 @@ lookup is still pending (rate-limited to 1 packet / 2s). The file's
 `file_catalog` entry existing but `anidb_metadata` being null/absent
 confirms "requested, not yet resolved". It resolves on its own; re-adding
 the file or a library rescan re-arms `lookup_requests`.
+
+## Local-only tables (not in --dump)
+
+`--dump` decodes the CRDT blob + settings; the client's **local** tables
+(library index, watch history, mappings) are plain SQLite — query them
+directly. Read-only queries are safe while the app runs (WAL). No
+`sqlite3` on NixOS: `nix run nixpkgs#sqlite -- <db> "<sql>"`.
+
+```bash
+DB=~/.local/share/dessplay/dessplay.db
+# Media roots (position 0 = download target). Paths are BLOBs: CAST.
+nix run nixpkgs#sqlite -- "$DB" \
+  "SELECT position, CAST(path AS TEXT) FROM media_roots ORDER BY position;"
+# Where does the index think a file lives? (hex(root) matches the dump's
+# hex hashes, uppercase.) Duplicate rows for one hash = one copy moved —
+# check which paths still exist on disk.
+nix run nixpkgs#sqlite -- "$DB" \
+  "SELECT CAST(path AS TEXT), hex(root) FROM hash_cache WHERE path LIKE '%<name>%';"
+# Personal watch history / manual mappings:
+#   watch_history(hash, series_id, series_name, filename, watched_at)
+#   manual_mappings(hash, local_path, ...)
+```
+
+Worked example (2026-07-02): "browser didn't anchor on my playlist file"
+— playlist hash from `--dump --section playlist` matched TWO `hash_cache`
+paths; `ls` showed the first (sort-order winner) no longer existed. Stale
+index rows for moved files were the root cause.

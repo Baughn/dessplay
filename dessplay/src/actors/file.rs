@@ -340,6 +340,9 @@ enum Done {
         hits: Vec<IndexedFile>,
         /// Files to hash (new or changed since last scan).
         worklist: std::collections::VecDeque<ScanItem>,
+        /// Index rows whose files vanished from under the roots (moved
+        /// or deleted behind the app's back) — to be pruned.
+        stale: Vec<PathBuf>,
     },
     /// One library-scan file finished hashing.
     LibraryHashed {
@@ -678,14 +681,19 @@ impl Actor {
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            let (hits, worklist) = scan_library(&roots, &cache);
+            let (hits, worklist, stale) = scan_library(&roots, &cache);
             tracing::debug!(
                 hits = hits.len(),
                 to_hash = worklist.len(),
+                stale = stale.len(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "library walk finished"
             );
-            let _ = done_tx.blocking_send(Done::LibraryWalk { hits, worklist });
+            let _ = done_tx.blocking_send(Done::LibraryWalk {
+                hits,
+                worklist,
+                stale,
+            });
         });
     }
 
@@ -1069,8 +1077,13 @@ impl Actor {
                 }
                 Err(e) => tracing::error!("placeholder render failed: {e}"),
             },
-            Done::LibraryWalk { hits, worklist } => {
+            Done::LibraryWalk {
+                hits,
+                worklist,
+                stale,
+            } => {
                 self.scan_walking = false;
+                self.prune_stale_index(stale);
                 // Cache hits are known immediately.
                 if !hits.is_empty() {
                     let _ = self
@@ -1162,6 +1175,32 @@ impl Actor {
                 self.pump_library_scan();
             }
         }
+    }
+
+    /// Drop index rows whose files vanished from under the media roots —
+    /// the scan's counterpart to [`Self::lost_local_file`]. Without this
+    /// a file moved between directories kept its old row forever,
+    /// polluting everything built on the index (browser search ghosts,
+    /// add-browser anchoring in the wrong directory — 2026-07-02).
+    fn prune_stale_index(&mut self, stale: Vec<PathBuf>) {
+        if stale.is_empty() {
+            return;
+        }
+        let mut cache = (*self.hash_cache).clone();
+        for path in stale {
+            tracing::info!(path = %path.display(), "index row for a vanished file; pruning");
+            if let Err(e) = self.storage.remove_hash_cache(&path) {
+                tracing::error!("pruning hash cache: {e}");
+            }
+            if let Some((_, hashed)) = cache.remove(&path) {
+                // The servable set may still point at the vanished path
+                // (never at a re-resolved live copy — the == guards that).
+                if self.local_files.get(&hashed.root) == Some(&path) {
+                    self.local_files.remove(&hashed.root);
+                }
+            }
+        }
+        self.hash_cache = Arc::new(cache);
     }
 
     /// Commit freshly-computed hashes to the in-memory cache and SQLite.
@@ -1837,13 +1876,19 @@ fn walk_files(roots: &[PathBuf], mut on_file: impl FnMut(PathBuf, &Path)) {
 fn scan_library(
     roots: &[PathBuf],
     cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>,
-) -> (Vec<IndexedFile>, std::collections::VecDeque<ScanItem>) {
+) -> (
+    Vec<IndexedFile>,
+    std::collections::VecDeque<ScanItem>,
+    Vec<PathBuf>,
+) {
     let mut hits = Vec::new();
     let mut worklist = std::collections::VecDeque::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     walk_files(roots, |path, root| {
         if !is_video_file(&path) {
             return;
         }
+        seen.insert(path.clone());
         // `std::fs::metadata` follows symlinks, so a symlinked video reports
         // its target's mtime/size (not the link's).
         let Ok(metadata) = std::fs::metadata(&path) else {
@@ -1880,7 +1925,20 @@ fn scan_library(
             }),
         }
     });
-    (hits, worklist)
+    // Index rows for files that vanished from under the roots (moved or
+    // deleted behind the app's back) — the disk is the truth, the index
+    // follows it. The `seen` check spares a stat per live row; the
+    // `exists` double-check protects rows the walk deliberately skips
+    // (e.g. a non-video file hashed via playlist-add) and files created
+    // mid-walk. Rows outside the roots (the download cache, removed
+    // roots) are none of the scan's business.
+    let stale: Vec<PathBuf> = cache
+        .keys()
+        .filter(|path| roots.iter().any(|root| path.starts_with(root)))
+        .filter(|path| !seen.contains(*path) && !path.exists())
+        .cloned()
+        .collect();
+    (hits, worklist, stale)
 }
 
 /// Every file named exactly `filename` under the roots, in breadth-first
@@ -2323,6 +2381,67 @@ mod tests {
         let rows = check.hash_cache().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].hash.root, expected);
+    }
+
+    /// Regression (2026-07-02, "Release that Witch ep 5"): a file moved
+    /// between directories under a media root leaves its old hash_cache
+    /// row behind forever — the scan only ever adds rows. The stale row
+    /// then pollutes everything built on the library index (browser
+    /// search ghosts, anchor resolution landing in the wrong directory).
+    /// A rescan must prune index rows whose files vanished from under
+    /// the roots, in SQLite and in the in-memory map.
+    #[tokio::test]
+    async fn rescan_prunes_vanished_files_from_the_index() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"episode five".as_slice();
+        let moved = write(root.path(), "Fangkai/ep5.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let mtime = mtime_millis(&std::fs::metadata(&moved).unwrap()).unwrap();
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        // The current location is indexed…
+        storage
+            .upsert_hash_cache(&moved, mtime, &hashed, 1)
+            .unwrap();
+        // …and so is the old, pre-move location (no file there anymore).
+        let stale = root.path().join("ep5.mkv");
+        storage
+            .upsert_hash_cache(&stale, mtime, &hashed, 1)
+            .unwrap();
+        // A row outside the media roots (a download-cache file) must be
+        // left alone — the scan has no opinion on the cache.
+        let outside = PathBuf::from("/nonexistent-cache/aabbcc");
+        storage
+            .upsert_hash_cache(&outside, mtime, &hashed, 1)
+            .unwrap();
+
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        // The walk reports the surviving file as indexed.
+        match next_output(&mut rig).await {
+            FileOutput::LibraryIndexed { files } => {
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].filename, "ep5.mkv");
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        // The stale row is pruned; the live and out-of-root rows survive.
+        let check = Storage::open(&db_path).unwrap();
+        let paths: Vec<PathBuf> = check
+            .hash_cache()
+            .unwrap()
+            .into_iter()
+            .map(|row| row.path)
+            .collect();
+        assert!(!paths.contains(&stale), "stale row must be pruned");
+        assert!(paths.contains(&moved));
+        assert!(paths.contains(&outside));
     }
 
     #[tokio::test]
@@ -3250,7 +3369,7 @@ mod tests {
         write(root.path(), "Frieren/ep1.nfo", b"<nfo/>");
 
         // Empty cache: the video needs hashing, the junk is ignored.
-        let (hits, worklist) = scan_library(&[root.path().to_path_buf()], &HashMap::new());
+        let (hits, worklist, _stale) = scan_library(&[root.path().to_path_buf()], &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(worklist.len(), 1);
         assert_eq!(worklist[0].path, video);
@@ -3259,7 +3378,7 @@ mod tests {
         // With the video already cached (matching mtime/size) it's a hit,
         // not re-hashed.
         let cache = cache_of(&video, b"episode one");
-        let (hits, worklist) = scan_library(&[root.path().to_path_buf()], &cache);
+        let (hits, worklist, _stale) = scan_library(&[root.path().to_path_buf()], &cache);
         assert!(worklist.is_empty());
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].hash, ed2k_hash_bytes(b"episode one").root);
@@ -3276,7 +3395,7 @@ mod tests {
             video.clone(),
             (stale_mtime, ed2k_hash_bytes(b"episode one")),
         )]);
-        let (hits, worklist) = scan_library(&[root.path().to_path_buf()], &cache);
+        let (hits, worklist, _stale) = scan_library(&[root.path().to_path_buf()], &cache);
         assert!(hits.is_empty(), "stale mtime must not count as a hit");
         assert_eq!(worklist.len(), 1);
         assert_eq!(worklist[0].path, video);
@@ -3297,7 +3416,7 @@ mod tests {
         std::os::unix::fs::symlink(base.path().join("store/Frieren"), root.join("Frieren"))
             .unwrap();
 
-        let (hits, worklist) = scan_library(std::slice::from_ref(&root), &HashMap::new());
+        let (hits, worklist, _stale) = scan_library(std::slice::from_ref(&root), &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(
             worklist.len(),
@@ -3319,7 +3438,7 @@ mod tests {
         let link = root.join("ep1.mkv");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let (hits, worklist) = scan_library(std::slice::from_ref(&root), &HashMap::new());
+        let (hits, worklist, _stale) = scan_library(std::slice::from_ref(&root), &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(worklist.len(), 1, "symlinked video file must be seen");
         assert_eq!(worklist[0].path, link);
@@ -3337,7 +3456,7 @@ mod tests {
         write(root.path(), "Frieren/ep1.mkv", b"episode one");
         std::os::unix::fs::symlink(root.path(), root.path().join("Frieren/loop")).unwrap();
 
-        let (_hits, worklist) = scan_library(&[root.path().to_path_buf()], &HashMap::new());
+        let (_hits, worklist, _stale) = scan_library(&[root.path().to_path_buf()], &HashMap::new());
         assert_eq!(worklist.len(), 1, "cycle must not duplicate or hang");
         assert_eq!(worklist[0].filename, "ep1.mkv");
     }

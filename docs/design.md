@@ -1108,6 +1108,12 @@ no longer filled only on demand.
 - **Periodically** the client re-walks the roots and re-hashes only changed
   files. Interactive clients rescan about once a minute; a seeder, whose store
   is large and stable, rescans once a day.
+- **The walk also prunes**: an index row whose file has vanished from under
+  the roots (moved or deleted behind the app's back) is removed — the disk
+  is the truth, the index follows it. Without this a moved file kept its old
+  row forever, leaving ghosts in everything built on the index (the file
+  browser's search and anchor placement). Rows outside the roots (the
+  download cache) are reconciled by their own startup pass, not the scan.
 - For every indexed hash that lacks metadata in the synced state, the client
   inserts a `FileHashInfo` (hash, size, filename, mtime, and a title-like
   containing-directory `series_hint`) into the

@@ -245,12 +245,17 @@ impl BrowserLibrary {
         }
     }
 
-    /// A local path holding `hash`, if the index knows one.
+    /// A local path holding `hash` — the first indexed copy that still
+    /// exists on disk. The index can hold rows for files moved or
+    /// deleted behind the app's back (until the scan prunes them), and
+    /// anchoring on a ghost lands the browser in the wrong directory
+    /// with the cursor on nothing (2026-07-02).
     fn path_of(&self, hash: Ed2kHash) -> Option<PathBuf> {
         self.files
             .iter()
-            .find(|file| file.hash == hash)
+            .filter(|file| file.hash == hash)
             .map(|file| file.path.clone())
+            .find(|path| path.exists())
     }
 
     /// Has this path's file been watched (path known to the index)?
@@ -301,13 +306,19 @@ impl FileBrowser {
             filter: LineBuffer::default(),
         };
         browser.refresh();
-        if let Some(anchor) = after
-            && let Some(path) = browser.library.path_of(anchor)
-        {
-            browser.cwd = path.parent().map(Path::to_path_buf);
-            browser.refresh();
-            if let Some(index) = browser.entries.iter().position(|row| row.path == path) {
-                browser.cursor.set(index);
+        if let Some(anchor) = after {
+            match browser.library.path_of(anchor) {
+                Some(path) => {
+                    tracing::debug!(%anchor, path = %path.display(),
+                        "add browser anchored on the entry's local copy");
+                    browser.cwd = path.parent().map(Path::to_path_buf);
+                    browser.refresh();
+                    if let Some(index) = browser.entries.iter().position(|row| row.path == path) {
+                        browser.cursor.set(index);
+                    }
+                }
+                None => tracing::debug!(%anchor,
+                    "add browser: no existing local copy for the anchor; opening at the roots"),
             }
         }
         browser
@@ -1756,6 +1767,35 @@ mod tests {
         // Opened in the anchor's directory, cursor on the anchor itself.
         assert_eq!(browser.cwd.as_deref(), Some(dir.as_path()));
         assert_eq!(browser.entries[browser.cursor.index()].name, "f2.mkv");
+    }
+
+    /// Regression (2026-07-02, "Release that Witch ep 5"): the library
+    /// index can hold stale rows — a file indexed loose in the root and
+    /// later moved into a series directory keeps its old row until the
+    /// scan prunes it. Anchor resolution took the first indexed copy by
+    /// sort order (the vanished loose one), landing the browser in the
+    /// media root with the cursor on nothing. It must skip paths that no
+    /// longer exist and anchor on the copy that does.
+    #[test]
+    fn add_browser_anchor_skips_stale_index_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Videos");
+        let dir = root.join("Fangkai Nage Nuwu (2026)");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ep5.mkv"), b"x").unwrap();
+        // The stale row sorts first ("Videos/ep5.mkv" < "Videos/Fangkai…")
+        // but its file is gone; only the moved copy exists.
+        let library = BrowserLibrary::new(
+            std::slice::from_ref(&root),
+            vec![
+                (root.join("ep5.mkv"), hash(5)),
+                (dir.join("ep5.mkv"), hash(5)),
+            ],
+            Default::default(),
+        );
+        let browser = FileBrowser::for_file(vec![root.clone()], Some(hash(5)), library);
+        assert_eq!(browser.cwd.as_deref(), Some(dir.as_path()));
+        assert_eq!(browser.entries[browser.cursor.index()].name, "ep5.mkv");
     }
 
     #[test]

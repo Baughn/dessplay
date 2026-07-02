@@ -1031,6 +1031,12 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 } => self.storage.series_map_dir(key).ok().flatten(),
                                 _ => None,
                             };
+                            tracing::debug!(
+                                files = files.len(),
+                                watched = watched.len(),
+                                start = start.as_ref().map(|p| p.display().to_string()),
+                                "browse: answering with the library index"
+                            );
                             let _ = self.ui.try_send(UiInput::Browse {
                                 request,
                                 files,
