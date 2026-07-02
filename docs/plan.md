@@ -1,10 +1,15 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-06-12
+Last updated: 2026-07-02
 
 10 phases, bottom-up. Each phase produces testable artifacts. The first
 user-facing demo (TUI with chat + shared playlist) arrives at Phase 6;
 full watch-party experience at Phase 7.
+
+Phases 11–18 are the **feature-request batch** (triaged 2026-07-02 from
+the group's request sheet; request numbers `#N` refer to its rows).
+Ordering is dependency-driven: the protocol version gate lands first so
+later wire/schema changes are clean flag-days.
 
 ## Workspace Layout
 
@@ -620,3 +625,294 @@ the laptop's cache cleans up after itself.
 
 ### Milestone
 Stable, production-ready. All documented failure modes handled.
+
+---
+
+## Phase 11: Protocol Version Gate (#23)
+
+**Goal**: Refuse mismatched clients with a clear message, so every later
+wire/schema change is a clean flag-day instead of silent decode garbage.
+
+### What gets built
+- `PROTOCOL_VERSION: u32` constant in `dessplay-core::net`, carried in
+  `Auth`. Adding the field is itself the one-time break: a pre-versioning
+  client's `Auth` fails to decode on the new server.
+- Server: on version mismatch (or `Auth` decode failure, which *is* a
+  pre-versioning client), reply and close. Mismatching **new** clients get
+  a new `ProtocolMismatch { server_version }` variant (appended to
+  `ServerControl`, so enum indices stay stable) and print "please update";
+  undecodable-old clients get `AuthFailed`, which their binary can still
+  decode — a generic refusal beats a hang.
+- Client: on `ProtocolMismatch`, exit with a clear message (no reconnect
+  loop).
+- Policy note in network-design.md: bump the constant on any change to
+  wire messages, `CrdtOp`, or CRDT value types; append enum variants,
+  never reorder.
+
+### Testing
+- Sim-transport integration: matching version connects; client with
+  version±1 is refused with `ProtocolMismatch` and does not retry.
+- A hand-encoded pre-versioning `Auth` frame gets `AuthFailed` + close.
+
+### Milestone
+An old binary pointed at the new server fails fast with a human-readable
+reason. Later phases bump the version freely.
+
+---
+
+## Phase 12: State Wording & Narrator Polish (#17, #29, #27, #2, #18; closes #12)
+
+**Goal**: Stop conflating "paused the video" with "not ready to watch",
+in both the narrator's language and the Users pane's colors.
+
+### What gets built
+- **#17**: narrator wording — a manual-override clear *without* an intent
+  change reads "Nero is ready"; "paused"/"unpaused" are reserved for
+  transitions that actually stop/start video (intent + gating outcome).
+  The no-cascade rule still holds: one line per user action.
+- **#18**: Paused becomes its own Users-pane display state (yellow),
+  distinct from red blockers (Missing file, committed-absent);
+  attribution is kept — the pane still shows *who* paused. Ready States
+  table in design.md updated.
+- **#29**: "Departed" renders as **"Offline"** (Users pane dim line +
+  narrator "left" lines untouched). Display-level rename only; the
+  internal `Presence::Departed` name stays.
+- **#27**: `/me` action lines render grey/dim in the chat log (and OSD).
+- **#2**: seek narrator lines carry from→to: "Baughn skipped 08:12 →
+  12:34" (the prior sample is already tracked for second-and-later
+  seeks; the unattributed first seek stays a documented gap).
+- **#12 closure**: a property test over the gating derivation — for all
+  presence × file-state combinations, an Away or NotWatching user never
+  blocks playback. Believed already true; the test pins it and the
+  request closes.
+
+### Testing
+- Narrator: snapshot-diff unit tests (feed successive state views,
+  assert exact lines) for each new/changed wording.
+- UI: insta snapshots for the yellow Paused row and Offline line.
+- The #12 property test (derive-level, proptest over state combinations).
+
+### Milestone
+"Nero ready" vs "Nero paused" mean what they say; a paused friend no
+longer looks like a missing-file blocker.
+
+---
+
+## Phase 13: Player OSD Rework (#16, #30, #14)
+
+**Goal**: The video OSD becomes trustworthy: chat lines don't vanish
+mid-read, your own lines don't echo, and the design.md blocker summary
+(never implemented — confirmed 2026-07-02) finally exists as a
+persistent "Waiting for X, Y, Z" display.
+
+### What gets built
+- **`osd-overlay` support** in the `Player` trait: `set_overlay(id,
+  text)` / `clear_overlay(id)` alongside `show_osd` (mpv `osd-overlay`
+  command; MockPlayer records overlay state). Two overlay slots: chat
+  and blocker-summary — independent of each other and of `show-text`.
+- **#16**: chat OSD becomes a rolling buffer rendered into the chat
+  overlay — last N messages (default 4), each retained a minimum time
+  (default 8s) and expiring individually; a burst never erases an unread
+  line. Buffer + expiry timer live in the PlayerActor (it owns player
+  state); the session keeps sending one message per new chat line.
+- **#30**: the session's chat→OSD site (`session.rs`) skips messages
+  whose sender is the local user.
+- **#14**: a blocker-summary producer in the session: on every state
+  change, derive who currently blocks playback (reusing/lifting the
+  block-reason derivation that today lives in `ui/props.rs` — it moves
+  to a shared derive site so TUI and OSD cannot disagree) and set/clear
+  the overlay: "Waiting for Kim (downloading 34%), Nero (paused)".
+  Shown to everyone, including non-blockers; cleared when playing.
+
+### Testing
+- PlayerActor: paused-time unit tests for buffer retention/expiry and
+  overlay updates (MockPlayer assertions).
+- Harness: A pauses → B's and C's MockPlayers show "Waiting for A";
+  A resumes → overlay clears. Own-message OSD suppression asserted.
+- Real-mpv smoke extends to one `osd-overlay` round trip.
+
+### Milestone
+A stalled unpause visibly names its blockers on the video itself; chat
+on the OSD is readable under bursts.
+
+---
+
+## Phase 14: File Responsiveness (#26, #21)
+
+**Goal**: Files that are *becoming* available stop looking broken.
+
+### What gets built
+- **#26 (mtime-quiesce recheck)**: when a resolve finds a candidate but
+  hashing mismatches — the classic case being a hash check racing a
+  still-running download/copy — the FileActor starts polling that path's
+  mtime+size once per second (cheap `stat`); when they hold still for
+  ~2s, it re-hashes. Repeats until Verified or the file vanishes; the
+  poll is dropped if the entry resolves by other means. Kills the
+  "download finished five seconds later but DessPlay took a minute to
+  notice" lag.
+- **#21 (downloads during indexing)**: diagnose with the already-landed
+  logging, then fix. Suspected: the library scan monopolizing the
+  FileActor's blocking-pool budget or serve queue. Whatever the cause,
+  the fix must preserve the liveness rule (architecture.md): a scan in
+  progress may never starve chunk serving or resolution.
+
+### Testing
+- FileActor paused-time test: a file whose bytes+mtime keep changing is
+  not re-hashed; once quiet, it re-hashes and resolves Verified (the
+  regression test is written first, per the bug-fixing rule).
+- Harness regression for #21: start a scan over a large simulated tree,
+  assert an in-flight download's chunks keep flowing.
+
+### Milestone
+A file that finishes downloading (or copying in) is Verified within
+seconds, not minutes; indexing never stalls transfers.
+
+---
+
+## Phase 15: Episode Browser Rework (#31, #11, #10)
+
+**Goal**: The episode browser answers "which copy, who has it, what's
+next" at a glance — today three same-named copies of an episode render
+as three identical lines.
+
+### What gets built
+- **#31 (copies, filenames, holders)**: episode rows gain the filename
+  and holders. Single-copy episodes stay one line
+  (`Episode 03  [Judas] Frieren - 03.mkv   Baughn Nero Kim`); multiple
+  copies expand into a lightweight tree, one child per file, holders
+  listed per child. Holders derive from `FileAvailability::Ready`
+  entries; the local user's own copy is what makes "pick the file *you*
+  have" possible.
+- **#11 (watched marks + next-unwatched)**: episodes watched personally
+  (85% history) or by the group (watched flags) render muted, matching
+  the playlist's convention; a `<` marker sits on the next unwatched
+  episode and the cursor opens there.
+- **#10 (manual mark-watched)**: a key in the episode browser / series
+  pane cycles an episode's group watched flag. Watched flags are
+  server-only writes by design, so this is a new control message
+  (`MarkWatched { file, watched }`, mirroring `EofReached`): the server
+  sets the flag and — matching the EOF path — auto-advances a linked
+  List entry's `next_ep` when marking watched. Idempotent; protocol
+  version bump (Phase 11 makes this painless).
+
+### Testing
+- Props-mapping unit tests: copy grouping (1 vs N copies), holder
+  derivation, watched muting, next-unwatched cursor placement.
+- insta snapshots: single-line and tree renders, long-filename clipping.
+- Harness: client A marks an episode watched → B's browser shows it
+  muted and B's List shows the advanced next_ep.
+
+### Milestone
+Three copies of SL2 episode 4 are three distinguishable lines with
+owners; queueing tonight's episode starts with the cursor already on it.
+
+---
+
+## Phase 16: Presence & Watch-State Extensions (#7/#13, #15)
+
+**Goal**: The group can manage *absent* members — the "Kim tool".
+
+### What gets built
+- **#7/#13 (mark others not-watching)**: `SeriesWatchState` entries gain
+  attribution — the map value becomes a struct carrying `set_by:
+  Option<UserId>` (snapshot decode falls back per the existing
+  `CrdtStateVn` pattern; protocol version bumps). Surfaces: `n` on a
+  Users-pane user (sets NotWatching for the now-playing series) and
+  `/skip <name>`. The narrator names the real setter ("Baughn set Kim to
+  not-watching Frieren"), replacing the "(by …)" placeholder. Guards
+  mirror Away: any user may write, the subject's own later write wins by
+  LWW.
+- **#15 (known-but-offline users)**: the server persists a
+  `known_users` table (username, last_seen, updated on
+  connect/disconnect) and pushes it with the `PeerList` (offline users
+  with a `last_seen` timestamp; hidden after 30 days). The Users pane
+  shows them dim + italic with "last seen 3d ago" — and they are valid
+  targets for `n`/`a`, which is the point: rule on someone's series
+  commitment without waiting for them to show up.
+
+### Testing
+- CRDT: convergence property tests over the new attribution struct
+  (append-only encoding asserted: old two/three-variant ops decode).
+- Server: known_users persistence across restart; 30-day cutoff.
+- Harness: A marks offline-Kim not-watching → B's pane and narrator
+  agree; Kim reconnects and overrides back to Watching, LWW holds.
+
+### Milestone
+Witch Hat can be gated on Kim being present without Kim's absence
+blocking every other show — recorded by whoever notices, attributed.
+
+---
+
+## Phase 17: /summon (#4)
+
+**Goal**: One command pings the missing people on IRC, with the
+mandatory Dess-girl.
+
+### What gets built
+- IrcActor learns channel membership: parse NAMES on join, track
+  JOIN/PART/QUIT/NICK. Membership is actor state, queried by command.
+- `/summon`: the session computes absent known users (Phase 16's
+  registry minus present peers), maps each to the closest-edit-distance
+  channel nick (excluding `*Dess` bridge nicks; a normalized-distance
+  threshold so nobody random gets pinged — Nero→Nero200 must match,
+  an absent user with no plausible nick is skipped and reported), and
+  sends one PRIVMSG:
+  `Nero200, Quickshot: Dess? https://brage.info/GAN/019dea7a-e1ad-77e1-a719-82619e50944f.jpg`
+  (URL a constant for now). Local system line reports who was pinged or
+  why nobody was ("IRC bridge disabled", "everyone's here").
+
+### Testing
+- Pure-function tests: NAMES/NICK tracking, nick matching (Nero→Nero200,
+  `*Dess` exclusion, threshold rejections), message formatting.
+- Duplex-pipe actor test: `/summon` end-to-end against a scripted IRC
+  server.
+
+### Milestone
+"It's time for dess" is one command instead of five manual pings.
+
+---
+
+## Phase 18: Layout & Input Polish (#6, #33, #22, #8)
+
+**Goal**: The remaining small, independent UI requests.
+
+### What gets built
+- **#6**: the progress bar + time move to their own line in the left
+  column, between the chat input and the subtitle pane, so ready-state
+  text stops shoving them around. TUI layout diagram in design.md
+  updated.
+- **#33 (drag-drop add)**: enable bracketed paste (crossterm
+  `Event::Paste`). A paste that is a single existing-file path while the
+  playlist pane is focused becomes an add (same path as the browser
+  pick); any other paste inserts into the chat input as text (which the
+  chat input gains as a side benefit).
+- **#22**: `subtitle_speaker_colors` toggle in the settings screen
+  (default on); when off, the separate subtitle pane renders uniformly
+  dim regardless of speaker.
+- **#8**: a sort toggle in the add/map file browser — alphabetical vs
+  newest-mtime-first (mtime from the library index), persisted like the
+  All Series sort. Freshly landed files float to the top.
+
+### Testing
+- insta snapshots for the new left-column layout and both browser sorts.
+- Paste-event message tests: path-on-playlist → add; text → chat input;
+  path-while-chat-focused → text.
+- Settings round-trip for the two new persisted settings.
+
+### Milestone
+The request sheet's interface rows are done or consciously deferred.
+
+---
+
+## Deferred from the 2026-07-02 batch
+
+Tracked here so they aren't re-triaged from scratch:
+
+- **#5** subtitle near-duplicate lines — needs a concrete example.
+- **#28** large uncorrected desync — believed fixed by the full-codebase
+  audit; reopen with logs if it recurs.
+- **#9** Nero-names surfacing and **#25** auto-queue next episode — both
+  blocked on finishing The List (linking coverage, next_ep reliability).
+- **#14 (sound half)** the audible "Dess?!" — blocked on an actual audio
+  asset; the Phase 13 overlay covers the visibility need.
+- **#19** GUI — future work (ui-architecture.md, Web Renderer).
