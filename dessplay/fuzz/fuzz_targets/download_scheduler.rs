@@ -52,6 +52,10 @@ enum Event {
     SetSources { mask: u8 },
     /// Advance the shared clock (crosses snub/re-solicit timeouts).
     Tick { millis: u16 },
+    /// Cancel the download (a local copy appeared through another
+    /// channel), optionally restarting it — exercises cancel's cleanup
+    /// and a re-start over the partially-written backing file.
+    Cancel { restart: bool },
 }
 
 fuzz_target!(|events: Vec<Event>| {
@@ -78,7 +82,15 @@ fuzz_target!(|events: Vec<Event>| {
     let mut downloads = Downloads::new(config);
     let mut now: u64 = 1000;
     let all_sources: Vec<PeerId> = PEERS.iter().map(|p| PeerId::new(*p)).collect();
-    let _ = downloads.start(hash.root, size_bytes, hash.root, path, all_sources, 0, now);
+    let _ = downloads.start(
+        hash.root,
+        size_bytes,
+        hash.root,
+        path.clone(),
+        all_sources.clone(),
+        0,
+        now,
+    );
 
     for event in events.into_iter().take(2000) {
         now += 1;
@@ -155,6 +167,20 @@ fuzz_target!(|events: Vec<Event>| {
             Event::Tick { millis } => {
                 now = now.saturating_add(millis as u64);
                 let _ = downloads.tick(now);
+            }
+            Event::Cancel { restart } => {
+                let _ = downloads.cancel(&hash.root);
+                if restart {
+                    let _ = downloads.start(
+                        hash.root,
+                        size_bytes,
+                        hash.root,
+                        path.clone(),
+                        all_sources.clone(),
+                        0,
+                        now,
+                    );
+                }
             }
         }
     }

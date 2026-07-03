@@ -318,6 +318,32 @@ impl Downloads {
         self.progress_and_refill(file, now)
     }
 
+    /// Stop downloading `file`: drop its state and tell every source to
+    /// forget the chunks still in flight with it. Used when a local copy
+    /// turns up through another channel (library scan / resolve) — the
+    /// peers no longer need to relay us the rest.
+    pub fn cancel(&mut self, file: &Ed2kHash) -> Vec<DownloadAction> {
+        let Some(d) = self.files.remove(file) else {
+            return vec![];
+        };
+        let mut actions = Vec::new();
+        for (peer, src) in d.sources {
+            if src.in_flight.is_empty() {
+                continue;
+            }
+            let mut chunks: Vec<u32> = src.in_flight.into_iter().collect();
+            chunks.sort_unstable();
+            actions.push(DownloadAction::Send {
+                to: peer,
+                message: PeerMessage::Cancel {
+                    file: *file,
+                    chunks,
+                },
+            });
+        }
+        actions
+    }
+
     /// Handle a relayed peer message addressed to a download.
     pub fn on_peer_message(
         &mut self,
@@ -946,6 +972,79 @@ mod tests {
         // Only a block-hash request goes out first — no chunk requests.
         assert_eq!(block_hash_requests(&actions), vec!["seed"]);
         assert!(requests(&actions).is_empty());
+    }
+
+    /// A cancelled download (a local copy turned up through another
+    /// channel) tells every source to drop the chunks we still had in
+    /// flight with it, deactivates, and ignores late chunk data.
+    #[test]
+    fn cancel_notifies_sources_of_in_flight_chunks_and_deactivates() {
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, DownloadConfig::default());
+        let actions = r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("seed")],
+            0,
+            1000,
+        );
+        // Answer the solicitation so chunk requests go in flight.
+        assert_eq!(block_hash_requests(&actions), vec!["seed"]);
+        let mut actions = r.downloads.on_peer_message(
+            peer("seed"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            1001,
+        );
+        actions.extend(r.downloads.on_peer_message(
+            peer("seed"),
+            PeerMessage::FileAvailability {
+                file: r.file,
+                bitfield: r.full_bitfield(),
+            },
+            1002,
+        ));
+        let in_flight: Vec<u32> = requests(&actions)
+            .into_iter()
+            .flat_map(|(_, c)| c)
+            .collect();
+        assert!(!in_flight.is_empty(), "no chunk requests went out");
+
+        let cancels = r.downloads.cancel(&r.file);
+        let mut cancelled: Vec<u32> = cancels
+            .iter()
+            .filter_map(|a| match a {
+                DownloadAction::Send {
+                    to,
+                    message: PeerMessage::Cancel { chunks, .. },
+                } if to.to_string() == "seed" => Some(chunks.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        cancelled.sort_unstable();
+        let mut expected = in_flight.clone();
+        expected.sort_unstable();
+        assert_eq!(cancelled, expected, "every in-flight chunk is cancelled");
+        assert!(!r.downloads.is_active(&r.file));
+
+        // Late data for the cancelled download is ignored, and ticking
+        // never revives it.
+        let data = r.chunk(in_flight[0]);
+        let late = r.downloads.on_peer_message(
+            peer("seed"),
+            PeerMessage::ChunkData {
+                file: r.file,
+                index: in_flight[0],
+                data,
+            },
+            1003,
+        );
+        assert!(late.is_empty());
+        assert!(r.downloads.tick(60_000).is_empty());
     }
 
     /// Regression: a lone source solicited for block hashes that stays

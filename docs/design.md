@@ -1226,7 +1226,12 @@ no longer filled only on demand.
   with no deadline, while transfers are latency-sensitive (a source that
   serves nothing for 30s is snubbed) — so while transfer traffic (serving
   or downloading) is active, scan hashing defers, resuming ~10s after the
-  traffic goes quiet. The walk itself (stat-only) still runs.
+  traffic goes quiet. The walk itself (stat-only) still runs. One
+  exemption: a walked file whose name matches an unmet playlist entry is
+  resolved (and so hashed) immediately, even during transfers — otherwise
+  an active download would defer the discovery of the very file that makes
+  it redundant (see [Download Cache](#download-cache-and-retention), "a
+  local copy trumps the download").
 - **The walk also prunes**: an index row whose file has vanished from under
   the roots (moved or deleted behind the app's back) is removed — the disk
   is the truth, the index follows it. Without this a moved file kept its old
@@ -1318,6 +1323,19 @@ marker; `A` only acts on such rows. Archiving moves the file into the library,
 so the marker clears — that is the success feedback. Both success and failure
 also post a local-only system line to the chat pane ("Archived …" / "Archive
 failed (…): …"); these notices are local, not synced.
+
+**A local copy trumps the download.** A file being fetched from peers can
+land locally through another channel mid-transfer (a bittorrent download
+racing the prefetch — 2026-07-03). The library walk (stat-only, so it runs
+even while transfers defer scan *hashing*, #21) spots a new file bearing
+the name of an unmet playlist entry and resolves it immediately — resolve
+hashes outside the scan deferral, and a copy still being written lands in
+the mismatch re-check (#26), verifying seconds after the write finishes.
+A verified copy cancels the peer download (sources are told to drop our
+in-flight chunk requests; the partial cache file is deleted) and the entry
+resolves Ready at the local path. The scan also adopts by **hash**: a
+matching file under a *different* filename, invisible to the name-based
+walk trigger, is adopted when its scan hash comes in.
 
 **Pre-fetching**: clients with downloading enabled fetch playlist entries
 *ahead* of now-playing (in playlist order) in the background, so next week's

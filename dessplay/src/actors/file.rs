@@ -481,6 +481,15 @@ struct Actor {
     scan_failed: usize,
     /// Files between info-level progress checkpoints (~20 over the scan).
     scan_log_step: usize,
+    /// Files the session asked us to resolve that we could not verify
+    /// locally (hash → playlist filename): NotFound or HashMismatch
+    /// outcomes, cleared on Verified. When the library walk turns up a
+    /// new file bearing one of these names, it is resolved immediately —
+    /// outside the scan-hashing transfer deferral (#21) — so a copy that
+    /// arrives through another channel (a bittorrent download racing the
+    /// peer prefetch, 2026-07-03) is adopted and the peer download
+    /// cancelled instead of running to completion or a restart.
+    wanted: HashMap<Ed2kHash, String>,
     /// Mismatched resolutions being watched for quiescence (#26):
     /// name-matched files whose contents didn't hash — usually a copy or
     /// external download still being written into a media root.
@@ -621,6 +630,7 @@ impl Actor {
             scan_started: None,
             scan_failed: 0,
             scan_log_step: 1,
+            wanted: HashMap::new(),
             rechecks: HashMap::new(),
             last_transfer_activity: None,
             scan_transfer_quiet: config.scan_transfer_quiet,
@@ -972,6 +982,7 @@ impl Actor {
         block_hashes: Vec<dessplay_core::hash::Ed2kBlockHash>,
     ) {
         tracing::info!(%file, path = %path.display(), "download complete");
+        self.wanted.remove(&file);
         self.local_files.insert(file, path.clone());
         self.last_progress_at.remove(&file);
         if let Ok(metadata) = std::fs::metadata(&path) {
@@ -1006,6 +1017,24 @@ impl Actor {
             .out
             .send(FileOutput::DownloadComplete { file, path })
             .await;
+    }
+
+    /// A verified local copy turned up while a peer download for the same
+    /// file was in flight (it arrived through another channel — a
+    /// bittorrent download racing the prefetch): stop the download, tell
+    /// the sources to drop our in-flight chunk requests, and remove the
+    /// partial cache file. The caller has already recorded the local copy.
+    async fn cancel_redundant_download(&mut self, file: Ed2kHash) {
+        tracing::info!(%file, "local copy appeared; cancelling the peer download");
+        let actions = self.downloads.cancel(&file);
+        self.run_download_actions(actions).await;
+        self.last_progress_at.remove(&file);
+        let partial = self.download_path(file);
+        if let Err(e) = std::fs::remove_file(&partial)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %partial.display(), "removing partial download: {e}");
+        }
     }
 
     /// Serve a peer the per-block hashes of a file we hold (from the
@@ -1173,9 +1202,24 @@ impl Actor {
                 fresh,
             } => {
                 self.commit_fresh_hashes(fresh);
+                // Track unmet resolves so the library walk can spot their
+                // files arriving through another channel; a verified copy
+                // that isn't the download's own completed cache file makes
+                // the peer download redundant — cancel it.
+                match &resolution {
+                    Resolution::Verified(_) => {
+                        self.wanted.remove(&file);
+                    }
+                    Resolution::NotFound | Resolution::HashMismatch(_) => {
+                        self.wanted.insert(file, filename.clone());
+                    }
+                }
                 // A verified local copy can be served to peers.
                 if let Resolution::Verified(path) = &resolution {
                     self.local_files.insert(file, path.clone());
+                    if self.downloads.is_active(&file) && *path != self.download_path(file) {
+                        self.cancel_redundant_download(file).await;
+                    }
                     // Resolving (loading) a file is an "access": bump the
                     // cache entry's last_access so retention runs from last
                     // access, not download time (design.md Download Cache).
@@ -1275,6 +1319,34 @@ impl Actor {
                 self.scan_worklist = worklist;
                 self.scan_total = self.scan_worklist.len();
                 self.scan_done = 0;
+                // A new/changed file bearing the name of an unmet resolve
+                // is worth verifying right now: resolve hashes it outside
+                // the scan deferral (#21), so a copy that landed through
+                // another channel is adopted even while its own peer
+                // download keeps hashing deferred (2026-07-03). A copy
+                // still being written resolves HashMismatch and the
+                // quiescence watch (#26) picks it up from there — so skip
+                // files already under watch.
+                let arrived: Vec<(Ed2kHash, String)> = self
+                    .scan_worklist
+                    .iter()
+                    .filter_map(|item| {
+                        self.wanted
+                            .iter()
+                            .find(|(hash, name)| {
+                                *name == &item.filename && !self.rechecks.contains_key(hash)
+                            })
+                            .map(|(hash, name)| (*hash, name.clone()))
+                    })
+                    .collect();
+                for (hash, filename) in arrived {
+                    tracing::info!(
+                        file = %hash,
+                        filename,
+                        "library walk found a file we were missing; resolving now"
+                    );
+                    self.resolve(hash, filename).await;
+                }
                 if self.scan_total > 0 {
                     tracing::info!(to_hash = self.scan_total, "indexing media library");
                     self.scan_started = Some(std::time::Instant::now());
@@ -1300,6 +1372,29 @@ impl Actor {
                         let root = hashed.root;
                         let size = hashed.size_bytes;
                         self.queue_scan_hash_commit(item.path.clone(), item.mtime, hashed);
+                        // The scan hashed a file whose *contents* match an
+                        // unmet resolve or an active download: adopt it.
+                        // By-hash, so it works even under a different
+                        // filename (where the walk trigger can't see it).
+                        if self.wanted.remove(&root).is_some() || self.downloads.is_active(&root) {
+                            tracing::info!(
+                                file = %root,
+                                path = %item.path.display(),
+                                "library scan found a file we were missing; adopting"
+                            );
+                            self.local_files.insert(root, item.path.clone());
+                            self.rechecks.remove(&root);
+                            if self.downloads.is_active(&root) {
+                                self.cancel_redundant_download(root).await;
+                            }
+                            let _ = self
+                                .out
+                                .send(FileOutput::Resolved {
+                                    file: root,
+                                    resolution: Resolution::Verified(item.path.clone()),
+                                })
+                                .await;
+                        }
                         tracing::trace!(
                             done = self.scan_done,
                             total = self.scan_total,
@@ -4029,5 +4124,144 @@ mod tests {
                 _ => continue,
             }
         }
+    }
+
+    /// Regression (2026-07-03): while a playlist entry was downloading
+    /// from a peer, the same file landed in a media root through another
+    /// channel (a bittorrent download). The library walk saw it, but scan
+    /// hashing defers during transfers (#21) — and the download itself is
+    /// transfer traffic — so the local copy was never discovered until a
+    /// restart. A file appearing under a media root bearing the name of
+    /// an entry we're downloading must be verified promptly (outside the
+    /// scan deferral), the peer download cancelled and its partial file
+    /// removed, and the entry resolved Verified at the media-root path.
+    #[tokio::test]
+    async fn a_local_copy_appearing_mid_download_cancels_it_and_resolves() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"the episode the group is watching".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        let file = hashed.root;
+
+        let db = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&db.path().join("test.db")).unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+
+        // The entry has no local copy yet.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { resolution, .. } => {
+                assert!(matches!(resolution, Resolution::NotFound));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        // A peer download starts — transfer traffic from here on.
+        let peer = dessplay_core::net::PeerId::from(dessplay_core::types::UserId::new("kim"));
+        rig.commands
+            .send(FileCommand::StartDownload {
+                file,
+                size_bytes: contents.len() as u64,
+                sources: vec![peer],
+                play_chunk: 0,
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::SendPeer { message, .. } => {
+                assert!(matches!(
+                    *message,
+                    dessplay_core::net::PeerMessage::BlockHashRequest { .. }
+                ));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        let partial = rig
+            ._cache_dir
+            .as_ref()
+            .unwrap()
+            .path()
+            .join(file.to_string());
+        assert!(partial.exists(), "download must have opened its partial");
+
+        // The same file lands in a media root behind our back.
+        write(root.path(), "Anime/ep1.mkv", contents);
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+
+        // The actor must discover, verify, and adopt the local copy.
+        let path = loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved {
+                    file: f,
+                    resolution: Resolution::Verified(path),
+                } if f == file => break path,
+                _ => continue,
+            }
+        };
+        assert_eq!(path, root.path().join("Anime/ep1.mkv"));
+        // The peer download is cancelled and its partial cleaned up.
+        assert!(
+            !partial.exists(),
+            "cancelled download must remove its partial file"
+        );
+    }
+
+    /// The by-hash half of the same recovery: a copy of a missing entry
+    /// that lands under a *different filename* is invisible to the
+    /// name-based walk trigger and to `resolve`, but the scan hashes it
+    /// eventually — matching contents must still be adopted (resolved
+    /// Verified at the scanned path).
+    #[tokio::test]
+    async fn a_renamed_local_copy_is_adopted_by_hash_when_scanned() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"the same episode under another name".as_slice();
+        let file = ed2k_hash_bytes(contents).root;
+
+        let db = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&db.path().join("test.db")).unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+
+        // The entry is missing under its playlist name.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Resolved { resolution, .. } => {
+                assert!(matches!(resolution, Resolution::NotFound));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        // The content arrives under a different name; the scan hashes it.
+        let renamed = write(root.path(), "renamed.mkv", contents);
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+
+        let path = loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved {
+                    file: f,
+                    resolution: Resolution::Verified(path),
+                } if f == file => break path,
+                _ => continue,
+            }
+        };
+        assert_eq!(path, renamed);
     }
 }
