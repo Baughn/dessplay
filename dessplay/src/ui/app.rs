@@ -484,7 +484,7 @@ impl Ui {
     pub fn open_file_browser(
         &mut self,
         request: BrowseRequest,
-        files: Vec<(PathBuf, Ed2kHash)>,
+        files: Vec<(PathBuf, Ed2kHash, i64)>,
         mut watched: BTreeSet<Ed2kHash>,
         start: Option<PathBuf>,
     ) {
@@ -497,7 +497,7 @@ impl Ui {
                 .map(|(hash, _)| *hash),
         );
         let library = BrowserLibrary::new(&self.media_roots, files, watched);
-        let browser = match request {
+        let mut browser = match request {
             BrowseRequest::Add { after } => {
                 FileBrowser::for_file(self.media_roots.clone(), after, library)
             }
@@ -505,6 +505,7 @@ impl Ui {
                 FileBrowser::for_mapping(self.media_roots.clone(), file, target, start, library)
             }
         };
+        browser.set_sort(self.settings.file_browser_sort);
         // A double-press races two requests; the second answer replaces
         // the first browser instead of stacking on it.
         if matches!(self.modals.last(), Some(Modal::Files(_))) {
@@ -673,6 +674,37 @@ impl Ui {
             }
             return actions;
         }
+        // Bracketed paste (design.md #33). A single existing-file path
+        // pasted while the Playlist pane is focused becomes a playlist
+        // add, exactly like picking it in the file browser; any other
+        // paste (wrong pane, not a real file, multi-line) lands in the
+        // chat input as plain text, as if typed. Silent (falls through
+        // unchanged) while a modal is open — no new capability there yet.
+        if let Event::Paste(text) = &ev
+            && self.modals.is_empty()
+        {
+            let trimmed = text.trim();
+            let is_file_path = self.focus == Focus::Playlist
+                && !trimmed.is_empty()
+                && !trimmed.contains('\n')
+                && std::path::Path::new(trimmed).is_file();
+            if is_file_path {
+                let msg = Msg::FileChosen {
+                    path: PathBuf::from(trimmed),
+                    after: self.playlist.selected_hash(),
+                };
+                let action = self.update(msg);
+                if let Some(action) = &action {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return action.into_iter().collect();
+            }
+            self.chat.insert_text(text);
+            self.refresh_keybar();
+            return Vec::new();
+        }
+
         if self.modals.is_empty() {
             match super::components::plain(&ev) {
                 Some(Key::Tab) => {
@@ -900,6 +932,18 @@ impl Ui {
             Msg::ToggleSeriesSort => {
                 self.settings.series_sort = self.series.sort();
                 self.refresh_series();
+                Some(UserAction::SaveSettings(
+                    Box::new(self.settings.clone()),
+                    self.media_roots.clone(),
+                ))
+            }
+            // The file browser already flipped its own sort; mirror it into
+            // settings and save (design.md #8), same pattern as
+            // `ToggleSeriesSort` above.
+            Msg::ToggleBrowserSort => {
+                if let Some(Modal::Files(browser)) = self.modals.last() {
+                    self.settings.file_browser_sort = browser.sort();
+                }
                 Some(UserAction::SaveSettings(
                     Box::new(self.settings.clone()),
                     self.media_roots.clone(),
@@ -1423,10 +1467,18 @@ impl Ui {
         .areas(right);
 
         if self.subtitle_mode == SubtitleMode::SeparatePane {
-            let [chat_area, subs_area] =
-                Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
-                    .areas(left);
+            // Progress bar + time get their own line (design.md #6) between
+            // the chat input and the subtitle pane, so the status bar's
+            // variable-width "waiting on ..." text never shoves them
+            // sideways.
+            let [chat_area, progress_area, subs_area] = Layout::vertical([
+                Constraint::Percentage(70),
+                Constraint::Length(1),
+                Constraint::Percentage(30),
+            ])
+            .areas(left);
             self.chat.view(frame, chat_area);
+            self.status.render_progress(frame, progress_area);
             // The newest lines that fit, newest first (top) — the input box
             // sits just below, so the freshest line is closest to the eye.
             // Each line: a dim in-video timestamp, then the text colored by
@@ -1441,9 +1493,13 @@ impl Ui {
                 .rev()
                 .take(visible)
                 .map(|entry| {
-                    let text_style = match &entry.speaker {
-                        Some(name) => super::theme::user_style(name),
-                        None => tuirealm::ratatui::style::Style::default(),
+                    let text_style = if !self.settings.subtitle_speaker_colors {
+                        super::theme::dim()
+                    } else {
+                        match &entry.speaker {
+                            Some(name) => super::theme::user_style(name),
+                            None => tuirealm::ratatui::style::Style::default(),
+                        }
                     };
                     Line::from(vec![
                         Span::styled(
@@ -1465,8 +1521,13 @@ impl Ui {
             );
         } else {
             // Off and Intermixed both use the full-width chat pane
-            // (Intermixed shows subtitles inside the chat log).
-            self.chat.view(frame, left);
+            // (Intermixed shows subtitles inside the chat log), with the
+            // progress line at the bottom of the column — the position the
+            // subtitle pane would occupy if enabled.
+            let [chat_area, progress_area] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(left);
+            self.chat.view(frame, chat_area);
+            self.status.render_progress(frame, progress_area);
         }
         self.series.view(frame, series_area);
         self.users.view(frame, users_area);
@@ -2010,6 +2071,50 @@ mod tests {
             .find(|c| c.symbol() == "0")
             .expect("timestamp digit cell");
         assert_eq!(prefix_cell.fg, crate::ui::theme::dim().fg.unwrap());
+    }
+
+    /// `subtitle_speaker_colors = false` (design.md #22): every
+    /// separate-pane line renders uniformly dim, even one with a known
+    /// speaker.
+    #[test]
+    fn separate_pane_speaker_colors_off_renders_uniformly_dim() {
+        use tuirealm::ratatui::Terminal;
+        use tuirealm::ratatui::backend::TestBackend;
+
+        let mut ui = ui_with_view(StateView::default());
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        ui.settings.subtitle_speaker_colors = false;
+        ui.push_subtitle(1000, 10, "newest".into(), Some("Frieren".into()));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let buffer = terminal
+            .draw(|frame| ui.draw(frame))
+            .unwrap()
+            .buffer
+            .clone();
+
+        let row_of = |needle: &str| -> u16 {
+            for y in 0..buffer.area.height {
+                let mut line = String::new();
+                for x in 0..buffer.area.width {
+                    line.push_str(buffer[(x, y)].symbol());
+                }
+                if line.contains(needle) {
+                    return y;
+                }
+            }
+            panic!("{needle:?} not found in render");
+        };
+        let y = row_of("newest");
+        let n_cell = (0..buffer.area.width)
+            .map(|x| &buffer[(x, y)])
+            .find(|c| c.symbol() == "n")
+            .expect("subtitle text cell");
+        assert_eq!(
+            n_cell.fg,
+            crate::ui::theme::dim().fg.unwrap(),
+            "speaker color must be suppressed when the setting is off"
+        );
     }
 
     proptest::proptest! {

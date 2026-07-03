@@ -561,6 +561,50 @@ impl SeriesSort {
     }
 }
 
+// ---- File browser ------------------------------------------------------
+
+/// Sort order for the add/map file browser (design.md #8). `Newest`
+/// overrides both the plain alphabetical listing and the Map browser's
+/// edit-distance-to-target ranking -- it's an explicit "show me what just
+/// landed" toggle, not a tiebreaker layered on top of either.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BrowserSort {
+    /// The browser's normal order: alphabetical, or (Map purpose)
+    /// edit-distance to the target filename.
+    #[default]
+    Alphabetical,
+    /// Newest mtime first (from the library index, or a live stat for a
+    /// not-yet-indexed file); directories stay first, alphabetical.
+    Newest,
+}
+
+impl BrowserSort {
+    /// Stable string for persistence in the settings table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BrowserSort::Alphabetical => "alphabetical",
+            BrowserSort::Newest => "newest",
+        }
+    }
+
+    /// Parse a persisted value; `None` for an unrecognized string.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "alphabetical" => Some(BrowserSort::Alphabetical),
+            "newest" => Some(BrowserSort::Newest),
+            _ => None,
+        }
+    }
+
+    /// Cycle to the other value (the file browser only has two).
+    pub fn toggled(self) -> Self {
+        match self {
+            BrowserSort::Alphabetical => BrowserSort::Newest,
+            BrowserSort::Newest => BrowserSort::Alphabetical,
+        }
+    }
+}
+
 /// One franchise row (Recent / All modes).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FranchiseRow {

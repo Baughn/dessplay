@@ -58,6 +58,10 @@ Optional settings (sensible defaults, editable later):
 - Upload limit (bytes/sec cap for serving files to peers; default unlimited)
 - Subtitle mode (off / intermixed / separate pane; default off; also
   cycled live with `F2`). See [Subtitle Display](#subtitle-display).
+- Subtitle speaker colors (toggle, default on). When off, separate-pane
+  subtitle lines render uniformly dim regardless of speaker; has no effect
+  on Intermixed mode, which is already uniformly dim. See
+  [Subtitle Display](#subtitle-display).
 - Auto-download (toggle, default on). When off the client never fetches
   file contents from peers -- neither the prefetch window nor the missing
   now-playing file -- so it relies entirely on its own media roots. See
@@ -160,6 +164,23 @@ sync state with each other. See [network-design.md](network-design.md).
    (its `s` key stays live, and the whole filesystem has no index).
 6. Select file to add. (Enter)
 
+**Sort order (#8):** `Tab` toggles the add/map browser between
+alphabetical (the default) and newest-mtime-first, both in a plain
+directory listing and in search results — so files that just landed float
+to the top. Newest mtime comes from the **library index** when the file
+is already hashed, or a live stat for one that isn't yet; directories
+always stay alphabetical (no single meaningful mtime). Not available in
+the media-root directory picker (no library index there). The mapping
+browser's own edit-distance-to-target ranking is what "alphabetical" means
+for it -- `Tab` still switches it to newest-mtime-first. The choice is
+persisted, like the All Series sort.
+
+**Or paste it in (#33):** with the Playlist pane focused, pasting (terminal
+paste, bracketed) a single path to a file that exists adds it — same as
+picking it in the browser, anchored after the currently selected entry.
+Any other paste (wrong pane, multiple lines, not a real path) is treated
+as ordinary text and lands in the chat input instead, exactly as if typed.
+
 **Reordering:**
 1. Focus the **Playlist** pane
 2. Use `J` / `K` (lowercase `j` / `k` work too) to move the selected item
@@ -192,7 +213,8 @@ When someone adds a file, everyone needs to find their local copy:
    - Browser opens to the directory most recently used for files from that
      series (the main loop supplies it from `series_map_dirs` when the
      browser is requested; unknown series open at the media roots)
-   - Files are sorted by edit distance to the target filename
+   - Files are sorted by edit distance to the target filename by default;
+     `Tab` switches to newest-mtime-first (design.md #8)
 4b. You can manually set yourself to "not watching" on a file that's Missing
    (e.g. a known series but you don't have this episode yet). This clears the
    "missing from known series" block
@@ -973,8 +995,9 @@ the same pattern.
 |          Chat Window             | (current +       |
 |          (continued)             |  previous in     |
 |   [always-visible input line]    |  muted colors)   |
+|  [=====>       ] 12:34 / 24:00   |                  |
 +----------------------------------+------------------+
-|  Player Status: [=====>       ] 12:34 / 24:00       |
+|  Player Status: waiting on baughn (paused)          |
 |  Now Playing: [Frieren] Sousou no Frieren - 01.mkv  |
 +-----------------------------------------------------+
 | Tab Next pane | Enter Send | Esc Clear | Ctrl-C Quit |
@@ -983,7 +1006,11 @@ the same pattern.
 
 **Proportions:**
 - Bottom: Player status (3 lines) then keybinding bar (1 line)
-- Left 50%: Chat (with input line at bottom)
+- Left 50%: Chat (with input line at bottom), then a dedicated
+  progress-bar + time line (design.md #6) -- kept off the bottom status
+  bar so the variable-width "waiting on ..." blocker text never shoves it
+  sideways. Sits between the chat input and the subtitle pane when
+  [Separate pane mode](#subtitle-display) is on.
 - Right 50%, top: Series (three modes: Recent Series / All Series / The List)
 - Right 50%, middle: Users
 - Right 50%, bottom: Playlist
@@ -1040,12 +1067,14 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Backspace` | File Browser | Up one level (from the roots listing, close); while searching, delete a search character |
 | `Esc` | File Browser | Cancel; while searching, clear the search |
 | _printable_ | File Browser (add / map) | Type-to-search the library recursively (root-relative paths, directories first); not in the directory picker |
+| `Tab` | File Browser (add / map) | Toggle sort: alphabetical <-> newest mtime first (persisted); not in the directory picker |
 | `PgUp` / `PgDn` | File Browser | Move the selection by a page |
 | `s` | File Browser (directory picker) | Select the current directory |
 | `a` | Users | Mark selected user as Away (or clear an Away you set) |
 | `n` | Users | Mark selected user NotWatching for the now-playing series (works on a known-offline row too) |
 | `Enter` | Playlist | Play selected entry (or open file browser on [Add New]) |
 | `a` | Playlist | Add file (insert after selected entry) |
+| Paste | Playlist | Add a pasted existing-file path (insert after selected entry); any other paste goes to the chat input instead |
 | `d` | Playlist | Remove selected entry |
 | `w` | Playlist | Cycle the selected entry's series watch state: Watching -> Maybe -> NotWatching |
 | `J` / `K` (or `j` / `k`) | Playlist | Move selected entry down/up (cursor follows the entry) |
@@ -1685,7 +1714,9 @@ the `subtitle_mode` setting):
   freshest line sits next to the chat input box just below it. Each line's
   text is **colored by its speaker** -- the ASS `Name` field hashed into
   the same name->color palette chat uses for usernames, so each speaker is
-  visually distinct. The speaker name itself is **never displayed** (it is
+  visually distinct -- unless the `subtitle_speaker_colors` setting
+  (default on) is off, in which case every line renders uniformly dim like
+  Intermixed mode. The speaker name itself is **never displayed** (it is
   often a character name -- a spoiler); only its color is. The `MM:SS`
   timestamp prefix stays dim.
 

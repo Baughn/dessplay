@@ -87,6 +87,8 @@ pub enum Msg {
         /// [Add New] row means append; the dispatcher resolves it).
         after: Option<Ed2kHash>,
     },
+    /// File browser: the sort toggle was pressed (design.md #8).
+    ToggleBrowserSort,
     /// Directory picker: a directory was chosen (settings media root).
     DirChosen(PathBuf),
     /// Settings modal wants a directory picker on top.
@@ -150,6 +152,7 @@ impl Msg {
             Msg::FileMapped { .. } => "FileMapped",
             Msg::CloseModal => "CloseModal",
             Msg::FileChosen { .. } => "FileChosen",
+            Msg::ToggleBrowserSort => "ToggleBrowserSort",
             Msg::DirChosen(_) => "DirChosen",
             Msg::OpenDirPicker => "OpenDirPicker",
             Msg::SettingsSaved(..) => "SettingsSaved",

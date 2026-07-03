@@ -1082,6 +1082,55 @@ mandatory Dess-girl.
 
 ## Phase 18: Layout & Input Polish (#6, #33, #22, #8)
 
+**Status: complete (2026-07-03).** Notes and deviations:
+
+- **#6**: `StatusBar::render` split into the bottom status bar (state +
+  "Now Playing", unchanged position) and a new `render_progress`, called
+  directly from `Ui::draw` (not through the `Component`/`view()` trait
+  path — the same "inline render" pattern already used for the subtitle
+  pane) into a `Constraint::Length(1)` row in the left column: between the
+  chat input and the subtitle pane in Separate-pane mode, or at the
+  bottom of the chat column otherwise (the position the subtitle pane
+  would occupy if enabled).
+- **#33**: bracketed paste is enabled via `CrosstermTerminalAdapter`'s
+  inherent `enable_bracketed_paste()` (not part of the `TerminalAdapter`
+  trait) right after entering the alternate screen; since the adapter's
+  `restore()` never tracks or disables it, `run_ui_thread` explicitly
+  issues `DisableBracketedPaste` on exit. `Ui::handle` gained a top-level
+  `Event::Paste` branch (gated on no modal open, mirroring the existing
+  global Tab/F2/F3 gate): a single existing-file path while Playlist is
+  focused reuses `Msg::FileChosen` verbatim (anchored after the current
+  selection, via a newly `pub(crate)` `PlaylistPane::selected_hash`);
+  anything else lands in the chat input via a new `ChatPane::insert_text`
+  (char-by-char, exactly like typing). No new `Msg` variant needed.
+- **#22**: `subtitle_speaker_colors: bool` (default true) is a fully
+  additive copy of the `irc_enabled` pattern end-to-end (`config.rs` load/
+  save, a new settings-modal row appended at the end of the fixed-field
+  list to avoid renumbering existing `FIELD_*` constants) plus one `if` in
+  `Ui::draw`'s Separate-pane subtitle loop, gating speaker color to
+  uniform dim when off.
+- **#8**: `BrowserSort` (`Alphabetical` default / `Newest`) mirrors
+  `SeriesSort` exactly, including the `set_sort`-from-settings-on-open /
+  read-back-on-toggle pattern (`FileBrowser::sort()`, mirroring
+  `SeriesPane::sort()`). `Newest` **replaces** rather than layers onto the
+  purpose's default ordering — plain alphabetical *or* the Map browser's
+  edit-distance-to-target ranking — since the request is an explicit
+  "show me what's fresh" override, not a tiebreaker. Threading mtime
+  required touching every layer between `Storage::library_paths()` (now
+  `Vec<(PathBuf, Ed2kHash, i64)>`) and `BrowserLibrary`/`LibraryFile`/
+  `DirRow` (`run.rs` → `UiInput::Browse` → `Ui::open_file_browser`); ~10
+  existing test call sites picked up the third tuple element. The live
+  directory-listing branch prefers the library index's mtime (an
+  already-hashed file) and falls back to a live stat reusing the
+  symlink-follow metadata call already made for `is_dir` when possible —
+  so a freshly landed, not-yet-indexed file still sorts correctly, not
+  just previously-scanned ones. `Tab` was the deliberate key choice (not
+  `s`, which the design row for this phase implies but which collides
+  with the type-to-search fall-through the moment a search starts with
+  "s", e.g. "Sousou") — confirmed unused inside a modal (the global
+  Tab-cycles-focus handler is gated on no modal being open) and bound in
+  the File, Map, *and* Search keymaps so the toggle works mid-search too.
+
 **Goal**: The remaining small, independent UI requests.
 
 ### What gets built

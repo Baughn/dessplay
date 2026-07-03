@@ -53,6 +53,10 @@ fn shift(c: char) -> Event<NoUserEvent> {
     })
 }
 
+fn paste(text: &str) -> Event<NoUserEvent> {
+    Event::Paste(text.to_string())
+}
+
 /// Type a string into the focused component.
 fn type_str(ui: &mut Ui, text: &str) -> Vec<UserAction> {
     text.chars()
@@ -467,6 +471,107 @@ fn add_file_via_browser_produces_hash_and_add() {
     assert!(!ui.modal_open());
 }
 
+/// design.md #8: `Tab` in the file browser toggles Alphabetical <->
+/// Newest and persists the choice, same pattern as
+/// `all_series_sort_toggle_persists`.
+#[test]
+fn file_browser_sort_toggle_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("ep1.mkv"), b"video bytes").unwrap();
+    let mut ui = Ui::new(
+        UserId::new("kim"),
+        Settings {
+            username: Some("kim".into()),
+            password: Some("x".into()),
+            ..Settings::default()
+        },
+        vec![dir.path().to_path_buf()],
+    );
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    ui.open_file_browser(
+        BrowseRequest::Add { after: None },
+        vec![],
+        Default::default(),
+        None,
+    );
+    assert!(ui.modal_open());
+    let actions = ui.handle(key(Key::Tab));
+    let [UserAction::SaveSettings(saved, _)] = actions.as_slice() else {
+        panic!("expected a SaveSettings, got {actions:?}");
+    };
+    assert_eq!(
+        saved.file_browser_sort,
+        dessplay::ui::props::BrowserSort::Newest
+    );
+    // The modal is still open — Tab was consumed by the browser's own
+    // keymap, not the global focus-cycle key.
+    assert!(ui.modal_open());
+}
+
+/// design.md #33: pasting a single existing-file path while the Playlist
+/// pane is focused becomes a playlist add — same as picking it in the
+/// browser, anchored after the current selection (here, none selected in
+/// an empty playlist, so `after: None`).
+#[test]
+fn paste_existing_file_path_on_playlist_focus_adds_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ep1.mkv");
+    std::fs::write(&file, b"video bytes").unwrap();
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab)); // Chat -> Series -> Users -> Playlist
+    }
+    let actions = ui.handle(paste(&file.display().to_string()));
+    assert_eq!(
+        actions,
+        vec![UserAction::HashAndAdd {
+            path: file,
+            after: None,
+        }]
+    );
+    assert!(!ui.modal_open());
+}
+
+/// A paste while Chat is focused (the default) lands in the chat input as
+/// plain text, exactly as if typed — asserted by sending it and checking
+/// the resulting chat mutation.
+#[test]
+fn paste_plain_text_on_chat_focus_lands_in_input() {
+    let mut ui = ui();
+    assert!(ui.handle(paste("hello from the clipboard")).is_empty());
+    let actions = ui.handle(key(Key::Enter));
+    assert_eq!(
+        actions,
+        vec![UserAction::Mutate(Mutation::Chat {
+            text: "hello from the clipboard".into()
+        })]
+    );
+}
+
+/// A paste on Playlist focus that is *not* a real file (design.md #33:
+/// "any other paste") falls through to the chat input too — the playlist
+/// short-circuit only fires for an actual existing-file path.
+#[test]
+fn paste_nonexistent_path_on_playlist_focus_lands_in_chat_input() {
+    let mut ui = ui();
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab)); // Chat -> Series -> Users -> Playlist
+    }
+    // No leading `/` — a pasted path starting with `/` would otherwise be
+    // read back as a slash-command once it lands in the chat input.
+    assert!(ui.handle(paste("no-such-file.mkv")).is_empty());
+    // Switch back to chat to send what landed there.
+    ui.handle(key(Key::Tab));
+    let actions = ui.handle(key(Key::Enter));
+    assert_eq!(
+        actions,
+        vec![UserAction::Mutate(Mutation::Chat {
+            text: "no-such-file.mkv".into()
+        })]
+    );
+}
+
 /// `a` on a playlist entry with a local copy: the browser opens in that
 /// file's directory with the cursor on it, so the next episode is one
 /// keypress away.
@@ -505,8 +610,8 @@ fn add_browser_opens_at_the_selected_entry() {
             after: Some(hash(1)),
         },
         vec![
-            (root.join("Frieren").join("ep1.mkv"), hash(1)),
-            (root.join("Frieren").join("ep2.mkv"), hash(2)),
+            (root.join("Frieren").join("ep1.mkv"), hash(1), 1_000),
+            (root.join("Frieren").join("ep2.mkv"), hash(2), 2_000),
         ],
         [hash(1)].into_iter().collect(), // ep1 personally watched
         None,
@@ -551,7 +656,7 @@ fn add_browser_type_to_search_finds_deep_directories() {
     ui.handle(key(Key::Enter)); // [Add New] -> Browse request
     ui.open_file_browser(
         BrowseRequest::Add { after: None },
-        vec![(deep.join("ep1.mkv"), hash(1))],
+        vec![(deep.join("ep1.mkv"), hash(1), 1_000)],
         Default::default(),
         None,
     );
@@ -1222,6 +1327,41 @@ fn status_bar_shows_blockers() {
     let screen = render(&mut ui, 100, 30);
     assert!(screen.contains("waiting on baughn (paused)"), "{screen}");
     assert!(screen.contains("Now Playing: ep1.mkv"), "{screen}");
+}
+
+/// design.md #6: the progress bar + time render on their own row, never
+/// sharing a line with the variable-width "waiting on ..." blocker text
+/// (which used to shove the bar sideways as blockers came and went).
+#[test]
+fn progress_line_is_on_its_own_row_separate_from_blockers() {
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    state.set_now_playing(A, ts(2), Some(hash(1)));
+    state.set_playback_intent(A, ts(3), dessplay_core::types::PlaybackIntent::Playing);
+    state.set_manual_override(A, ts(4), UserId::new("baughn"), Some(ManualState::Paused));
+    state.set_playback_position(
+        A,
+        ts(5),
+        UserId::new("kim"),
+        dessplay_core::types::PlaybackPosition {
+            position_millis: 720_000,
+            timestamp: ts(5),
+            file: hash(1),
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim"), peer("baughn")]));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("waiting on baughn (paused)"), "{screen}");
+    assert!(screen.contains("12:00 / 24:00"), "{screen}");
+    let blocker_line = screen
+        .lines()
+        .find(|line| line.contains("waiting on"))
+        .expect("blocker line");
+    assert!(
+        !blocker_line.contains("12:00"),
+        "progress bar/time must not share a row with blocker text: {blocker_line:?}"
+    );
 }
 
 #[test]

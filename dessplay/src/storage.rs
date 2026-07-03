@@ -737,18 +737,25 @@ impl Storage {
         Ok(entries)
     }
 
-    /// Every indexed file as (path, ed2k root) — the lean projection of
-    /// [`Self::hash_cache`] (no per-block blobs), sized for the file
-    /// browser's recursive search on every browser open.
-    pub fn library_paths(&self) -> Result<Vec<(PathBuf, Ed2kHash)>> {
-        let mut stmt = self.conn.prepare("SELECT path, root FROM hash_cache")?;
+    /// Every indexed file as (path, ed2k root, mtime millis) — the lean
+    /// projection of [`Self::hash_cache`] (no per-block blobs), sized for
+    /// the file browser's recursive search on every browser open. mtime
+    /// backs the browser's newest-first sort (design.md #8).
+    pub fn library_paths(&self) -> Result<Vec<(PathBuf, Ed2kHash, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, root, mtime FROM hash_cache")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?;
         let mut entries = Vec::new();
         for row in rows {
-            let (path_bytes, root) = row?;
-            entries.push((path_from_bytes(&path_bytes), hash_from_blob(root)?));
+            let (path_bytes, root, mtime) = row?;
+            entries.push((path_from_bytes(&path_bytes), hash_from_blob(root)?, mtime));
         }
         Ok(entries)
     }
@@ -1156,7 +1163,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             storage.library_paths().unwrap(),
-            vec![(PathBuf::from("/anime/ep1.mkv"), hashed.root)]
+            vec![(PathBuf::from("/anime/ep1.mkv"), hashed.root, 1_000)]
         );
     }
 

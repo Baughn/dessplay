@@ -143,15 +143,23 @@ struct DirRow {
     /// The file has been watched (personally or by the group): greyed
     /// out, matching the playlist's muting.
     watched: bool,
+    /// Unix millis, when known: from the library index for a search row,
+    /// or a live stat for a directory-listing row. `None` for synthetic
+    /// rows (`[Select]`, `..`, the overflow note) and for a real file
+    /// whose mtime couldn't be determined (index miss, or a failed stat).
+    /// Backs the `Newest` sort (design.md #8).
+    mtime: Option<i64>,
 }
 
 /// One indexed file the browser's search spans: absolute path, its
 /// display string (media-root name + relative path, e.g.
-/// `Anime/Purgatory/Haibane Renmei/ep01.mkv`), and its hash.
+/// `Anime/Purgatory/Haibane Renmei/ep01.mkv`), its hash, and its indexed
+/// mtime (unix millis) for the `Newest` sort.
 struct LibraryFile {
     path: PathBuf,
     display: String,
     hash: Ed2kHash,
+    mtime: i64,
 }
 
 /// A directory implied by the indexed files' ancestors, with the same
@@ -172,6 +180,10 @@ pub struct BrowserLibrary {
     dirs: Vec<LibraryDir>,
     /// Path → hash, to grey watched files in the directory listing too.
     by_path: std::collections::HashMap<PathBuf, Ed2kHash>,
+    /// Path → indexed mtime millis, for the directory listing's `Newest`
+    /// sort (design.md #8) — an already-hashed file's mtime is known
+    /// without a fresh stat.
+    mtime_by_path: std::collections::HashMap<PathBuf, i64>,
     watched: std::collections::BTreeSet<Ed2kHash>,
 }
 
@@ -181,7 +193,7 @@ impl BrowserLibrary {
     /// different media roots stay distinguishable.
     pub fn new(
         roots: &[PathBuf],
-        files: Vec<(PathBuf, Ed2kHash)>,
+        files: Vec<(PathBuf, Ed2kHash, i64)>,
         watched: std::collections::BTreeSet<Ed2kHash>,
     ) -> Self {
         fn root_label(root: &Path) -> String {
@@ -193,7 +205,8 @@ impl BrowserLibrary {
         let mut dirs: std::collections::BTreeMap<PathBuf, String> =
             std::collections::BTreeMap::new();
         let mut by_path = std::collections::HashMap::new();
-        for (path, hash) in files {
+        let mut mtime_by_path = std::collections::HashMap::new();
+        for (path, hash, mtime) in files {
             let Some(root) = roots.iter().find(|root| path.starts_with(root)) else {
                 continue;
             };
@@ -216,10 +229,12 @@ impl BrowserLibrary {
                 dirs.insert(dir.to_path_buf(), display);
             }
             by_path.insert(path.clone(), hash);
+            mtime_by_path.insert(path.clone(), mtime);
             lib_files.push(LibraryFile {
                 path,
                 display,
                 hash,
+                mtime,
             });
         }
         lib_files.sort_by(|a, b| {
@@ -242,6 +257,7 @@ impl BrowserLibrary {
             files: lib_files,
             dirs,
             by_path,
+            mtime_by_path,
             watched,
         }
     }
@@ -257,6 +273,13 @@ impl BrowserLibrary {
             .filter(|file| file.hash == hash)
             .map(|file| file.path.clone())
             .find(|path| path.exists())
+    }
+
+    /// The library index's mtime for `path` (millis), if it's an indexed
+    /// file. `None` for a file the scan hasn't hashed yet — the
+    /// directory-listing `Newest` sort falls back to a live stat then.
+    fn mtime_of(&self, path: &Path) -> Option<i64> {
+        self.mtime_by_path.get(path).copied()
     }
 
     /// Has this path's file been watched (path known to the index)?
@@ -288,6 +311,10 @@ pub struct FileBrowser {
     /// Type-to-search filter; non-empty switches the listing to the
     /// recursive search results.
     filter: LineBuffer,
+    /// Alphabetical (or, in Map purpose, edit-distance) vs newest-mtime
+    /// first (design.md #8). Not applicable to the directory picker
+    /// (`Directory` purpose never toggles it — no bar entry offered).
+    sort: super::props::BrowserSort,
 }
 
 impl FileBrowser {
@@ -305,6 +332,7 @@ impl FileBrowser {
             cursor: ListCursor::default(),
             library,
             filter: LineBuffer::default(),
+            sort: super::props::BrowserSort::default(),
         };
         browser.refresh();
         if let Some(anchor) = after {
@@ -344,6 +372,7 @@ impl FileBrowser {
             cursor: ListCursor::default(),
             library,
             filter: LineBuffer::default(),
+            sort: super::props::BrowserSort::default(),
         };
         browser.refresh();
         browser
@@ -363,9 +392,34 @@ impl FileBrowser {
             cursor: ListCursor::default(),
             library: BrowserLibrary::default(),
             filter: LineBuffer::default(),
+            sort: super::props::BrowserSort::default(),
         };
         browser.refresh();
         browser
+    }
+
+    /// Seed the sort preference (design.md #8), e.g. from
+    /// `Settings::file_browser_sort` when the browser opens.
+    pub fn set_sort(&mut self, sort: super::props::BrowserSort) {
+        if self.sort != sort {
+            self.sort = sort;
+            self.refresh();
+        }
+    }
+
+    /// The current sort preference, for persisting a toggle back to
+    /// settings.
+    pub(crate) fn sort(&self) -> super::props::BrowserSort {
+        self.sort
+    }
+
+    /// `Tab`: toggle Alphabetical <-> Newest and re-list. Not bound in the
+    /// directory picker (it has no library index, and `Tab` there is
+    /// meaningless — no sort to toggle).
+    fn act_toggle_sort(&mut self) -> Option<Msg> {
+        self.sort = self.sort.toggled();
+        self.refresh();
+        Some(Msg::ToggleBrowserSort)
     }
 
     /// Does this browser support type-to-search? (Everything but the
@@ -382,31 +436,42 @@ impl FileBrowser {
     /// Rebuild [`Self::entries`] as the recursive search results:
     /// matching directories first (selecting one clears the search and
     /// browses it), then matching files, both as root-relative paths.
+    /// Files are ordered alphabetically or (`Newest` sort) by mtime —
+    /// directories always stay alphabetical, since a directory has no
+    /// single meaningful mtime in the index.
     fn refresh_search(&mut self) {
         let query = self.filter.text().to_lowercase();
-        let mut rows: Vec<DirRow> = Vec::new();
+        let mut dir_rows: Vec<DirRow> = Vec::new();
         for dir in &self.library.dirs {
             if dir.display.to_lowercase().contains(&query) {
-                rows.push(DirRow {
+                dir_rows.push(DirRow {
                     name: dir.display.clone(),
                     path: dir.path.clone(),
                     is_dir: true,
                     kind: RowKind::Entry,
                     watched: false,
+                    mtime: None,
                 });
             }
         }
+        let mut file_rows: Vec<DirRow> = Vec::new();
         for file in &self.library.files {
             if file.display.to_lowercase().contains(&query) {
-                rows.push(DirRow {
+                file_rows.push(DirRow {
                     name: file.display.clone(),
                     path: file.path.clone(),
                     is_dir: false,
                     kind: RowKind::Entry,
                     watched: self.library.watched.contains(&file.hash),
+                    mtime: Some(file.mtime),
                 });
             }
         }
+        if self.sort == super::props::BrowserSort::Newest {
+            file_rows.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
+        }
+        let mut rows = dir_rows;
+        rows.append(&mut file_rows);
         let overflow = rows.len().saturating_sub(SEARCH_CAP);
         if overflow > 0 {
             rows.truncate(SEARCH_CAP);
@@ -416,6 +481,7 @@ impl FileBrowser {
                 is_dir: false,
                 kind: RowKind::Note,
                 watched: false,
+                mtime: None,
             });
         }
         self.entries = rows;
@@ -437,6 +503,7 @@ impl FileBrowser {
                         is_dir: true,
                         kind: RowKind::Entry,
                         watched: false,
+                        mtime: None,
                     });
                 }
             }
@@ -453,51 +520,79 @@ impl FileBrowser {
                         // Follow symlinks: `DirEntry::file_type()` reports the
                         // link itself, so a symlinked directory would otherwise
                         // look like a non-dir. No cycle worry — this lists one
-                        // level, it doesn't recurse.
+                        // level, it doesn't recurse. The followed metadata (when
+                        // we already fetched it for a symlink) also backs mtime
+                        // below, so a symlinked file only costs one extra stat.
                         let file_type = entry.file_type().ok()?;
-                        let is_dir = if file_type.is_symlink() {
-                            std::fs::metadata(entry.path())
-                                .map(|m| m.is_dir())
-                                .unwrap_or(false)
-                        } else {
-                            file_type.is_dir()
-                        };
+                        let path = entry.path();
+                        let followed_meta = file_type
+                            .is_symlink()
+                            .then(|| std::fs::metadata(&path).ok())
+                            .flatten();
+                        let is_dir = followed_meta
+                            .as_ref()
+                            .map(|m| m.is_dir())
+                            .unwrap_or_else(|| file_type.is_dir());
                         if matches!(self.purpose, BrowseFor::Directory) && !is_dir {
                             return None;
                         }
-                        let path = entry.path();
                         let watched = self.library.is_watched_path(&path);
+                        // "mtime from the library index" (design.md #8) for
+                        // an already-hashed file, else a live stat — the
+                        // read_dir entry already gives us a cheap one for
+                        // the common non-symlink case, so a freshly landed,
+                        // not-yet-indexed file still sorts correctly.
+                        let mtime = self.library.mtime_of(&path).or_else(|| {
+                            followed_meta
+                                .or_else(|| entry.metadata().ok())
+                                .and_then(|m| m.modified().ok())
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_millis() as i64)
+                        });
                         Some(DirRow {
                             name,
                             path,
                             is_dir,
                             kind: RowKind::Entry,
                             watched,
+                            mtime,
                         })
                     })
                     .collect();
-                // Directories first, then by name — except in mapping
-                // mode, where files are ranked by edit distance to the
-                // target so the likely match floats to the top.
-                match &self.purpose {
-                    BrowseFor::Map { target, .. } => {
-                        let target = target.clone();
-                        rows.sort_by(|a, b| {
-                            b.is_dir.cmp(&a.is_dir).then_with(|| {
-                                if a.is_dir {
-                                    a.name.cmp(&b.name)
-                                } else {
-                                    strsim::levenshtein(&a.name, &target)
-                                        .cmp(&strsim::levenshtein(&b.name, &target))
-                                        .then_with(|| a.name.cmp(&b.name))
-                                }
-                            })
-                        });
-                    }
-                    _ => {
-                        rows.sort_by(|a, b| {
-                            b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name))
-                        });
+                // Directories first, then by name — except in mapping mode
+                // (edit distance to the target) or the `Newest` sort
+                // (mtime), which override that default file ordering.
+                if self.sort == super::props::BrowserSort::Newest {
+                    rows.sort_by(|a, b| {
+                        b.is_dir.cmp(&a.is_dir).then_with(|| {
+                            if a.is_dir {
+                                a.name.cmp(&b.name)
+                            } else {
+                                b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name))
+                            }
+                        })
+                    });
+                } else {
+                    match &self.purpose {
+                        BrowseFor::Map { target, .. } => {
+                            let target = target.clone();
+                            rows.sort_by(|a, b| {
+                                b.is_dir.cmp(&a.is_dir).then_with(|| {
+                                    if a.is_dir {
+                                        a.name.cmp(&b.name)
+                                    } else {
+                                        strsim::levenshtein(&a.name, &target)
+                                            .cmp(&strsim::levenshtein(&b.name, &target))
+                                            .then_with(|| a.name.cmp(&b.name))
+                                    }
+                                })
+                            });
+                        }
+                        _ => {
+                            rows.sort_by(|a, b| {
+                                b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name))
+                            });
+                        }
                     }
                 }
                 // In the media-root picker, surface "confirm this
@@ -512,6 +607,7 @@ impl FileBrowser {
                             is_dir: true,
                             kind: RowKind::Parent,
                             watched: false,
+                            mtime: None,
                         },
                     );
                     rows.insert(
@@ -522,6 +618,7 @@ impl FileBrowser {
                             is_dir: false,
                             kind: RowKind::Select,
                             watched: false,
+                            mtime: None,
                         },
                     );
                 }
@@ -713,7 +810,11 @@ impl AppComponent<Msg, NoUserEvent> for FileBrowser {
     }
 }
 
-/// Playlist-add browser bindings.
+/// Playlist-add browser bindings. `Tab` toggles the sort (design.md #8) —
+/// safe here: it's never consumed by type-to-search (the filter editor
+/// only reacts to `Char`/word-motion/Backspace/Delete/arrows/Home/End),
+/// and outside a modal `Tab` is the global focus-cycle key, but a modal
+/// always intercepts input before that global handler ever sees it.
 static BROWSER_FILE_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
     Binding {
         pattern: KeyPattern::Plain(Key::Enter),
@@ -729,6 +830,11 @@ static BROWSER_FILE_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
         pattern: KeyPattern::Plain(Key::Esc),
         bar: Some(("Esc", "Cancel")),
         action: FileBrowser::act_close,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Tab),
+        bar: Some(("Tab", "Sort")),
+        action: FileBrowser::act_toggle_sort,
     },
 ]);
 
@@ -749,11 +855,17 @@ static BROWSER_MAP_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
         bar: Some(("Esc", "Cancel")),
         action: FileBrowser::act_close,
     },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Tab),
+        bar: Some(("Tab", "Sort")),
+        action: FileBrowser::act_toggle_sort,
+    },
 ]);
 
 /// Bindings while the recursive search has text (File and Map browsers):
 /// Esc clears the search instead of closing, and Backspace is left to
-/// the filter editor (delete a character) instead of ascending.
+/// the filter editor (delete a character) instead of ascending. `Tab`
+/// keeps working mid-search — see [`BROWSER_FILE_KEYMAP`].
 static BROWSER_SEARCH_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
     Binding {
         pattern: KeyPattern::Plain(Key::Enter),
@@ -764,6 +876,11 @@ static BROWSER_SEARCH_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
         pattern: KeyPattern::Plain(Key::Esc),
         bar: Some(("Esc", "Clear")),
         action: FileBrowser::act_search_clear,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Tab),
+        bar: Some(("Tab", "Sort")),
+        action: FileBrowser::act_toggle_sort,
     },
 ]);
 
@@ -806,7 +923,8 @@ const FIELD_IRC_ENABLED: usize = 7;
 const FIELD_IRC_SERVER: usize = 8;
 const FIELD_IRC_TLS: usize = 9;
 const FIELD_IRC_CHANNEL: usize = 10;
-const FIXED_FIELDS: usize = 11;
+const FIELD_SUBTITLE_SPEAKER_COLORS: usize = 11;
+const FIXED_FIELDS: usize = 12;
 
 /// First-run and later settings editing: a [`Form`] over the working
 /// settings and media roots. All form behavior (cursor, editor, save
@@ -913,6 +1031,11 @@ impl FormModel for SettingsForm {
             format!("IRC server:  {}", self.field_value(FIELD_IRC_SERVER)).into(),
             format!("IRC TLS:     {}", yes_no(self.settings.irc_tls)).into(),
             format!("IRC channel: {}", self.field_value(FIELD_IRC_CHANNEL)).into(),
+            format!(
+                "Subtitle speaker colors: {}",
+                yes_no(self.settings.subtitle_speaker_colors)
+            )
+            .into(),
         ];
         for (index, root) in self.roots.iter().enumerate() {
             let marker = if index == 0 { " (download target)" } else { "" };
@@ -953,6 +1076,10 @@ impl FormModel for SettingsForm {
             }
             FIELD_AUTO_DOWNLOAD => {
                 self.settings.auto_download = !self.settings.auto_download;
+                RowAction::Handled
+            }
+            FIELD_SUBTITLE_SPEAKER_COLORS => {
+                self.settings.subtitle_speaker_colors = !self.settings.subtitle_speaker_colors;
                 RowAction::Handled
             }
             index if index == self.add_root_index() => RowAction::Out(Msg::OpenDirPicker),
@@ -1674,6 +1801,13 @@ mod tests {
         })
     }
 
+    fn tab() -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code: Key::Tab,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
     /// A single-copy episode row, unnumbered and unwatched (the common
     /// shape before Phase 15's grouping/holders/muting apply).
     fn single(hash: Ed2kHash, filename: &str) -> EpisodeRow {
@@ -1788,8 +1922,9 @@ mod tests {
                 (
                     root.join("Purgatory").join("Haibane Renmei").join("e1.mkv"),
                     hash(1),
+                    1_000,
                 ),
-                (root.join("Frieren").join("f1.mkv"), hash(2)),
+                (root.join("Frieren").join("f1.mkv"), hash(2), 2_000),
             ],
             [hash(1)].into_iter().collect(),
         )
@@ -1818,6 +1953,86 @@ mod tests {
         assert!(!browser.entries[1].is_dir);
         // The watched file is greyed (the playlist's muting, here too).
         assert!(browser.entries[1].watched);
+    }
+
+    /// design.md #8: `Tab` toggles Alphabetical <-> Newest in the
+    /// directory listing. Names are chosen so alphabetical and
+    /// newest-mtime orders disagree (`aaa_old` sorts first alphabetically
+    /// but has the older mtime), and with no library index at all — this
+    /// is the live-stat fallback path (a freshly landed, not-yet-hashed
+    /// file), not the index lookup.
+    #[test]
+    fn tab_toggles_sort_and_reorders_files_newest_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Anime");
+        std::fs::create_dir_all(&root).unwrap();
+        let old_path = root.join("aaa_old.mkv");
+        let new_path = root.join("zzz_new.mkv");
+        std::fs::write(&old_path, b"x").unwrap();
+        std::fs::write(&new_path, b"x").unwrap();
+        let now = std::time::SystemTime::now();
+        std::fs::File::open(&old_path)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(3600))
+            .unwrap();
+        std::fs::File::open(&new_path)
+            .unwrap()
+            .set_modified(now)
+            .unwrap();
+
+        let mut browser =
+            FileBrowser::for_file(vec![root.clone()], None, BrowserLibrary::default());
+        // No anchor: opens on the roots listing. Descend into the one root.
+        browser.on(&enter());
+        let names =
+            |b: &FileBrowser| -> Vec<String> { b.entries.iter().map(|r| r.name.clone()).collect() };
+        assert_eq!(
+            names(&browser),
+            vec!["aaa_old.mkv", "zzz_new.mkv"],
+            "default sort is alphabetical"
+        );
+        assert_eq!(browser.on(&tab()), Some(Msg::ToggleBrowserSort));
+        assert_eq!(
+            names(&browser),
+            vec!["zzz_new.mkv", "aaa_old.mkv"],
+            "Newest sort must put the freshest mtime first"
+        );
+        assert_eq!(browser.sort(), super::props::BrowserSort::Newest);
+        // Toggling again returns to alphabetical.
+        browser.on(&tab());
+        assert_eq!(names(&browser), vec!["aaa_old.mkv", "zzz_new.mkv"]);
+    }
+
+    /// The same toggle re-orders recursive search results too, using the
+    /// library index's mtime (not a live stat — these paths never existed
+    /// on disk in this test).
+    #[test]
+    fn tab_toggles_sort_in_search_results() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Anime");
+        let library = BrowserLibrary::new(
+            std::slice::from_ref(&root),
+            vec![
+                (root.join("aaa_old.mkv"), hash(1), 1_000),
+                (root.join("zzz_new.mkv"), hash(2), 9_000),
+            ],
+            Default::default(),
+        );
+        let mut browser = FileBrowser::for_file(vec![root], None, library);
+        // `_` matches both filenames but not the implied "Anime" root
+        // directory row, keeping this a pure two-file comparison.
+        browser.on(&char_key('_'));
+        let names =
+            |b: &FileBrowser| -> Vec<String> { b.entries.iter().map(|r| r.name.clone()).collect() };
+        assert_eq!(
+            names(&browser),
+            vec!["Anime/aaa_old.mkv", "Anime/zzz_new.mkv"]
+        );
+        browser.on(&tab());
+        assert_eq!(
+            names(&browser),
+            vec!["Anime/zzz_new.mkv", "Anime/aaa_old.mkv"]
+        );
     }
 
     #[test]
@@ -1886,7 +2101,7 @@ mod tests {
         }
         let library = BrowserLibrary::new(
             std::slice::from_ref(&root),
-            vec![(dir.join("f2.mkv"), hash(2))],
+            vec![(dir.join("f2.mkv"), hash(2), 1_000)],
             Default::default(),
         );
         let browser = FileBrowser::for_file(vec![root.clone()], Some(hash(2)), library);
@@ -1914,8 +2129,8 @@ mod tests {
         let library = BrowserLibrary::new(
             std::slice::from_ref(&root),
             vec![
-                (root.join("ep5.mkv"), hash(5)),
-                (dir.join("ep5.mkv"), hash(5)),
+                (root.join("ep5.mkv"), hash(5), 1_000),
+                (dir.join("ep5.mkv"), hash(5), 2_000),
             ],
             Default::default(),
         );
@@ -1940,7 +2155,7 @@ mod tests {
     #[test]
     fn search_overflow_is_announced_not_silent() {
         let root = PathBuf::from("/anime");
-        let files: Vec<(PathBuf, Ed2kHash)> = (0..(super::SEARCH_CAP as u32 + 10))
+        let files: Vec<(PathBuf, Ed2kHash, i64)> = (0..(super::SEARCH_CAP as u32 + 10))
             .map(|i| {
                 (
                     root.join(format!("show{i}/ep{i}.mkv")),
@@ -1949,6 +2164,7 @@ mod tests {
                         b[..4].copy_from_slice(&i.to_le_bytes());
                         b
                     }),
+                    i as i64,
                 )
             })
             .collect();

@@ -192,6 +192,16 @@ impl ChatPane {
         self.input.clear();
     }
 
+    /// Insert pasted text at the cursor, character by character — exactly
+    /// as if it had been typed (design.md #33). Used for a bracketed
+    /// paste that isn't a playlist-add path.
+    pub(crate) fn insert_text(&mut self, text: &str) {
+        self.history_pos = None;
+        for c in text.chars() {
+            self.input.insert(c);
+        }
+    }
+
     /// Keys shown in the keybinding bar (derived from the keymap).
     pub fn keybindings(&self) -> Vec<Keybinding> {
         CHAT_KEYMAP.bar()
@@ -801,8 +811,10 @@ impl PlaylistPane {
         self.cursor.clamp(self.props.rows.len() + 1);
     }
 
-    /// The hash under the cursor, if it's a real row.
-    fn selected_hash(&self) -> Option<dessplay_core::types::Ed2kHash> {
+    /// The hash under the cursor, if it's a real row. `pub(crate)` so
+    /// `Ui::handle`'s paste-add path (design.md #33) can anchor a pasted
+    /// path after the same entry the `a` key would.
+    pub(crate) fn selected_hash(&self) -> Option<dessplay_core::types::Ed2kHash> {
         self.props.rows.get(self.cursor.index()).map(|row| row.hash)
     }
 
@@ -1421,6 +1433,12 @@ pub struct StatusBar {
     focused: bool,
 }
 
+/// `MM:SS` formatting shared by the status line and the progress line.
+fn mmss(millis: u64) -> String {
+    let s = millis / 1000;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
 impl StatusBar {
     /// Replace props.
     pub fn set_props(&mut self, props: StatusProps) {
@@ -1428,24 +1446,6 @@ impl StatusBar {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        fn mmss(millis: u64) -> String {
-            let s = millis / 1000;
-            format!("{}:{:02}", s / 60, s % 60)
-        }
-        let progress = match (self.props.position_millis, self.props.duration_millis) {
-            (Some(pos), Some(dur)) if dur > 0 => {
-                let width = 30usize;
-                let filled = ((pos as f64 / dur as f64) * width as f64) as usize;
-                format!(
-                    "[{}>{}] {} / {}",
-                    "=".repeat(filled.min(width)),
-                    " ".repeat(width - filled.min(width)),
-                    mmss(pos),
-                    mmss(dur),
-                )
-            }
-            _ => String::new(),
-        };
         let state = if self.props.playing {
             Span::styled("▶ playing", theme::tone_style(Tone::Good))
         } else if self.props.blockers.is_empty() {
@@ -1460,10 +1460,7 @@ impl StatusBar {
             Some(title) => format!("Now Playing: {title}"),
             None => "Nothing playing".to_string(),
         };
-        let lines = vec![
-            Line::from(vec![state, Span::raw("  "), Span::raw(progress)]),
-            Line::from(now),
-        ];
+        let lines = vec![Line::from(vec![state]), Line::from(now)];
         frame.render_widget(
             Paragraph::new(lines).block(
                 Block::default()
@@ -1472,6 +1469,30 @@ impl StatusBar {
             ),
             area,
         );
+    }
+
+    /// The progress-bar + elapsed/total time, on its own line (design.md
+    /// #6) so the variable-width "waiting on ..." state text on the main
+    /// status line never shoves it sideways. Rendered directly by
+    /// [`super::app::Ui::draw`] (not through the `Component`/`view()`
+    /// path) since it shares `self.props` with [`Self::render`] but lives
+    /// in a different area — the left column, not the bottom status bar.
+    pub(crate) fn render_progress(&self, frame: &mut Frame, area: Rect) {
+        let progress = match (self.props.position_millis, self.props.duration_millis) {
+            (Some(pos), Some(dur)) if dur > 0 => {
+                let width = 30usize;
+                let filled = ((pos as f64 / dur as f64) * width as f64) as usize;
+                format!(
+                    "[{}>{}] {} / {}",
+                    "=".repeat(filled.min(width)),
+                    " ".repeat(width - filled.min(width)),
+                    mmss(pos),
+                    mmss(dur),
+                )
+            }
+            _ => String::new(),
+        };
+        frame.render_widget(Paragraph::new(Line::from(progress)), area);
     }
 }
 

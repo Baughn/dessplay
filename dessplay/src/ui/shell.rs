@@ -69,8 +69,9 @@ pub enum UiInput {
     Browse {
         /// The request being answered (which browser, and its anchor).
         request: crate::ui::msg::BrowseRequest,
-        /// Every indexed file: (path, ed2k root) from the hash cache.
-        files: Vec<(std::path::PathBuf, dessplay_core::types::Ed2kHash)>,
+        /// Every indexed file: (path, ed2k root, mtime millis) from the
+        /// hash cache.
+        files: Vec<(std::path::PathBuf, dessplay_core::types::Ed2kHash, i64)>,
         /// Personally-watched hashes (the group's flags are unioned in
         /// UI-side from the synced view).
         watched: std::collections::BTreeSet<dessplay_core::types::Ed2kHash>,
@@ -128,11 +129,22 @@ pub fn run_ui_thread(
         let _ = adapter.restore();
         return;
     }
+    // Bracketed paste (design.md #33): without it, a terminal delivers
+    // pasted text as a stream of individual key-press events instead of
+    // one `Event::Paste`, so a dropped-in file path can't be told apart
+    // from typing. `enable_bracketed_paste` is an inherent method on the
+    // concrete crossterm adapter (not part of `TerminalAdapter`), and
+    // isn't tracked by `restore()` — it never emits `DisableBracketedPaste`
+    // — so we explicitly undo it ourselves below.
+    if let Err(e) = adapter.enable_bracketed_paste() {
+        tracing::warn!("cannot enable bracketed paste: {e}");
+    }
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "terminal setup complete"
     );
     run_ui_loop(ui, inputs, actions, &mut adapter);
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     let _ = adapter.restore();
     tracing::debug!("UI thread exiting");
 }

@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use crate::storage::{Result, Storage, StorageError};
-use crate::ui::props::SeriesSort;
+use crate::ui::props::{BrowserSort, SeriesSort};
 
 /// Which video player to drive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -203,9 +203,17 @@ pub struct Settings {
     pub upload_limit: Option<u64>,
     /// How local player subtitles are surfaced in the chat pane.
     pub subtitle_mode: SubtitleMode,
+    /// Color separate-pane subtitle lines by ASS speaker (design.md #22).
+    /// When false, every separate-pane line renders uniformly dim
+    /// regardless of speaker. Default true. Has no effect on Intermixed
+    /// mode, which is already uniformly dim.
+    pub subtitle_speaker_colors: bool,
     /// Sort order for the All Series browser mode (toggled with `s`).
     /// Local-only display preference; persisted across sessions.
     pub series_sort: SeriesSort,
+    /// Sort order for the add/map file browser (design.md #8).
+    /// Local-only display preference; persisted across sessions.
+    pub file_browser_sort: BrowserSort,
     /// Whether to automatically fetch files from peers (prefetch window
     /// and the missing now-playing file). When false the client never
     /// downloads — it relies on its own library (design.md,
@@ -234,7 +242,9 @@ impl Default for Settings {
             cache_retention: CacheRetention::default(),
             upload_limit: None,
             subtitle_mode: SubtitleMode::default(),
+            subtitle_speaker_colors: true,
             series_sort: SeriesSort::default(),
+            file_browser_sort: BrowserSort::default(),
             auto_download: true,
             irc_enabled: true,
             irc_server: "irc.rizon.net".into(),
@@ -298,11 +308,22 @@ impl Settings {
                     _ => defaults.subtitle_mode,
                 },
             },
+            subtitle_speaker_colors: storage
+                .setting("subtitle_speaker_colors")?
+                .map(|value| parse_bool("subtitle_speaker_colors", &value))
+                .transpose()?
+                .unwrap_or(defaults.subtitle_speaker_colors),
             series_sort: match storage.setting("series_sort")? {
                 Some(value) => SeriesSort::parse(&value).ok_or_else(|| {
                     StorageError::Corrupt(format!("unknown series_sort {value:?}"))
                 })?,
                 None => defaults.series_sort,
+            },
+            file_browser_sort: match storage.setting("file_browser_sort")? {
+                Some(value) => BrowserSort::parse(&value).ok_or_else(|| {
+                    StorageError::Corrupt(format!("unknown file_browser_sort {value:?}"))
+                })?,
+                None => defaults.file_browser_sort,
             },
             auto_download: storage
                 .setting("auto_download")?
@@ -347,7 +368,16 @@ impl Settings {
             self.upload_limit.map(|limit| limit.to_string()).as_deref(),
         )?;
         storage.set_setting("subtitle_mode", Some(self.subtitle_mode.as_str()))?;
+        storage.set_setting(
+            "subtitle_speaker_colors",
+            Some(if self.subtitle_speaker_colors {
+                "true"
+            } else {
+                "false"
+            }),
+        )?;
         storage.set_setting("series_sort", Some(self.series_sort.as_str()))?;
+        storage.set_setting("file_browser_sort", Some(self.file_browser_sort.as_str()))?;
         storage.set_setting(
             "auto_download",
             Some(if self.auto_download { "true" } else { "false" }),
@@ -390,7 +420,9 @@ mod tests {
             cache_retention: CacheRetention::Infinite,
             upload_limit: Some(1_000_000),
             subtitle_mode: SubtitleMode::Intermixed,
+            subtitle_speaker_colors: false,
             series_sort: SeriesSort::Year,
+            file_browser_sort: BrowserSort::Newest,
             auto_download: false,
             irc_enabled: false,
             irc_server: "irc.example.org".into(),
