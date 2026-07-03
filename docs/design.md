@@ -568,6 +568,15 @@ This prevents sync issues from different encodes/versions.
   - `/ack` -- acknowledge the current committed-absent blocker(s): a per-file
     one-shot that lets the group play past a committed (Watching) user who is
     Lost/Departed, and latches intent Playing. Re-needed on the next episode.
+  - `/summon` -- ping everyone [known but offline](#presence) on IRC in one
+    PRIVMSG, with the mandatory Dess-girl link. Deciding "IRC bridge
+    disabled" or "everyone's here" needs no round trip (both are already
+    known client-side); matching each absent username to a live channel
+    nick (by edit-distance similarity, e.g. `Nero` -> `Nero200`, excluding
+    `*Dess` bridge echoes) happens in the IRC actor, which tracks channel
+    membership from NAMES/JOIN/PART/QUIT/NICK. A local system line reports
+    who was pinged (by the nick actually addressed) and who had no
+    plausible nick.
   - `/me <action>` -- send an IRC-style action ("* Baughn waves"). Unlike
     the other commands this is a real, **synced** chat message (it reaches
     everyone, persists, and shows on the player OSD as "* Baughn waves");
@@ -606,7 +615,12 @@ chat pane. It is **on by default**; defaults are `irc.rizon.net`, TLS
   become separate messages. A `/me` **CTCP action is never split** -- chunking
   it would break the `\x01` framing or emit several separate emotes for one
   action, so an over-long emote is left to the server's 512-byte truncation
-  (the conventional client behavior); intentional.
+  (the conventional client behavior); intentional. `/summon`'s ping is the
+  one other outbound message and is **not** tapped from `Mutation::Chat`
+  (it addresses specific nicks, not a broadcast to the group) -- it goes
+  out directly as a PRIVMSG and is never mirrored into the local chat log
+  or synced; only the summon *outcome* (who was pinged) becomes a local
+  system line.
 - **Inbound.** Messages from IRC nicks that do **not** end in `Dess` are
   shown locally, rendered like normal chat (per-nick color, mention
   highlight) but with a dim `irc` tag so they aren't mistaken for

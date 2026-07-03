@@ -921,6 +921,26 @@ fn irc_config_changed(
         != crate::actors::irc::IrcConfig::from_settings(new, me)
 }
 
+/// Build the local system line reporting a `/summon`'s outcome
+/// (design.md #4): who was pinged (by the channel nick actually
+/// addressed) and, when any absent user had no plausible nick, who was
+/// skipped. Covers both "we found nicks but some didn't match" and "we
+/// aren't connected to IRC right now" (which the IRC actor reports as
+/// everyone unmatched) with the same wording.
+fn summon_report(pinged: &[(UserId, String)], unmatched: &[UserId]) -> String {
+    if pinged.is_empty() {
+        let names: Vec<&str> = unmatched.iter().map(|u| u.0.as_str()).collect();
+        return format!("/summon: no IRC nick found for {}", names.join(", "));
+    }
+    let nicks: Vec<&str> = pinged.iter().map(|(_, nick)| nick.as_str()).collect();
+    let mut text = format!("Summoned {} on IRC.", nicks.join(", "));
+    if !unmatched.is_empty() {
+        let names: Vec<&str> = unmatched.iter().map(|u| u.0.as_str()).collect();
+        text.push_str(&format!(" No IRC nick found for {}.", names.join(", ")));
+    }
+    text
+}
+
 /// The interactive bridge loop: actors on one side, UI channels on the
 /// other. Extracted from [`run_interactive`] so it is testable without
 /// a terminal — supervision bugs ("Ctrl-C doesn't quit") live here, and
@@ -1124,6 +1144,15 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 text,
                             });
                         }
+                        Some(UserAction::Summon(absent)) => {
+                            // Lossy, like the chat tap below: never block the
+                            // main loop on the IRC actor's readiness. The
+                            // outcome (including "not connected yet") comes
+                            // back through the irc_events arm.
+                            let _ = self
+                                .irc_tx
+                                .try_send(crate::actors::irc::IrcCommand::Summon(absent));
+                        }
                         Some(UserAction::SaveSettings(saved, roots)) => {
                             if let Err(e) = self.storage.save_settings(&saved) {
                                 tracing::error!("saving settings: {e}");
@@ -1293,6 +1322,12 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             let _ = self.ui.try_send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text: format!("IRC disconnected: {reason}"),
+                            });
+                        }
+                        Some(IrcEvent::Summoned { pinged, unmatched }) => {
+                            let _ = self.ui.try_send(UiInput::System {
+                                timestamp: (system_clock())(),
+                                text: summon_report(&pinged, &unmatched),
                             });
                         }
                     }
@@ -1595,6 +1630,35 @@ mod tests {
         // directly, not another pair of brackets ([[::1]]:9876 was the bug).
         assert_eq!(with_default_port("[::1]"), "[::1]:9876");
         assert_eq!(with_default_port("[fe80::1]"), "[fe80::1]:9876");
+    }
+
+    #[test]
+    fn summon_report_formats_pinged_and_unmatched() {
+        // Everyone matched.
+        assert_eq!(
+            summon_report(
+                &[
+                    (UserId::new("Nero"), "Nero200".to_string()),
+                    (UserId::new("Quickshot"), "Quickshot".to_string()),
+                ],
+                &[],
+            ),
+            "Summoned Nero200, Quickshot on IRC."
+        );
+        // Some matched, some not.
+        assert_eq!(
+            summon_report(
+                &[(UserId::new("Nero"), "Nero200".to_string())],
+                &[UserId::new("Kim")],
+            ),
+            "Summoned Nero200 on IRC. No IRC nick found for Kim."
+        );
+        // Nobody matched (also covers "not connected to IRC" — the IRC
+        // actor reports that the same way).
+        assert_eq!(
+            summon_report(&[], &[UserId::new("Kim"), UserId::new("Dagger")]),
+            "/summon: no IRC nick found for Kim, Dagger"
+        );
     }
 
     #[test]

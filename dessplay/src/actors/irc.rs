@@ -28,6 +28,7 @@
 //! tested in isolation; the actor loop is driven over an in-memory
 //! `tokio::io::duplex` pipe in tests.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,6 +54,15 @@ const BRIDGE_SUFFIX: &str = "Dess";
 const MAX_NICK: usize = 30;
 /// Cap on 433 nick-collision retries before giving up on a connection.
 const MAX_NICK_TRIES: u32 = 5;
+/// The mandatory Dess-girl image, linked in every `/summon` ping
+/// (design.md #4). A constant for now; the audible half of the request
+/// (#14) is separately deferred pending an actual audio asset.
+const DESS_GIRL_URL: &str = "https://brage.info/GAN/019dea7a-e1ad-77e1-a719-82619e50944f.jpg";
+/// Minimum normalized-Levenshtein similarity (0.0-1.0) for `/summon` to
+/// treat a channel nick as the same person as a dessplay username —
+/// e.g. `Nero` -> `Nero200` scores ~0.57 and matches; an unrelated nick
+/// scores well below this and is never pinged by accident.
+const SUMMON_MATCH_THRESHOLD: f64 = 0.4;
 
 /// Static configuration for the bridge, derived from [`Settings`] plus
 /// the local user's name.
@@ -96,6 +106,12 @@ pub enum IrcCommand {
     SendChat(String),
     /// Replace the live config (settings changed); reconnects cleanly.
     Reconfigure(Box<IrcConfig>),
+    /// Ping each absent username on IRC (design.md #4, `/summon`): each is
+    /// matched to the closest current channel nick and addressed in one
+    /// PRIVMSG with the Dess-girl link. Reported back via
+    /// [`IrcEvent::Summoned`], even when nothing was sent (e.g. no nick
+    /// matched, or we aren't connected yet).
+    Summon(Vec<UserId>),
     /// QUIT and exit the actor.
     Shutdown,
 }
@@ -118,6 +134,15 @@ pub enum IrcEvent {
         text: String,
         /// True if the message was a CTCP ACTION (an emote / `/me`).
         action: bool,
+    },
+    /// The outcome of a [`IrcCommand::Summon`]: who was pinged (mapped to
+    /// the channel nick actually addressed) and who had no plausible nick
+    /// (never pinged).
+    Summoned {
+        /// Requested users matched to a channel nick and pinged.
+        pinged: Vec<(UserId, String)>,
+        /// Requested users with no plausible channel nick.
+        unmatched: Vec<UserId>,
     },
 }
 
@@ -166,6 +191,17 @@ async fn run_with_connector<S, C, F>(
                     backoff = INITIAL_BACKOFF;
                 }
                 Some(IrcCommand::SendChat(_)) => {}
+                // Nobody is reachable while the bridge is disabled — report
+                // every requested user as unmatched so `/summon` never goes
+                // silently unanswered.
+                Some(IrcCommand::Summon(absent)) => {
+                    let _ = events
+                        .send(IrcEvent::Summoned {
+                            pinged: Vec::new(),
+                            unmatched: absent,
+                        })
+                        .await;
+                }
             }
         }
 
@@ -209,7 +245,7 @@ async fn run_with_connector<S, C, F>(
         // Wait out the backoff before reconnecting, staying responsive to
         // Shutdown/Reconfigure. A dropped SendChat must NOT abort the wait
         // (that would defeat capped backoff — see `wait_backoff`).
-        match wait_backoff(backoff, &mut commands).await {
+        match wait_backoff(backoff, &mut commands, &events).await {
             WaitOutcome::Elapsed => {}
             WaitOutcome::Shutdown => return,
             WaitOutcome::Reconfigure(c) => {
@@ -243,7 +279,11 @@ enum WaitOutcome {
 /// capped exponential backoff into a reconnect storm. The sleep future is
 /// created once and polled across iterations, so a dropped SendChat
 /// neither shortens nor extends the remaining wait.
-async fn wait_backoff(backoff: Duration, commands: &mut mpsc::Receiver<IrcCommand>) -> WaitOutcome {
+async fn wait_backoff(
+    backoff: Duration,
+    commands: &mut mpsc::Receiver<IrcCommand>,
+    events: &mpsc::Sender<IrcEvent>,
+) -> WaitOutcome {
     let sleep = tokio::time::sleep(backoff);
     tokio::pin!(sleep);
     loop {
@@ -253,6 +293,16 @@ async fn wait_backoff(backoff: Duration, commands: &mut mpsc::Receiver<IrcComman
                 None | Some(IrcCommand::Shutdown) => return WaitOutcome::Shutdown,
                 Some(IrcCommand::Reconfigure(c)) => return WaitOutcome::Reconfigure(c),
                 Some(IrcCommand::SendChat(_)) => {}
+                // Same rationale as the disabled-idle loop above: we are
+                // between connections, so nobody can be reached yet.
+                Some(IrcCommand::Summon(absent)) => {
+                    let _ = events
+                        .send(IrcEvent::Summoned {
+                            pinged: Vec::new(),
+                            unmatched: absent,
+                        })
+                        .await;
+                }
             },
         }
     }
@@ -347,6 +397,11 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     }
     let mut registered = false;
     let mut nick_tries: u32 = 0;
+    // Channel membership, tracked from NAMES + JOIN/PART/QUIT/NICK so
+    // `/summon` (design.md #4) can match an absent dessplay username to
+    // whoever is actually in the channel right now. Reset per session:
+    // a fresh NAMES reply always follows a JOIN.
+    let mut members: HashSet<String> = HashSet::new();
 
     loop {
         tokio::select! {
@@ -409,6 +464,45 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
                             .unwrap_or_else(|| format!("cannot join {}", config.channel));
                         return SessionEnd::Rejected { reason };
                     }
+                    // RPL_NAMREPLY: the trailing param is the space-separated
+                    // nick list (with optional @/+/etc. status markers).
+                    "353" => {
+                        if let Some(list) = parsed.params.last() {
+                            members.extend(parse_names(list));
+                        }
+                    }
+                    "JOIN" => {
+                        if let (Some(prefix), Some(channel)) =
+                            (parsed.prefix.as_deref(), parsed.params.first())
+                            && channel.eq_ignore_ascii_case(&config.channel)
+                        {
+                            members.insert(nick_of_prefix(prefix).to_string());
+                        }
+                    }
+                    "PART" => {
+                        if let (Some(prefix), Some(channel)) =
+                            (parsed.prefix.as_deref(), parsed.params.first())
+                            && channel.eq_ignore_ascii_case(&config.channel)
+                        {
+                            members.remove(nick_of_prefix(prefix));
+                        }
+                    }
+                    // QUIT carries no channel param (it leaves every channel
+                    // the nick was in); we only ever track one, so a global
+                    // removal is correct.
+                    "QUIT" => {
+                        if let Some(prefix) = parsed.prefix.as_deref() {
+                            members.remove(nick_of_prefix(prefix));
+                        }
+                    }
+                    "NICK" => {
+                        if let (Some(prefix), Some(new_nick)) =
+                            (parsed.prefix.as_deref(), parsed.params.first())
+                        {
+                            members.remove(nick_of_prefix(prefix));
+                            members.insert(new_nick.clone());
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -427,6 +521,18 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
                             return SessionEnd::Lost { reason: e, registered };
                         }
                     }
+                }
+                Some(IrcCommand::Summon(absent)) => {
+                    let (pinged, unmatched) = match_summon(&absent, &members);
+                    if !pinged.is_empty() {
+                        let text = summon_message(&pinged);
+                        for msg in format_privmsg(&config.channel, &text) {
+                            if let Err(e) = send_line(&mut write, &msg).await {
+                                return SessionEnd::Lost { reason: e, registered };
+                            }
+                        }
+                    }
+                    let _ = events.send(IrcEvent::Summoned { pinged, unmatched }).await;
                 }
             },
         }
@@ -578,6 +684,70 @@ pub(crate) fn next_nick_on_collision(current: &str) -> String {
         stem.truncate(max_stem);
     }
     format!("{stem}{next}{BRIDGE_SUFFIX}")
+}
+
+/// Strip a NAMES-reply status marker (op/voice/halfop/owner/admin) from a
+/// nick.
+fn strip_nick_prefix(nick: &str) -> &str {
+    nick.trim_start_matches(['~', '&', '@', '%', '+'])
+}
+
+/// Parse the nick list from a NAMES (353) reply's trailing parameter.
+pub(crate) fn parse_names(trailing: &str) -> Vec<String> {
+    trailing
+        .split_whitespace()
+        .map(|n| strip_nick_prefix(n).to_string())
+        .collect()
+}
+
+/// Match each absent dessplay username to the channel nick it most likely
+/// belongs to (design.md #4, `/summon`), splitting the result into pinged
+/// (username, matched nick) pairs and those with no plausible match.
+/// Bridge nicks (`*Dess`) are excluded from the candidate pool — pinging
+/// our own echo of a dessplay user makes no sense, and they are exactly
+/// the users who are *not* absent.
+pub(crate) fn match_summon(
+    absent: &[UserId],
+    members: &HashSet<String>,
+) -> (Vec<(UserId, String)>, Vec<UserId>) {
+    let candidates: Vec<&str> = members
+        .iter()
+        .map(String::as_str)
+        .filter(|nick| !is_bridge_nick(nick))
+        .collect();
+    let mut pinged = Vec::new();
+    let mut unmatched = Vec::new();
+    for user in absent {
+        match best_nick_match(&user.0, &candidates) {
+            Some(nick) => pinged.push((user.clone(), nick.to_string())),
+            None => unmatched.push(user.clone()),
+        }
+    }
+    (pinged, unmatched)
+}
+
+/// Find the candidate nick most similar to `username` by normalized
+/// Levenshtein similarity (case-insensitive), above
+/// [`SUMMON_MATCH_THRESHOLD`]. `None` if nothing plausible is in the
+/// channel right now.
+fn best_nick_match<'a>(username: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    let username = username.to_ascii_lowercase();
+    candidates
+        .iter()
+        .map(|&nick| {
+            let score = strsim::normalized_levenshtein(&username, &nick.to_ascii_lowercase());
+            (nick, score)
+        })
+        .filter(|(_, score)| *score >= SUMMON_MATCH_THRESHOLD)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(nick, _)| nick)
+}
+
+/// The mandatory Dess-girl ping text (design.md #4): every matched nick
+/// addressed IRC-style, e.g. `Nero200, Quickshot: Dess? <url>`.
+pub(crate) fn summon_message(pinged: &[(UserId, String)]) -> String {
+    let nicks: Vec<&str> = pinged.iter().map(|(_, nick)| nick.as_str()).collect();
+    format!("{}: Dess? {DESS_GIRL_URL}", nicks.join(", "))
 }
 
 /// Build the PRIVMSG line(s) for a chat message: split on newlines into
@@ -840,6 +1010,57 @@ mod tests {
     }
 
     #[test]
+    fn parse_names_strips_status_markers() {
+        assert_eq!(
+            parse_names("@Baughn +Nero Kim &Quickshot ~Dagger"),
+            vec!["Baughn", "Nero", "Kim", "Quickshot", "Dagger"]
+        );
+        assert_eq!(parse_names(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn match_summon_finds_decorated_nicks_and_skips_the_rest() {
+        let members: HashSet<String> = [
+            "Nero200".to_string(),
+            "QuickshotDess".to_string(), // our own bridge echo — excluded
+            "Tomoko".to_string(),        // unrelated — must not match Kim
+        ]
+        .into_iter()
+        .collect();
+        let absent = vec![
+            UserId::new("Nero"),
+            UserId::new("Quickshot"),
+            UserId::new("Kim"),
+        ];
+        let (pinged, unmatched) = match_summon(&absent, &members);
+        assert_eq!(pinged, vec![(UserId::new("Nero"), "Nero200".to_string())]);
+        assert_eq!(
+            unmatched,
+            vec![UserId::new("Quickshot"), UserId::new("Kim")]
+        );
+    }
+
+    #[test]
+    fn match_summon_is_case_insensitive() {
+        let members: HashSet<String> = ["nero_".to_string()].into_iter().collect();
+        let (pinged, unmatched) = match_summon(&[UserId::new("Nero")], &members);
+        assert_eq!(pinged, vec![(UserId::new("Nero"), "nero_".to_string())]);
+        assert!(unmatched.is_empty());
+    }
+
+    #[test]
+    fn summon_message_addresses_every_matched_nick() {
+        let pinged = vec![
+            (UserId::new("Nero"), "Nero200".to_string()),
+            (UserId::new("Quickshot"), "Quickshot".to_string()),
+        ];
+        assert_eq!(
+            summon_message(&pinged),
+            format!("Nero200, Quickshot: Dess? {DESS_GIRL_URL}")
+        );
+    }
+
+    #[test]
     fn strip_controls_removes_formatting() {
         assert_eq!(strip_controls("\u{2}bold\u{f}"), "bold");
         assert_eq!(strip_controls("\u{3}04red\u{3}"), "red");
@@ -912,6 +1133,22 @@ mod tests {
             .unwrap();
     }
 
+    /// Force the actor to have fully drained every previously-written
+    /// server line before the test proceeds. `tokio::select!` picks
+    /// unbiased among *all* ready branches each iteration, so writing
+    /// several lines and then immediately sending an `IrcCommand` races
+    /// the still-buffered lines against the already-queued command — a
+    /// PING/PONG round trip only resolves once the actor's line-reading
+    /// branch has processed everything ahead of it (commands don't jump
+    /// the queue within one branch), giving a deterministic barrier.
+    async fn sync_via_ping(
+        lines: &mut tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        server: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    ) {
+        write_server(server, "PING :sync").await;
+        assert_eq!(next_line(lines).await, "PONG :sync");
+    }
+
     #[tokio::test]
     async fn registers_joins_and_emits_connected() {
         let (_cmd, mut events, mut lines, mut server, _h) = spawn_session();
@@ -968,6 +1205,117 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(next_line(&mut lines).await, "PRIVMSG #dess :hello world");
+    }
+
+    #[tokio::test]
+    async fn summon_pings_matched_nicks_via_names_reply() {
+        let (cmd, mut events, mut lines, mut server, _h) = spawn_session();
+        let _ = next_line(&mut lines).await; // NICK
+        let _ = next_line(&mut lines).await; // USER
+        write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
+        let _ = next_line(&mut lines).await; // JOIN
+        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
+
+        // Scripted NAMES reply populates channel membership.
+        write_server(
+            &mut server,
+            ":srv 353 BaughnDess = #dess :BaughnDess @Nero200 +Tomoko",
+        )
+        .await;
+        write_server(&mut server, ":srv 366 BaughnDess #dess :End of /NAMES").await;
+        sync_via_ping(&mut lines, &mut server).await;
+
+        cmd.send(IrcCommand::Summon(vec![
+            UserId::new("Nero"),
+            UserId::new("Kim"),
+        ]))
+        .await
+        .unwrap();
+
+        assert_eq!(
+            next_line(&mut lines).await,
+            format!("PRIVMSG #dess :Nero200: Dess? {DESS_GIRL_URL}")
+        );
+        assert_eq!(
+            events.recv().await,
+            Some(IrcEvent::Summoned {
+                pinged: vec![(UserId::new("Nero"), "Nero200".to_string())],
+                unmatched: vec![UserId::new("Kim")],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn summon_tracks_join_part_quit_and_nick() {
+        let (cmd, mut events, mut lines, mut server, _h) = spawn_session();
+        let _ = next_line(&mut lines).await; // NICK
+        let _ = next_line(&mut lines).await; // USER
+        write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
+        let _ = next_line(&mut lines).await; // JOIN
+        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
+
+        // Nero200 joins live (no NAMES reply involved)...
+        write_server(&mut server, ":Nero200!u@h JOIN #dess").await;
+        // ...then renames...
+        write_server(&mut server, ":Nero200!u@h NICK :Nero201").await;
+        // ...and a decoy in an unrelated channel must not be tracked.
+        write_server(&mut server, ":Decoy!u@h JOIN #elsewhere").await;
+        sync_via_ping(&mut lines, &mut server).await;
+
+        cmd.send(IrcCommand::Summon(vec![UserId::new("Nero")]))
+            .await
+            .unwrap();
+        assert_eq!(
+            next_line(&mut lines).await,
+            format!("PRIVMSG #dess :Nero201: Dess? {DESS_GIRL_URL}")
+        );
+        assert_eq!(
+            events.recv().await,
+            Some(IrcEvent::Summoned {
+                pinged: vec![(UserId::new("Nero"), "Nero201".to_string())],
+                unmatched: Vec::new(),
+            })
+        );
+
+        // Nero201 leaves; a second summon finds nobody.
+        write_server(&mut server, ":Nero201!u@h PART #dess :bye").await;
+        sync_via_ping(&mut lines, &mut server).await;
+        cmd.send(IrcCommand::Summon(vec![UserId::new("Nero")]))
+            .await
+            .unwrap();
+        assert_eq!(
+            events.recv().await,
+            Some(IrcEvent::Summoned {
+                pinged: Vec::new(),
+                unmatched: vec![UserId::new("Nero")],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn summon_excludes_bridge_nicks_and_reports_no_match() {
+        let (cmd, mut events, mut lines, mut server, _h) = spawn_session();
+        let _ = next_line(&mut lines).await; // NICK
+        let _ = next_line(&mut lines).await; // USER
+        write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
+        let _ = next_line(&mut lines).await; // JOIN
+        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
+
+        write_server(&mut server, ":srv 353 BaughnDess = #dess :NeroDess").await;
+        sync_via_ping(&mut lines, &mut server).await;
+
+        cmd.send(IrcCommand::Summon(vec![UserId::new("Nero")]))
+            .await
+            .unwrap();
+        // A bridge echo of Nero is not a plausible ping target — nothing is
+        // sent, and the outcome reports him unmatched.
+        assert_eq!(
+            events.recv().await,
+            Some(IrcEvent::Summoned {
+                pinged: Vec::new(),
+                unmatched: vec![UserId::new("Nero")],
+            })
+        );
     }
 
     #[tokio::test]
@@ -1132,6 +1480,40 @@ mod tests {
         assert!(
             after.is_ok(),
             "the reconnect should still fire after the backoff elapses"
+        );
+    }
+
+    /// A `/summon` arriving while disconnected (mid reconnect-backoff) has
+    /// nobody to check — the actor must still answer with everyone
+    /// unmatched (so the caller isn't left hanging) and, like SendChat,
+    /// must NOT abort the backoff wait.
+    #[tokio::test(start_paused = true)]
+    async fn summon_during_backoff_reports_unmatched_without_blocking() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(8);
+        let (att_tx, mut att_rx) = mpsc::channel(8);
+        let (srv_tx, _srv_rx) = mpsc::channel(8);
+        let connector = injector(vec![Conn::Fail; 8], att_tx, srv_tx);
+        tokio::spawn(run_with_connector(test_config(), cmd_rx, ev_tx, connector));
+
+        att_rx.recv().await.unwrap();
+
+        cmd_tx
+            .send(IrcCommand::Summon(vec![UserId::new("Nero")]))
+            .await
+            .unwrap();
+        assert_eq!(
+            ev_rx.recv().await,
+            Some(IrcEvent::Summoned {
+                pinged: Vec::new(),
+                unmatched: vec![UserId::new("Nero")],
+            })
+        );
+
+        let immediate = tokio::time::timeout(INITIAL_BACKOFF / 2, att_rx.recv()).await;
+        assert!(
+            immediate.is_err(),
+            "Summon aborted the backoff wait and forced an immediate reconnect"
         );
     }
 

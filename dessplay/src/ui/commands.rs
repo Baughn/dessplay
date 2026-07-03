@@ -59,6 +59,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         help: "play past a committed-but-absent user (this file)",
     },
     SlashCommand {
+        name: "/summon",
+        args: "",
+        help: "ping absent friends on IRC",
+    },
+    SlashCommand {
         name: "/settings",
         args: "",
         help: "open settings",

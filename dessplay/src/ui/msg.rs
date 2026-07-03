@@ -251,6 +251,11 @@ pub enum UserAction {
     /// main loop stamps it with the shared clock — the UI has no clock of
     /// its own.
     Notice(String),
+    /// Ping absent known users on IRC (design.md #4, `/summon`). The UI
+    /// has no view of live IRC channel membership, so the main loop
+    /// forwards this to the IRC actor, which resolves each username to a
+    /// nick and reports the outcome back as a local system line.
+    Summon(Vec<UserId>),
     /// Quit the application.
     Quit,
 }

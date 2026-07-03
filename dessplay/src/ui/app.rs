@@ -100,6 +100,9 @@ fn log_action(action: &UserAction) {
             tracing::debug!(kind, "user action: Browse");
         }
         UserAction::Notice(text) => tracing::debug!(%text, "user action: Notice"),
+        UserAction::Summon(absent) => {
+            tracing::debug!(count = absent.len(), "user action: Summon");
+        }
         UserAction::Quit => tracing::debug!("user action: Quit"),
     }
 }
@@ -1242,6 +1245,8 @@ impl Ui {
             },
             // Play past a committed-but-absent blocker of the current file.
             "/ack" => self.acknowledge_blockers(),
+            // Ping absent known users on IRC (design.md #4).
+            "/summon" => self.command_summon(),
             other => vec![UserAction::Notice(format!(
                 "Unknown command: {other} — type / to see commands"
             ))],
@@ -1318,6 +1323,31 @@ impl Ui {
             intent: PlaybackIntent::Playing,
         }));
         actions
+    }
+
+    /// `/summon`: ping every known-but-offline user (design.md #15's
+    /// registry, already "present peers excluded") on IRC. The
+    /// bridge-disabled and nobody-absent cases are decided here (no round
+    /// trip needed — both are already in `self.snapshot`/`self.settings`);
+    /// everything requiring live channel membership (matching a username to
+    /// a nick, sending the PRIVMSG) happens in the IRC actor and reports
+    /// back through `IrcEvent::Summoned`.
+    fn command_summon(&self) -> Vec<UserAction> {
+        if !self.settings.irc_enabled {
+            return vec![UserAction::Notice(
+                "/summon: IRC bridge disabled".to_string(),
+            )];
+        }
+        let absent: Vec<UserId> = self
+            .snapshot
+            .known_offline
+            .iter()
+            .map(|user| user.username.clone())
+            .collect();
+        if absent.is_empty() {
+            return vec![UserAction::Notice("/summon: everyone's here".to_string())];
+        }
+        vec![UserAction::Summon(absent)]
     }
 
     fn open_episode_browser(&mut self, key: FranchiseKey) {
@@ -1728,6 +1758,55 @@ mod tests {
         let actions = ui.command("/ack");
         assert!(mutations(&actions).is_empty());
         assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
+    fn known_user(name: &str, last_seen: u64) -> dessplay_core::net::KnownUser {
+        dessplay_core::net::KnownUser {
+            username: UserId::new(name),
+            last_seen,
+        }
+    }
+
+    /// `/summon` with nobody known-offline is a local notice — nobody to
+    /// page, no actor round trip.
+    #[test]
+    fn summon_with_nobody_offline_is_a_notice() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.snapshot.known_offline = Vec::new();
+        let actions = ui.command("/summon");
+        assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
+    /// `/summon` with the IRC bridge disabled is a local notice, decided
+    /// entirely from settings — no `UserAction::Summon` reaches the actor.
+    #[test]
+    fn summon_with_irc_disabled_is_a_notice() {
+        let settings = Settings {
+            irc_enabled: false,
+            ..Settings::default()
+        };
+        let mut ui = Ui::with_setup(me(), settings, vec![], false);
+        ui.snapshot.view = std::sync::Arc::new(StateView::default());
+        ui.snapshot.known_offline = vec![known_user("nero", 0)];
+        let actions = ui.command("/summon");
+        assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
+    /// `/summon` with known-offline users emits `UserAction::Summon`
+    /// carrying every one of their usernames — the IRC actor resolves the
+    /// rest (design.md #4).
+    #[test]
+    fn summon_with_absent_users_emits_summon_action() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.snapshot.known_offline = vec![known_user("nero", 0), known_user("kim", 0)];
+        let actions = ui.command("/summon");
+        assert_eq!(
+            actions,
+            vec![UserAction::Summon(vec![
+                UserId::new("nero"),
+                UserId::new("kim")
+            ])]
+        );
     }
 
     fn chat_msg(t: u64, who: &str, text: &str) -> dessplay_core::types::ChatMessage {

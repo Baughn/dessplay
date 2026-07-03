@@ -1016,6 +1016,43 @@ blocking every other show — recorded by whoever notices, attributed.
 
 ## Phase 17: /summon (#4)
 
+**Status: complete (2026-07-03).** Notes and deviations:
+
+- **`/summon` takes no arguments and is decided in two layers**, matching
+  the existing `/ack` dispatch pattern: `Ui::command` answers "IRC bridge
+  disabled" and "everyone's here" locally (both are already in
+  `self.settings`/`self.snapshot.known_offline`, no round trip needed) and
+  only emits `UserAction::Summon(Vec<UserId>)` when there is real work.
+  Everything needing live IRC state (channel membership, nick matching,
+  sending the PRIVMSG) lives in the IRC actor as two new `IrcCommand`/
+  `IrcEvent` variants (`Summon` / `Summoned { pinged, unmatched }`),
+  mirroring the existing pair rather than a new channel.
+- **Membership tracking** is actor-local state inside `run_session`
+  (`HashSet<String>`, reset per connection since a fresh NAMES reply
+  always follows a JOIN): populated from `353` (NAMES), then kept live
+  from `JOIN`/`PART`/`QUIT`/`NICK`. `PART`/`JOIN` are filtered to our one
+  channel; `QUIT` has no channel param so it's a global removal (we only
+  ever track one channel, so this is exact).
+- **Nick matching** uses `strsim::normalized_levenshtein` (already a
+  dependency, previously used for manual-file-mapping ranking in 9A) at a
+  **0.4** similarity threshold, case-insensitive — `Nero`→`Nero200` scores
+  ~0.57 and matches comfortably; an unrelated nick scores well below 0.4.
+  Bridge nicks (`*Dess`) are excluded from the candidate pool via the
+  existing `is_bridge_nick`.
+- **The "not connected yet" case** (a `Summon` arriving while the actor is
+  disabled or mid-reconnect-backoff) isn't named in the terse plan
+  wording, but needed an answer: both the disabled-idle loop and
+  `wait_backoff` now report `Summoned { pinged: vec![], unmatched: <all
+  requested> }` immediately (same shape as "checked membership, found
+  nobody") rather than silently dropping the command like `SendChat`
+  does — a `/summon` that vanishes with zero feedback would violate the
+  "local system line always reports" requirement. `wait_backoff` gained
+  an `events` parameter for this; the SendChat-during-backoff
+  non-abort behavior is untouched (Summon follows the identical
+  fall-through-without-returning shape).
+- The Dess-girl URL is a hardcoded `const DESS_GIRL_URL` in `irc.rs` (the
+  exact link from this plan's row) — no settings surface, as scoped.
+
 **Goal**: One command pings the missing people on IRC, with the
 mandatory Dess-girl.
 
