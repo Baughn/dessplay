@@ -7,6 +7,15 @@ use dessplay::run::{
     HeadlessArgs, load_dotenv, run_dump, run_headless, run_import, run_interactive,
 };
 
+// glibc malloc doesn't return freed memory to the OS after a burst of
+// small allocations (e.g. a large library scan); mimalloc purges freed
+// pages back to the OS on its own (2026-07-03: malloc_trim recovered
+// hundreds of MB of RSS on both long-running dessplay processes).
+// Not built on Windows, where it's less needed and adds friction.
+#[cfg(not(target_os = "windows"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// A synchronized video player for watch parties.
 #[derive(Parser, Debug)]
 #[command(version, about)]

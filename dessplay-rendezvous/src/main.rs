@@ -8,6 +8,15 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
+// glibc malloc doesn't return freed memory to the OS after a burst of
+// small allocations (e.g. a compaction's full-state broadcast); mimalloc
+// purges freed pages back to the OS on its own (2026-07-03: malloc_trim
+// recovered ~360MB of RSS on this process in production).
+// Not built on Windows, where it's less needed and adds friction.
+#[cfg(not(target_os = "windows"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use clap::Parser;
 use dessplay_core::net::quic::QuicListener;
 use dessplay_core::net::tofu::load_or_generate_cert;

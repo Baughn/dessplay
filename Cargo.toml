@@ -55,6 +55,14 @@ rustc-hash = "2"
 # Local-time conversion for chat timestamps (reliable in multithreaded
 # apps, unlike the `time` crate's current_local_offset).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Global allocator for both binaries (Linux/macOS only -- mimalloc doesn't
+# support Windows/MSVC well here either, and isn't needed there). glibc
+# malloc doesn't return freed memory to the OS after a burst of small
+# allocations (e.g. a large library scan); mimalloc purges freed pages
+# back to the OS on its own. (jemalloc was tried first but its configure
+# script fails under NixOS's default hardening flags -- mimalloc builds
+# clean with no workarounds.)
+mimalloc = "0.1"
 
 # Debug-build MD4 hashes at ~70 MiB/s — a 1.4GB episode takes 20s and
 # feels broken (release: >1.2 GiB/s). Always optimize the hash inner

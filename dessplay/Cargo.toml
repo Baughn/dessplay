@@ -31,6 +31,9 @@ ab_glyph = { workspace = true }
 strsim = { workspace = true }
 chrono = { workspace = true }
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+mimalloc = { workspace = true }
+
 [dev-dependencies]
 insta = { workspace = true }
 proptest = { workspace = true }
