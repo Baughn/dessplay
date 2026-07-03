@@ -53,6 +53,7 @@ impl UiClient {
             peers: self.handle.peers.borrow().clone(),
             recency: BTreeMap::new(),
             cache_hashes: Default::default(),
+            watched_hashes: Default::default(),
         };
         self.ui.apply_snapshot(snapshot);
     }

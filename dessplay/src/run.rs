@@ -1075,6 +1075,21 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 ))
                                 .await;
                         }
+                        Some(UserAction::MarkWatched { file, watched }) => {
+                            // Server-authoritative, like EofReached: sent
+                            // straight to the wire rather than through a
+                            // CRDT Mutation (design.md #10).
+                            let _ = self
+                                .handle
+                                .network
+                                .send(crate::actors::network::NetworkCommand::SendReliable(
+                                    Box::new(dessplay_core::net::ServerControl::MarkWatched {
+                                        file,
+                                        watched,
+                                    }),
+                                ))
+                                .await;
+                        }
                         Some(UserAction::MapFile { file, path, series }) => {
                             self.shell.set_manual_mapping(file, path, series).await;
                         }
@@ -1381,11 +1396,13 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             .into_iter()
             .map(|entry| entry.hash)
             .collect();
+        let watched_hashes = self.storage.watched_hashes().unwrap_or_default();
         Some(crate::ui::app::UiSnapshot {
             view: std::sync::Arc::new(view),
             peers: self.handle.peers.borrow().clone(),
             recency,
             cache_hashes,
+            watched_hashes,
         })
     }
 }

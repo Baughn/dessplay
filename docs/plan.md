@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 10 phases, bottom-up. Each phase produces testable artifacts. The first
 user-facing demo (TUI with chat + shared playlist) arrives at Phase 6;
@@ -849,6 +849,46 @@ seconds, not minutes; indexing never stalls transfers.
 ---
 
 ## Phase 15: Episode Browser Rework (#31, #11, #10)
+
+**Status: complete (2026-07-03).** Notes and deviations:
+
+- Grouping key is the AniDB-parsed `(category, number)` from
+  `episode_sort_key`'s own parser (factored out as
+  `props::parse_episode_number`), not a name/hash heuristic: adjacent
+  sorted files sharing a key merge, and a file with **no** parseable
+  episode number always starts its own singleton group, even next to
+  another unnumbered file — there is no evidence any two of them are the
+  same episode.
+- A multi-copy group renders as a `Header` (display-only, episode label,
+  aggregate `watched` = all copies watched) plus one `Child` per file; a
+  single-copy episode is one `Single` row combining the label, filename,
+  and holders on one line, matching the design's literal example. `Enter`
+  and `w` both decline (return `None`, the established "binding
+  declines" convention already used by `PlaylistPane::act_archive`/
+  `act_watch`) on a `Header` row — there's no single file to act on.
+- Holders (`props::ready_holders`) and the episode grouping/muting
+  (`props::episode_rows`, `props::first_unwatched`) are pure `StateView`
+  mappings with their own unit tests; the modal only renders what it's
+  handed. Holders render dim and right-aligned (mirroring
+  `PlaylistPane`'s tag column), not per-user colored — kept simple since
+  the design didn't call for it.
+- `w` toggles the **raw group watched flag** (`view.watched`), not the
+  combined muted-display value — a copy already muted by personal
+  history alone still flips the group flag to `true` on first press,
+  consistent with "cycles a group watched flag".
+- `MarkWatched { file, watched }` was appended as the **last** variant of
+  `ServerControl` (after `ProtocolMismatch`), not grouped with
+  `EofReached`: the bump policy (Phase 11) forbids reordering existing
+  variants, and this only needed one more discriminant, not a reshape.
+  `PROTOCOL_VERSION` bumped to 2. `handle_mark_watched` mirrors
+  `handle_eof`'s watched-flag + `list_advances` writes but isn't scoped
+  to now-playing and touches no playback register; idempotent (a request
+  that wouldn't change the flag is a no-op). Unmarking never rewinds
+  `next_ep` — the auto-advance only ever runs forward, on `watched: true`.
+- `UiSnapshot` gained `watched_hashes` (personal 85%-history set, fetched
+  in `run.rs::snapshot()` exactly like `recency`) so the episode browser
+  can mute by personal history without new plumbing beyond the existing
+  per-tick snapshot.
 
 **Goal**: The episode browser answers "which copy, who has it, what's
 next" at a glance — today three same-named copies of an episode render

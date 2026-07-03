@@ -1,0 +1,13 @@
+---
+source: dessplay/src/ui/modals.rs
+expression: "render(&mut browser, 40, 10)"
+---
+
+      ┌Frieren — S1──────────────┐
+      │< Episode 1  [A-Very-Long-│
+      │                          │
+      │                          │
+      │                          │
+      │                          │
+      │                          │
+      └──────────────────────────┘

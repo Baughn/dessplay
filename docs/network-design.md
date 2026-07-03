@@ -167,6 +167,13 @@ enum ServerControl {
     /// The client waits for the server's close after sending, so the
     /// frame is flushed before teardown.
     Goodbye,
+    /// Manual mark-watched from the episode browser (design.md #10): set
+    /// a file's group watched flag directly, not scoped to now-playing.
+    /// Setting `true` also runs the EOF path's List `next_ep`
+    /// auto-advance. Appended after `ProtocolMismatch` on the wire (the
+    /// bump policy forbids reordering existing variants) though it
+    /// belongs here logically.
+    MarkWatched { file: Ed2kHash, watched: bool },
 
     // Server -> Client
     AuthOk { observed_addr: SocketAddr },

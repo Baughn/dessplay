@@ -52,6 +52,12 @@ pub enum Msg {
         /// The chosen file's ed2k hash.
         hash: Ed2kHash,
     },
+    /// Episode browser (`w`): cycle a file's group watched flag
+    /// (design.md #10).
+    ToggleEpisodeWatched {
+        /// The file whose watched flag to flip.
+        hash: Ed2kHash,
+    },
     /// Move the selected entry after its successor (down).
     MoveDown(Ed2kHash),
     /// Move the selected entry before its predecessor (up).
@@ -129,6 +135,7 @@ impl Msg {
             Msg::PlaySelected(_) => "PlaySelected",
             Msg::AddFileAfter(_) => "AddFileAfter",
             Msg::EpisodeChosen { .. } => "EpisodeChosen",
+            Msg::ToggleEpisodeWatched { .. } => "ToggleEpisodeWatched",
             Msg::MoveDown(_) => "MoveDown",
             Msg::MoveUp(_) => "MoveUp",
             Msg::RemoveEntry(_) => "RemoveEntry",
@@ -204,6 +211,15 @@ pub enum UserAction {
     AniDbSearch {
         /// The query.
         query: String,
+    },
+    /// Manually set a file's group watched flag (design.md #10). The
+    /// server owns the watched flag (like `EofReached`), so this is sent
+    /// straight to it rather than a CRDT `Mutation`.
+    MarkWatched {
+        /// The file.
+        file: Ed2kHash,
+        /// The new value.
+        watched: bool,
     },
     /// Persist a manual mapping (playlist entry → local file the user
     /// picked) and resolve it.

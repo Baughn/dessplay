@@ -20,7 +20,7 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// its stability is what lets a mismatched future client still be
 /// decoded and answered with a readable [`ServerControl::ProtocolMismatch`]
 /// instead of a silent decode failure.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as
@@ -189,6 +189,21 @@ pub enum ServerControl {
         /// The server's [`PROTOCOL_VERSION`].
         server_version: u32,
     },
+
+    // ---- Manual mark-watched (design.md #10)
+    /// Client -> server: cycle a file's group watched flag from the
+    /// episode browser. Unlike `EofReached` this is not scoped to
+    /// now-playing and touches no playback register -- just the watched
+    /// flag, plus (when setting `true`) the same List `next_ep`
+    /// auto-advance the EOF path gets. Appended last so no existing
+    /// discriminant moves (see the bump policy above); logically it
+    /// belongs with the other client -> server requests.
+    MarkWatched {
+        /// The file whose watched flag to set.
+        file: Ed2kHash,
+        /// The new value.
+        watched: bool,
+    },
 }
 
 /// One AniDB name-search result.
@@ -224,6 +239,7 @@ impl ServerControl {
             ServerControl::AniDbSearch { .. } => "AniDbSearch",
             ServerControl::AniDbSearchResults { .. } => "AniDbSearchResults",
             ServerControl::ProtocolMismatch { .. } => "ProtocolMismatch",
+            ServerControl::MarkWatched { .. } => "MarkWatched",
         }
     }
 }

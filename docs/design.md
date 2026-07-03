@@ -114,6 +114,27 @@ sync state with each other. See [network-design.md](network-design.md).
    playlist. If you have the file locally it resolves Ready; if you don't, it
    is added anyway (using the file catalog's identity) and downloads like any
    other missing file. Press `Esc`/`Backspace` to go back.
+   - Episodes are grouped by AniDB episode identity: most episodes have
+     exactly one known file and render as a single line ("Episode 03
+     `[Judas] Frieren - 03.mkv` Baughn Nero Kim"); when several files
+     claim the same episode number they expand into a lightweight tree --
+     a display-only header line plus one selectable child per copy, each
+     with its own holders. Holders are the users currently advertising
+     that file `Ready`, right-aligned and dim, so "pick the file you
+     already have" is a glance away. A file with no parseable episode
+     number never merges with another just because it's adjacent --
+     there's no evidence they're the same episode.
+   - Episodes watched personally (85% history) or by the group (the
+     watched flag) render muted, matching the playlist pane's convention.
+     A `<` marker sits on the first not-fully-watched row, and the
+     browser opens (and a season, once selected) with the cursor already
+     there.
+   - `w` cycles the selected file's group watched flag directly (a
+     `MarkWatched` request to the server, mirroring `EofReached`'s
+     watched-flag write): handy for marking an episode watched without
+     playing it to EOF, or undoing an accidental advance. Setting it to
+     watched also runs the same List `next_ep` auto-advance the EOF path
+     gets. No-op on a header row (no single file to act on).
 6. Sort mode for All Series is persisted across sessions.
 
 **From scratch:**
@@ -963,7 +984,8 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Enter` | Series (List mode) | Jump to next episode / open entry |
 | `e` | Series (List mode) | Edit entry (modal) |
 | `l` | Series (List mode) | Link entry to AniDB (search modal) |
-| `Enter` | Episode Browser | Select season / add episode to playlist |
+| `Enter` | Episode Browser | Select season (cursor on its first unwatched row) / choose an episode or copy; no-op on a header row |
+| `w` | Episode Browser | Cycle the selected file's group watched flag; no-op on a header row or in the season list |
 | `PgUp` / `PgDn` | Episode Browser | Move the selection by a page |
 | `Esc` / `Backspace` | Episode Browser | Go back (episodes -> seasons -> close) |
 | `Enter` | File Browser | Open directory / choose file (add or map) |
@@ -1044,7 +1066,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Data | CRDT Type | Notes |
 |------|-----------|-------|
 | Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>>` | `Identifier`-based ordering; includes size and duration; `None` = removal tombstone (purged at compaction) |
-| Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF) |
+| Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF, or a manual `MarkWatched` request from the episode browser) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Standalone register; last seeker is position authority |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion -- already paused at Lost) |

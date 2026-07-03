@@ -51,6 +51,10 @@ pub struct UiSnapshot {
     /// root). These render a dim "temporary" marker and are the only
     /// rows the archive action operates on. Local, not synced.
     pub cache_hashes: BTreeSet<Ed2kHash>,
+    /// Personal watch history (85% rule), by hash — feeds the episode
+    /// browser's muting alongside the group watched flag (design.md
+    /// #11). Local, not synced.
+    pub watched_hashes: BTreeSet<Ed2kHash>,
 }
 
 /// Log one outgoing [`UserAction`] at debug. Mutations log their
@@ -70,6 +74,9 @@ fn log_action(action: &UserAction) {
         UserAction::SaveSettings(..) => tracing::debug!("user action: SaveSettings"),
         UserAction::AniDbSearch { query } => {
             tracing::debug!(%query, "user action: AniDbSearch");
+        }
+        UserAction::MarkWatched { file, watched } => {
+            tracing::debug!(hash = %file, watched, "user action: MarkWatched");
         }
         UserAction::MapFile { path, .. } => {
             tracing::debug!(path = %path.display(), "user action: MapFile");
@@ -1059,6 +1066,13 @@ impl Ui {
                 let after = self.snapshot.view.playlist.last().map(|entry| entry.hash);
                 Some(UserAction::AddByHash { hash, after })
             }
+            Msg::ToggleEpisodeWatched { hash } => {
+                let watched = self.snapshot.view.watched.get(&hash) != Some(&true);
+                Some(UserAction::MarkWatched {
+                    file: hash,
+                    watched,
+                })
+            }
             Msg::OpenDirPicker => {
                 self.push_modal(Modal::Files(FileBrowser::for_directory()));
                 None
@@ -1263,51 +1277,44 @@ impl Ui {
             .into_iter()
             .find(|franchise| franchise.key == key);
         let Some(franchise) = franchise else { return };
-        // Build a season's episode list, ordered topologically by AniDB
-        // episode number (falling back to a natural parse of the label) --
-        // the metadata map is keyed by ed2k hash, so it arrives unordered.
-        let season_episodes = |hashes: Vec<Ed2kHash>| -> Vec<(Ed2kHash, String)> {
-            let mut episodes: Vec<(Ed2kHash, String)> = hashes
-                .into_iter()
-                .map(|hash| (hash, super::props::episode_label(view, &hash)))
-                .collect();
-            episodes.sort_by(|a, b| {
-                let key = |hash: &Ed2kHash, label: &str| {
-                    let epno = view
-                        .anidb_metadata
-                        .get(hash)
-                        .and_then(|metadata| metadata.as_ref())
-                        .and_then(|metadata| metadata.episode_number.as_deref());
-                    super::props::episode_sort_key(epno, label)
-                };
-                key(&a.0, &a.1).cmp(&key(&b.0, &b.1))
-            });
-            episodes
+        // Group a season's known files into rows (design.md #31/#11):
+        // sorted and grouped by AniDB episode identity, muted by group
+        // flag or personal history, with the browser's opening cursor on
+        // the first unwatched row.
+        let watched_hashes = &self.snapshot.watched_hashes;
+        let build_season = |title: String, hashes: Vec<Ed2kHash>| -> Season {
+            let episodes = props::episode_rows(view, &hashes, watched_hashes);
+            let first_unwatched = props::first_unwatched(&episodes);
+            Season {
+                title,
+                episodes,
+                first_unwatched,
+            }
         };
         let seasons: Vec<Season> = if franchise.series.is_empty() {
-            vec![Season {
-                title: franchise.title.clone(),
-                episodes: season_episodes(franchise.files.clone()),
-            }]
+            vec![build_season(
+                franchise.title.clone(),
+                franchise.files.clone(),
+            )]
         } else {
             franchise
                 .series
                 .iter()
-                .map(|series| Season {
-                    title: view
+                .map(|series| {
+                    let title = view
                         .series_relations
                         .get(series)
                         .map(|relations| relations.title.clone())
-                        .unwrap_or_else(|| format!("anidb:{}", series.0)),
-                    episodes: season_episodes(
-                        view.anidb_metadata
-                            .iter()
-                            .filter_map(|(hash, metadata)| {
-                                let metadata = metadata.as_ref()?;
-                                (metadata.series_id == Some(*series)).then_some(*hash)
-                            })
-                            .collect(),
-                    ),
+                        .unwrap_or_else(|| format!("anidb:{}", series.0));
+                    let hashes = view
+                        .anidb_metadata
+                        .iter()
+                        .filter_map(|(hash, metadata)| {
+                            let metadata = metadata.as_ref()?;
+                            (metadata.series_id == Some(*series)).then_some(*hash)
+                        })
+                        .collect();
+                    build_season(title, hashes)
                 })
                 .collect()
         };

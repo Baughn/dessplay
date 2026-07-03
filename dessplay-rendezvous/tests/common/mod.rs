@@ -472,6 +472,17 @@ pub async fn report_eof<S: SnapshotSource>(handle: &S, file: Ed2kHash) {
         .unwrap();
 }
 
+/// Manually mark a file's group watched flag, as the episode browser will.
+pub async fn mark_watched<S: SnapshotSource>(handle: &S, file: Ed2kHash, watched: bool) {
+    handle
+        .network_tx()
+        .send(NetworkCommand::SendReliable(Box::new(
+            ServerControl::MarkWatched { file, watched },
+        )))
+        .await
+        .unwrap();
+}
+
 /// Graceful quit: Goodbye + connection teardown.
 pub async fn quit<S: SnapshotSource>(handle: &S) {
     handle

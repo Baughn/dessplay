@@ -1067,6 +1067,9 @@ async fn serve_authed<T: Transport>(
             ServerControl::EofReached { file } => {
                 handle_eof(shared, username, role, file).await;
             }
+            ServerControl::MarkWatched { file, watched } => {
+                handle_mark_watched(shared, file, watched).await;
+            }
             ServerControl::AniDbSearch { query } => {
                 // A LIKE scan over the whole titles table (~1M rows,
                 // tens of ms). Searches are manual and rare; fine to
@@ -1197,6 +1200,37 @@ async fn handle_eof<T: Transport>(
     };
     shared.dirty.store(true, Ordering::SeqCst);
     tracing::info!("EOF on {file:?} reported by {reporter:?}; advancing");
+    for op in ops {
+        shared.broadcast_op(op, None, RelayTransport::Eager).await;
+    }
+}
+
+/// Manual mark-watched from the episode browser (docs/design.md #10):
+/// unlike `handle_eof` this is not scoped to now-playing and touches no
+/// playback register -- just the watched flag, plus (when setting `true`)
+/// the same List `next_ep` auto-advance the EOF path gets. A request that
+/// would not change the flag is a no-op, making repeats idempotent.
+async fn handle_mark_watched<T: Transport>(shared: &Shared<T>, file: Ed2kHash, watched: bool) {
+    let ops = {
+        let mut state = lock(&shared.state);
+        let view = state.view();
+        if view.watched.get(&file) == Some(&watched) {
+            return; // already at the requested value
+        }
+        let epoch = Epoch(shared.epoch.load(Ordering::SeqCst));
+        let mut ops = vec![state.set_watched(ActorId::SERVER, shared.stamp(), file, watched)];
+        if watched {
+            for (id, new_state) in list_advances(&view, file) {
+                tracing::info!(next_ep = ?new_state.next_ep, "advancing List entry");
+                ops.push(state.set_next_ep(ActorId::SERVER, shared.stamp(), id, new_state));
+            }
+        }
+        ops.into_iter()
+            .map(|op| ServerControl::StateOp { epoch, op })
+            .collect::<Vec<_>>()
+    };
+    shared.dirty.store(true, Ordering::SeqCst);
+    tracing::info!(watched, "manual mark-watched on {file:?}");
     for op in ops {
         shared.broadcast_op(op, None, RelayTransport::Eager).await;
     }

@@ -1,0 +1,21 @@
+---
+source: dessplay/src/ui/modals.rs
+expression: "render(&mut browser, 80, 20)"
+---
+
+
+
+            ┌Frieren — S1──────────────────────────────────────────┐
+            │  Episode 1  [Judas] Frieren - 01.mkv             Kim │
+            │< Episode 2                                           │
+            │    [Judas] Frieren - 02.mkv               Baughn Kim │
+            │    [SubGroup] Frieren - 02.mkv                  Nero │
+            │  extra_clip.mkv                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            └──────────────────────────────────────────────────────┘

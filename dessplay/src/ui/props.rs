@@ -744,6 +744,37 @@ pub struct EpisodeSortKey {
     fallback: Vec<NatToken>,
 }
 
+/// Parse an AniDB `episode_number` string ("03", "S1", "C1", ...) into its
+/// `(category, number)` ordering/grouping identity. `None` when
+/// unparseable: no digits, or a numeric-leading string with a
+/// non-alphabetic prefix.
+fn parse_episode_number(episode_number: Option<&str>) -> Option<(u8, u64)> {
+    let epno = episode_number?.trim();
+    let digits_at = epno.find(|c: char| c.is_ascii_digit())?;
+    let (prefix, digits) = epno.split_at(digits_at);
+    // Only an alphabetic (or empty) prefix is a recognised episode form;
+    // a leading digit means prefix is empty (regular episode).
+    if !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let number: u64 = digits
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .filter_map(|c| c.to_digit(10))
+        .fold(0u64, |n, d| {
+            n.saturating_mul(10).saturating_add(u64::from(d))
+        });
+    let category = match prefix.to_ascii_uppercase().as_str() {
+        "" => 0,
+        "S" => 1,
+        "C" => 2,
+        "T" => 3,
+        "P" => 4,
+        _ => 5,
+    };
+    Some((category, number))
+}
+
 /// Sort key for ordering episodes within a season.
 ///
 /// Topological by AniDB episode number when known: regular episodes (numeric,
@@ -754,33 +785,7 @@ pub struct EpisodeSortKey {
 /// precedes "ep 10").
 pub fn episode_sort_key(episode_number: Option<&str>, label: &str) -> EpisodeSortKey {
     let fallback = natural_tokens(label);
-    let parsed = episode_number.and_then(|epno| {
-        let epno = epno.trim();
-        let digits_at = epno.find(|c: char| c.is_ascii_digit())?;
-        let (prefix, digits) = epno.split_at(digits_at);
-        // Only an alphabetic (or empty) prefix is a recognised episode form;
-        // a leading digit means prefix is empty (regular episode).
-        if !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
-            return None;
-        }
-        let number: u64 = digits
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .filter_map(|c| c.to_digit(10))
-            .fold(0u64, |n, d| {
-                n.saturating_mul(10).saturating_add(u64::from(d))
-            });
-        let category = match prefix.to_ascii_uppercase().as_str() {
-            "" => 0,
-            "S" => 1,
-            "C" => 2,
-            "T" => 3,
-            "P" => 4,
-            _ => 5,
-        };
-        Some((category, number))
-    });
-    match parsed {
+    match parse_episode_number(episode_number) {
         Some((category, number)) => EpisodeSortKey {
             unnumbered: false,
             category,
@@ -794,6 +799,205 @@ pub fn episode_sort_key(episode_number: Option<&str>, label: &str) -> EpisodeSor
             fallback,
         },
     }
+}
+
+/// One known file for an episode: its display filename, holders (users
+/// advertising [`FileAvailability::Ready`] for it), and whether it counts
+/// as watched for muting.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EpisodeCopy {
+    /// The file's hash — what `Enter`/mark-watched act on.
+    pub hash: Ed2kHash,
+    /// Best-effort display name (see [`episode_label`]).
+    pub filename: String,
+    /// Users advertising [`FileAvailability::Ready`] for this hash,
+    /// sorted.
+    pub holders: Vec<UserId>,
+    /// Group watched flag, or personal 85%-history — either counts.
+    pub watched: bool,
+}
+
+/// One row in the episode browser's file list (design.md #31): most
+/// episodes have exactly one known copy and render as a single line;
+/// when several files share the same real AniDB episode number they
+/// expand into a header plus one child per copy, so "which copy, who has
+/// it" is visible instead of several identical-looking lines.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum EpisodeRow {
+    /// The only known copy of this episode. `episode` is the AniDB-derived
+    /// label ("Episode 03") when the file has a real episode number tying
+    /// it to potential siblings; `None` when it doesn't (the filename is
+    /// already the whole story, and there's no evidence any other file is
+    /// the same episode).
+    Single {
+        /// `Some("Episode 03")` when numbered.
+        episode: Option<String>,
+        /// The file.
+        copy: EpisodeCopy,
+    },
+    /// Display-only grouping line for a multi-copy episode — not
+    /// selectable, just names the group. `watched` is true only when
+    /// every copy underneath is.
+    Header {
+        /// "Episode 03".
+        episode: String,
+        /// Whether every copy in the group is watched.
+        watched: bool,
+    },
+    /// One copy of a multi-copy episode, indented under its [`Header`].
+    Child(EpisodeCopy),
+}
+
+impl EpisodeRow {
+    /// The hash to act on (add to playlist, mark watched) — `None` for a
+    /// [`Header`](EpisodeRow::Header), which exists only to name the
+    /// group and carries no file of its own.
+    pub fn hash(&self) -> Option<Ed2kHash> {
+        match self {
+            EpisodeRow::Single { copy, .. } | EpisodeRow::Child(copy) => Some(copy.hash),
+            EpisodeRow::Header { .. } => None,
+        }
+    }
+
+    /// Whether this row (and everything under it) is watched, for muting.
+    pub fn watched(&self) -> bool {
+        match self {
+            EpisodeRow::Single { copy, .. } | EpisodeRow::Child(copy) => copy.watched,
+            EpisodeRow::Header { watched, .. } => *watched,
+        }
+    }
+}
+
+/// Users advertising [`FileAvailability::Ready`] for `hash` (design.md
+/// #31: the episode browser's per-copy "who has it" list). Sorted for a
+/// stable display order.
+pub fn ready_holders(view: &StateView, hash: Ed2kHash) -> Vec<UserId> {
+    let mut holders: Vec<UserId> = view
+        .file_availability
+        .iter()
+        .filter(|((_, h), avail)| *h == hash && **avail == FileAvailability::Ready)
+        .map(|((user, _), _)| user.clone())
+        .collect();
+    holders.sort();
+    holders
+}
+
+/// Group and order a season's known files into episode rows (design.md
+/// #31/#11).
+///
+/// Files are sorted by [`episode_sort_key`], then adjacent files sharing
+/// the same real, parsed AniDB episode number collapse into one row (or a
+/// header + children when there's more than one copy). Files with no
+/// parseable episode number never merge with each other, even if
+/// adjacent — there is no evidence any two of them are the same episode,
+/// so each stays its own singleton group.
+///
+/// `personally_watched` is the local 85%-history hash set (design.md,
+/// Watch Tracking); a copy is muted when the group watched flag *or*
+/// personal history says watched, matching the playlist pane's
+/// convention.
+pub fn episode_rows(
+    view: &StateView,
+    hashes: &[Ed2kHash],
+    personally_watched: &BTreeSet<Ed2kHash>,
+) -> Vec<EpisodeRow> {
+    struct Entry {
+        hash: Ed2kHash,
+        label: String,
+        episode_number: Option<String>,
+        key: Option<(u8, u64)>,
+        sort_key: EpisodeSortKey,
+    }
+    let mut entries: Vec<Entry> = hashes
+        .iter()
+        .map(|&hash| {
+            let label = episode_label(view, &hash);
+            let episode_number = view
+                .anidb_metadata
+                .get(&hash)
+                .and_then(|m| m.as_ref())
+                .and_then(|m| m.episode_number.clone());
+            Entry {
+                hash,
+                key: parse_episode_number(episode_number.as_deref()),
+                sort_key: episode_sort_key(episode_number.as_deref(), &label),
+                episode_number,
+                label,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
+
+    // Group adjacent entries sharing the same parsed key; an unparseable
+    // (`None`) key always starts its own singleton group. `episode` is
+    // computed once here so the flat_map below never needs to re-derive
+    // "is this really a shared-key group" from `Option` alone.
+    struct Group {
+        episode: Option<String>,
+        members: Vec<Entry>,
+    }
+    let mut groups: Vec<Group> = Vec::new();
+    for entry in entries {
+        if let Some(key) = entry.key
+            && let Some(last) = groups.last_mut()
+            && last
+                .members
+                .last()
+                .is_some_and(|prev| prev.key == Some(key))
+        {
+            last.members.push(entry);
+            continue;
+        }
+        let episode = entry
+            .key
+            .and(entry.episode_number.as_deref())
+            .map(|epno| format!("Episode {epno}"));
+        groups.push(Group {
+            episode,
+            members: vec![entry],
+        });
+    }
+
+    let copy_of = |entry: &Entry| EpisodeCopy {
+        hash: entry.hash,
+        filename: entry.label.clone(),
+        holders: ready_holders(view, entry.hash),
+        watched: view.watched.get(&entry.hash) == Some(&true)
+            || personally_watched.contains(&entry.hash),
+    };
+
+    groups
+        .into_iter()
+        .flat_map(|group| {
+            if let [entry] = group.members.as_slice() {
+                vec![EpisodeRow::Single {
+                    episode: group.episode,
+                    copy: copy_of(entry),
+                }]
+            } else {
+                let copies: Vec<EpisodeCopy> = group.members.iter().map(copy_of).collect();
+                let watched = copies.iter().all(|copy| copy.watched);
+                // A multi-member group only ever forms from a shared
+                // `Some` key (the loop above never merges `None`-keyed
+                // entries), so `episode` is always `Some` here;
+                // `unwrap_or_default` keeps this total rather than
+                // panicking on that invariant.
+                let mut rows = vec![EpisodeRow::Header {
+                    episode: group.episode.unwrap_or_default(),
+                    watched,
+                }];
+                rows.extend(copies.into_iter().map(EpisodeRow::Child));
+                rows
+            }
+        })
+        .collect()
+}
+
+/// The index of the first not-fully-watched row (design.md #11: the
+/// browser's `<` marker and initial cursor placement). `None` when
+/// everything is watched.
+pub fn first_unwatched(rows: &[EpisodeRow]) -> Option<usize> {
+    rows.iter().position(|row| !row.watched())
 }
 
 /// The List, grouped per design: Watching (CurrentSeason + Active)
@@ -1664,5 +1868,168 @@ mod tests {
             let expected: Vec<String> = sorted.iter().map(|n| format!("{n:05}")).collect();
             proptest::prop_assert_eq!(sorted_labels(&items), expected);
         }
+    }
+
+    fn metadata(series: AniDbSeriesId, episode: &str) -> AniDbMetadata {
+        AniDbMetadata {
+            source: MetadataSource::AniDb,
+            series_name: "Frieren".into(),
+            series_id: Some(series),
+            episode_number: Some(episode.into()),
+        }
+    }
+
+    #[test]
+    fn ready_holders_lists_users_advertising_ready_sorted() {
+        let mut state = CrdtState::new();
+        state.set_file_availability(
+            A,
+            ts(1),
+            UserId::new("nero"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+        state.set_file_availability(
+            A,
+            ts(2),
+            UserId::new("kim"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+        state.set_file_availability(
+            A,
+            ts(3),
+            UserId::new("baughn"),
+            hash(1),
+            FileAvailability::Missing,
+        );
+        // Different file: must not leak in.
+        state.set_file_availability(
+            A,
+            ts(4),
+            UserId::new("dagger"),
+            hash(2),
+            FileAvailability::Ready,
+        );
+        assert_eq!(
+            ready_holders(&state.view(), hash(1)),
+            vec![UserId::new("kim"), UserId::new("nero")]
+        );
+    }
+
+    #[test]
+    fn episode_rows_single_copy_per_episode() {
+        // Two distinct AniDB episodes, one file each: two Single rows, in
+        // episode order regardless of hash-map iteration order.
+        let series = AniDbSeriesId(1);
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(A, ts(1), hash(2), Some(metadata(series, "2")));
+        state.set_anidb_metadata(A, ts(2), hash(1), Some(metadata(series, "1")));
+        let view = state.view();
+        let rows = episode_rows(&view, &[hash(2), hash(1)], &BTreeSet::new());
+        let hashes: Vec<Ed2kHash> = rows.iter().filter_map(EpisodeRow::hash).collect();
+        assert_eq!(hashes, vec![hash(1), hash(2)]);
+        assert!(
+            matches!(&rows[0], EpisodeRow::Single { episode: Some(e), .. } if e == "Episode 1")
+        );
+        assert!(
+            matches!(&rows[1], EpisodeRow::Single { episode: Some(e), .. } if e == "Episode 2")
+        );
+    }
+
+    #[test]
+    fn episode_rows_multi_copy_becomes_header_and_children() {
+        // Two files both claiming AniDB episode 3: one Header + two
+        // Children, holders attached per copy.
+        let series = AniDbSeriesId(1);
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(A, ts(1), hash(1), Some(metadata(series, "3")));
+        state.set_anidb_metadata(A, ts(2), hash(2), Some(metadata(series, "3")));
+        state.set_file_availability(
+            A,
+            ts(3),
+            UserId::new("kim"),
+            hash(1),
+            FileAvailability::Ready,
+        );
+        state.set_file_availability(
+            A,
+            ts(4),
+            UserId::new("nero"),
+            hash(2),
+            FileAvailability::Ready,
+        );
+        let view = state.view();
+        let rows = episode_rows(&view, &[hash(1), hash(2)], &BTreeSet::new());
+        assert_eq!(rows.len(), 3);
+        assert!(
+            matches!(&rows[0], EpisodeRow::Header { episode, watched: false } if episode == "Episode 3")
+        );
+        let EpisodeRow::Child(a) = &rows[1] else {
+            panic!("expected a Child row")
+        };
+        let EpisodeRow::Child(b) = &rows[2] else {
+            panic!("expected a Child row")
+        };
+        assert_eq!(a.hash, hash(1));
+        assert_eq!(a.holders, vec![UserId::new("kim")]);
+        assert_eq!(b.hash, hash(2));
+        assert_eq!(b.holders, vec![UserId::new("nero")]);
+    }
+
+    #[test]
+    fn episode_rows_never_merges_unnumbered_files() {
+        // Two files with no AniDB episode number: each is a singleton
+        // group, never merged just because they're adjacent after sorting.
+        let mut state = CrdtState::new();
+        // No metadata at all -- both fall back to their playlist filename.
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(1),
+            sender: UserId::new("kim"),
+            text: "irrelevant".into(),
+        });
+        let view = state.view();
+        let rows = episode_rows(&view, &[hash(1), hash(2)], &BTreeSet::new());
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .all(|row| matches!(row, EpisodeRow::Single { episode: None, .. }))
+        );
+    }
+
+    #[test]
+    fn episode_rows_muted_by_group_flag_or_personal_history() {
+        let series = AniDbSeriesId(1);
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(A, ts(1), hash(1), Some(metadata(series, "1")));
+        state.set_anidb_metadata(A, ts(2), hash(2), Some(metadata(series, "2")));
+        state.set_watched(A, ts(3), hash(1), true); // group flag
+        let personally_watched: BTreeSet<Ed2kHash> = [hash(2)].into_iter().collect(); // personal history
+        let view = state.view();
+        let rows = episode_rows(&view, &[hash(1), hash(2)], &personally_watched);
+        assert!(rows.iter().all(EpisodeRow::watched));
+        assert_eq!(first_unwatched(&rows), None);
+
+        // A third, untouched episode breaks the streak.
+        state.set_anidb_metadata(A, ts(4), hash(3), Some(metadata(series, "3")));
+        let view = state.view();
+        let rows = episode_rows(&view, &[hash(1), hash(2), hash(3)], &personally_watched);
+        assert_eq!(first_unwatched(&rows), Some(2));
+    }
+
+    #[test]
+    fn episode_rows_header_watched_only_when_every_copy_is() {
+        let series = AniDbSeriesId(1);
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(A, ts(1), hash(1), Some(metadata(series, "1")));
+        state.set_anidb_metadata(A, ts(2), hash(2), Some(metadata(series, "1")));
+        state.set_watched(A, ts(3), hash(1), true);
+        let view = state.view();
+        let rows = episode_rows(&view, &[hash(1), hash(2)], &BTreeSet::new());
+        let EpisodeRow::Header { watched, .. } = &rows[0] else {
+            panic!("expected a Header row")
+        };
+        assert!(!watched, "one unwatched copy must keep the group unwatched");
+        assert_eq!(first_unwatched(&rows), Some(0));
     }
 }
