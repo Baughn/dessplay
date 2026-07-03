@@ -211,6 +211,23 @@ pub enum SeriesWatchState {
     Maybe,
 }
 
+/// A user's series-watch preference plus who wrote it (mirrors
+/// [`ManualState::Away`]'s `set_by`). `set_by: None` means "the subject
+/// themself" — every self-directed write (`/watch`, `/maybe`, `/skip`,
+/// Ctrl-R) and every system auto-write (a linked List entry's watcher
+/// membership, the missing-file auto-NotWatching) writes `None`; only a
+/// write targeting *another* user (design.md #7/#13: `n` on the Users
+/// pane, `/skip <name>`) sets `Some(actor)`. Display code falls back to
+/// the subject when `None`, so this is a pure additive change for every
+/// call site that predates Phase 16.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct SeriesPreference {
+    /// The three-state commitment.
+    pub state: SeriesWatchState,
+    /// Who wrote this entry, if not the subject.
+    pub set_by: Option<UserId>,
+}
+
 /// Who is currently the playback-position authority. A user identity
 /// rather than an `ActorId`: actors are session-scoped, so a raw actor
 /// could not be mapped back to a user across reconnects.

@@ -18,8 +18,8 @@ use crate::lww::{Lww, LwwCell, resolve_value};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
     FileCatalogEntry, FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent,
-    PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry, SeriesRelations,
-    SeriesWatchState, SharedTimestamp, UserId,
+    PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry, SeriesPreference,
+    SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
@@ -49,7 +49,7 @@ pub struct CrdtState {
     /// The group's play/pause latch. Unwritten resolves as `Paused`.
     pub playback_intent: LwwCell<PlaybackIntent>,
     /// Per-user, per-series watch preference.
-    pub series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
+    pub series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesPreference>,
     /// Per-user manual state override. `Away` is writable by anyone.
     pub manual_override: LwwMap<UserId, Option<ManualState>>,
     /// Per-user, per-file availability.
@@ -107,7 +107,7 @@ pub enum CrdtOp {
     /// Playback-intent register write.
     PlaybackIntent(LwwRegOp<PlaybackIntent>),
     /// Series preference write.
-    SeriesPreference(LwwMapOp<(UserId, AniDbSeriesId), SeriesWatchState>),
+    SeriesPreference(LwwMapOp<(UserId, AniDbSeriesId), SeriesPreference>),
     /// Manual override write.
     ManualOverride(LwwMapOp<UserId, Option<ManualState>>),
     /// File availability write.
@@ -217,10 +217,97 @@ struct PlaybackPositionV1 {
     timestamp: SharedTimestamp,
 }
 
+/// The on-disk/wire layout of [`CrdtState`] **before** `series_preference`
+/// entries gained [`SeriesPreference`] attribution (design.md #7/#13).
+/// Identical to the current struct except `series_preference` uses the
+/// bare [`SeriesWatchState`] value. Frozen: a record of the format, not
+/// live state.
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Default, Serialize))]
+struct CrdtStateV3 {
+    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
+    watched: LwwMap<Ed2kHash, bool>,
+    now_playing: LwwCell<Option<Ed2kHash>>,
+    seek_authority: LwwCell<SeekAuthority>,
+    playback_intent: LwwCell<PlaybackIntent>,
+    series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
+    manual_override: LwwMap<UserId, Option<ManualState>>,
+    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
+    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
+    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
+    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_next_ep: LwwMap<ListEntryId, NextEpState>,
+    lookup_requests: GSet<FileHashInfo>,
+    chat: GList<ChatMessage>,
+    playback_position: LwwMap<UserId, PlaybackPosition>,
+    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+}
+
+/// A migration-only [`ActorId`], used solely to synthesize dots when
+/// rebuilding an [`LwwMap`] whose *value type* changed shape (see
+/// [`upgrade_series_preference`]). Never issued to a real client or
+/// server session — safe because `ActorId`s are session-scoped (Phase 4):
+/// no live session's dot clock depends on a restart-time migration
+/// preserving the old map's internal dot structure, only the resolved
+/// `(timestamp, value)` per key matters for future LWW comparisons.
+const MIGRATION_ACTOR: ActorId = ActorId(u128::MAX);
+
+/// Rebuild a `series_preference` map from its pre-attribution shape,
+/// preserving each entry's resolved `(timestamp, value)` and writing
+/// `set_by: None` (falls back to the subject on display — see
+/// [`SeriesPreference`]).
+fn upgrade_series_preference(
+    old: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
+) -> LwwMap<(UserId, AniDbSeriesId), SeriesPreference> {
+    let mut upgraded = LwwMap::new();
+    for entry in old.iter() {
+        let (key, cell) = entry.val;
+        if let Some(lww) = crate::lww::resolve(cell) {
+            map_put(
+                &mut upgraded,
+                MIGRATION_ACTOR,
+                lww.timestamp,
+                key.clone(),
+                SeriesPreference {
+                    state: lww.value,
+                    set_by: None,
+                },
+            );
+        }
+    }
+    upgraded
+}
+
+impl From<CrdtStateV3> for CrdtState {
+    fn from(v3: CrdtStateV3) -> Self {
+        CrdtState {
+            playlist: v3.playlist,
+            watched: v3.watched,
+            now_playing: v3.now_playing,
+            seek_authority: v3.seek_authority,
+            playback_intent: v3.playback_intent,
+            series_preference: upgrade_series_preference(v3.series_preference),
+            manual_override: v3.manual_override,
+            file_availability: v3.file_availability,
+            anidb_metadata: v3.anidb_metadata,
+            series_relations: v3.series_relations,
+            file_catalog: v3.file_catalog,
+            list_entries: v3.list_entries,
+            list_next_ep: v3.list_next_ep,
+            lookup_requests: v3.lookup_requests,
+            chat: v3.chat,
+            playback_position: v3.playback_position,
+            acknowledged_absent: v3.acknowledged_absent,
+        }
+    }
+}
+
 /// The on-disk/wire layout of [`CrdtState`] **before** the `file` tag was
 /// appended to [`PlaybackPosition`] (but after `acknowledged_absent`).
 /// Identical to the current struct except `playback_position` uses the old
-/// [`PlaybackPositionV1`] value. Frozen: a record of the format, not live
+/// [`PlaybackPositionV1`] value, and `series_preference` the pre-attribution
+/// [`SeriesWatchState`] value. Frozen: a record of the format, not live
 /// state.
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(Default, Serialize))]
@@ -254,7 +341,7 @@ impl From<CrdtStateV2> for CrdtState {
             now_playing: v2.now_playing,
             seek_authority: v2.seek_authority,
             playback_intent: v2.playback_intent,
-            series_preference: v2.series_preference,
+            series_preference: upgrade_series_preference(v2.series_preference),
             manual_override: v2.manual_override,
             file_availability: v2.file_availability,
             anidb_metadata: v2.anidb_metadata,
@@ -306,7 +393,7 @@ impl From<CrdtStateV1> for CrdtState {
             now_playing: v1.now_playing,
             seek_authority: v1.seek_authority,
             playback_intent: v1.playback_intent,
-            series_preference: v1.series_preference,
+            series_preference: upgrade_series_preference(v1.series_preference),
             manual_override: v1.manual_override,
             file_availability: v1.file_availability,
             anidb_metadata: v1.anidb_metadata,
@@ -326,16 +413,20 @@ impl CrdtState {
     /// Decode a persisted snapshot blob, migrating an older on-disk layout
     /// forward. The postcard blob carries no version tag, so try the
     /// current layout first and, on failure, fall back through the previous
-    /// layouts: [`CrdtStateV2`] (before the `file` tag on
+    /// layouts: [`CrdtStateV3`] (before `series_preference` gained
+    /// attribution), then [`CrdtStateV2`] (before the `file` tag on
     /// [`PlaybackPosition`]), then [`CrdtStateV1`] (also before
-    /// `acknowledged_absent`). Both drop their ephemeral playback positions.
-    /// A blob that is none of these (genuinely corrupt) surfaces the
-    /// *original* error, so callers still see a real codec failure.
+    /// `acknowledged_absent`). All three drop ephemeral playback positions
+    /// (V1/V2) and re-key `series_preference` with `set_by: None` (V1/V2/V3)
+    /// — see [`upgrade_series_preference`]. A blob that is none of these
+    /// (genuinely corrupt) surfaces the *original* error, so callers still
+    /// see a real codec failure.
     pub fn decode_snapshot(blob: &[u8]) -> Result<CrdtState, crate::wire::WireError> {
         match crate::wire::decode::<CrdtState>(blob) {
             Ok(state) => Ok(state),
-            Err(primary) => crate::wire::decode::<CrdtStateV2>(blob)
+            Err(primary) => crate::wire::decode::<CrdtStateV3>(blob)
                 .map(CrdtState::from)
+                .or_else(|_| crate::wire::decode::<CrdtStateV2>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV1>(blob).map(CrdtState::from))
                 .map_err(|_| primary),
         }
@@ -514,7 +605,9 @@ impl CrdtState {
         CrdtOp::PlaybackIntent(reg_put(&mut self.playback_intent, ts, intent))
     }
 
-    /// Set a user's watch preference for a series.
+    /// Set a user's watch preference for a series. `set_by` names the
+    /// writer when it isn't `user` themself (`None` for every self-directed
+    /// write and system auto-write — see [`SeriesPreference`]).
     pub fn set_series_preference(
         &mut self,
         actor: ActorId,
@@ -522,13 +615,17 @@ impl CrdtState {
         user: UserId,
         series: AniDbSeriesId,
         pref: SeriesWatchState,
+        set_by: Option<UserId>,
     ) -> CrdtOp {
         CrdtOp::SeriesPreference(map_put(
             &mut self.series_preference,
             actor,
             ts,
             (user, series),
-            pref,
+            SeriesPreference {
+                state: pref,
+                set_by,
+            },
         ))
     }
 
@@ -943,7 +1040,7 @@ pub struct StateView {
     /// The play/pause latch (`Paused` when never written).
     pub playback_intent: PlaybackIntent,
     /// Per-user series preferences.
-    pub series_preference: BTreeMap<(UserId, AniDbSeriesId), SeriesWatchState>,
+    pub series_preference: BTreeMap<(UserId, AniDbSeriesId), SeriesPreference>,
     /// Per-user manual overrides.
     pub manual_override: BTreeMap<UserId, Option<ManualState>>,
     /// Per-user file availability.
@@ -1023,6 +1120,76 @@ mod tests {
         // Durable state survives; the ephemeral positions are dropped.
         assert_eq!(decoded.view().now_playing, Some(hash(1)));
         assert!(decoded.view().playback_position.is_empty());
+    }
+
+    /// A pre-attribution snapshot's `series_preference` entries carry bare
+    /// `SeriesWatchState`. Decoding must fall through to `CrdtStateV3` and
+    /// upgrade each entry to `SeriesPreference { set_by: None, .. }`,
+    /// preserving the resolved value and timestamp (so a later real write
+    /// still LWW-compares correctly against the migrated entry).
+    #[test]
+    fn legacy_blob_with_unattributed_series_preference_upgrades_to_set_by_none() {
+        let mut series_preference = LwwMap::new();
+        map_put(
+            &mut series_preference,
+            A1,
+            ts(5),
+            (UserId::new("kim"), AniDbSeriesId(1)),
+            SeriesWatchState::Watching,
+        );
+        let legacy = CrdtStateV3 {
+            series_preference,
+            ..Default::default()
+        };
+        let blob = crate::wire::encode(&legacy).unwrap();
+
+        let decoded = CrdtState::decode_snapshot(&blob).expect("legacy blob must decode");
+        let key = (UserId::new("kim"), AniDbSeriesId(1));
+        assert_eq!(
+            decoded.view().series_preference.get(&key),
+            Some(&SeriesPreference {
+                state: SeriesWatchState::Watching,
+                set_by: None,
+            })
+        );
+
+        // A later real write (with attribution) must still win by LWW —
+        // the migrated entry's timestamp must have survived the upgrade.
+        let mut decoded = decoded;
+        decoded.set_series_preference(
+            A2,
+            ts(6),
+            UserId::new("kim"),
+            AniDbSeriesId(1),
+            SeriesWatchState::NotWatching,
+            Some(UserId::new("baughn")),
+        );
+        assert_eq!(
+            decoded.view().series_preference.get(&key),
+            Some(&SeriesPreference {
+                state: SeriesWatchState::NotWatching,
+                set_by: Some(UserId::new("baughn")),
+            })
+        );
+
+        // And an *older* real write (ts 4, before the migrated ts-5 entry)
+        // must still lose — the migration didn't reset the dominance order.
+        let mut decoded2 = CrdtState::decode_snapshot(&blob).unwrap();
+        decoded2.set_series_preference(
+            A2,
+            ts(4),
+            UserId::new("kim"),
+            AniDbSeriesId(1),
+            SeriesWatchState::Maybe,
+            Some(UserId::new("baughn")),
+        );
+        assert_eq!(
+            decoded2.view().series_preference.get(&key),
+            Some(&SeriesPreference {
+                state: SeriesWatchState::Watching,
+                set_by: None,
+            })
+        );
     }
 
     #[test]

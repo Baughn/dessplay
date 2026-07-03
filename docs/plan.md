@@ -929,6 +929,58 @@ owners; queueing tonight's episode starts with the cursor already on it.
 
 ## Phase 16: Presence & Watch-State Extensions (#7/#13, #15)
 
+**Status: complete (2026-07-03).** Notes and deviations:
+
+- `SeriesWatchState` (the enum) is unchanged; the new attribution struct
+  is `SeriesPreference { state: SeriesWatchState, set_by: Option<UserId> }`
+  wrapping it in the map. `set_by: None` means "the subject" (every
+  self-directed write and system auto-write keeps writing `None`, unchanged
+  behavior); only the two new other-targeting paths (`n`, `/skip <name>`)
+  write `Some(actor)`. This kept the diff to the two new call sites instead
+  of threading `Some(self.me)` through every existing one.
+- The value-*shape* change (not just a trailing field on `CrdtState`, but a
+  field added to an existing map's value type) needed a value-preserving
+  migration, not just a whole-field move: `CrdtStateV3` freezes today's
+  layout (bare `SeriesWatchState`), and `upgrade_series_preference` rebuilds
+  the map entry-by-entry from resolved `(timestamp, value)` pairs under a
+  reserved migration-only `ActorId(u128::MAX)` — safe because `ActorId`s are
+  session-scoped (Phase 4), so no live session's dot clock depends on the
+  old map's internal dot structure surviving a restart-time migration.
+  `PROTOCOL_VERSION` bumped 2 → 3 (also covers #15's `PeerList` change; one
+  bump for the whole phase).
+- The existing `dessplay-core/tests/migration.rs` byte-truncation trick
+  (chop a known trailing suffix off a *current*-layout encoding to fabricate
+  an old blob) only works for trailing-field additions; it cannot fabricate
+  a faithful old blob for a *middle*-field shape change without access to
+  the private `CrdtStateVn` structs. `sample_state()` there was simplified
+  to leave `series_preference` empty (an empty map encodes identically
+  regardless of value shape) and the `SeriesPreference` migration is instead
+  covered where `CrdtStateV3` is reachable: `state.rs`'s own `#[cfg(test)]`
+  module.
+- **#15 design choice** (a deviation from the terse plan wording): the new
+  `known_offline` field *replaces* the old plain "departed" line rather than
+  sitting beside it. The server's `known_users` table records `last_seen` on
+  every connect *and* disconnect (both flow through the same code path that
+  already flips `registry.peers` presence), so filtering it down to
+  "everyone not currently Present" naturally covers both this-session
+  departures and never-connected-today users in one richer, selectable list
+  — a Kim who left 10 minutes ago and a Kim who hasn't logged in today are
+  equally valid `n`/`/skip <name>` targets, which is the actual point of the
+  request. The `CommittedAbsent`-blocker exclusion (a committed-but-absent
+  user always gets a red blocker row, never the dim line) is preserved
+  exactly as before; the finer Lost-vs-Departed-vs-committed dedup happens
+  client-side in `props::users_props` against `rows`, not on the server.
+- `ClientHandle` gained a second, independent `known_offline: watch::
+  Receiver<Vec<KnownUser>>` channel alongside the existing `peers` one
+  (rather than widening `peers`' value type), since `peers`'s type is
+  threaded through the whole multi-client test harness
+  (`dessplay-rendezvous/tests/common/mod.rs`) and widening it would have
+  touched every harness test file for no benefit — the two channels update
+  together (both are filled from the same `PeerList` push) but stay
+  separately typed.
+- The Users pane's selection cursor now ranges over `rows.len() +
+  known_offline.len()`; `a`/`n` resolve the selected index into either list.
+
 **Goal**: The group can manage *absent* members — the "Kim tool".
 
 ### What gets built

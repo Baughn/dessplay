@@ -64,7 +64,14 @@ pub fn rebuild(
     }
     fresh.set_playback_intent(actor, stamp(), view.playback_intent);
     for ((user, series), pref) in &view.series_preference {
-        fresh.set_series_preference(actor, stamp(), user.clone(), *series, *pref);
+        fresh.set_series_preference(
+            actor,
+            stamp(),
+            user.clone(),
+            *series,
+            pref.state,
+            pref.set_by.clone(),
+        );
     }
     for (user, value) in &view.manual_override {
         fresh.set_manual_override(actor, stamp(), user.clone(), value.clone());

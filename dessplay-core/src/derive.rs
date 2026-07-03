@@ -82,7 +82,7 @@ pub fn series_watch_for_file(
     };
     view.series_preference
         .get(&(user.clone(), series))
-        .copied()
+        .map(|pref| pref.state)
         .unwrap_or(SeriesWatchState::Maybe)
 }
 
@@ -358,6 +358,7 @@ mod tests {
             UserId::new("kim"),
             series,
             SeriesWatchState::NotWatching,
+            None,
         );
         // Kim is even Missing the file — irrelevant, she isn't watching.
         state.set_file_availability(
@@ -396,6 +397,7 @@ mod tests {
             UserId::new("kim"),
             series,
             SeriesWatchState::NotWatching,
+            None,
         );
         state.set_manual_override(SERVER, ts(5), UserId::new("kim"), Some(ManualState::Paused));
         let view = state.view();
@@ -482,6 +484,7 @@ mod tests {
                 UserId::new(*user),
                 SERIES,
                 *pref,
+                None,
             );
         }
         state
@@ -737,7 +740,7 @@ mod tests {
                         state.set_manual_override(SERVER, ts(t), user.clone(), Some(manual.clone()));
                     }
                     if let Some(pref) = spec.pref {
-                        state.set_series_preference(SERVER, ts(t + 1), user.clone(), series, pref);
+                        state.set_series_preference(SERVER, ts(t + 1), user.clone(), series, pref, None);
                     }
                     if let Some(avail) = spec.avail {
                         state.set_file_availability(SERVER, ts(t + 2), user.clone(), hash(1), avail);

@@ -130,6 +130,16 @@ const MIGRATIONS: &[&str] = &[
     // into one franchise. NULL = unknown (playlist-only request, or no
     // ancestor directory looked like a title).
     "ALTER TABLE anidb_queue ADD COLUMN series_hint TEXT;",
+    // v5 (Phase 16, #15): every username ever seen, with a last-seen
+    // timestamp, updated on connect/disconnect — survives server restarts
+    // (unlike the in-memory peer registry), so a user who hasn't connected
+    // yet today can still be named and acted on (`n` / `/skip <name>`).
+    "
+    CREATE TABLE known_users (
+        username  TEXT PRIMARY KEY,
+        last_seen INTEGER NOT NULL
+    ) STRICT;
+    ",
 ];
 
 /// `next_attempt` sentinel for queue entries that are settled and must
@@ -315,6 +325,38 @@ impl ServerStorage {
             });
         }
         Ok(messages)
+    }
+
+    // ---- Known users (design.md #15).
+
+    /// Record that `username` was seen (connected or disconnected) at
+    /// `at`. Upserts — a later call always wins, never regresses.
+    pub fn record_seen(&self, username: &UserId, at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO known_users (username, last_seen)
+             VALUES (?1, ?2)
+             ON CONFLICT (username) DO UPDATE SET last_seen = excluded.last_seen",
+            params![username.0, at],
+        )?;
+        Ok(())
+    }
+
+    /// Every known user last seen at or after `cutoff` (shared-clock
+    /// millis), for the `PeerList`'s `known_offline` field — the caller
+    /// filters out anyone currently in the live registry.
+    pub fn known_users(&self, cutoff: i64) -> Result<Vec<(UserId, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT username, last_seen FROM known_users WHERE last_seen >= ?1")?;
+        let rows = stmt.query_map(params![cutoff], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut users = Vec::new();
+        for row in rows {
+            let (username, last_seen) = row?;
+            users.push((UserId(username), last_seen));
+        }
+        Ok(users)
     }
 
     // ---- AniDB validation queue.
@@ -843,6 +885,32 @@ mod tests {
         let since = storage.chat_archive(Some(2), 100).unwrap();
         assert_eq!(since.len(), 2);
         assert_eq!(storage.chat_archive(None, 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn known_users_upserts_and_filters_by_cutoff() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        storage.record_seen(&UserId::new("kim"), 100).unwrap();
+        storage.record_seen(&UserId::new("nero"), 200).unwrap();
+        // A later call for the same user wins (upsert), never regresses.
+        storage.record_seen(&UserId::new("kim"), 300).unwrap();
+
+        let all = storage.known_users(0).unwrap();
+        assert_eq!(
+            all.into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            std::collections::BTreeMap::from([
+                (UserId::new("kim"), 300),
+                (UserId::new("nero"), 200),
+            ])
+        );
+
+        // The 30-day-cutoff boundary: nero (last_seen 200) drops out once
+        // the cutoff passes it, kim (300) stays.
+        let recent = storage.known_users(201).unwrap();
+        assert_eq!(recent, vec![(UserId::new("kim"), 300)]);
+        let none = storage.known_users(301).unwrap();
+        assert!(none.is_empty());
     }
 
     #[test]

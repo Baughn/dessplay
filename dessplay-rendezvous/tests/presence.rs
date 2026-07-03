@@ -188,6 +188,7 @@ async fn committed_absent_user_blocks_until_acknowledged() {
             user: baughn_id.clone(),
             series,
             pref: SeriesWatchState::Watching,
+            set_by: None,
         },
     )
     .await;
@@ -196,7 +197,8 @@ async fn committed_absent_user_blocks_until_acknowledged() {
             s.view
                 .series_preference
                 .get(&(UserId::new("baughn"), series))
-                == Some(&SeriesWatchState::Watching)
+                .map(|p| p.state)
+                == Some(SeriesWatchState::Watching)
         })
     })
     .await;
@@ -251,6 +253,112 @@ async fn committed_absent_user_blocks_until_acknowledged() {
     )
     .await;
     eventually(&[&kim], Duration::from_secs(30), |snaps| snaps[0].playing()).await;
+}
+
+/// design.md #7/#13 — the "Kim tool": instead of waiting for an absent
+/// committed user or acknowledging them file-by-file, another present user
+/// can mark them NotWatching directly, attributed to the actor. Unlike
+/// `AcknowledgeAbsent` (a one-shot, re-needed every episode) this is a
+/// durable preference change, so playback stays unblocked for the whole
+/// series -- and it's what B's Users pane / narrator would drive via `n`
+/// or `/skip <name>`.
+#[tokio::test(start_paused = true)]
+async fn marking_an_absent_committed_user_not_watching_unblocks_playback() {
+    let harness = Harness::new(0x5EED);
+    let (kim, baughn) = playing_session(&harness).await;
+
+    let series = AniDbSeriesId(42);
+    let kim_id = UserId::new("kim");
+    let baughn_id = UserId::new("baughn");
+    mutate(
+        &baughn,
+        Mutation::SetAniDbMetadata {
+            hash: hash(1),
+            metadata: Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(series),
+                episode_number: Some("1".into()),
+            }),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetSeriesPreference {
+            user: kim_id.clone(),
+            series,
+            pref: SeriesWatchState::Watching,
+            set_by: None,
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .series_preference
+                .get(&(kim_id.clone(), series))
+                .map(|p| p.state)
+                == Some(SeriesWatchState::Watching)
+        })
+    })
+    .await;
+
+    // Kim's connection dies; she becomes Departed and, being committed,
+    // keeps blocking baughn's playback.
+    harness.isolate("kim");
+    eventually(&[&baughn], Duration::from_secs(120), |snaps| {
+        snaps[0]
+            .peer("kim")
+            .is_some_and(|p| p.presence == Presence::Departed)
+    })
+    .await;
+    mutate(
+        &baughn,
+        Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Playing,
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !snapshot_of(&baughn).await.playing(),
+        "committed-absent kim must block playback before the mark"
+    );
+
+    // Baughn marks kim NotWatching for the series -- attributed to
+    // himself, since kim isn't here to do it.
+    mutate(
+        &baughn,
+        Mutation::SetSeriesPreference {
+            user: kim_id.clone(),
+            series,
+            pref: SeriesWatchState::NotWatching,
+            set_by: Some(baughn_id.clone()),
+        },
+    )
+    .await;
+    mutate(
+        &baughn,
+        Mutation::SetPlaybackIntent {
+            intent: PlaybackIntent::Playing,
+        },
+    )
+    .await;
+    eventually(&[&baughn], Duration::from_secs(30), |snaps| {
+        snaps[0].playing()
+    })
+    .await;
+
+    let snap = snapshot_of(&baughn).await;
+    assert_eq!(
+        snap.view.series_preference.get(&(kim_id, series)),
+        Some(&dessplay_core::types::SeriesPreference {
+            state: SeriesWatchState::NotWatching,
+            set_by: Some(baughn_id),
+        }),
+        "the resolved preference must attribute the write to baughn, not kim"
+    );
 }
 
 /// Graceful quit: straight to Departed (no Lost stage), still listed,
@@ -309,6 +417,7 @@ async fn committed_user_blocks_after_graceful_quit() {
             user: baughn_id.clone(),
             series,
             pref: SeriesWatchState::Watching,
+            set_by: None,
         },
     )
     .await;
@@ -317,7 +426,8 @@ async fn committed_user_blocks_after_graceful_quit() {
             .view
             .series_preference
             .get(&(baughn_id.clone(), series))
-            == Some(&SeriesWatchState::Watching)
+            .map(|p| p.state)
+            == Some(SeriesWatchState::Watching)
     })
     .await;
 

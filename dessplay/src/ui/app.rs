@@ -44,6 +44,14 @@ pub struct UiSnapshot {
     pub view: std::sync::Arc<StateView>,
     /// The latest peer list.
     pub peers: Vec<PeerInfo>,
+    /// Known usernames not currently in `peers` (design.md #15) — valid
+    /// targets for `n` / `/skip <name>` even before they show up.
+    pub known_offline: Vec<dessplay_core::net::KnownUser>,
+    /// Shared-clock millis when this snapshot was built — the "now" the
+    /// Users pane's "last seen Nd ago" labels are relative to. Threaded
+    /// explicitly (not read from the system clock inside `props`) so the
+    /// mapping stays a pure, testable function of its inputs.
+    pub now: u64,
     /// Local watch history: series (by AniDB id or filename-parsed name)
     /// -> last-watched millis (drives the Recent mode sort).
     pub recency: BTreeMap<crate::storage::SeriesKey, u64>,
@@ -508,8 +516,12 @@ impl Ui {
         self.chat.set_lines(chat);
         self.chat
             .set_usernames(props::chat_usernames(&snapshot.peers));
-        self.users
-            .set_props(props::users_props(&snapshot.view, &snapshot.peers));
+        self.users.set_props(props::users_props(
+            &snapshot.view,
+            &snapshot.peers,
+            &snapshot.known_offline,
+            snapshot.now,
+        ));
         self.playlist.set_props(props::playlist_props(
             &snapshot.view,
             &self.me,
@@ -802,13 +814,17 @@ impl Ui {
         if let Some(file) = view.now_playing
             && let Some(Some(metadata)) = view.anidb_metadata.get(&file)
             && let Some(series) = metadata.series_id
-            && view.series_preference.get(&(me.clone(), series))
-                == Some(&SeriesWatchState::NotWatching)
+            && view
+                .series_preference
+                .get(&(me.clone(), series))
+                .map(|pref| pref.state)
+                == Some(SeriesWatchState::NotWatching)
         {
             actions.push(UserAction::Mutate(Mutation::SetSeriesPreference {
                 user: me,
                 series,
                 pref: SeriesWatchState::Maybe,
+                set_by: None,
             }));
         }
         actions
@@ -939,6 +955,10 @@ impl Ui {
                     state,
                 }))
             }
+            Msg::SetNotWatching(user) => self
+                .set_others_pref(user, SeriesWatchState::NotWatching, "n")
+                .into_iter()
+                .next(),
             Msg::AddFileAfter(after) => {
                 // The browser wants the library index (recursive search,
                 // watched greying, cursor placement), which lives in
@@ -1030,7 +1050,7 @@ impl Ui {
                 let current = view
                     .series_preference
                     .get(&(self.me.clone(), series))
-                    .copied()
+                    .map(|pref| pref.state)
                     .unwrap_or(SeriesWatchState::Maybe);
                 let next = match current {
                     SeriesWatchState::Watching => SeriesWatchState::Maybe,
@@ -1041,6 +1061,7 @@ impl Ui {
                     user: self.me.clone(),
                     series,
                     pref: next,
+                    set_by: None,
                 }))
             }
             Msg::CloseModal => {
@@ -1210,7 +1231,15 @@ impl Ui {
             // `/maybe` is the opportunistic default; `/skip` opts out.
             "/watch" => self.set_now_playing_pref(SeriesWatchState::Watching, "/watch"),
             "/maybe" => self.set_now_playing_pref(SeriesWatchState::Maybe, "/maybe"),
-            "/skip" => self.set_now_playing_pref(SeriesWatchState::NotWatching, "/skip"),
+            // `/skip` marks yourself by default; an optional name targets
+            // another user (design.md #7/#13) — mirrors `/away <name>`'s
+            // no-validation `UserId::new`.
+            "/skip" => match parts.next() {
+                Some(name) => {
+                    self.set_others_pref(UserId::new(name), SeriesWatchState::NotWatching, "/skip")
+                }
+                None => self.set_now_playing_pref(SeriesWatchState::NotWatching, "/skip"),
+            },
             // Play past a committed-but-absent blocker of the current file.
             "/ack" => self.acknowledge_blockers(),
             other => vec![UserAction::Notice(format!(
@@ -1235,6 +1264,26 @@ impl Ui {
                 user: self.me.clone(),
                 series,
                 pref,
+                set_by: None,
+            })],
+            None => vec![UserAction::Notice(format!(
+                "{cmd}: no series info for the current file yet"
+            ))],
+        }
+    }
+
+    /// Set another user's watch preference for the now-playing file's
+    /// series, attributed to us (design.md #7/#13: `n` on the Users pane,
+    /// `/skip <name>`). A local notice when there is no series id yet — the
+    /// mirror of [`Self::set_now_playing_pref`], which the self-directed
+    /// commands still use unattributed (`set_by: None`).
+    fn set_others_pref(&self, user: UserId, pref: SeriesWatchState, cmd: &str) -> Vec<UserAction> {
+        match self.now_playing_series() {
+            Some(series) => vec![UserAction::Mutate(Mutation::SetSeriesPreference {
+                user,
+                series,
+                pref,
+                set_by: Some(self.me.clone()),
             })],
             None => vec![UserAction::Notice(format!(
                 "{cmd}: no series info for the current file yet"
@@ -1572,6 +1621,7 @@ mod tests {
             user.clone(),
             AniDbSeriesId(7),
             SeriesWatchState::NotWatching,
+            None,
         );
         state.view()
     }
@@ -1610,6 +1660,7 @@ mod tests {
             user.clone(),
             AniDbSeriesId(7),
             SeriesWatchState::Watching,
+            None,
         );
         state.view()
     }
@@ -2223,6 +2274,67 @@ mod tests {
         let mut ui = ui_with_view(StateView::default());
         let actions = ui.command("/skip");
         assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
+    #[test]
+    fn skip_with_a_name_targets_that_user_attributed_to_self() {
+        // design.md #7/#13: `/skip <name>` marks *another* user
+        // NotWatching, attributed to the local user (`me`, i.e. "kim").
+        let mut state = CrdtState::new();
+        state.set_now_playing(A, SharedTimestamp(1), Some(Ed2kHash([1; 16])));
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(2),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show".into(),
+                series_id: Some(AniDbSeriesId(7)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let mut ui = ui_with_view(state.view());
+        let actions = ui.command("/skip baughn");
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(
+            &actions[0],
+            UserAction::Mutate(Mutation::SetSeriesPreference {
+                user,
+                series: AniDbSeriesId(7),
+                pref: SeriesWatchState::NotWatching,
+                set_by: Some(setter),
+            }) if *user == UserId::new("baughn") && *setter == me()
+        ));
+    }
+
+    #[test]
+    fn users_pane_n_marks_the_selected_user_not_watching_attributed_to_self() {
+        // design.md #7/#13: `n` on the Users pane mirrors `/skip <name>`
+        // but is driven by row selection instead of a typed name.
+        let mut state = CrdtState::new();
+        state.set_now_playing(A, SharedTimestamp(1), Some(Ed2kHash([1; 16])));
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(2),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show".into(),
+                series_id: Some(AniDbSeriesId(7)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let mut ui = ui_with_view(state.view());
+        let action = ui.update(Msg::SetNotWatching(UserId::new("baughn")));
+        assert!(matches!(
+            action,
+            Some(UserAction::Mutate(Mutation::SetSeriesPreference {
+                user,
+                series: AniDbSeriesId(7),
+                pref: SeriesWatchState::NotWatching,
+                set_by: Some(setter),
+            })) if user == UserId::new("baughn") && setter == me()
+        ));
     }
 
     #[test]

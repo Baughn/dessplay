@@ -202,11 +202,12 @@ fn state_json(view: &StateView, sel: &Selection) -> Result<Value, serde_json::Er
     }
     if sel.wants("series_preference") {
         let mut rows = Vec::new();
-        for ((user, series), state) in &view.series_preference {
+        for ((user, series), pref) in &view.series_preference {
             rows.push(json!({
                 "user": user.0,
                 "series": series.0,
-                "state": serde_json::to_value(state)?,
+                "state": serde_json::to_value(pref.state)?,
+                "set_by": pref.set_by.as_ref().map(|u| &u.0),
             }));
         }
         m.insert("series_preference".into(), Value::Array(rows));
@@ -328,7 +329,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use dessplay_core::types::{AniDbSeriesId, SeriesWatchState, UserId};
+    use dessplay_core::types::{AniDbSeriesId, SeriesPreference, SeriesWatchState, UserId};
 
     fn hash(byte: u8) -> Ed2kHash {
         Ed2kHash([byte; 16])
@@ -342,7 +343,10 @@ mod tests {
         let mut series_preference = BTreeMap::new();
         series_preference.insert(
             (UserId::new("Baughn"), AniDbSeriesId(18302)),
-            SeriesWatchState::Watching,
+            SeriesPreference {
+                state: SeriesWatchState::Watching,
+                set_by: None,
+            },
         );
         StateView {
             now_playing: Some(hash(0xab)),
@@ -374,7 +378,9 @@ mod tests {
         let rows = json["series_preference"].as_array().unwrap();
         assert_eq!(
             rows,
-            &vec![json!({ "user": "Baughn", "series": 18302, "state": "Watching" })]
+            &vec![
+                json!({ "user": "Baughn", "series": 18302, "state": "Watching", "set_by": null })
+            ]
         );
     }
 

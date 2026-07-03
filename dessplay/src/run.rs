@@ -554,7 +554,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                     ClientEvent::Network(NetworkEvent::Disconnected { reason }) => {
                         tracing::warn!("disconnected ({reason}); retrying");
                     }
-                    ClientEvent::Network(NetworkEvent::PeerList(peers)) => {
+                    ClientEvent::Network(NetworkEvent::PeerList { peers, known_offline }) => {
                         if first_peer_list {
                             first_peer_list = false;
                             tracing::info!(
@@ -566,7 +566,11 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                             .iter()
                             .map(|p| format!("{} [{:?}/{:?}]", p.username, p.role, p.presence))
                             .collect();
-                        tracing::info!("peers: {}", listed.join(", "));
+                        tracing::info!(
+                            "peers: {} (known offline: {})",
+                            listed.join(", "),
+                            known_offline.len()
+                        );
                     }
                     // Relayed peer traffic is internal cross-actor flow
                     // (and high-volume during a transfer) — trace, not
@@ -1216,7 +1220,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                     .await;
                             }
                         }
-                        ClientEvent::Network(NetworkEvent::PeerList(_)) if first_peer_list => {
+                        ClientEvent::Network(NetworkEvent::PeerList { .. }) if first_peer_list => {
                             first_peer_list = false;
                             tracing::info!(
                                 since_start_ms = self.start.elapsed().as_millis() as u64,
@@ -1420,6 +1424,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         Some(crate::ui::app::UiSnapshot {
             view: std::sync::Arc::new(view),
             peers: self.handle.peers.borrow().clone(),
+            known_offline: self.handle.known_offline.borrow().clone(),
+            now: (system_clock())(),
             recency,
             cache_hashes,
             watched_hashes,

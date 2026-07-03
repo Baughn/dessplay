@@ -689,12 +689,40 @@ impl UsersPane {
         items
     }
 
+    /// The selected username, whether it's a live `rows` entry or a
+    /// selectable `known_offline` one (design.md #15 -- both are valid
+    /// `a`/`n` targets).
+    fn selected_username(&self) -> Option<String> {
+        let index = self.cursor.index();
+        if let Some(row) = self.props.rows.get(index) {
+            return Some(row.name.clone());
+        }
+        self.props
+            .known_offline
+            .get(index - self.props.rows.len())
+            .map(|row| row.name.clone())
+    }
+
     /// `a`: mark the selected user Away (or clear an Away we set).
     fn act_away(&mut self) -> Option<Msg> {
-        let row = self.props.rows.get(self.cursor.index())?;
         Some(Msg::ToggleAway(dessplay_core::types::UserId::new(
-            row.name.clone(),
+            self.selected_username()?,
         )))
+    }
+
+    /// `n`: mark the selected user NotWatching for the now-playing series
+    /// (design.md #7/#13 — the "Kim tool": rule on someone's commitment
+    /// without waiting for them to show up).
+    fn act_not_watching(&mut self) -> Option<Msg> {
+        Some(Msg::SetNotWatching(dessplay_core::types::UserId::new(
+            self.selected_username()?,
+        )))
+    }
+
+    /// Rows + known-offline entries are one selectable range; seeders never
+    /// are.
+    fn selectable_len(&self) -> usize {
+        self.props.rows.len() + self.props.known_offline.len()
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -709,19 +737,22 @@ impl UsersPane {
                 ]))
             })
             .collect();
-        if !self.props.departed.is_empty() {
-            items.push(ListItem::new(Span::styled(
-                format!("offline: {}", self.props.departed.join(", ")),
-                theme::tone_style(Tone::Muted),
-            )));
-        }
+        // Dim + italic, one row per known-offline user (design.md #15) --
+        // selectable, unlike the seeders line below.
+        items.extend(self.props.known_offline.iter().map(|row| {
+            ListItem::new(Span::styled(
+                format!("{} (last seen {})", row.name, row.last_seen_label),
+                theme::tone_style(Tone::Muted)
+                    .add_modifier(tuirealm::ratatui::style::Modifier::ITALIC),
+            ))
+        }));
         if !self.props.seeders.is_empty() {
             items.push(ListItem::new(Span::styled(
                 format!("seeders: {}", self.props.seeders.join(", ")),
                 theme::tone_style(Tone::Muted),
             )));
         }
-        let selected = (self.focused && !self.props.rows.is_empty()).then(|| self.cursor.index());
+        let selected = (self.focused && self.selectable_len() > 0).then(|| self.cursor.index());
         render_list(frame, area, "Users", items, selected, self.focused);
     }
 }
@@ -731,7 +762,7 @@ passive_component!(UsersPane);
 impl AppComponent<Msg, NoUserEvent> for UsersPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         if let Some(key) = plain(ev)
-            && self.cursor.nav(key, self.props.rows.len())
+            && self.cursor.nav(key, self.selectable_len())
         {
             return Some(Msg::None);
         }
@@ -740,11 +771,18 @@ impl AppComponent<Msg, NoUserEvent> for UsersPane {
 }
 
 /// Users-pane bindings.
-static USERS_KEYMAP: Keymap<UsersPane, Msg> = Keymap(&[Binding {
-    pattern: KeyPattern::Char('a'),
-    bar: Some(("a", "Mark away")),
-    action: UsersPane::act_away,
-}]);
+static USERS_KEYMAP: Keymap<UsersPane, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Char('a'),
+        bar: Some(("a", "Mark away")),
+        action: UsersPane::act_away,
+    },
+    Binding {
+        pattern: KeyPattern::Char('n'),
+        bar: Some(("n", "Not watching")),
+        action: UsersPane::act_not_watching,
+    },
+]);
 
 // ---- Playlist pane -----------------------------------------------------
 

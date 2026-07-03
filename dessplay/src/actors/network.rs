@@ -81,7 +81,12 @@ pub enum NetworkEvent {
         message: String,
     },
     /// A fresh peer list.
-    PeerList(Vec<dessplay_core::net::PeerInfo>),
+    PeerList {
+        /// Present/Lost/Departed peers this session knows about.
+        peers: Vec<dessplay_core::net::PeerInfo>,
+        /// Known usernames not currently in `peers` (design.md #15).
+        known_offline: Vec<dessplay_core::net::KnownUser>,
+    },
     /// A state-sync message from the server (op, merge, snapshot,
     /// hash). Routed to the sync actor; `via_datagram` selects the
     /// FIFO-guarded apply path.
@@ -437,8 +442,16 @@ async fn run_connection<T: Transport>(
                             config.protocol_version
                         ));
                     }
-                    ServerControl::PeerList { peers } => {
-                        let _ = events.send(NetworkEvent::PeerList(peers)).await;
+                    ServerControl::PeerList {
+                        peers,
+                        known_offline,
+                    } => {
+                        let _ = events
+                            .send(NetworkEvent::PeerList {
+                                peers,
+                                known_offline,
+                            })
+                            .await;
                     }
                     ServerControl::TimeSyncResponse { client_send, server_recv, server_send } => {
                         let t4 = (config.clock)();

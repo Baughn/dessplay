@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use dessplay_core::net::{Connector, PeerInfo, Role};
+use dessplay_core::net::{Connector, KnownUser, PeerInfo, Role};
 use dessplay_core::types::{ActorId, UserId};
 use tokio::sync::{mpsc, watch};
 
@@ -37,6 +37,9 @@ pub struct ClientHandle {
     /// derived playback state (`dessplay_core::derive`). Borrow, don't
     /// consume: `peers.borrow().clone()`.
     pub peers: watch::Receiver<Vec<PeerInfo>>,
+    /// Known usernames not currently in `peers` (design.md #15). Borrow,
+    /// don't consume, same as `peers`.
+    pub known_offline: watch::Receiver<Vec<KnownUser>>,
 }
 
 /// Configuration for a headless sync client.
@@ -78,6 +81,7 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
     let (sync_event_tx, mut sync_event_rx) = mpsc::channel(256);
     let (event_tx, event_rx) = mpsc::channel(256);
     let (peers_tx, peers_rx) = watch::channel(Vec::new());
+    let (known_offline_tx, known_offline_rx) = watch::channel(Vec::new());
 
     let mut sync_config = SyncConfig::new(
         config.username.clone(),
@@ -117,8 +121,13 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
     let router_events = event_tx.clone();
     tokio::spawn(async move {
         while let Some(event) = net_event_rx.recv().await {
-            if let NetworkEvent::PeerList(peers) = &event {
+            if let NetworkEvent::PeerList {
+                peers,
+                known_offline,
+            } = &event
+            {
                 let _ = peers_tx.send(peers.clone());
+                let _ = known_offline_tx.send(known_offline.clone());
             }
             let to_sync = match &event {
                 NetworkEvent::Server { msg, via_datagram } => Some(SyncCommand::Server {
@@ -130,7 +139,7 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
                 NetworkEvent::ClockSync { offset_millis } => Some(SyncCommand::ClockSync {
                     offset_millis: *offset_millis,
                 }),
-                NetworkEvent::PeerList(_)
+                NetworkEvent::PeerList { .. }
                 | NetworkEvent::Rejected { .. }
                 | NetworkEvent::SearchResults { .. }
                 | NetworkEvent::Peer { .. } => None,
@@ -167,5 +176,6 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
         network: net_tx,
         events: event_rx,
         peers: peers_rx,
+        known_offline: known_offline_rx,
     }
 }

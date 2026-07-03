@@ -20,7 +20,7 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// its stability is what lets a mismatched future client still be
 /// decoded and answered with a readable [`ServerControl::ProtocolMismatch`]
 /// instead of a silent decode failure.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as
@@ -67,6 +67,19 @@ pub struct PeerInfo {
     pub addresses: Vec<SocketAddr>,
     /// Shared-clock millis when the peer connected.
     pub connected_since: u64,
+}
+
+/// A username the server has seen before, with when it last connected or
+/// disconnected — design.md #15: lets the group name and act on
+/// (`n` / `/skip <name>`) someone who hasn't connected *this session*
+/// (possibly not since a server restart), which the live [`PeerInfo`] list
+/// alone cannot represent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnownUser {
+    /// The username.
+    pub username: UserId,
+    /// Shared-clock millis of the last connect or disconnect.
+    pub last_seen: u64,
 }
 
 /// Client <-> server control messages. See docs/network-design.md for
@@ -120,6 +133,12 @@ pub enum ServerControl {
     PeerList {
         /// All known peers, including the recipient.
         peers: Vec<PeerInfo>,
+        /// Known usernames not currently in `peers` (design.md #15):
+        /// this-session departures and never-connected-today users alike,
+        /// from the server's persisted registry, within the retention
+        /// window. Replaces the old plain "departed" display -- see
+        /// [`KnownUser`].
+        known_offline: Vec<KnownUser>,
     },
     /// NTP-style probe response.
     TimeSyncResponse {

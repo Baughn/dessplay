@@ -9,6 +9,16 @@
 //!    `CrdtState::decode_snapshot`: an older blob (the field-less prefix)
 //!    decodes via the `CrdtStateV1` fallback with an empty set, so the
 //!    authoritative server never silently loses its List/playlist.
+//!
+//! `series_preference`'s Phase 16 value-shape change (bare `SeriesWatchState`
+//! -> attributed `SeriesPreference`) is **not** exercised here: unlike the
+//! trailing-field additions above, it changes a field in the *middle* of the
+//! struct, so the byte-truncation trick this file uses (chop a known
+//! trailing suffix off a *current*-layout encoding) can't fabricate a
+//! faithful old-layout blob for it — the private `CrdtStateV1`/`V2`/`V3`
+//! structs this integration test has no access to would need constructing
+//! directly. That migration is covered where those structs are reachable:
+//! `dessplay-core/src/state.rs`'s own `#[cfg(test)]` module.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -29,37 +39,16 @@ fn hash(i: u8) -> Ed2kHash {
 
 /// A state populated across a spread of fields, with an **empty**
 /// `acknowledged_absent` — so its postcard encoding ends with exactly the
-/// one-byte empty-GSet that the v1 layout lacks. `playback_position` is
-/// left **empty**: an empty map encodes identically whether its value is
-/// the current `PlaybackPosition` or the old `PlaybackPositionV1` (no entry
-/// bytes carry the value layout), so stripping the trailing byte still
-/// reproduces a faithful pre-`file` v1 blob.
+/// one-byte empty-GSet that the v1 layout lacks. `series_preference` and
+/// `playback_position` are left **empty**: an empty map encodes identically
+/// regardless of its value type (no entry bytes carry the value layout), so
+/// stripping the trailing byte still reproduces a faithful pre-`file` v1
+/// blob even after `series_preference`'s Phase 16 value-shape change (see
+/// the module docs).
 fn sample_state() -> CrdtState {
     let mut state = CrdtState::new();
     state.set_now_playing(A, ts(1), Some(hash(1)));
     state.set_watched(A, ts(2), hash(1), true);
-    // All three watch states, including the new trailing variant.
-    state.set_series_preference(
-        A,
-        ts(3),
-        UserId::new("baughn"),
-        dessplay_core::types::AniDbSeriesId(7),
-        SeriesWatchState::Watching,
-    );
-    state.set_series_preference(
-        A,
-        ts(4),
-        UserId::new("kim"),
-        dessplay_core::types::AniDbSeriesId(8),
-        SeriesWatchState::Maybe,
-    );
-    state.set_series_preference(
-        A,
-        ts(5),
-        UserId::new("nero"),
-        dessplay_core::types::AniDbSeriesId(9),
-        SeriesWatchState::NotWatching,
-    );
     state.append_chat(ChatMessage {
         timestamp: ts(6),
         sender: UserId::new("baughn"),

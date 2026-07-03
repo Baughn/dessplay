@@ -51,6 +51,8 @@ impl UiClient {
         let snapshot = UiSnapshot {
             view: std::sync::Arc::new(view_of(&self.handle).await),
             peers: self.handle.peers.borrow().clone(),
+            known_offline: self.handle.known_offline.borrow().clone(),
+            now: 0,
             recency: BTreeMap::new(),
             cache_hashes: Default::default(),
             watched_hashes: Default::default(),

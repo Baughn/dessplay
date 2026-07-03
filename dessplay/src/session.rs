@@ -352,7 +352,7 @@ struct NarratorState {
     /// Per-user manual override (Paused / Away).
     manual_override: BTreeMap<UserId, Option<ManualState>>,
     /// Per-(user, series) watch preference (small; one or two per user).
-    series_preference: BTreeMap<(UserId, AniDbSeriesId), SeriesWatchState>,
+    series_preference: BTreeMap<(UserId, AniDbSeriesId), dessplay_core::types::SeriesPreference>,
     /// Per-user presence (interactive users only; seeders never narrated).
     peers: BTreeMap<UserId, dessplay_core::net::Presence>,
     /// Per-file acknowledgements of committed-absent users.
@@ -694,8 +694,8 @@ impl PlayerWiring {
                 .cloned()
                 .collect::<std::collections::BTreeSet<_>>();
             for key in keys {
-                let was = prev.series_preference.get(&key).copied();
-                let now = view.series_preference.get(&key).copied();
+                let was = prev.series_preference.get(&key).cloned();
+                let now = view.series_preference.get(&key).cloned();
                 if was == now {
                     continue;
                 }
@@ -713,7 +713,9 @@ impl PlayerWiring {
                 // function of synced state: every client suppresses the same
                 // lines (design.md, System Messages — "every client diffs
                 // the same synced inputs ... narrates the same lines").
-                if was.is_none() && now == list_implied_pref(view, series, user) {
+                if was.is_none()
+                    && now.as_ref().map(|p| p.state) == list_implied_pref(view, series, user)
+                {
                     continue;
                 }
                 // Coalesce the become_ready (Ctrl-R / /ready) action: it
@@ -727,15 +729,23 @@ impl PlayerWiring {
                 let override_cleared = prev.manual_override.get(user).cloned().flatten().is_some()
                     && view.manual_override.get(user).cloned().flatten().is_none();
                 let name = &meta.series_name;
-                match now {
+                // Attribution: the real setter when recorded (design.md
+                // #7/#13 — `n` on the Users pane, `/skip <name>`), else the
+                // subject themself (every self-directed write and system
+                // auto-write, unchanged from before this feature existed).
+                let by = now
+                    .as_ref()
+                    .and_then(|p| p.set_by.clone())
+                    .unwrap_or_else(|| user.clone());
+                match now.as_ref().map(|p| p.state) {
                     Some(SeriesWatchState::NotWatching) => {
-                        lines.push(format!("{user} set to not-watching {name} (by {user})"))
+                        lines.push(format!("{user} set to not-watching {name} (by {by})"))
                     }
                     Some(SeriesWatchState::Watching) => {
-                        lines.push(format!("{user} is committed to {name} (by {user})"))
+                        lines.push(format!("{user} is committed to {name} (by {by})"))
                     }
                     Some(SeriesWatchState::Maybe) if !override_cleared => {
-                        lines.push(format!("{user} set {name} to maybe (by {user})"))
+                        lines.push(format!("{user} set {name} to maybe (by {by})"))
                     }
                     Some(SeriesWatchState::Maybe) => {}
                     None => {}
@@ -1031,6 +1041,7 @@ impl PlayerWiring {
             user: self.me.clone(),
             series,
             pref: dessplay_core::types::SeriesWatchState::NotWatching,
+            set_by: None,
         })];
         // Show the placeholder instead of a stale frame / blank window.
         if view.now_playing == Some(file) {
@@ -1351,6 +1362,7 @@ impl PlayerWiring {
                 user: self.me.clone(),
                 series,
                 pref,
+                set_by: None,
             }));
         }
 
@@ -2629,12 +2641,20 @@ mod tests {
             baughn.clone(),
             series,
             SeriesWatchState::NotWatching,
+            None,
         );
         let v0 = state.view();
 
         // One become_ready action: clear the override AND flip to Maybe.
         state.set_manual_override(A, ts(12), baughn.clone(), None);
-        state.set_series_preference(A, ts(13), baughn.clone(), series, SeriesWatchState::Maybe);
+        state.set_series_preference(
+            A,
+            ts(13),
+            baughn.clone(),
+            series,
+            SeriesWatchState::Maybe,
+            None,
+        );
         let v1 = state.view();
 
         assert_eq!(narrate_diff(&v0, &peers, &v1, &peers), ["baughn unpaused"]);
@@ -2673,6 +2693,7 @@ mod tests {
             baughn.clone(),
             series,
             SeriesWatchState::NotWatching,
+            None,
         );
         let v_not = state.view();
         assert_eq!(
@@ -2686,6 +2707,7 @@ mod tests {
             baughn.clone(),
             series,
             SeriesWatchState::Watching,
+            None,
         );
         let v_yes = state.view();
         assert_eq!(
@@ -2694,11 +2716,46 @@ mod tests {
         );
 
         // Watching -> Maybe (the default) is narrated too.
-        state.set_series_preference(A, ts(22), baughn.clone(), series, SeriesWatchState::Maybe);
+        state.set_series_preference(
+            A,
+            ts(22),
+            baughn.clone(),
+            series,
+            SeriesWatchState::Maybe,
+            None,
+        );
         let v_maybe = state.view();
         assert_eq!(
             narrate_diff(&v_yes, &peers, &v_maybe, &peers),
             ["baughn set Some Show to maybe (by baughn)"]
+        );
+    }
+
+    #[test]
+    fn narrator_attributes_a_mark_others_write_to_the_real_setter() {
+        // design.md #7/#13: `n` on the Users pane / `/skip <name>` writes
+        // another user's preference, attributed to the actor — the narrator
+        // must name them, not fall back to the (absent) subject.
+        let baughn = UserId::new("baughn");
+        let kim = UserId::new("kim");
+        let series = dessplay_core::types::AniDbSeriesId(7);
+        let peers = [peer("kim"), peer("baughn")];
+
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let v0 = state.view();
+        state.set_series_preference(
+            A,
+            ts(20),
+            kim.clone(),
+            series,
+            SeriesWatchState::NotWatching,
+            Some(baughn.clone()),
+        );
+        let v1 = state.view();
+        assert_eq!(
+            narrate_diff(&v0, &peers, &v1, &peers),
+            ["kim set to not-watching Some Show (by baughn)"]
         );
     }
 
@@ -2729,7 +2786,14 @@ mod tests {
         );
 
         // The auto-write lands; its own narration is suppressed (intended).
-        state.set_series_preference(A, ts(11), me.clone(), series, SeriesWatchState::Watching);
+        state.set_series_preference(
+            A,
+            ts(11),
+            me.clone(),
+            series,
+            SeriesWatchState::Watching,
+            None,
+        );
         let auto = wiring.on_state(&state.view(), &peers);
         assert!(
             !system_texts(&auto).iter().any(|l| l.contains("committed")),
@@ -2738,7 +2802,14 @@ mod tests {
         );
 
         // A later manual /skip MUST narrate (this is the regression).
-        state.set_series_preference(A, ts(12), me.clone(), series, SeriesWatchState::NotWatching);
+        state.set_series_preference(
+            A,
+            ts(12),
+            me.clone(),
+            series,
+            SeriesWatchState::NotWatching,
+            None,
+        );
         let manual = wiring.on_state(&state.view(), &peers);
         assert_eq!(
             system_texts(&manual),
@@ -2780,8 +2851,16 @@ mod tests {
             baughn.clone(),
             series,
             SeriesWatchState::Watching,
+            None,
         );
-        state.set_series_preference(A, ts(12), kim.clone(), series, SeriesWatchState::Watching);
+        state.set_series_preference(
+            A,
+            ts(12),
+            kim.clone(),
+            series,
+            SeriesWatchState::Watching,
+            None,
+        );
         let v1 = state.view();
 
         // Two different clients diffing the identical synced transition.
@@ -2819,6 +2898,7 @@ mod tests {
             baughn,
             dessplay_core::types::AniDbSeriesId(99),
             SeriesWatchState::NotWatching,
+            None,
         );
         let v1 = state.view();
         assert!(narrate_diff(&v0, &peers, &v1, &peers).is_empty());
@@ -4391,6 +4471,7 @@ mod tests {
             UserId::new("dan"),
             series,
             SeriesWatchState::NotWatching,
+            None,
         );
         let view = state.view();
 
@@ -4502,6 +4583,7 @@ mod tests {
             me(),
             dessplay_core::types::AniDbSeriesId(7),
             SeriesWatchState::Watching,
+            None,
         );
         let view = state.view();
         let mut wiring = PlayerWiring::new(me());
@@ -4663,7 +4745,7 @@ mod tests {
             state.set_file_availability(A, ts(5), UserId::new("nas"), h, FileAvailability::Ready);
         }
         let series = dessplay_core::types::AniDbSeriesId(7);
-        state.set_series_preference(A, ts(6), me(), series, SeriesWatchState::NotWatching);
+        state.set_series_preference(A, ts(6), me(), series, SeriesWatchState::NotWatching, None);
         let view = state.view();
         let peers = [peer("kim"), peer("nas")];
 
@@ -4677,7 +4759,7 @@ mod tests {
         );
 
         // Commit to the series: now the whole window downloads.
-        state.set_series_preference(A, ts(7), me(), series, SeriesWatchState::Watching);
+        state.set_series_preference(A, ts(7), me(), series, SeriesWatchState::Watching, None);
         let view = state.view();
         let downloads = start_download_files(&wiring.on_state(&view, &peers));
         assert!(
@@ -5030,6 +5112,7 @@ mod tests {
             me(),
             dessplay_core::types::AniDbSeriesId(9),
             SeriesWatchState::Watching,
+            None,
         );
         let mut wiring = PlayerWiring::new(me());
         let directives = wiring.on_state(&state.view(), &[peer("kim")]);

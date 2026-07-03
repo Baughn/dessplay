@@ -17,8 +17,8 @@ use std::time::Duration;
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::framing::{read_frame, write_frame};
 use dessplay_core::net::{
-    AniDbSearchHit, BiStream, Listener, PROTOCOL_VERSION, PeerInfo, Presence, RelayEnvelope, Role,
-    ServerControl, Transport, TransportEvent, WireMessage,
+    AniDbSearchHit, BiStream, KnownUser, Listener, PROTOCOL_VERSION, PeerInfo, Presence,
+    RelayEnvelope, Role, ServerControl, Transport, TransportEvent, WireMessage,
 };
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
@@ -406,6 +406,9 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 /// timeout) a Lost peer becomes Departed — 60s of silence total, per
 /// docs/design.md (Presence).
 const DEPART_AFTER_MILLIS: u64 = 30_000;
+/// How long a known user stays visible in `known_offline` after their last
+/// connect/disconnect, per docs/design.md #15 ("hidden after 30 days").
+const KNOWN_USER_RETENTION_MILLIS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Resolve the snapshot the server starts from.
 ///
@@ -621,11 +624,67 @@ async fn reject_and_close<T: Transport>(conn: &T, msg: &ServerControl, reason: &
     conn.close(reason).await;
 }
 
+/// Every known user (design.md #15) not currently **Present**, within the
+/// retention window — the persisted counterpart to the in-memory registry,
+/// so a user who hasn't connected this session (possibly not since a
+/// server restart) can still be named and acted on.
+///
+/// Only `Presence::Present` peers are excluded here, not Lost/Departed
+/// ones: those still hold a `registry.peers` entry (it is never removed,
+/// only its presence flips), but they are *not* "fully represented"
+/// on-screen the way a Present peer is -- a Departed peer's only client-side
+/// display today is the plain dim line this field replaces. The finer
+/// dedup (Lost peers already get a row; a committed-absent Departed peer
+/// gets a blocker row) happens client-side against `rows`, which is built
+/// from the full peer list and knows about that gating state; this
+/// function only needs to avoid listing someone who is plainly, currently
+/// here.
+fn known_offline<T>(shared: &Shared<T>, peers: &[PeerInfo]) -> Vec<KnownUser> {
+    let Some(storage) = &*lock(&shared.storage) else {
+        return Vec::new();
+    };
+    let cutoff = (shared.clock)().saturating_sub(KNOWN_USER_RETENTION_MILLIS) as i64;
+    let known = match storage.known_users(cutoff) {
+        Ok(known) => known,
+        Err(e) => {
+            tracing::error!("loading known_users: {e}");
+            return Vec::new();
+        }
+    };
+    known
+        .into_iter()
+        .filter(|(username, _)| {
+            !peers
+                .iter()
+                .any(|p| &p.username == username && p.presence == Presence::Present)
+        })
+        .map(|(username, last_seen)| KnownUser {
+            username,
+            last_seen: last_seen as u64,
+        })
+        .collect()
+}
+
+/// Record `username`'s last-seen timestamp (design.md #15), on connect and
+/// disconnect alike. Best-effort: a storage error only logs, since presence
+/// tracking must not depend on it.
+fn record_seen<T>(shared: &Shared<T>, username: &UserId, at: u64) {
+    if let Some(storage) = &*lock(&shared.storage)
+        && let Err(e) = storage.record_seen(username, at as i64)
+    {
+        tracing::error!(user = %username.0, "recording known_users last_seen: {e}");
+    }
+}
+
 /// Push the current peer list (all presence stages) to every live
 /// connection.
 async fn broadcast_peer_list<T: Transport>(shared: &Shared<T>) {
     let peers = lock(&shared.registry).peer_infos();
-    let msg = ServerControl::PeerList { peers };
+    let known_offline = known_offline(shared, &peers);
+    let msg = ServerControl::PeerList {
+        peers,
+        known_offline,
+    };
     for conn in shared.live_conns(None) {
         send_control(&*conn, &msg).await;
     }
@@ -820,6 +879,7 @@ async fn serve_connection<T: Transport>(
         tracing::debug!(user = %username.0, "superseding the user's old connection");
         old.close("superseded by a new connection").await;
     }
+    record_seen(&shared, &username, clock());
 
     send_control(
         &*conn,
@@ -888,6 +948,7 @@ async fn serve_connection<T: Transport>(
         return;
     }
 
+    record_seen(&shared, &username, clock());
     match end {
         AuthedEnd::Goodbye => {
             tracing::info!("{username:?} quit");

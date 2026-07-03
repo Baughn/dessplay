@@ -87,7 +87,7 @@ async fn two_clients_connect_over_real_quic() {
         expect_event(events, Duration::from_secs(10), |e| {
             match e {
                 NetworkEvent::Connected { .. } => connected = true,
-                NetworkEvent::PeerList(peers) if peers.len() == 2 => saw_both_peers = true,
+                NetworkEvent::PeerList { peers, .. } if peers.len() == 2 => saw_both_peers = true,
                 NetworkEvent::ClockSync { offset_millis } => offset = Some(*offset_millis),
                 _ => {}
             }
@@ -213,7 +213,7 @@ async fn a_relayed_message_reaches_a_receive_only_peer_over_real_quic() {
     // opened + — with the fix — announced).
     for events in [&mut sender_events, &mut receiver_events] {
         expect_event(events, Duration::from_secs(10), |e| {
-            matches!(e, NetworkEvent::PeerList(peers) if peers.len() == 2).then_some(())
+            matches!(e, NetworkEvent::PeerList { peers, .. } if peers.len() == 2).then_some(())
         })
         .await;
     }

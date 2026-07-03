@@ -147,7 +147,7 @@ async fn connect_auth_peerlist_and_clock() {
 
     // Peer list contains us, Present, Interactive.
     expect_event(&mut client, Duration::from_secs(5), |e| match e {
-        NetworkEvent::PeerList(peers) => peers
+        NetworkEvent::PeerList { peers, .. } => peers
             .iter()
             .any(|p| {
                 p.username == UserId::new("baughn")
@@ -186,7 +186,7 @@ async fn second_client_appears_in_both_peer_lists() {
     // Both eventually see a two-peer list with the right roles.
     for client in [&mut kim, &mut nas] {
         expect_event(client, Duration::from_secs(5), |e| match e {
-            NetworkEvent::PeerList(peers) if peers.len() == 2 => {
+            NetworkEvent::PeerList { peers, .. } if peers.len() == 2 => {
                 let kim_ok = peers
                     .iter()
                     .any(|p| p.username == UserId::new("kim") && p.role == Role::Interactive);
@@ -355,7 +355,7 @@ async fn graceful_shutdown_updates_peer_list() {
     }
     // Wait until dagger has seen the 2-peer world.
     expect_event(&mut dag, Duration::from_secs(5), |e| match e {
-        NetworkEvent::PeerList(peers) if peers.len() == 2 => Some(()),
+        NetworkEvent::PeerList { peers, .. } if peers.len() == 2 => Some(()),
         _ => None,
     })
     .await;
@@ -365,7 +365,7 @@ async fn graceful_shutdown_updates_peer_list() {
     // Dagger sees kim depart *in place*: still listed, now Departed (a
     // clean quit is an immediate departure, not a registry removal).
     expect_event(&mut dag, Duration::from_secs(10), |e| match e {
-        NetworkEvent::PeerList(peers) => {
+        NetworkEvent::PeerList { peers, .. } => {
             let kim = peers.iter().find(|p| p.username == UserId::new("kim"));
             let dagger = peers.iter().find(|p| p.username == UserId::new("dagger"));
             (kim.is_some_and(|p| p.presence == Presence::Departed)

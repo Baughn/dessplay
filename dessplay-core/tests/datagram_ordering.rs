@@ -302,14 +302,21 @@ fn map_backed_series_preference_is_gap_checked() {
     let user = UserId::new("kim");
     let s = dessplay_core::types::AniDbSeriesId(1);
     let s2 = dessplay_core::types::AniDbSeriesId(2);
-    let op1 =
-        origin.set_series_preference(ORIGIN, ts(1), user.clone(), s, SeriesWatchState::Watching);
+    let op1 = origin.set_series_preference(
+        ORIGIN,
+        ts(1),
+        user.clone(),
+        s,
+        SeriesWatchState::Watching,
+        None,
+    );
     let op2 = origin.set_series_preference(
         ORIGIN,
         ts(2),
         user.clone(),
         s2,
         SeriesWatchState::NotWatching,
+        None,
     );
 
     let mut replica = CrdtState::new();

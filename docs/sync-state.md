@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-06-19
+Last updated: 2026-07-03
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -185,7 +185,7 @@ and the wire protocol uniform.
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Any peer; server on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Whoever last seeked; server on file change or authority departure |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Any user (play/pause); server forces Paused on lost/quit/departure/EOF-advance |
-| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>, ActorId>` | Each user writes own |
+| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesPreference>, ActorId>` | Any user (design.md #7/#13: `SeriesPreference { state, set_by }` lets one user write another's) |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
 | Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Any peer inserts; cleared on compaction |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>` | Each user writes own |
@@ -323,7 +323,16 @@ playback would silently auto-resume the moment a paused/lost user departs
 
 ### Series Preference
 
-`Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>, ActorId>`.
+`Map<(UserId, AniDbSeriesId), LwwCell<SeriesPreference>, ActorId>`.
+
+`SeriesPreference { state: SeriesWatchState, set_by: Option<UserId> }`
+(design.md #7/#13). `set_by` mirrors `ManualState::Away`'s setter: `None`
+for every self-directed write and system auto-write (rendered as the
+subject by the narrator), `Some(actor)` when one user writes *another's*
+preference (`n` on the Users pane, `/skip <name>` -- the "Kim tool": rule
+on someone's commitment without waiting for them to reconnect). There is
+no special-casing on read -- a later write from the subject themself wins
+by plain LWW, same as any other concurrent write to the key.
 
 `SeriesWatchState` is `Watching | NotWatching | Maybe` -- a user's
 commitment to a series, with three values:
@@ -359,6 +368,20 @@ total order on every replica -- convergence-safe. The only visible effect
 is that at an exact-millisecond tie, a concurrent `Maybe` write beats a
 `Watching`/`NotWatching` one, which is vanishingly rare under the
 Lamport-monotonic stamp discipline.
+
+**The `SeriesPreference` wrapper (Phase 16) is a value-*shape* change**,
+unlike the `Maybe`-variant addition above: the map's value type gained a
+field (`set_by`), not just a new enum discriminant. Snapshot decode
+migrates old on-disk blobs via `CrdtState::decode_snapshot`'s versioned
+fallback chain (`CrdtStateV3` -- identical to today's layout but with the
+bare `SeriesWatchState` value): each old entry is resolved to its
+`(timestamp, value)` winner and rewritten as `SeriesPreference { state,
+set_by: None }` under a reserved migration-only `ActorId`, preserving the
+timestamp (so a later real write from any actor still LWW-compares
+correctly) without needing the old entries' original per-actor dot
+structure -- safe because `ActorId`s are session-scoped (Phase 4), so no
+live session's dot clock depends on a restart-time migration reproducing
+it.
 
 ### Acknowledged Absent
 

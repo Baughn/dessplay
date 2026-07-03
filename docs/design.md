@@ -210,8 +210,9 @@ can be set on the settings screen.
 
 This state is **derived** from two independent sources:
 
-1. **Per-series watch preference** (`Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>`):
-   a user's commitment to a specific AniDB series, with **three** values:
+1. **Per-series watch preference** (`Map<(UserId, AniDbSeriesId), LwwCell<SeriesPreference>>`,
+   `SeriesPreference { state: SeriesWatchState, set_by: Option<UserId> }`):
+   a user's commitment to a specific AniDB series, with **three** `state` values:
 
    - **Watching** (committed): "I am definitely watching this series." The
      group waits for this user even when they are **absent** -- Lost,
@@ -254,6 +255,20 @@ user's client -- **attempting to unpause the player, or pressing Enter to send
 a chat message** -- back to normal. Merely *typing* a chat line (without
 sending it) does not clear it, so you can compose a message while still marked
 away. With five trusted friends, no permission system is needed.
+
+**Marking others not-watching**: any user can set *another* user's series
+preference to NotWatching -- `n` on a user in the Users pane (the now-playing
+series), or `/skip <name>` in chat -- the "Kim tool": rule on someone's
+commitment to a show without waiting for them to show up, or acknowledging
+them file-by-file. Unlike [Acknowledge](#playback-rules) (a per-file
+one-shot, re-needed every episode) this is a durable preference change, so
+playback stays unblocked for the whole series until the subject's own later
+write overrides it (plain LWW -- no special-casing, unlike Away's
+clear-by-the-marked-user's-activity rule). The write is attributed to the
+setter (`set_by: Some(actor)`), and the narrator names them ("Baughn set Kim
+to not-watching Frieren (by Baughn)"); `a`/`n` on the Users pane also work on
+a [known-but-offline](#presence) user who hasn't connected yet today, not just
+a currently-listed one.
 
 Derived states (manual override wins; otherwise the now-playing series'
 commitment decides):
@@ -313,11 +328,12 @@ and they are Ready, blue while a Ready peer is still fetching, and red
 otherwise (the download is visible; the red says they still won't be
 watching right now).
 
-Departed users (see [Presence](#presence)) are shown on a dim "offline"
-line -- **except** a committed (Watching) absent user, who keeps gating
-the now-playing file and is surfaced as a "committed, away" blocker until
-they return or the group [acknowledges](#playback-rules) past them.
-Seeders are not listed as users; they appear on a separate dim "seeders:" line.
+Departed users (see [Presence](#presence)) are shown on the dim, italic
+known-offline line -- **except** a committed (Watching) absent user, who
+keeps gating the now-playing file and is surfaced as a "committed, away"
+blocker until they return or the group [acknowledges](#playback-rules) past
+them. Seeders are not listed as users; they appear on a separate dim
+"seeders:" line.
 
 The video player carries a persistent **"Waiting for …" OSD overlay**
 whenever someone blocks playback of the now-playing file: every blocker
@@ -663,9 +679,12 @@ seek authority), so new-file lines are un-attributed; EOF-advance is told
 apart by the prior file's watched flag flipping true. Watch-preference
 lines are scoped to the **now-playing series** (the `/watch` / `/maybe` /
 `/skip` / Ctrl-R surface), which keeps the List's bulk auto-writes for
-other series out of the chat; their `(by …)` is the subject today (you can
-only set your own preference) and will name the real setter once
-[marking *others* not-watching](#future-plans) lands.
+other series out of the chat; the series-preference value itself carries a
+`set_by: Option<UserId>` (mirroring `ManualState::Away`) for exactly this
+reason -- `None` for every self-directed write and system auto-write
+(rendered as the subject, "(by Kim)"), `Some(actor)` for a write targeting
+*another* user (`n` on the Users pane, `/skip <name>` -- see
+[User States](#user-states)), rendered as the real setter ("(by Baughn)").
 
 **No cascade spam.** A single user-meaningful action often writes several
 registers at once -- pressing play clears the manual override *and* sets
@@ -769,7 +788,7 @@ A user's presence degrades in three stages:
 |-------|---------|--------|
 | **Present** | Normal operation | Counted in playback gating |
 | **Lost** | 30s without traffic (QUIC idle timeout; clients keep-alive every 10s, and position updates double as liveness) | Everyone pauses (server forces playback intent to Paused); system message in chat |
-| **Departed** | 60s without traffic | Removed from gating and from the active Users list (shown on a dim "offline" line). Playback **stays paused** -- the intent register holds Paused until a human presses play; the usual response is to switch shows. No auto-unpause. |
+| **Departed** | 60s without traffic | Removed from gating and from the active Users list (shown on the dim known-offline line -- see below). Playback **stays paused** -- the intent register holds Paused until a human presses play; the usual response is to switch shows. No auto-unpause. |
 
 Additional rules:
 
@@ -779,7 +798,7 @@ Additional rules:
 - **Graceful quit** (`/quit`, Ctrl-C): an *immediate departure* -- the
   user goes straight to **Departed** (skipping the 30s Lost / 60s ladder),
   but stays listed exactly like a peer that timed out: shown on the dim
-  "offline" line, and -- if **committed** (Watching) to the now-playing
+  known-offline line, and -- if **committed** (Watching) to the now-playing
   series -- still gating until the group acknowledges past them. Skipping
   the Lost stage is the *only* thing a clean quit buys over a silent
   disconnect; it does not waive a commitment (design's User States: the
@@ -795,6 +814,21 @@ Additional rules:
   server takes seek authority.
 - Departed users' CRDT state (manual override, file availability) persists
   but is ignored by gating until they return.
+
+**Known but offline (#15).** The above stages only cover peers the server's
+in-memory registry has seen *this process lifetime* -- a user who hasn't
+connected since the last server restart (or hasn't launched yet today) is
+invisible to it. The server also persists a small `known_users` table
+(username, last-seen millis), updated on every connect and disconnect, and
+pushes it alongside `PeerList` as `known_offline: Vec<KnownUser>` (everyone
+known who isn't currently Present, within a 30-day window). The Users pane
+renders this as a single dim + italic list -- replacing the old plain
+"offline" line -- showing "Kim (last seen 3d ago)" for both a user who left
+minutes ago and one who hasn't shown up today, unified because both are
+equally valid `n` / `/skip <name>` targets (the point of #15: rule on
+someone's commitment without waiting for them to reconnect). A committed
+(Watching) absent user is excluded from this list and shown instead as the
+red "committed, away" blocker row, exactly as before.
 
 ---
 
@@ -995,6 +1029,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `PgUp` / `PgDn` | File Browser | Move the selection by a page |
 | `s` | File Browser (directory picker) | Select the current directory |
 | `a` | Users | Mark selected user as Away (or clear an Away you set) |
+| `n` | Users | Mark selected user NotWatching for the now-playing series (works on a known-offline row too) |
 | `Enter` | Playlist | Play selected entry (or open file browser on [Add New]) |
 | `a` | Playlist | Add file (insert after selected entry) |
 | `d` | Playlist | Remove selected entry |
@@ -1070,7 +1105,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Standalone register; last seeker is position authority |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion -- already paused at Lost) |
-| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesWatchState>>` | Compound key; `Watching \| NotWatching \| Maybe`, absent entry = Maybe |
+| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesPreference>>` | Compound key; `SeriesPreference { state: Watching \| NotWatching \| Maybe, set_by: Option<UserId> }`, absent entry = Maybe; any user may write (design.md #7/#13) |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
 | Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Per-file one-shot: play past a committed-absent user; cleared on compaction |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>>` | Compound key |
@@ -1747,6 +1782,7 @@ inserted) so the previous layout is a strict prefix.
 | `anime_queue` | ANIME (relations-walk) queue: aid, attempt bookkeeping; the graph fills in over hours and must survive restarts |
 | `anidb_titles` | The anime-titles dump (aid, kind, lang, title); backs local name search |
 | `kv` | Bookkeeping (e.g. the titles dump's last fetch time) |
+| `known_users` | Every username ever seen, with a last-seen timestamp (design.md #15); updated on connect/disconnect, survives restarts unlike the in-memory peer registry |
 
 ---
 
@@ -1803,11 +1839,6 @@ For v1, this is acceptable. Future improvements could include:
   rule (see [File State](#file-state)). Needs a synced eligibility signal on
   `FileAvailability::Downloading` (the downloader's measured speed vs the
   file's bitrate); only the 20% threshold is enforced today.
-- Marking *another* user as not-watching a series (the per-series analogue of
-  `/away <name>` -- for when someone never gets around to a show). Needs a
-  `set_by` on `SeriesWatchState` (mirroring `ManualState::Away`) so the
-  [system message](#system-messages) can name the real setter; the narrator
-  already derives the subject from the map key.
 - Direct client-to-client connections (with or without hole punching) as a
   transfer optimization, slotted in beneath the `send(peer, message)`
   interface. Cut from v2: the relay-through-NAS path makes them unnecessary.

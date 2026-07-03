@@ -39,6 +39,10 @@ pub enum Msg {
     // Users pane
     /// Mark a user Away (or clear an Away).
     ToggleAway(UserId),
+    /// Mark a user NotWatching for the now-playing series (design.md
+    /// #7/#13 — the "Kim tool"): attributed to us, since the target may be
+    /// absent.
+    SetNotWatching(UserId),
 
     // Playlist pane
     /// Set now-playing to this entry.
@@ -132,6 +136,7 @@ impl Msg {
             Msg::AniDbSearchRequested(_) => "AniDbSearchRequested",
             Msg::ListEntryLinked(..) => "ListEntryLinked",
             Msg::ToggleAway(_) => "ToggleAway",
+            Msg::SetNotWatching(_) => "SetNotWatching",
             Msg::PlaySelected(_) => "PlaySelected",
             Msg::AddFileAfter(_) => "AddFileAfter",
             Msg::EpisodeChosen { .. } => "EpisodeChosen",

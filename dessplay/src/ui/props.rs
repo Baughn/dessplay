@@ -49,15 +49,45 @@ pub struct UserRow {
     pub tone: Tone,
 }
 
-/// Users pane props: active rows plus the dim departed/seeder lines.
+/// One row in the dim+italic "known offline" list (design.md #15):
+/// this-session departures and never-connected-today users alike,
+/// selectable as `n` / `/skip <name>` targets.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct KnownOfflineRow {
+    /// Username.
+    pub name: String,
+    /// "3d ago" / "5h ago" / "just now", relative to the snapshot's `now`.
+    pub last_seen_label: String,
+}
+
+/// Users pane props: active rows plus the dim known-offline/seeder lines.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct UsersProps {
     /// Present and Lost interactive users.
     pub rows: Vec<UserRow>,
-    /// Departed usernames (dim line).
-    pub departed: Vec<String>,
+    /// Known usernames not represented in `rows` -- this-session
+    /// departures and never-connected-today users alike (design.md #15).
+    /// Dim + italic, selectable.
+    pub known_offline: Vec<KnownOfflineRow>,
     /// Seeders (dim line), with a marker when not present.
     pub seeders: Vec<String>,
+}
+
+/// Render an elapsed duration as "Nd ago" / "Nh ago" / "Nm ago" / "just
+/// now" -- whole units, largest that divides at least 1.
+fn humanize_ago(elapsed_millis: u64) -> String {
+    const MINUTE: u64 = 60_000;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    if elapsed_millis >= DAY {
+        format!("{}d ago", elapsed_millis / DAY)
+    } else if elapsed_millis >= HOUR {
+        format!("{}h ago", elapsed_millis / HOUR)
+    } else if elapsed_millis >= MINUTE {
+        format!("{}m ago", elapsed_millis / MINUTE)
+    } else {
+        "just now".to_string()
+    }
 }
 
 /// Names of chat participants: interactive peers that are present or lost
@@ -71,8 +101,16 @@ pub fn chat_usernames(peers: &[PeerInfo]) -> Vec<String> {
         .collect()
 }
 
-/// Build the users pane from the design's ready-state table.
-pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
+/// Build the users pane from the design's ready-state table. `known_offline`
+/// is the server's persisted registry (design.md #15) of usernames not
+/// currently Present; `now` is the snapshot's shared-clock millis, for the
+/// "last seen Nd ago" labels.
+pub fn users_props(
+    view: &StateView,
+    peers: &[PeerInfo],
+    known_offline: &[dessplay_core::net::KnownUser],
+    now: u64,
+) -> UsersProps {
     let mut props = UsersProps::default();
     for peer in peers {
         let name = peer.username.to_string();
@@ -86,11 +124,12 @@ pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
         match peer.presence {
             // A committed (Watching) absent user keeps gating across
             // absence (until acknowledged), so they must read as a blocker
-            // here too — never hidden on the dim departed line — matching
-            // the `CommittedAbsent` blocker the status bar surfaces. A
-            // Maybe/NotWatching absent user does not block: Departed goes
-            // to the dim line, Lost shows greyed (a dropped connection, not
-            // something we are waiting on).
+            // here too — never hidden on the dim known-offline line —
+            // matching the `CommittedAbsent` blocker the status bar
+            // surfaces. A Maybe/NotWatching absent user does not block:
+            // Departed falls through to `known_offline` below, Lost shows
+            // greyed (a dropped connection, not something we are waiting
+            // on).
             Presence::Departed | Presence::Lost
                 if committed_absent_blocker(view, &peer.username) =>
             {
@@ -100,7 +139,10 @@ pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
                     tone: Tone::Blocked,
                 });
             }
-            Presence::Departed => props.departed.push(name),
+            // A plain Departed peer gets no row here — they're represented
+            // by `known_offline` below instead (design.md #15 unifies
+            // this-session departures with the persisted registry).
+            Presence::Departed => {}
             Presence::Lost => props.rows.push(UserRow {
                 name,
                 label: "lost".into(),
@@ -152,6 +194,20 @@ pub fn users_props(view: &StateView, peers: &[PeerInfo]) -> UsersProps {
                 props.rows.push(UserRow { name, label, tone });
             }
         }
+    }
+    // Anyone already given a row (Present, Lost, or a committed-absent
+    // blocker) is fully represented there; `known_offline` covers the rest.
+    let already_shown: std::collections::BTreeSet<&str> =
+        props.rows.iter().map(|row| row.name.as_str()).collect();
+    for user in known_offline {
+        let name = user.username.to_string();
+        if already_shown.contains(name.as_str()) {
+            continue;
+        }
+        props.known_offline.push(KnownOfflineRow {
+            name,
+            last_seen_label: humanize_ago(now.saturating_sub(user.last_seen)),
+        });
     }
     props
 }
@@ -1120,6 +1176,13 @@ mod tests {
         }
     }
 
+    fn known_user(name: &str, last_seen: u64) -> dessplay_core::net::KnownUser {
+        dessplay_core::net::KnownUser {
+            username: UserId::new(name),
+            last_seen,
+        }
+    }
+
     fn entry(i: u8, name: &str) -> NewPlaylistEntry {
         NewPlaylistEntry {
             hash: hash(i),
@@ -1169,7 +1232,8 @@ mod tests {
             peer("gone", Role::Interactive, Presence::Departed),
             peer("nas", Role::Seeder, Presence::Present),
         ];
-        let props = users_props(&state.view(), &peers);
+        let known_offline = [known_user("gone", 900)];
+        let props = users_props(&state.view(), &peers, &known_offline, 1_000);
 
         let by_name: BTreeMap<&str, &UserRow> = props
             .rows
@@ -1186,7 +1250,14 @@ mod tests {
         assert_eq!(by_name["downloader"].tone, Tone::Transfer);
         assert_eq!(by_name["lacking"].tone, Tone::Blocked);
         assert_eq!(by_name["ghost"].label, "lost");
-        assert_eq!(props.departed, vec!["gone"]);
+        assert_eq!(
+            props
+                .known_offline
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gone"]
+        );
         assert_eq!(props.seeders, vec!["nas"]);
     }
 
@@ -1218,6 +1289,7 @@ mod tests {
                 UserId::new(who),
                 series,
                 SeriesWatchState::Watching,
+                None,
             );
         }
         let peers = [
@@ -1226,7 +1298,15 @@ mod tests {
             peer("mlost", Role::Interactive, Presence::Lost),
             peer("mgone", Role::Interactive, Presence::Departed),
         ];
-        let props = users_props(&state.view(), &peers);
+        let known_offline = [known_user("cgone", 900), known_user("mgone", 900)];
+        let known_offline_names = |props: &UsersProps| {
+            props
+                .known_offline
+                .iter()
+                .map(|row| row.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let props = users_props(&state.view(), &peers, &known_offline, 1_000);
         let by_name: BTreeMap<&str, &UserRow> = props
             .rows
             .iter()
@@ -1239,22 +1319,22 @@ mod tests {
             assert_eq!(by_name[who].tone, Tone::Blocked, "{who}");
         }
         assert!(
-            !props.departed.contains(&"cgone".to_string()),
+            !known_offline_names(&props).contains(&"cgone".to_string()),
             "a committed departed user must not hide on the dim line"
         );
         // Maybe absent users do not block.
         assert_eq!(by_name["mlost"].label, "lost");
         assert_eq!(by_name["mlost"].tone, Tone::Idle);
-        assert_eq!(props.departed, vec!["mgone"]);
+        assert_eq!(known_offline_names(&props), vec!["mgone"]);
 
         // Acknowledging cgone for this file clears the block: it returns to
-        // the dim departed line.
+        // the dim known-offline line.
         state.acknowledge_absent(hash(1), UserId::new("cgone"));
-        let props = users_props(&state.view(), &peers);
+        let props = users_props(&state.view(), &peers, &known_offline, 1_000);
         assert!(
-            props.departed.contains(&"cgone".to_string()),
+            known_offline_names(&props).contains(&"cgone".to_string()),
             "an acknowledged committed-absent user no longer blocks: {:?}",
-            props.departed
+            known_offline_names(&props)
         );
     }
 
@@ -1286,11 +1366,12 @@ mod tests {
                 UserId::new("cabs"),
                 series,
                 SeriesWatchState::Watching,
+                None,
             );
             let peers = [peer("cabs", Role::Interactive, presence)];
 
             // Before Away: shown as a red "committed, away" blocker.
-            let props = users_props(&state.view(), &peers);
+            let props = users_props(&state.view(), &peers, &[], 0);
             assert!(
                 props
                     .rows
@@ -1310,7 +1391,7 @@ mod tests {
                     set_by: UserId::new("kim"),
                 }),
             );
-            let props = users_props(&state.view(), &peers);
+            let props = users_props(&state.view(), &peers, &[], 0);
             assert!(
                 !props
                     .rows
@@ -1348,6 +1429,7 @@ mod tests {
             UserId::new("ndl"),
             AniDbSeriesId(7),
             SeriesWatchState::NotWatching,
+            None,
         );
         state.set_manual_override(A, ts(4), UserId::new("pdl"), Some(ManualState::Paused));
         for (i, name) in [(5, "ndl"), (6, "pdl")] {
@@ -1365,7 +1447,7 @@ mod tests {
             peer("ndl", Role::Interactive, Presence::Present),
             peer("pdl", Role::Interactive, Presence::Present),
         ];
-        let props = users_props(&state.view(), &peers);
+        let props = users_props(&state.view(), &peers, &[], 0);
         let by_name: BTreeMap<&str, &UserRow> = props
             .rows
             .iter()

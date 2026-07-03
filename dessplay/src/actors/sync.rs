@@ -87,12 +87,16 @@ pub enum Mutation {
     },
     /// Set a per-user series preference.
     SetSeriesPreference {
-        /// Whose preference (usually our own user).
+        /// Whose preference (usually our own user, but `n` / `/skip <name>`
+        /// can target another).
         user: UserId,
         /// The series.
         series: AniDbSeriesId,
         /// Watching or not.
         pref: SeriesWatchState,
+        /// Who wrote this, if not `user` themself (design.md #7/#13).
+        /// `None` for every self-directed write and system auto-write.
+        set_by: Option<UserId>,
     },
     /// Set a manual override (own user; `Away` may target others).
     SetManualOverride {
@@ -524,9 +528,14 @@ impl SyncActor {
             Mutation::SetPlaybackIntent { intent } => {
                 self.state.set_playback_intent(actor, ts, intent)
             }
-            Mutation::SetSeriesPreference { user, series, pref } => self
+            Mutation::SetSeriesPreference {
+                user,
+                series,
+                pref,
+                set_by,
+            } => self
                 .state
-                .set_series_preference(actor, ts, user, series, pref),
+                .set_series_preference(actor, ts, user, series, pref, set_by),
             Mutation::SetManualOverride { user, state } => {
                 self.state.set_manual_override(actor, ts, user, state)
             }

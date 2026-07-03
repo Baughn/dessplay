@@ -84,6 +84,8 @@ fn snapshot(view: StateView, peers: Vec<PeerInfo>) -> UiSnapshot {
     UiSnapshot {
         view: std::sync::Arc::new(view),
         peers,
+        known_offline: Default::default(),
+        now: 0,
         recency: BTreeMap::new(),
         cache_hashes: Default::default(),
         watched_hashes: Default::default(),
@@ -111,6 +113,8 @@ fn snapshot_with_cache(view: StateView, peers: Vec<PeerInfo>, cache: &[Ed2kHash]
     UiSnapshot {
         view: std::sync::Arc::new(view),
         peers,
+        known_offline: Default::default(),
+        now: 0,
         recency: BTreeMap::new(),
         cache_hashes: cache.iter().copied().collect(),
         watched_hashes: Default::default(),

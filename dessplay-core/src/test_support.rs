@@ -119,6 +119,8 @@ pub enum ScriptOp {
         series: u8,
         /// Preference selector: 0 = Watching, 1 = NotWatching, else Maybe.
         pref: u8,
+        /// Attribution selector: 0 = self (`None`), else `Some(user(setter))`.
+        setter: u8,
     },
     /// Set a manual override: 0 = None, 1 = Paused, otherwise Away.
     SetManualOverride {
@@ -290,6 +292,7 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
             user: u,
             series: s,
             pref,
+            setter,
         } => state.set_series_preference(
             a,
             ts,
@@ -300,6 +303,7 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
                 1 => SeriesWatchState::NotWatching,
                 _ => SeriesWatchState::Maybe,
             },
+            (*setter != 0).then(|| user(*setter)),
         ),
         ScriptOp::SetManualOverride {
             user: u,

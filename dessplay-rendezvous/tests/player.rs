@@ -454,7 +454,8 @@ async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
                 s.view
                     .series_preference
                     .get(&(UserId::new(who), AniDbSeriesId(4242)))
-                    == Some(&SeriesWatchState::NotWatching)
+                    .map(|p| p.state)
+                    == Some(SeriesWatchState::NotWatching)
             })
         })
         .await;
@@ -529,7 +530,8 @@ async fn placeholder_client_cannot_take_seek_authority() {
             s.view
                 .series_preference
                 .get(&(UserId::new("baughn"), AniDbSeriesId(4242)))
-                == Some(&SeriesWatchState::NotWatching)
+                .map(|p| p.state)
+                == Some(SeriesWatchState::NotWatching)
         })
     })
     .await;
@@ -612,7 +614,8 @@ async fn dragging_the_right_file_clears_missing() {
             s.view
                 .series_preference
                 .get(&(UserId::new("dagger"), AniDbSeriesId(4242)))
-                == Some(&SeriesWatchState::NotWatching)
+                .map(|p| p.state)
+                == Some(SeriesWatchState::NotWatching)
         })
     })
     .await;

@@ -115,6 +115,7 @@ async fn eof_ignores_non_watching_reporters() {
             user: UserId::new("kim"),
             series,
             pref: SeriesWatchState::NotWatching,
+            set_by: None,
         },
     )
     .await;
