@@ -92,8 +92,12 @@ sync state with each other. See [network-design.md](network-design.md).
 
 **From the Series pane:**
 1. Press `Tab` to focus the **Series** pane (top-right)
-2. The pane has three modes, cycled with `m`:
-   - **Recent Series** (default): only franchises the user has *watched*, most
+2. The pane has three modes, cycled with `m` (`Recent Series -> All Series ->
+   The List`, wrapping around), and **opens on The List by default** -- the
+   spreadsheet view is the day-to-day "what are we watching" surface, so it's
+   what you see first:
+   - **The List** (default): see [The List](#the-list-series-tracker).
+   - **Recent Series**: only franchises the user has *watched*, most
      recently watched first (then title). Unwatched series are hidden. Press
      `/` to filter by title substring (case-insensitive); the filter *removes*
      the watched-only restriction, so any series can be found. `Esc` clears the
@@ -103,7 +107,6 @@ sync state with each other. See [network-design.md](network-design.md).
      protocol.)
    - **All Series**: every franchise, sorted by title or year (toggle with
      `s`). `/` filters the same way.
-   - **The List**: see [The List](#the-list-series-tracker).
 3. Related anime are grouped into **franchises** using AniDB's relations graph
    (sequel, prequel, side story, etc.). Each franchise shows as one entry. The
    browser spans the group's **collective library** -- every file any client
@@ -232,9 +235,17 @@ can be set on the settings screen.
 
 This state is **derived** from two independent sources:
 
-1. **Per-series watch preference** (`Map<(UserId, AniDbSeriesId), LwwCell<SeriesPreference>>`,
+1. **Per-series watch preference** (`Map<(UserId, ListEntryId), LwwCell<SeriesPreference>>`,
    `SeriesPreference { state: SeriesWatchState, set_by: Option<UserId> }`):
-   a user's commitment to a specific AniDB series, with **three** `state` values:
+   a user's commitment to a specific series, keyed by its
+   [List](#the-list-series-tracker) entry rather than by AniDB series id.
+   AniDB linking is enrichment only (episode metadata, franchise grouping) --
+   never a prerequisite for commitment, because a real number of series the
+   group watches have no AniDB entry at all. Resolving the now-playing file
+   to a `ListEntryId` (for `/watch`/`/maybe`/`/skip`, the watch-cycle key, and
+   the Users-pane `n` action) auto-creates an entry on first use if none
+   already claims the file -- see [Series Identity](#series-identity) for
+   the resolution order. With **three** `state` values:
 
    - **Watching** (committed): "I am definitely watching this series." The
      group waits for this user even when they are **absent** -- Lost,
@@ -258,9 +269,10 @@ This state is **derived** from two independent sources:
    **Becoming committed** is a deliberate act -- being listed in a
    [List](#the-list-series-tracker) entry's `watchers` set, or a per-series
    action (`/watch`, or the watch-cycle key in the playlist/series pane).
-   `Ctrl-R` / "mark ready" does **not** commit: it clears a pause or an
-   auto-`NotWatching` back to **Maybe**, never to Watching, so the
-   block-across-absence commitment is always opt-in.
+   Both write the `(UserId, ListEntryId)` preference directly; neither needs
+   an AniDB link. `Ctrl-R` / "mark ready" does **not** commit: it clears a
+   pause or an auto-`NotWatching` back to **Maybe**, never to Watching, so
+   the block-across-absence commitment is always opt-in.
 
 2. **Manual override** (`LwwCell<Option<ManualState>>`): The user can manually
    pause (stepping away), which overrides the series-based state. The override
@@ -582,11 +594,12 @@ This prevents sync issues from different encodes/versions.
     you unpause the player or send another chat message.
   - `/watch` -- **commit** to the now-playing file's series (sets your
     per-series preference to Watching, so the group waits for you even when
-    you're absent; needs an AniDB series id)
+    you're absent; resolves to a [List entry](#series-identity), creating one
+    automatically if the file doesn't match one yet -- no AniDB link needed)
   - `/maybe` -- set the now-playing file's series to Maybe, the opportunistic
-    default (needs an AniDB series id)
+    default (same [List entry](#series-identity) resolution as `/watch`)
   - `/skip` -- stop watching the now-playing file's series (sets your
-    per-series preference to NotWatching; needs an AniDB series id)
+    per-series preference to NotWatching; same resolution as `/watch`)
   - `/ack` -- acknowledge the current committed-absent blocker(s): a per-file
     one-shot that lets the group play past a committed (Watching) user who is
     Lost/Departed, and latches intent Playing. Re-needed on the next episode.
@@ -873,8 +886,15 @@ red "committed, away" blocker row, exactly as before.
 The group's shared tracking spreadsheet, ported into the app: an explicit,
 permanent record of what the group plans to watch, is watching, and has
 finished. This is **separate from the playlist** (which holds concrete files
-for a session); List entries are series-level and linked to playlist activity
-through AniDB series IDs.
+for a session); List entries are series-level. `anidb_series_id` links an
+entry to AniDB for **enrichment only** -- episode metadata, franchise
+grouping, the AniDB search modal -- and is never a prerequisite for
+commitment or gating: a real number of series the group watches (obscure
+OVAs, doujin work, non-Japanese content, very new simulcasts) simply have no
+AniDB entry, and the design must not depend on them getting one. Every
+series anyone commits to via `/watch`, the watch-cycle key, or a List
+entry's `watchers` set has a List entry, linked or not -- see
+[Series Identity](#series-identity).
 
 ### Schema
 
@@ -889,7 +909,9 @@ struct SeriesListEntry {
     status_note: Option<String>,      // drop reason, hiatus progress, etc.
     source: Option<String>,           // where files come from; None = SubsPlease/batch
     watchers: BTreeSet<UserId>,       // who watches this series
-    anidb_series_id: Option<AniDbSeriesId>,  // linked manually after import
+    anidb_series_id: Option<AniDbSeriesId>,  // linked manually after import; enrichment only
+    local_aliases: BTreeSet<String>,  // confirmed series-name aliases (unlinked matching)
+    manual_files: BTreeSet<Ed2kHash>, // explicit file overrides, for names aliases can't catch
 }
 
 enum ListStatus {
@@ -912,43 +934,132 @@ struct NextEpState {
 ```
 
 `next_ep` is free text by necessity -- real entries include season prefixes,
-OVA names, and guesses. When an entry is AniDB-linked and `next_ep` is
-numeric, the server auto-advances it when the group finishes the matching
-episode (same EOF transition that marks the playlist entry watched), and
-resets `available` to false -- the new next episode is presumably not out
-yet. Otherwise `available` is maintained by hand; automating it (e.g. via
-AniDB episode air dates) is future work.
+OVA names, and guesses. See [Advancing next_ep](#advancing-next_ep) for how
+and when it auto-advances, linked or not. Otherwise `available` is
+maintained by hand; automating it (e.g. via AniDB episode air dates) is
+future work.
 
 The List is never pruned: it is a few hundred rows of text, and the history
 is the point.
 
+### Series Identity
+
+Two mechanisms already turn a file into "a series," and neither is a safe
+foundation for group **commitment** (whether the group waits for someone
+across absence):
+
+- AniDB's relations graph, for files with a series id -- structural
+  (sequel/prequel/etc.), stable, but only exists for series AniDB knows.
+- A per-file **derived name** (the AniDB-miss fallback's `series_hint`, or
+  the bare filename otherwise -- see
+  [Parsing files](#parsing-files-to-seriesseasonepisode)), used today for
+  franchise-browsing's fallback grouping and personal known-series
+  detection. This name is **not** stable enough to hang commitment on: it's
+  computed per file, from that file's own directory context, and the group
+  does not reliably keep every episode of an untracked show in one
+  dedicated directory. Two files of the same show, one hinted from
+  `Anime/ShowName/` and one sitting loose elsewhere, derive different
+  names today (`session.rs` builds the local series key straight from
+  `AniDbMetadata.series_name`) -- silently splitting one show into two
+  "series" for the one question that most needs a single stable answer.
+
+So List entries carry their own identity data, used only for unlinked
+entries (a linked entry's AniDB series id is authoritative and skips all of
+this):
+
+- `local_aliases`: confirmed series-name strings that resolve to this
+  entry -- seeded with the derived name of whichever file first created the
+  entry, and grown by hand (same edit modal) whenever a differently-hinted
+  file for the same show shows up.
+- `manual_files`: explicit file hashes attached directly to the entry, for
+  outliers whose name doesn't parse into any alias at all.
+
+**Resolution order**, used by `/watch`/`/maybe`/`/skip`, the watch-cycle
+key, the Users-pane `n` action, and `watchers`-set wiring, given the
+now-playing (or selected) file:
+
+1. The file has an AniDB series id, and some List entry is linked to it:
+   that entry.
+2. The file's hash is in some entry's `manual_files`: that entry.
+3. The file's derived name matches some entry's `name` or `local_aliases`:
+   that entry.
+4. No entry claims the file: auto-create one -- linked, with name/nero_name
+   seeded from `AniDbMetadata`, if the file has a series id; otherwise
+   unlinked, with `name` and the sole `local_aliases` entry seeded from the
+   derived name, so a later file with the same derived name matches without
+   further setup.
+
+This is deliberately **stricter** than the existing franchise-browsing and
+known-series heuristics, which stay soft, best-effort, and unchanged (an
+"accepted" cosmetic edge case, per [File Matching](#file-matching)) -- a
+mis-grouped franchise row is a browsing annoyance, but a mis-resolved List
+entry silently un-commits someone from a show they're actively watching.
+
+### Advancing next_ep
+
+Two distinct problems hide under "auto-advance," with very different
+certainty:
+
+1. **Bumping the counter.** When the group finishes a file belonging to a
+   linked series, the server increments `next_ep` from that file's own
+   `AniDbMetadata.episode` (authoritative) and resets `available` to false.
+   For an **unlinked** entry the same bump happens from the *just-finished*
+   file's own filename-parsed episode number, when one parses cleanly --
+   there's no real ambiguity here, since it's a fact about a file already
+   confirmed watched, not a guess about one that hasn't aired yet. A file
+   whose name yields no parseable number leaves `next_ep` for a manual bump,
+   exactly like any other free-text entry ("movie 5?").
+2. **Resolving the counter to a file.** Finding *which* library file is
+   episode `next_ep + 1` is the genuinely uncertain step for an unlinked
+   series -- there's no AniDB episode identity to match against, only
+   heuristics (filename-parsed episode number, edit distance to the
+   expected label, mtime recency, `local_aliases`/`manual_files`
+   membership). Rather than guess silently, jumping to `next_ep` on an
+   unlinked entry reuses the Episode Browser's existing multi-file
+   disambiguation UI ("several files claim the same episode number ...
+   expand into a lightweight tree," see [Adding Files to the
+   Playlist](#adding-files-to-the-playlist)) -- generalized from "several
+   files, one confirmed identity" to "several *candidate* files, ranked by
+   score, no confirmed identity." Picking one runs the ordinary
+   add-to-playlist flow; nothing is queued until a human picks. This is
+   deliberately **not** a new kind of synced Playlist entry -- no
+   `Map<Ed2kHash, ...>` schema change -- it lives entirely in the
+   Series/List pane and the episode browser, exactly like choosing which
+   copy of a linked episode to play today.
+
 ### UI Integration
 
 The Series pane gains **The List** as a third mode (alongside Recent Series /
-All Series), grouped by status: CurrentSeason and Active first, then
-ShortList, Planned, Waiting, Hiatus, with Finished/Dropped collapsed at the
-bottom. Pressing `Enter` on a linked Active/CurrentSeason entry jumps
-straight to the `next_ep` file: into the episode browser with the cursor on
-that episode if anyone has it, so queueing tonight's episodes is a couple of
-keypresses.
+All Series) -- and is the pane's default mode, see [Adding Files to the
+Playlist](#adding-files-to-the-playlist) -- grouped by status: CurrentSeason
+and Active first, then ShortList, Planned, Waiting, Hiatus, with
+Finished/Dropped collapsed at the bottom. Pressing `Enter` on an
+Active/CurrentSeason entry jumps toward `next_ep`: for a linked entry, into
+the episode browser with the cursor on that episode if anyone has it; for an
+unlinked entry, into the candidate-ranked disambiguation view described
+above. Either way queueing tonight's episode is a couple of keypresses.
 
 Entries display name, nero_name, next_ep (with an "out" marker from
 `available`), and watcher initials. Editing fields and adding entries happens
-in a small edit modal; linking an unlinked entry (`l`) opens the AniDB
+in a small edit modal (also where `local_aliases`/`manual_files` are edited
+for an unlinked entry); linking an unlinked entry (`l`) opens the AniDB
 search modal: it pre-searches for the entry's name (informal names like
 "GochiUsa" resolve through the titles dump's synonyms), the user picks
 from the ranked candidates and confirms. Enter on fresh results links;
-editing the query re-arms search.
+editing the query re-arms search. Linking does not require or touch
+`local_aliases`/`manual_files` -- an entry can be linked and still carry
+them, in case a stray file's derived name never matched the AniDB-known one.
 
 The `watchers` set wires into the per-series watch preference, and is the
-declarative route to **commitment**: when an entry is linked, users *in*
-the watchers set get `SeriesWatchState::Watching` (committed -- the group
-waits for them even when absent) and users *not* in it get
-`SeriesWatchState::NotWatching` (so they never gate playback on shows they
-skip). Series with no List opinion stay at the **Maybe** default. Two
-guards: an *empty* watchers set means "unrecorded", not "nobody", and
-never writes preferences; and an existing preference (a manual choice) is
-never overridden.
+declarative route to **commitment**: users *in* the watchers set get
+`SeriesWatchState::Watching` (committed -- the group waits for them even
+when absent) and users *not* in it get `SeriesWatchState::NotWatching` (so
+they never gate playback on shows they skip) -- linked or not, since
+commitment keys on the entry's `ListEntryId`, never its AniDB link. Series
+with no List opinion stay at the **Maybe** default. Two guards: an *empty*
+watchers set means "unrecorded", not "nobody", and never writes
+preferences; and an existing preference (a manual choice) is never
+overridden.
 
 ### Import
 
@@ -963,7 +1074,9 @@ CSVs:
 - Watcher initials map to usernames via a flag:
   `--watchers B=Baughn,N=Nero,Q=Quickshot,D=Dagger,K=Kim`.
 - AniDB linking is *not* part of import; entries arrive unlinked and are
-  linked lazily from the UI.
+  linked lazily from the UI. `local_aliases`/`manual_files` are likewise
+  empty on import -- an imported entry only starts claiming files once
+  something (a link, or a `/watch` on a matching file) resolves to it.
 
 ---
 
@@ -1148,7 +1261,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Standalone register; last seeker is position authority |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion -- already paused at Lost) |
-| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesPreference>>` | Compound key; `SeriesPreference { state: Watching \| NotWatching \| Maybe, set_by: Option<UserId> }`, absent entry = Maybe; any user may write (design.md #7/#13) |
+| Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>>` | Compound key, keyed on the List entry (not AniDB id -- see [Series Identity](#series-identity)); `SeriesPreference { state: Watching \| NotWatching \| Maybe, set_by: Option<UserId> }`, absent entry = Maybe; any user may write (design.md #7/#13) |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
 | Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Per-file one-shot: play past a committed-absent user; cleared on compaction |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>>` | Compound key |

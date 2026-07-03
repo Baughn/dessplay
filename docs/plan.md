@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 10 phases, bottom-up. Each phase produces testable artifacts. The first
 user-facing demo (TUI with chat + shared playlist) arrives at Phase 6;
@@ -1163,6 +1163,75 @@ The request sheet's interface rows are done or consciously deferred.
 
 ---
 
+## Phase 19: Series Identity & List Commitment (#9, #25)
+
+**Goal**: series commitment and gating stop depending on an AniDB link
+existing at all. Every committable series routes through its
+[List](design.md#the-list-series-tracker) entry, and a file resolves to
+that entry without assuming AniDB knows the series or that its episodes
+share one directory — see design.md's
+[Series Identity](design.md#series-identity) and
+[Advancing next_ep](design.md#advancing-next_ep) (design discussion
+2026-07-03/04). Unblocks the two long-deferred requests below: #9
+(Nero-names surfacing) and #25 (auto-queue next episode), both of which
+were waiting on exactly this.
+
+### What gets built
+- Protocol version gate: `PROTOCOL_VERSION` 3 -> 4 (Phase 11's gate refuses
+  a mismatched reconnect, forcing a clean resync on upgrade).
+- `series_preference` re-keyed `Map<(UserId, AniDbSeriesId), ...>` ->
+  `Map<(UserId, ListEntryId), ...>` in `dessplay-core::state`. Snapshot
+  migration per sync-state.md's Series Preference note: for each old
+  `AniDbSeriesId`-keyed entry, find (or synthesize) the linked List entry
+  and rewrite the key, preserving the original timestamp — mirroring the
+  `SeriesPreference`-wrapper migration's approach but spanning two maps
+  instead of one.
+- `SeriesListEntry` gains `local_aliases: BTreeSet<String>` and
+  `manual_files: BTreeSet<Ed2kHash>`.
+- A single resolution function implementing design.md's 4-step order
+  (AniDB link -> `manual_files` -> `local_aliases` -> auto-create),
+  replacing every `now_playing_series() -> Option<AniDbSeriesId>` call site
+  (`/watch`/`/maybe`/`/skip`, the playlist `w` cycle key, Users-pane `n`,
+  `watchers`-set wiring) with the `ListEntryId`-returning equivalent.
+- EOF-time `next_ep` bump extended to unlinked entries: parse the
+  just-finished file's own filename for an episode number (no ambiguity —
+  it's the file already confirmed watched) and bump when it parses
+  cleanly; otherwise left for a manual bump, same as any free-text entry.
+- Candidate-ranked disambiguation: generalize the Episode Browser's
+  existing "several files, one confirmed episode" tree into "several
+  *candidate* files, ranked, no confirmed identity" for jumping to
+  `next_ep` on an unlinked entry — scored on parsed episode number, edit
+  distance to the expected label, mtime, and alias/`manual_files`
+  membership. Picking a candidate runs the ordinary add-to-playlist flow;
+  no Playlist CRDT change.
+- Series pane default mode -> The List (`SeriesMode::TheList` as
+  `#[default]`, was `Recent`).
+- List edit modal gains fields for a linked-or-not entry's
+  `local_aliases` / `manual_files`.
+
+### Testing
+- Property test: the re-keying migration preserves every
+  (subject, resolved value) pair across representative old-snapshot
+  fixtures, mirroring the existing `SeriesPreference`-wrapper migration
+  test.
+- Property test: resolution order (link > `manual_files` >
+  `local_aliases` > auto-create) is deterministic and idempotent
+  regardless of which committable action triggers it first.
+- Gating property tests (`derive.rs`) parameterized over linked/unlinked:
+  an unlinked entry's commitment blocks/unblocks playback identically to a
+  linked one.
+- Unit test: two files with different directory-derived hints, once both
+  named in one entry's `local_aliases`, resolve to the same `ListEntryId`.
+- insta snapshot: the candidate-ranked disambiguation tree, mirroring the
+  existing multi-file-per-episode tree snapshot.
+
+### Milestone
+A series with no AniDB entry can be committed to, gates playback across
+absence exactly like a linked one, and its next episode can be found and
+queued without relying on a dedicated directory. #9 and #25 unblocked.
+
+---
+
 ## Deferred from the 2026-07-02 batch
 
 Tracked here so they aren't re-triaged from scratch:
@@ -1170,8 +1239,8 @@ Tracked here so they aren't re-triaged from scratch:
 - **#5** subtitle near-duplicate lines — needs a concrete example.
 - **#28** large uncorrected desync — believed fixed by the full-codebase
   audit; reopen with logs if it recurs.
-- **#9** Nero-names surfacing and **#25** auto-queue next episode — both
-  blocked on finishing The List (linking coverage, next_ep reliability).
+- **#9** Nero-names surfacing and **#25** auto-queue next episode —
+  scheduled as Phase 19 (Series Identity & List Commitment), above.
 - **#14 (sound half)** the audible "Dess?!" — blocked on an actual audio
   asset; the Phase 13 overlay covers the visibility need.
 - **#19** GUI — future work (ui-architecture.md, Web Renderer).

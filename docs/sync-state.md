@@ -129,7 +129,7 @@ The standard pattern is `Map<K, LwwCell<V>, ActorId>`. The Map's keys are
 effectively grow-only (we never use `Map::rm`; see below), so its
 observed-remove machinery sits unused.
 
-Per-user state uses **compound keys**: e.g. `Map<(UserId, AniDbSeriesId), ...>`
+Per-user state uses **compound keys**: e.g. `Map<(UserId, ListEntryId), ...>`
 rather than separate CRDT instances per user. This keeps the state table flat
 and the wire protocol uniform.
 
@@ -185,7 +185,7 @@ and the wire protocol uniform.
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Any peer; server on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Whoever last seeked; server on file change or authority departure |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Any user (play/pause); server forces Paused on lost/quit/departure/EOF-advance |
-| Series preference | `Map<(UserId, AniDbSeriesId), LwwCell<SeriesPreference>, ActorId>` | Any user (design.md #7/#13: `SeriesPreference { state, set_by }` lets one user write another's) |
+| Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>, ActorId>` | Any user (design.md #7/#13: `SeriesPreference { state, set_by }` lets one user write another's) |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
 | Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Any peer inserts; cleared on compaction |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>` | Each user writes own |
@@ -323,7 +323,12 @@ playback would silently auto-resume the moment a paused/lost user departs
 
 ### Series Preference
 
-`Map<(UserId, AniDbSeriesId), LwwCell<SeriesPreference>, ActorId>`.
+`Map<(UserId, ListEntryId), LwwCell<SeriesPreference>, ActorId>`. Keyed on
+the [List](#the-list) entry, not the AniDB series id -- AniDB linking is
+enrichment only, and a real number of series the group watches have no AniDB
+entry at all. See design.md's [Series Identity](design.md#series-identity)
+for how a file resolves to a `ListEntryId` (auto-creating an entry on first
+commitment if none claims the file yet).
 
 `SeriesPreference { state: SeriesWatchState, set_by: Option<UserId> }`
 (design.md #7/#13). `set_by` mirrors `ManualState::Away`'s setter: `None`
@@ -382,6 +387,22 @@ correctly) without needing the old entries' original per-actor dot
 structure -- safe because `ActorId`s are session-scoped (Phase 4), so no
 live session's dot clock depends on a restart-time migration reproducing
 it.
+
+**Re-keying `AniDbSeriesId` -> `ListEntryId` (Series Identity work) is a
+key-*type* change**, not a value-shape change, so it needs the same
+snapshot-migration + `PROTOCOL_VERSION` bump treatment as the moves above,
+plus one wrinkle the `Maybe`-variant and `SeriesPreference`-wrapper
+migrations didn't have: the new key doesn't exist yet for old data. The
+migration must *synthesize* it: for every `AniDbSeriesId` referenced by an
+old-layout `series_preference` entry, find the List entry already linked to
+that id (linking predates this change, so most will have one) or synthesize
+one -- name from the snapshot's own `anidb_metadata` map if a cached title
+exists, else a placeholder pending a later fill -- and rewrite each old
+`(UserId, AniDbSeriesId)` entry as `(UserId, ListEntryId)`, preserving the
+original timestamp exactly as the `SeriesPreference`-wrapper migration does.
+Because this mutates *two* maps (`series_preference` and `the_list`) from
+one old snapshot, it runs as its own decode-time step, not folded into the
+generic versioned-fallback chain used for pure value-shape changes.
 
 ### Acknowledged Absent
 
@@ -553,9 +574,14 @@ from clobbering concurrent edits to notes/status, mirroring the
 watched-flags reasoning above.
 
 Entries are whole-struct LWW -- edit frequency is a few writes per week, and
-losing one concurrent note edit is shrug-worthy. **The List survives
-compaction untouched and is never pruned**: it is a few hundred rows of text
-and the history is the point.
+losing one concurrent note edit is shrug-worthy. This also covers
+`local_aliases`/`manual_files` (design.md's [Series
+Identity](design.md#series-identity)): they ride along with the rest of the
+entry rather than getting their own map, since they change about as often as
+notes do and don't need finer-grained conflict resolution.
+
+**The List survives compaction untouched and is never pruned**: it is a few
+hundred rows of text and the history is the point.
 
 ### Chat
 
