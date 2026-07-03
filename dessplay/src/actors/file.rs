@@ -492,9 +492,22 @@ struct Actor {
     scan_transfer_quiet: std::time::Duration,
     /// One "deferring" log line per deferral episode, not per tick.
     scan_defer_logged: bool,
+    /// Scan hash results not yet folded into `hash_cache` (batched --
+    /// see [`SCAN_COMMIT_BATCH`]).
+    scan_pending_commits: Vec<(PathBuf, i64, Ed2kFileHash)>,
     out: mpsc::Sender<FileOutput>,
     done_tx: mpsc::Sender<Done>,
 }
+
+/// How many library-scan hash results to buffer before folding them into
+/// `hash_cache` in a single clone, instead of cloning the whole map once
+/// per file. A full scan hashes one file at a time
+/// ([`Actor::pump_library_scan`]), so without batching a large library
+/// makes the per-file `commit_fresh_hashes` clone O(n) work n times —
+/// O(n^2) total, and a burst of ever-larger transient allocations that
+/// fragments the allocator (2026-07-03: `malloc_trim` recovered ~360MB
+/// RSS on the primary seeder after a scan).
+const SCAN_COMMIT_BATCH: usize = 64;
 
 /// One watched mismatch (#26): poll the path's `(mtime, size)` about
 /// once a second; once it holds still — and differs from the state the
@@ -599,6 +612,7 @@ impl Actor {
             serve_queue: std::collections::VecDeque::new(),
             upload: UploadLimiter::new(config.upload_limit),
             last_progress_at: HashMap::new(),
+            scan_pending_commits: Vec::new(),
             scan_worklist: std::collections::VecDeque::new(),
             scan_hashing: false,
             scan_walking: false,
@@ -1285,7 +1299,7 @@ impl Actor {
                     Ok(hashed) => {
                         let root = hashed.root;
                         let size = hashed.size_bytes;
-                        self.commit_fresh_hashes(vec![(item.path.clone(), item.mtime, hashed)]);
+                        self.queue_scan_hash_commit(item.path.clone(), item.mtime, hashed);
                         tracing::trace!(
                             done = self.scan_done,
                             total = self.scan_total,
@@ -1314,6 +1328,10 @@ impl Actor {
                 // it shows without RUST_LOG): a periodic checkpoint plus a
                 // completion summary with timing and failure count.
                 if self.scan_done == self.scan_total {
+                    // Fold any still-buffered results now, so a resolve
+                    // immediately after "scan complete" sees them instead
+                    // of waiting on a stray partial batch.
+                    self.flush_scan_hash_commits();
                     tracing::info!(
                         hashed = self.scan_done - self.scan_failed,
                         failed = self.scan_failed,
@@ -1366,6 +1384,34 @@ impl Actor {
                     self.local_files.remove(&hashed.root);
                 }
             }
+        }
+        self.hash_cache = Arc::new(cache);
+    }
+
+    /// Persist one library-scan hash result to SQLite immediately, but
+    /// only fold it into the in-memory `hash_cache` once
+    /// [`SCAN_COMMIT_BATCH`] results have piled up (or
+    /// [`Self::flush_scan_hash_commits`] is called explicitly, at scan
+    /// completion) -- see [`SCAN_COMMIT_BATCH`] for why.
+    fn queue_scan_hash_commit(&mut self, path: PathBuf, mtime: i64, hash: Ed2kFileHash) {
+        let now = (self.clock)() as i64;
+        if let Err(e) = self.storage.upsert_hash_cache(&path, mtime, &hash, now) {
+            tracing::error!("persisting hash cache: {e}");
+        }
+        self.scan_pending_commits.push((path, mtime, hash));
+        if self.scan_pending_commits.len() >= SCAN_COMMIT_BATCH {
+            self.flush_scan_hash_commits();
+        }
+    }
+
+    /// Fold any buffered scan hash results into `hash_cache` in one clone.
+    fn flush_scan_hash_commits(&mut self) {
+        if self.scan_pending_commits.is_empty() {
+            return;
+        }
+        let mut cache = (*self.hash_cache).clone();
+        for (path, mtime, hash) in self.scan_pending_commits.drain(..) {
+            cache.insert(path, (mtime, hash));
         }
         self.hash_cache = Arc::new(cache);
     }
@@ -2439,6 +2485,68 @@ mod tests {
             .await
             .expect("output timeout")
             .expect("actor gone")
+    }
+
+    /// Regression (2026-07-03): a full library scan reported one
+    /// `Done::LibraryHashed` per file, and each one used to clone the
+    /// *entire* `hash_cache` map before replacing it — O(n) work per
+    /// file, O(n^2) for a scan of n files. On the primary seeder's
+    /// terabyte-scale library this produced a burst of ever-larger
+    /// transient allocations that fragmented the allocator badly enough
+    /// that `malloc_trim` recovered ~360MB of RSS. Scan commits must be
+    /// batched into a bounded number of map rebuilds, not one per file.
+    #[test]
+    fn library_scan_batches_hash_cache_commits_instead_of_cloning_per_file() {
+        let db = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&db.path().join("test.db")).unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let (out_tx, _out_rx) = mpsc::channel(1024);
+        let (done_tx, _done_rx) = mpsc::channel(1024);
+        let mut actor = Actor::new(
+            FileConfig {
+                storage,
+                media_roots: vec![],
+                retention: CacheRetention::default(),
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+            },
+            out_tx,
+            done_tx,
+        )
+        .unwrap();
+
+        let n = 250;
+        let mut rebuilds = 0usize;
+        let mut last_ptr = Arc::as_ptr(&actor.hash_cache);
+        for i in 0..n {
+            let path = PathBuf::from(format!("/media/ep{i}.mkv"));
+            let hash = ed2k_hash_bytes(format!("episode {i}").as_bytes());
+            actor.queue_scan_hash_commit(path, 1, hash);
+            let ptr = Arc::as_ptr(&actor.hash_cache);
+            if ptr != last_ptr {
+                rebuilds += 1;
+                last_ptr = ptr;
+            }
+        }
+        actor.flush_scan_hash_commits();
+        if Arc::as_ptr(&actor.hash_cache) != last_ptr {
+            rebuilds += 1;
+        }
+
+        assert_eq!(
+            actor.hash_cache.len(),
+            n,
+            "every scanned file must end up in the cache"
+        );
+        assert!(
+            rebuilds < n,
+            "hash_cache was rebuilt {rebuilds} times for {n} files -- \
+             it must not be cloned once per scanned file"
+        );
     }
 
     /// Spec (Download Cache and Retention): an evictable file is deleted
