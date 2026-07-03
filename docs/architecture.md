@@ -411,8 +411,10 @@ external user's line, mapped to a local-only `UiInput::Irc` chat line).
 Mutate` arm and forwards the text via a lossy `try_send` (never awaiting
 a possibly-reconnecting actor — the liveness rule). A guarded
 `irc_events.recv()` select arm drains events without ending the session
-when the channel closes. `SaveSettings` sends a `Reconfigure`; shutdown
-sends `Shutdown` and waits (bounded) for the actor to drop its receiver.
+when the channel closes. `SaveSettings` sends a `Reconfigure` only when
+the derived `IrcConfig` actually changed (an unrelated save, e.g. an F2
+subtitle-mode cycle, must not force a reconnect); shutdown sends
+`Shutdown` and waits (bounded) for the actor to drop its receiver.
 
 ### AniDB worker (server-side, Phase 8)
 

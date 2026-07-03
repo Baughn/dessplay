@@ -901,6 +901,22 @@ pub enum SessionEnd {
     Rejected(String),
 }
 
+/// Whether the IRC bridge actually needs to reconnect after a settings
+/// save. Compares the derived [`crate::actors::irc::IrcConfig`], not the
+/// raw `Settings`, so an unrelated save (e.g. an F2 subtitle-mode cycle,
+/// which clones the whole `Settings` but only changes `subtitle_mode`)
+/// never forces a needless reconnect — mirrors the `roots !=
+/// self.media_roots` guard used for media roots in the `SaveSettings`
+/// handler below.
+fn irc_config_changed(
+    old: &crate::config::Settings,
+    new: &crate::config::Settings,
+    me: &UserId,
+) -> bool {
+    crate::actors::irc::IrcConfig::from_settings(old, me)
+        != crate::actors::irc::IrcConfig::from_settings(new, me)
+}
+
 /// The interactive bridge loop: actors on one side, UI channels on the
 /// other. Extracted from [`run_interactive`] so it is testable without
 /// a terminal — supervision bugs ("Ctrl-C doesn't quit") live here, and
@@ -1136,18 +1152,22 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             }
                             self.shell.set_retention(saved.cache_retention).await;
                             self.shell.set_auto_download(saved.auto_download);
+                            // Only reconfigure the IRC actor when the
+                            // IRC-relevant settings actually changed. An
+                            // unrelated save (e.g. an F2 subtitle-mode
+                            // cycle) carries the whole `Settings` struct
+                            // unchanged apart from one field, and must not
+                            // force a needless reconnect.
+                            if irc_config_changed(&self.settings, &saved, &self.me) {
+                                let _ = self.irc_tx.try_send(
+                                    crate::actors::irc::IrcCommand::Reconfigure(Box::new(
+                                        crate::actors::irc::IrcConfig::from_settings(
+                                            &saved, &self.me,
+                                        ),
+                                    )),
+                                );
+                            }
                             self.settings = *saved;
-                            // Apply any IRC settings change live: the actor
-                            // reconnects (or idles, if disabled). The nick is
-                            // stable — `me` is fixed after first-run setup.
-                            let _ = self.irc_tx.try_send(
-                                crate::actors::irc::IrcCommand::Reconfigure(Box::new(
-                                    crate::actors::irc::IrcConfig::from_settings(
-                                        &self.settings,
-                                        &self.me,
-                                    ),
-                                )),
-                            );
                         }
                     }
                 }
@@ -1761,6 +1781,31 @@ mod tests {
             vec![PathBuf::from("/real")],
             "a one-off --media-root must never be persisted (design.md)"
         );
+    }
+
+    #[test]
+    fn f2_subtitle_cycle_does_not_reconfigure_irc() {
+        // An F2 subtitle-mode cycle clones the whole Settings and only
+        // changes `subtitle_mode` — it must not be mistaken for an IRC
+        // settings change and force a needless reconnect.
+        let me = UserId("Baughn".into());
+        let old = crate::config::Settings::default();
+        let mut new = old.clone();
+        new.subtitle_mode = match old.subtitle_mode {
+            crate::config::SubtitleMode::Off => crate::config::SubtitleMode::Intermixed,
+            _ => crate::config::SubtitleMode::Off,
+        };
+        assert_ne!(old.subtitle_mode, new.subtitle_mode);
+        assert!(!irc_config_changed(&old, &new, &me));
+    }
+
+    #[test]
+    fn genuine_irc_setting_change_reconfigures_irc() {
+        let me = UserId("Baughn".into());
+        let old = crate::config::Settings::default();
+        let mut new = old.clone();
+        new.irc_server = "irc.example.org".into();
+        assert!(irc_config_changed(&old, &new, &me));
     }
 
     #[test]

@@ -56,7 +56,7 @@ const MAX_NICK_TRIES: u32 = 5;
 
 /// Static configuration for the bridge, derived from [`Settings`] plus
 /// the local user's name.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IrcConfig {
     /// When false the actor stays idle (no socket) until reconfigured.
     pub enabled: bool,

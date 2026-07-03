@@ -664,24 +664,28 @@ pub fn franchise_rows(
 /// A human-readable label for a file in the episode browser. In order of
 /// preference:
 /// 1. the playlist entry's filename (the real on-disk name);
-/// 2. AniDB's "series — episode" when the file has a real episode number;
-/// 3. the file catalog's per-file filename — this distinguishes episodes
-///    when metadata is filename-derived, whose `series_name` is a directory
-///    hint shared by every episode of the series (so it must *not* be used
-///    as a per-episode label);
+/// 2. the file catalog's per-file filename — a real filename beats the
+///    cosmetic "series — episode" form below whenever one is known, which
+///    is what lets [`episode_rows`] tell same-episode copies apart by
+///    filename instead of rendering N identical rows; it also distinguishes
+///    episodes when metadata is filename-derived, whose `series_name` is a
+///    directory hint shared by every episode of the series (so that name
+///    must *not* be used as a per-episode label);
+/// 3. AniDB's "series — episode" when the file has a real episode number
+///    but, unusually, no catalog entry;
 /// 4. the bare `series_name` (better than a raw hash when nothing else);
 /// 5. the raw hash.
 pub fn episode_label(view: &StateView, hash: &Ed2kHash) -> String {
     if let Some(entry) = view.playlist.iter().find(|entry| entry.hash == *hash) {
         return entry.state.filename.clone();
     }
+    if let Some(entry) = view.file_catalog.get(hash) {
+        return entry.filename.clone();
+    }
     if let Some(Some(metadata)) = view.anidb_metadata.get(hash)
         && let Some(ep) = &metadata.episode_number
     {
         return format!("{} — {}", metadata.series_name, ep);
-    }
-    if let Some(entry) = view.file_catalog.get(hash) {
-        return entry.filename.clone();
     }
     if let Some(Some(metadata)) = view.anidb_metadata.get(hash) {
         return metadata.series_name.clone();
@@ -1588,6 +1592,89 @@ mod tests {
             episode_label(&view, &hash(6)),
             "Cardcaptor Sakura - 02 - Wonderful Friend.mkv"
         );
+    }
+
+    /// Regression: when a file has *real* AniDB metadata (a genuine
+    /// episode number, not a filename-derived directory hint) **and** a
+    /// catalog entry, the catalog filename must still win. Multiple
+    /// releases of the same AniDB-known episode share identical metadata,
+    /// so preferring "series — episode" here rendered every copy in the
+    /// episode browser as the exact same string (reported 2026-07-03:
+    /// four copies of "Yuuki Yuuna wa Yuusha de Aru — 01" with no way to
+    /// tell them apart).
+    #[test]
+    fn episode_label_prefers_catalog_filename_over_series_dash_episode_when_both_known() {
+        use dessplay_core::types::{
+            AniDbMetadata, AniDbSeriesId, FileCatalogEntry, MetadataSource,
+        };
+
+        let mut state = CrdtState::new();
+        let metadata = AniDbMetadata {
+            source: MetadataSource::AniDb,
+            series_name: "Yuuki Yuuna wa Yuusha de Aru".into(),
+            series_id: Some(AniDbSeriesId(1)),
+            episode_number: Some("01".into()),
+        };
+        state.set_anidb_metadata(A, ts(1), hash(1), Some(metadata.clone()));
+        state.set_file_catalog(
+            A,
+            ts(2),
+            hash(1),
+            FileCatalogEntry {
+                filename: "[Judas] Yuuki Yuuna - 01 [1080p].mkv".into(),
+                size_bytes: 1,
+                duration_millis: None,
+            },
+        );
+        // Metadata only, no catalog entry: falls back to "series — ep".
+        state.set_anidb_metadata(A, ts(3), hash(2), Some(metadata));
+        let view = state.view();
+        assert_eq!(
+            episode_label(&view, &hash(1)),
+            "[Judas] Yuuki Yuuna - 01 [1080p].mkv"
+        );
+        assert_eq!(
+            episode_label(&view, &hash(2)),
+            "Yuuki Yuuna wa Yuusha de Aru — 01"
+        );
+    }
+
+    #[test]
+    fn episode_rows_multi_copy_shows_distinct_catalog_filenames() {
+        use dessplay_core::types::{AniDbSeriesId, FileCatalogEntry};
+
+        let series = AniDbSeriesId(1);
+        let mut state = CrdtState::new();
+        let names = [
+            "[Judas] Yuuki Yuuna - 01 [1080p].mkv",
+            "[SubGroup] Yuuki Yuuna - 01.mkv",
+            "Yuuki.Yuuna.S01E01.mkv",
+        ];
+        for (i, name) in names.iter().enumerate() {
+            let h = hash(i as u8 + 1);
+            state.set_anidb_metadata(A, ts(i as u64 * 2 + 1), h, Some(metadata(series, "01")));
+            state.set_file_catalog(
+                A,
+                ts(i as u64 * 2 + 2),
+                h,
+                FileCatalogEntry {
+                    filename: (*name).into(),
+                    size_bytes: 1,
+                    duration_millis: None,
+                },
+            );
+        }
+        let view = state.view();
+        let hashes: Vec<Ed2kHash> = (1..=3).map(hash).collect();
+        let rows = episode_rows(&view, &hashes, &BTreeSet::new());
+        let filenames: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| match row {
+                EpisodeRow::Child(copy) => Some(copy.filename.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(filenames, names, "each copy must show its own filename");
     }
 
     /// Sort a list of (episode_number, label) by the episode key and return
