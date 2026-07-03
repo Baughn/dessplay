@@ -626,6 +626,8 @@ the laptop's cache cleans up after itself.
 ### Milestone
 Stable, production-ready. All documented failure modes handled.
 
+Status: Completed as side-effects of phase 1-19. Insta replaced tmux tests. VLC defined as unnecessary.
+
 ---
 
 ## Phase 11: Protocol Version Gate (#23)

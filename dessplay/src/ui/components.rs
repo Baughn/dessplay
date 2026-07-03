@@ -685,10 +685,11 @@ pub struct UsersPane {
 }
 
 impl UsersPane {
-    /// Replace props, clamping the selection.
+    /// Replace props, clamping the selection (rows + selectable
+    /// known-offline entries -- see `selectable_len`).
     pub fn set_props(&mut self, props: UsersProps) {
         self.props = props;
-        self.cursor.clamp(self.props.rows.len());
+        self.cursor.clamp(self.selectable_len());
     }
 
     /// Keys shown in the keybinding bar: the structural list-navigation
@@ -1817,6 +1818,55 @@ mod playlist_pane_tests {
         apply_reorder(&mut p, h[0], 2); // -> [1,2,0]
         assert_eq!(p.cursor.index(), 2);
         assert_eq!(p.selected_hash(), Some(h[0]));
+    }
+}
+
+#[cfg(test)]
+mod users_pane_tests {
+    use super::*;
+    use crate::ui::props::{KnownOfflineRow, UserRow};
+
+    fn present(name: &str) -> UserRow {
+        UserRow {
+            name: name.to_string(),
+            label: "ready".to_string(),
+            tone: Tone::Normal,
+        }
+    }
+
+    fn offline(name: &str) -> KnownOfflineRow {
+        KnownOfflineRow {
+            name: name.to_string(),
+            last_seen_label: "3d ago".to_string(),
+        }
+    }
+
+    /// Selecting a known-offline row must survive a snapshot refresh with
+    /// unchanged props -- `apply_snapshot` calls `set_props` on every
+    /// incoming snapshot (presence, chat, position churn), not just when
+    /// the rows actually change. Regression: `set_props` used to clamp to
+    /// `rows.len()` only, snapping the selection off any known-offline row
+    /// onto the last present user the moment any snapshot landed.
+    #[test]
+    fn selecting_a_known_offline_row_survives_a_snapshot_refresh() {
+        let mut p = UsersPane {
+            focused: true,
+            ..Default::default()
+        };
+        let props = UsersProps {
+            rows: vec![present("Baughn")],
+            known_offline: vec![offline("Kim"), offline("Nero")],
+            seeders: vec![],
+        };
+        p.set_props(props.clone());
+        // Move onto the first known-offline row (index 1: past the one
+        // present row).
+        p.cursor.set(1);
+        assert_eq!(p.selected_username(), Some("Kim".to_string()));
+
+        // Simulate an unrelated snapshot refresh (props unchanged).
+        p.set_props(props);
+        assert_eq!(p.selected_username(), Some("Kim".to_string()));
     }
 }
 

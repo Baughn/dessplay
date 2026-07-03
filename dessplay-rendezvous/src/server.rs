@@ -879,7 +879,12 @@ async fn serve_connection<T: Transport>(
         tracing::debug!(user = %username.0, "superseding the user's old connection");
         old.close("superseded by a new connection").await;
     }
-    record_seen(&shared, &username, clock());
+    // Seeders are never listed as users (design.md, Client Roles) and are
+    // excluded from every presence-derived line -- including known_offline,
+    // which they would otherwise leak into once no longer Present.
+    if role == Role::Interactive {
+        record_seen(&shared, &username, clock());
+    }
 
     send_control(
         &*conn,
@@ -948,7 +953,9 @@ async fn serve_connection<T: Transport>(
         return;
     }
 
-    record_seen(&shared, &username, clock());
+    if role == Role::Interactive {
+        record_seen(&shared, &username, clock());
+    }
     match end {
         AuthedEnd::Goodbye => {
             tracing::info!("{username:?} quit");

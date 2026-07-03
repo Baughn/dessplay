@@ -157,7 +157,21 @@ struct Source {
     /// as a bitfield solicitation). Set once per source; a source dropped
     /// on departure is re-added fresh by `set_sources` and re-solicited.
     solicited: bool,
+    /// How many times `snub` has re-solicited this source with no reply.
+    /// Capped at [`MAX_SOLICIT_ATTEMPTS`] -- a source that never answers a
+    /// `BlockHashRequest` (e.g. a manual mapping to a different encode,
+    /// which `serve_block_hashes` silently refuses under this file's
+    /// identity by design) would otherwise be re-asked every snub timeout
+    /// forever. Capping and dropping it bounds the wasted round trips;
+    /// `set_sources` re-adds it fresh (a new `solicit_attempts` budget) if
+    /// it's still a candidate on a later pass, so a source that becomes
+    /// servable later (e.g. the mapping is corrected) isn't locked out.
+    solicit_attempts: u32,
 }
+
+/// How many silent `BlockHashRequest` re-solicitations a source gets before
+/// `snub` gives up on it (see [`Source::solicit_attempts`]).
+const MAX_SOLICIT_ATTEMPTS: u32 = 3;
 
 struct Download {
     store: ChunkStore,
@@ -267,6 +281,7 @@ impl Downloads {
                 in_flight: HashSet::new(),
                 last_progress: now,
                 solicited: false,
+                solicit_attempts: 0,
             });
         }
         self.progress_and_refill(file, now)
@@ -441,7 +456,6 @@ impl Downloads {
             return vec![];
         };
         let timeout = self.config.snub_timeout_millis;
-        let need_hashes = matches!(d.block_hashes, BlockHashes::Pending);
         let mut actions = Vec::new();
         let snubbed: Vec<PeerId> = d
             .sources
@@ -465,32 +479,69 @@ impl Downloads {
                 d.sources.remove(&peer);
             }
         }
-        // Block-hash-stage stall: a source we solicited for block hashes but
-        // that never answered (so it has no in-flight chunks, and the
-        // chunk-stage snub above skips it) while we still need the hashes.
-        // Re-ask it. Without this a lone source whose `BlockHashRequest` or
-        // reply was lost -- or that briefly dropped during a sub-Lost
-        // reconnect and returned -- leaves the download stuck at Pending
-        // forever: it is never re-solicited (the `solicited` flag latches
-        // and is only cleared by removing the source) and never snubbed
-        // (empty in-flight). Re-soliciting in place (rather than dropping and
-        // waiting for set_sources to re-add) recovers even with no state
-        // snapshots, since the file actor's own timer drives `tick`.
-        if need_hashes {
-            for (peer, src) in d.sources.iter_mut() {
-                if src.solicited
-                    && src.in_flight.is_empty()
-                    && now.saturating_sub(src.last_progress) >= timeout
-                {
-                    // Re-arm the clock so the next re-ask is another timeout
-                    // away, not every tick.
-                    src.last_progress = now;
-                    tracing::debug!(%peer, "re-soliciting block hashes from a stalled source");
-                    actions.push(DownloadAction::Send {
-                        to: peer.clone(),
-                        message: PeerMessage::BlockHashRequest { file },
-                    });
-                }
+        // Solicited-but-silent stall: a source we asked for block hashes /
+        // availability that never answered, so it still carries an empty
+        // bitfield (source entries only ever come from synced Ready peers,
+        // so an empty bitfield always means "hasn't replied yet", never
+        // "has nothing" -- see `progress_and_refill`). It has no in-flight
+        // chunks (an empty bitfield is never picked for chunk requests), so
+        // the chunk-stage snub above skips it too. Re-ask it.
+        //
+        // This applies whether the file is still `Pending` (the source that
+        // is meant to supply the block hashes themselves went silent) or
+        // already `Have` (a source solicited *after* validation -- e.g. one
+        // that joined to replace a departed driver, per
+        // `progress_and_refill`'s post-`Have` solicitation -- went silent
+        // instead). Gating this only on `Pending` left the post-`Have` case
+        // uncovered: a solicited source with a lost reply kept
+        // `solicited=true` and an empty bitfield forever, never re-asked
+        // (the flag latches, cleared only by removing the source) and never
+        // snubbed (empty in-flight) -- a permanent wedge if it ends up the
+        // only surviving source. Re-soliciting in place (rather than
+        // dropping and waiting for `set_sources` to re-add) recovers even
+        // with no state snapshots, since the file actor's own timer drives
+        // `tick`.
+        //
+        // A source that never answers *at all* -- e.g. a manual mapping to
+        // a different encode, which `serve_block_hashes` silently refuses
+        // to serve under this file's identity by design -- would otherwise
+        // be re-asked every timeout forever, spending bandwidth on a source
+        // that can never succeed. Cap it at `MAX_SOLICIT_ATTEMPTS`: past
+        // that, give up and drop the source instead of re-asking again.
+        // `set_sources` re-adds it fresh (a new attempt budget) if it's
+        // still a candidate on a later pass, so a source that becomes
+        // servable later isn't locked out permanently -- just rate-limited.
+        let give_up: Vec<PeerId> = d
+            .sources
+            .iter()
+            .filter(|(_, s)| {
+                s.solicited
+                    && s.in_flight.is_empty()
+                    && s.bitfield.count_ones() == 0
+                    && now.saturating_sub(s.last_progress) >= timeout
+                    && s.solicit_attempts >= MAX_SOLICIT_ATTEMPTS
+            })
+            .map(|(p, _)| p.clone())
+            .collect();
+        for peer in give_up {
+            tracing::debug!(%peer, attempts = MAX_SOLICIT_ATTEMPTS, "giving up on a silent source");
+            d.sources.remove(&peer);
+        }
+        for (peer, src) in d.sources.iter_mut() {
+            if src.solicited
+                && src.in_flight.is_empty()
+                && src.bitfield.count_ones() == 0
+                && now.saturating_sub(src.last_progress) >= timeout
+            {
+                // Re-arm the clock so the next re-ask is another timeout
+                // away, not every tick.
+                src.last_progress = now;
+                src.solicit_attempts += 1;
+                tracing::debug!(%peer, attempt = src.solicit_attempts, "re-soliciting block hashes from a stalled source");
+                actions.push(DownloadAction::Send {
+                    to: peer.clone(),
+                    message: PeerMessage::BlockHashRequest { file },
+                });
             }
         }
         actions
@@ -1264,6 +1315,112 @@ mod tests {
             block_hash_requests(&actions).contains(&"b".to_string()),
             "a source joining after block hashes are validated must be solicited: {actions:?}"
         );
+    }
+
+    /// A source solicited *after* block hashes are already `Have` (an empty
+    /// bitfield, per `a_source_added_after_block_hashes_is_solicited`) must
+    /// be re-solicited if its reply never arrives -- not left with
+    /// `solicited=true` and an empty bitfield forever. Pre-fix the re-ask
+    /// loop in `snub` only ran while `block_hashes` was still `Pending`
+    /// (`need_hashes`), so a solicited-but-silent post-`Have` source was
+    /// never re-asked (no in-flight chunks to trip the chunk-stage snub
+    /// either) -- a permanent wedge if it's the only surviving source.
+    #[test]
+    fn post_have_stalled_source_is_re_solicited() {
+        let config = DownloadConfig::default();
+        let timeout = config.snub_timeout_millis;
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("a")],
+            0,
+            1000,
+        );
+        // 'a' supplies valid block hashes -> state leaves Pending.
+        r.downloads.on_peer_message(
+            peer("a"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            1100,
+        );
+        // 'b' joins post-Have and is solicited once...
+        let actions = r
+            .downloads
+            .set_sources(r.file, vec![peer("a"), peer("b")], 0, 1200);
+        assert!(block_hash_requests(&actions).contains(&"b".to_string()));
+        // 'a' then departs, leaving 'b' as the only source -- still with an
+        // empty bitfield, since its reply never arrived.
+        r.downloads.set_sources(r.file, vec![peer("b")], 0, 1200);
+
+        // Before the timeout, no re-ask.
+        let early = r.downloads.tick(1200 + timeout - 1);
+        assert!(
+            block_hash_requests(&early).is_empty(),
+            "re-asked before the snub timeout"
+        );
+
+        // After the timeout, the stalled post-Have source is re-solicited.
+        let late = r.downloads.tick(1200 + timeout + 1);
+        assert_eq!(
+            block_hash_requests(&late),
+            vec!["b"],
+            "a solicited post-Have source with an empty bitfield was never re-solicited"
+        );
+    }
+
+    /// A source that never answers *at all* (e.g. a manual mapping to a
+    /// different encode, which `serve_block_hashes` silently refuses to
+    /// serve under this file's identity) must eventually be given up on,
+    /// not re-solicited forever. Regression for the "perpetual
+    /// re-solicitation" half of the block-hash-stall fix: bounding retries
+    /// caps the wasted bandwidth even though the underlying source can
+    /// never succeed.
+    #[test]
+    fn a_perpetually_silent_source_is_eventually_given_up_on() {
+        let config = DownloadConfig::default();
+        let timeout = config.snub_timeout_millis;
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("silent")],
+            0,
+            1000,
+        );
+
+        // Re-solicit up to MAX_SOLICIT_ATTEMPTS times, one per timeout,
+        // with the source staying silent throughout.
+        let mut now = 1000;
+        for attempt in 1..=3 {
+            now += timeout + 1;
+            let actions = r.downloads.tick(now);
+            assert_eq!(
+                block_hash_requests(&actions),
+                vec!["silent"],
+                "attempt {attempt} should still re-solicit"
+            );
+        }
+
+        // One more timeout past the cap: the source is dropped, not
+        // re-asked again.
+        now += timeout + 1;
+        let actions = r.downloads.tick(now);
+        assert!(
+            block_hash_requests(&actions).is_empty(),
+            "a perpetually silent source was re-solicited past the attempt cap: {actions:?}"
+        );
+
+        // And it stays gone -- no further re-asks on later ticks either.
+        now += timeout + 1;
+        let actions = r.downloads.tick(now);
+        assert!(block_hash_requests(&actions).is_empty());
     }
 
     /// A download must not wedge when the source that supplied block hashes

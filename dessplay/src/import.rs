@@ -429,12 +429,22 @@ pub async fn submit(
     }
 
     let existing = view(handle).await?;
-    // Name (case-insensitive) -> (entry id, its AniDB link, was-it-created
-    // in this run). Seeded from the current List so a re-import matches
-    // existing entries, and *grown as we go* so a series named on more than
-    // one sheet collapses onto one entry instead of creating a duplicate the
-    // frozen snapshot could never see (the bug: matching only the pre-loop
-    // snapshot left each same-named row to mint its own random id).
+    // Name (case-insensitive) -> (entry id, its AniDB link, has-an-earlier-
+    // row-in-this-run-already-matched-it). Seeded from the current List so
+    // a re-import matches existing entries, and *grown as we go* so a
+    // series named on more than one sheet collapses onto one entry instead
+    // of creating a duplicate the frozen snapshot could never see (the
+    // bug: matching only the pre-loop snapshot left each same-named row to
+    // mint its own random id).
+    //
+    // The third field tracks "matched by an earlier row in *this* run", not
+    // "created in this run" -- collapsing is a status conflict between two
+    // *imported* sheets, and that applies whether the entry already existed
+    // in The List or was just created a moment ago by an earlier row of
+    // this same import. Gating on "created this run" instead (the prior
+    // bug) silently resolved a conflict between two sheets whenever the
+    // entry pre-existed -- which re-imports, the primary supported
+    // workflow, hit on every single row.
     let mut seen: std::collections::HashMap<String, (ListEntryId, Option<AniDbSeriesId>, bool)> =
         std::collections::HashMap::new();
     for (id, entry) in &existing.list_entries {
@@ -448,16 +458,17 @@ pub async fn submit(
         let mut entry = imported.entry.clone();
         let key = entry.name.to_ascii_lowercase();
         let id = match seen.get(&key).copied() {
-            Some((id, old_anidb, created_this_run)) => {
+            Some((id, old_anidb, matched_this_run)) => {
                 // A manually-set AniDB link outlives re-imports (imports
                 // arrive unlinked, so `old_anidb` only ever comes from an
                 // existing entry).
                 entry.anidb_series_id = entry.anidb_series_id.or(old_anidb);
                 outcome.updated += 1;
-                if created_this_run {
+                if matched_this_run {
                     // Two sheets named the same series: the later row wins.
                     outcome.collapsed.push(entry.name.clone());
                 }
+                seen.insert(key, (id, old_anidb, true));
                 id
             }
             None => {
