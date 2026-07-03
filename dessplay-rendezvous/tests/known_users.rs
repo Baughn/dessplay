@@ -88,3 +88,53 @@ async fn known_user_survives_a_server_restart() {
     .await;
     drop(kim);
 }
+
+/// design.md (Client Roles): "Seeders are not listed as users" and are
+/// "excluded from every presence-derived line." A seeder that connects and
+/// later disconnects (e.g. a service restart) must never appear in
+/// `known_offline` -- it would otherwise render as a selectable
+/// known-offline user in the Users pane, a meaningless `n`/`/skip <name>`
+/// target for something that should never gate or be listed at all.
+#[tokio::test(start_paused = true)]
+async fn seeder_never_appears_in_known_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage =
+        dessplay_rendezvous::storage::ServerStorage::open(&dir.path().join("rendezvous.db"))
+            .unwrap();
+    let harness = Harness::with_config_and_storage(
+        0x5EED,
+        dessplay_rendezvous::server::ServerConfig::new(PASSWORD),
+        Some(storage),
+    );
+    let baughn = harness.client("baughn", 1);
+    let nas = harness.seeder("nas", 2);
+
+    // Wait for the seeder to actually register (present on the shared
+    // registry) before disconnecting it.
+    eventually(&[&baughn], Duration::from_secs(30), |snaps| {
+        snaps[0].peer("nas").is_some()
+    })
+    .await;
+    quit(&nas).await;
+
+    // Give the disconnect time to be processed (record_seen, if it were
+    // going to run, happens synchronously on the disconnect path).
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // A fresh peer connecting afterward must never see "nas" as
+    // known-offline.
+    let kim = harness.client("kim", 3);
+    eventually(&[&kim], Duration::from_secs(30), |snaps| {
+        snaps[0].peer("kim").is_some()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !kim.known_offline
+            .borrow()
+            .iter()
+            .any(|k| k.username == UserId::new("nas")),
+        "seeder leaked into known_offline: {:?}",
+        kim.known_offline.borrow()
+    );
+}

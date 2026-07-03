@@ -84,12 +84,20 @@ async fn import_submits_and_reimport_updates() {
     );
 
     // Re-import: every row matches an existing entry by name, nothing
-    // duplicates, and no fresh same-run collapse is reported (the duplicate
-    // rows now match the already-present entry, not one created this run).
+    // duplicates -- but the cross-sheet duplicate names still collapse onto
+    // one entry each *within this run*, and that conflict is still
+    // surfaced even though every entry pre-existed (collapsing is a status
+    // conflict between two imported sheets, not a "was it just created"
+    // question -- a re-import, the primary supported workflow, must not
+    // silently swallow it).
     let outcome = submit(&kim, &parse_fixtures()).await.expect("re-submit");
     assert_eq!(outcome.created, 0);
     assert_eq!(outcome.updated, total);
-    assert!(outcome.collapsed.is_empty());
+    assert_eq!(
+        outcome.collapsed.len(),
+        dups,
+        "a re-import must still surface cross-sheet duplicates, not just first-time imports"
+    );
     eventually(&[&kim, &baughn], Duration::from_secs(60), |snaps| {
         snaps.iter().all(|s| s.view.list_entries.len() == unique)
     })

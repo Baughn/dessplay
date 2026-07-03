@@ -396,6 +396,10 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
         };
     }
     let mut registered = false;
+    // Whether `IrcEvent::Connected` has fired yet -- once, on the first
+    // RPL_NAMREPLY confirming the channel join actually succeeded (see the
+    // "353" arm below).
+    let mut joined = false;
     let mut nick_tries: u32 = 0;
     // Channel membership, tracked from NAMES + JOIN/PART/QUIT/NICK so
     // `/summon` (design.md #4) can match an absent dessplay username to
@@ -421,13 +425,19 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
                         }
                     }
                     // RPL_WELCOME: registration done — join the channel.
+                    // `IrcEvent::Connected` is deliberately not sent here:
+                    // it fires once the join is actually confirmed (the
+                    // first NAMREPLY for our channel, below) -- not merely
+                    // requested. Sending it this early meant a channel we
+                    // can never join (e.g. +R) still narrated a spurious
+                    // "connected" every backoff cycle, right before the
+                    // rejection's Disconnected.
                     "001" => {
                         registered = true;
                         if let Err(e) = send_line(&mut write, &format!("JOIN {}", config.channel)).await {
                             return SessionEnd::Lost { reason: e, registered };
                         }
-                        tracing::info!(channel = %config.channel, "joined IRC channel");
-                        let _ = events.send(IrcEvent::Connected).await;
+                        tracing::debug!(channel = %config.channel, "sent JOIN");
                     }
                     // ERR_NICKNAMEINUSE / ERR_NICKCOLLISION before registration.
                     "433" | "436" if !registered => {
@@ -466,9 +476,24 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
                     }
                     // RPL_NAMREPLY: the trailing param is the space-separated
                     // nick list (with optional @/+/etc. status markers).
+                    // Its arrival for our channel is the actual confirmation
+                    // the JOIN succeeded (a rejection, "473"/"474"/etc.
+                    // above, arrives instead and never reaches here) -- so
+                    // the first one is also when `IrcEvent::Connected`
+                    // fires.
                     "353" => {
                         if let Some(list) = parsed.params.last() {
                             members.extend(parse_names(list));
+                        }
+                        if !joined
+                            && parsed
+                                .params
+                                .get(2)
+                                .is_some_and(|c| c.eq_ignore_ascii_case(&config.channel))
+                        {
+                            joined = true;
+                            tracing::info!(channel = %config.channel, "joined IRC channel");
+                            let _ = events.send(IrcEvent::Connected).await;
                         }
                     }
                     "JOIN" => {
@@ -1133,6 +1158,19 @@ mod tests {
             .unwrap();
     }
 
+    /// Confirm a JOIN the way a real server does: an RPL_NAMREPLY (353) for
+    /// the channel, then RPL_ENDOFNAMES (366) -- this is what actually
+    /// triggers `IrcEvent::Connected` (see the "353" arm), not the earlier
+    /// `001`/JOIN exchange.
+    async fn write_join_confirmed(
+        write: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        nick: &str,
+        channel: &str,
+    ) {
+        write_server(write, &format!(":srv 353 {nick} = {channel} :{nick}")).await;
+        write_server(write, &format!(":srv 366 {nick} {channel} :End of /NAMES")).await;
+    }
+
     /// Force the actor to have fully drained every previously-written
     /// server line before the test proceeds. `tokio::select!` picks
     /// unbiased among *all* ready branches each iteration, so writing
@@ -1159,6 +1197,7 @@ mod tests {
         );
         write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
         assert_eq!(next_line(&mut lines).await, "JOIN #dess");
+        write_join_confirmed(&mut server, "BaughnDess", "#dess").await;
         assert_eq!(events.recv().await, Some(IrcEvent::Connected));
     }
 
@@ -1169,6 +1208,7 @@ mod tests {
         let _ = next_line(&mut lines).await; // USER
         write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
         let _ = next_line(&mut lines).await; // JOIN
+        write_join_confirmed(&mut server, "BaughnDess", "#dess").await;
         assert_eq!(events.recv().await, Some(IrcEvent::Connected));
 
         // A bridge nick is dropped; the following external one is the
@@ -1214,15 +1254,16 @@ mod tests {
         let _ = next_line(&mut lines).await; // USER
         write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
         let _ = next_line(&mut lines).await; // JOIN
-        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
 
-        // Scripted NAMES reply populates channel membership.
+        // Scripted NAMES reply populates channel membership and is also
+        // what confirms the join, so `Connected` fires here.
         write_server(
             &mut server,
             ":srv 353 BaughnDess = #dess :BaughnDess @Nero200 +Tomoko",
         )
         .await;
         write_server(&mut server, ":srv 366 BaughnDess #dess :End of /NAMES").await;
+        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
         sync_via_ping(&mut lines, &mut server).await;
 
         cmd.send(IrcCommand::Summon(vec![
@@ -1252,6 +1293,7 @@ mod tests {
         let _ = next_line(&mut lines).await; // USER
         write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
         let _ = next_line(&mut lines).await; // JOIN
+        write_join_confirmed(&mut server, "BaughnDess", "#dess").await;
         assert_eq!(events.recv().await, Some(IrcEvent::Connected));
 
         // Nero200 joins live (no NAMES reply involved)...
@@ -1299,9 +1341,9 @@ mod tests {
         let _ = next_line(&mut lines).await; // USER
         write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
         let _ = next_line(&mut lines).await; // JOIN
-        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
 
         write_server(&mut server, ":srv 353 BaughnDess = #dess :NeroDess").await;
+        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
         sync_via_ping(&mut lines, &mut server).await;
 
         cmd.send(IrcCommand::Summon(vec![UserId::new("Nero")]))
@@ -1387,12 +1429,25 @@ mod tests {
         }
 
         /// Consume NICK + USER, reply with RPL_WELCOME (001), then consume
-        /// the JOIN — the full client-side handshake.
+        /// the JOIN — the full client-side handshake. Does *not* confirm
+        /// the join (see `confirm_join`): callers that expect a successful
+        /// join and `IrcEvent::Connected` must confirm it explicitly, so
+        /// `register_and_reject` (below) can instead reject it.
         async fn register_and_join(&mut self, nick: &str, channel: &str) {
             assert_eq!(self.recv_line().await, format!("NICK {nick}"));
             let _ = self.recv_line().await; // USER
             self.send(&format!(":srv 001 {nick} :Welcome")).await;
             assert_eq!(self.recv_line().await, format!("JOIN {channel}"));
+        }
+
+        /// Confirm a prior `register_and_join`'s JOIN the way a real server
+        /// does: RPL_NAMREPLY (353) then RPL_ENDOFNAMES (366) -- what
+        /// actually triggers `IrcEvent::Connected`.
+        async fn confirm_join(&mut self, nick: &str, channel: &str) {
+            self.send(&format!(":srv 353 {nick} = {channel} :{nick}"))
+                .await;
+            self.send(&format!(":srv 366 {nick} {channel} :End of /NAMES"))
+                .await;
         }
 
         /// Register and consume the JOIN, then reject it with 477 (the
@@ -1564,6 +1619,7 @@ mod tests {
         }
         let mut srv = srv_rx.recv().await.unwrap();
         srv.register_and_join("BaughnDess", "#dess").await;
+        srv.confirm_join("BaughnDess", "#dess").await;
         assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
 
         // The established connection drops -> Disconnected + backoff reset.
@@ -1593,6 +1649,11 @@ mod tests {
     /// backoff each cycle — a ~2s Connected/Disconnected spam loop. Now it
     /// returns SessionEnd::Rejected, which surfaces Disconnected but leaves
     /// the backoff growing.
+    ///
+    /// Also covers the narration-accuracy half: `IrcEvent::Connected` fires
+    /// only once the join is actually confirmed (an RPL_NAMREPLY for the
+    /// channel), never before a rejection -- a channel we can never join
+    /// must not narrate a false "connected" on every cycle.
     #[tokio::test(start_paused = true)]
     async fn rejected_join_backs_off_instead_of_looping() {
         let (_cmd_tx, cmd_rx) = mpsc::channel(8);
@@ -1610,8 +1671,9 @@ mod tests {
             attempt_at.push(start.elapsed());
             let mut srv = srv_rx.recv().await.unwrap();
             srv.register_and_reject("BaughnDess", "#dess").await;
-            // Each rejected cycle surfaces Connected (001) then Disconnected.
-            assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
+            // The join is never confirmed (no NAMREPLY before the 477), so
+            // each rejected cycle surfaces only Disconnected -- no spurious
+            // Connected.
             assert!(matches!(
                 ev_rx.recv().await,
                 Some(IrcEvent::Disconnected { .. })
@@ -1690,6 +1752,7 @@ mod tests {
         att_rx.recv().await.unwrap();
         let mut srv = srv_rx.recv().await.unwrap();
         srv.register_and_join("BaughnDess", "#dess").await;
+        srv.confirm_join("BaughnDess", "#dess").await;
         assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
     }
 
@@ -1707,6 +1770,7 @@ mod tests {
         att_rx.recv().await.unwrap();
         let mut srv1 = srv_rx.recv().await.unwrap();
         srv1.register_and_join("BaughnDess", "#dess").await;
+        srv1.confirm_join("BaughnDess", "#dess").await;
         assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
 
         let mut new = test_config();
@@ -1720,6 +1784,7 @@ mod tests {
         att_rx.recv().await.unwrap();
         let mut srv2 = srv_rx.recv().await.unwrap();
         srv2.register_and_join("BaughnDess", "#other").await;
+        srv2.confirm_join("BaughnDess", "#other").await;
         assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
     }
 
@@ -1737,6 +1802,7 @@ mod tests {
         att_rx.recv().await.unwrap();
         let mut srv = srv_rx.recv().await.unwrap();
         srv.register_and_join("BaughnDess", "#dess").await;
+        srv.confirm_join("BaughnDess", "#dess").await;
         assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
 
         let disabled = IrcConfig {
@@ -1767,6 +1833,7 @@ mod tests {
         att_rx.recv().await.unwrap();
         let mut srv = srv_rx.recv().await.unwrap();
         srv.register_and_join("BaughnDess", "#dess").await;
+        srv.confirm_join("BaughnDess", "#dess").await;
         assert_eq!(ev_rx.recv().await, Some(IrcEvent::Connected));
 
         srv.send("PING :tantalum.rizon.net").await;
