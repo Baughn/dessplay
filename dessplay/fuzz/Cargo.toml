@@ -1,0 +1,40 @@
+[package]
+name = "dessplay-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Excluded from the root workspace (fuzz builds use their own profile).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+tempfile = "3"
+serde_json = "1"
+dessplay-core = { path = "../../dessplay-core" }
+dessplay = { path = ".." }
+
+[[bin]]
+name = "mpv_ipc_translate"
+path = "fuzz_targets/mpv_ipc_translate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpv_ass_text"
+path = "fuzz_targets/mpv_ass_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "download_scheduler"
+path = "fuzz_targets/download_scheduler.rs"
+test = false
+doc = false
+bench = false

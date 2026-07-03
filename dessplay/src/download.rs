@@ -157,21 +157,51 @@ struct Source {
     /// as a bitfield solicitation). Set once per source; a source dropped
     /// on departure is re-added fresh by `set_sources` and re-solicited.
     solicited: bool,
+    /// Whether this source has answered our `BlockHashRequest` with a
+    /// `BlockHashes` reply (valid or not -- an invalid reply drops the
+    /// source outright via `on_block_hashes`, so this only ever stays
+    /// observable as `true`). Tracked separately from the bitfield: the
+    /// two replies (`BlockHashes` and `FileAvailability`) are sent
+    /// together by an honest peer but travel as two independent
+    /// messages, so one can arrive without the other (a dropped
+    /// connection mid-reply, or any peer that broadcasts availability on
+    /// its own initiative). `snub`'s stall detection used to treat a
+    /// non-empty bitfield alone as "this source has answered", which
+    /// silently stopped re-soliciting a source that had advertised
+    /// availability but never actually supplied block hashes -- if every
+    /// present source hit that interleaving, the file stayed `Pending`
+    /// forever with no chunk ever requested, despite present, honest,
+    /// fully-advertising sources sitting right there.
+    hashes_replied: bool,
     /// How many times `snub` has re-solicited this source with no reply.
     /// Capped at [`MAX_SOLICIT_ATTEMPTS`] -- a source that never answers a
     /// `BlockHashRequest` (e.g. a manual mapping to a different encode,
     /// which `serve_block_hashes` silently refuses under this file's
     /// identity by design) would otherwise be re-asked every snub timeout
-    /// forever. Capping and dropping it bounds the wasted round trips;
-    /// `set_sources` re-adds it fresh (a new `solicit_attempts` budget) if
-    /// it's still a candidate on a later pass, so a source that becomes
-    /// servable later (e.g. the mapping is corrected) isn't locked out.
+    /// forever. Past the cap, `snub` backs off for
+    /// [`GIVE_UP_COOLDOWN_MULTIPLIER`] timeouts before resetting the
+    /// budget and trying again -- *not* a permanent drop. An earlier
+    /// version removed the source outright once the cap was hit, relying
+    /// on a later external `set_sources`/`start` call to "re-add it
+    /// fresh"; nothing in this module guarantees such a call ever
+    /// happens again (the file actor never calls `set_sources` directly,
+    /// only `start` via a `StartDownload` the session re-emits whenever
+    /// its synced state view changes -- reliably frequent in an active
+    /// session via e.g. playback-position churn, but never for a
+    /// seeder-only download nobody is watching). A solitary or
+    /// persistently-silent source could then be lost forever with no
+    /// recovery path and no visible signal. Backing off in place removes
+    /// that external dependency.
     solicit_attempts: u32,
 }
 
 /// How many silent `BlockHashRequest` re-solicitations a source gets before
-/// `snub` gives up on it (see [`Source::solicit_attempts`]).
+/// `snub` backs off (see [`Source::solicit_attempts`]).
 const MAX_SOLICIT_ATTEMPTS: u32 = 3;
+
+/// How many extra snub timeouts a source that hit [`MAX_SOLICIT_ATTEMPTS`]
+/// waits before its budget resets and solicitation resumes.
+const GIVE_UP_COOLDOWN_MULTIPLIER: u32 = 10;
 
 struct Download {
     store: ChunkStore,
@@ -281,6 +311,7 @@ impl Downloads {
                 in_flight: HashSet::new(),
                 last_progress: now,
                 solicited: false,
+                hashes_replied: false,
                 solicit_attempts: 0,
             });
         }
@@ -364,6 +395,9 @@ impl Downloads {
         }
         tracing::debug!(blocks = hashes.len(), "block hashes validated");
         d.block_hashes = BlockHashes::Have(hashes);
+        if let Some(src) = d.sources.get_mut(&from) {
+            src.hashes_replied = true;
+        }
         // A resume may already have chunks on disk: verify now.
         self.verify_and_collect(file);
         self.progress_and_refill(file, now)
@@ -480,12 +514,17 @@ impl Downloads {
             }
         }
         // Solicited-but-silent stall: a source we asked for block hashes /
-        // availability that never answered, so it still carries an empty
-        // bitfield (source entries only ever come from synced Ready peers,
-        // so an empty bitfield always means "hasn't replied yet", never
-        // "has nothing" -- see `progress_and_refill`). It has no in-flight
-        // chunks (an empty bitfield is never picked for chunk requests), so
-        // the chunk-stage snub above skips it too. Re-ask it.
+        // availability that hasn't fully answered -- still missing its
+        // bitfield (source entries only ever come from synced Ready
+        // peers, so an empty bitfield always means "hasn't advertised
+        // yet", never "has nothing" -- see `progress_and_refill`), or,
+        // while the file is still `Pending`, still missing its
+        // `BlockHashes` reply specifically (`hashes_replied`; tracked
+        // separately from the bitfield -- see `Source::hashes_replied`
+        // for why a non-empty bitfield alone doesn't mean this source
+        // answered our hash request). A source with in-flight chunks is
+        // plainly not stalled, so the chunk-stage snub above already
+        // covers it. Re-ask it.
         //
         // This applies whether the file is still `Pending` (the source that
         // is meant to supply the block hashes themselves went silent) or
@@ -507,42 +546,38 @@ impl Downloads {
         // to serve under this file's identity by design -- would otherwise
         // be re-asked every timeout forever, spending bandwidth on a source
         // that can never succeed. Cap it at `MAX_SOLICIT_ATTEMPTS`: past
-        // that, give up and drop the source instead of re-asking again.
-        // `set_sources` re-adds it fresh (a new attempt budget) if it's
-        // still a candidate on a later pass, so a source that becomes
-        // servable later isn't locked out permanently -- just rate-limited.
-        let give_up: Vec<PeerId> = d
-            .sources
-            .iter()
-            .filter(|(_, s)| {
-                s.solicited
-                    && s.in_flight.is_empty()
-                    && s.bitfield.count_ones() == 0
-                    && now.saturating_sub(s.last_progress) >= timeout
-                    && s.solicit_attempts >= MAX_SOLICIT_ATTEMPTS
-            })
-            .map(|(p, _)| p.clone())
-            .collect();
-        for peer in give_up {
-            tracing::debug!(%peer, attempts = MAX_SOLICIT_ATTEMPTS, "giving up on a silent source");
-            d.sources.remove(&peer);
-        }
+        // that, back off for `GIVE_UP_COOLDOWN_MULTIPLIER` timeouts before
+        // resetting the budget and asking again. This is a self-contained
+        // backoff, not a drop -- see `Source::solicit_attempts` for why an
+        // outright removal here is not safe to rely on an external caller
+        // to undo.
+        let need_hashes = matches!(d.block_hashes, BlockHashes::Pending);
         for (peer, src) in d.sources.iter_mut() {
-            if src.solicited
-                && src.in_flight.is_empty()
-                && src.bitfield.count_ones() == 0
-                && now.saturating_sub(src.last_progress) >= timeout
-            {
-                // Re-arm the clock so the next re-ask is another timeout
-                // away, not every tick.
-                src.last_progress = now;
-                src.solicit_attempts += 1;
-                tracing::debug!(%peer, attempt = src.solicit_attempts, "re-soliciting block hashes from a stalled source");
-                actions.push(DownloadAction::Send {
-                    to: peer.clone(),
-                    message: PeerMessage::BlockHashRequest { file },
-                });
+            let still_missing_something =
+                src.bitfield.count_ones() == 0 || (need_hashes && !src.hashes_replied);
+            if !(src.solicited && src.in_flight.is_empty() && still_missing_something) {
+                continue;
             }
+            let elapsed = now.saturating_sub(src.last_progress);
+            if src.solicit_attempts >= MAX_SOLICIT_ATTEMPTS {
+                if elapsed < timeout.saturating_mul(GIVE_UP_COOLDOWN_MULTIPLIER as u64) {
+                    continue;
+                }
+                tracing::debug!(%peer, "cooldown elapsed; resuming solicitation of a long-silent source");
+                src.solicit_attempts = 0;
+            } else if elapsed < timeout {
+                continue;
+            } else {
+                tracing::debug!(%peer, attempt = src.solicit_attempts + 1, "re-soliciting block hashes from a stalled source");
+            }
+            // Re-arm the clock so the next re-ask is another timeout (or
+            // cooldown) away, not every tick.
+            src.last_progress = now;
+            src.solicit_attempts += 1;
+            actions.push(DownloadAction::Send {
+                to: peer.clone(),
+                message: PeerMessage::BlockHashRequest { file },
+            });
         }
         actions
     }
@@ -1375,13 +1410,17 @@ mod tests {
 
     /// A source that never answers *at all* (e.g. a manual mapping to a
     /// different encode, which `serve_block_hashes` silently refuses to
-    /// serve under this file's identity) must eventually be given up on,
-    /// not re-solicited forever. Regression for the "perpetual
-    /// re-solicitation" half of the block-hash-stall fix: bounding retries
-    /// caps the wasted bandwidth even though the underlying source can
-    /// never succeed.
+    /// serve under this file's identity) must back off after
+    /// `MAX_SOLICIT_ATTEMPTS`, not be re-solicited every timeout forever --
+    /// but it must **not** be dropped permanently either: nothing external
+    /// is guaranteed to ever re-add a source to a lone-seeder-style
+    /// download nobody is actively watching (see `Source::solicit_attempts`),
+    /// so `Downloads` must recover on its own once the cooldown elapses.
+    /// Regression for both halves: an earlier version bounded the
+    /// re-solicitation (good) by dropping the source outright (a silent
+    /// wedge if nothing ever calls `set_sources` again).
     #[test]
-    fn a_perpetually_silent_source_is_eventually_given_up_on() {
+    fn a_perpetually_silent_source_backs_off_then_resumes_on_its_own() {
         let config = DownloadConfig::default();
         let timeout = config.snub_timeout_millis;
         let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
@@ -1408,8 +1447,7 @@ mod tests {
             );
         }
 
-        // One more timeout past the cap: the source is dropped, not
-        // re-asked again.
+        // One more timeout past the cap: back off, not re-asked yet.
         now += timeout + 1;
         let actions = r.downloads.tick(now);
         assert!(
@@ -1417,10 +1455,21 @@ mod tests {
             "a perpetually silent source was re-solicited past the attempt cap: {actions:?}"
         );
 
-        // And it stays gone -- no further re-asks on later ticks either.
+        // Still silent, well within the cooldown: still no re-ask.
         now += timeout + 1;
         let actions = r.downloads.tick(now);
         assert!(block_hash_requests(&actions).is_empty());
+
+        // Once the full cooldown elapses, solicitation resumes on its
+        // own -- no external `set_sources`/`start` call involved. This
+        // is the whole point: a lone silent source is never lost forever.
+        now += timeout * u64::from(GIVE_UP_COOLDOWN_MULTIPLIER);
+        let actions = r.downloads.tick(now);
+        assert_eq!(
+            block_hash_requests(&actions),
+            vec!["silent"],
+            "a long-silent source must resume being solicited after the cooldown, with no external call: {actions:?}"
+        );
     }
 
     /// A download must not wedge when the source that supplied block hashes

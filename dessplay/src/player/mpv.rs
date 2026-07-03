@@ -321,7 +321,7 @@ async fn supervise_attached(
 
 /// Translation state for the reader loop.
 #[derive(Default)]
-struct Translate {
+pub struct Translate {
     /// A `seek` event arrived; the next `playback-restart` resolves it.
     seek_pending: bool,
     /// In-flight `get_property time-pos` request for a finished seek.
@@ -422,7 +422,7 @@ async fn read_loop(
 }
 
 /// Translate one mpv IPC message into player events.
-fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<PlayerEvent> {
+pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<PlayerEvent> {
     // The reply to our post-seek position query.
     if let Some(id) = state.seek_pos_request
         && msg.get("request_id").and_then(Value::as_u64) == Some(id)
@@ -550,7 +550,7 @@ fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<Pl
 /// simultaneous events arrive newline-separated; we join their texts and
 /// take the first non-empty speaker. A line that is not a well-formed
 /// `Dialogue:` event is treated as plain text with no speaker.
-fn parse_ass_full(raw: &str) -> (String, Option<String>) {
+pub fn parse_ass_full(raw: &str) -> (String, Option<String>) {
     let mut texts: Vec<String> = Vec::new();
     let mut speaker: Option<String> = None;
     for line in raw.split('\n') {

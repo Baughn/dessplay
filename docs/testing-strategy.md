@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-06-12
+Last updated: 2026-07-03
 
 ## Table of Contents
 
@@ -561,6 +561,57 @@ Raw bytes -> stream/datagram framing layer. Must not panic.
 #### Sync Engine (`sync_engine`) — Phase 4
 2-4 SyncActors through random event sequences with partitions and loss.
 Mid-run convergence checks.
+
+### Client Targets (`dessplay/fuzz`)
+
+A second, separate cargo-fuzz crate (own `Cargo.toml`/`run.sh`, same
+conventions) for logic that lives in the `dessplay` client crate rather
+than `dessplay-core` — the mpv player integration and the download
+scheduler, both external-input boundaries the core CRDT fuzzing above
+doesn't reach.
+
+#### mpv IPC Translate (`mpv_ipc_translate`)
+Arbitrary sequences of raw lines (plus a `loading`-flag toggle per step)
+fed through `player::mpv::translate` against one running `Translate`
+accumulator, mirroring `read_loop`'s per-line parse-or-skip. Targets the
+cross-message state (pause/path dedup, the seek-reply request-id match,
+EOF edge-triggering), not just single-message parsing. Must not panic.
+
+#### mpv ASS Text (`mpv_ass_text`)
+Arbitrary strings through `player::mpv::parse_ass_full` (the ASS
+override-tag stripper, including the drawing-mode and unclosed-brace
+"eat the rest" paths). Must not panic, and the stripped text must never
+be longer than the input.
+
+#### Download Scheduler (`download_scheduler`)
+Arbitrary sequences of peer protocol events (honest and adversarial:
+wrong-length bitfields, forged block hashes, out-of-range or corrupt
+chunk data, churning source sets, clock jumps) against `download::Downloads`
+with a small real backing file. Must not panic. Liveness ("does chaos
+ever wedge it permanently") is intentionally *not* checked here — see the
+companion proptest below — this target is purely a crash-safety net
+against malformed peer input.
+
+#### Download Chaos Recovery (`download_props`, proptest)
+Not a fuzz target — an in-repo proptest (`dessplay/tests/download_props.rs`)
+using the same event vocabulary as `download_scheduler`, plus a forced
+honest epilogue: after an arbitrary chaos prefix, every original source
+becomes present and truthful again, and the download must reach
+completion with the exact original bytes. This generalizes the module's
+own history of hand-found wedge regressions (a stalled block-hash source
+never re-solicited, a departed driving source, two sources
+double-assigned the same chunk, a lying source never dropped) into one
+property instead of waiting for the next one to be found by hand. It
+already caught two: a source given up on past `MAX_SOLICIT_ATTEMPTS` was
+removed permanently, with nothing but an external `set_sources`/`start`
+call (never guaranteed for a seeder-only download nobody is watching) able
+to re-add it -- fixed by backing off for a long cooldown and retrying
+in place instead of dropping the source. And a source that answered
+`FileAvailability` without also answering `BlockHashes` (e.g. the two
+replies split by a flaky connection) was mistaken for "already answered"
+by the stall detector, since it keyed off the bitfield alone -- fixed by
+tracking each source's `BlockHashes` reply independently of its
+bitfield.
 
 ---
 
