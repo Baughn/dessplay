@@ -279,6 +279,25 @@ impl<T: Transport> Shared<T> {
         }
     }
 
+    /// Broadcast a `ServerControl` message to every live connection
+    /// (optionally excluding one), encoding the frame once and reusing
+    /// it for every recipient -- mirrors [`Self::broadcast_op`]'s
+    /// single-encode discipline. The naive per-connection
+    /// `send_control(conn, &msg)` loop clones and postcard-encodes
+    /// `msg` fresh for *each* recipient; for a large message (e.g. a
+    /// compaction's full `StateSnapshot`) that is N redundant clones of
+    /// the entire CRDT state for N live peers (2026-07-03: the resulting
+    /// allocation burst fragmented the allocator badly enough that
+    /// `malloc_trim` recovered ~360MB RSS on the rendezvous server).
+    async fn broadcast_control(&self, msg: &ServerControl, skip: Option<u64>) {
+        let Ok(frame) = wire::encode(&WireMessage::Control(msg.clone())) else {
+            return;
+        };
+        for conn in self.live_conns(skip) {
+            let _ = conn.send_control(&frame).await;
+        }
+    }
+
     /// Forward a peer message to `to`, wrapped as `Forwarded { from }`.
     /// Dropped silently if the target has no live relay stream (absent
     /// or not yet opened) — the design's "drop envelopes addressed to
@@ -496,9 +515,7 @@ where
                         hash: state.view_hash(),
                     }
                 };
-                for conn in shared.live_conns(None) {
-                    send_control(&*conn, &msg).await;
-                }
+                shared.broadcast_control(&msg, None).await;
             }
         });
     }
@@ -685,9 +702,7 @@ async fn broadcast_peer_list<T: Transport>(shared: &Shared<T>) {
         peers,
         known_offline,
     };
-    for conn in shared.live_conns(None) {
-        send_control(&*conn, &msg).await;
-    }
+    shared.broadcast_control(&msg, None).await;
 }
 
 /// Promote Lost peers past the departure threshold, then apply the
@@ -1192,9 +1207,7 @@ async fn serve_authed<T: Transport>(
                 // (as view_hash must) would fail to propagate a
                 // recovered position.
                 let merge = ServerControl::StateMerge(shared.snapshot());
-                for peer in shared.live_conns(None) {
-                    send_control(&*peer, &merge).await;
-                }
+                shared.broadcast_control(&merge, None).await;
                 if now_playing_changed {
                     shared
                         .server_write(|state, actor, ts| {
@@ -1352,10 +1365,9 @@ async fn run_compaction<T: Transport>(shared: &Shared<T>, chat_keep: usize) {
         elapsed_ms = started.elapsed().as_millis() as u64,
         "compacted state"
     );
-    let msg = ServerControl::StateSnapshot(snapshot);
-    for conn in shared.live_conns(None) {
-        send_control(&*conn, &msg).await;
-    }
+    shared
+        .broadcast_control(&ServerControl::StateSnapshot(snapshot), None)
+        .await;
     shared.flush();
 }
 
