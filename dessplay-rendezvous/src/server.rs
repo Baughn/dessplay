@@ -1317,42 +1317,62 @@ async fn handle_mark_watched<T: Transport>(shared: &Shared<T>, file: Ed2kHash, w
     }
 }
 
-/// List entries to auto-advance when `file` finishes: linked to the
-/// file's series, with a numeric `next_ep` equal to the file's numeric
-/// episode number. Returns the new progress states.
+/// List entries to auto-advance when `file` finishes: the entry claiming
+/// `file` (design.md, Series Identity -- linked or not), with a numeric
+/// `next_ep` equal to the file's numeric episode number. Returns the new
+/// progress states (at most one; `resolve_series_entry_for_file` resolves
+/// to a single entry).
 fn list_advances(
     view: &StateView,
     file: Ed2kHash,
 ) -> Vec<(dessplay_core::types::ListEntryId, NextEpState)> {
-    let Some(Some(metadata)) = view.anidb_metadata.get(&file) else {
+    let Some(id) = dessplay_core::series_identity::resolve_series_entry_for_file(view, file) else {
         return Vec::new();
     };
-    let (Some(series), Some(episode)) = (
-        metadata.series_id,
-        metadata
-            .episode_number
-            .as_deref()
-            .and_then(|ep| ep.trim().parse::<u32>().ok()),
-    ) else {
-        return Vec::new(); // unlinked file or special episode ("S1")
+    // The episode that just finished: AniDB's own number when linked and
+    // known, else a best-effort parse of the file's own name (design.md,
+    // Advancing next_ep -- no ambiguity here, it's a fact about a file
+    // already confirmed watched, not a guess about a future one).
+    let episode = view
+        .anidb_metadata
+        .get(&file)
+        .and_then(|m| m.as_ref())
+        .and_then(|m| m.episode_number.as_deref())
+        .and_then(|ep| ep.trim().parse::<u32>().ok())
+        .or_else(|| {
+            let filename = &view
+                .playlist
+                .iter()
+                .find(|e| e.hash == file)?
+                .state
+                .filename;
+            dessplay_core::episode_parse::parse_episode_number(filename)?
+                .parse::<u32>()
+                .ok()
+        });
+    let Some(episode) = episode else {
+        return Vec::new(); // no AniDB episode number, and no parseable one either
     };
-    view.list_entries
-        .iter()
-        .filter(|(_, entry)| entry.anidb_series_id == Some(series))
-        .filter_map(|(id, _)| {
-            let progress = view.list_next_ep.get(id)?;
-            let next: u32 = progress.next_ep.as_deref()?.trim().parse().ok()?;
-            (next == episode).then(|| {
-                (
-                    *id,
-                    NextEpState {
-                        next_ep: Some((episode + 1).to_string()),
-                        available: false,
-                    },
-                )
-            })
-        })
-        .collect()
+    let Some(progress) = view.list_next_ep.get(&id) else {
+        return Vec::new();
+    };
+    let Some(next) = progress
+        .next_ep
+        .as_deref()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+    else {
+        return Vec::new(); // free-text next_ep ("movie 5?"): manual bump only
+    };
+    if next != episode {
+        return Vec::new();
+    }
+    vec![(
+        id,
+        NextEpState {
+            next_ep: Some((episode + 1).to_string()),
+            available: false,
+        },
+    )]
 }
 
 /// Compact the state and broadcast the fresh snapshot to every live

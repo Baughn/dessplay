@@ -99,6 +99,100 @@ async fn mark_watched_toggles_and_is_idempotent() {
     .await;
 }
 
+/// A file the AniDB-miss fallback already labeled (`series_id: None`,
+/// filename-derived name) -- the "genuinely unknown to AniDB" case
+/// design.md's Series Identity work is about.
+async fn unknown_series_session(
+    harness: &Harness,
+) -> (
+    dessplay::client::ClientHandle,
+    dessplay::client::ClientHandle,
+) {
+    let kim = harness.client("kim", 1);
+    let baughn = harness.client("baughn", 2);
+    mutate(&kim, Mutation::PushPlaylist { new: entry(1) }).await;
+    mutate(
+        &kim,
+        Mutation::SetAniDbMetadata {
+            hash: hash(1),
+            metadata: Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Some Obscure Show".into(),
+                series_id: None,
+                episode_number: None,
+            }),
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps
+            .iter()
+            .all(|s| s.view.anidb_metadata.contains_key(&hash(1)))
+    })
+    .await;
+    (kim, baughn)
+}
+
+/// Marking watched auto-advances an *unlinked* List entry's `next_ep` too
+/// (design.md, Series Identity): the file resolves to the entry through
+/// `manual_files` rather than an AniDB link, and the episode number comes
+/// from parsing the file's own name (`entry(1)`'s filename, "ep1.mkv"),
+/// since there is no AniDB episode number to fall back on.
+#[tokio::test(start_paused = true)]
+async fn mark_watched_advances_unlinked_list_entry_via_filename_parse() {
+    let harness = Harness::new(0x5EED);
+    let (kim, baughn) = unknown_series_session(&harness).await;
+
+    let id = ListEntryId(43);
+    mutate(
+        &kim,
+        Mutation::PutListEntry {
+            id,
+            entry: SeriesListEntry {
+                name: "Some Obscure Show".into(),
+                nero_name: None,
+                genre: None,
+                notes: vec![],
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: None,
+                local_aliases: Default::default(),
+                manual_files: [hash(1)].into_iter().collect(),
+            },
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNextEp {
+            id,
+            next_ep: NextEpState {
+                next_ep: Some("1".into()),
+                available: true,
+            },
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps.iter().all(|s| s.view.list_next_ep.len() == 1)
+    })
+    .await;
+
+    mark_watched(&kim, hash(1), true).await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps.iter().all(|s| {
+            s.view
+                .list_next_ep
+                .get(&id)
+                .is_some_and(|n| n.next_ep.as_deref() == Some("2") && !n.available)
+        })
+    })
+    .await;
+}
+
 /// Marking watched auto-advances a linked List entry's `next_ep`, exactly
 /// like the EOF transition — but never on unmark (the design only auto-
 /// advances forward, never rewinds a next_ep on a manual undo).
