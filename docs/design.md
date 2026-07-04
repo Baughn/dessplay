@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1158,6 +1158,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `Backspace` | Chat | Delete character before cursor |
 | `Delete` | Chat | Delete character after cursor |
 | `Ctrl-W` / `Ctrl-Backspace` / `Alt-Backspace` | Chat | Delete word before cursor |
+| `Ctrl-T` | Chat | Transpose the two characters around the cursor (readline-style) |
 | `Left` / `Right` | Chat | Move cursor |
 | `Ctrl-Left` / `Ctrl-Right` (or `Alt-`) | Chat | Move cursor by word |
 | `Home` / `End` (or `Ctrl-A` / `Ctrl-E`) | Chat | Move cursor to start/end of line |

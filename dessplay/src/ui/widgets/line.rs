@@ -195,6 +195,24 @@ impl LineBuffer {
         self.cursor = target;
     }
 
+    /// Transpose the two characters around the cursor (Ctrl-T), with
+    /// readline's semantics: at the end of the line swap the last two
+    /// characters; elsewhere swap the character before the cursor with the
+    /// one under it and advance, so repeated presses drag a character
+    /// rightward. No-op at the start of the line or with fewer than two
+    /// characters.
+    pub fn transpose_chars(&mut self) {
+        if self.cursor == 0 || self.chars.len() < 2 {
+            return;
+        }
+        if self.cursor == self.chars.len() {
+            self.chars.swap(self.cursor - 2, self.cursor - 1);
+        } else {
+            self.chars.swap(self.cursor - 1, self.cursor);
+            self.cursor += 1;
+        }
+    }
+
     /// Feed one key event through the standard editing vocabulary.
     /// Returns whether the event was consumed. Callers keep their own
     /// semantics for Enter/Esc/Up/Down (submit, cancel, history, list
@@ -205,7 +223,8 @@ impl LineBuffer {
     /// Ctrl-A/Ctrl-E; word motion via Ctrl/Alt-arrows and Alt-b/Alt-f
     /// (ghostty emits readline bytes for Option-arrow); word kill via
     /// Ctrl-W (Ctrl-only — Alt-W is a typed character on macOS) and
-    /// Ctrl/Alt-Backspace.
+    /// Ctrl/Alt-Backspace; character transpose via Ctrl-T (Ctrl-only,
+    /// same macOS reasoning).
     pub fn edit(&mut self, ev: &Event<NoUserEvent>) -> bool {
         if let Some(c) = typed(ev) {
             self.insert(c);
@@ -219,6 +238,7 @@ impl LineBuffer {
                 Key::Char('f') if mods.contains(KeyModifiers::ALT) => self.move_word_right(),
                 Key::Backspace => self.kill_word_left(),
                 Key::Char('w') if mods.contains(KeyModifiers::CONTROL) => self.kill_word_left(),
+                Key::Char('t') if mods.contains(KeyModifiers::CONTROL) => self.transpose_chars(),
                 Key::Char('a') if mods.contains(KeyModifiers::CONTROL) => self.home(),
                 Key::Char('e') if mods.contains(KeyModifiers::CONTROL) => self.end(),
                 _ => return false,
@@ -504,6 +524,35 @@ mod tests {
     }
 
     #[test]
+    fn transpose_matches_readline() {
+        // At end of line: swap the last two, cursor stays at the end.
+        let mut b = buf("teh");
+        b.transpose_chars();
+        assert_eq!(b.text(), "the");
+        assert_eq!(b.cursor(), 3);
+        // Mid-line: swap around the cursor and advance, so repeated
+        // presses drag the character rightward.
+        let mut b = buf("abcd");
+        b.home();
+        b.move_right(); // cursor between a and b
+        b.transpose_chars();
+        assert_eq!(b.text(), "bacd");
+        assert_eq!(b.cursor(), 2);
+        b.transpose_chars();
+        assert_eq!(b.text(), "bcad");
+        assert_eq!(b.cursor(), 3);
+        // No-ops: cursor at start, or fewer than two characters.
+        let mut b = buf("ab");
+        b.home();
+        b.transpose_chars();
+        assert_eq!(b.text(), "ab");
+        assert_eq!(b.cursor(), 0);
+        let mut b = buf("a");
+        b.transpose_chars();
+        assert_eq!(b.text(), "a");
+    }
+
+    #[test]
     fn edit_handles_the_full_vocabulary() {
         let mut b = buf("the quick brown");
         // Word motion via Ctrl-arrow and Alt-b/f.
@@ -523,12 +572,17 @@ mod tests {
         assert_eq!(b.text(), "the quick ");
         assert!(b.edit(&alt(Key::Backspace)));
         assert_eq!(b.text(), "the ");
+        // Ctrl-T transposes the two characters before the cursor.
+        assert!(b.edit(&ctrl(Key::Char('t'))));
+        assert_eq!(b.text(), "th e");
         // Ctrl-B/F are readline char motion, not ours: unconsumed, untyped.
         assert!(!b.edit(&ctrl(Key::Char('b'))));
         assert!(!b.edit(&ctrl(Key::Char('f'))));
         // Alt-W is a typed character on macOS, not a kill: unconsumed here.
         assert!(!b.edit(&alt(Key::Char('w'))));
-        assert_eq!(b.text(), "the ");
+        // Alt-T likewise: transpose is Ctrl-only.
+        assert!(!b.edit(&alt(Key::Char('t'))));
+        assert_eq!(b.text(), "th e");
         // Enter / Esc / Up are the caller's business: unconsumed.
         assert!(!b.edit(&key(Key::Enter)));
         assert!(!b.edit(&key(Key::Esc)));
@@ -602,6 +656,7 @@ mod tests {
             WordLeft,
             WordRight,
             KillWord,
+            Transpose,
             SetText(String),
             Clear,
         }
@@ -618,6 +673,7 @@ mod tests {
                 Just(Op::WordLeft),
                 Just(Op::WordRight),
                 Just(Op::KillWord),
+                Just(Op::Transpose),
                 "[ -~]{0,40}".prop_map(Op::SetText),
                 Just(Op::Clear),
             ]
@@ -637,6 +693,7 @@ mod tests {
                 Op::WordLeft => b.move_word_left(),
                 Op::WordRight => b.move_word_right(),
                 Op::KillWord => b.kill_word_left(),
+                Op::Transpose => b.transpose_chars(),
                 Op::SetText(t) => b.set_text(t),
                 Op::Clear => b.clear(),
             }
