@@ -19,14 +19,13 @@ use crate::types::{Ed2kHash, ListEntryId, ListStatus, SeriesListEntry};
 pub fn resolve_series_entry_for_file(view: &StateView, file: Ed2kHash) -> Option<ListEntryId> {
     let metadata = view.anidb_metadata.get(&file)?.as_ref()?;
 
-    if let Some(series_id) = metadata.series_id {
-        if let Some((id, _)) = view
+    if let Some(series_id) = metadata.series_id
+        && let Some((id, _)) = view
             .list_entries
             .iter()
             .find(|(_, entry)| entry.anidb_series_id == Some(series_id))
-        {
-            return Some(*id);
-        }
+    {
+        return Some(*id);
     }
 
     if let Some((id, _)) = view
