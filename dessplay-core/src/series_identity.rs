@@ -19,9 +19,13 @@ use crate::types::{AniDbSeriesId, Ed2kHash, ListEntryId, ListStatus, SeriesListE
 /// function never does, since it also backs read-only gating derivation
 /// (`derive::series_watch_for_file`), which must stay a pure query.
 pub fn resolve_series_entry_for_file(view: &StateView, file: Ed2kHash) -> Option<ListEntryId> {
-    let metadata = view.anidb_metadata.get(&file)?.as_ref()?;
+    // Steps 1 and 3 need metadata (a series id / a derived name); step 2
+    // is a pure hash-membership test and must work without any — a
+    // manually-attached file is committed the moment it's attached, not
+    // once the server's fallback metadata lands.
+    let metadata = view.anidb_metadata.get(&file).and_then(|m| m.as_ref());
 
-    if let Some(series_id) = metadata.series_id
+    if let Some(series_id) = metadata.and_then(|m| m.series_id)
         && let Some((id, _)) = view
             .list_entries
             .iter()
@@ -38,6 +42,7 @@ pub fn resolve_series_entry_for_file(view: &StateView, file: Ed2kHash) -> Option
         return Some(*id);
     }
 
+    let metadata = metadata?;
     view.list_entries
         .iter()
         .find(|(_, entry)| {
@@ -139,6 +144,149 @@ mod tests {
 
     fn ts(t: u64) -> SharedTimestamp {
         SharedTimestamp(t)
+    }
+
+    fn entry(name: &str) -> SeriesListEntry {
+        SeriesListEntry {
+            name: name.into(),
+            nero_name: None,
+            genre: None,
+            notes: Vec::new(),
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: BTreeSet::new(),
+            anidb_series_id: None,
+            local_aliases: BTreeSet::new(),
+            manual_files: BTreeSet::new(),
+            anidb_unavailable: false,
+        }
+    }
+
+    fn fallback_metadata(state: &mut CrdtState, file: Ed2kHash, series_name: &str) {
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            file,
+            Some(AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: series_name.into(),
+                series_id: None,
+                episode_number: None,
+            }),
+        );
+    }
+
+    /// Resolution step 2: `manual_files` is a pure hash-membership test
+    /// and must resolve even before any metadata has been synced for the
+    /// file (design.md, Series Identity — the step has no name or AniDB
+    /// dependency). Regression: the metadata guard used to sit above it,
+    /// so a manually-attached file resolved to nothing (Maybe gating)
+    /// until the server's fallback metadata landed.
+    #[test]
+    fn manual_files_resolves_a_file_with_no_metadata_at_all() {
+        let mut state = CrdtState::new();
+        let mut e = entry("Some Obscure Show");
+        e.manual_files.insert(hash(1));
+        state.put_list_entry(A, ts(1), ListEntryId(7), e);
+        assert_eq!(
+            resolve_series_entry_for_file(&state.view(), hash(1)),
+            Some(ListEntryId(7)),
+        );
+    }
+
+    /// Step 2 beats step 3: an explicit hash attachment wins over a
+    /// name-colliding other entry.
+    #[test]
+    fn manual_files_beats_a_name_match_on_another_entry() {
+        let mut state = CrdtState::new();
+        fallback_metadata(&mut state, hash(1), "Some Obscure Show");
+        // Entry 1 matches by name; entry 2 claims the hash explicitly.
+        state.put_list_entry(A, ts(2), ListEntryId(1), entry("Some Obscure Show"));
+        let mut by_hash = entry("A Different Title");
+        by_hash.manual_files.insert(hash(1));
+        state.put_list_entry(A, ts(3), ListEntryId(2), by_hash);
+        assert_eq!(
+            resolve_series_entry_for_file(&state.view(), hash(1)),
+            Some(ListEntryId(2)),
+        );
+    }
+
+    /// Step 1 beats step 2: a linked entry wins over a stray
+    /// `manual_files` attachment on another entry.
+    #[test]
+    fn anidb_link_beats_manual_files_on_another_entry() {
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            hash(1),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(AniDbSeriesId(42)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let mut linked = entry("Frieren");
+        linked.anidb_series_id = Some(AniDbSeriesId(42));
+        state.put_list_entry(A, ts(2), ListEntryId(1), linked);
+        let mut by_hash = entry("Wrong Entry");
+        by_hash.manual_files.insert(hash(1));
+        state.put_list_entry(A, ts(3), ListEntryId(2), by_hash);
+        assert_eq!(
+            resolve_series_entry_for_file(&state.view(), hash(1)),
+            Some(ListEntryId(1)),
+        );
+    }
+
+    /// Step 3, `name` half: the derived name matching an entry's name
+    /// resolves to it.
+    #[test]
+    fn derived_name_matching_an_entry_name_resolves() {
+        let mut state = CrdtState::new();
+        fallback_metadata(&mut state, hash(1), "Some Obscure Show");
+        state.put_list_entry(A, ts(2), ListEntryId(9), entry("Some Obscure Show"));
+        assert_eq!(
+            resolve_series_entry_for_file(&state.view(), hash(1)),
+            Some(ListEntryId(9)),
+        );
+    }
+
+    /// Step 3, `local_aliases` half: a derived name found only in an
+    /// entry's aliases resolves to it.
+    #[test]
+    fn derived_name_matching_a_local_alias_resolves() {
+        let mut state = CrdtState::new();
+        fallback_metadata(&mut state, hash(1), "ObscureShow S2");
+        let mut e = entry("Some Obscure Show");
+        e.local_aliases.insert("ObscureShow S2".into());
+        state.put_list_entry(A, ts(2), ListEntryId(9), e);
+        assert_eq!(
+            resolve_series_entry_for_file(&state.view(), hash(1)),
+            Some(ListEntryId(9)),
+        );
+    }
+
+    /// The design's motivating case (plan.md Phase 19): two files of the
+    /// same show with *different* directory-derived hints — one from a
+    /// dedicated folder, one loose — both resolve to the one entry once
+    /// both hints are in its `local_aliases`.
+    #[test]
+    fn two_differently_hinted_files_resolve_to_the_same_entry_via_aliases() {
+        let mut state = CrdtState::new();
+        fallback_metadata(&mut state, hash(1), "Obscure Show");
+        fallback_metadata(&mut state, hash(2), "obscure_show_ep2_loose");
+        let mut e = entry("Some Obscure Show");
+        e.local_aliases.insert("Obscure Show".into());
+        e.local_aliases.insert("obscure_show_ep2_loose".into());
+        state.put_list_entry(A, ts(3), ListEntryId(9), e);
+        let view = state.view();
+        let first = resolve_series_entry_for_file(&view, hash(1));
+        let second = resolve_series_entry_for_file(&view, hash(2));
+        assert_eq!(first, Some(ListEntryId(9)));
+        assert_eq!(first, second);
     }
 
     /// Regression: two independent auto-create resolutions for the *same*

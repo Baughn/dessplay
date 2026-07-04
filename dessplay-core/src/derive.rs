@@ -526,6 +526,58 @@ mod tests {
         state
     }
 
+    /// Unlinked mirror of [`committed_state`]: the same commitments, but
+    /// the series has no AniDB id at all — the file's fallback-derived
+    /// name resolves to an unlinked List entry through `local_aliases`
+    /// (design.md, Series Identity: linking is enrichment only, never a
+    /// prerequisite for commitment or gating).
+    fn committed_state_unlinked(prefs: &[(&str, SeriesWatchState)]) -> CrdtState {
+        let mut state = playing_state();
+        state.set_anidb_metadata(
+            SERVER,
+            ts(3),
+            hash(1),
+            Some(AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: "Obscure Doujin Show".into(),
+                series_id: None,
+                episode_number: None,
+            }),
+        );
+        let id = ListEntryId(0xDE55);
+        state.put_list_entry(
+            SERVER,
+            ts(3),
+            id,
+            SeriesListEntry {
+                name: "The Obscure Show".into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: None,
+                local_aliases: ["Obscure Doujin Show".into()].into_iter().collect(),
+                manual_files: Default::default(),
+                anidb_unavailable: false,
+            },
+        );
+        for (i, (user, pref)) in prefs.iter().enumerate() {
+            state.set_series_preference(
+                SERVER,
+                ts(10 + i as u64),
+                UserId::new(*user),
+                id,
+                *pref,
+                None,
+            );
+        }
+        state
+    }
+
     #[test]
     fn user_state_defaults_to_maybe() {
         // No preference, no metadata — the opportunistic default.
@@ -552,20 +604,73 @@ mod tests {
 
     #[test]
     fn absent_committed_user_blocks() {
-        // A committed (Watching) user gates across absence.
-        let view = committed_state(&[("baughn", SeriesWatchState::Watching)]).view();
-        for presence in [Presence::Lost, Presence::Departed] {
-            let peers = [present("kim"), peer("baughn", Role::Interactive, presence)];
-            assert_eq!(
-                playback_blockers(&view, &peers),
-                vec![Blocker {
-                    user: UserId::new("baughn"),
-                    reason: BlockReason::CommittedAbsent,
-                }],
-                "committed absent ({presence:?}) must block"
-            );
-            assert!(!playback_active(&view, &peers));
+        // A committed (Watching) user gates across absence — identically
+        // whether the series is AniDB-linked or an unlinked List entry
+        // (plan.md Phase 19 milestone: commitment keys on the entry,
+        // never its link).
+        let watching = [("baughn", SeriesWatchState::Watching)];
+        for (label, state) in [
+            ("linked", committed_state(&watching)),
+            ("unlinked", committed_state_unlinked(&watching)),
+        ] {
+            let view = state.view();
+            for presence in [Presence::Lost, Presence::Departed] {
+                let peers = [present("kim"), peer("baughn", Role::Interactive, presence)];
+                assert_eq!(
+                    playback_blockers(&view, &peers),
+                    vec![Blocker {
+                        user: UserId::new("baughn"),
+                        reason: BlockReason::CommittedAbsent,
+                    }],
+                    "committed absent ({presence:?}, {label}) must block"
+                );
+                assert!(!playback_active(&view, &peers));
+            }
         }
+    }
+
+    /// The rest of the linked/unlinked parity promised by plan.md Phase
+    /// 19: on an unlinked entry, NotWatching never blocks (even with a
+    /// Missing file), a present committed user still gates on file
+    /// state, and the derived user states match the linked ones.
+    #[test]
+    fn unlinked_entry_gates_like_a_linked_one() {
+        // NotWatching + Missing file: never blocks.
+        let mut state = committed_state_unlinked(&[("kim", SeriesWatchState::NotWatching)]);
+        state.set_file_availability(
+            SERVER,
+            ts(20),
+            UserId::new("kim"),
+            hash(1),
+            FileAvailability::Missing,
+        );
+        let view = state.view();
+        assert_eq!(
+            user_state(&view, &UserId::new("kim")),
+            DerivedUserState::NotWatching
+        );
+        assert!(playback_active(&view, &[present("kim"), present("baughn")]));
+
+        // Present committed user with a Missing file: blocks on the file.
+        let mut state = committed_state_unlinked(&[("baughn", SeriesWatchState::Watching)]);
+        assert_eq!(
+            user_state(&state.view(), &UserId::new("baughn")),
+            DerivedUserState::Ready
+        );
+        state.set_file_availability(
+            SERVER,
+            ts(20),
+            UserId::new("baughn"),
+            hash(1),
+            FileAvailability::Missing,
+        );
+        assert_eq!(
+            playback_blockers(&state.view(), &[present("baughn")]),
+            vec![Blocker {
+                user: UserId::new("baughn"),
+                reason: BlockReason::FileMissing,
+            }],
+        );
     }
 
     #[test]
