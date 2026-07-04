@@ -187,7 +187,15 @@ pub enum BrowseRequest {
 }
 
 /// Actions leaving the UI toward the main loop / actors.
+///
+/// `Mutate`'s `Mutation` payload is the largest variant by a wide margin
+/// (it carries whole `SeriesListEntry`/`NextEpState` values for List
+/// writes) -- deliberately not boxed. These are one-at-a-time UI actions
+/// dispatched at human-interaction speed, never stored in bulk, so boxing
+/// would only relocate the allocation to every construction site (~60 of
+/// them) for no real benefit.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum UserAction {
     /// Apply a state mutation through the sync actor.
     Mutate(crate::actors::sync::Mutation),
