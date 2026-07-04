@@ -1617,6 +1617,19 @@ impl AniDbSearchModal {
         self.cursor.reset();
     }
 
+    /// A real (not in-flight, not stale) "zero matches" answer -- the
+    /// confirmation signal for design.md's Series Identity
+    /// `anidb_unavailable` marker, distinct from "nobody's searched yet".
+    pub fn search_answered_empty(&self) -> bool {
+        self.answered.is_some() && self.results.is_empty()
+    }
+
+    /// A real (not in-flight, not stale) answer with at least one hit --
+    /// clears a stale `anidb_unavailable` marker even without linking.
+    pub fn search_answered_with_hits(&self) -> bool {
+        self.answered.is_some() && !self.results.is_empty()
+    }
+
     /// Keys for the keybinding bar: the keymap's entries with the
     /// structural results-navigation entry slotted after Enter.
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
@@ -2417,6 +2430,7 @@ mod tests {
             anidb_series_id: None,
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         }
     }
 

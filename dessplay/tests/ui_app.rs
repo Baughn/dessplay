@@ -957,6 +957,7 @@ fn the_list_renders_and_edits() {
             anidb_series_id: None,
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         },
     );
     state.set_next_ep(
@@ -975,7 +976,10 @@ fn the_list_renders_and_edits() {
     let screen = render(&mut ui, 100, 30);
     assert!(screen.contains("Watching (1)"), "{screen}");
     assert!(screen.contains("Frieren"), "{screen}");
-    assert!(screen.contains("→12✓"), "{screen}");
+    // Episode # and availability are separate table columns now (design.md
+    // feedback: the 3 spreadsheet columns need their own aligned cells).
+    assert!(screen.contains("12"), "{screen}");
+    assert!(screen.contains("✓"), "{screen}");
 
     // Enter on the entry (unlinked) opens the editor; rename and save.
     ui.handle(key(Key::Down)); // heading -> entry
@@ -992,6 +996,45 @@ fn the_list_renders_and_edits() {
     assert_eq!(entry.name, "Frieren!");
     assert_eq!(entry.status, ListStatus::Active);
     assert!(!ui.modal_open());
+}
+
+/// An unlinked entry whose AniDB search came up empty gets a durable
+/// callout in the row itself (design.md, Series Identity) -- distinct
+/// from an unlinked entry nobody's tried linking yet, which shows no
+/// marker (covered by `the_list_renders_and_edits`, `anidb_unavailable:
+/// false`).
+#[test]
+fn the_list_marks_a_confirmed_anidb_unavailable_entry() {
+    let mut state = CrdtState::new();
+    state.put_list_entry(
+        A,
+        ts(1),
+        ListEntryId(7),
+        SeriesListEntry {
+            name: "Some Obscure Show".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
+            anidb_unavailable: true,
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    ui.handle(key(Key::Tab)); // Series, already in The List (default mode)
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Some Obscure Show"), "{screen}");
+    assert!(
+        screen.contains("⊘"),
+        "expected the unavailable marker: {screen}"
+    );
 }
 
 /// The List edit modal must be saveable without Ctrl-S (eaten as XOFF on
@@ -1016,6 +1059,7 @@ fn list_edit_modal_saves_on_capital_s() {
             anidb_series_id: None,
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         },
     );
     let mut ui = ui();
@@ -1060,6 +1104,7 @@ fn list_edit_modal_edits_next_ep_and_available() {
             anidb_series_id: None,
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         },
     );
     state.set_next_ep(
@@ -1143,6 +1188,7 @@ fn list_edit_modal_save_without_next_ep_change_emits_no_set_next_ep() {
             anidb_series_id: None,
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         },
     );
     state.set_next_ep(
@@ -1203,6 +1249,7 @@ fn linking_a_list_entry_searches_and_links() {
             anidb_series_id: None,
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         },
     );
     let mut ui = ui();
@@ -1288,6 +1335,7 @@ fn editing_the_search_query_rearms_search() {
             anidb_series_id: None,
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         },
     );
     let mut ui = ui();

@@ -129,6 +129,7 @@ async fn eof_ignores_non_watching_reporters() {
                 anidb_series_id: Some(series),
                 local_aliases: Default::default(),
                 manual_files: Default::default(),
+                anidb_unavailable: false,
             },
         },
     )

@@ -40,6 +40,7 @@ async fn link_series(
                 anidb_series_id: Some(series),
                 local_aliases: Default::default(),
                 manual_files: Default::default(),
+                anidb_unavailable: false,
             },
         },
     )

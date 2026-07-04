@@ -1266,25 +1266,63 @@ impl SeriesPane {
                         ))
                     }
                     ListNavRow::Entry(g, e) => {
+                        // A plain table: episode #, out-this-week, and
+                        // watchers are the spreadsheet's load-bearing
+                        // columns, so they get fixed-width, aligned cells
+                        // instead of drifting with the name's length.
+                        const EP_WIDTH: usize = 8;
+                        const AVAIL_WIDTH: usize = 3;
+                        const WATCHERS_WIDTH: usize = 10;
+                        const INDENT: usize = 2;
+                        let reserved = INDENT + EP_WIDTH + AVAIL_WIDTH + WATCHERS_WIDTH + 3;
+                        let name_width = (area.width as usize).saturating_sub(reserved).max(8);
+
                         let entry = &self.groups[*g].rows[*e];
-                        let mut spans = vec![Span::raw(format!("  {}", entry.name))];
+                        let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+                        let mut visible_len = 0;
+                        // A search that came up empty is a durable "AniDB
+                        // doesn't have this" callout (design.md, Series
+                        // Identity) -- distinct from an unlinked entry
+                        // nobody's tried linking yet, which gets no marker.
+                        if entry.series_id.is_none() && entry.anidb_unavailable {
+                            let marker = "⊘ ";
+                            visible_len += marker.chars().count();
+                            spans.push(Span::styled(marker, theme::dim()));
+                        }
+                        visible_len += entry.name.chars().count();
+                        spans.push(Span::raw(entry.name.clone()));
                         if let Some(nero) = &entry.nero_name {
-                            spans.push(Span::styled(format!(" “{nero}”"), theme::dim()));
+                            let text = format!(" “{nero}”");
+                            visible_len += text.chars().count();
+                            spans.push(Span::styled(text, theme::dim()));
                         }
-                        if let Some(next) = &entry.next_ep {
-                            let mark = if entry.available { "✓" } else { "" };
-                            spans.push(Span::styled(
-                                format!("  →{next}{mark}"),
-                                theme::tone_style(if entry.available {
-                                    Tone::Good
-                                } else {
-                                    Tone::Normal
-                                }),
-                            ));
+                        if visible_len < name_width {
+                            spans.push(Span::raw(" ".repeat(name_width - visible_len)));
                         }
-                        if !entry.watchers.is_empty() {
-                            spans.push(Span::styled(format!("  {}", entry.watchers), theme::dim()));
-                        }
+
+                        let ep_text = entry.next_ep.as_deref().unwrap_or("");
+                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(
+                            format!("{ep_text:<EP_WIDTH$}"),
+                            theme::tone_style(Tone::Normal),
+                        ));
+
+                        let avail_text = if entry.next_ep.is_some() && entry.available {
+                            "✓"
+                        } else {
+                            ""
+                        };
+                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(
+                            format!("{avail_text:^AVAIL_WIDTH$}"),
+                            theme::tone_style(Tone::Good),
+                        ));
+
+                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(
+                            format!("{:<WATCHERS_WIDTH$}", entry.watchers),
+                            theme::dim(),
+                        ));
                         ListItem::new(Line::from(spans))
                     }
                 })
@@ -1707,6 +1745,7 @@ mod series_pane_tests {
             available: false,
             watchers: String::new(),
             series_id,
+            anidb_unavailable: false,
         }
     }
 

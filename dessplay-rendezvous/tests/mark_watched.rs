@@ -32,6 +32,7 @@ fn frieren_entry() -> SeriesListEntry {
         anidb_series_id: Some(FRIEREN),
         local_aliases: Default::default(),
         manual_files: Default::default(),
+        anidb_unavailable: false,
     }
 }
 
@@ -161,6 +162,7 @@ async fn mark_watched_advances_unlinked_list_entry_via_filename_parse() {
                 anidb_series_id: None,
                 local_aliases: Default::default(),
                 manual_files: [hash(1)].into_iter().collect(),
+                anidb_unavailable: false,
             },
         },
     )

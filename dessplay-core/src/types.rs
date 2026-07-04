@@ -465,6 +465,14 @@ pub struct SeriesListEntry {
     /// whose derived name doesn't match any `local_aliases` entry
     /// (design.md, Series Identity).
     pub manual_files: BTreeSet<Ed2kHash>,
+    /// An AniDB name search for this entry came back with zero hits --
+    /// distinct from simply never having been searched. Set when the
+    /// search modal answers empty, cleared when a later search (any
+    /// query) answers with hits; a real link always implies `false`.
+    /// Surfaced in The List so "confirmed not on AniDB" isn't
+    /// indistinguishable from "nobody's checked yet" (design.md, Series
+    /// Identity).
+    pub anidb_unavailable: bool,
 }
 
 /// Fast-changing progress state for a List entry, kept separate from

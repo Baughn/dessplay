@@ -345,6 +345,7 @@ fn upgrade_list_entries(
                     anidb_series_id: old.anidb_series_id,
                     local_aliases: BTreeSet::new(),
                     manual_files: BTreeSet::new(),
+                    anidb_unavailable: false,
                 },
             );
         }
@@ -423,6 +424,7 @@ fn upgrade_series_preference_to_list_entries(
                     anidb_series_id: Some(series),
                     local_aliases: BTreeSet::new(),
                     manual_files: BTreeSet::new(),
+                    anidb_unavailable: false,
                 },
             );
             id

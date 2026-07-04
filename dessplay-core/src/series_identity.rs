@@ -72,6 +72,7 @@ pub fn build_entry_for_file(view: &StateView, file: Ed2kHash) -> Option<SeriesLi
             BTreeSet::new()
         },
         manual_files: BTreeSet::new(),
+        anidb_unavailable: false,
     })
 }
 

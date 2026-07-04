@@ -5063,6 +5063,7 @@ mod tests {
             anidb_series_id: series.map(dessplay_core::types::AniDbSeriesId),
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         }
     }
 

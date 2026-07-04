@@ -1227,6 +1227,7 @@ mod tests {
                 anidb_series_id: Some(AniDbSeriesId(777)),
                 local_aliases: Default::default(),
                 manual_files: Default::default(),
+                anidb_unavailable: false,
             };
             state.put_list_entry(ActorId::SERVER, ts, ListEntryId(1), entry);
         });

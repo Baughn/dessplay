@@ -465,14 +465,39 @@ impl Ui {
 
     /// Deliver AniDB search results to the search modal, if it's open
     /// (stale results for a superseded query are dropped by the modal).
+    ///
+    /// A real "zero matches" answer marks the entry `anidb_unavailable`
+    /// (design.md, Series Identity: distinguishes "confirmed not on
+    /// AniDB" from "nobody's checked yet"); a real answer *with* hits
+    /// clears a stale marker, even without linking -- a better query
+    /// proved AniDB does know the show after all. No-op if the flag
+    /// already matches (nothing to write).
     pub fn set_search_results(
         &mut self,
         query: &str,
         results: Vec<dessplay_core::net::AniDbSearchHit>,
-    ) {
-        if let Some(Modal::AniDbSearch(modal)) = self.modals.last_mut() {
-            modal.set_results(query, results);
+    ) -> Vec<UserAction> {
+        let Some(Modal::AniDbSearch(modal)) = self.modals.last_mut() else {
+            return Vec::new();
+        };
+        modal.set_results(query, results);
+        let id = modal.id;
+        let unavailable = if modal.search_answered_empty() {
+            true
+        } else if modal.search_answered_with_hits() {
+            false
+        } else {
+            return Vec::new(); // still in flight, or a stale reply was dropped
+        };
+        let Some(entry) = self.snapshot.view.list_entries.get(&id) else {
+            return Vec::new();
+        };
+        if entry.anidb_unavailable == unavailable {
+            return Vec::new();
         }
+        let mut entry = entry.clone();
+        entry.anidb_unavailable = unavailable;
+        vec![UserAction::Mutate(Mutation::PutListEntry { id, entry })]
     }
 
     /// Open a file browser: the main loop's answer to
@@ -1718,6 +1743,7 @@ mod tests {
                 anidb_series_id: Some(series),
                 local_aliases: Default::default(),
                 manual_files: Default::default(),
+                anidb_unavailable: false,
             },
         );
         id
@@ -2554,8 +2580,84 @@ mod tests {
                 anidb_series_id: None,
                 local_aliases: Default::default(),
                 manual_files: Default::default(),
+                anidb_unavailable: false,
             },
         )
+    }
+
+    #[test]
+    fn empty_search_marks_the_entry_anidb_unavailable() {
+        let mut state = CrdtState::new();
+        let (id, entry) = unlinked_entry(ListEntryId(1), "Some Obscure Show");
+        state.put_list_entry(A, SharedTimestamp(1), id, entry);
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::LinkListEntry(id));
+        assert!(matches!(ui.modals.last(), Some(Modal::AniDbSearch(_))));
+
+        let actions = ui.set_search_results("Some Obscure Show", vec![]);
+        assert_eq!(
+            actions,
+            vec![UserAction::Mutate(Mutation::PutListEntry {
+                id,
+                entry: SeriesListEntry {
+                    anidb_unavailable: true,
+                    ..unlinked_entry(id, "Some Obscure Show").1
+                },
+            })]
+        );
+    }
+
+    #[test]
+    fn empty_search_is_a_no_op_when_already_marked_unavailable() {
+        let mut state = CrdtState::new();
+        let (id, mut entry) = unlinked_entry(ListEntryId(1), "Some Obscure Show");
+        entry.anidb_unavailable = true;
+        state.put_list_entry(A, SharedTimestamp(1), id, entry);
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::LinkListEntry(id));
+        assert_eq!(ui.set_search_results("Some Obscure Show", vec![]), vec![]);
+    }
+
+    #[test]
+    fn a_search_with_hits_clears_a_stale_unavailable_marker() {
+        let mut state = CrdtState::new();
+        let (id, mut entry) = unlinked_entry(ListEntryId(1), "Some Obscure Show");
+        entry.anidb_unavailable = true;
+        state.put_list_entry(A, SharedTimestamp(1), id, entry);
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::LinkListEntry(id));
+
+        let hit = dessplay_core::net::AniDbSearchHit {
+            series: AniDbSeriesId(99),
+            title: "Some Obscure Show".into(),
+            matched: "Some Obscure Show".into(),
+        };
+        let actions = ui.set_search_results("Some Obscure Show", vec![hit]);
+        assert_eq!(
+            actions,
+            vec![UserAction::Mutate(Mutation::PutListEntry {
+                id,
+                entry: SeriesListEntry {
+                    anidb_unavailable: false,
+                    ..unlinked_entry(id, "Some Obscure Show").1
+                },
+            })]
+        );
+    }
+
+    #[test]
+    fn stale_search_reply_is_ignored() {
+        let mut state = CrdtState::new();
+        let (id, entry) = unlinked_entry(ListEntryId(1), "Some Obscure Show");
+        state.put_list_entry(A, SharedTimestamp(1), id, entry);
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::LinkListEntry(id));
+        // A reply for a query that's no longer the editor's text (the
+        // user has since typed something else) must not write anything.
+        assert_eq!(
+            ui.set_search_results("some old query nobody sees anymore", vec![]),
+            vec![]
+        );
     }
 
     #[test]

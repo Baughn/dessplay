@@ -200,6 +200,7 @@ async fn eof_advances_a_linked_list_entry() {
         anidb_series_id: Some(FRIEREN),
         local_aliases: Default::default(),
         manual_files: Default::default(),
+        anidb_unavailable: false,
     };
     mutate(
         &kim,
@@ -229,6 +230,7 @@ async fn eof_advances_a_linked_list_entry() {
                 anidb_series_id: None,
                 local_aliases: Default::default(),
                 manual_files: Default::default(),
+                anidb_unavailable: false,
                 ..entry
             },
         },

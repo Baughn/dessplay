@@ -198,7 +198,14 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 watched,
                 start,
             } => ui.open_file_browser(request, files, watched, start),
-            UiInput::SearchResults { query, results } => ui.set_search_results(&query, results),
+            UiInput::SearchResults { query, results } => {
+                for action in ui.set_search_results(&query, results) {
+                    if actions.blocking_send(action).is_err() {
+                        tracing::debug!("UI thread exiting (actions channel closed)");
+                        return;
+                    }
+                }
+            }
             UiInput::Probe(cell) => {
                 // Stamp the moment we dequeued this input — measured by a
                 // test against the send time. Fall through to a draw so

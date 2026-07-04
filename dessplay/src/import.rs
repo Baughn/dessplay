@@ -270,6 +270,7 @@ pub fn import_sheet(
             anidb_series_id: None,
             local_aliases: Default::default(),
             manual_files: Default::default(),
+            anidb_unavailable: false,
         };
 
         // Watchers.

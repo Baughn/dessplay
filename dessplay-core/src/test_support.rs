@@ -393,6 +393,7 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
                 anidb_series_id: None,
                 local_aliases: Default::default(),
                 manual_files: Default::default(),
+                anidb_unavailable: false,
             };
             state.put_list_entry(a, ts, list_entry(*entry), value)
         }

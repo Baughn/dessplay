@@ -633,6 +633,10 @@ pub struct ListRow {
     pub watchers: String,
     /// The linked series, if any.
     pub series_id: Option<AniDbSeriesId>,
+    /// An AniDB name search for this (unlinked) entry came back with zero
+    /// hits (design.md, Series Identity) -- confirmed not on AniDB, not
+    /// just never checked.
+    pub anidb_unavailable: bool,
 }
 
 /// A status group of List rows.
@@ -1262,6 +1266,7 @@ pub fn list_groups(view: &StateView) -> Vec<ListGroup> {
                 .map(|c| c.to_ascii_uppercase())
                 .collect(),
             series_id: entry.anidb_series_id,
+            anidb_unavailable: entry.anidb_unavailable,
         });
     }
     for (group, _) in &mut groups {
@@ -1317,6 +1322,7 @@ mod tests {
                 anidb_series_id: Some(series),
                 local_aliases: Default::default(),
                 manual_files: Default::default(),
+                anidb_unavailable: false,
             },
         );
         id
@@ -1724,6 +1730,7 @@ mod tests {
                     anidb_series_id: None,
                     local_aliases: Default::default(),
                     manual_files: Default::default(),
+                    anidb_unavailable: false,
                 },
             );
         };
@@ -2399,6 +2406,7 @@ mod tests {
             anidb_series_id: None,
             local_aliases: aliases.iter().map(|a| a.to_string()).collect(),
             manual_files: manual_files.iter().copied().collect(),
+            anidb_unavailable: false,
         }
     }
 
