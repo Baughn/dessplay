@@ -66,22 +66,20 @@ pub struct Blocker {
 
 /// A user's effective commitment to the series of an arbitrary `file`
 /// (not necessarily now-playing): the stored preference, or the default
-/// [`SeriesWatchState::Maybe`] when there is no preference, no metadata,
-/// or no AniDB series id. Used by prefetch gating and the playlist watch
-/// tag as well as [`effective_watch`].
+/// [`SeriesWatchState::Maybe`] when there is no preference or no List
+/// entry claims the file yet (design.md, Series Identity -- AniDB linking
+/// is enrichment only, never required for this). Used by prefetch gating
+/// and the playlist watch tag as well as [`effective_watch`].
 pub fn series_watch_for_file(
     view: &StateView,
     user: &UserId,
     file: crate::types::Ed2kHash,
 ) -> SeriesWatchState {
-    let Some(Some(metadata)) = view.anidb_metadata.get(&file) else {
-        return SeriesWatchState::Maybe;
-    };
-    let Some(series) = metadata.series_id else {
+    let Some(entry) = crate::series_identity::resolve_series_entry_for_file(view, file) else {
         return SeriesWatchState::Maybe;
     };
     view.series_preference
-        .get(&(user.clone(), series))
+        .get(&(user.clone(), entry))
         .map(|pref| pref.state)
         .unwrap_or(SeriesWatchState::Maybe)
 }
@@ -227,7 +225,8 @@ mod tests {
     use super::*;
     use crate::state::CrdtState;
     use crate::types::{
-        ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, MetadataSource, SharedTimestamp,
+        ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, ListEntryId, ListStatus, MetadataSource,
+        SeriesListEntry, SharedTimestamp,
     };
 
     const SERVER: ActorId = ActorId::SERVER;
@@ -238,6 +237,39 @@ mod tests {
 
     fn hash(i: u8) -> Ed2kHash {
         Ed2kHash([i; 16])
+    }
+
+    /// Link a List entry to `series` so `series_watch_for_file`'s
+    /// resolution (design.md, Series Identity) can find preferences
+    /// written against it. Tests key preferences on the returned
+    /// `ListEntryId`, not the raw `AniDbSeriesId`, mirroring how a real
+    /// AniDB-linked series always has a backing entry.
+    fn link_series(
+        state: &mut CrdtState,
+        ts: SharedTimestamp,
+        series: AniDbSeriesId,
+    ) -> ListEntryId {
+        let id = ListEntryId(series.0 as u128);
+        state.put_list_entry(
+            SERVER,
+            ts,
+            id,
+            SeriesListEntry {
+                name: "Frieren".into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: Some(series),
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+            },
+        );
+        id
     }
 
     fn peer(name: &str, role: Role, presence: Presence) -> PeerInfo {
@@ -352,11 +384,12 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
+        let entry = link_series(&mut state, ts(3), series);
         state.set_series_preference(
             SERVER,
             ts(4),
             UserId::new("kim"),
-            series,
+            entry,
             SeriesWatchState::NotWatching,
             None,
         );
@@ -391,11 +424,12 @@ mod tests {
                 episode_number: None,
             }),
         );
+        let entry = link_series(&mut state, ts(3), series);
         state.set_series_preference(
             SERVER,
             ts(4),
             UserId::new("kim"),
-            series,
+            entry,
             SeriesWatchState::NotWatching,
             None,
         );
@@ -477,12 +511,13 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
+        let entry = link_series(&mut state, ts(3), SERIES);
         for (i, (user, pref)) in prefs.iter().enumerate() {
             state.set_series_preference(
                 SERVER,
                 ts(10 + i as u64),
                 UserId::new(*user),
-                SERIES,
+                entry,
                 *pref,
                 None,
             );
@@ -732,6 +767,7 @@ mod tests {
                         episode_number: Some("1".into()),
                     }),
                 );
+                let entry = link_series(&mut state, ts(3), series);
                 let mut peers = Vec::new();
                 for (i, spec) in specs.iter().enumerate() {
                     let user = UserId::new(format!("user{i}"));
@@ -740,7 +776,7 @@ mod tests {
                         state.set_manual_override(SERVER, ts(t), user.clone(), Some(manual.clone()));
                     }
                     if let Some(pref) = spec.pref {
-                        state.set_series_preference(SERVER, ts(t + 1), user.clone(), series, pref, None);
+                        state.set_series_preference(SERVER, ts(t + 1), user.clone(), entry, pref, None);
                     }
                     if let Some(avail) = spec.avail {
                         state.set_file_availability(SERVER, ts(t + 2), user.clone(), hash(1), avail);

@@ -10,9 +10,42 @@ use common::*;
 use dessplay::actors::sync::Mutation;
 use dessplay_core::net::{Presence, Role};
 use dessplay_core::types::{
-    AniDbMetadata, AniDbSeriesId, MetadataSource, PlaybackIntent, SeekAuthority, SeriesWatchState,
-    UserId,
+    AniDbMetadata, AniDbSeriesId, ListEntryId, ListStatus, MetadataSource, PlaybackIntent,
+    SeekAuthority, SeriesListEntry, SeriesWatchState, UserId,
 };
+
+/// Link a List entry to `series` so a `SetSeriesPreference` mutation has
+/// somewhere to resolve to (design.md, Series Identity) -- AniDB linking
+/// is enrichment only, but commitment still keys on the entry, not the
+/// raw series id.
+async fn link_series(
+    client: &dessplay::client::ClientHandle,
+    series: AniDbSeriesId,
+) -> ListEntryId {
+    let id = ListEntryId(series.0 as u128);
+    mutate(
+        client,
+        Mutation::PutListEntry {
+            id,
+            entry: SeriesListEntry {
+                name: "Frieren".into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: Some(series),
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+            },
+        },
+    )
+    .await;
+    id
+}
 
 /// Get a two-user session playing: now-playing set, intent Playing,
 /// both clients agreeing playback is active.
@@ -182,11 +215,12 @@ async fn committed_absent_user_blocks_until_acknowledged() {
         },
     )
     .await;
+    let entry = link_series(&kim, series).await;
     mutate(
         &baughn,
         Mutation::SetSeriesPreference {
             user: baughn_id.clone(),
-            series,
+            entry,
             pref: SeriesWatchState::Watching,
             set_by: None,
         },
@@ -196,7 +230,7 @@ async fn committed_absent_user_blocks_until_acknowledged() {
         snaps.iter().all(|s| {
             s.view
                 .series_preference
-                .get(&(UserId::new("baughn"), series))
+                .get(&(UserId::new("baughn"), entry))
                 .map(|p| p.state)
                 == Some(SeriesWatchState::Watching)
         })
@@ -283,11 +317,12 @@ async fn marking_an_absent_committed_user_not_watching_unblocks_playback() {
         },
     )
     .await;
+    let entry = link_series(&baughn, series).await;
     mutate(
         &kim,
         Mutation::SetSeriesPreference {
             user: kim_id.clone(),
-            series,
+            entry,
             pref: SeriesWatchState::Watching,
             set_by: None,
         },
@@ -297,7 +332,7 @@ async fn marking_an_absent_committed_user_not_watching_unblocks_playback() {
         snaps.iter().all(|s| {
             s.view
                 .series_preference
-                .get(&(kim_id.clone(), series))
+                .get(&(kim_id.clone(), entry))
                 .map(|p| p.state)
                 == Some(SeriesWatchState::Watching)
         })
@@ -332,7 +367,7 @@ async fn marking_an_absent_committed_user_not_watching_unblocks_playback() {
         &baughn,
         Mutation::SetSeriesPreference {
             user: kim_id.clone(),
-            series,
+            entry,
             pref: SeriesWatchState::NotWatching,
             set_by: Some(baughn_id.clone()),
         },
@@ -352,7 +387,7 @@ async fn marking_an_absent_committed_user_not_watching_unblocks_playback() {
 
     let snap = snapshot_of(&baughn).await;
     assert_eq!(
-        snap.view.series_preference.get(&(kim_id, series)),
+        snap.view.series_preference.get(&(kim_id, entry)),
         Some(&dessplay_core::types::SeriesPreference {
             state: SeriesWatchState::NotWatching,
             set_by: Some(baughn_id),
@@ -411,11 +446,12 @@ async fn committed_user_blocks_after_graceful_quit() {
         },
     )
     .await;
+    let entry = link_series(&kim, series).await;
     mutate(
         &baughn,
         Mutation::SetSeriesPreference {
             user: baughn_id.clone(),
-            series,
+            entry,
             pref: SeriesWatchState::Watching,
             set_by: None,
         },
@@ -425,7 +461,7 @@ async fn committed_user_blocks_after_graceful_quit() {
         snaps[0]
             .view
             .series_preference
-            .get(&(baughn_id.clone(), series))
+            .get(&(baughn_id.clone(), entry))
             .map(|p| p.state)
             == Some(SeriesWatchState::Watching)
     })

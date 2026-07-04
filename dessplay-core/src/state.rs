@@ -12,14 +12,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use crdts::{CmRDT, CvRDT, GList, GSet, Map, glist};
+use digest::Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::lww::{Lww, LwwCell, resolve_value};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
-    FileCatalogEntry, FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent,
-    PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry, SeriesPreference,
-    SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    FileCatalogEntry, FileHashInfo, ListEntryId, ListStatus, ManualState, NextEpState,
+    PlaybackIntent, PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry,
+    SeriesPreference, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
@@ -48,8 +49,11 @@ pub struct CrdtState {
     pub seek_authority: LwwCell<SeekAuthority>,
     /// The group's play/pause latch. Unwritten resolves as `Paused`.
     pub playback_intent: LwwCell<PlaybackIntent>,
-    /// Per-user, per-series watch preference.
-    pub series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesPreference>,
+    /// Per-user, per-series watch preference, keyed on the
+    /// [`SeriesListEntry`]'s [`ListEntryId`] rather than [`AniDbSeriesId`]
+    /// -- AniDB linking is enrichment only, never a prerequisite for
+    /// commitment (design.md, Series Identity).
+    pub series_preference: LwwMap<(UserId, ListEntryId), SeriesPreference>,
     /// Per-user manual state override. `Away` is writable by anyone.
     pub manual_override: LwwMap<UserId, Option<ManualState>>,
     /// Per-user, per-file availability.
@@ -75,11 +79,23 @@ pub struct CrdtState {
     /// committed (Watching) user who is absent: each `(now-playing file,
     /// acknowledged user)` pair suppresses that user's committed-absent
     /// block *for that file only*. Grow-only, cleared at compaction.
-    ///
-    /// **Must stay the last field** — the on-disk snapshot has no version
-    /// tag, so [`CrdtState::decode_snapshot`] migrates older blobs by
-    /// treating them as the field-less [`CrdtStateV1`] prefix.
     pub acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+    /// The [`PROTOCOL_VERSION`](crate::net::message::PROTOCOL_VERSION) this
+    /// struct's shape matches. Exists purely so [`CrdtState::decode_snapshot`]
+    /// can tell an old blob from a new one *by length*, not content, even
+    /// when every field a shape change touched happens to be empty (an
+    /// empty collection's postcard encoding doesn't depend on its value
+    /// type, so emptiness alone can otherwise make an old, differently-typed
+    /// blob spuriously decode as current -- caught by the Phase 19
+    /// `series_preference` re-key, a key-*type* change with no natural
+    /// trailing-field length difference when `list_entries` is empty; see
+    /// `legacy_blob_synthesizes_one_shared_entry_with_watchers_seeded`).
+    ///
+    /// **Must stay the last field** and **always be present** — the
+    /// fallback layouts (`CrdtStateV1`..`CrdtStateV4`) deliberately omit it,
+    /// so any blob missing it decodes exactly `size_of::<u32>()` bytes
+    /// short, a byte-length guarantee no content-dependent check can give.
+    pub protocol_version: u32,
 }
 
 /// One replicated operation, as sent over the wire (postcard-serialized).
@@ -106,8 +122,9 @@ pub enum CrdtOp {
     SeekAuthority(LwwRegOp<SeekAuthority>),
     /// Playback-intent register write.
     PlaybackIntent(LwwRegOp<PlaybackIntent>),
-    /// Series preference write.
-    SeriesPreference(LwwMapOp<(UserId, AniDbSeriesId), SeriesPreference>),
+    /// Series preference write (keyed on [`ListEntryId`], not
+    /// [`AniDbSeriesId`] -- see [`CrdtState::series_preference`]).
+    SeriesPreference(LwwMapOp<(UserId, ListEntryId), SeriesPreference>),
     /// Manual override write.
     ManualOverride(LwwMapOp<UserId, Option<ManualState>>),
     /// File availability write.
@@ -217,10 +234,29 @@ struct PlaybackPositionV1 {
     timestamp: SharedTimestamp,
 }
 
+/// The on-disk/wire layout of [`SeriesListEntry`] **before** `local_aliases`
+/// and `manual_files` were added (Phase 19, Series Identity). Frozen: a
+/// record of the format, not live state.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
+struct SeriesListEntryV1 {
+    name: String,
+    nero_name: Option<String>,
+    genre: Option<String>,
+    notes: Vec<String>,
+    recommender: Option<String>,
+    status: ListStatus,
+    status_note: Option<String>,
+    source: Option<String>,
+    watchers: BTreeSet<UserId>,
+    anidb_series_id: Option<AniDbSeriesId>,
+}
+
 /// The on-disk/wire layout of [`CrdtState`] **before** `series_preference`
 /// entries gained [`SeriesPreference`] attribution (design.md #7/#13).
 /// Identical to the current struct except `series_preference` uses the
-/// bare [`SeriesWatchState`] value. Frozen: a record of the format, not
+/// bare [`SeriesWatchState`] value, and `list_entries` the pre-Phase-19
+/// [`SeriesListEntryV1`] value. Frozen: a record of the format, not
 /// live state.
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(Default, Serialize))]
@@ -236,7 +272,7 @@ struct CrdtStateV3 {
     anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
     series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
     file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
-    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntryV1>,
     list_next_ep: LwwMap<ListEntryId, NextEpState>,
     lookup_requests: GSet<FileHashInfo>,
     chat: GList<ChatMessage>,
@@ -245,12 +281,14 @@ struct CrdtStateV3 {
 }
 
 /// A migration-only [`ActorId`], used solely to synthesize dots when
-/// rebuilding an [`LwwMap`] whose *value type* changed shape (see
-/// [`upgrade_series_preference`]). Never issued to a real client or
-/// server session — safe because `ActorId`s are session-scoped (Phase 4):
-/// no live session's dot clock depends on a restart-time migration
-/// preserving the old map's internal dot structure, only the resolved
-/// `(timestamp, value)` per key matters for future LWW comparisons.
+/// rebuilding an [`LwwMap`] whose *value type* (or, for `series_preference`,
+/// *key type*) changed shape (see [`upgrade_series_preference`],
+/// [`upgrade_list_entries`], [`upgrade_series_preference_to_list_entries`]).
+/// Never issued to a real client or server session — safe because
+/// `ActorId`s are session-scoped (Phase 4): no live session's dot clock
+/// depends on a restart-time migration preserving the old map's internal
+/// dot structure, only the resolved `(timestamp, value)` per key matters
+/// for future LWW comparisons.
 const MIGRATION_ACTOR: ActorId = ActorId(u128::MAX);
 
 /// Rebuild a `series_preference` map from its pre-attribution shape,
@@ -279,26 +317,172 @@ fn upgrade_series_preference(
     upgraded
 }
 
+/// Rebuild a `list_entries` map from its pre-Phase-19 shape, defaulting
+/// `local_aliases`/`manual_files` empty (nothing had a chance to populate
+/// them before this migration ever ran).
+fn upgrade_list_entries(
+    old: LwwMap<ListEntryId, SeriesListEntryV1>,
+) -> LwwMap<ListEntryId, SeriesListEntry> {
+    let mut upgraded = LwwMap::new();
+    for entry in old.iter() {
+        let (key, cell) = entry.val;
+        if let Some(lww) = crate::lww::resolve(cell) {
+            let old = lww.value;
+            map_put(
+                &mut upgraded,
+                MIGRATION_ACTOR,
+                lww.timestamp,
+                *key,
+                SeriesListEntry {
+                    name: old.name,
+                    nero_name: old.nero_name,
+                    genre: old.genre,
+                    notes: old.notes,
+                    recommender: old.recommender,
+                    status: old.status,
+                    status_note: old.status_note,
+                    source: old.source,
+                    watchers: old.watchers,
+                    anidb_series_id: old.anidb_series_id,
+                    local_aliases: BTreeSet::new(),
+                    manual_files: BTreeSet::new(),
+                },
+            );
+        }
+    }
+    upgraded
+}
+
+/// Deterministically derive a synthesized [`ListEntryId`] for an AniDB
+/// series that no List entry claims yet, so migrating equivalent old data
+/// twice (e.g. independently on a client and the server) converges on the
+/// same id instead of diverging into two entries. Migration-only —
+/// entries created by real usage still get a random id (see `import.rs`,
+/// `ListEntryId::from_bytes(rand::random())`).
+fn synthesize_list_entry_id(series: AniDbSeriesId) -> ListEntryId {
+    let digest = <[u8; 16]>::from(md4::Md4::digest(
+        [
+            b"dessplay:phase19-list-entry-migration:",
+            &series.0.to_le_bytes()[..],
+        ]
+        .concat(),
+    ));
+    ListEntryId::from_bytes(digest)
+}
+
+/// Re-key `series_preference` from `AniDbSeriesId` to `ListEntryId`
+/// (Phase 19, Series Identity: AniDB linking is enrichment only, never a
+/// prerequisite for commitment). For each referenced series, reuses the
+/// List entry already linked to it if one exists (first match, by
+/// `ListEntryId`, if more than one somehow is -- nothing enforces
+/// uniqueness), else synthesizes one: name from cached `anidb_metadata`
+/// if present, else a placeholder; status `Active`; `watchers` seeded
+/// from every user whose preference for that series already resolves to
+/// `Watching`, so migrating doesn't visibly regress a real commitment to
+/// an empty watcher row in the now-default List pane. `list_entries` is
+/// mutated in place (synthesized entries are inserted into it).
+fn upgrade_series_preference_to_list_entries(
+    old: LwwMap<(UserId, AniDbSeriesId), SeriesPreference>,
+    list_entries: &mut LwwMap<ListEntryId, SeriesListEntry>,
+    anidb_metadata: &LwwMap<Ed2kHash, Option<AniDbMetadata>>,
+) -> LwwMap<(UserId, ListEntryId), SeriesPreference> {
+    let resolved: Vec<((UserId, AniDbSeriesId), Lww<SeriesPreference>)> = old
+        .iter()
+        .filter_map(|entry| {
+            let (key, cell) = entry.val;
+            crate::lww::resolve(cell).map(|lww| (key.clone(), lww))
+        })
+        .collect();
+
+    let mut linked: BTreeMap<AniDbSeriesId, ListEntryId> = BTreeMap::new();
+    for entry in list_entries.iter() {
+        let (id, cell) = entry.val;
+        if let Some(series) = crate::lww::resolve(cell).and_then(|lww| lww.value.anidb_series_id) {
+            linked.entry(series).or_insert(*id);
+        }
+    }
+
+    let mut watching: BTreeMap<AniDbSeriesId, BTreeSet<UserId>> = BTreeMap::new();
+    for ((user, series), lww) in &resolved {
+        if lww.value.state == SeriesWatchState::Watching {
+            watching.entry(*series).or_default().insert(user.clone());
+        }
+    }
+
+    let cached_name = |series: AniDbSeriesId| -> Option<String> {
+        anidb_metadata.iter().find_map(|entry| {
+            let (_, cell) = entry.val;
+            crate::lww::resolve(cell)?
+                .value
+                .filter(|m| m.series_id == Some(series))
+                .map(|m| m.series_name)
+        })
+    };
+
+    let mut upgraded = LwwMap::new();
+    for ((user, series), lww) in resolved {
+        let entry_id = *linked.entry(series).or_insert_with(|| {
+            let id = synthesize_list_entry_id(series);
+            map_put(
+                list_entries,
+                MIGRATION_ACTOR,
+                lww.timestamp,
+                id,
+                SeriesListEntry {
+                    name: cached_name(series).unwrap_or_else(|| format!("series {}", series.0)),
+                    nero_name: None,
+                    genre: None,
+                    notes: Vec::new(),
+                    recommender: None,
+                    status: ListStatus::Active,
+                    status_note: None,
+                    source: None,
+                    watchers: watching.get(&series).cloned().unwrap_or_default(),
+                    anidb_series_id: Some(series),
+                    local_aliases: BTreeSet::new(),
+                    manual_files: BTreeSet::new(),
+                },
+            );
+            id
+        });
+        map_put(
+            &mut upgraded,
+            MIGRATION_ACTOR,
+            lww.timestamp,
+            (user, entry_id),
+            lww.value,
+        );
+    }
+    upgraded
+}
+
 impl From<CrdtStateV3> for CrdtState {
     fn from(v3: CrdtStateV3) -> Self {
+        let mut list_entries = upgrade_list_entries(v3.list_entries);
+        let series_preference = upgrade_series_preference_to_list_entries(
+            upgrade_series_preference(v3.series_preference),
+            &mut list_entries,
+            &v3.anidb_metadata,
+        );
         CrdtState {
             playlist: v3.playlist,
             watched: v3.watched,
             now_playing: v3.now_playing,
             seek_authority: v3.seek_authority,
             playback_intent: v3.playback_intent,
-            series_preference: upgrade_series_preference(v3.series_preference),
+            series_preference,
             manual_override: v3.manual_override,
             file_availability: v3.file_availability,
             anidb_metadata: v3.anidb_metadata,
             series_relations: v3.series_relations,
             file_catalog: v3.file_catalog,
-            list_entries: v3.list_entries,
+            list_entries,
             list_next_ep: v3.list_next_ep,
             lookup_requests: v3.lookup_requests,
             chat: v3.chat,
             playback_position: v3.playback_position,
             acknowledged_absent: v3.acknowledged_absent,
+            protocol_version: crate::net::message::PROTOCOL_VERSION,
         }
     }
 }
@@ -306,8 +490,9 @@ impl From<CrdtStateV3> for CrdtState {
 /// The on-disk/wire layout of [`CrdtState`] **before** the `file` tag was
 /// appended to [`PlaybackPosition`] (but after `acknowledged_absent`).
 /// Identical to the current struct except `playback_position` uses the old
-/// [`PlaybackPositionV1`] value, and `series_preference` the pre-attribution
-/// [`SeriesWatchState`] value. Frozen: a record of the format, not live
+/// [`PlaybackPositionV1`] value, `series_preference` the pre-attribution
+/// [`SeriesWatchState`] value, and `list_entries` the pre-Phase-19
+/// [`SeriesListEntryV1`] value. Frozen: a record of the format, not live
 /// state.
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(Default, Serialize))]
@@ -323,7 +508,7 @@ struct CrdtStateV2 {
     anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
     series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
     file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
-    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntryV1>,
     list_next_ep: LwwMap<ListEntryId, NextEpState>,
     lookup_requests: GSet<FileHashInfo>,
     chat: GList<ChatMessage>,
@@ -335,24 +520,31 @@ struct CrdtStateV2 {
 
 impl From<CrdtStateV2> for CrdtState {
     fn from(v2: CrdtStateV2) -> Self {
+        let mut list_entries = upgrade_list_entries(v2.list_entries);
+        let series_preference = upgrade_series_preference_to_list_entries(
+            upgrade_series_preference(v2.series_preference),
+            &mut list_entries,
+            &v2.anidb_metadata,
+        );
         CrdtState {
             playlist: v2.playlist,
             watched: v2.watched,
             now_playing: v2.now_playing,
             seek_authority: v2.seek_authority,
             playback_intent: v2.playback_intent,
-            series_preference: upgrade_series_preference(v2.series_preference),
+            series_preference,
             manual_override: v2.manual_override,
             file_availability: v2.file_availability,
             anidb_metadata: v2.anidb_metadata,
             series_relations: v2.series_relations,
             file_catalog: v2.file_catalog,
-            list_entries: v2.list_entries,
+            list_entries,
             list_next_ep: v2.list_next_ep,
             lookup_requests: v2.lookup_requests,
             chat: v2.chat,
             playback_position: LwwMap::new(), // ephemeral; dropped on migration
             acknowledged_absent: v2.acknowledged_absent,
+            protocol_version: crate::net::message::PROTOCOL_VERSION,
         }
     }
 }
@@ -376,7 +568,7 @@ struct CrdtStateV1 {
     anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
     series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
     file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
-    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntryV1>,
     list_next_ep: LwwMap<ListEntryId, NextEpState>,
     lookup_requests: GSet<FileHashInfo>,
     chat: GList<ChatMessage>,
@@ -387,24 +579,91 @@ struct CrdtStateV1 {
 
 impl From<CrdtStateV1> for CrdtState {
     fn from(v1: CrdtStateV1) -> Self {
+        let mut list_entries = upgrade_list_entries(v1.list_entries);
+        let series_preference = upgrade_series_preference_to_list_entries(
+            upgrade_series_preference(v1.series_preference),
+            &mut list_entries,
+            &v1.anidb_metadata,
+        );
         CrdtState {
             playlist: v1.playlist,
             watched: v1.watched,
             now_playing: v1.now_playing,
             seek_authority: v1.seek_authority,
             playback_intent: v1.playback_intent,
-            series_preference: upgrade_series_preference(v1.series_preference),
+            series_preference,
             manual_override: v1.manual_override,
             file_availability: v1.file_availability,
             anidb_metadata: v1.anidb_metadata,
             series_relations: v1.series_relations,
             file_catalog: v1.file_catalog,
-            list_entries: v1.list_entries,
+            list_entries,
             list_next_ep: v1.list_next_ep,
             lookup_requests: v1.lookup_requests,
             chat: v1.chat,
             playback_position: LwwMap::new(), // ephemeral; dropped on migration
             acknowledged_absent: GSet::new(),
+            protocol_version: crate::net::message::PROTOCOL_VERSION,
+        }
+    }
+}
+
+/// The on-disk/wire layout of [`CrdtState`] **before** `series_preference`
+/// was re-keyed from `AniDbSeriesId` to `ListEntryId` and `SeriesListEntry`
+/// gained `local_aliases`/`manual_files` (Phase 19, Series Identity).
+/// Otherwise identical to the current struct — `series_preference` already
+/// has [`SeriesPreference`] attribution and `playback_position` already has
+/// the `file` tag; only the two Phase 19 fields differ. Frozen: a record of
+/// the format, not live state.
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Default, Serialize))]
+struct CrdtStateV4 {
+    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
+    watched: LwwMap<Ed2kHash, bool>,
+    now_playing: LwwCell<Option<Ed2kHash>>,
+    seek_authority: LwwCell<SeekAuthority>,
+    playback_intent: LwwCell<PlaybackIntent>,
+    series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesPreference>,
+    manual_override: LwwMap<UserId, Option<ManualState>>,
+    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
+    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
+    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
+    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntryV1>,
+    list_next_ep: LwwMap<ListEntryId, NextEpState>,
+    lookup_requests: GSet<FileHashInfo>,
+    chat: GList<ChatMessage>,
+    playback_position: LwwMap<UserId, PlaybackPosition>,
+    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+}
+
+impl From<CrdtStateV4> for CrdtState {
+    fn from(v4: CrdtStateV4) -> Self {
+        let mut list_entries = upgrade_list_entries(v4.list_entries);
+        let series_preference = upgrade_series_preference_to_list_entries(
+            v4.series_preference,
+            &mut list_entries,
+            &v4.anidb_metadata,
+        );
+        CrdtState {
+            playlist: v4.playlist,
+            watched: v4.watched,
+            now_playing: v4.now_playing,
+            seek_authority: v4.seek_authority,
+            playback_intent: v4.playback_intent,
+            series_preference,
+            manual_override: v4.manual_override,
+            file_availability: v4.file_availability,
+            anidb_metadata: v4.anidb_metadata,
+            series_relations: v4.series_relations,
+            file_catalog: v4.file_catalog,
+            list_entries,
+            list_next_ep: v4.list_next_ep,
+            lookup_requests: v4.lookup_requests,
+            chat: v4.chat,
+            playback_position: v4.playback_position,
+            acknowledged_absent: v4.acknowledged_absent,
+            protocol_version: crate::net::message::PROTOCOL_VERSION,
         }
     }
 }
@@ -413,19 +672,27 @@ impl CrdtState {
     /// Decode a persisted snapshot blob, migrating an older on-disk layout
     /// forward. The postcard blob carries no version tag, so try the
     /// current layout first and, on failure, fall back through the previous
-    /// layouts: [`CrdtStateV3`] (before `series_preference` gained
-    /// attribution), then [`CrdtStateV2`] (before the `file` tag on
-    /// [`PlaybackPosition`]), then [`CrdtStateV1`] (also before
-    /// `acknowledged_absent`). All three drop ephemeral playback positions
-    /// (V1/V2) and re-key `series_preference` with `set_by: None` (V1/V2/V3)
-    /// — see [`upgrade_series_preference`]. A blob that is none of these
-    /// (genuinely corrupt) surfaces the *original* error, so callers still
-    /// see a real codec failure.
+    /// layouts: [`CrdtStateV4`] (before `series_preference` was re-keyed to
+    /// `ListEntryId` and `SeriesListEntry` gained `local_aliases`/
+    /// `manual_files`, Phase 19), then [`CrdtStateV3`] (before
+    /// `series_preference` gained attribution), then [`CrdtStateV2`]
+    /// (before the `file` tag on [`PlaybackPosition`]), then
+    /// [`CrdtStateV1`] (also before `acknowledged_absent`). All four drop
+    /// ephemeral playback positions (V1/V2), re-key `series_preference`
+    /// with `set_by: None` (V1/V2/V3) — see [`upgrade_series_preference`]
+    /// — default `local_aliases`/`manual_files` empty (V1/V2/V3/V4) — see
+    /// [`upgrade_list_entries`] — and re-key `series_preference` onto a
+    /// `ListEntryId`, reusing or synthesizing a List entry per referenced
+    /// series (V1/V2/V3/V4) — see
+    /// [`upgrade_series_preference_to_list_entries`]. A blob that is none
+    /// of these (genuinely corrupt) surfaces the *original* error, so
+    /// callers still see a real codec failure.
     pub fn decode_snapshot(blob: &[u8]) -> Result<CrdtState, crate::wire::WireError> {
         match crate::wire::decode::<CrdtState>(blob) {
             Ok(state) => Ok(state),
-            Err(primary) => crate::wire::decode::<CrdtStateV3>(blob)
+            Err(primary) => crate::wire::decode::<CrdtStateV4>(blob)
                 .map(CrdtState::from)
+                .or_else(|_| crate::wire::decode::<CrdtStateV3>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV2>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV1>(blob).map(CrdtState::from))
                 .map_err(|_| primary),
@@ -480,7 +747,10 @@ where
 impl CrdtState {
     /// An empty state.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            protocol_version: crate::net::message::PROTOCOL_VERSION,
+            ..Self::default()
+        }
     }
 
     /// Apply one replicated operation (local echo or remote broadcast).
@@ -527,6 +797,11 @@ impl CrdtState {
         self.chat.merge(other.chat);
         self.playback_position.merge(other.playback_position);
         self.acknowledged_absent.merge(other.acknowledged_absent);
+        // Not a CRDT type -- both sides are always the current binary's
+        // PROTOCOL_VERSION in practice (the connect-time gate refuses a
+        // mismatched peer), so which side wins is moot; `max` is a
+        // deterministic, order-independent pick.
+        self.protocol_version = self.protocol_version.max(other.protocol_version);
     }
 
     // ---- Mutators. Each applies locally and returns the op to broadcast.
@@ -613,7 +888,7 @@ impl CrdtState {
         actor: ActorId,
         ts: SharedTimestamp,
         user: UserId,
-        series: AniDbSeriesId,
+        entry: ListEntryId,
         pref: SeriesWatchState,
         set_by: Option<UserId>,
     ) -> CrdtOp {
@@ -621,7 +896,7 @@ impl CrdtState {
             &mut self.series_preference,
             actor,
             ts,
-            (user, series),
+            (user, entry),
             SeriesPreference {
                 state: pref,
                 set_by,
@@ -1039,8 +1314,8 @@ pub struct StateView {
     pub seek_authority: Option<SeekAuthority>,
     /// The play/pause latch (`Paused` when never written).
     pub playback_intent: PlaybackIntent,
-    /// Per-user series preferences.
-    pub series_preference: BTreeMap<(UserId, AniDbSeriesId), SeriesPreference>,
+    /// Per-user series preferences, keyed on the List entry.
+    pub series_preference: BTreeMap<(UserId, ListEntryId), SeriesPreference>,
     /// Per-user manual overrides.
     pub manual_override: BTreeMap<UserId, Option<ManualState>>,
     /// Per-user file availability.
@@ -1126,7 +1401,9 @@ mod tests {
     /// `SeriesWatchState`. Decoding must fall through to `CrdtStateV3` and
     /// upgrade each entry to `SeriesPreference { set_by: None, .. }`,
     /// preserving the resolved value and timestamp (so a later real write
-    /// still LWW-compares correctly against the migrated entry).
+    /// still LWW-compares correctly against the migrated entry) — and,
+    /// since Phase 19, additionally re-key it onto a synthesized List
+    /// entry (deterministic, so both decodes below agree on its id).
     #[test]
     fn legacy_blob_with_unattributed_series_preference_upgrades_to_set_by_none() {
         let mut series_preference = LwwMap::new();
@@ -1142,9 +1419,10 @@ mod tests {
             ..Default::default()
         };
         let blob = crate::wire::encode(&legacy).unwrap();
+        let entry_id = synthesize_list_entry_id(AniDbSeriesId(1));
 
         let decoded = CrdtState::decode_snapshot(&blob).expect("legacy blob must decode");
-        let key = (UserId::new("kim"), AniDbSeriesId(1));
+        let key = (UserId::new("kim"), entry_id);
         assert_eq!(
             decoded.view().series_preference.get(&key),
             Some(&SeriesPreference {
@@ -1160,7 +1438,7 @@ mod tests {
             A2,
             ts(6),
             UserId::new("kim"),
-            AniDbSeriesId(1),
+            entry_id,
             SeriesWatchState::NotWatching,
             Some(UserId::new("baughn")),
         );
@@ -1179,7 +1457,7 @@ mod tests {
             A2,
             ts(4),
             UserId::new("kim"),
-            AniDbSeriesId(1),
+            entry_id,
             SeriesWatchState::Maybe,
             Some(UserId::new("baughn")),
         );
@@ -1187,6 +1465,134 @@ mod tests {
             decoded2.view().series_preference.get(&key),
             Some(&SeriesPreference {
                 state: SeriesWatchState::Watching,
+                set_by: None,
+            })
+        );
+    }
+
+    /// A `CrdtStateV4` blob (current shape except the Phase 19 fields) whose
+    /// series already has a linked List entry: the rekey must **reuse** it,
+    /// not synthesize a duplicate.
+    #[test]
+    fn legacy_blob_reuses_an_existing_linked_list_entry() {
+        let series = AniDbSeriesId(7);
+        let entry_id = ListEntryId(99);
+        let mut list_entries = LwwMap::new();
+        map_put(
+            &mut list_entries,
+            A1,
+            ts(1),
+            entry_id,
+            SeriesListEntryV1 {
+                name: "Frieren".into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: Some(series),
+            },
+        );
+        let mut series_preference = LwwMap::new();
+        map_put(
+            &mut series_preference,
+            A1,
+            ts(2),
+            (UserId::new("kim"), series),
+            SeriesPreference {
+                state: SeriesWatchState::Watching,
+                set_by: None,
+            },
+        );
+        let legacy = CrdtStateV4 {
+            list_entries,
+            series_preference,
+            ..Default::default()
+        };
+        let blob = crate::wire::encode(&legacy).unwrap();
+
+        let decoded = CrdtState::decode_snapshot(&blob).expect("legacy V4 blob must decode");
+        let view = decoded.view();
+        assert_eq!(
+            view.series_preference.get(&(UserId::new("kim"), entry_id)),
+            Some(&SeriesPreference {
+                state: SeriesWatchState::Watching,
+                set_by: None,
+            })
+        );
+        assert_eq!(
+            view.list_entries.len(),
+            1,
+            "must not synthesize a duplicate entry for an already-linked series"
+        );
+    }
+
+    /// Multiple users referencing the same unlinked series must converge on
+    /// one synthesized entry (not one per user), with `watchers` seeded
+    /// from whoever already resolves `Watching` (not `Maybe`) and `status`
+    /// defaulted to `Active`.
+    #[test]
+    fn legacy_blob_synthesizes_one_shared_entry_with_watchers_seeded() {
+        let series = AniDbSeriesId(11);
+        let mut series_preference = LwwMap::new();
+        map_put(
+            &mut series_preference,
+            A1,
+            ts(1),
+            (UserId::new("kim"), series),
+            SeriesPreference {
+                state: SeriesWatchState::Watching,
+                set_by: None,
+            },
+        );
+        map_put(
+            &mut series_preference,
+            A1,
+            ts(2),
+            (UserId::new("baughn"), series),
+            SeriesPreference {
+                state: SeriesWatchState::Watching,
+                set_by: None,
+            },
+        );
+        map_put(
+            &mut series_preference,
+            A1,
+            ts(3),
+            (UserId::new("nero"), series),
+            SeriesPreference {
+                state: SeriesWatchState::Maybe,
+                set_by: None,
+            },
+        );
+        let legacy = CrdtStateV4 {
+            series_preference,
+            ..Default::default()
+        };
+        let blob = crate::wire::encode(&legacy).unwrap();
+
+        let decoded = CrdtState::decode_snapshot(&blob).expect("legacy V4 blob must decode");
+        let view = decoded.view();
+
+        assert_eq!(view.list_entries.len(), 1, "one entry shared by all three");
+        let (entry_id, entry) = view.list_entries.iter().next().unwrap();
+        assert_eq!(entry.anidb_series_id, Some(series));
+        assert_eq!(entry.status, ListStatus::Active);
+        assert_eq!(
+            entry.watchers,
+            [UserId::new("kim"), UserId::new("baughn")]
+                .into_iter()
+                .collect(),
+            "Maybe (nero) must not be seeded into watchers"
+        );
+        assert_eq!(
+            view.series_preference
+                .get(&(UserId::new("nero"), *entry_id)),
+            Some(&SeriesPreference {
+                state: SeriesWatchState::Maybe,
                 set_by: None,
             })
         );

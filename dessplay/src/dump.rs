@@ -202,10 +202,12 @@ fn state_json(view: &StateView, sel: &Selection) -> Result<Value, serde_json::Er
     }
     if sel.wants("series_preference") {
         let mut rows = Vec::new();
-        for ((user, series), pref) in &view.series_preference {
+        for ((user, entry), pref) in &view.series_preference {
             rows.push(json!({
                 "user": user.0,
-                "series": series.0,
+                // Stringified: serde_json can't safely round-trip a raw
+                // u128 (see `u128_keyed`).
+                "entry": entry.0.to_string(),
                 "state": serde_json::to_value(pref.state)?,
                 "set_by": pref.set_by.as_ref().map(|u| &u.0),
             }));
@@ -329,7 +331,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use dessplay_core::types::{AniDbSeriesId, SeriesPreference, SeriesWatchState, UserId};
+    use dessplay_core::types::{SeriesPreference, SeriesWatchState, UserId};
 
     fn hash(byte: u8) -> Ed2kHash {
         Ed2kHash([byte; 16])
@@ -342,7 +344,7 @@ mod tests {
         watched.insert(hash(0xcd), true);
         let mut series_preference = BTreeMap::new();
         series_preference.insert(
-            (UserId::new("Baughn"), AniDbSeriesId(18302)),
+            (UserId::new("Baughn"), ListEntryId(18302)),
             SeriesPreference {
                 state: SeriesWatchState::Watching,
                 set_by: None,
@@ -379,7 +381,7 @@ mod tests {
         assert_eq!(
             rows,
             &vec![
-                json!({ "user": "Baughn", "series": 18302, "state": "Watching", "set_by": null })
+                json!({ "user": "Baughn", "entry": "18302", "state": "Watching", "set_by": null })
             ]
         );
     }

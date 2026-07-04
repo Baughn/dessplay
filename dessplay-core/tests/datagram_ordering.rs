@@ -300,8 +300,8 @@ proptest! {
 fn map_backed_series_preference_is_gap_checked() {
     let mut origin = CrdtState::new();
     let user = UserId::new("kim");
-    let s = dessplay_core::types::AniDbSeriesId(1);
-    let s2 = dessplay_core::types::AniDbSeriesId(2);
+    let s = dessplay_core::types::ListEntryId(1);
+    let s2 = dessplay_core::types::ListEntryId(2);
     let op1 = origin.set_series_preference(
         ORIGIN,
         ts(1),

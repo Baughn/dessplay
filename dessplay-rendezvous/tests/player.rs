@@ -447,15 +447,17 @@ async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
     )
     .await;
 
-    // Both users auto-mark NotWatching for the unknown, unobtainable series.
+    // Both users auto-mark NotWatching for the unknown, unobtainable
+    // series. Each client resolves (or, on this first miss, synthesizes)
+    // its own List entry for the series (design.md, Series Identity) --
+    // nothing enforces only one gets created, so check by subject/state
+    // rather than a specific entry id.
     for who in ["kim", "baughn"] {
         eventually(&[&kim, &baughn], BUDGET, |snaps| {
             snaps.iter().all(|s| {
-                s.view
-                    .series_preference
-                    .get(&(UserId::new(who), AniDbSeriesId(4242)))
-                    .map(|p| p.state)
-                    == Some(SeriesWatchState::NotWatching)
+                s.view.series_preference.iter().any(|((u, _), p)| {
+                    *u == UserId::new(who) && p.state == SeriesWatchState::NotWatching
+                })
             })
         })
         .await;
@@ -527,11 +529,9 @@ async fn placeholder_client_cannot_take_seek_authority() {
 
     eventually(&[&kim, &baughn], BUDGET, |snaps| {
         snaps.iter().all(|s| {
-            s.view
-                .series_preference
-                .get(&(UserId::new("baughn"), AniDbSeriesId(4242)))
-                .map(|p| p.state)
-                == Some(SeriesWatchState::NotWatching)
+            s.view.series_preference.iter().any(|((u, _), p)| {
+                *u == UserId::new("baughn") && p.state == SeriesWatchState::NotWatching
+            })
         })
     })
     .await;
@@ -611,11 +611,9 @@ async fn dragging_the_right_file_clears_missing() {
     // dagger lacks the unobtainable unknown-series file → placeholder.
     eventually(&[&dagger], BUDGET, |snaps| {
         snaps.iter().all(|s| {
-            s.view
-                .series_preference
-                .get(&(UserId::new("dagger"), AniDbSeriesId(4242)))
-                .map(|p| p.state)
-                == Some(SeriesWatchState::NotWatching)
+            s.view.series_preference.iter().any(|((u, _), p)| {
+                *u == UserId::new("dagger") && p.state == SeriesWatchState::NotWatching
+            })
         })
     })
     .await;

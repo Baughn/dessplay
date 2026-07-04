@@ -11,8 +11,8 @@ use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::franchise::{self, FranchiseKey};
 use dessplay_core::net::PeerInfo;
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, ListEntryId, ManualState, NextEpState, PlaybackIntent,
-    SeriesListEntry, SeriesWatchState, UserId, encode_action,
+    Ed2kHash, ListEntryId, ManualState, NextEpState, PlaybackIntent, SeriesListEntry,
+    SeriesWatchState, UserId, encode_action,
 };
 use tuirealm::component::AppComponent;
 use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
@@ -785,6 +785,23 @@ impl Ui {
                 self.refresh_keybar();
                 return actions;
             }
+            Some(Msg::CycleSeriesWatch(hash)) => {
+                let actions = self.cycle_series_watch(*hash);
+                for action in &actions {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return actions;
+            }
+            Some(Msg::SetNotWatching(user)) => {
+                let actions =
+                    self.set_others_pref(user.clone(), SeriesWatchState::NotWatching, "n");
+                for action in &actions {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return actions;
+            }
             _ => {}
         }
         let action = msg.and_then(|msg| self.update(msg));
@@ -847,17 +864,17 @@ impl Ui {
             }),
         ];
         if let Some(file) = view.now_playing
-            && let Some(Some(metadata)) = view.anidb_metadata.get(&file)
-            && let Some(series) = metadata.series_id
+            && let Some(entry) =
+                dessplay_core::series_identity::resolve_series_entry_for_file(view, file)
             && view
                 .series_preference
-                .get(&(me.clone(), series))
+                .get(&(me.clone(), entry))
                 .map(|pref| pref.state)
                 == Some(SeriesWatchState::NotWatching)
         {
             actions.push(UserAction::Mutate(Mutation::SetSeriesPreference {
                 user: me,
-                series,
+                entry,
                 pref: SeriesWatchState::Maybe,
                 set_by: None,
             }));
@@ -915,12 +932,16 @@ impl Ui {
     fn update(&mut self, msg: Msg) -> Option<UserAction> {
         match msg {
             Msg::None => None,
-            // `Msg::SendChat`, `Msg::Command`, `Msg::PlaySelected`, and
-            // `Msg::ListEntrySaved` are intercepted in `handle()` (they can
+            // `Msg::SendChat`, `Msg::Command`, `Msg::PlaySelected`,
+            // `Msg::ListEntrySaved`, `Msg::CycleSeriesWatch`, and
+            // `Msg::SetNotWatching` are intercepted in `handle()` (they can
             // each yield several actions); they never reach `update()`.
-            Msg::SendChat(_) | Msg::Command(_) | Msg::PlaySelected(_) | Msg::ListEntrySaved(..) => {
-                None
-            }
+            Msg::SendChat(_)
+            | Msg::Command(_)
+            | Msg::PlaySelected(_)
+            | Msg::ListEntrySaved(..)
+            | Msg::CycleSeriesWatch(_)
+            | Msg::SetNotWatching(_) => None,
             Msg::CycleSeriesMode | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
@@ -1002,10 +1023,6 @@ impl Ui {
                     state,
                 }))
             }
-            Msg::SetNotWatching(user) => self
-                .set_others_pref(user, SeriesWatchState::NotWatching, "n")
-                .into_iter()
-                .next(),
             Msg::AddFileAfter(after) => {
                 // The browser wants the library index (recursive search,
                 // watched greying, cursor placement), which lives in
@@ -1078,38 +1095,6 @@ impl Ui {
                     series_name,
                     filename,
                 })
-            }
-            Msg::CycleSeriesWatch(hash) => {
-                let view = &self.snapshot.view;
-                // Resolve the entry's series; no id yet → local notice.
-                let Some(series) = view
-                    .anidb_metadata
-                    .get(&hash)
-                    .and_then(|m| m.as_ref())
-                    .and_then(|m| m.series_id)
-                else {
-                    return Some(UserAction::Notice(
-                        "watch: no series info for that file yet".to_string(),
-                    ));
-                };
-                // Cycle Watching -> Maybe -> NotWatching -> Watching, with
-                // an absent entry (the default) treated as Maybe.
-                let current = view
-                    .series_preference
-                    .get(&(self.me.clone(), series))
-                    .map(|pref| pref.state)
-                    .unwrap_or(SeriesWatchState::Maybe);
-                let next = match current {
-                    SeriesWatchState::Watching => SeriesWatchState::Maybe,
-                    SeriesWatchState::Maybe => SeriesWatchState::NotWatching,
-                    SeriesWatchState::NotWatching => SeriesWatchState::Watching,
-                };
-                Some(UserAction::Mutate(Mutation::SetSeriesPreference {
-                    user: self.me.clone(),
-                    series,
-                    pref: next,
-                    set_by: None,
-                }))
             }
             Msg::CloseModal => {
                 self.pop_modal();
@@ -1297,24 +1282,31 @@ impl Ui {
         }
     }
 
-    /// The AniDB series id of the now-playing file, if known — the key the
-    /// per-series watch commands write against.
-    fn now_playing_series(&self) -> Option<AniDbSeriesId> {
+    /// The List entry claiming the now-playing file, if resolvable — the
+    /// key the per-series watch commands write against (design.md, Series
+    /// Identity). Auto-creates one (via a `PutListEntry` action to send
+    /// alongside) if nothing claims it yet; `None` only when nothing is
+    /// playing or the file has no metadata at all.
+    fn now_playing_entry(&self) -> Option<(ListEntryId, Vec<UserAction>)> {
         let view = &self.snapshot.view;
         let file = view.now_playing?;
-        view.anidb_metadata.get(&file)?.as_ref()?.series_id
+        let (entry, create) = crate::session::resolve_or_create_series_entry(view, file)?;
+        Some((entry, create.into_iter().map(UserAction::Mutate).collect()))
     }
 
     /// Set our watch preference for the now-playing file's series, or post
-    /// a local notice when there is no series id yet.
+    /// a local notice when there is no series info yet.
     fn set_now_playing_pref(&self, pref: SeriesWatchState, cmd: &str) -> Vec<UserAction> {
-        match self.now_playing_series() {
-            Some(series) => vec![UserAction::Mutate(Mutation::SetSeriesPreference {
-                user: self.me.clone(),
-                series,
-                pref,
-                set_by: None,
-            })],
+        match self.now_playing_entry() {
+            Some((entry, mut actions)) => {
+                actions.push(UserAction::Mutate(Mutation::SetSeriesPreference {
+                    user: self.me.clone(),
+                    entry,
+                    pref,
+                    set_by: None,
+                }));
+                actions
+            }
             None => vec![UserAction::Notice(format!(
                 "{cmd}: no series info for the current file yet"
             ))],
@@ -1323,21 +1315,58 @@ impl Ui {
 
     /// Set another user's watch preference for the now-playing file's
     /// series, attributed to us (design.md #7/#13: `n` on the Users pane,
-    /// `/skip <name>`). A local notice when there is no series id yet — the
-    /// mirror of [`Self::set_now_playing_pref`], which the self-directed
+    /// `/skip <name>`). A local notice when there is no series info yet —
+    /// the mirror of [`Self::set_now_playing_pref`], which the self-directed
     /// commands still use unattributed (`set_by: None`).
     fn set_others_pref(&self, user: UserId, pref: SeriesWatchState, cmd: &str) -> Vec<UserAction> {
-        match self.now_playing_series() {
-            Some(series) => vec![UserAction::Mutate(Mutation::SetSeriesPreference {
-                user,
-                series,
-                pref,
-                set_by: Some(self.me.clone()),
-            })],
+        match self.now_playing_entry() {
+            Some((entry, mut actions)) => {
+                actions.push(UserAction::Mutate(Mutation::SetSeriesPreference {
+                    user,
+                    entry,
+                    pref,
+                    set_by: Some(self.me.clone()),
+                }));
+                actions
+            }
             None => vec![UserAction::Notice(format!(
                 "{cmd}: no series info for the current file yet"
             ))],
         }
+    }
+
+    /// Playlist `w`: cycle the given file's watch state Watching -> Maybe
+    /// -> NotWatching -> Watching (absent = Maybe). Auto-creates a List
+    /// entry (design.md, Series Identity) if nothing claims the file yet,
+    /// so this works even for a series AniDB doesn't know about -- unlike
+    /// `update()`'s single-action return, this can yield the create *and*
+    /// the preference write, so it is intercepted in `handle()`.
+    fn cycle_series_watch(&self, hash: Ed2kHash) -> Vec<UserAction> {
+        let view = &self.snapshot.view;
+        let Some((entry, create)) = crate::session::resolve_or_create_series_entry(view, hash)
+        else {
+            return vec![UserAction::Notice(
+                "watch: no series info for that file yet".to_string(),
+            )];
+        };
+        let mut actions: Vec<UserAction> = create.into_iter().map(UserAction::Mutate).collect();
+        let current = view
+            .series_preference
+            .get(&(self.me.clone(), entry))
+            .map(|pref| pref.state)
+            .unwrap_or(SeriesWatchState::Maybe);
+        let next = match current {
+            SeriesWatchState::Watching => SeriesWatchState::Maybe,
+            SeriesWatchState::Maybe => SeriesWatchState::NotWatching,
+            SeriesWatchState::NotWatching => SeriesWatchState::Watching,
+        };
+        actions.push(UserAction::Mutate(Mutation::SetSeriesPreference {
+            user: self.me.clone(),
+            entry,
+            pref: next,
+            set_by: None,
+        }));
+        actions
     }
 
     /// `/ack`: acknowledge every committed-but-absent blocker of the
@@ -1637,10 +1666,40 @@ mod tests {
     use super::*;
     use dessplay_core::state::CrdtState;
     use dessplay_core::types::{
-        ActorId, AniDbMetadata, AniDbSeriesId, MetadataSource, SharedTimestamp,
+        ActorId, AniDbMetadata, AniDbSeriesId, ListStatus, MetadataSource, SharedTimestamp,
     };
 
     const A: ActorId = ActorId::SERVER;
+
+    /// Link a List entry to `series` so preference writes/gating resolve
+    /// through it (design.md, Series Identity).
+    fn link_series(
+        state: &mut CrdtState,
+        ts: SharedTimestamp,
+        series: AniDbSeriesId,
+    ) -> ListEntryId {
+        let id = ListEntryId(series.0 as u128);
+        state.put_list_entry(
+            A,
+            ts,
+            id,
+            SeriesListEntry {
+                name: "Show".into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: Some(series),
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+            },
+        );
+        id
+    }
 
     /// Regression: the hashing-overlay rect must not overflow u16 when the
     /// terminal is extremely wide. `area.width * 3` overflowed u16 (panic in
@@ -1706,11 +1765,12 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
+        let entry = link_series(&mut state, SharedTimestamp(4), AniDbSeriesId(7));
         state.set_series_preference(
             A,
             SharedTimestamp(5),
             user.clone(),
-            AniDbSeriesId(7),
+            entry,
             SeriesWatchState::NotWatching,
             None,
         );
@@ -1745,11 +1805,12 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
+        let entry = link_series(&mut state, SharedTimestamp(4), AniDbSeriesId(7));
         state.set_series_preference(
             A,
             SharedTimestamp(5),
             user.clone(),
-            AniDbSeriesId(7),
+            entry,
             SeriesWatchState::Watching,
             None,
         );
@@ -2208,7 +2269,7 @@ mod tests {
         assert!(muts.iter().any(|m| matches!(
             m,
             Mutation::SetSeriesPreference {
-                series: AniDbSeriesId(7),
+                entry: ListEntryId(7),
                 pref: SeriesWatchState::Maybe,
                 ..
             }
@@ -2439,13 +2500,14 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
+        link_series(&mut state, SharedTimestamp(3), AniDbSeriesId(7));
         let mut ui = ui_with_view(state.view());
         let actions = ui.command("/skip");
         assert_eq!(actions.len(), 1);
         assert!(matches!(
             actions[0],
             UserAction::Mutate(Mutation::SetSeriesPreference {
-                series: AniDbSeriesId(7),
+                entry: ListEntryId(7),
                 pref: SeriesWatchState::NotWatching,
                 ..
             })
@@ -2477,6 +2539,7 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
+        link_series(&mut state, SharedTimestamp(3), AniDbSeriesId(7));
         let mut ui = ui_with_view(state.view());
         let actions = ui.command("/skip baughn");
         assert_eq!(actions.len(), 1);
@@ -2484,7 +2547,7 @@ mod tests {
             &actions[0],
             UserAction::Mutate(Mutation::SetSeriesPreference {
                 user,
-                series: AniDbSeriesId(7),
+                entry: ListEntryId(7),
                 pref: SeriesWatchState::NotWatching,
                 set_by: Some(setter),
             }) if *user == UserId::new("baughn") && *setter == me()
@@ -2508,13 +2571,20 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
-        let mut ui = ui_with_view(state.view());
-        let action = ui.update(Msg::SetNotWatching(UserId::new("baughn")));
+        link_series(&mut state, SharedTimestamp(3), AniDbSeriesId(7));
+        let ui = ui_with_view(state.view());
+        // `Msg::SetNotWatching` is intercepted in `handle()` (it can yield
+        // several actions, e.g. an auto-created List entry), never reaching
+        // `update()` -- exercise the underlying handler directly.
+        let action = ui
+            .set_others_pref(UserId::new("baughn"), SeriesWatchState::NotWatching, "n")
+            .into_iter()
+            .next();
         assert!(matches!(
             action,
             Some(UserAction::Mutate(Mutation::SetSeriesPreference {
                 user,
-                series: AniDbSeriesId(7),
+                entry: ListEntryId(7),
                 pref: SeriesWatchState::NotWatching,
                 set_by: Some(setter),
             })) if user == UserId::new("baughn") && setter == me()
@@ -2592,7 +2662,7 @@ mod tests {
         assert!(muts.iter().any(|m| matches!(
             m,
             Mutation::SetSeriesPreference {
-                series: AniDbSeriesId(7),
+                entry: ListEntryId(7),
                 pref: SeriesWatchState::Maybe,
                 ..
             }
@@ -2607,7 +2677,7 @@ mod tests {
         assert!(muts.iter().any(|m| matches!(
             m,
             Mutation::SetSeriesPreference {
-                series: AniDbSeriesId(7),
+                entry: ListEntryId(7),
                 pref: SeriesWatchState::Watching,
                 ..
             }

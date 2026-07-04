@@ -21,9 +21,9 @@ pub fn arb_script_op() -> impl Strategy<Value = ScriptOp> {
         any::<u8>().prop_map(|authority| ScriptOp::SetSeekAuthority { authority }),
         any::<bool>().prop_map(|playing| ScriptOp::SetIntent { playing }),
         (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>()).prop_map(
-            |(user, series, pref, setter)| ScriptOp::SetSeriesPreference {
+            |(user, entry, pref, setter)| ScriptOp::SetSeriesPreference {
                 user,
-                series,
+                entry,
                 pref,
                 setter,
             },

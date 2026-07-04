@@ -29,7 +29,7 @@ use dessplay_core::derive;
 use dessplay_core::net::PeerInfo;
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, FileAvailability, ManualState, PlaybackIntent, SeekAuthority,
+    Ed2kHash, FileAvailability, ListEntryId, ManualState, PlaybackIntent, SeekAuthority,
     SeriesWatchState, UserId, decode_action,
 };
 
@@ -217,7 +217,7 @@ pub struct PlayerWiring {
     /// GSet insert; this just avoids re-sending every snapshot).
     lookups_requested: HashSet<Ed2kHash>,
     /// Series preferences already written from List watchers sets.
-    watcher_prefs_written: HashSet<dessplay_core::types::AniDbSeriesId>,
+    watcher_prefs_written: HashSet<dessplay_core::types::ListEntryId>,
     /// Files already recorded as personally watched this session (the
     /// 85% rule fires once per file).
     watched_recorded: HashSet<Ed2kHash>,
@@ -351,8 +351,8 @@ struct NarratorState {
     seek_sample: Option<(u64, u64)>,
     /// Per-user manual override (Paused / Away).
     manual_override: BTreeMap<UserId, Option<ManualState>>,
-    /// Per-(user, series) watch preference (small; one or two per user).
-    series_preference: BTreeMap<(UserId, AniDbSeriesId), dessplay_core::types::SeriesPreference>,
+    /// Per-(user, List entry) watch preference (small; one or two per user).
+    series_preference: BTreeMap<(UserId, ListEntryId), dessplay_core::types::SeriesPreference>,
     /// Per-user presence (interactive users only; seeders never narrated).
     peers: BTreeMap<UserId, dessplay_core::net::Presence>,
     /// Per-file acknowledgements of committed-absent users.
@@ -683,14 +683,14 @@ impl PlayerWiring {
         // skipped too. Attribution is the subject until the "mark others
         // not-watching" feature lands and adds a real setter.
         if let Some(file) = view.now_playing
-            && let Some(Some(meta)) = view.anidb_metadata.get(&file)
-            && let Some(series) = meta.series_id
+            && let Some(entry) =
+                dessplay_core::series_identity::resolve_series_entry_for_file(view, file)
         {
             let keys = prev
                 .series_preference
                 .keys()
                 .chain(view.series_preference.keys())
-                .filter(|(_, s)| *s == series)
+                .filter(|(_, e)| *e == entry)
                 .cloned()
                 .collect::<std::collections::BTreeSet<_>>();
             for key in keys {
@@ -714,7 +714,7 @@ impl PlayerWiring {
                 // lines (design.md, System Messages — "every client diffs
                 // the same synced inputs ... narrates the same lines").
                 if was.is_none()
-                    && now.as_ref().map(|p| p.state) == list_implied_pref(view, series, user)
+                    && now.as_ref().map(|p| p.state) == list_implied_pref(view, entry, user)
                 {
                     continue;
                 }
@@ -728,7 +728,10 @@ impl PlayerWiring {
                 // clients.
                 let override_cleared = prev.manual_override.get(user).cloned().flatten().is_some()
                     && view.manual_override.get(user).cloned().flatten().is_none();
-                let name = &meta.series_name;
+                let Some(name) = view.list_entries.get(&entry).map(|e| e.name.clone()) else {
+                    continue;
+                };
+                let name = &name;
                 // Attribution: the real setter when recorded (design.md
                 // #7/#13 — `n` on the Users pane, `/skip <name>`), else the
                 // subject themself (every self-directed write and system
@@ -982,10 +985,11 @@ impl PlayerWiring {
     /// React to the file actor's known-series answer (design.md, File
     /// State, missing-file branch). Known series stay Missing (you
     /// should have the file). For an *unknown* series we auto-mark
-    /// NotWatching — but only when there is an AniDB series id to key
-    /// the preference on; a no-id file keeps blocking, with the manual
-    /// not-watching action as the escape hatch. A pre-existing
-    /// preference (a manual choice) is never overridden.
+    /// NotWatching — but only when there is an AniDB series id at all
+    /// (this is "is the series known", a different question from Series
+    /// Identity's file->entry resolution); a no-id file keeps blocking,
+    /// with the manual not-watching action as the escape hatch. A
+    /// pre-existing preference (a manual choice) is never overridden.
     pub fn on_series_known(
         &mut self,
         file: Ed2kHash,
@@ -997,17 +1001,22 @@ impl PlayerWiring {
         if known {
             return vec![];
         }
-        let Some(series) = series else {
+        if series.is_none() {
             // No series id: stays Missing/blocking (option B). The
             // placeholder would contradict the blocking state, so none.
             return vec![];
         };
         // A pre-existing preference is a manual choice and wins: if the
         // user chose to watch this series, they block legitimately on
-        // the missing file (no auto-NotWatching, no placeholder).
-        if view
-            .series_preference
-            .contains_key(&(self.me.clone(), series))
+        // the missing file (no auto-NotWatching, no placeholder). No
+        // entry yet trivially means no preference yet either -- read-only,
+        // no auto-create here (that's only worth doing once we actually
+        // decide to write NotWatching below).
+        if let Some(entry) =
+            dessplay_core::series_identity::resolve_series_entry_for_file(view, file)
+            && view
+                .series_preference
+                .contains_key(&(self.me.clone(), entry))
         {
             return vec![];
         }
@@ -1020,10 +1029,7 @@ impl PlayerWiring {
         // never download, so it counts as unobtainable and flips to
         // NotWatching below.
         if self.auto_download && !self.download_sources(view, peers, file).is_empty() {
-            tracing::debug!(
-                aid = series.0,
-                "missing file is downloadable; not marking NotWatching"
-            );
+            tracing::debug!("missing file is downloadable; not marking NotWatching");
             let mut out = vec![];
             if view.now_playing == Some(file) {
                 out.push(Directive::RenderPlaceholder {
@@ -1033,16 +1039,17 @@ impl PlayerWiring {
             }
             return out;
         }
-        tracing::info!(
-            aid = series.0,
-            "missing file from an unknown series; marking NotWatching"
-        );
-        let mut out = vec![Directive::Mutate(Mutation::SetSeriesPreference {
+        tracing::info!("missing file from an unknown series; marking NotWatching");
+        let Some((entry, create)) = resolve_or_create_series_entry(view, file) else {
+            return vec![];
+        };
+        let mut out: Vec<Directive> = create.into_iter().map(Directive::Mutate).collect();
+        out.push(Directive::Mutate(Mutation::SetSeriesPreference {
             user: self.me.clone(),
-            series,
+            entry,
             pref: dessplay_core::types::SeriesWatchState::NotWatching,
             set_by: None,
-        })];
+        }));
         // Show the placeholder instead of a stale frame / blank window.
         if view.now_playing == Some(file) {
             out.push(Directive::RenderPlaceholder {
@@ -1333,23 +1340,20 @@ impl PlayerWiring {
         }
 
         // The List's watchers set is the declarative commitment route
-        // (docs/design.md, The List): a member of a linked series commits
-        // (Watching — the group waits for them even when absent), a
-        // non-member skips it (NotWatching). A series with no List opinion
-        // stays at the Maybe default. Written once per series per session,
-        // and only when no preference exists — a manual choice always wins.
-        for entry in view.list_entries.values() {
-            let Some(series) = entry.anidb_series_id else {
-                continue;
-            };
+        // (docs/design.md, The List): a member commits (Watching — the
+        // group waits for them even when absent), a non-member skips it
+        // (NotWatching) -- linked or not, since commitment keys on the
+        // entry's own id, never its AniDB link. A series with no List
+        // opinion stays at the Maybe default. Written once per entry per
+        // session, and only when no preference exists — a manual choice
+        // always wins.
+        for (id, entry) in view.list_entries.iter() {
             // An empty watchers set means "unrecorded", not "nobody".
             if entry.watchers.is_empty() {
                 continue;
             }
-            let has_pref = view
-                .series_preference
-                .contains_key(&(self.me.clone(), series));
-            if has_pref || !self.watcher_prefs_written.insert(series) {
+            let has_pref = view.series_preference.contains_key(&(self.me.clone(), *id));
+            if has_pref || !self.watcher_prefs_written.insert(*id) {
                 continue;
             }
             let pref = if entry.watchers.contains(&self.me) {
@@ -1357,10 +1361,10 @@ impl PlayerWiring {
             } else {
                 dessplay_core::types::SeriesWatchState::NotWatching
             };
-            tracing::info!(aid = series.0, name = %entry.name, ?pref, "List watchers: writing series preference");
+            tracing::info!(entry = id.0, name = %entry.name, ?pref, "List watchers: writing series preference");
             out.push(Directive::Mutate(Mutation::SetSeriesPreference {
                 user: self.me.clone(),
-                series,
+                entry: *id,
                 pref,
                 set_by: None,
             }));
@@ -2273,19 +2277,34 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
 /// `None` when no linked entry with a non-empty watchers set covers
 /// `series` (so a genuine first manual preference still narrates). Computed
 /// purely from synced state, so every client suppresses identically.
+/// Resolve `file` to a List entry, auto-creating one (a `PutListEntry`
+/// mutation to write alongside whatever action triggered creation) if
+/// nothing claims it yet (design.md, Series Identity). `None` only when
+/// the file has no metadata at all -- nothing to name a fresh entry with.
+pub(crate) fn resolve_or_create_series_entry(
+    view: &StateView,
+    file: Ed2kHash,
+) -> Option<(ListEntryId, Option<Mutation>)> {
+    if let Some(entry) = dessplay_core::series_identity::resolve_series_entry_for_file(view, file) {
+        return Some((entry, None));
+    }
+    let entry = dessplay_core::series_identity::build_entry_for_file(view, file)?;
+    let id = ListEntryId::from_bytes(rand::random());
+    Some((id, Some(Mutation::PutListEntry { id, entry })))
+}
+
 fn list_implied_pref(
     view: &StateView,
-    series: AniDbSeriesId,
+    entry: ListEntryId,
     user: &UserId,
 ) -> Option<SeriesWatchState> {
-    view.list_entries.values().find_map(|entry| {
-        (entry.anidb_series_id == Some(series) && !entry.watchers.is_empty()).then(|| {
-            if entry.watchers.contains(user) {
-                SeriesWatchState::Watching
-            } else {
-                SeriesWatchState::NotWatching
-            }
-        })
+    let entry = view.list_entries.get(&entry)?;
+    (!entry.watchers.is_empty()).then(|| {
+        if entry.watchers.contains(user) {
+            SeriesWatchState::Watching
+        } else {
+            SeriesWatchState::NotWatching
+        }
     })
 }
 
@@ -2628,18 +2647,18 @@ mod tests {
         // "baughn unpaused" + "baughn set ... to maybe" (design.md, System
         // Messages: "one line per action, not one per register").
         let baughn = UserId::new("baughn");
-        let series = dessplay_core::types::AniDbSeriesId(7);
         let peers = [peer("kim"), peer("baughn")];
 
         let mut state = playing_state();
         with_metadata(&mut state, hash(1), Some(7));
+        let entry = link_series(&mut state, ts(1), 7);
         // Stuck Paused + auto-NotWatching (e.g. a missing unknown-series file).
         state.set_manual_override(A, ts(10), baughn.clone(), Some(ManualState::Paused));
         state.set_series_preference(
             A,
             ts(11),
             baughn.clone(),
-            series,
+            entry,
             SeriesWatchState::NotWatching,
             None,
         );
@@ -2651,7 +2670,7 @@ mod tests {
             A,
             ts(13),
             baughn.clone(),
-            series,
+            entry,
             SeriesWatchState::Maybe,
             None,
         );
@@ -2681,17 +2700,17 @@ mod tests {
     #[test]
     fn narrator_not_watching_and_watching_now_playing_series() {
         let baughn = UserId::new("baughn");
-        let series = dessplay_core::types::AniDbSeriesId(7);
         let peers = [peer("kim"), peer("baughn")];
 
         let mut state = playing_state();
         with_metadata(&mut state, hash(1), Some(7));
+        let entry = link_series(&mut state, ts(1), 7);
         let v0 = state.view();
         state.set_series_preference(
             A,
             ts(20),
             baughn.clone(),
-            series,
+            entry,
             SeriesWatchState::NotWatching,
             None,
         );
@@ -2705,7 +2724,7 @@ mod tests {
             A,
             ts(21),
             baughn.clone(),
-            series,
+            entry,
             SeriesWatchState::Watching,
             None,
         );
@@ -2720,7 +2739,7 @@ mod tests {
             A,
             ts(22),
             baughn.clone(),
-            series,
+            entry,
             SeriesWatchState::Maybe,
             None,
         );
@@ -2738,17 +2757,17 @@ mod tests {
         // must name them, not fall back to the (absent) subject.
         let baughn = UserId::new("baughn");
         let kim = UserId::new("kim");
-        let series = dessplay_core::types::AniDbSeriesId(7);
         let peers = [peer("kim"), peer("baughn")];
 
         let mut state = playing_state();
         with_metadata(&mut state, hash(1), Some(7));
+        let entry = link_series(&mut state, ts(1), 7);
         let v0 = state.view();
         state.set_series_preference(
             A,
             ts(20),
             kim.clone(),
-            series,
+            entry,
             SeriesWatchState::NotWatching,
             Some(baughn.clone()),
         );
@@ -2768,19 +2787,19 @@ mod tests {
         // the initial None -> auto transition is silenced.
         use dessplay_core::types::ListEntryId;
         let me = me();
-        let series = dessplay_core::types::AniDbSeriesId(7);
+        let entry = ListEntryId(1);
         let peers = [peer("kim")];
 
         let mut state = playing_state();
         with_metadata(&mut state, hash(1), Some(7));
-        state.put_list_entry(A, ts(10), ListEntryId(1), list_entry(Some(7), &["kim"]));
+        state.put_list_entry(A, ts(10), entry, list_entry(Some(7), &["kim"]));
 
         let mut wiring = PlayerWiring::new(me.clone());
         // Baseline: the List auto-write fires (kim is a watcher -> Watching),
         // populating the per-session suppression set.
         let baseline = wiring.on_state(&state.view(), &peers);
         assert!(
-            preference_writes(&baseline).contains(&(series, SeriesWatchState::Watching)),
+            preference_writes(&baseline).contains(&(entry, SeriesWatchState::Watching)),
             "List membership should auto-commit: {:?}",
             preference_writes(&baseline)
         );
@@ -2790,7 +2809,7 @@ mod tests {
             A,
             ts(11),
             me.clone(),
-            series,
+            entry,
             SeriesWatchState::Watching,
             None,
         );
@@ -2806,7 +2825,7 @@ mod tests {
             A,
             ts(12),
             me.clone(),
-            series,
+            entry,
             SeriesWatchState::NotWatching,
             None,
         );
@@ -2828,19 +2847,14 @@ mod tests {
         // "every client diffs the same synced inputs, every client narrates
         // the same lines" (design.md, System Messages).
         use dessplay_core::types::ListEntryId;
-        let series = dessplay_core::types::AniDbSeriesId(7);
+        let entry = ListEntryId(1);
         let baughn = UserId::new("baughn");
         let kim = UserId::new("kim");
         let peers = [peer("baughn"), peer("kim")];
 
         let mut state = playing_state();
         with_metadata(&mut state, hash(1), Some(7));
-        state.put_list_entry(
-            A,
-            ts(10),
-            ListEntryId(1),
-            list_entry(Some(7), &["baughn", "kim"]),
-        );
+        state.put_list_entry(A, ts(10), entry, list_entry(Some(7), &["baughn", "kim"]));
         let v0 = state.view();
 
         // Both watchers' clients write their own List-derived preference
@@ -2849,7 +2863,7 @@ mod tests {
             A,
             ts(11),
             baughn.clone(),
-            series,
+            entry,
             SeriesWatchState::Watching,
             None,
         );
@@ -2857,7 +2871,7 @@ mod tests {
             A,
             ts(12),
             kim.clone(),
-            series,
+            entry,
             SeriesWatchState::Watching,
             None,
         );
@@ -2896,7 +2910,7 @@ mod tests {
             A,
             ts(20),
             baughn,
-            dessplay_core::types::AniDbSeriesId(99),
+            dessplay_core::types::ListEntryId(99),
             SeriesWatchState::NotWatching,
             None,
         );
@@ -4417,12 +4431,12 @@ mod tests {
 
     fn series_pref_writes(
         directives: &[Directive],
-    ) -> Vec<(dessplay_core::types::AniDbSeriesId, SeriesWatchState)> {
+    ) -> Vec<(dessplay_core::types::ListEntryId, SeriesWatchState)> {
         directives
             .iter()
             .filter_map(|d| match d {
-                Directive::Mutate(Mutation::SetSeriesPreference { series, pref, .. }) => {
-                    Some((*series, *pref))
+                Directive::Mutate(Mutation::SetSeriesPreference { entry, pref, .. }) => {
+                    Some((*entry, *pref))
                 }
                 _ => None,
             })
@@ -4451,9 +4465,9 @@ mod tests {
 
     #[test]
     fn placeholder_lists_who_is_and_isnt_watching() {
-        let series = dessplay_core::types::AniDbSeriesId(7);
         let mut state = playing_state();
         with_metadata(&mut state, hash(1), Some(7));
+        let entry = link_series(&mut state, ts(1), 7);
         // ben paused, cat away, dan not-watching the now-playing series;
         // ann keeps the Maybe default (actively watching).
         state.set_manual_override(A, ts(10), UserId::new("ben"), Some(ManualState::Paused));
@@ -4469,7 +4483,7 @@ mod tests {
             A,
             ts(12),
             UserId::new("dan"),
-            series,
+            entry,
             SeriesWatchState::NotWatching,
             None,
         );
@@ -4539,13 +4553,19 @@ mod tests {
             &view,
             &[peer("kim")],
         );
-        assert_eq!(
-            series_pref_writes(&directives),
-            vec![(
-                dessplay_core::types::AniDbSeriesId(7),
-                SeriesWatchState::NotWatching
-            )]
-        );
+        // No List entry claims the file yet, so it auto-creates one
+        // (design.md, Series Identity) -- the synthesized id is random, so
+        // check the write's shape and that PutListEntry used the same id,
+        // rather than asserting an exact id.
+        let writes = series_pref_writes(&directives);
+        assert_eq!(writes.len(), 1);
+        let (entry_id, pref) = writes[0];
+        assert_eq!(pref, SeriesWatchState::NotWatching);
+        assert!(directives.iter().any(|d| matches!(
+            d,
+            Directive::Mutate(Mutation::PutListEntry { id, entry })
+                if *id == entry_id && entry.anidb_series_id == Some(dessplay_core::types::AniDbSeriesId(7))
+        )));
         assert!(has_placeholder(&directives));
     }
 
@@ -4577,14 +4597,8 @@ mod tests {
     fn a_manual_watch_choice_is_never_overridden_by_the_missing_branch() {
         let mut state = playing_state();
         with_metadata(&mut state, hash(1), Some(7));
-        state.set_series_preference(
-            A,
-            ts(60),
-            me(),
-            dessplay_core::types::AniDbSeriesId(7),
-            SeriesWatchState::Watching,
-            None,
-        );
+        let entry = link_series(&mut state, ts(1), 7);
+        state.set_series_preference(A, ts(60), me(), entry, SeriesWatchState::Watching, None);
         let view = state.view();
         let mut wiring = PlayerWiring::new(me());
         let directives = wiring.on_series_known(
@@ -4744,8 +4758,8 @@ mod tests {
         for h in [hash(1), hash(2)] {
             state.set_file_availability(A, ts(5), UserId::new("nas"), h, FileAvailability::Ready);
         }
-        let series = dessplay_core::types::AniDbSeriesId(7);
-        state.set_series_preference(A, ts(6), me(), series, SeriesWatchState::NotWatching, None);
+        let entry = link_series(&mut state, ts(1), 7);
+        state.set_series_preference(A, ts(6), me(), entry, SeriesWatchState::NotWatching, None);
         let view = state.view();
         let peers = [peer("kim"), peer("nas")];
 
@@ -4759,7 +4773,7 @@ mod tests {
         );
 
         // Commit to the series: now the whole window downloads.
-        state.set_series_preference(A, ts(7), me(), series, SeriesWatchState::Watching, None);
+        state.set_series_preference(A, ts(7), me(), entry, SeriesWatchState::Watching, None);
         let view = state.view();
         let downloads = start_download_files(&wiring.on_state(&view, &peers));
         assert!(
@@ -4849,12 +4863,11 @@ mod tests {
             &view,
             &peers,
         );
+        let writes = series_pref_writes(&directives);
+        assert_eq!(writes.len(), 1);
         assert_eq!(
-            series_pref_writes(&directives),
-            vec![(
-                dessplay_core::types::AniDbSeriesId(7),
-                SeriesWatchState::NotWatching
-            )],
+            writes[0].1,
+            SeriesWatchState::NotWatching,
             "auto_download off: an unobtainable unknown-series file must flip to NotWatching"
         );
         assert!(has_placeholder(&directives));
@@ -5055,21 +5068,34 @@ mod tests {
 
     fn preference_writes(
         directives: &[Directive],
-    ) -> Vec<(dessplay_core::types::AniDbSeriesId, SeriesWatchState)> {
+    ) -> Vec<(dessplay_core::types::ListEntryId, SeriesWatchState)> {
         directives
             .iter()
             .filter_map(|d| match d {
-                Directive::Mutate(Mutation::SetSeriesPreference { series, pref, .. }) => {
-                    Some((*series, *pref))
+                Directive::Mutate(Mutation::SetSeriesPreference { entry, pref, .. }) => {
+                    Some((*entry, *pref))
                 }
                 _ => None,
             })
             .collect()
     }
 
+    /// Link a List entry (no watchers) to `series`, matching
+    /// `with_metadata`'s "Some Show" name, so preferences and narration
+    /// resolve through it (design.md, Series Identity).
+    fn link_series(
+        state: &mut CrdtState,
+        ts: SharedTimestamp,
+        series: u32,
+    ) -> dessplay_core::types::ListEntryId {
+        let id = dessplay_core::types::ListEntryId(series as u128);
+        state.put_list_entry(A, ts, id, list_entry(Some(series), &[]));
+        id
+    }
+
     #[test]
     fn non_watchers_of_a_linked_entry_become_not_watching_once() {
-        use dessplay_core::types::{AniDbSeriesId, ListEntryId};
+        use dessplay_core::types::ListEntryId;
         let mut state = CrdtState::new();
         // kim is not in the watchers set.
         state.put_list_entry(
@@ -5083,7 +5109,7 @@ mod tests {
         let first = wiring.on_state(&view, &[peer("kim")]);
         assert_eq!(
             preference_writes(&first),
-            vec![(AniDbSeriesId(7), SeriesWatchState::NotWatching)]
+            vec![(ListEntryId(1), SeriesWatchState::NotWatching)]
         );
         // Once per session, not per snapshot.
         let second = wiring.on_state(&view, &[peer("kim")]);
@@ -5101,7 +5127,10 @@ mod tests {
             ListEntryId(1),
             list_entry(Some(7), &["kim", "nero"]),
         );
-        // Unlinked: no write.
+        // Unlinked, kim not a watcher: still auto-writes (design.md, Series
+        // Identity -- watchers wiring keys on the entry's own id, not its
+        // AniDB link, so an unlinked entry commits/excludes exactly like a
+        // linked one).
         state.put_list_entry(A, ts(2), ListEntryId(2), list_entry(None, &["nero"]));
         // Empty watchers means "unrecorded", not "nobody": no write.
         state.put_list_entry(A, ts(3), ListEntryId(3), list_entry(Some(8), &[]));
@@ -5112,17 +5141,20 @@ mod tests {
             A,
             ts(5),
             me(),
-            dessplay_core::types::AniDbSeriesId(9),
+            ListEntryId(4),
             SeriesWatchState::Watching,
             None,
         );
         let mut wiring = PlayerWiring::new(me());
         let directives = wiring.on_state(&state.view(), &[peer("kim")]);
-        // Only series 7 is auto-written, and as a commitment (Watching);
-        // the unlinked / empty / manually-chosen series are untouched.
+        // Entries 1 and 2 auto-write (commitment or exclusion); the empty
+        // and manually-chosen entries are untouched.
         assert_eq!(
             preference_writes(&directives),
-            vec![(AniDbSeriesId(7), SeriesWatchState::Watching)]
+            vec![
+                (ListEntryId(1), SeriesWatchState::Watching),
+                (ListEntryId(2), SeriesWatchState::NotWatching),
+            ]
         );
     }
 }

@@ -94,8 +94,11 @@ async fn eof_ignores_non_watching_reporters() {
     let (kim, baughn) = session(&harness).await;
     let nas = harness.seeder("nas", 3);
 
-    // Kim marks the series NotWatching (metadata links the file).
+    // Kim marks the series NotWatching (metadata links the file, and a
+    // linked List entry gives the preference somewhere to resolve to --
+    // design.md, Series Identity).
     let series = AniDbSeriesId(42);
+    let entry = dessplay_core::types::ListEntryId(42);
     mutate(
         &kim,
         Mutation::SetAniDbMetadata {
@@ -111,9 +114,30 @@ async fn eof_ignores_non_watching_reporters() {
     .await;
     mutate(
         &kim,
+        Mutation::PutListEntry {
+            id: entry,
+            entry: dessplay_core::types::SeriesListEntry {
+                name: "Frieren".into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: dessplay_core::types::ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: Some(series),
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+            },
+        },
+    )
+    .await;
+    mutate(
+        &kim,
         Mutation::SetSeriesPreference {
             user: UserId::new("kim"),
-            series,
+            entry,
             pref: SeriesWatchState::NotWatching,
             set_by: None,
         },

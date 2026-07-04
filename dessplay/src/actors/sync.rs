@@ -90,8 +90,9 @@ pub enum Mutation {
         /// Whose preference (usually our own user, but `n` / `/skip <name>`
         /// can target another).
         user: UserId,
-        /// The series.
-        series: AniDbSeriesId,
+        /// The List entry (design.md, Series Identity -- not the AniDB
+        /// series id; AniDB linking is enrichment only).
+        entry: ListEntryId,
         /// Watching or not.
         pref: SeriesWatchState,
         /// Who wrote this, if not `user` themself (design.md #7/#13).
@@ -530,12 +531,12 @@ impl SyncActor {
             }
             Mutation::SetSeriesPreference {
                 user,
-                series,
+                entry,
                 pref,
                 set_by,
             } => self
                 .state
-                .set_series_preference(actor, ts, user, series, pref, set_by),
+                .set_series_preference(actor, ts, user, entry, pref, set_by),
             Mutation::SetManualOverride { user, state } => {
                 self.state.set_manual_override(actor, ts, user, state)
             }

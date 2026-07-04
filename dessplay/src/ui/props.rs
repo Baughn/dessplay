@@ -1178,14 +1178,44 @@ mod tests {
     use dessplay_core::CrdtState;
     use dessplay_core::playlist::NewPlaylistEntry;
     use dessplay_core::types::{
-        ActorId, AniDbMetadata, AniDbSeriesId, ManualState, MetadataSource, PlaybackIntent,
-        SeriesListEntry, SeriesWatchState, SharedTimestamp,
+        ActorId, AniDbMetadata, AniDbSeriesId, ListEntryId, ListStatus, ManualState,
+        MetadataSource, PlaybackIntent, SeriesListEntry, SeriesWatchState, SharedTimestamp,
     };
 
     const A: ActorId = ActorId::SERVER;
 
     fn ts(t: u64) -> SharedTimestamp {
         SharedTimestamp(t)
+    }
+
+    /// Link a List entry to `series` so preference writes/gating resolve
+    /// through it (design.md, Series Identity).
+    fn link_series(
+        state: &mut CrdtState,
+        ts: SharedTimestamp,
+        series: AniDbSeriesId,
+    ) -> ListEntryId {
+        let id = ListEntryId(series.0 as u128);
+        state.put_list_entry(
+            A,
+            ts,
+            id,
+            SeriesListEntry {
+                name: "Show".into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: Some(series),
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+            },
+        );
+        id
     }
 
     #[test]
@@ -1326,12 +1356,13 @@ mod tests {
                 episode_number: Some("1".into()),
             }),
         );
+        let entry = link_series(&mut state, ts(1), series);
         for who in ["clost", "cgone"] {
             state.set_series_preference(
                 A,
                 ts(3),
                 UserId::new(who),
-                series,
+                entry,
                 SeriesWatchState::Watching,
                 None,
             );
@@ -1404,11 +1435,12 @@ mod tests {
                     episode_number: Some("1".into()),
                 }),
             );
+            let entry = link_series(&mut state, ts(1), series);
             state.set_series_preference(
                 A,
                 ts(3),
                 UserId::new("cabs"),
-                series,
+                entry,
                 SeriesWatchState::Watching,
                 None,
             );
@@ -1467,11 +1499,12 @@ mod tests {
             }),
         );
         // A not-watching downloader and a paused downloader.
+        let entry = link_series(&mut state, ts(1), AniDbSeriesId(7));
         state.set_series_preference(
             A,
             ts(3),
             UserId::new("ndl"),
-            AniDbSeriesId(7),
+            entry,
             SeriesWatchState::NotWatching,
             None,
         );

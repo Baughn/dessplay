@@ -115,8 +115,8 @@ pub enum ScriptOp {
     SetSeriesPreference {
         /// User index.
         user: u8,
-        /// Series index.
-        series: u8,
+        /// List entry index.
+        entry: u8,
         /// Preference selector: 0 = Watching, 1 = NotWatching, else Maybe.
         pref: u8,
         /// Attribution selector: 0 = self (`None`), else `Some(user(setter))`.
@@ -290,14 +290,14 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
         ),
         ScriptOp::SetSeriesPreference {
             user: u,
-            series: s,
+            entry: e,
             pref,
             setter,
         } => state.set_series_preference(
             a,
             ts,
             user(*u),
-            series(*s),
+            list_entry(*e),
             match pref % 3 {
                 0 => SeriesWatchState::Watching,
                 1 => SeriesWatchState::NotWatching,

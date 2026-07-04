@@ -18,6 +18,7 @@ pub mod hash;
 pub mod lww;
 pub mod net;
 pub mod playlist;
+pub mod series_identity;
 pub mod state;
 #[cfg(feature = "test-support")]
 pub mod test_support;

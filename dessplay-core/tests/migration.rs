@@ -83,14 +83,20 @@ fn v1_snapshot_without_acknowledged_absent_upgrades() {
     let state = sample_state();
     let bytes = wire::encode(&state).unwrap();
 
-    // The empty trailing GSet is exactly one length-0 byte. Stripping it
-    // reproduces the pre-`acknowledged_absent` (v1) on-disk layout.
+    // The trailing two bytes are the empty acknowledged_absent GSet
+    // (a single length-0 byte) followed by `protocol_version` (a small
+    // varint -- PROTOCOL_VERSION fits in one byte). Both are absent from
+    // the v1 layout (protocol_version postdates v1 by three more phases,
+    // Phase 19's Series Identity work -- see `CrdtState::protocol_version`
+    // for why it must be a real trailing field, not inferred from
+    // content), so stripping both reproduces the pre-`acknowledged_absent`
+    // on-disk layout.
     assert_eq!(
-        *bytes.last().unwrap(),
-        0u8,
-        "an empty acknowledged_absent must serialize to a single 0x00"
+        bytes[bytes.len() - 2..],
+        [0u8, dessplay_core::net::message::PROTOCOL_VERSION as u8],
+        "an empty acknowledged_absent + small protocol_version must serialize to [0x00, version]"
     );
-    let v1_bytes = &bytes[..bytes.len() - 1];
+    let v1_bytes = &bytes[..bytes.len() - 2];
 
     let upgraded =
         CrdtState::decode_snapshot(v1_bytes).expect("v1 blob must decode via the fallback");
