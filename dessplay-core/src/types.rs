@@ -452,8 +452,19 @@ pub struct SeriesListEntry {
     pub source: Option<String>,
     /// Who watches this series.
     pub watchers: BTreeSet<UserId>,
-    /// Linked manually after import.
+    /// Linked manually after import; enrichment only (episode metadata,
+    /// franchise grouping) -- never a prerequisite for commitment or
+    /// gating. See design.md, Series Identity.
     pub anidb_series_id: Option<AniDbSeriesId>,
+    /// Confirmed series-name aliases, for matching a file to this entry
+    /// when unlinked (design.md, Series Identity). Seeded with the
+    /// derived name of whichever file first created the entry; grown by
+    /// hand when a differently-hinted file for the same show shows up.
+    pub local_aliases: BTreeSet<String>,
+    /// Explicit file hashes attached directly to this entry, for outliers
+    /// whose derived name doesn't match any `local_aliases` entry
+    /// (design.md, Series Identity).
+    pub manual_files: BTreeSet<Ed2kHash>,
 }
 
 /// Fast-changing progress state for a List entry, kept separate from

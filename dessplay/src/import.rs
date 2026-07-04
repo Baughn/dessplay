@@ -268,6 +268,8 @@ pub fn import_sheet(
             source: cell(&record, columns.source),
             watchers: Default::default(),
             anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         };
 
         // Watchers.

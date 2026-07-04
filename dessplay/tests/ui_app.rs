@@ -955,6 +955,8 @@ fn the_list_renders_and_edits() {
             source: None,
             watchers: [UserId::new("Baughn")].into_iter().collect(),
             anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         },
     );
     state.set_next_ep(
@@ -1012,6 +1014,8 @@ fn list_edit_modal_saves_on_capital_s() {
             source: None,
             watchers: Default::default(),
             anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         },
     );
     let mut ui = ui();
@@ -1054,6 +1058,8 @@ fn list_edit_modal_edits_next_ep_and_available() {
             source: None,
             watchers: Default::default(),
             anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         },
     );
     state.set_next_ep(
@@ -1135,6 +1141,8 @@ fn list_edit_modal_save_without_next_ep_change_emits_no_set_next_ep() {
             source: None,
             watchers: Default::default(),
             anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         },
     );
     state.set_next_ep(
@@ -1193,6 +1201,8 @@ fn linking_a_list_entry_searches_and_links() {
             source: None,
             watchers: Default::default(),
             anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         },
     );
     let mut ui = ui();
@@ -1276,6 +1286,8 @@ fn editing_the_search_query_rearms_search() {
             source: None,
             watchers: Default::default(),
             anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         },
     );
     let mut ui = ui();

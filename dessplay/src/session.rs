@@ -5048,6 +5048,8 @@ mod tests {
             source: None,
             watchers: watchers.iter().map(|w| UserId::new(*w)).collect(),
             anidb_series_id: series.map(dessplay_core::types::AniDbSeriesId),
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         }
     }
 

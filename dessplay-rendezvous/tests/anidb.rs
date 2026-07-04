@@ -198,6 +198,8 @@ async fn eof_advances_a_linked_list_entry() {
         source: None,
         watchers: Default::default(),
         anidb_series_id: Some(FRIEREN),
+        local_aliases: Default::default(),
+        manual_files: Default::default(),
     };
     mutate(
         &kim,
@@ -225,6 +227,8 @@ async fn eof_advances_a_linked_list_entry() {
             id: decoy,
             entry: SeriesListEntry {
                 anidb_series_id: None,
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
                 ..entry
             },
         },

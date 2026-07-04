@@ -1225,6 +1225,8 @@ mod tests {
                 source: None,
                 watchers: Default::default(),
                 anidb_series_id: Some(AniDbSeriesId(777)),
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
             };
             state.put_list_entry(ActorId::SERVER, ts, ListEntryId(1), entry);
         });

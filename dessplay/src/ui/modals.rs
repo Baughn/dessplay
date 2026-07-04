@@ -2415,6 +2415,8 @@ mod tests {
             source: None,
             watchers: Default::default(),
             anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
         }
     }
 

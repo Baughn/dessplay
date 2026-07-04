@@ -30,6 +30,8 @@ fn frieren_entry() -> SeriesListEntry {
         source: None,
         watchers: Default::default(),
         anidb_series_id: Some(FRIEREN),
+        local_aliases: Default::default(),
+        manual_files: Default::default(),
     }
 }
 

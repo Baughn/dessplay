@@ -1585,6 +1585,8 @@ mod tests {
                         .into_iter()
                         .collect(),
                     anidb_series_id: None,
+                    local_aliases: Default::default(),
+                    manual_files: Default::default(),
                 },
             );
         };
