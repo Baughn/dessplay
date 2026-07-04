@@ -418,6 +418,7 @@ fn reselecting_now_playing_entry_is_a_noop() {
 fn all_series_sort_toggle_persists() {
     let mut ui = ui();
     ui.handle(key(Key::Tab)); // Chat -> Series
+    ui.handle(key(Key::Char('m'))); // The List (default) -> Recent
     ui.handle(key(Key::Char('m'))); // Recent -> All
     let actions = ui.handle(key(Key::Char('s'))); // toggle sort to Year
     let [UserAction::SaveSettings(saved, _)] = actions.as_slice() else {
@@ -968,9 +969,7 @@ fn the_list_renders_and_edits() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
 
-    ui.handle(key(Key::Tab)); // Series
-    ui.handle(key(Key::Char('m'))); // All
-    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Tab)); // Series, already in The List (default mode)
     let screen = render(&mut ui, 100, 30);
     assert!(screen.contains("Watching (1)"), "{screen}");
     assert!(screen.contains("Frieren"), "{screen}");
@@ -1018,9 +1017,7 @@ fn list_edit_modal_saves_on_capital_s() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
 
-    ui.handle(key(Key::Tab)); // Series
-    ui.handle(key(Key::Char('m'))); // All
-    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Tab)); // Series, already in The List (default mode)
     ui.handle(key(Key::Down)); // heading -> entry
     ui.handle(key(Key::Enter)); // open the edit modal
     assert!(ui.modal_open());
@@ -1071,9 +1068,7 @@ fn list_edit_modal_edits_next_ep_and_available() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
 
-    ui.handle(key(Key::Tab)); // Series
-    ui.handle(key(Key::Char('m'))); // All
-    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Tab)); // Series, already in The List (default mode)
     ui.handle(key(Key::Down)); // heading -> entry
     ui.handle(key(Key::Enter)); // open the edit modal
     assert!(ui.modal_open());
@@ -1154,9 +1149,7 @@ fn list_edit_modal_save_without_next_ep_change_emits_no_set_next_ep() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
 
-    ui.handle(key(Key::Tab)); // Series
-    ui.handle(key(Key::Char('m'))); // All
-    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Tab)); // Series, already in The List (default mode)
     ui.handle(key(Key::Down)); // heading -> entry
     ui.handle(key(Key::Enter)); // open the edit modal
 
@@ -1205,9 +1198,7 @@ fn linking_a_list_entry_searches_and_links() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
 
-    ui.handle(key(Key::Tab)); // Series
-    ui.handle(key(Key::Char('m'))); // All
-    ui.handle(key(Key::Char('m'))); // The List
+    ui.handle(key(Key::Tab)); // Series, already in The List (default mode)
     ui.handle(key(Key::Down)); // heading -> entry
 
     // 'l' opens the search modal and fires a search for the name.
@@ -1289,9 +1280,7 @@ fn editing_the_search_query_rearms_search() {
     );
     let mut ui = ui();
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
-    ui.handle(key(Key::Tab));
-    ui.handle(key(Key::Char('m')));
-    ui.handle(key(Key::Char('m')));
+    ui.handle(key(Key::Tab)); // already in The List (default mode)
     ui.handle(key(Key::Down));
     ui.handle(key(Key::Char('l')));
 

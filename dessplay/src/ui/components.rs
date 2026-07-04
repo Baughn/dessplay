@@ -988,11 +988,13 @@ static PLAYLIST_KEYMAP: Keymap<PlaylistPane, Msg> = Keymap(&[
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SeriesMode {
     /// Franchises by recency.
-    #[default]
     Recent,
     /// Franchises alphabetical / by year.
     All,
-    /// The List.
+    /// The List. Default mode (design.md, Adding Files to the Playlist):
+    /// the spreadsheet view is the day-to-day "what are we watching"
+    /// surface.
+    #[default]
     TheList,
 }
 
@@ -1564,11 +1566,11 @@ mod series_pane_tests {
     #[test]
     fn slash_gated_filter_leaves_mode_keys_live() {
         let mut p = SeriesPane::default();
-        assert_eq!(p.mode(), SeriesMode::Recent);
+        assert_eq!(p.mode(), SeriesMode::TheList);
 
         // Bare `m` cycles mode when not filtering.
         p.on(&key(Key::Char('m')));
-        assert_eq!(p.mode(), SeriesMode::All);
+        assert_eq!(p.mode(), SeriesMode::Recent);
 
         // `/` starts filtering; now letters — including `m` and `s` —
         // build the filter instead of cycling/sorting.
@@ -1579,7 +1581,7 @@ mod series_pane_tests {
         assert_eq!(p.filter(), "mon");
         assert_eq!(
             p.mode(),
-            SeriesMode::All,
+            SeriesMode::Recent,
             "mode must not change while filtering"
         );
 
@@ -1591,7 +1593,7 @@ mod series_pane_tests {
 
         // After Esc, `m` cycles again.
         p.on(&key(Key::Char('m')));
-        assert_eq!(p.mode(), SeriesMode::TheList);
+        assert_eq!(p.mode(), SeriesMode::All);
     }
 
     /// Backspace deletes filter characters; once the filter is empty, a
@@ -1600,7 +1602,13 @@ mod series_pane_tests {
     /// (2026-06-15).
     #[test]
     fn backspace_on_empty_filter_exits_filtering() {
+        // Filtering only applies in Recent/All (The List, the default,
+        // doesn't filter — see `the_list_mode_does_not_filter`), so step
+        // off the default mode first.
         let mut p = SeriesPane::default();
+        p.on(&key(Key::Char('m')));
+        assert_eq!(p.mode(), SeriesMode::Recent);
+
         p.on(&key(Key::Char('/')));
         p.on(&key(Key::Char('a')));
         assert_eq!(p.filter(), "a");
@@ -1639,6 +1647,10 @@ mod series_pane_tests {
     #[test]
     fn page_keys_jump_series_selection() {
         let mut p = SeriesPane::default();
+        // Franchise-list paging is a Recent/All concern; step off the
+        // default The List mode first.
+        p.on(&key(Key::Char('m')));
+        assert_eq!(p.mode(), SeriesMode::Recent);
         p.set_franchises(franchises(30));
 
         // From the top, PageDown lands a page in.
@@ -1675,12 +1687,10 @@ mod series_pane_tests {
     #[test]
     fn the_list_mode_does_not_filter() {
         let mut p = SeriesPane::default();
-        p.on(&key(Key::Char('m'))); // All
-        p.on(&key(Key::Char('m'))); // The List
         assert_eq!(p.mode(), SeriesMode::TheList);
         p.on(&key(Key::Char('/')));
         assert_eq!(p.filter(), "");
-        // `m` still cycles (back to Recent), proving `/` didn't start a filter.
+        // `m` still cycles (to Recent), proving `/` didn't start a filter.
         p.on(&key(Key::Char('m')));
         assert_eq!(p.mode(), SeriesMode::Recent);
     }
