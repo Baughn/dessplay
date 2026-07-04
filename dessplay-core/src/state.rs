@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use crdts::{CmRDT, CvRDT, GList, GSet, Map, glist};
-use digest::Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::lww::{Lww, LwwCell, resolve_value};
@@ -353,23 +352,6 @@ fn upgrade_list_entries(
     upgraded
 }
 
-/// Deterministically derive a synthesized [`ListEntryId`] for an AniDB
-/// series that no List entry claims yet, so migrating equivalent old data
-/// twice (e.g. independently on a client and the server) converges on the
-/// same id instead of diverging into two entries. Migration-only —
-/// entries created by real usage still get a random id (see `import.rs`,
-/// `ListEntryId::from_bytes(rand::random())`).
-fn synthesize_list_entry_id(series: AniDbSeriesId) -> ListEntryId {
-    let digest = <[u8; 16]>::from(md4::Md4::digest(
-        [
-            b"dessplay:phase19-list-entry-migration:",
-            &series.0.to_le_bytes()[..],
-        ]
-        .concat(),
-    ));
-    ListEntryId::from_bytes(digest)
-}
-
 /// Re-key `series_preference` from `AniDbSeriesId` to `ListEntryId`
 /// (Phase 19, Series Identity: AniDB linking is enrichment only, never a
 /// prerequisite for commitment). For each referenced series, reuses the
@@ -422,7 +404,7 @@ fn upgrade_series_preference_to_list_entries(
     let mut upgraded = LwwMap::new();
     for ((user, series), lww) in resolved {
         let entry_id = *linked.entry(series).or_insert_with(|| {
-            let id = synthesize_list_entry_id(series);
+            let id = crate::series_identity::derive_entry_id(Some(series), "");
             map_put(
                 list_entries,
                 MIGRATION_ACTOR,
@@ -1419,7 +1401,7 @@ mod tests {
             ..Default::default()
         };
         let blob = crate::wire::encode(&legacy).unwrap();
-        let entry_id = synthesize_list_entry_id(AniDbSeriesId(1));
+        let entry_id = crate::series_identity::derive_entry_id(Some(AniDbSeriesId(1)), "");
 
         let decoded = CrdtState::decode_snapshot(&blob).expect("legacy blob must decode");
         let key = (UserId::new("kim"), entry_id);

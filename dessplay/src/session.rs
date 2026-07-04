@@ -2269,6 +2269,22 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     }
 }
 
+/// Resolve `file` to a List entry, auto-creating one (a `PutListEntry`
+/// mutation to write alongside whatever action triggered creation) if
+/// nothing claims it yet (design.md, Series Identity). `None` only when
+/// the file has no metadata at all -- nothing to name a fresh entry with.
+/// The synthesized id is deterministic
+/// ([`dessplay_core::series_identity::derive_entry_id`]): two clients
+/// independently resolving the same series converge on the same entry
+/// instead of racing to create separate ones.
+pub(crate) fn resolve_or_create_series_entry(
+    view: &StateView,
+    file: Ed2kHash,
+) -> Option<(ListEntryId, Option<Mutation>)> {
+    let (id, entry) = dessplay_core::series_identity::resolve_or_build_entry(view, file)?;
+    Some((id, entry.map(|entry| Mutation::PutListEntry { id, entry })))
+}
+
 /// The series-watch preference a linked List entry implies for `user`: a
 /// watcher commits (Watching — the group waits for them even when absent),
 /// a non-watcher skips (NotWatching). The List link is the declarative
@@ -2277,22 +2293,6 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
 /// `None` when no linked entry with a non-empty watchers set covers
 /// `series` (so a genuine first manual preference still narrates). Computed
 /// purely from synced state, so every client suppresses identically.
-/// Resolve `file` to a List entry, auto-creating one (a `PutListEntry`
-/// mutation to write alongside whatever action triggered creation) if
-/// nothing claims it yet (design.md, Series Identity). `None` only when
-/// the file has no metadata at all -- nothing to name a fresh entry with.
-pub(crate) fn resolve_or_create_series_entry(
-    view: &StateView,
-    file: Ed2kHash,
-) -> Option<(ListEntryId, Option<Mutation>)> {
-    if let Some(entry) = dessplay_core::series_identity::resolve_series_entry_for_file(view, file) {
-        return Some((entry, None));
-    }
-    let entry = dessplay_core::series_identity::build_entry_for_file(view, file)?;
-    let id = ListEntryId::from_bytes(rand::random());
-    Some((id, Some(Mutation::PutListEntry { id, entry })))
-}
-
 fn list_implied_pref(
     view: &StateView,
     entry: ListEntryId,
