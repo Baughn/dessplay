@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::{PeerInfo, Presence, Role};
 use dessplay_core::types::{
-    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, ManualState,
-    SeriesWatchState, UserId, decode_action,
+    AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, ManualState, NextEpState,
+    SeriesListEntry, SeriesWatchState, UserId, decode_action,
 };
 use dessplay_core::{StateView, franchise};
 
@@ -1102,6 +1102,110 @@ pub fn episode_rows(
 /// everything is watched.
 pub fn first_unwatched(rows: &[EpisodeRow]) -> Option<usize> {
     rows.iter().position(|row| !row.watched())
+}
+
+/// How far (Levenshtein distance) a file's derived series name may sit
+/// from a List entry's `name`/`local_aliases` and still be considered a
+/// plausible candidate for its next episode (design.md, Advancing
+/// next_ep). Loose enough to catch a differently-hinted file -- the whole
+/// reason Series Identity exists -- but tight enough that unrelated
+/// library files don't flood the list.
+const CANDIDATE_NAME_DISTANCE_THRESHOLD: usize = 6;
+
+/// Rank library files as candidates for `entry`'s next episode (design.md,
+/// Advancing next_ep): for a series with no AniDB episode identity to
+/// match against, finding the right file is a heuristic, not a lookup.
+/// Files already queued are excluded (nothing left to disambiguate for
+/// them). Candidates are ranked, best first: an explicit `manual_files`
+/// override always wins; then a file whose own name parses to the
+/// expected episode number ([`episode_parse::parse_episode_number`]
+/// against `next_ep`); then by ascending edit distance from the file's
+/// derived name to `entry`'s `name`/`local_aliases`. A file whose name
+/// distance exceeds [`CANDIDATE_NAME_DISTANCE_THRESHOLD`] (and isn't a
+/// manual override) is dropped, not just ranked low.
+///
+/// Returns a `Header` (design.md #31's grouping line, generalized from
+/// "several files, one confirmed episode" to "several candidates, no
+/// confirmed identity") followed by one `Child` per candidate, in rank
+/// order -- reusing the Episode Browser's existing tree UI outright.
+/// Empty when nothing clears the bar; callers should fall back to the
+/// plain edit form when there's nothing to disambiguate.
+pub fn candidate_rows(
+    view: &StateView,
+    entry: &SeriesListEntry,
+    next_ep: Option<&NextEpState>,
+) -> Vec<EpisodeRow> {
+    let expected_episode: Option<u32> = next_ep
+        .and_then(|n| n.next_ep.as_deref())
+        .and_then(|s| s.trim().parse().ok());
+    let queued: BTreeSet<Ed2kHash> = view.playlist.iter().map(|e| e.hash).collect();
+
+    let mut candidates: Vec<((bool, u8, usize, String), EpisodeCopy)> = view
+        .anidb_metadata
+        .iter()
+        .filter_map(|(hash, metadata)| {
+            if queued.contains(hash) {
+                return None;
+            }
+            let metadata = metadata.as_ref()?;
+            let is_manual = entry.manual_files.contains(hash);
+            let name_distance = if is_manual {
+                0
+            } else {
+                let to_name = strsim::levenshtein(&metadata.series_name, &entry.name);
+                let to_alias = entry
+                    .local_aliases
+                    .iter()
+                    .map(|alias| strsim::levenshtein(&metadata.series_name, alias))
+                    .min()
+                    .unwrap_or(usize::MAX);
+                to_name.min(to_alias)
+            };
+            if !is_manual && name_distance > CANDIDATE_NAME_DISTANCE_THRESHOLD {
+                return None;
+            }
+            let parsed_episode = view
+                .file_catalog
+                .get(hash)
+                .and_then(|c| dessplay_core::episode_parse::parse_episode_number(&c.filename))
+                .and_then(|s| s.parse::<u32>().ok());
+            let episode_rank: u8 = match (parsed_episode, expected_episode) {
+                (Some(p), Some(e)) if p == e => 0,
+                (Some(_), _) => 1,
+                (None, _) => 2,
+            };
+            let filename = episode_label(view, hash);
+            let key = (!is_manual, episode_rank, name_distance, filename.clone());
+            Some((
+                key,
+                EpisodeCopy {
+                    hash: *hash,
+                    filename,
+                    holders: ready_holders(view, *hash),
+                    watched: view.watched.get(hash).copied().unwrap_or(false),
+                },
+            ))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let header = EpisodeRow::Header {
+        episode: match expected_episode {
+            Some(n) => format!("Next episode ({n}?)"),
+            None => "Next episode?".to_string(),
+        },
+        watched: false,
+    };
+    std::iter::once(header)
+        .chain(
+            candidates
+                .into_iter()
+                .map(|(_, copy)| EpisodeRow::Child(copy)),
+        )
+        .collect()
 }
 
 /// The List, grouped per design: Watching (CurrentSeason + Active)
@@ -2279,5 +2383,177 @@ mod tests {
         };
         assert!(!watched, "one unwatched copy must keep the group unwatched");
         assert_eq!(first_unwatched(&rows), Some(0));
+    }
+
+    fn unlinked_entry(name: &str, aliases: &[&str], manual_files: &[Ed2kHash]) -> SeriesListEntry {
+        SeriesListEntry {
+            name: name.into(),
+            nero_name: None,
+            genre: None,
+            notes: Vec::new(),
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+            local_aliases: aliases.iter().map(|a| a.to_string()).collect(),
+            manual_files: manual_files.iter().copied().collect(),
+        }
+    }
+
+    fn unknown_metadata(series_name: &str) -> AniDbMetadata {
+        AniDbMetadata {
+            source: MetadataSource::FilenameDerived,
+            series_name: series_name.into(),
+            series_id: None,
+            episode_number: None,
+        }
+    }
+
+    fn catalog(filename: &str) -> dessplay_core::types::FileCatalogEntry {
+        dessplay_core::types::FileCatalogEntry {
+            filename: filename.into(),
+            size_bytes: 1,
+            duration_millis: None,
+        }
+    }
+
+    #[test]
+    fn candidate_rows_ranks_manual_files_first() {
+        let list_entry = unlinked_entry("Some Obscure Show", &[], &[hash(2)]);
+        let mut state = CrdtState::new();
+        // hash(1): a close name match, but not a manual override.
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            hash(1),
+            Some(unknown_metadata("Some Obscure Show")),
+        );
+        state.set_file_catalog(A, ts(1), hash(1), catalog("Some Obscure Show - 02.mkv"));
+        // hash(2): an unrelated derived name, but manually overridden --
+        // must still win over a merely name-similar file.
+        state.set_anidb_metadata(
+            A,
+            ts(2),
+            hash(2),
+            Some(unknown_metadata("Totally Different Title")),
+        );
+        state.set_file_catalog(
+            A,
+            ts(2),
+            hash(2),
+            catalog("Totally Different Title - 02.mkv"),
+        );
+        let view = state.view();
+        let rows = candidate_rows(&view, &list_entry, None);
+        let hashes: Vec<_> = rows.iter().filter_map(EpisodeRow::hash).collect();
+        assert_eq!(
+            hashes,
+            vec![hash(2), hash(1)],
+            "manual_files must rank first regardless of name distance"
+        );
+    }
+
+    #[test]
+    fn candidate_rows_prefers_the_matching_parsed_episode_number() {
+        let list_entry = unlinked_entry("Some Obscure Show", &[], &[]);
+        let next_ep = NextEpState {
+            next_ep: Some("13".into()),
+            available: false,
+        };
+        let mut state = CrdtState::new();
+        // hash(1): right name, wrong episode.
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            hash(1),
+            Some(unknown_metadata("Some Obscure Show")),
+        );
+        state.set_file_catalog(A, ts(1), hash(1), catalog("Some Obscure Show - 12.mkv"));
+        // hash(2): right name, right (expected) episode.
+        state.set_anidb_metadata(
+            A,
+            ts(2),
+            hash(2),
+            Some(unknown_metadata("Some Obscure Show")),
+        );
+        state.set_file_catalog(A, ts(2), hash(2), catalog("Some Obscure Show - 13.mkv"));
+        let view = state.view();
+        let rows = candidate_rows(&view, &list_entry, Some(&next_ep));
+        let hashes: Vec<_> = rows.iter().filter_map(EpisodeRow::hash).collect();
+        assert_eq!(
+            hashes,
+            vec![hash(2), hash(1)],
+            "the file parsing to the expected episode number must rank first"
+        );
+    }
+
+    #[test]
+    fn candidate_rows_matches_via_local_aliases_too() {
+        // The derived name doesn't match `name` at all, only a registered
+        // alias -- exactly the differently-hinted-file case Series
+        // Identity's local_aliases exist for.
+        let list_entry = unlinked_entry("Some Obscure Show", &["Some Obscure Show OVA"], &[]);
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            hash(1),
+            Some(unknown_metadata("Some Obscure Show OVA")),
+        );
+        state.set_file_catalog(A, ts(1), hash(1), catalog("Some Obscure Show OVA - 01.mkv"));
+        let view = state.view();
+        let rows = candidate_rows(&view, &list_entry, None);
+        assert_eq!(
+            rows.iter().filter_map(EpisodeRow::hash).collect::<Vec<_>>(),
+            vec![hash(1)]
+        );
+    }
+
+    #[test]
+    fn candidate_rows_excludes_files_too_dissimilar_in_name() {
+        let list_entry = unlinked_entry("Some Obscure Show", &[], &[]);
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            hash(1),
+            Some(unknown_metadata(
+                "A Completely Unrelated Series About Something Else",
+            )),
+        );
+        state.set_file_catalog(A, ts(1), hash(1), catalog("Unrelated - 01.mkv"));
+        let view = state.view();
+        assert!(
+            candidate_rows(&view, &list_entry, None).is_empty(),
+            "an unrelated file must not become a candidate"
+        );
+    }
+
+    #[test]
+    fn candidate_rows_excludes_already_queued_files() {
+        let list_entry = unlinked_entry("Some Obscure Show", &[], &[]);
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            hash(1),
+            Some(unknown_metadata("Some Obscure Show")),
+        );
+        state.set_file_catalog(A, ts(1), hash(1), catalog("Some Obscure Show - 02.mkv"));
+        state.push_playlist_entry(A, ts(2), entry(1, "Some Obscure Show - 02.mkv"));
+        let view = state.view();
+        assert!(
+            candidate_rows(&view, &list_entry, None).is_empty(),
+            "an already-queued file has nothing left to disambiguate"
+        );
+    }
+
+    #[test]
+    fn candidate_rows_empty_when_nothing_is_known_at_all() {
+        let list_entry = unlinked_entry("Some Obscure Show", &[], &[]);
+        let view = CrdtState::new().view();
+        assert!(candidate_rows(&view, &list_entry, None).is_empty());
     }
 }

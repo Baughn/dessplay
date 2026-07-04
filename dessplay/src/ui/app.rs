@@ -986,6 +986,28 @@ impl Ui {
                 self.push_modal(Modal::ListEdit(ListEditModal::new(id, entry, next_ep)));
                 None
             }
+            Msg::BrowseUnlinkedListEntry(id) => {
+                let view = &self.snapshot.view;
+                let entry = view.list_entries.get(&id)?.clone();
+                let next_ep = view.list_next_ep.get(&id);
+                let rows = props::candidate_rows(view, &entry, next_ep);
+                if rows.is_empty() {
+                    // Nothing to disambiguate: fall back to the plain editor.
+                    return self.update(Msg::EditListEntry(id));
+                }
+                let season = Season {
+                    title: entry.name.clone(),
+                    // Row 0 is always the synthetic Header; the best-ranked
+                    // candidate (index 1) is where the cursor should open.
+                    first_unwatched: Some(1),
+                    episodes: rows,
+                };
+                self.push_modal(Modal::Episodes(EpisodeBrowser::new(
+                    entry.name,
+                    vec![season],
+                )));
+                None
+            }
             Msg::LinkListEntry(id) => {
                 let entry = self.snapshot.view.list_entries.get(&id)?;
                 let name = entry.name.clone();
@@ -2512,6 +2534,80 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// An unlinked List entry, matching `link_series`'s shape but with no
+    /// AniDB series id.
+    fn unlinked_entry(id: ListEntryId, name: &str) -> (ListEntryId, SeriesListEntry) {
+        (
+            id,
+            SeriesListEntry {
+                name: name.into(),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: None,
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+            },
+        )
+    }
+
+    #[test]
+    fn browse_unlinked_list_entry_opens_candidate_browser_when_candidates_exist() {
+        let id = ListEntryId(1);
+        let mut state = CrdtState::new();
+        let (id, entry) = unlinked_entry(id, "Some Obscure Show");
+        state.put_list_entry(A, SharedTimestamp(1), id, entry);
+        // A library file whose derived name matches the entry -- a
+        // candidate for its next episode (design.md, Advancing next_ep).
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(2),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: "Some Obscure Show".into(),
+                series_id: None,
+                episode_number: None,
+            }),
+        );
+        state.set_file_catalog(
+            A,
+            SharedTimestamp(3),
+            Ed2kHash([1; 16]),
+            dessplay_core::types::FileCatalogEntry {
+                filename: "Some Obscure Show - 01.mkv".into(),
+                size_bytes: 1,
+                duration_millis: None,
+            },
+        );
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::BrowseUnlinkedListEntry(id));
+        assert!(
+            matches!(ui.modals.last(), Some(Modal::Episodes(_))),
+            "a candidate should open the disambiguation browser, not the editor"
+        );
+    }
+
+    #[test]
+    fn browse_unlinked_list_entry_falls_back_to_editor_when_no_candidates() {
+        let id = ListEntryId(1);
+        let mut state = CrdtState::new();
+        let (id, entry) = unlinked_entry(id, "Some Obscure Show");
+        state.put_list_entry(A, SharedTimestamp(1), id, entry);
+        // No files in the library at all -- nothing to disambiguate.
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::BrowseUnlinkedListEntry(id));
+        assert!(
+            matches!(ui.modals.last(), Some(Modal::ListEdit(_))),
+            "no candidates should fall back to the plain editor"
+        );
     }
 
     #[test]

@@ -1200,7 +1200,7 @@ impl SeriesPane {
                     Some(series) => Some(Msg::BrowseFranchise(
                         dessplay_core::franchise::FranchiseKey::Series(series),
                     )),
-                    None => Some(Msg::EditListEntry(entry.id)),
+                    None => Some(Msg::BrowseUnlinkedListEntry(entry.id)),
                 }
             }
         }
@@ -1693,6 +1693,55 @@ mod series_pane_tests {
         // `m` still cycles (to Recent), proving `/` didn't start a filter.
         p.on(&key(Key::Char('m')));
         assert_eq!(p.mode(), SeriesMode::Recent);
+    }
+
+    fn list_row(
+        id: u128,
+        series_id: Option<dessplay_core::types::AniDbSeriesId>,
+    ) -> crate::ui::props::ListRow {
+        crate::ui::props::ListRow {
+            id: dessplay_core::types::ListEntryId(id),
+            name: "Some Show".into(),
+            nero_name: None,
+            next_ep: None,
+            available: false,
+            watchers: String::new(),
+            series_id,
+        }
+    }
+
+    /// Enter on a linked entry browses its franchise; on an unlinked one it
+    /// tries the candidate-ranked disambiguation view instead (design.md,
+    /// Advancing next_ep) -- never straight to the plain editor anymore.
+    #[test]
+    fn list_enter_branches_on_whether_the_entry_is_linked() {
+        let mut p = SeriesPane::default();
+        assert_eq!(p.mode(), SeriesMode::TheList);
+        p.set_groups(vec![ListGroup {
+            heading: "Watching",
+            rows: vec![
+                list_row(1, Some(dessplay_core::types::AniDbSeriesId(7))),
+                list_row(2, None),
+            ],
+            collapsed: false,
+        }]);
+        p.on(&key(Key::Down)); // heading -> first entry (linked)
+
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseFranchise(
+                dessplay_core::franchise::FranchiseKey::Series(
+                    dessplay_core::types::AniDbSeriesId(7)
+                )
+            ))
+        );
+        p.on(&key(Key::Down));
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseUnlinkedListEntry(
+                dessplay_core::types::ListEntryId(2)
+            ))
+        );
     }
 }
 
