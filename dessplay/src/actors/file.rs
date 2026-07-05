@@ -1077,9 +1077,20 @@ impl Actor {
         if hashed.root != file {
             // The path we hold hashes to something other than what was
             // requested (e.g. a manual mapping to a different encode). Never
-            // serve those block hashes under this file's identity.
+            // serve those block hashes under this file's identity — and say
+            // so: this is a *definitive* mismatch (unlike the uncached case
+            // above, which may be a hash still in flight), so tell the
+            // requester to stop soliciting us instead of leaving it to
+            // re-ask a permanently-silent holder on every cooldown.
             tracing::debug!(%file, actual = %hashed.root,
-                "cached hashes don't match the requested file; not serving");
+                "cached hashes don't match the requested file; replying CannotServe");
+            let _ = self
+                .out
+                .send(FileOutput::SendPeer {
+                    to,
+                    message: Box::new(PeerMessage::CannotServe { file }),
+                })
+                .await;
             return;
         }
         let blocks = hashed.blocks.clone();
@@ -2969,7 +2980,10 @@ mod tests {
     /// when the local copy hashes to something else (a manual map to a
     /// different encode). Before the guard, serve_block_hashes handed the
     /// mapped file's block hashes to a downloader requesting a different hash,
-    /// propagating a mismatched encode to the group.
+    /// propagating a mismatched encode to the group. And the refusal must be
+    /// *spoken*, not silent (2026-07-05 review): a definitive mismatch
+    /// replies `CannotServe`, so the requester stops soliciting a holder
+    /// that can never answer instead of re-asking on every cooldown.
     #[tokio::test]
     async fn block_hashes_not_served_for_mismatched_content() {
         let root = tempfile::tempdir().unwrap();
@@ -3001,7 +3015,8 @@ mod tests {
             other => panic!("unexpected output: {other:?}"),
         }
 
-        // A peer solicits the requested (mismatched) hash. We must not serve.
+        // A peer solicits the requested (mismatched) hash. We must not serve
+        // the hashes — we must answer CannotServe so it stops asking.
         rig.commands
             .send(FileCommand::PeerMessage {
                 from: PeerId::new("peer7"),
@@ -3009,14 +3024,18 @@ mod tests {
             })
             .await
             .unwrap();
-        // No output at all: the guard drops it. (A served response would be a
-        // SendPeer here.)
-        match tokio::time::timeout(Duration::from_millis(200), next_output(&mut rig)).await {
-            Err(_) => {} // expected: nothing served
-            Ok(FileOutput::SendPeer { message, .. }) => {
-                panic!("served block hashes for mismatched content: {message:?}")
+        match tokio::time::timeout(Duration::from_millis(1000), next_output(&mut rig)).await {
+            Ok(FileOutput::SendPeer { to, message }) => {
+                assert_eq!(to, PeerId::new("peer7"));
+                match *message {
+                    PeerMessage::CannotServe { file } => assert_eq!(file, requested),
+                    other => {
+                        panic!("expected CannotServe for mismatched content, served: {other:?}")
+                    }
+                }
             }
             Ok(other) => panic!("unexpected output: {other:?}"),
+            Err(_) => panic!("mismatched solicitation went unanswered (silent bail)"),
         }
     }
 

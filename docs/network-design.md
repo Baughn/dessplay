@@ -438,6 +438,7 @@ enum PeerMessage {
     ChunkRequest { file_id: FileId, chunks: Vec<u32> },
     ChunkData { file_id: FileId, index: u32, data: Vec<u8> },
     Cancel { file_id: FileId, chunks: Vec<u32> },  // retract requests
+    CannotServe { file_id: FileId },  // definitive "I can never serve this"
 }
 ```
 
@@ -446,6 +447,17 @@ envelopes carry the sender's identity. `Bitfield` is a compact `Vec<u8>`
 newtype (LSB-first bits + a length), not a `bitvec` dependency. `Cancel`
 retracts outstanding requests — used by endgame and when dropping a
 silent source (see [Chunk Selection](#chunk-selection-rarest-first)).
+
+`CannotServe` answers a `BlockHashRequest` from a holder whose local copy
+is **known** to hash to a different identity — a manual mapping to a
+different encode, which design.md deliberately leaves playable locally
+(filename-trusted) and therefore advertised Ready. Ready normally implies
+servable; this is the one designed exception, so the holder says so
+explicitly and the requester drops it as a source for that download and
+never re-solicits it (unlike a snub, which retries after a cooldown). A
+holder that merely hasn't finished hashing stays silent instead — that
+state is transient and resolves into either `BlockHashes` or
+`CannotServe` on a later solicitation.
 
 ### Chunks
 

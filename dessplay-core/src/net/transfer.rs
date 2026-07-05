@@ -200,6 +200,18 @@ pub enum PeerMessage {
         /// Chunk indices to cancel.
         chunks: Vec<u32>,
     },
+    /// "I advertise `file` but can never serve it" — the reply to a
+    /// [`BlockHashRequest`] from a holder whose local copy is *known* to
+    /// differ from the requested identity (a manual mapping to a
+    /// different encode: playable locally by design, unservable under
+    /// this hash). The requester drops the sender as a source for this
+    /// download and does not re-solicit it, instead of re-asking a
+    /// permanently-silent holder forever. Only sent on a definitive
+    /// mismatch; a holder still hashing stays silent (transient).
+    CannotServe {
+        /// The file.
+        file: Ed2kHash,
+    },
 }
 
 impl std::fmt::Debug for PeerMessage {
@@ -237,6 +249,9 @@ impl std::fmt::Debug for PeerMessage {
                 .field("file", file)
                 .field("chunks", chunks)
                 .finish(),
+            PeerMessage::CannotServe { file } => {
+                f.debug_struct("CannotServe").field("file", file).finish()
+            }
         }
     }
 }

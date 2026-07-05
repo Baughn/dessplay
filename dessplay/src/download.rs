@@ -209,6 +209,14 @@ struct Download {
     size_bytes: u64,
     block_hashes: BlockHashes,
     sources: HashMap<PeerId, Source>,
+    /// Peers that answered a solicitation with [`PeerMessage::CannotServe`]:
+    /// they advertise the file but *know* they can never serve it under
+    /// this identity (a manual mapping to a different encode). Excluded
+    /// from `set_sources` re-adds for this download's lifetime — the
+    /// session re-offers every synced-Ready holder on each refresh, and
+    /// without this the denied holder would be re-added and re-solicited
+    /// forever.
+    denied: HashSet<PeerId>,
     /// Chunk index playback is at (sequential-window anchor).
     play_chunk: u32,
     stats: TransferStats,
@@ -277,6 +285,7 @@ impl Downloads {
                     size_bytes,
                     block_hashes: BlockHashes::Pending,
                     sources: HashMap::new(),
+                    denied: HashSet::new(),
                     play_chunk,
                     stats: TransferStats::default(),
                     last_progress_bps: 0,
@@ -304,8 +313,12 @@ impl Downloads {
         // needed again — no Cancel: they're gone).
         d.sources.retain(|peer, _| keep.contains(peer));
         // Add new sources with an empty bitfield (they'll advertise);
-        // arm their snub clock now.
+        // arm their snub clock now. A denied peer (replied CannotServe)
+        // is never re-added.
         for peer in sources {
+            if d.denied.contains(&peer) {
+                continue;
+            }
             d.sources.entry(peer).or_insert_with(|| Source {
                 bitfield: Bitfield::new(chunk_count(d.size_bytes)),
                 in_flight: HashSet::new(),
@@ -367,6 +380,19 @@ impl Downloads {
             }
             PeerMessage::BlockHashes { file, hashes } => {
                 self.on_block_hashes(file, from, hashes, now)
+            }
+            PeerMessage::CannotServe { file } => {
+                let Some(d) = self.files.get_mut(&file) else {
+                    return vec![];
+                };
+                // A definitive "never" from the holder (a manual mapping
+                // to a different encode): drop it and never re-add it for
+                // this download, unlike a snub (which is a *maybe* and
+                // retries after a cooldown).
+                tracing::info!(%from, %file, "source says it can never serve; denying it");
+                d.sources.remove(&from);
+                d.denied.insert(from);
+                self.progress_and_refill(file, now)
             }
             PeerMessage::ChunkData { file, index, data } => {
                 self.on_chunk_data(file, from, index, data, now)
@@ -1449,6 +1475,56 @@ mod tests {
             block_hash_requests(&actions).contains(&"b".to_string()),
             "a source joining after block hashes are validated must be solicited: {actions:?}"
         );
+    }
+
+    /// A source that answers `CannotServe` (a manual mapping to a
+    /// different encode -- it advertises Ready but *knows* it can never
+    /// serve under this identity) is dropped and, unlike a snubbed or
+    /// invalid-hashes source, never re-added by a later `set_sources`
+    /// refresh (2026-07-05 review: the session re-offers every
+    /// synced-Ready holder on each snapshot, so a mere drop meant
+    /// re-solicitation forever, just paced by the cooldown).
+    #[test]
+    fn a_cannot_serve_source_is_denied_and_never_re_added() {
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, DownloadConfig::default());
+        let actions = r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("mapper")],
+            0,
+            1000,
+        );
+        assert_eq!(block_hash_requests(&actions), vec!["mapper".to_string()]);
+
+        r.downloads.on_peer_message(
+            peer("mapper"),
+            PeerMessage::CannotServe { file: r.file },
+            1100,
+        );
+
+        // The session re-offers the still-synced-Ready mapper alongside a
+        // genuine source: only the genuine one is (re)solicited.
+        let actions = r
+            .downloads
+            .set_sources(r.file, vec![peer("mapper"), peer("seed")], 0, 1200);
+        assert_eq!(
+            block_hash_requests(&actions),
+            vec!["seed".to_string()],
+            "a denied source must not be re-added or re-solicited: {actions:?}"
+        );
+
+        // And it stays denied across arbitrarily many later refreshes and
+        // ticks (no cooldown-style resumption).
+        for t in [5_000, 60_000, 3_600_000] {
+            let mut actions = r.downloads.set_sources(r.file, vec![peer("mapper")], 0, t);
+            actions.extend(r.downloads.tick(t));
+            assert!(
+                block_hash_requests(&actions).is_empty(),
+                "denied source resurfaced at t={t}: {actions:?}"
+            );
+        }
     }
 
     /// A source solicited *after* block hashes are already `Have` (an empty
