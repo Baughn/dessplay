@@ -171,6 +171,100 @@ fn data(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i.wrapping_mul(37) % 251) as u8).collect()
 }
 
+/// Regression (2026-07-05 review): when a local copy appears through
+/// another channel mid-transfer, the download is cancelled and its
+/// partial deleted — but the session's `resolved` map lags the file
+/// actor's, so a snapshot processed in that window re-emits
+/// `StartDownload`. That stale re-emit must be a no-op: without the
+/// local-files guard it re-created the just-deleted partial and
+/// re-downloaded the entire file from the relay.
+#[tokio::test]
+async fn a_cancelled_redundant_download_is_not_resurrected_by_a_stale_start() {
+    let bytes = data(64 * 1024);
+    let hash = ed2k_hash_bytes(&bytes);
+    let filename = "ep1.mkv";
+    let mut leecher = spawn_actor("leech", &[]);
+    let partial = leecher._cache.path().join(hash.root.to_string());
+
+    // A download starts and solicits its source (no replies needed —
+    // the point is what the *leecher* sends, not a full transfer).
+    let start = || FileCommand::StartDownload {
+        file: hash.root,
+        size_bytes: hash.size_bytes,
+        sources: vec![PeerId::new("seed")],
+        play_chunk: 0,
+    };
+    leecher.commands.send(start()).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "download never solicited its source"
+        );
+        match tokio::time::timeout(Duration::from_millis(50), leecher.outputs.recv()).await {
+            Ok(Some(FileOutput::SendPeer { message, .. }))
+                if matches!(&*message, PeerMessage::BlockHashRequest { .. }) =>
+            {
+                break;
+            }
+            _ => continue,
+        }
+    }
+
+    // The local copy lands through another channel; resolving it
+    // verifies, cancels the download, and deletes the partial.
+    std::fs::write(leecher._media.path().join(filename), &bytes).unwrap();
+    leecher
+        .commands
+        .send(FileCommand::Resolve {
+            file: hash.root,
+            filename: filename.to_string(),
+        })
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "local copy never resolved"
+        );
+        match tokio::time::timeout(Duration::from_millis(50), leecher.outputs.recv()).await {
+            Ok(Some(FileOutput::Resolved { file, resolution })) if file == hash.root => {
+                assert!(
+                    matches!(resolution, dessplay::actors::file::Resolution::Verified(_)),
+                    "the landed copy should verify"
+                );
+                break;
+            }
+            _ => continue,
+        }
+    }
+    // Drain any cancel-time traffic (e.g. drop-requests to sources).
+    while tokio::time::timeout(Duration::from_millis(100), leecher.outputs.recv())
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {}
+    assert!(!partial.exists(), "cancel should have deleted the partial");
+
+    // The stale session re-emit: must not re-create the partial or
+    // solicit anyone.
+    leecher.commands.send(start()).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some(FileOutput::SendPeer { message, .. })) =
+            tokio::time::timeout(Duration::from_millis(50), leecher.outputs.recv()).await
+        {
+            panic!("stale StartDownload resurrected the download: sent {message:?}");
+        }
+    }
+    assert!(
+        !partial.exists(),
+        "stale StartDownload re-created the deleted partial"
+    );
+}
+
 #[tokio::test]
 async fn single_seed_transfer_completes_with_full_goodput() {
     let bytes = data(2 * ED2K_BLOCK_SIZE as usize + 123_456); // 3 blocks

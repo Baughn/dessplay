@@ -702,6 +702,18 @@ impl Actor {
                 sources,
                 play_chunk,
             } => {
+                // A file we already hold never (re)starts a download. The
+                // session emits StartDownload from its *own* resolution
+                // map, which lags this actor's — the FileOutput::Resolved
+                // recording a freshly-landed local copy may still be in
+                // flight — so a snapshot processed in that window re-emits
+                // for a file whose redundant download was just cancelled.
+                // Without this guard that re-emit re-created the deleted
+                // partial and re-downloaded the whole file.
+                if self.local_files.contains_key(&file) {
+                    tracing::debug!(%file, "ignoring StartDownload for a file we already hold");
+                    return;
+                }
                 let path = self.download_path(file);
                 // The session re-emits StartDownload every snapshot to
                 // refresh sources (idempotent); log only the actor-side
