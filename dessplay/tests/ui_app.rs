@@ -998,6 +998,86 @@ fn the_list_renders_and_edits() {
     assert!(!ui.modal_open());
 }
 
+/// Regression (2026-07-05 review): the List table's name cell must pad
+/// by terminal *display width*, not char count. A CJK title (2 cells per
+/// glyph — routine in `nero_name`) under-padded and shoved the
+/// episode/available/watchers columns out of alignment, defeating the
+/// aligned-table feature on exactly the rows it exists for.
+#[test]
+fn the_list_columns_align_across_cjk_and_ascii_rows() {
+    let mut state = CrdtState::new();
+    let entry = |name: &str, nero: Option<&str>| SeriesListEntry {
+        name: name.into(),
+        nero_name: nero.map(String::from),
+        genre: None,
+        notes: vec![],
+        recommender: None,
+        status: ListStatus::Active,
+        status_note: None,
+        source: None,
+        watchers: Default::default(),
+        anidb_series_id: None,
+        local_aliases: Default::default(),
+        manual_files: Default::default(),
+        anidb_unavailable: false,
+    };
+    state.put_list_entry(A, ts(1), ListEntryId(1), entry("Frieren", None));
+    // A CJK nero long enough to overflow the name cell (truncation path) …
+    state.put_list_entry(
+        A,
+        ts(2),
+        ListEntryId(2),
+        entry("Sousou", Some("葬送のフリーレン")),
+    );
+    // … and one short enough to fit (padding path).
+    state.put_list_entry(A, ts(2), ListEntryId(3), entry("Bocchi", Some("ぼっち")));
+    for (id, ep) in [
+        (ListEntryId(1), "12"),
+        (ListEntryId(2), "34"),
+        (ListEntryId(3), "56"),
+    ] {
+        state.set_next_ep(
+            A,
+            ts(3),
+            id,
+            dessplay_core::types::NextEpState {
+                next_ep: Some(ep.into()),
+                available: false,
+            },
+        );
+    }
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    ui.handle(key(Key::Tab)); // Series pane, The List (default mode)
+    let screen = render(&mut ui, 100, 30);
+
+    // The episode column must start at the same screen column on the
+    // ASCII row and the CJK row. `buffer_to_string` emits one char per
+    // terminal cell (a wide glyph is its char plus a space for the
+    // continuation cell), so the char count of the prefix *is* the
+    // screen column.
+    let ep_column = |name: &str, ep: &str| {
+        let line = screen
+            .lines()
+            .find(|l| l.contains(name))
+            .unwrap_or_else(|| panic!("no row for {name}: {screen}"));
+        let idx = line
+            .find(ep)
+            .unwrap_or_else(|| panic!("no ep {ep}: {line}"));
+        line[..idx].chars().count()
+    };
+    assert_eq!(
+        ep_column("Frieren", "12"),
+        ep_column("Sousou", "34"),
+        "episode column drifts on an over-long CJK title (truncation):\n{screen}"
+    );
+    assert_eq!(
+        ep_column("Frieren", "12"),
+        ep_column("Bocchi", "56"),
+        "episode column drifts on a short CJK title (padding):\n{screen}"
+    );
+}
+
 /// An unlinked entry whose AniDB search came up empty gets a durable
 /// callout in the row itself (design.md, Series Identity) -- distinct
 /// from an unlinked entry nobody's tried linking yet, which shows no

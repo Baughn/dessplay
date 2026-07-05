@@ -14,6 +14,7 @@ use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use tuirealm::state::State;
+use unicode_width::UnicodeWidthStr;
 
 use super::msg::Msg;
 use super::props::{
@@ -24,6 +25,33 @@ use super::widgets::{Binding, KeyPattern, Keymap, LineBuffer, ListCursor, TextFi
 
 /// A key the pane responds to, for the keybinding bar.
 pub type Keybinding = (&'static str, &'static str);
+
+/// Truncate `s` to at most `max` display cells, appending `…` (one cell)
+/// when anything was cut. Returns the text and its display width — cells,
+/// not chars, so CJK (two cells per glyph) truncates and pads correctly.
+fn truncate_display(s: &str, max: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+    if max == 0 {
+        return (String::new(), 0);
+    }
+    let full = s.width();
+    if full <= max {
+        return (s.to_string(), full);
+    }
+    let budget = max - 1; // reserve a cell for the ellipsis
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in s.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    (out, used + 1)
+}
 
 /// Shared no-op implementations for the trait methods our panes don't
 /// use (they're driven by typed props, not tui-realm attrs).
@@ -1279,6 +1307,12 @@ impl SeriesPane {
 
                         let entry = &self.groups[*g].rows[*e];
                         let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+                        // Cell widths are terminal *display* widths (CJK
+                        // glyphs occupy two cells), not char counts —
+                        // char-count padding drifts the columns on every
+                        // Japanese title. And the name cell truncates to
+                        // its width: an over-long title must not shove
+                        // the episode/watchers columns sideways either.
                         let mut visible_len = 0;
                         // A search that came up empty is a durable "AniDB
                         // doesn't have this" callout (design.md, Series
@@ -1286,14 +1320,19 @@ impl SeriesPane {
                         // nobody's tried linking yet, which gets no marker.
                         if entry.series_id.is_none() && entry.anidb_unavailable {
                             let marker = "⊘ ";
-                            visible_len += marker.chars().count();
+                            visible_len += marker.width();
                             spans.push(Span::styled(marker, theme::dim()));
                         }
-                        visible_len += entry.name.chars().count();
-                        spans.push(Span::raw(entry.name.clone()));
-                        if let Some(nero) = &entry.nero_name {
-                            let text = format!(" “{nero}”");
-                            visible_len += text.chars().count();
+                        let (name, w) =
+                            truncate_display(&entry.name, name_width - visible_len.min(name_width));
+                        visible_len += w;
+                        spans.push(Span::raw(name));
+                        if let Some(nero) = &entry.nero_name
+                            && visible_len < name_width
+                        {
+                            let (text, w) =
+                                truncate_display(&format!(" “{nero}”"), name_width - visible_len);
+                            visible_len += w;
                             spans.push(Span::styled(text, theme::dim()));
                         }
                         if visible_len < name_width {

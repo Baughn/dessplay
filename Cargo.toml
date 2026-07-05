@@ -28,6 +28,10 @@ proptest = "1"
 csv = "1.4"
 tuirealm = "4"
 crossterm = "0.29"
+# Terminal display width (CJK-aware) for the UI's aligned columns —
+# char counts under-pad wide glyphs. Already in the tree via ratatui, so
+# a direct dep adds no weight.
+unicode-width = "0.2"
 insta = "1.47"
 rand = "0.9"
 ed2k = "1.0"

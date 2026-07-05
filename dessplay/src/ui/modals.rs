@@ -18,6 +18,8 @@ use dessplay_core::net::AniDbSearchHit;
 use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, NextEpState, SeriesListEntry};
 
 use super::components::plain;
+use unicode_width::UnicodeWidthStr;
+
 use super::msg::Msg;
 use super::props::{self, EpisodeRow};
 use super::theme;
@@ -1353,8 +1355,10 @@ fn episode_row_item(row: &EpisodeRow, marked: bool, width: usize) -> ListItem<'s
     if right.is_empty() {
         return ListItem::new(Span::styled(left, style));
     }
+    // Display width, not char count: episode filenames routinely carry
+    // CJK, which occupies two cells per glyph and would over-pad here.
     let pad = width
-        .saturating_sub(left.chars().count() + right.chars().count() + 1)
+        .saturating_sub(left.width() + right.width() + 1)
         .max(1);
     ListItem::new(Line::from(vec![
         Span::styled(left, style),
