@@ -103,3 +103,84 @@ async fn import_submits_and_reimport_updates() {
     })
     .await;
 }
+
+/// Regression (2026-07-05 review): the app-owned identity/enrichment
+/// fields — `local_aliases`, `manual_files`, `anidb_unavailable` — have
+/// no CSV representation (design.md, Series Identity: grown in-app after
+/// import), so a re-import matching the entry by name must carry them
+/// over, exactly as it already carries a manually-set AniDB link. The
+/// update branch used to write the freshly-parsed row wholesale, silently
+/// wiping in-app enrichment on the primary supported workflow.
+#[tokio::test(start_paused = true)]
+async fn reimport_preserves_app_owned_identity_fields() {
+    use dessplay::actors::sync::Mutation;
+    use dessplay_core::types::Ed2kHash;
+
+    let harness = Harness::new(0x5EED);
+    let kim = harness.client("kim", 1);
+
+    let report = parse_fixtures();
+    submit(&kim, &report).await.expect("submit");
+
+    // Enrich GochiUsa in-app: an alias, a manual file, and a failed
+    // AniDB search.
+    let snaps = eventually(&[&kim], Duration::from_secs(60), |snaps| {
+        snaps[0]
+            .view
+            .list_entries
+            .values()
+            .any(|entry| entry.name == "GochiUsa")
+    })
+    .await;
+    let (id, mut enriched) = snaps[0]
+        .view
+        .list_entries
+        .iter()
+        .find(|(_, entry)| entry.name == "GochiUsa")
+        .map(|(id, entry)| (*id, entry.clone()))
+        .expect("GochiUsa imported");
+    enriched
+        .local_aliases
+        .insert("Gochuumon wa Usagi Desu ka".into());
+    enriched.manual_files.insert(Ed2kHash([7; 16]));
+    enriched.anidb_unavailable = true;
+    mutate(
+        &kim,
+        Mutation::PutListEntry {
+            id,
+            entry: enriched,
+        },
+    )
+    .await;
+    eventually(&[&kim], Duration::from_secs(60), |snaps| {
+        snaps[0]
+            .view
+            .list_entries
+            .get(&id)
+            .is_some_and(|entry| entry.anidb_unavailable)
+    })
+    .await;
+
+    // Re-import the unchanged sheet; the enrichment must survive.
+    let outcome = submit(&kim, &parse_fixtures()).await.expect("re-submit");
+    assert_eq!(outcome.created, 0, "re-import must match, not duplicate");
+    // `submit` sends every PutListEntry and its final GetView poll down
+    // the same sync-actor channel, so by the time it returns the local
+    // view reflects the re-import — this snapshot observes post-import
+    // values, not the pre-import ones.
+    let snaps = eventually(&[&kim], Duration::from_secs(60), |snaps| {
+        snaps[0].view.list_entries.contains_key(&id)
+    })
+    .await;
+    let entry = &snaps[0].view.list_entries[&id];
+    assert!(
+        entry.local_aliases.contains("Gochuumon wa Usagi Desu ka"),
+        "re-import wiped local_aliases: {:?}",
+        entry.local_aliases
+    );
+    assert!(
+        entry.manual_files.contains(&Ed2kHash([7; 16])),
+        "re-import wiped manual_files"
+    );
+    assert!(entry.anidb_unavailable, "re-import reset anidb_unavailable");
+}

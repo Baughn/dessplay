@@ -466,6 +466,15 @@ pub async fn submit(
                 // arrive unlinked, so `old_anidb` only ever comes from an
                 // existing entry).
                 entry.anidb_series_id = entry.anidb_series_id.or(old_anidb);
+                // Likewise the app-owned identity/enrichment fields
+                // (design.md, Series Identity): they have no CSV
+                // representation — grown in-app after import — so a
+                // matched row carries them over instead of wiping them.
+                if let Some(old) = existing.list_entries.get(&id) {
+                    entry.local_aliases = old.local_aliases.clone();
+                    entry.manual_files = old.manual_files.clone();
+                    entry.anidb_unavailable = old.anidb_unavailable;
+                }
                 outcome.updated += 1;
                 if matched_this_run {
                     // Two sheets named the same series: the later row wins.
