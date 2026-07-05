@@ -195,6 +195,9 @@ fn hash_from_blob(blob: Vec<u8>) -> Result<Ed2kHash> {
 /// The rendezvous server's persistent storage.
 pub struct ServerStorage {
     conn: Connection,
+    /// The on-disk path, when file-backed (`None` in-memory): the anchor
+    /// for the pre-migration backup next to the live database.
+    path: Option<PathBuf>,
 }
 
 impl ServerStorage {
@@ -206,19 +209,19 @@ impl ServerStorage {
                 .map_err(|e| StorageError::Corrupt(format!("creating {parent:?}: {e}")))?;
         }
         let conn = Connection::open(path)?;
-        Self::init(conn)
+        Self::init(conn, Some(path.to_path_buf()))
     }
 
     /// An in-memory database, for tests.
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(conn: Connection, path: Option<PathBuf>) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         migrate(&conn, MIGRATIONS)?;
-        Ok(Self { conn })
+        Ok(Self { conn, path })
     }
 
     /// The default database path:
@@ -255,7 +258,15 @@ impl ServerStorage {
         Ok(())
     }
 
-    /// Load the stored snapshot, if any.
+    /// Load the stored snapshot, if any. When the blob was written by an
+    /// **older layout** (decoded via a fallback and migrated forward),
+    /// the whole database is first backed up next to itself — the next
+    /// `save_state` will overwrite the only copy of the old-layout data,
+    /// and a subtly-wrong migration must stay recoverable (2026-07-05:
+    /// a mid-Phase-19 dev layout reached production; manual testing
+    /// requires deploying, so this will happen again). A backup failure
+    /// is an error: proceeding without one is exactly the silent
+    /// state-loss the server's refuse-to-start posture exists to prevent.
     pub fn load_state(&self) -> Result<Option<StateSnapshot>> {
         let started = std::time::Instant::now();
         let row: Option<(i64, Vec<u8>)> = self
@@ -270,7 +281,10 @@ impl ServerStorage {
             tracing::debug!("no stored state snapshot");
             return Ok(None);
         };
-        let state = CrdtState::decode_snapshot(&blob)?;
+        let (state, migrated) = CrdtState::decode_snapshot_flagged(&blob)?;
+        if migrated {
+            self.backup_pre_migration()?;
+        }
         tracing::debug!(
             epoch,
             bytes = blob.len(),
@@ -281,6 +295,39 @@ impl ServerStorage {
             epoch: Epoch(epoch as u64),
             state,
         }))
+    }
+
+    /// Copy the database to `<db>.pre-v{PROTOCOL_VERSION}.bak` (via
+    /// `VACUUM INTO`, safe on a live connection) before a migrated
+    /// snapshot is first persisted in the new layout. Idempotent: if the
+    /// backup for this version already exists it is kept, not
+    /// overwritten — a crash-loop between load and first save must not
+    /// clobber the copy that still holds the old-layout data. In-memory
+    /// databases (tests) skip silently.
+    fn backup_pre_migration(&self) -> Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let mut target = path.clone().into_os_string();
+        target.push(format!(
+            ".pre-v{}.bak",
+            dessplay_core::net::message::PROTOCOL_VERSION
+        ));
+        let target = PathBuf::from(target);
+        if target.exists() {
+            tracing::info!(target = %target.display(),
+                "pre-migration backup already exists; keeping it");
+            return Ok(());
+        }
+        self.conn.execute(
+            "VACUUM INTO ?1",
+            params![target.to_str().ok_or_else(|| {
+                StorageError::Corrupt(format!("backup path not UTF-8: {target:?}"))
+            })?],
+        )?;
+        tracing::info!(target = %target.display(),
+            "old-layout snapshot detected; database backed up before migration");
+        Ok(())
     }
 
     // ---- Chat archive.
@@ -866,6 +913,107 @@ mod tests {
         };
         storage.save_state(&snapshot, 1000).unwrap();
         assert_eq!(storage.load_state().unwrap().unwrap(), snapshot);
+    }
+
+    /// Loading a snapshot written by an **older layout** must back up the
+    /// whole database next to itself before the caller can overwrite the
+    /// only old-layout copy (user request, 2026-07-05: manual testing
+    /// requires deploying, so mid-development layouts will keep reaching
+    /// the server). The legacy blob is fabricated by the byte-truncation
+    /// trick from dessplay-core's migration tests: stripping the trailing
+    /// empty `acknowledged_absent` + `protocol_version` bytes off a
+    /// current-layout encoding reproduces a faithful V1 blob.
+    #[test]
+    fn migrated_load_backs_up_the_database_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("rendezvous.db");
+        let storage = ServerStorage::open(&db_path).unwrap();
+
+        let cluster = run_cluster(&[ClusterEvent::ServerOp {
+            ts: 1,
+            op: ScriptOp::AddPlaylist {
+                file: 1,
+                after: None,
+            },
+        }]);
+        let bytes = dessplay_core::wire::encode(&cluster.server).unwrap();
+        assert_eq!(
+            bytes[bytes.len() - 2..],
+            [0u8, dessplay_core::net::message::PROTOCOL_VERSION as u8],
+            "truncation trick precondition (see dessplay-core/tests/migration.rs)"
+        );
+        let legacy_blob = &bytes[..bytes.len() - 2];
+        storage
+            .conn
+            .execute(
+                "INSERT INTO crdt_state (room, epoch, state, saved_at)
+                 VALUES ('default', 7, ?1, 1000)",
+                params![legacy_blob],
+            )
+            .unwrap();
+
+        let loaded = storage.load_state().unwrap().unwrap();
+        assert_eq!(loaded.epoch, Epoch(7));
+        assert_eq!(loaded.state.view(), cluster.server.view());
+
+        // The backup exists and still holds the *old-layout* blob.
+        let backup_path = dir.path().join(format!(
+            "rendezvous.db.pre-v{}.bak",
+            dessplay_core::net::message::PROTOCOL_VERSION
+        ));
+        assert!(
+            backup_path.exists(),
+            "backup must exist after a migrated load"
+        );
+        let backup = rusqlite::Connection::open(&backup_path).unwrap();
+        let stored: Vec<u8> = backup
+            .query_row(
+                "SELECT state FROM crdt_state WHERE room='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored, legacy_blob,
+            "backup holds the original old-layout blob"
+        );
+
+        // A second migrated load (crash-loop before the first save) keeps
+        // the existing backup rather than failing or clobbering it.
+        let modified = std::fs::metadata(&backup_path).unwrap().modified().unwrap();
+        storage.load_state().unwrap().unwrap();
+        assert_eq!(
+            std::fs::metadata(&backup_path).unwrap().modified().unwrap(),
+            modified,
+            "existing backup must be kept, not rewritten"
+        );
+    }
+
+    /// A current-layout snapshot loads without creating any backup.
+    #[test]
+    fn current_layout_load_creates_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("rendezvous.db");
+        let storage = ServerStorage::open(&db_path).unwrap();
+        let cluster = run_cluster(&[ClusterEvent::ServerOp {
+            ts: 1,
+            op: ScriptOp::AddPlaylist {
+                file: 1,
+                after: None,
+            },
+        }]);
+        let snapshot = StateSnapshot {
+            epoch: Epoch(7),
+            state: cluster.server,
+        };
+        storage.save_state(&snapshot, 1000).unwrap();
+        storage.load_state().unwrap().unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".bak"))
+            .collect();
+        assert!(leftovers.is_empty(), "no backup for a current-layout load");
     }
 
     #[test]

@@ -798,14 +798,27 @@ impl CrdtState {
     /// of these (genuinely corrupt) surfaces the *original* error, so
     /// callers still see a real codec failure.
     pub fn decode_snapshot(blob: &[u8]) -> Result<CrdtState, crate::wire::WireError> {
+        Ok(Self::decode_snapshot_flagged(blob)?.0)
+    }
+
+    /// [`decode_snapshot`](Self::decode_snapshot), also reporting whether a
+    /// **fallback layout** was used (`true` = the blob was written by an
+    /// older build and migrated forward). A caller that will persist the
+    /// migrated result over the original — the rendezvous server — uses
+    /// the flag to back up the old database first, so a subtly-wrong
+    /// migration is recoverable.
+    pub fn decode_snapshot_flagged(
+        blob: &[u8],
+    ) -> Result<(CrdtState, bool), crate::wire::WireError> {
         match crate::wire::decode::<CrdtState>(blob) {
-            Ok(state) => Ok(state),
+            Ok(state) => Ok((state, false)),
             Err(primary) => crate::wire::decode::<CrdtStateV5>(blob)
                 .map(CrdtState::from)
                 .or_else(|_| crate::wire::decode::<CrdtStateV4>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV3>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV2>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV1>(blob).map(CrdtState::from))
+                .map(|state| (state, true))
                 .map_err(|_| primary),
         }
     }
