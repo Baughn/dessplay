@@ -1165,6 +1165,32 @@ The request sheet's interface rows are done or consciously deferred.
 
 ## Phase 19: Series Identity & List Commitment (#9, #25)
 
+**Status: complete (2026-07-05).** Notes and deviations:
+
+- The auto-created entry id is **deterministic** (MD4 over a domain-tagged
+  AniDB id or derived name, `series_identity::derive_entry_id`) rather
+  than random: two clients racing to auto-create for the same series must
+  converge on one entry, or gating forks (caught by a flaking e2e test).
+  Import still mints random ids — a deliberate creation has no content to
+  hash yet.
+- The migration landed as unit tests over crafted legacy blobs
+  (`state.rs::legacy_blob_*`: link-reuse and synthesis both asserted)
+  rather than the promised property test over fixtures; the
+  resolution-order and linked/unlinked-gating tests landed 2026-07-05
+  with the scoped-review fixes (`series_identity.rs` tests,
+  `derive.rs::absent_committed_user_blocks` parameterized). The
+  disambiguation view is covered behaviorally (opens-the-browser +
+  ranking assertions) rather than by an insta snapshot.
+- The resolution function's step 2 (`manual_files`) runs *before* the
+  metadata guard — it is a pure hash test and must work before any
+  metadata syncs (2026-07-05 review).
+- The edit modal's Aliases / Manual files rows landed 2026-07-05
+  (semicolon-separated; manual files as ed2k hex, unparsable tokens
+  dropped). `watchers` editing remains deferred to import.
+- `PROTOCOL_VERSION` ended at **5**, not 4: the review's manual-mapping
+  fix added `PeerMessage::CannotServe` within the same upgrade window
+  (network-design.md, Peer Messages).
+
 **Goal**: series commitment and gating stop depending on an AniDB link
 existing at all. Every committable series routes through its
 [List](design.md#the-list-series-tracker) entry, and a file resolves to
@@ -1189,7 +1215,7 @@ were waiting on exactly this.
 - `SeriesListEntry` gains `local_aliases: BTreeSet<String>` and
   `manual_files: BTreeSet<Ed2kHash>`.
 - A single resolution function implementing design.md's 4-step order
-  (AniDB link -> `manual_files` -> `local_aliases` -> auto-create),
+  (AniDB link -> `manual_files` -> name/`local_aliases` match -> auto-create),
   replacing every `now_playing_series() -> Option<AniDbSeriesId>` call site
   (`/watch`/`/maybe`/`/skip`, the playlist `w` cycle key, Users-pane `n`,
   `watchers`-set wiring) with the `ListEntryId`-returning equivalent.

@@ -34,6 +34,24 @@ impl fmt::Debug for Ed2kHash {
     }
 }
 
+impl std::str::FromStr for Ed2kHash {
+    type Err = String;
+
+    /// Parse the `Display` form back: exactly 32 hex digits.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.len() != 32 || !s.is_ascii() {
+            return Err(format!("expected 32 hex digits, got {:?}", s.len()));
+        }
+        let mut bytes = [0u8; 16];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&s[2 * i..2 * i + 2], 16)
+                .map_err(|e| format!("bad hex at {}: {e}", 2 * i))?;
+        }
+        Ok(Ed2kHash(bytes))
+    }
+}
+
 /// A user's self-chosen nickname. There is no cryptographic identity.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct UserId(pub String);

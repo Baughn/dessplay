@@ -1077,6 +1077,12 @@ CSVs:
   linked lazily from the UI. `local_aliases`/`manual_files` are likewise
   empty on import -- an imported entry only starts claiming files once
   something (a link, or a `/watch` on a matching file) resolves to it.
+- **Re-import preserves app-owned fields.** A re-run (the supported way to
+  refresh statuses/next_ep from the sheet) matches existing entries by
+  name and carries over what the app owns and the CSV cannot express: the
+  AniDB link, `local_aliases`, `manual_files`, and the
+  AniDB-search-came-up-empty flag. Only sheet-owned columns are
+  overwritten.
 
 ---
 
@@ -1645,7 +1651,11 @@ check** -- the same "the user explicitly chose this file" exemption the
 browser map gets (see [Content Hash](#content-hash)). The trade-off is
 that a same-named *different encode* dropped in would silently desync the
 client from the group; this is accepted for parity with the browser map
-and because the user deliberately loaded that exact file. dessplay learns
+and because the user deliberately loaded that exact file. (Either way a
+mismatched mapping is never *served*: the holder answers peer
+solicitations with a definitive `CannotServe`, so downloaders drop it as
+a source rather than re-asking forever -- see network-design.md, Peer
+Messages.) dessplay learns
 what mpv has loaded by observing its `path` property (see
 [Events from Player](#events-from-player)); a path it never commanded, with
 a matching name, is the trigger. (Especially handy in attach mode, where

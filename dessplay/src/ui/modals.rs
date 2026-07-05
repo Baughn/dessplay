@@ -1417,14 +1417,25 @@ const LIST_FIELDS: &[&str] = &[
     "Source",
     "Next ep",
     "Available",
+    "Aliases",
+    "Manual files",
 ];
 const LIST_FIELD_STATUS: usize = 5;
 const LIST_FIELD_NEXT_EP: usize = 8;
 const LIST_FIELD_AVAILABLE: usize = 9;
+const LIST_FIELD_ALIASES: usize = 10;
+const LIST_FIELD_MANUAL_FILES: usize = 11;
 
 /// Edit one List entry's fields (watchers are edited via import or a
 /// later refinement): a [`Form`] over the entry plus its progress
 /// register.
+///
+/// This is also where an entry's identity data is grown by hand
+/// (design.md, Series Identity): **Aliases** (`local_aliases`,
+/// semicolon-separated series names) and **Manual files**
+/// (`manual_files`, semicolon-separated ed2k hex hashes — a token that
+/// doesn't parse as a hash is dropped on commit, which the redisplayed
+/// row makes visible).
 ///
 /// `next_ep`/`available` ([`NextEpState`]) live in a separate CRDT
 /// register from the rest of the entry, so the server's EOF auto-advance
@@ -1489,6 +1500,20 @@ impl ListEditForm {
             7 => self.entry.source.clone().unwrap_or_default(),
             LIST_FIELD_NEXT_EP => self.next_ep.next_ep.clone().unwrap_or_default(),
             LIST_FIELD_AVAILABLE => if self.next_ep.available { "yes" } else { "no" }.to_string(),
+            LIST_FIELD_ALIASES => self
+                .entry
+                .local_aliases
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; "),
+            LIST_FIELD_MANUAL_FILES => self
+                .entry
+                .manual_files
+                .iter()
+                .map(|hash| hash.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
             _ => String::new(),
         }
     }
@@ -1557,6 +1582,21 @@ impl FormModel for ListEditForm {
             6 => self.entry.status_note = opt,
             7 => self.entry.source = opt,
             LIST_FIELD_NEXT_EP => self.next_ep.next_ep = opt,
+            LIST_FIELD_ALIASES => {
+                self.entry.local_aliases = value
+                    .split(';')
+                    .map(|alias| alias.trim().to_string())
+                    .filter(|alias| !alias.is_empty())
+                    .collect();
+            }
+            LIST_FIELD_MANUAL_FILES => {
+                // Tokens that don't parse as ed2k hex are dropped; the
+                // redisplayed row shows what stuck.
+                self.entry.manual_files = value
+                    .split(';')
+                    .filter_map(|token| token.trim().parse().ok())
+                    .collect();
+            }
             _ => {}
         }
     }

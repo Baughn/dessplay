@@ -998,6 +998,76 @@ fn the_list_renders_and_edits() {
     assert!(!ui.modal_open());
 }
 
+/// Phase 19 completion: the edit modal is where an unlinked entry's
+/// identity data is grown by hand (design.md, Series Identity /
+/// UI Integration) — `local_aliases` as semicolon-separated names, and
+/// `manual_files` as semicolon-separated ed2k hex hashes (unparsable
+/// tokens dropped).
+#[test]
+fn the_list_editor_edits_aliases_and_manual_files() {
+    let mut state = CrdtState::new();
+    state.put_list_entry(
+        A,
+        ts(1),
+        ListEntryId(7),
+        SeriesListEntry {
+            name: "Some Obscure Show".into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+            local_aliases: ["OldAlias".into()].into_iter().collect(),
+            manual_files: Default::default(),
+            anidb_unavailable: false,
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    ui.handle(key(Key::Tab)); // Series pane (The List)
+    ui.handle(key(Key::Down)); // heading -> entry
+    ui.handle(key(Key::Char('e'))); // edit modal
+    assert!(ui.modal_open());
+
+    // Down to "Aliases" (row 10) and replace the alias list.
+    for _ in 0..10 {
+        ui.handle(key(Key::Down));
+    }
+    ui.handle(key(Key::Enter));
+    for _ in 0.."OldAlias".len() {
+        ui.handle(key(Key::Backspace)); // clear the prefilled alias
+    }
+    type_str(&mut ui, "ObscureShow S2; Obscure Show");
+    ui.handle(key(Key::Enter));
+
+    // Down to "Manual files" and enter one good and one bad token.
+    ui.handle(key(Key::Down));
+    ui.handle(key(Key::Enter));
+    type_str(&mut ui, &format!("{}; not-a-hash", hash(9)));
+    ui.handle(key(Key::Enter));
+
+    let actions = ui.handle(ctrl('s'));
+    let [UserAction::Mutate(Mutation::PutListEntry { id, entry })] = actions.as_slice() else {
+        panic!("expected PutListEntry, got {actions:?}");
+    };
+    assert_eq!(*id, ListEntryId(7));
+    assert_eq!(
+        entry.local_aliases,
+        ["ObscureShow S2".to_string(), "Obscure Show".to_string()]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(
+        entry.manual_files,
+        [hash(9)].into_iter().collect(),
+        "the parsable hash sticks; the junk token is dropped"
+    );
+}
+
 /// Regression (2026-07-05 review): the List table's name cell must pad
 /// by terminal *display width*, not char count. A CJK title (2 cells per
 /// glyph — routine in `nero_name`) under-padded and shoved the
