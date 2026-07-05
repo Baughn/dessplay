@@ -195,6 +195,78 @@ async fn mark_watched_advances_unlinked_list_entry_via_filename_parse() {
     .await;
 }
 
+/// Regression (2026-07-05 review): a **linked** entry bumps `next_ep`
+/// only from the file's own AniDB episode number — the authoritative
+/// source (design.md, Advancing next_ep); the filename parse is the
+/// *unlinked* entry's mechanism. A linked special ("S1", non-numeric)
+/// whose filename happens to parse to the current `next_ep` must not
+/// advance past an episode the group never watched.
+#[tokio::test(start_paused = true)]
+async fn mark_watched_never_advances_a_linked_entry_from_the_filename() {
+    let harness = Harness::new(0x5EED);
+    let kim = harness.client("kim", 1);
+    let baughn = harness.client("baughn", 2);
+    // The playlist filename ("ep1.mkv") parses to episode 1, but AniDB
+    // says this file is the special "S1".
+    mutate(&kim, Mutation::PushPlaylist { new: entry(1) }).await;
+    mutate(
+        &kim,
+        Mutation::SetAniDbMetadata {
+            hash: hash(1),
+            metadata: Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Frieren".into(),
+                series_id: Some(FRIEREN),
+                episode_number: Some("S1".into()),
+            }),
+        },
+    )
+    .await;
+    let id = ListEntryId(42);
+    mutate(
+        &kim,
+        Mutation::PutListEntry {
+            id,
+            entry: frieren_entry(),
+        },
+    )
+    .await;
+    mutate(
+        &kim,
+        Mutation::SetNextEp {
+            id,
+            next_ep: NextEpState {
+                next_ep: Some("1".into()),
+                available: true,
+            },
+        },
+    )
+    .await;
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps.iter().all(|s| s.view.list_next_ep.len() == 1)
+    })
+    .await;
+
+    mark_watched(&kim, hash(1), true).await;
+    // The watched flag replicates (proving the mark round-tripped) …
+    eventually(&[&kim, &baughn], Duration::from_secs(30), |snaps| {
+        snaps
+            .iter()
+            .all(|s| s.view.watched.get(&hash(1)) == Some(&true))
+    })
+    .await;
+    // … but next_ep must not have moved: the linked entry has no
+    // authoritative (numeric) AniDB episode for this file.
+    let snap = snapshot_of(&baughn).await;
+    let progress = &snap.view.list_next_ep[&id];
+    assert_eq!(
+        progress.next_ep.as_deref(),
+        Some("1"),
+        "a linked special must not bump next_ep from a filename parse"
+    );
+    assert!(progress.available, "available must be untouched too");
+}
+
 /// Marking watched auto-advances a linked List entry's `next_ep`, exactly
 /// like the EOF transition — but never on unmark (the design only auto-
 /// advances forward, never rewinds a next_ep on a manual undo).

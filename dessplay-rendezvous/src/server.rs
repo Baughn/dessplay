@@ -1329,10 +1329,17 @@ fn list_advances(
     let Some(id) = dessplay_core::series_identity::resolve_series_entry_for_file(view, file) else {
         return Vec::new();
     };
-    // The episode that just finished: AniDB's own number when linked and
-    // known, else a best-effort parse of the file's own name (design.md,
-    // Advancing next_ep -- no ambiguity here, it's a fact about a file
-    // already confirmed watched, not a guess about a future one).
+    // The episode that just finished. A *linked* entry bumps only from
+    // AniDB's own episode number -- the authoritative source; a
+    // non-numeric one (a special, "S1") means no advance, never a guess.
+    // Only an *unlinked* entry falls back to parsing the file's own name
+    // (design.md, Advancing next_ep -- no ambiguity there either: it's a
+    // fact about a file already confirmed watched, and the filename is
+    // all an unlinked series has).
+    let linked = view
+        .list_entries
+        .get(&id)
+        .is_some_and(|entry| entry.anidb_series_id.is_some());
     let episode = view
         .anidb_metadata
         .get(&file)
@@ -1340,6 +1347,9 @@ fn list_advances(
         .and_then(|m| m.episode_number.as_deref())
         .and_then(|ep| ep.trim().parse::<u32>().ok())
         .or_else(|| {
+            if linked {
+                return None;
+            }
             let filename = &view
                 .playlist
                 .iter()
