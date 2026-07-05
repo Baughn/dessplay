@@ -404,6 +404,19 @@ Because this mutates *two* maps (`series_preference` and `the_list`) from
 one old snapshot, it runs as its own decode-time step, not folded into the
 generic versioned-fallback chain used for pure value-shape changes.
 
+**Mid-development layouts can become load-bearing.** A build from the
+middle of the Phase 19 window — re-keyed and with
+`local_aliases`/`manual_files`, but before `SeriesListEntry` gained
+`anidb_unavailable` — was deployed to the rendezvous server (2026-07-04)
+and wrote authoritative snapshots in that never-numbered shape; the next
+day's binary then refused to start, since no fallback matched it. The
+chain now carries that layout as `CrdtStateV5` (upgrade: default the
+missing flag false; everything else passes through). The general lesson:
+the server persists whatever layout it *runs*, so any layout that ever
+reaches tsugumi needs a fallback entry — either deploy only at
+phase-complete commits, or add the intermediate to the chain as part of
+the deploy.
+
 ### Acknowledged Absent
 
 `GSet<(Ed2kHash, UserId)>` -- a grow-only set of `(now-playing file,
