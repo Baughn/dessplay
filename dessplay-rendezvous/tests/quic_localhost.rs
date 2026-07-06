@@ -53,7 +53,7 @@ async fn two_clients_connect_over_real_quic() {
     let mut connectors = Vec::new();
     for name in ["kim", "baughn"] {
         // First use: no pin.
-        let connector = Arc::new(QuicConnector::new(server_addr, "dessplay", None).unwrap());
+        let connector = Arc::new(QuicConnector::new(vec![server_addr], "dessplay", None).unwrap());
         connectors.push(Arc::clone(&connector));
         let (_cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
         let (event_tx, event_rx) = mpsc::channel(64);
@@ -126,7 +126,7 @@ async fn wrong_password_fails_cleanly_over_real_quic() {
         None,
     ));
 
-    let connector = Arc::new(QuicConnector::new(server_addr, "dessplay", None).unwrap());
+    let connector = Arc::new(QuicConnector::new(vec![server_addr], "dessplay", None).unwrap());
     let (_cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
     let (event_tx, mut events) = mpsc::channel(64);
     tokio::spawn(network::run(
@@ -186,7 +186,7 @@ async fn a_relayed_message_reaches_a_receive_only_peer_over_real_quic() {
     };
     let mut ends = Vec::new();
     for name in ["sender", "receiver"] {
-        let connector = Arc::new(QuicConnector::new(server_addr, "dessplay", None).unwrap());
+        let connector = Arc::new(QuicConnector::new(vec![server_addr], "dessplay", None).unwrap());
         let (cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
         let (event_tx, event_rx) = mpsc::channel(64);
         tokio::spawn(network::run(
@@ -269,7 +269,8 @@ async fn wrong_pinned_fingerprint_refuses_to_connect() {
         None,
     ));
 
-    let connector = QuicConnector::new(server_addr, "dessplay", Some(vec![0xAA; 32])).unwrap();
+    let connector =
+        QuicConnector::new(vec![server_addr], "dessplay", Some(vec![0xAA; 32])).unwrap();
     let result = connector.connect().await;
     assert!(result.is_err(), "connected despite a fingerprint mismatch");
     assert!(connector.observed_fingerprint().is_none());

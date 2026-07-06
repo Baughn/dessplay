@@ -56,6 +56,7 @@ impl UiClient {
             recency: BTreeMap::new(),
             cache_hashes: Default::default(),
             watched_hashes: Default::default(),
+            link: dessplay::ui::props::LinkStatus::Connected,
         };
         self.ui.apply_snapshot(snapshot);
     }

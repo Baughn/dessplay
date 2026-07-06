@@ -105,6 +105,7 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
         irc_tx,
         irc_events,
         irc_alive: true,
+        link: Default::default(),
     };
     let task = tokio::spawn(async move { session.run().await });
     LoopRig {

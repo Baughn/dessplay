@@ -39,6 +39,14 @@ pub const CONTROL_PRIORITY: i32 = 100;
 /// "open immediately after handshake" latency.
 pub const CONTROL_STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Per-address handshake budget when dialing. The QUIC idle timeout
+/// (30s) is far too long to discover that one address family is
+/// black-holed — a Mac waking from sleep can have a stale-NDP IPv6 path
+/// that silently eats packets for a minute while IPv4 works
+/// (2026-07-06) — so each resolved address gets this budget before the
+/// connector moves on to the next.
+pub const PER_ADDRESS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Per-stream flow control window. Sized for pushing video chunks over
 /// a ~250Mbit, tens-of-ms path with headroom, not for request/response.
 pub const STREAM_RECEIVE_WINDOW: u64 = 16 * 1024 * 1024;
@@ -190,22 +198,41 @@ impl Transport for QuicTransport {
 }
 
 /// Dials the rendezvous server over QUIC with TOFU verification.
+///
+/// Holds *every* resolved server address and tries them in order on each
+/// [`Connector::connect`], with [`PER_ADDRESS_HANDSHAKE_TIMEOUT`] per
+/// address — so a black-holed IPv6 path (post-sleep stale NDP,
+/// 2026-07-06) falls through to IPv4 instead of eating the full 30s
+/// idle timeout. Endpoints are created lazily, one per address family.
 pub struct QuicConnector {
-    endpoint: quinn::Endpoint,
-    server_addr: SocketAddr,
+    client_config: quinn::ClientConfig,
+    /// Lazily-bound client endpoints, at most one per address family.
+    /// A `std` mutex: only held across synchronous bind/lookup, never
+    /// an await.
+    endpoints: std::sync::Mutex<Vec<quinn::Endpoint>>,
+    server_addrs: Vec<SocketAddr>,
     server_name: String,
+    /// Handshake budget per address. [`PER_ADDRESS_HANDSHAKE_TIMEOUT`]
+    /// in production; tests shorten it.
+    per_address_timeout: Duration,
     observed: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
 }
 
 impl QuicConnector {
-    /// Build a connector. `pinned` is the stored fingerprint, if any;
-    /// after the first successful [`Connector::connect`],
-    /// [`QuicConnector::observed_fingerprint`] yields what to pin.
+    /// Build a connector. `server_addrs` must be non-empty; addresses
+    /// are tried in the given order on every connect. `pinned` is the
+    /// stored fingerprint, if any; after the first successful
+    /// [`Connector::connect`], [`QuicConnector::observed_fingerprint`]
+    /// yields what to pin (the pin is per server *name*, shared across
+    /// addresses).
     pub fn new(
-        server_addr: SocketAddr,
+        server_addrs: Vec<SocketAddr>,
         server_name: impl Into<String>,
         pinned: Option<Vec<u8>>,
     ) -> Result<Self, TransportError> {
+        if server_addrs.is_empty() {
+            return Err(TransportError::Setup("no server addresses".into()));
+        }
         let (verifier, observed) = TofuVerifier::new(pinned);
         let crypto = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
@@ -222,18 +249,12 @@ impl QuicConnector {
         let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
         client_config.transport_config(Arc::new(shared_transport_config()));
 
-        let bind: SocketAddr = if server_addr.is_ipv4() {
-            (Ipv4Addr::UNSPECIFIED, 0).into()
-        } else {
-            (Ipv6Addr::UNSPECIFIED, 0).into()
-        };
-        let mut endpoint = quinn::Endpoint::client(bind).map_err(setup("binding endpoint"))?;
-        endpoint.set_default_client_config(client_config);
-
         Ok(Self {
-            endpoint,
-            server_addr,
+            client_config,
+            endpoints: std::sync::Mutex::new(Vec::new()),
+            server_addrs,
             server_name: server_name.into(),
+            per_address_timeout: PER_ADDRESS_HANDSHAKE_TIMEOUT,
             observed,
         })
     }
@@ -243,36 +264,88 @@ impl QuicConnector {
     pub fn observed_fingerprint(&self) -> Option<Vec<u8>> {
         self.observed.lock().ok().and_then(|guard| guard.clone())
     }
+
+    /// The client endpoint for `addr`'s family, binding it on first use.
+    fn endpoint_for(&self, addr: SocketAddr) -> Result<quinn::Endpoint, TransportError> {
+        let mut endpoints = self
+            .endpoints
+            .lock()
+            .map_err(|_| TransportError::Setup("endpoint lock poisoned".into()))?;
+        for endpoint in endpoints.iter() {
+            if endpoint
+                .local_addr()
+                .map(|local| local.is_ipv4() == addr.is_ipv4())
+                .unwrap_or(false)
+            {
+                return Ok(endpoint.clone());
+            }
+        }
+        let bind: SocketAddr = if addr.is_ipv4() {
+            (Ipv4Addr::UNSPECIFIED, 0).into()
+        } else {
+            (Ipv6Addr::UNSPECIFIED, 0).into()
+        };
+        let mut endpoint = quinn::Endpoint::client(bind).map_err(setup("binding endpoint"))?;
+        endpoint.set_default_client_config(self.client_config.clone());
+        endpoints.push(endpoint.clone());
+        Ok(endpoint)
+    }
+
+    /// One dial to one address: handshake plus control stream, bounded
+    /// by `per_address_timeout`.
+    async fn connect_one(&self, addr: SocketAddr) -> Result<QuicTransport, TransportError> {
+        let started = std::time::Instant::now();
+        tracing::debug!(
+            addr = %addr,
+            server_name = %self.server_name,
+            "dialing"
+        );
+        let endpoint = self.endpoint_for(addr)?;
+        let dial = async {
+            let connecting = endpoint
+                .connect(addr, &self.server_name)
+                .map_err(setup("dial"))?;
+            let conn = connecting.await.map_err(setup("handshake"))?;
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "QUIC handshake complete"
+            );
+            let (send, recv) = conn
+                .open_bi()
+                .await
+                .map_err(setup("opening control stream"))?;
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "control stream open"
+            );
+            Ok(QuicTransport::new(conn, send, recv))
+        };
+        match tokio::time::timeout(self.per_address_timeout, dial).await {
+            Ok(result) => result,
+            Err(_) => Err(TransportError::Setup(format!(
+                "handshake with {addr}: no response within {}s",
+                self.per_address_timeout.as_secs_f64()
+            ))),
+        }
+    }
 }
 
 impl Connector for QuicConnector {
     type Conn = QuicTransport;
 
     async fn connect(&self) -> Result<QuicTransport, TransportError> {
-        let started = std::time::Instant::now();
-        tracing::debug!(
-            addr = %self.server_addr,
-            server_name = %self.server_name,
-            "dialing"
-        );
-        let connecting = self
-            .endpoint
-            .connect(self.server_addr, &self.server_name)
-            .map_err(setup("dial"))?;
-        let conn = connecting.await.map_err(setup("handshake"))?;
-        tracing::debug!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "QUIC handshake complete"
-        );
-        let (send, recv) = conn
-            .open_bi()
-            .await
-            .map_err(setup("opening control stream"))?;
-        tracing::debug!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "control stream open"
-        );
-        Ok(QuicTransport::new(conn, send, recv))
+        let mut last_err = None;
+        for &addr in &self.server_addrs {
+            match self.connect_one(addr).await {
+                Ok(conn) => return Ok(conn),
+                Err(e) => {
+                    tracing::warn!(addr = %addr, error = %e, "address failed; trying next");
+                    last_err = Some(e);
+                }
+            }
+        }
+        // new() rejects an empty address list, so last_err is Some here.
+        Err(last_err.unwrap_or_else(|| TransportError::Setup("no server addresses".into())))
     }
 }
 
@@ -434,7 +507,7 @@ mod tests {
         let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
         let server_addr = listener.local_addr().unwrap();
 
-        let connector = QuicConnector::new(server_addr, "dessplay", None).unwrap();
+        let connector = QuicConnector::new(vec![server_addr], "dessplay", None).unwrap();
         // The control stream opens lazily, so the server's `accept_bi`
         // (inside `accept`) only fires once the client writes a frame on
         // it — send one after connecting to unblock the accept.
@@ -475,7 +548,7 @@ mod tests {
         let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
         let server_addr = listener.local_addr().unwrap();
 
-        let connector = QuicConnector::new(server_addr, "dessplay", None).unwrap();
+        let connector = QuicConnector::new(vec![server_addr], "dessplay", None).unwrap();
 
         // The "attacker": completes the handshake (and locally opens the
         // control stream via `connect`) but never *writes* a frame on it, so
@@ -484,7 +557,7 @@ mod tests {
         let _idle = connector.connect().await.unwrap();
 
         // A normal client connects and sends its first control frame.
-        let normal_connector = QuicConnector::new(server_addr, "dessplay", None).unwrap();
+        let normal_connector = QuicConnector::new(vec![server_addr], "dessplay", None).unwrap();
         let normal = normal_connector.connect().await.unwrap();
         normal.send_control(b"hello").await.unwrap();
 
@@ -505,5 +578,41 @@ mod tests {
             TransportEvent::Control(payload) => assert_eq!(payload, b"hello"),
             other => panic!("expected the normal client's control frame, got {other:?}"),
         }
+    }
+
+    /// Regression (2026-07-06): a black-holed first address must not sink
+    /// the whole connection attempt. A Mac waking from sleep had a stale-NDP
+    /// IPv6 path that silently ate packets for ~90s while IPv4 worked; the
+    /// old single-address connector sat in the 30s idle timeout against the
+    /// AAAA address and never tried anything else. The connector must time
+    /// out per address and fall through to the next one.
+    #[tokio::test]
+    async fn dead_first_address_falls_through_to_the_next() {
+        let cert_dir = tempfile::tempdir().unwrap();
+        let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
+        let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        // A perfect black hole: a bound UDP socket that never answers.
+        let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let blackhole_addr = blackhole.local_addr().unwrap();
+
+        let mut connector =
+            QuicConnector::new(vec![blackhole_addr, server_addr], "dessplay", None).unwrap();
+        // Shorten the per-address budget so the test doesn't wait 10s on
+        // the black hole.
+        connector.per_address_timeout = Duration::from_millis(300);
+
+        let client_fut = async {
+            let client = connector.connect().await.expect("fallback address");
+            client.send_control(b"hello").await.unwrap();
+            client
+        };
+        let (_client, accepted) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(client_fut, listener.accept())
+        })
+        .await
+        .expect("connect/accept budget exhausted");
+        accepted.expect("accept failed");
     }
 }

@@ -213,6 +213,7 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
         irc_tx,
         irc_events,
         irc_alive: true,
+        link: Default::default(),
     };
     let loop_task = tokio::spawn(async move { session.run().await });
 

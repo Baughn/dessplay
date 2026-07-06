@@ -1526,15 +1526,34 @@ impl StatusBar {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let state = if self.props.playing {
-            Span::styled("▶ playing", theme::tone_style(Tone::Good))
-        } else if self.props.blockers.is_empty() {
-            Span::styled("⏸ paused", theme::dim())
-        } else {
-            Span::styled(
-                format!("⏸ waiting on {}", self.props.blockers.join(", ")),
-                theme::tone_style(Tone::Blocked),
-            )
+        // Anything but a healthy link replaces the play-state text: the
+        // gating info is stale while offline, and a silent dead
+        // handshake reads as a hang (design.md UI principles; the
+        // 2026-07-06 post-wake IPv6 black hole).
+        let state = match self.props.link {
+            super::props::LinkStatus::Connecting { attempt } if attempt <= 1 => {
+                Span::styled("⚡ connecting to server…", theme::tone_style(Tone::Paused))
+            }
+            super::props::LinkStatus::Connecting { attempt } => Span::styled(
+                format!("⚡ connecting to server (attempt {attempt})…"),
+                theme::tone_style(Tone::Paused),
+            ),
+            super::props::LinkStatus::Down => Span::styled(
+                "⚡ connection lost — retrying…",
+                theme::tone_style(Tone::Paused),
+            ),
+            super::props::LinkStatus::Connected => {
+                if self.props.playing {
+                    Span::styled("▶ playing", theme::tone_style(Tone::Good))
+                } else if self.props.blockers.is_empty() {
+                    Span::styled("⏸ paused", theme::dim())
+                } else {
+                    Span::styled(
+                        format!("⏸ waiting on {}", self.props.blockers.join(", ")),
+                        theme::tone_style(Tone::Blocked),
+                    )
+                }
+            }
         };
         let now = match &self.props.title {
             Some(title) => format!("Now Playing: {title}"),

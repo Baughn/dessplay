@@ -477,9 +477,37 @@ pub fn mmss(millis: u64) -> String {
 
 // ---- Player status ---------------------------------------------------
 
+/// The server-link state shown on the status bar. Without it a dead
+/// handshake (which can run the full per-address timeout ladder) is
+/// indistinguishable from a hang — the 2026-07-06 post-wake IPv6 black
+/// hole read as "dessplay froze" (design.md UI principles: no silent
+/// long-running work).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LinkStatus {
+    /// Dialing the server (initial connect or a retry).
+    Connecting {
+        /// 1-based attempt counter from the network actor.
+        attempt: u64,
+    },
+    /// Authenticated and syncing.
+    Connected,
+    /// Connection lost; the network actor is between retries.
+    Down,
+}
+
+impl Default for LinkStatus {
+    /// The state at startup, before the first network event arrives.
+    fn default() -> Self {
+        LinkStatus::Connecting { attempt: 1 }
+    }
+}
+
 /// Player status bar props.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct StatusProps {
+    /// Server-link state; anything but `Connected` replaces the
+    /// play-state text (stale gating info is noise while offline).
+    pub link: LinkStatus,
     /// Now-playing filename.
     pub title: Option<String>,
     /// The derived playback state.
@@ -493,7 +521,12 @@ pub struct StatusProps {
 }
 
 /// Build the status bar.
-pub fn status_props(view: &StateView, peers: &[PeerInfo], me: &UserId) -> StatusProps {
+pub fn status_props(
+    view: &StateView,
+    peers: &[PeerInfo],
+    me: &UserId,
+    link: LinkStatus,
+) -> StatusProps {
     let title = view.now_playing.and_then(|hash| {
         view.playlist
             .iter()
@@ -519,6 +552,7 @@ pub fn status_props(view: &StateView, peers: &[PeerInfo], me: &UserId) -> Status
         })
         .collect();
     StatusProps {
+        link,
         title,
         playing: derive::playback_active(view, peers),
         blockers,
@@ -1700,7 +1734,12 @@ mod tests {
         state.set_playback_intent(A, ts(3), PlaybackIntent::Playing);
         state.set_manual_override(A, ts(4), UserId::new("kim"), Some(ManualState::Paused));
         let peers = [peer("kim", Role::Interactive, Presence::Present)];
-        let props = status_props(&state.view(), &peers, &UserId::new("kim"));
+        let props = status_props(
+            &state.view(),
+            &peers,
+            &UserId::new("kim"),
+            LinkStatus::Connected,
+        );
         assert_eq!(props.title.as_deref(), Some("ep1.mkv"));
         assert!(!props.playing);
         assert_eq!(props.blockers, vec!["kim (paused)"]);

@@ -69,6 +69,14 @@ impl NetworkCommand {
 /// Events to the main loop.
 #[derive(Debug)]
 pub enum NetworkEvent {
+    /// A connection attempt is starting (initial or reconnect). Feeds
+    /// the status bar's link indicator — a dead handshake can take the
+    /// full per-address timeout ladder, and silence there reads as a
+    /// hang (design.md UI principles: no silent long-running work).
+    Connecting {
+        /// 1-based attempt counter, reset only by process restart.
+        attempt: u64,
+    },
     /// Authenticated; the server saw us at this address.
     Connected {
         /// Our address as observed by the server.
@@ -186,6 +194,11 @@ pub async fn run<C: Connector>(
         attempt_number += 1;
         let attempt_started = tokio::time::Instant::now();
         tracing::info!(attempt = attempt_number, "connecting to server");
+        let _ = events
+            .send(NetworkEvent::Connecting {
+                attempt: attempt_number,
+            })
+            .await;
         // A connection attempt to an unreachable host can take the full
         // handshake timeout (30s of QUIC retries) — Shutdown must
         // interrupt it, or quitting hangs on this actor. Other commands

@@ -93,6 +93,7 @@ fn snapshot(view: StateView, peers: Vec<PeerInfo>) -> UiSnapshot {
         recency: BTreeMap::new(),
         cache_hashes: Default::default(),
         watched_hashes: Default::default(),
+        link: dessplay::ui::props::LinkStatus::Connected,
     }
 }
 
@@ -122,6 +123,7 @@ fn snapshot_with_cache(view: StateView, peers: Vec<PeerInfo>, cache: &[Ed2kHash]
         recency: BTreeMap::new(),
         cache_hashes: cache.iter().copied().collect(),
         watched_hashes: Default::default(),
+        link: dessplay::ui::props::LinkStatus::Connected,
     }
 }
 
@@ -147,6 +149,43 @@ fn layout_snapshot_empty_state() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
     insta::assert_snapshot!(render(&mut ui, 100, 30));
+}
+
+/// Regression (2026-07-06): a dead handshake used to be invisible — the
+/// status bar showed stale playback state while the network actor sat in
+/// a 30s timeout, and the user concluded dessplay had hung. Any link
+/// state other than Connected must be visible on the status bar.
+#[test]
+fn status_bar_shows_connection_state_while_not_connected() {
+    let mut ui = ui();
+    let mut snap = snapshot(StateView::default(), vec![peer("kim")]);
+    snap.link = dessplay::ui::props::LinkStatus::Connecting { attempt: 1 };
+    ui.apply_snapshot(snap);
+    let rendered = render(&mut ui, 100, 30);
+    assert!(rendered.contains("connecting to server"), "{rendered}");
+
+    // Later attempts surface the counter — visible progress, not a
+    // frozen line.
+    let mut snap = snapshot(StateView::default(), vec![peer("kim")]);
+    snap.link = dessplay::ui::props::LinkStatus::Connecting { attempt: 3 };
+    ui.apply_snapshot(snap);
+    let rendered = render(&mut ui, 100, 30);
+    assert!(
+        rendered.contains("connecting to server (attempt 3)"),
+        "{rendered}"
+    );
+
+    // A mid-session drop shows as lost-and-retrying.
+    let mut snap = snapshot(StateView::default(), vec![peer("kim")]);
+    snap.link = dessplay::ui::props::LinkStatus::Down;
+    ui.apply_snapshot(snap);
+    let rendered = render(&mut ui, 100, 30);
+    assert!(rendered.contains("connection lost"), "{rendered}");
+
+    // And a healthy link shows playback state, not connection state.
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    let rendered = render(&mut ui, 100, 30);
+    assert!(!rendered.contains("connecting to server"), "{rendered}");
 }
 
 #[test]

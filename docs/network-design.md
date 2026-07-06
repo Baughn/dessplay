@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-07-02
+Last updated: 2026-07-06
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -67,6 +67,19 @@ seeder is an ordinary client; anyone can run another one.
 
 There are no client-to-client connections. Both IPv4 and IPv6 are supported
 (the server is dual-stack); `PeerInfo.addresses` carries both families.
+
+**Dialing.** The client resolves *all* of the server's A/AAAA addresses and
+tries them in family-interleaved order (the resolver's preferred family
+first, then the other family, alternating), with a **10s per-address
+handshake budget** before moving to the next address. One address family
+being silently black-holed is a real failure mode — a Mac waking from sleep
+had a stale-NDP IPv6 path that ate packets for ~90s while IPv4 worked
+(2026-07-06) — and waiting out the full 30s idle timeout against a single
+dead AAAA address read as a hang. Client endpoints are created lazily, one
+per address family; the TOFU pin is keyed by server name and shared across
+addresses. Each connection attempt (initial or reconnect) is surfaced to
+the UI as a `Connecting { attempt }` event so the status bar can show link
+state (design.md, UI principles: no silent long-running work).
 
 ### Channel Usage (Client <-> Server)
 

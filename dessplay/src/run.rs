@@ -185,6 +185,28 @@ fn download_config(args: &HeadlessArgs) -> crate::download::DownloadConfig {
     }
 }
 
+/// Reorder resolved addresses so the two families alternate, keeping
+/// each family's own resolver order and starting with the resolver's
+/// first pick. The connector tries addresses in order with a bounded
+/// per-address timeout, so this guarantees the *other* family is the
+/// second thing tried when the preferred one is black-holed (post-sleep
+/// stale-NDP IPv6, 2026-07-06) rather than after every same-family
+/// address.
+fn interleave_families(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let first_is_v4 = addrs.first().is_some_and(|addr| addr.is_ipv4());
+    let (first, second): (Vec<_>, Vec<_>) = addrs
+        .into_iter()
+        .partition(|addr| addr.is_ipv4() == first_is_v4);
+    let mut out = Vec::with_capacity(first.len() + second.len());
+    let (mut first, mut second) = (first.into_iter(), second.into_iter());
+    loop {
+        match (first.next(), second.next()) {
+            (None, None) => return out,
+            (a, b) => out.extend(a.into_iter().chain(b)),
+        }
+    }
+}
+
 /// Append the default port unless the address already has one. A
 /// `host:port` has exactly one colon; a bracketed IPv6 literal carries
 /// its port after `]:` (and if it has none, just needs `:port` appended,
@@ -322,13 +344,19 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
     // Resolve and pin.
     let phase = std::time::Instant::now();
     let server_addr_str = with_default_port(&server);
-    let addr: SocketAddr = tokio::net::lookup_host(&server_addr_str)
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(&server_addr_str)
         .await
         .map_err(|e| format!("resolving {server_addr_str}: {e}"))?
-        .next()
-        .ok_or_else(|| format!("{server_addr_str} resolved to no addresses"))?;
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("{server_addr_str} resolved to no addresses"));
+    }
+    // Interleave families so a black-holed IPv6 path falls through to
+    // IPv4 after one per-address timeout, not after every AAAA address
+    // (post-sleep stale NDP ate v6 for ~90s while v4 worked; 2026-07-06).
+    let addrs = interleave_families(addrs);
     tracing::info!(
-        resolved = %addr,
+        resolved = ?addrs,
         elapsed_ms = phase.elapsed().as_millis() as u64,
         "resolved {server_addr_str}"
     );
@@ -353,7 +381,7 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
     }
     let phase = std::time::Instant::now();
     let connector = Arc::new(
-        QuicConnector::new(addr, server_name, pinned)
+        QuicConnector::new(addrs, server_name, pinned)
             .map_err(|e| format!("building QUIC endpoint: {e}"))?,
     );
     tracing::info!(
@@ -851,6 +879,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         irc_tx,
         irc_events,
         irc_alive: true,
+        link: crate::ui::props::LinkStatus::default(),
     };
     let end = session.run().await;
 
@@ -992,6 +1021,9 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     /// Whether the IRC event channel is still open (guards its select arm
     /// so a closed channel can't busy-loop).
     pub irc_alive: bool,
+    /// Server-link state for the status bar, tracked from the network
+    /// actor's Connecting/Connected/Disconnected events.
+    pub link: crate::ui::props::LinkStatus,
 }
 
 impl<F: crate::player::PlayerFactory> SessionLoop<F> {
@@ -1210,7 +1242,15 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         ClientEvent::Network(NetworkEvent::Rejected { message }) => {
                             return SessionEnd::Rejected(message.clone());
                         }
+                        ClientEvent::Network(NetworkEvent::Connecting { attempt }) => {
+                            self.link =
+                                crate::ui::props::LinkStatus::Connecting { attempt: *attempt };
+                        }
+                        ClientEvent::Network(NetworkEvent::Disconnected { .. }) => {
+                            self.link = crate::ui::props::LinkStatus::Down;
+                        }
                         ClientEvent::Network(NetworkEvent::Connected { .. }) => {
+                            self.link = crate::ui::props::LinkStatus::Connected;
                             if first_connected {
                                 first_connected = false;
                                 tracing::info!(
@@ -1464,6 +1504,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             recency,
             cache_hashes,
             watched_hashes,
+            link: self.link,
         })
     }
 }
@@ -1630,6 +1671,28 @@ mod tests {
         // directly, not another pair of brackets ([[::1]]:9876 was the bug).
         assert_eq!(with_default_port("[::1]"), "[::1]:9876");
         assert_eq!(with_default_port("[fe80::1]"), "[fe80::1]:9876");
+    }
+
+    #[test]
+    fn interleave_families_alternates_starting_with_resolver_preference() {
+        fn v4(last: u8) -> SocketAddr {
+            format!("10.0.0.{last}:1").parse().unwrap()
+        }
+        fn v6(last: u8) -> SocketAddr {
+            format!("[2001:db8::{last}]:1").parse().unwrap()
+        }
+        // Resolver prefers v6: the first v4 lands second, per-family
+        // order preserved.
+        assert_eq!(
+            interleave_families(vec![v6(1), v6(2), v4(1), v4(2)]),
+            vec![v6(1), v4(1), v6(2), v4(2)]
+        );
+        // Resolver prefers v4: symmetric.
+        assert_eq!(interleave_families(vec![v4(1), v6(1)]), vec![v4(1), v6(1)]);
+        // Single family / single address: unchanged.
+        assert_eq!(interleave_families(vec![v6(1), v6(2)]), vec![v6(1), v6(2)]);
+        assert_eq!(interleave_families(vec![v4(9)]), vec![v4(9)]);
+        assert_eq!(interleave_families(vec![]), Vec::<SocketAddr>::new());
     }
 
     #[test]

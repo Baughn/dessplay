@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-04
+Last updated: 2026-07-06
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1098,6 +1098,15 @@ happening, and retries. Playlist-add hashing shows a centered progress
 overlay (one bar per in-flight file); it is visually modal but captures
 no input, so chat keeps working underneath. Phase 9's transfers reuse
 the same pattern.
+
+The **server link** is part of this: whenever the client is not
+connected, the status bar's play-state slot shows the link instead —
+"⚡ connecting to server (attempt N)…" while dialing (a dead handshake
+can take the full per-address timeout ladder; see
+[network-design.md](network-design.md#connection-types), Dialing) and
+"⚡ connection lost — retrying…" after a mid-session drop. Stale gating
+text ("⏸ paused") while silently failing to connect read as a hang
+(2026-07-06).
 
 ```
 +----------------------------------+------------------+

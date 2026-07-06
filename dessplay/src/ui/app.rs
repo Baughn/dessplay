@@ -63,6 +63,9 @@ pub struct UiSnapshot {
     /// browser's muting alongside the group watched flag (design.md
     /// #11). Local, not synced.
     pub watched_hashes: BTreeSet<Ed2kHash>,
+    /// Server-link state, from the network actor's connect lifecycle.
+    /// The status bar shows it whenever it isn't `Connected`.
+    pub link: props::LinkStatus,
 }
 
 /// Log one outgoing [`UserAction`] at debug. Mutations log their
@@ -560,6 +563,7 @@ impl Ui {
             &snapshot.view,
             &snapshot.peers,
             &self.me,
+            snapshot.link,
         ));
         self.snapshot = snapshot;
         self.refresh_series();
