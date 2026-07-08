@@ -93,19 +93,19 @@ impl SeederTransfer {
         for entry in download_order(view) {
             let file = entry.hash;
             if self.have.get(&file) == Some(&false) {
+                // Emitted even with no peer source: the torrent path
+                // needs no peer, and the peer path just waits for one.
                 let sources = self.sources(view, peers, file);
-                if !sources.is_empty() {
-                    let _ = self
-                        .file
-                        .send(FileCommand::StartDownload {
-                            file,
-                            size_bytes: entry.state.size_bytes,
-                            filename: entry.state.filename.clone(),
-                            sources,
-                            play_chunk: 0,
-                        })
-                        .await;
-                }
+                let _ = self
+                    .file
+                    .send(FileCommand::StartDownload {
+                        file,
+                        size_bytes: entry.state.size_bytes,
+                        filename: entry.state.filename.clone(),
+                        sources,
+                        play_chunk: 0,
+                    })
+                    .await;
             }
         }
     }

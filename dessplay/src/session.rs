@@ -924,24 +924,26 @@ impl PlayerWiring {
             }
             let sources = self.download_sources(view, peers, file);
             if sources.is_empty() {
-                // A windowed file we want but can't fetch — the diagnostic
-                // signal for "why didn't this prefetch?". Logged once per
-                // stall (not every snapshot); clears once a source appears.
+                // A windowed file no present peer can serve — still
+                // emitted (the torrent path needs no peer source; the
+                // peer path just waits), but tracked as the diagnostic
+                // signal for "why isn't this prefetching from peers?".
+                // Logged once per stall; clears once a source appears.
                 self.prefetching.remove(&file);
                 if self.awaiting_source.insert(file) {
                     tracing::info!(
                         %file,
-                        "prefetch: windowed file is missing but no present peer has it Ready yet; not downloading"
+                        "prefetch: no present peer has this file Ready; trying a torrent"
                     );
                 }
-                continue;
-            }
-            self.awaiting_source.remove(&file);
-            // `StartDownload` is re-emitted every snapshot to refresh the
-            // source set (idempotent in the file actor); log only the
-            // transition into downloading.
-            if self.prefetching.insert(file) {
-                tracing::info!(%file, sources = sources.len(), "prefetch: starting download");
+            } else {
+                self.awaiting_source.remove(&file);
+                // `StartDownload` is re-emitted every snapshot to refresh
+                // the source set (idempotent in the file actor); log only
+                // the transition into downloading.
+                if self.prefetching.insert(file) {
+                    tracing::info!(%file, sources = sources.len(), "prefetch: starting download");
+                }
             }
             out.push(Directive::StartDownload {
                 file,
@@ -4703,12 +4705,12 @@ mod tests {
     }
 
     #[test]
-    fn windowed_missing_file_without_a_source_does_not_download() {
-        // The prefetch-logging refactor (collect-first + per-file
-        // transition tracking) must not change the download decision: a
-        // windowed missing file with no present Ready peer is *not*
-        // downloaded, and one gains its download the moment a source
-        // appears.
+    fn windowed_missing_file_without_a_source_still_emits_for_the_torrent_path() {
+        // Torrent-first downloads (design.md, BitTorrent Downloads): a
+        // windowed missing file is emitted even when no present peer
+        // advertises it — the torrent path needs no peer source; the
+        // peer path inside the file actor simply waits for one. Sources
+        // fill in the moment a peer appears.
         let mut state = CrdtState::new();
         state.push_playlist_entry(A, ts(1), entry(1, "now.mkv")); // now-playing
         state.push_playlist_entry(A, ts(2), entry(2, "ahead.mkv")); // in window
@@ -4722,14 +4724,21 @@ mod tests {
         wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
         wiring.on_resolved(hash(2), Resolution::NotFound, &view, &peers);
 
-        // No source: nothing to download yet.
-        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        // No source: emitted anyway, with an empty source set.
+        let directives = wiring.on_state(&view, &peers);
+        let downloads = start_download_files(&directives);
         assert!(
-            downloads.is_empty(),
-            "a windowed missing file with no source must not download: {downloads:?}"
+            downloads.contains(&hash(1)) && downloads.contains(&hash(2)),
+            "windowed missing files must emit even without a source: {downloads:?}"
         );
+        for directive in &directives {
+            if let Directive::StartDownload { sources, .. } = directive {
+                assert!(sources.is_empty(), "no present peer advertises these");
+            }
+        }
 
-        // A peer now advertises the ahead entry Ready.
+        // A peer now advertises the ahead entry Ready: its emission
+        // carries the source.
         state.set_file_availability(
             A,
             ts(5),
@@ -4739,11 +4748,15 @@ mod tests {
         );
         let view = state.view();
         let peers = [peer("kim"), peer("nas")];
-        let downloads = start_download_files(&wiring.on_state(&view, &peers));
-        assert!(
-            downloads.contains(&hash(2)),
-            "the windowed file must download once a source appears: {downloads:?}"
-        );
+        let sources_for_2 = wiring
+            .on_state(&view, &peers)
+            .into_iter()
+            .find_map(|d| match d {
+                Directive::StartDownload { file, sources, .. } if file == hash(2) => Some(sources),
+                _ => None,
+            })
+            .expect("the windowed file must still emit");
+        assert_eq!(sources_for_2, vec![dessplay_core::net::PeerId::new("nas")]);
     }
 
     #[test]
