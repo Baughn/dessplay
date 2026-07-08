@@ -434,6 +434,9 @@ pub async fn run(
             return;
         }
     };
+    // Registered torrents rejoin the engine (or are dropped for files
+    // evicted while the app was closed) before any commands land.
+    actor.reconcile_torrents();
     // Drives snub detection, pipeline refill, and serve-queue draining.
     let mut tick = tokio::time::interval(DOWNLOAD_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1281,6 +1284,46 @@ impl Actor {
     /// multi-file surprise stays contained).
     fn torrent_dir(&self, file: Ed2kHash) -> PathBuf {
         self.cache_dir.join("torrents").join(file.to_string())
+    }
+
+    /// Startup reconciliation of the torrent registry (design.md,
+    /// BitTorrent Downloads): a registered torrent whose file is still
+    /// cached is re-added — instant when librqbit's fastresume already
+    /// restored it, a magnet re-fetch otherwise — so it keeps seeding; a
+    /// row whose file was evicted while the app was closed loses its
+    /// torrent. A torrent mid-download at shutdown has no cache entry
+    /// yet and is dropped too — in-flight downloads don't survive
+    /// restarts (matching the peer path), and the next `StartDownload`
+    /// re-searches.
+    fn reconcile_torrents(&mut self) {
+        let Some(engine) = self.torrent.clone() else {
+            return;
+        };
+        let rows = match self.storage.torrents() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!("listing registered torrents: {e}");
+                return;
+            }
+        };
+        for row in rows {
+            if self.local_files.contains_key(&row.hash) {
+                tracing::debug!(file = %row.hash, name = row.name, "re-adding torrent to seed");
+                let chosen = NyaaMatch {
+                    torrent_url: format!("magnet:?xt=urn:btih:{}", row.info_hash),
+                    info_hash: row.info_hash,
+                    title: row.name,
+                };
+                engine.add(row.hash, &chosen, self.torrent_dir(row.hash));
+            } else {
+                tracing::info!(
+                    file = %row.hash,
+                    name = row.name,
+                    "cached file gone; removing its torrent"
+                );
+                self.drop_torrent(row.hash);
+            }
+        }
     }
 
     /// Remove `file`'s torrent everywhere: the engine (with its files),
@@ -5016,5 +5059,77 @@ mod tests {
                 .exists(),
             "evicted cache file must be gone"
         );
+    }
+
+    /// Startup reconciliation: a registered torrent whose file is still
+    /// cached is re-added (by magnet) to keep seeding; one whose file
+    /// was evicted while the app was closed is removed.
+    #[tokio::test]
+    async fn startup_reconciles_registered_torrents() {
+        use crate::storage::TorrentRow;
+
+        let contents = b"a cached, still-seeding episode".as_slice();
+        let kept = ed2k_hash_bytes(contents).root;
+        let evicted = ed2k_hash_bytes(b"a file evicted while closed").root;
+
+        let storage = Storage::open_in_memory().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        // The kept file's cache entry, with its file present on disk.
+        let kept_path = cache_dir.path().join(kept.to_string());
+        std::fs::write(&kept_path, contents).unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: kept,
+                path: kept_path,
+                size_bytes: contents.len() as u64,
+                last_access: 0,
+            })
+            .unwrap();
+        for (hash, info_hash) in [(kept, "aa"), (evicted, "bb")] {
+            storage
+                .upsert_torrent(&TorrentRow {
+                    hash,
+                    info_hash: info_hash.into(),
+                    name: "ep.mkv".into(),
+                    added_at: 0,
+                })
+                .unwrap();
+        }
+
+        let engine = Arc::new(FakeTorrentEngine::default());
+        let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (out_tx, _out_rx) = mpsc::channel(64);
+        tokio::spawn(run(
+            FileConfig {
+                storage,
+                media_roots: vec![],
+                retention: CacheRetention::Infinite,
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: Some(engine.clone() as Arc<dyn TorrentEngine>),
+                nyaa: Some(Arc::new(FixedNyaa(None))),
+                torrent_fetch: TorrentFetchConfig::default(),
+            },
+            cmd_rx,
+            out_tx,
+        ));
+
+        for _ in 0..100 {
+            if engine.added(&kept).is_some() && engine.removed().contains(&(evicted, true)) {
+                let (chosen, _) = engine.added(&kept).unwrap();
+                assert_eq!(chosen.torrent_url, "magnet:?xt=urn:btih:aa");
+                assert!(
+                    engine.added(&evicted).is_none(),
+                    "the evicted file's torrent must not be re-added"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("startup reconciliation never ran");
     }
 }

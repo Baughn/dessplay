@@ -25,6 +25,7 @@
 
 pub mod engine;
 pub mod nyaa;
+pub mod rqbit;
 
 use std::collections::{HashMap, HashSet};
 

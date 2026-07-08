@@ -36,6 +36,7 @@ chrono = { workspace = true }
 ureq = { workspace = true }
 quick-xml = { workspace = true }
 percent-encoding = { workspace = true }
+librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 mimalloc = { workspace = true }

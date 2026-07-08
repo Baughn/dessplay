@@ -223,6 +223,9 @@ fn download_order(view: &StateView) -> Vec<&dessplay_core::playlist::PlaylistEnt
 /// flags like `--pipeline-depth` reach the seeder, which downloads the
 /// whole playlist and benefits from the same tuning interactive clients
 /// get.
+// A coherent "everything the seeder's file actor needs" bundle; the two
+// torrent handles travel together with the rest by design.
+#[allow(clippy::too_many_arguments)]
 pub fn seeder_file_config(
     storage: crate::storage::Storage,
     media_roots: Vec<PathBuf>,
@@ -230,6 +233,8 @@ pub fn seeder_file_config(
     clock: crate::actors::network::Clock,
     upload_limit: Option<u64>,
     download: crate::download::DownloadConfig,
+    torrent: Option<std::sync::Arc<dyn crate::torrent::engine::TorrentEngine>>,
+    nyaa: Option<std::sync::Arc<dyn crate::torrent::nyaa::NyaaSource>>,
 ) -> FileConfig {
     FileConfig {
         storage,
@@ -242,9 +247,8 @@ pub fn seeder_file_config(
         // A seeder's store is large and stable: scan daily, not minutely.
         scan_interval: Some(std::time::Duration::from_secs(24 * 60 * 60)),
         scan_transfer_quiet: SCAN_TRANSFER_QUIET_DEFAULT,
-        // Wired in run.rs alongside the interactive client (Phase 4).
-        torrent: None,
-        nyaa: None,
+        torrent,
+        nyaa,
         torrent_fetch: crate::torrent::TorrentFetchConfig::default(),
     }
 }
@@ -274,6 +278,8 @@ mod tests {
             clock,
             None,
             download,
+            None,
+            None,
         );
         assert_eq!(config.download.pipeline_depth, 32);
     }

@@ -185,6 +185,31 @@ fn download_config(args: &HeadlessArgs) -> crate::download::DownloadConfig {
     }
 }
 
+/// The torrent-first download wiring shared by interactive clients and
+/// seeders: a librqbit session at `<cache>/torrents/` plus the live
+/// nyaa search. A session that fails to start (port trouble, unwritable
+/// cache) disables the torrent path with a warning — the peer transfer
+/// still works — rather than failing startup.
+async fn torrent_wiring(
+    cache_dir: &std::path::Path,
+    upload_limit: Option<u64>,
+) -> (
+    Option<Arc<dyn crate::torrent::engine::TorrentEngine>>,
+    Option<Arc<dyn crate::torrent::nyaa::NyaaSource>>,
+) {
+    match crate::torrent::rqbit::RqbitEngine::new(cache_dir.join("torrents"), upload_limit).await {
+        Ok(engine) => (
+            Some(engine as Arc<dyn crate::torrent::engine::TorrentEngine>),
+            Some(Arc::new(crate::torrent::nyaa::HttpNyaaSource)
+                as Arc<dyn crate::torrent::nyaa::NyaaSource>),
+        ),
+        Err(e) => {
+            tracing::warn!("torrent downloads disabled: {e}");
+            (None, None)
+        }
+    }
+}
+
 /// Reorder resolved addresses so the two families alternate, keeping
 /// each family's own resolver order and starting with the resolver's
 /// first pick. The connector tries addresses in order with a bounded
@@ -491,6 +516,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
         // Reuse the db/cache paths already resolved (and locked) above.
         let file_storage = Storage::open(&resolved_db)
             .map_err(|e| format!("opening {}: {e}", resolved_db.display()))?;
+        let (torrent, nyaa) = torrent_wiring(&cache_dir, None).await;
         let (transfer, outputs) = crate::seeder::SeederTransfer::new(
             UserId::new(&username),
             crate::seeder::seeder_file_config(
@@ -500,6 +526,8 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                 system_clock(),
                 None,
                 download_config(&args),
+                torrent,
+                nyaa,
             ),
             handle.sync.clone(),
             handle.network.clone(),
@@ -829,6 +857,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         Some(socket) => crate::player::mpv::MpvFactory::attach(socket.clone()),
         None => crate::player::mpv::MpvFactory::new("mpv"),
     };
+    let (torrent, nyaa) = torrent_wiring(&cache_dir, settings.upload_limit).await;
     let shell = crate::session::SessionShell::new(
         me.clone(),
         player_factory,
@@ -844,10 +873,8 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             // Interactive clients re-scan the library about once a minute.
             scan_interval: Some(std::time::Duration::from_secs(60)),
             scan_transfer_quiet: crate::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
-            // The engine is wired in Phase 4 (librqbit); nyaa search is
-            // only consulted when both are present.
-            torrent: None,
-            nyaa: None,
+            torrent,
+            nyaa,
             torrent_fetch: crate::torrent::TorrentFetchConfig::default(),
         },
         settings.auto_download,
