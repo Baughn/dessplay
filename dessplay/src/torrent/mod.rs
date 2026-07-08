@@ -23,6 +23,7 @@
 //! search cooldown, the banned-infohash memory, and the handoff to the
 //! peer-transfer fallback.
 
+pub mod engine;
 pub mod nyaa;
 
 use std::collections::{HashMap, HashSet};
@@ -77,6 +78,8 @@ pub enum TorrentFetchAction {
         file: Ed2kHash,
         /// Exact release filename to query.
         filename: String,
+        /// Expected payload size (feeds [`nyaa::pick_match`]'s tolerance).
+        size_bytes: u64,
         /// Info hashes to skip (prior downloads failed ed2k verification).
         banned: HashSet<String>,
     },
@@ -132,6 +135,12 @@ enum Phase {
         /// Last progress emitted upstream (dedupe).
         last_emitted_bps: Option<u16>,
     },
+    /// The payload is complete; the actor is ed2k-hashing it. No
+    /// watchdog — hashing is local work that always finishes.
+    Verifying {
+        /// Info hash, for ban bookkeeping on a verify failure.
+        info_hash: String,
+    },
     /// The torrent path failed (no match, stall, engine error, or ed2k
     /// mismatch); the peer path has been started. A `StartDownload`
     /// re-emit past `retry_at` re-searches.
@@ -169,22 +178,33 @@ impl TorrentFetches {
         }
     }
 
-    /// Whether the torrent path is actively working on `file` (searching
-    /// or downloading — not a Failed placeholder).
+    /// Whether the torrent path is actively working on `file` (searching,
+    /// downloading, or verifying — not a Failed placeholder).
     pub fn is_active(&self, file: &Ed2kHash) -> bool {
         matches!(
             self.files.get(file).map(|f| &f.phase),
-            Some(Phase::Searching { .. } | Phase::Running { .. })
+            Some(Phase::Searching { .. } | Phase::Running { .. } | Phase::Verifying { .. })
         )
     }
 
-    /// The running torrent's info hash, if `file` is in the Running phase
-    /// (the actor needs it to ban after a verify failure).
+    /// The active torrent's info hash (Running or Verifying).
     pub fn running_info_hash(&self, file: &Ed2kHash) -> Option<&str> {
         match self.files.get(file).map(|f| &f.phase) {
-            Some(Phase::Running { info_hash, .. }) => Some(info_hash),
+            Some(Phase::Running { info_hash, .. } | Phase::Verifying { info_hash }) => {
+                Some(info_hash)
+            }
             _ => None,
         }
+    }
+
+    /// Files in the Running phase — the ones whose engine status the
+    /// actor polls each tick.
+    pub fn running_files(&self) -> Vec<Ed2kHash> {
+        self.files
+            .iter()
+            .filter(|(_, f)| matches!(f.phase, Phase::Running { .. }))
+            .map(|(file, _)| *file)
+            .collect()
     }
 
     /// A `StartDownload` arrived for `file`. Starts a search, refreshes
@@ -205,13 +225,16 @@ impl TorrentFetches {
             f.sources = sources;
             f.play_chunk = play_chunk;
             return match f.phase {
-                // Search/download in flight: just the stash refresh.
-                Phase::Searching { .. } | Phase::Running { .. } => vec![],
+                // Search/download/verify in flight: just the stash refresh.
+                Phase::Searching { .. } | Phase::Running { .. } | Phase::Verifying { .. } => {
+                    vec![]
+                }
                 Phase::Failed { retry_at } if now >= retry_at => {
                     f.phase = Phase::Searching { started_at: now };
                     vec![TorrentFetchAction::Search {
                         file,
                         filename: f.filename.clone(),
+                        size_bytes: f.size_bytes,
                         banned: f.banned.clone(),
                     }]
                 }
@@ -232,6 +255,7 @@ impl TorrentFetches {
         vec![TorrentFetchAction::Search {
             file,
             filename,
+            size_bytes,
             banned: HashSet::new(),
         }]
     }
@@ -304,15 +328,36 @@ impl TorrentFetches {
         }]
     }
 
-    /// The engine reported the torrent failed (tracker/metadata/IO error).
+    /// The engine reported the torrent failed (tracker/metadata/IO
+    /// error) — also the right call for a completed payload that can't
+    /// be read back (unlike a verify *mismatch*, this doesn't ban the
+    /// info hash; the release isn't at fault).
     pub fn on_engine_failed(&mut self, file: Ed2kHash, now: u64) -> Vec<TorrentFetchAction> {
         if !matches!(
             self.files.get(&file).map(|f| &f.phase),
-            Some(Phase::Running { .. })
+            Some(Phase::Running { .. } | Phase::Verifying { .. })
         ) {
             return vec![];
         }
         self.fail(file, now, /* remove_torrent */ true)
+    }
+
+    /// The engine finished downloading the payload; the actor is about
+    /// to ed2k-hash it. Parks the fetch in Verifying — no stall watchdog
+    /// while local hashing runs. Returns whether the transition happened
+    /// (false = not Running, e.g. already verifying or cancelled), so
+    /// the actor spawns the hash exactly once.
+    pub fn on_completed(&mut self, file: Ed2kHash) -> bool {
+        let Some(f) = self.files.get_mut(&file) else {
+            return false;
+        };
+        let Phase::Running { info_hash, .. } = &f.phase else {
+            return false;
+        };
+        f.phase = Phase::Verifying {
+            info_hash: info_hash.clone(),
+        };
+        true
     }
 
     /// The completed payload verified against the file's ed2k root: the
@@ -327,7 +372,7 @@ impl TorrentFetches {
     /// torrent + its files, and fall back to peers.
     pub fn on_verify_failed(&mut self, file: Ed2kHash, now: u64) -> Vec<TorrentFetchAction> {
         if let Some(f) = self.files.get_mut(&file)
-            && let Phase::Running { info_hash, .. } = &f.phase
+            && let Phase::Running { info_hash, .. } | Phase::Verifying { info_hash } = &f.phase
         {
             let hash = info_hash.clone();
             f.banned.insert(hash);
@@ -343,7 +388,9 @@ impl TorrentFetches {
             return vec![];
         };
         match f.phase {
-            Phase::Running { .. } => vec![TorrentFetchAction::Remove { file: *file }],
+            Phase::Running { .. } | Phase::Verifying { .. } => {
+                vec![TorrentFetchAction::Remove { file: *file }]
+            }
             Phase::Searching { .. } | Phase::Failed { .. } => vec![],
         }
     }
@@ -406,6 +453,8 @@ impl Fetch {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     fn hash(n: u8) -> Ed2kHash {
@@ -582,6 +631,28 @@ mod tests {
         // Later engine noise for the file is ignored.
         assert!(t.on_progress(f, 999, 10).is_empty());
         assert!(t.on_engine_failed(f, 10).is_empty());
+    }
+
+    #[test]
+    fn completion_parks_in_verifying_exactly_once_and_dodges_the_watchdog() {
+        let mut t = TorrentFetches::new(config());
+        let f = hash(1);
+        start(&mut t, f, vec![], 0);
+        t.on_searched(f, Some(a_match("aa")), 0);
+        assert!(t.on_completed(f), "first completion transitions");
+        assert!(!t.on_completed(f), "second is a no-op (hash spawns once)");
+        // Verifying is not Running: no polling, and no stall watchdog
+        // even while a huge payload hashes.
+        assert!(t.running_files().is_empty());
+        assert!(t.tick(u64::MAX).is_empty());
+        assert!(t.is_active(&f));
+        // A verify failure from Verifying still bans the info hash.
+        t.on_verify_failed(f, 0);
+        let actions = start(&mut t, f, vec![], config().search_cooldown_millis);
+        match &actions[..] {
+            [TorrentFetchAction::Search { banned, .. }] => assert!(banned.contains("aa")),
+            other => panic!("expected Search, got {other:?}"),
+        }
     }
 
     #[test]

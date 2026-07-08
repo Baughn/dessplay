@@ -58,6 +58,9 @@ fn spawn_actor(name: &str, media_files: &[(&str, &[u8])]) -> Actor {
             upload_limit: None,
             scan_interval: None,
             scan_transfer_quiet: dessplay::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
+            torrent: None,
+            nyaa: None,
+            torrent_fetch: dessplay::torrent::TorrentFetchConfig::default(),
         },
         cmd_rx,
         out_tx,
@@ -191,6 +194,7 @@ async fn a_cancelled_redundant_download_is_not_resurrected_by_a_stale_start() {
     let start = || FileCommand::StartDownload {
         file: hash.root,
         size_bytes: hash.size_bytes,
+        filename: "episode.mkv".into(),
         sources: vec![PeerId::new("seed")],
         play_chunk: 0,
     };
@@ -281,6 +285,7 @@ async fn single_seed_transfer_completes_with_full_goodput() {
         .send(FileCommand::StartDownload {
             file: hash.root,
             size_bytes: hash.size_bytes,
+            filename: "episode.mkv".into(),
             sources: vec![PeerId::new("seed")],
             play_chunk: 0,
         })
@@ -346,6 +351,7 @@ async fn two_seed_transfer_completes_and_stays_efficient() {
         .send(FileCommand::StartDownload {
             file: hash.root,
             size_bytes: hash.size_bytes,
+            filename: "episode.mkv".into(),
             sources: vec![PeerId::new("seedA"), PeerId::new("seedB")],
             play_chunk: 0,
         })

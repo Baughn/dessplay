@@ -844,6 +844,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             // Interactive clients re-scan the library about once a minute.
             scan_interval: Some(std::time::Duration::from_secs(60)),
             scan_transfer_quiet: crate::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
+            // The engine is wired in Phase 4 (librqbit); nyaa search is
+            // only consulted when both are present.
+            torrent: None,
+            nyaa: None,
+            torrent_fetch: crate::torrent::TorrentFetchConfig::default(),
         },
         settings.auto_download,
         handle.sync.clone(),

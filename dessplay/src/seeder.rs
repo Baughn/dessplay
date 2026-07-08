@@ -100,6 +100,7 @@ impl SeederTransfer {
                         .send(FileCommand::StartDownload {
                             file,
                             size_bytes: entry.state.size_bytes,
+                            filename: entry.state.filename.clone(),
                             sources,
                             play_chunk: 0,
                         })
@@ -241,6 +242,10 @@ pub fn seeder_file_config(
         // A seeder's store is large and stable: scan daily, not minutely.
         scan_interval: Some(std::time::Duration::from_secs(24 * 60 * 60)),
         scan_transfer_quiet: SCAN_TRANSFER_QUIET_DEFAULT,
+        // Wired in run.rs alongside the interactive client (Phase 4).
+        torrent: None,
+        nyaa: None,
+        torrent_fetch: crate::torrent::TorrentFetchConfig::default(),
     }
 }
 

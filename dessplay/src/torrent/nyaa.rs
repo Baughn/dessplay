@@ -266,6 +266,8 @@ fn stem(filename: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/nyaa_search.rss");

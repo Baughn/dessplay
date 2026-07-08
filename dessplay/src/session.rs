@@ -154,6 +154,8 @@ pub enum Directive {
         file: Ed2kHash,
         /// File size, for chunk geometry.
         size_bytes: u64,
+        /// Release filename (the nyaa search query for the torrent path).
+        filename: String,
         /// Present peers advertising the file (Ready).
         sources: Vec<dessplay_core::net::PeerId>,
         /// Playback chunk anchor for the sequential window.
@@ -892,23 +894,23 @@ impl PlayerWiring {
         // NotWatching — no point fetching a show we've opted out of
         // (design.md, Pre-fetching). Watching / Maybe / no-metadata still
         // download. (A NotWatching file already local still loads.)
-        let window: Vec<(Ed2kHash, u64)> = self
+        let window: Vec<(Ed2kHash, u64, String)> = self
             .prefetch_window(view)
             .iter()
             .filter(|e| {
                 derive::series_watch_for_file(view, &self.me, e.hash)
                     != dessplay_core::types::SeriesWatchState::NotWatching
             })
-            .map(|e| (e.hash, e.state.size_bytes))
+            .map(|e| (e.hash, e.state.size_bytes, e.state.filename.clone()))
             .collect();
-        let window_set: HashSet<Ed2kHash> = window.iter().map(|(h, _)| *h).collect();
+        let window_set: HashSet<Ed2kHash> = window.iter().map(|(h, _, _)| *h).collect();
         // Forget files that have fallen out of the window, so a later
         // re-entry logs its decision afresh.
         self.prefetching.retain(|f| window_set.contains(f));
         self.awaiting_source.retain(|f| window_set.contains(f));
 
         let mut out = Vec::new();
-        for (file, size_bytes) in window {
+        for (file, size_bytes, filename) in window {
             // Have it, or not resolved yet: skip. The watched flag does
             // *not* gate this — a windowed entry is one we intend to
             // watch, redownload included (design.md, Pre-fetching).
@@ -944,6 +946,7 @@ impl PlayerWiring {
             out.push(Directive::StartDownload {
                 file,
                 size_bytes,
+                filename,
                 sources,
                 // Sequential from the start; seek-aware windowing is
                 // future work (downloads still prioritise early chunks).
@@ -2080,6 +2083,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 Directive::StartDownload {
                     file,
                     size_bytes,
+                    filename,
                     sources,
                     play_chunk,
                 } => {
@@ -2088,6 +2092,7 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         .send(FileCommand::StartDownload {
                             file,
                             size_bytes,
+                            filename,
                             sources,
                             play_chunk,
                         })
