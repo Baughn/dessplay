@@ -289,12 +289,11 @@ impl TorrentFetches {
             *last_progress_bytes = progress_bytes;
             *last_progress_at = now;
         }
-        let bps = if size_bytes == 0 {
-            0
-        } else {
-            (progress_bytes.saturating_mul(10_000) / size_bytes).min(u64::from(PROGRESS_CAP_BPS))
-                as u16
-        };
+        let bps = progress_bytes
+            .saturating_mul(10_000)
+            .checked_div(size_bytes)
+            .unwrap_or(0)
+            .min(u64::from(PROGRESS_CAP_BPS)) as u16;
         if *last_emitted_bps == Some(bps) {
             return vec![];
         }

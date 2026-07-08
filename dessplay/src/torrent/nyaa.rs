@@ -111,10 +111,10 @@ pub fn parse_rss(xml: &str) -> Vec<NyaaItem> {
                 }
             }
             Ok(Event::Text(t)) => {
-                if let (true, Some(field)) = (in_item, field) {
-                    if let Ok(text) = t.unescape() {
-                        current.set(field, &text);
-                    }
+                if let (true, Some(field)) = (in_item, field)
+                    && let Ok(text) = t.unescape()
+                {
+                    current.set(field, &text);
                 }
             }
             Ok(Event::CData(t)) => {
