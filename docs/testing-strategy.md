@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-07-03
+Last updated: 2026-07-09
 
 ## Table of Contents
 
@@ -108,6 +108,27 @@ trait Player {
 ```
 
 Production: `MpvPlayer`. Tests: `MockPlayer`.
+
+### Torrent Traits
+
+The torrent-first download path (design.md, BitTorrent Downloads) sits
+behind two traits so the whole flow is testable without a network:
+
+- `NyaaSource` (blocking `search(filename) -> RSS`): `HttpNyaaSource` in
+  production; tests hand back fixture/canned RSS. The parse/match logic
+  (`parse_rss`, `pick_match`) is pure and unit-tested against a
+  committed real-shape fixture (entity-escaped titles, `nyaa:` fields).
+- `TorrentEngine` (`add`/`remove`/sync `status` poll): `RqbitEngine`
+  (librqbit) in production; `FakeTorrentEngine` lets actor tests script
+  progress, completion, and failure. The fetch *policy* (`TorrentFetches`
+  — watchdogs, cooldowns, fallback) is a synchronous clock-driven core
+  unit-tested like `Downloads`.
+
+Actor-level tests cover the ladder end-to-end with the fakes: no-match →
+peer fallback, stall → fallback, completion → ed2k verify → Ready,
+mismatch → ban + fallback, local-copy adoption cancelling the torrent,
+eviction removing it, and startup reconciliation. One `#[ignore]`d smoke
+test starts a real librqbit session.
 
 ---
 

@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-07-03
+Last updated: 2026-07-09
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -380,8 +380,38 @@ unit-testable); on-disk assembly + ed2k block verification is
 an upload-rate token bucket, answering `ChunkRequest`/`BlockHashRequest`
 from `local_files` (verified resolutions, manual mappings, completed
 downloads). The session (`PlayerWiring::plan_download`) drives downloads
-for the now-playing file plus a prefetch window. Seeder auto-fetch
+for the now-playing file plus a prefetch window — emitted even with no
+peer source, since the torrent path needs none. Seeder auto-fetch
 (headless, fetch everything) is the remaining 9B piece.
+
+**Torrent-first downloads** (design.md, BitTorrent Downloads) layer on
+top of `StartDownload` (which carries the release filename for the nyaa
+query). Three seams, all inside the file actor:
+
+- `torrent/nyaa.rs` — the search: a blocking `NyaaSource` trait
+  (`HttpNyaaSource` in production, canned RSS in tests) plus pure
+  `parse_rss`/`pick_match`, run on the blocking pool with completions
+  returning as `Done::NyaaSearched`.
+- `torrent/mod.rs` — `TorrentFetches`, the fetch policy core (same
+  pattern as `Downloads`: synchronous, clock-driven, returns
+  `TorrentFetchAction`s). Per-file `Searching → Running → Verifying →
+  Failed` state machine owning the stall/search watchdogs, the
+  15-minute search cooldown, the banned-infohash memory, and the
+  `Fallback` handoff (with the stashed sources) to the peer path.
+- `torrent/engine.rs` — the `TorrentEngine` trait the actor drives
+  (`add`/`remove` fire-and-forget, sync `status` polled on the existing
+  download tick); `FakeTorrentEngine` for actor tests, and
+  `torrent/rqbit.rs` (librqbit session, persistence + fastresume) in
+  production. `FileConfig` carries both handles as `Option`s — `None`
+  disables the torrent path entirely.
+
+A finished payload is ed2k-hashed off-thread (`Done::TorrentHashed`); a
+root match hardlinks it to the hash-addressed cache path and converges
+into `on_download_complete`, so everything downstream (serving, archive,
+eviction) is identical to a peer download. Eviction, `ForgetLocalFile`,
+and the local-copy-adoption sites also drop the file's torrent (seeding
+ends when the cached file goes); startup reconciliation re-adds
+registered torrents for still-cached files and cleans up the rest.
 
 ### IrcActor
 

@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-06
+Last updated: 2026-07-09
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1476,6 +1476,68 @@ no point fetching a show you've opted out of. **Maybe** (the default) and
 **Watching** entries are prefetched normally; a NotWatching file that is
 already local still loads (you can mute), it is just never fetched.
 
+### BitTorrent Downloads
+
+The peer transfer above is the right tool for *rare* files — ones only a
+group member holds — but most of what the group watches is a
+current-season release sitting on nyaa.si with hundreds of seeders. So
+fetching is **torrent-first**: every client (interactive and seeder)
+tries a public torrent before falling back to the relay path. Both routes
+sit behind the same `StartDownload`, honor the same `auto_download` /
+NotWatching gates, and converge on the same completion contract.
+
+**Search.** The playlist entry's exact filename is queried against
+nyaa.si's RSS search (release names embed a CRC tag, so an exact-title
+hit is near-certainly the right payload). A result is accepted iff its
+title equals the filename (whitespace-normalized, case-insensitive,
+extension optional), it has at least one seeder, and its size is within
+±3% of the entry's `size_bytes`; ties break to the most seeders.
+Searches for the same file are spaced at least 15 minutes apart (the
+session re-emits `StartDownload` every snapshot; a no-match must not
+re-hit nyaa each time) — so an episode queued before it hits nyaa is
+found on a later retry.
+
+**Fallback ladder.** The relay path engages (with whatever peer sources
+exist — possibly none, which is the ordinary awaiting-source state)
+whenever the torrent route can't deliver: no acceptable search result, a
+search error, a torrent with no byte progress for 90s (covers dead
+swarms and magnet-metadata hangs), an engine failure, or a completed
+payload that fails ed2k verification. Each failure also starts the
+15-minute cooldown before the next nyaa attempt.
+
+**Verification and completion.** The torrent payload downloads to
+`<cache>/torrents/<ed2k>/`. On completion it is ed2k-hashed; a root
+match hardlinks it to the hash-addressed cache path (`<cache>/<ed2k>`)
+and the file completes exactly like a peer download (cache entry, block
+hashes cached for serving, Ready). A mismatch (a mislabeled release
+despite the name/size match) deletes the torrent, **bans that info hash**
+for the file (never picked again this session), and falls back. A peer
+download racing the torrent is cancelled at this point — the general
+"local copy trumps the download" rule above also cancels a *torrent*
+when a copy arrives through yet another channel.
+
+**Complete-only playability.** Torrent pieces arrive out of order, so a
+partially-downloaded torrent is never playable. Torrent progress is
+reported but capped just below the 20% unpause threshold: the UI
+honestly shows "downloading N%" up to 19%, then flips straight to Ready
+once verified. (Sequential streaming to restore true play-at-20% is
+future work — see [Future Plans](#future-plans).)
+
+**Seeding.** Completed torrents keep seeding — good citizenship on
+public trackers — until the cached file is **evicted** (retention or a
+lost local copy), which removes the torrent and its payload; upload is
+capped by the existing `upload_limit` setting. A `torrents` table maps
+each ed2k hash to its torrent; at startup, registered torrents whose
+files are still cached rejoin the engine (librqbit session persistence +
+fastresume makes this instant), and rows for files evicted while the app
+was closed are cleaned up. A torrent mid-download at shutdown is
+dropped — in-flight downloads don't survive restarts, matching the peer
+path — and re-searched on the next `StartDownload`.
+
+The engine is librqbit, embedded (one session per process, rooted at
+`<cache>/torrents/`, DHT enabled). A session that fails to start
+disables the torrent path with a warning; the relay path still works.
+
 The **auto-download** setting (default on) is a coarser switch: turning it
 off disables *all* automatic fetching for that client -- both the prefetch
 window and the missing now-playing file -- making it a "bring your own
@@ -1964,6 +2026,7 @@ inserted) so the previous layout is a strict prefix.
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned) |
 | `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size); skips re-hashing unchanged files (Phase 9A); doubles as the **library index** populated by the periodic media-root scan; pruned alongside a removed cache entry |
 | `manual_mappings` | Playlist hash → user-picked local path |
+| `torrents` | ed2k hash → BitTorrent info hash for torrents in the engine (torrent-first downloads); reconciled at startup against the cache |
 | `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |
 | `tofu_fingerprints` | Pinned server cert fingerprints; write-once (replacing requires explicit forget) |
 
@@ -2035,6 +2098,13 @@ For v1, this is acceptable. Future improvements could include:
   rule (see [File State](#file-state)). Needs a synced eligibility signal on
   `FileAvailability::Downloading` (the downloader's measured speed vs the
   file's bitrate); only the 20% threshold is enforced today.
+- Sequential (streaming) torrent downloads with incremental ed2k
+  verification, so a torrented file inherits the real play-at-20% rule
+  instead of [complete-only playability](#bittorrent-downloads)
+  (librqbit's `FileStream` reprioritizes pieces sequentially).
+- Refining the missing-unknown-series "obtainable" check to also count a
+  likely nyaa hit — today only a present peer advertising the file Ready
+  suppresses the automatic NotWatching (see [File Matching](#file-matching)).
 - Direct client-to-client connections (with or without hole punching) as a
   transfer optimization, slotted in beneath the `send(peer, message)`
   interface. Cut from v2: the relay-through-NAS path makes them unnecessary.
