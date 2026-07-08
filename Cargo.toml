@@ -44,9 +44,15 @@ tracing-appender = "0.2"
 rusqlite = { version = "0.34", features = ["bundled"] }
 dirs = "6"
 tempfile = "3"
-# Server-side anime-titles dump fetch (one blocking GET per day).
+# Server-side anime-titles dump fetch (one blocking GET per day); the
+# client reuses it for the nyaa.si RSS search (torrent-first downloads).
 ureq = "3"
 flate2 = "1"
+# Nyaa RSS parsing — titles arrive entity-escaped, and hand-rolled XML
+# entity handling is a bug farm.
+quick-xml = "0.37"
+# Building the nyaa search URL (query = an exact release filename).
+percent-encoding = "2"
 # Placeholder PNG generation (Phase 9): rasterize status text with the
 # embedded DejaVu Sans into a PNG mpv can display.
 image = { version = "0.25", default-features = false, features = ["png"] }
