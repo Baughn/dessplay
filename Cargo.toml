@@ -73,6 +73,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # script fails under NixOS's default hardening flags -- mimalloc builds
 # clean with no workarounds.)
 mimalloc = "0.1"
+# Raise RLIMIT_NOFILE at startup in both binaries: launchd's soft
+# default is 256 fds and librqbit holds up to 128 peer sockets per
+# torrent (os error 24 storms, 2026-07-09). The crate handles the macOS
+# kern.maxfilesperproc cap that a naive setrlimit(RLIM_INFINITY) trips.
+rlimit = "0.10"
 
 # Dependencies compile once and are never stepped through incrementally;
 # their full DWARF was the bulk of a 50GB target/. Workspace crates keep

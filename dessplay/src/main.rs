@@ -158,6 +158,15 @@ fn main() -> color_eyre::Result<()> {
     } else {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
+    // Raise the soft fd limit to the hard limit: launchd's default soft
+    // limit is 256, and librqbit alone holds up to 128 peer sockets per
+    // torrent — one healthy swarm starved every other fd user ("Too many
+    // open files" storms, 2026-07-09). The crate caps at macOS's
+    // kern.maxfilesperproc where RLIM_INFINITY would be rejected.
+    match rlimit::increase_nofile_limit(u64::MAX) {
+        Ok(limit) => tracing::debug!("RLIMIT_NOFILE raised to {limit}"),
+        Err(e) => tracing::warn!("could not raise RLIMIT_NOFILE: {e}"),
+    }
     // Panics land in the log before the default hook prints them (the
     // terminal adapter's own hook restores the screen first).
     {

@@ -177,6 +177,12 @@ fn main() -> color_eyre::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+    // One QUIC connection per client plus relay streams: don't let a
+    // stingy inherited soft limit (launchd: 256) starve the server.
+    match rlimit::increase_nofile_limit(u64::MAX) {
+        Ok(limit) => tracing::debug!("RLIMIT_NOFILE raised to {limit}"),
+        Err(e) => tracing::warn!("could not raise RLIMIT_NOFILE: {e}"),
+    }
     if let Err(message) = run(Cli::parse()) {
         eprintln!("error: {message}");
         std::process::exit(1);

@@ -40,6 +40,7 @@ librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 mimalloc = { workspace = true }
+rlimit = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

@@ -199,8 +199,6 @@ impl Harness {
                 sim_clock(0),
                 None,
                 dessplay::download::DownloadConfig::default(),
-                None,
-                None,
             ),
             handle.sync.clone(),
             handle.network.clone(),

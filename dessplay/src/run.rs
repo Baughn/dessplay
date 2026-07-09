@@ -185,11 +185,13 @@ fn download_config(args: &HeadlessArgs) -> crate::download::DownloadConfig {
     }
 }
 
-/// The torrent-first download wiring shared by interactive clients and
-/// seeders: a librqbit session at `<cache>/torrents/` plus the live
-/// nyaa search. A session that fails to start (port trouble, unwritable
-/// cache) disables the torrent path with a warning — the peer transfer
-/// still works — rather than failing startup.
+/// The torrent-first download wiring for interactive clients: a librqbit
+/// session at `<cache>/torrents/` plus the live nyaa search. Seeders
+/// deliberately get none of this — a file nyaa can supply makes the
+/// seeder redundant; its job is the rare, peer-only files. A session
+/// that fails to start (port trouble, unwritable cache) disables the
+/// torrent path with a warning — the peer transfer still works — rather
+/// than failing startup.
 async fn torrent_wiring(
     cache_dir: &std::path::Path,
     upload_limit: Option<u64>,
@@ -516,7 +518,6 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
         // Reuse the db/cache paths already resolved (and locked) above.
         let file_storage = Storage::open(&resolved_db)
             .map_err(|e| format!("opening {}: {e}", resolved_db.display()))?;
-        let (torrent, nyaa) = torrent_wiring(&cache_dir, None).await;
         let (transfer, outputs) = crate::seeder::SeederTransfer::new(
             UserId::new(&username),
             crate::seeder::seeder_file_config(
@@ -526,8 +527,6 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                 system_clock(),
                 None,
                 download_config(&args),
-                torrent,
-                nyaa,
             ),
             handle.sync.clone(),
             handle.network.clone(),

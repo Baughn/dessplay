@@ -1493,10 +1493,13 @@ already local still loads (you can mute), it is just never fetched.
 The peer transfer above is the right tool for *rare* files — ones only a
 group member holds — but most of what the group watches is a
 current-season release sitting on nyaa.si with hundreds of seeders. So
-fetching is **torrent-first**: every client (interactive and seeder)
-tries a public torrent before falling back to the relay path. Both routes
-sit behind the same `StartDownload`, honor the same `auto_download` /
+fetching is **torrent-first** on **interactive clients**: they try a
+public torrent before falling back to the relay path. Both routes sit
+behind the same `StartDownload`, honor the same `auto_download` /
 NotWatching gates, and converge on the same completion contract.
+**Seeders run no torrent path at all** — a file nyaa can supply makes
+the seeder redundant; its job is the rare, peer-only files, so it
+downloads only from peers (and only when a peer source exists).
 
 **Search.** The playlist entry's exact filename is queried against
 nyaa.si's RSS search (release names embed a CRC tag, so an exact-title

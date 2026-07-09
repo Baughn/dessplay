@@ -17,6 +17,7 @@ flate2 = { workspace = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 mimalloc = { workspace = true }
+rlimit = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

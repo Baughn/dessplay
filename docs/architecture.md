@@ -386,7 +386,11 @@ peer source, since the torrent path needs none. Seeder auto-fetch
 
 **Torrent-first downloads** (design.md, BitTorrent Downloads) layer on
 top of `StartDownload` (which carries the release filename for the nyaa
-query). Three seams, all inside the file actor:
+query). **Interactive clients only**: `run.rs` wires the engine + nyaa
+source for them and leaves both `None` for seeders — a file nyaa can
+supply makes the seeder redundant, so the seeder downloads only from
+peers and skips `StartDownload` entirely when no peer source exists.
+Three seams, all inside the file actor:
 
 - `torrent/nyaa.rs` — the search: a blocking `NyaaSource` trait
   (`HttpNyaaSource` in production, canned RSS in tests) plus pure

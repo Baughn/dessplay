@@ -93,9 +93,14 @@ impl SeederTransfer {
         for entry in download_order(view) {
             let file = entry.hash;
             if self.have.get(&file) == Some(&false) {
-                // Emitted even with no peer source: the torrent path
-                // needs no peer, and the peer path just waits for one.
+                // Peer sources only: the seeder deliberately runs no
+                // torrent path (a torrentable file makes the seeder
+                // redundant — design.md, BitTorrent Downloads), so a
+                // sourceless emission would just park an empty download.
                 let sources = self.sources(view, peers, file);
+                if sources.is_empty() {
+                    continue;
+                }
                 let _ = self
                     .file
                     .send(FileCommand::StartDownload {
@@ -223,9 +228,6 @@ fn download_order(view: &StateView) -> Vec<&dessplay_core::playlist::PlaylistEnt
 /// flags like `--pipeline-depth` reach the seeder, which downloads the
 /// whole playlist and benefits from the same tuning interactive clients
 /// get.
-// A coherent "everything the seeder's file actor needs" bundle; the two
-// torrent handles travel together with the rest by design.
-#[allow(clippy::too_many_arguments)]
 pub fn seeder_file_config(
     storage: crate::storage::Storage,
     media_roots: Vec<PathBuf>,
@@ -233,8 +235,6 @@ pub fn seeder_file_config(
     clock: crate::actors::network::Clock,
     upload_limit: Option<u64>,
     download: crate::download::DownloadConfig,
-    torrent: Option<std::sync::Arc<dyn crate::torrent::engine::TorrentEngine>>,
-    nyaa: Option<std::sync::Arc<dyn crate::torrent::nyaa::NyaaSource>>,
 ) -> FileConfig {
     FileConfig {
         storage,
@@ -247,8 +247,10 @@ pub fn seeder_file_config(
         // A seeder's store is large and stable: scan daily, not minutely.
         scan_interval: Some(std::time::Duration::from_secs(24 * 60 * 60)),
         scan_transfer_quiet: SCAN_TRANSFER_QUIET_DEFAULT,
-        torrent,
-        nyaa,
+        // No torrent path on a seeder: any file nyaa can supply makes
+        // the seeder redundant — its job is the rare, peer-only files.
+        torrent: None,
+        nyaa: None,
         torrent_fetch: crate::torrent::TorrentFetchConfig::default(),
     }
 }
@@ -278,8 +280,6 @@ mod tests {
             clock,
             None,
             download,
-            None,
-            None,
         );
         assert_eq!(config.download.pipeline_depth, 32);
     }
