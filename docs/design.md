@@ -1490,8 +1490,12 @@ NotWatching gates, and converge on the same completion contract.
 nyaa.si's RSS search (release names embed a CRC tag, so an exact-title
 hit is near-certainly the right payload). A result is accepted iff its
 title equals the filename (whitespace-normalized, case-insensitive,
-extension optional), it has at least one seeder, and its size is within
-±3% of the entry's `size_bytes`; ties break to the most seeders.
+extension optional), it has at least one seeder, and the entry's
+`size_bytes` falls within the *display-rounding bounds* of nyaa's
+human-formatted size (±3% slack) — nyaa shows one decimal, so "1.3 GiB"
+covers 1.25–1.35 GiB, a wider band than any small percentage at that
+scale (a plain ±3%-of-midpoint check rejected a real 1.348 GiB release
+displayed as "1.3 GiB", 2026-07-09); ties break to the most seeders.
 Searches for the same file are spaced at least 15 minutes apart (the
 session re-emits `StartDownload` every snapshot; a no-match must not
 re-hit nyaa each time) — so an episode queued before it hits nyaa is

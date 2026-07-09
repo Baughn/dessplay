@@ -21,9 +21,11 @@ pub struct NyaaItem {
     pub torrent_url: String,
     /// BitTorrent info hash, lowercase hex.
     pub info_hash: String,
-    /// Payload size parsed from nyaa's human-formatted `<nyaa:size>`,
-    /// `None` if the field was missing or unparseable.
-    pub size_bytes: Option<u64>,
+    /// Bounds on the payload size, parsed from nyaa's human-formatted
+    /// `<nyaa:size>`: the range of actual byte sizes that would display
+    /// as that (rounded) string. `None` if the field was missing or
+    /// unparseable.
+    pub size_bounds: Option<(u64, u64)>,
     /// Current seeder count.
     pub seeders: u32,
 }
@@ -160,7 +162,7 @@ struct PartialItem {
     title: Option<String>,
     link: Option<String>,
     info_hash: Option<String>,
-    size_bytes: Option<u64>,
+    size_bounds: Option<(u64, u64)>,
     seeders: Option<u32>,
 }
 
@@ -170,7 +172,7 @@ impl PartialItem {
             Field::Title => self.title = Some(text.to_string()),
             Field::Link => self.link = Some(text.to_string()),
             Field::InfoHash => self.info_hash = Some(text.to_ascii_lowercase()),
-            Field::Size => self.size_bytes = parse_size(text),
+            Field::Size => self.size_bounds = parse_size(text),
             Field::Seeders => self.seeders = text.trim().parse().ok(),
         }
     }
@@ -180,19 +182,24 @@ impl PartialItem {
             title: self.title.take()?,
             torrent_url: self.link.take()?,
             info_hash: self.info_hash.take()?,
-            size_bytes: self.size_bytes,
+            size_bounds: self.size_bounds,
             seeders: self.seeders.unwrap_or(0),
         })
     }
 }
 
-/// Parse nyaa's human-formatted size ("1.4 GiB") into bytes. Best-effort:
-/// it only feeds a ±tolerance sanity check, never an exact comparison.
-pub fn parse_size(text: &str) -> Option<u64> {
+/// Parse nyaa's human-formatted size ("1.4 GiB") into the bounds of
+/// actual byte sizes that would display as that string. The display is
+/// rounded to the shown decimals, and the rounding quantum dwarfs any
+/// percentage tolerance at GiB scale (±0.05 GiB ≈ ±3.8% of "1.3 GiB"),
+/// so the bounds — value ± half the last decimal's step — are what a
+/// sanity check must compare against, never the midpoint alone.
+pub fn parse_size(text: &str) -> Option<(u64, u64)> {
     let text = text.trim();
     let split = text.find(|c: char| c != '.' && !c.is_ascii_digit())?;
     let (number, unit) = text.split_at(split);
-    let value: f64 = number.trim().parse().ok()?;
+    let number = number.trim();
+    let value: f64 = number.parse().ok()?;
     let scale: f64 = match unit.trim() {
         "B" | "Bytes" => 1.0,
         "KiB" => 1024.0,
@@ -201,21 +208,29 @@ pub fn parse_size(text: &str) -> Option<u64> {
         "TiB" => 1024.0f64.powi(4),
         _ => return None,
     };
+    let decimals = number
+        .rsplit_once('.')
+        .map_or(0, |(_, frac)| frac.len() as i32);
+    let half_step = 10f64.powi(-decimals) * scale / 2.0;
     let bytes = value * scale;
-    (bytes.is_finite() && bytes >= 0.0).then_some(bytes as u64)
+    (bytes.is_finite() && bytes >= 0.0).then_some((
+        (bytes - half_step).max(0.0) as u64,
+        (bytes + half_step) as u64,
+    ))
 }
 
-/// How far nyaa's (rounded, human-formatted) size may deviate from the
-/// playlist entry's exact byte size and still count as the same payload.
+/// Extra slack beyond the display-rounding bounds: how far the entry's
+/// exact byte size may sit outside the range nyaa's rounded size string
+/// covers and still count as the same payload.
 const SIZE_TOLERANCE: f64 = 0.03;
 
 /// Pick the acceptable result for `filename`, or `None`.
 ///
 /// Accepts an item whose title equals the filename (whitespace-normalized,
 /// case-insensitive, extension optional), with at least one seeder, whose
-/// size is within ±3% of `size_bytes`, and whose info hash isn't banned
-/// (a previous download of it failed ed2k verification). Ties break to
-/// the most seeders.
+/// size bounds (the display-rounding range, ±3% slack) contain
+/// `size_bytes`, and whose info hash isn't banned (a previous download of
+/// it failed ed2k verification). Ties break to the most seeders.
 pub fn pick_match(
     items: &[NyaaItem],
     filename: &str,
@@ -231,9 +246,10 @@ pub fn pick_match(
             (title == want_full || title == want_stem)
                 && item.seeders >= 1
                 && !banned.contains(&item.info_hash)
-                && item.size_bytes.is_some_and(|s| {
+                && item.size_bounds.is_some_and(|(lo, hi)| {
                     let want = size_bytes as f64;
-                    (s as f64 - want).abs() <= want * SIZE_TOLERANCE
+                    let slack = want * SIZE_TOLERANCE;
+                    want >= lo as f64 - slack && want <= hi as f64 + slack
                 })
         })
         .max_by_key(|item| item.seeders)
@@ -292,10 +308,7 @@ mod tests {
             items[0].info_hash,
             "0123456789abcdef0123456789abcdef01234567"
         );
-        assert_eq!(
-            items[0].size_bytes,
-            Some((1.4 * 1024.0 * 1024.0 * 1024.0) as u64)
-        );
+        assert_eq!(items[0].size_bounds, parse_size("1.4 GiB"));
         assert_eq!(items[0].seeders, 412);
         // Entity-escaped title round-trips.
         assert_eq!(
@@ -306,16 +319,19 @@ mod tests {
 
     #[test]
     fn parse_size_units() {
+        let mib = 1024.0 * 1024.0;
         assert_eq!(
             parse_size("711.7 MiB"),
-            Some((711.7 * 1024.0 * 1024.0) as u64)
+            Some((((711.7 - 0.05) * mib) as u64, ((711.7 + 0.05) * mib) as u64))
         );
+        let gib = 1024.0f64.powi(3);
         assert_eq!(
             parse_size("1.4 GiB"),
-            Some((1.4 * 1024.0f64.powi(3)) as u64)
+            Some((((1.4 - 0.05) * gib) as u64, ((1.4 + 0.05) * gib) as u64))
         );
-        assert_eq!(parse_size("512 B"), Some(512));
-        assert_eq!(parse_size("3 KiB"), Some(3072));
+        // No decimals shown: half a unit either way.
+        assert_eq!(parse_size("512 B"), Some((511, 512)));
+        assert_eq!(parse_size("3 KiB"), Some((2560, 3584)));
         assert_eq!(parse_size("nonsense"), None);
         assert_eq!(parse_size("1.4 GB"), None); // nyaa uses binary units only
     }
@@ -340,7 +356,7 @@ mod tests {
             title: "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4]".into(),
             torrent_url: "https://nyaa.si/download/1.torrent".into(),
             info_hash: "aa".into(),
-            size_bytes: Some(1000),
+            size_bounds: Some((1000, 1000)),
             seeders: 5,
         }];
         let m = pick_match(
@@ -364,6 +380,28 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn accepts_a_size_hidden_by_display_rounding() {
+        // Regression (2026-07-09, live): the real Clevatess S2-01 is
+        // 1,447,979,541 bytes (1.348 GiB) but nyaa displays "1.3 GiB"
+        // (1,395,864,371) — a 3.6% apparent deviation from rounding
+        // alone, which the plain ±3% check rejected.
+        let items = vec![NyaaItem {
+            title: "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv".into(),
+            torrent_url: "https://nyaa.si/download/2129710.torrent".into(),
+            info_hash: "123051cef95247353e061c58ee1cb713691f72b4".into(),
+            size_bounds: parse_size("1.3 GiB"),
+            seeders: 1716,
+        }];
+        let m = pick_match(
+            &items,
+            "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv",
+            1_447_979_541,
+            &HashSet::new(),
+        );
+        assert!(m.is_some());
     }
 
     #[test]
@@ -403,7 +441,7 @@ mod tests {
             title: "Show - 01.mkv".into(),
             torrent_url: format!("https://nyaa.si/download/{hash}.torrent"),
             info_hash: hash.into(),
-            size_bytes: Some(size),
+            size_bounds: Some((size, size)),
             seeders,
         };
         let items = vec![make("aa", 100), make("bb", 10)];
@@ -418,7 +456,7 @@ mod tests {
             title: "Show - 01.mkv".into(),
             torrent_url: "u".into(),
             info_hash: hash.into(),
-            size_bytes: Some(1000),
+            size_bounds: Some((1000, 1000)),
             seeders,
         };
         let items = vec![make("aa", 3), make("bb", 30), make("cc", 7)];
