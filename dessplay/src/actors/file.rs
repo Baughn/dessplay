@@ -144,6 +144,9 @@ pub enum FileCommand {
         /// Group watched flags (an entry behind the group's progress
         /// is evictable even if never personally watched).
         group_watched: HashSet<Ed2kHash>,
+        /// Every playlist entry's hash. A cached file *not* in this set
+        /// is no longer referenced and is evictable regardless of watched.
+        playlist: HashSet<Ed2kHash>,
     },
     /// Media roots changed (settings save).
     SetMediaRoots(Vec<PathBuf>),
@@ -579,6 +582,13 @@ const RECHECK_QUIET_POLLS: u32 = 2;
 /// How long a mismatch stays watched before the watch is dropped.
 const RECHECK_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
+/// Orphaned cache files (hash-named, but with no `cache_entries` row)
+/// older than this are swept at startup. A younger one may be an
+/// in-flight or just-abandoned peer-download partial — `download_path`
+/// is the final cache path, so an interrupted download leaves one — and
+/// is left alone; the age cutoff keeps the sweep off anything recent.
+const ORPHAN_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 /// Put a verified torrent payload at the hash-addressed cache path:
 /// hardlink (same filesystem by construction — both under the cache
 /// dir), falling back to a copy. Any stale partial at the destination
@@ -630,11 +640,13 @@ impl Actor {
         // (the cache is hash-named and the filename search can't find it).
         let mut reconciled = 0usize;
         let mut pruned = 0usize;
+        let mut live_cache_paths: HashSet<PathBuf> = HashSet::new();
         for entry in config.storage.cache_entries().unwrap_or_default() {
             let live = std::fs::metadata(&entry.path)
                 .map(|m| m.len() == entry.size_bytes)
                 .unwrap_or(false);
             if live {
+                live_cache_paths.insert(entry.path.clone());
                 local_files.insert(entry.hash, entry.path);
                 reconciled += 1;
             } else {
@@ -652,11 +664,55 @@ impl Actor {
                 pruned += 1;
             }
         }
+        // Sweep orphaned cache files: hash-named files in the cache root
+        // with no surviving `cache_entries` row. run_eviction only
+        // iterates cache_entries, so these are invisible to it and leak
+        // forever — the case a DB reset (bookkeeping gone, files stay)
+        // or an abandoned peer-download partial produces. Delete only
+        // those older than a week by mtime (see ORPHAN_MAX_AGE), leaving
+        // anything recent that might still be wanted.
+        let now = (config.clock)() as i64;
+        let mut orphans_swept = 0usize;
+        if let Ok(dir) = std::fs::read_dir(&config.cache_dir) {
+            for dirent in dir.flatten() {
+                let path = dirent.path();
+                let hash_named = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.parse::<Ed2kHash>().is_ok());
+                if !hash_named || live_cache_paths.contains(&path) {
+                    continue;
+                }
+                let metadata = match std::fs::metadata(&path) {
+                    Ok(m) if m.is_file() => m,
+                    _ => continue,
+                };
+                let old_enough = mtime_millis(&metadata)
+                    .is_some_and(|mt| now.saturating_sub(mt) >= ORPHAN_MAX_AGE.as_millis() as i64);
+                if !old_enough {
+                    continue;
+                }
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {
+                        tracing::info!(
+                            path = %path.display(),
+                            bytes = metadata.len(),
+                            "sweeping orphaned cache file (no bookkeeping)"
+                        );
+                        let _ = config.storage.remove_hash_cache(&path);
+                        hash_cache.remove(&path);
+                        orphans_swept += 1;
+                    }
+                    Err(e) => tracing::warn!(path = %path.display(), "sweeping orphan: {e}"),
+                }
+            }
+        }
         tracing::debug!(
             cached_hashes = hash_cache.len(),
             manual_mappings = manual.len(),
             cache_reconciled = reconciled,
             cache_pruned = pruned,
+            orphans_swept,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "file actor ready"
         );
@@ -744,7 +800,11 @@ impl Actor {
             FileCommand::RunEviction {
                 protected,
                 group_watched,
-            } => self.run_eviction(&protected, &group_watched).await,
+                playlist,
+            } => {
+                self.run_eviction(&protected, &group_watched, &playlist)
+                    .await
+            }
             FileCommand::SetMediaRoots(roots) => {
                 self.media_roots = roots;
                 // New roots may hold files we've never indexed.
@@ -2165,6 +2225,7 @@ impl Actor {
         &mut self,
         protected: &HashSet<Ed2kHash>,
         group_watched: &HashSet<Ed2kHash>,
+        playlist: &HashSet<Ed2kHash>,
     ) {
         let now = (self.clock)() as i64;
         let entries = match self.storage.cache_entries() {
@@ -2183,6 +2244,7 @@ impl Actor {
                 self.retention,
                 &entry,
                 watched,
+                playlist.contains(&entry.hash),
                 protected.contains(&entry.hash),
             ) {
                 continue;
@@ -2222,17 +2284,22 @@ impl Actor {
 }
 
 /// The eviction rule (design.md, Download Cache and Retention): a
-/// cached file is evicted iff it is watched (personally, or behind the
-/// group), not protected (now-playing / queued unwatched), and its last
-/// access is older than the retention window.
+/// cached file is evicted iff it is disposable — either watched
+/// (personally, or behind the group) *or* no longer referenced by the
+/// playlist at all — and not protected (now-playing / queued unwatched),
+/// and its last access is older than the retention window. A file still
+/// in the playlist but unwatched is kept (it is also `protected`, so this
+/// is belt-and-suspenders); an abandoned download that has left the
+/// playlist is reclaimed even though nobody ever watched it.
 pub fn evictable(
     now: i64,
     retention: CacheRetention,
     entry: &CacheEntry,
     watched: bool,
+    in_playlist: bool,
     protected: bool,
 ) -> bool {
-    if protected || !watched {
+    if protected || (in_playlist && !watched) {
         return false;
     }
     match retention {
@@ -2877,48 +2944,74 @@ mod tests {
         let entry = cache_entry(1, 1_000);
         let week_millis = week.as_millis() as i64;
 
-        // Unwatched or protected: never, under any retention.
+        // Args: (now, retention, entry, watched, in_playlist, protected).
         for retention in [
             CacheRetention::AfterWatch,
             CacheRetention::Keep(week),
             CacheRetention::Infinite,
         ] {
-            assert!(!evictable(i64::MAX, retention, &entry, false, false));
-            assert!(!evictable(i64::MAX, retention, &entry, true, true));
+            // In the playlist and unwatched: kept — still needed.
+            assert!(!evictable(i64::MAX, retention, &entry, false, true, false));
+            // Protected: kept regardless of everything else.
+            assert!(!evictable(i64::MAX, retention, &entry, true, true, true));
         }
 
         // AfterWatch: gone at the next pass.
+        //   a watched playlist entry ...
         assert!(evictable(
             1_000,
             CacheRetention::AfterWatch,
             &entry,
             true,
-            false
-        ));
-
-        // Keep(week): exact boundary is evictable, one millisecond
-        // before is not.
-        assert!(!evictable(
-            1_000 + week_millis - 1,
-            CacheRetention::Keep(week),
-            &entry,
             true,
             false
         ));
+        //   ... and an unwatched file that has left the playlist.
         assert!(evictable(
-            1_000 + week_millis,
-            CacheRetention::Keep(week),
+            1_000,
+            CacheRetention::AfterWatch,
             &entry,
-            true,
+            false,
+            false,
             false
         ));
 
-        // Infinite: never.
+        // Keep(week): the retention window is driven by last_access and
+        // applies to both disposable cases (watched, or not-in-playlist).
+        for (watched, in_playlist) in [(true, true), (false, false)] {
+            assert!(!evictable(
+                1_000 + week_millis - 1,
+                CacheRetention::Keep(week),
+                &entry,
+                watched,
+                in_playlist,
+                false
+            ));
+            assert!(evictable(
+                1_000 + week_millis,
+                CacheRetention::Keep(week),
+                &entry,
+                watched,
+                in_playlist,
+                false
+            ));
+        }
+
+        // Infinite: never, disposable or not.
         assert!(!evictable(
             i64::MAX,
             CacheRetention::Infinite,
             &entry,
             true,
+            true,
+            false
+        ));
+        assert!(!evictable(
+            i64::MAX,
+            CacheRetention::Infinite,
+            &entry,
+            false,
+            false,
             false
         ));
     }
@@ -2954,6 +3047,19 @@ mod tests {
         retention: CacheRetention,
         cache_dir: PathBuf,
     ) -> Rig {
+        spawn_rig_clocked(storage, roots, retention, cache_dir, test_clock())
+    }
+
+    /// As [`spawn_rig_at`], with a caller-supplied clock — for tests that
+    /// need "now" positioned relative to a file's real mtime (the
+    /// startup orphan sweep).
+    fn spawn_rig_clocked(
+        storage: Storage,
+        roots: Vec<PathBuf>,
+        retention: CacheRetention,
+        cache_dir: PathBuf,
+        clock: Clock,
+    ) -> Rig {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (out_tx, out_rx) = mpsc::channel(64);
         tokio::spawn(run(
@@ -2962,7 +3068,7 @@ mod tests {
                 media_roots: roots,
                 retention,
                 cache_dir,
-                clock: test_clock(),
+                clock,
                 download: DownloadConfig::default(),
                 upload_limit: None,
                 // No timer-driven scan in tests; drive via RescanLibrary.
@@ -3131,6 +3237,7 @@ mod tests {
             now,
             CacheRetention::Keep(week),
             &rows[0],
+            true,
             true,
             false,
         ));
@@ -3702,6 +3809,9 @@ mod tests {
             .send(FileCommand::RunEviction {
                 protected: HashSet::from([hash(2)]),
                 group_watched: HashSet::new(),
+                // All three are still playlist entries, so the unwatched
+                // one is kept for being needed, not swept as unreferenced.
+                playlist: HashSet::from([hash(1), hash(2), hash(3)]),
             })
             .await
             .unwrap();
@@ -3761,6 +3871,7 @@ mod tests {
             .send(FileCommand::RunEviction {
                 protected: HashSet::new(),
                 group_watched: HashSet::new(),
+                playlist: HashSet::from([hashed.root]),
             })
             .await
             .unwrap();
@@ -4140,6 +4251,9 @@ mod tests {
             .send(FileCommand::RunEviction {
                 protected: HashSet::new(),
                 group_watched: HashSet::from([hash(1)]),
+                // Still in the playlist: eviction is driven by the group
+                // watched flag, not by being unreferenced.
+                playlist: HashSet::from([hash(1)]),
             })
             .await
             .unwrap();
@@ -4148,6 +4262,150 @@ mod tests {
             other => panic!("unexpected output: {other:?}"),
         }
         assert!(!behind_path.exists());
+    }
+
+    /// Regression: a file that has left the playlist entirely is evictable
+    /// even though it was never watched — an abandoned download must not
+    /// pin cache space forever. (design.md, Download Cache: a cached file
+    /// is disposable once watched *or* no longer referenced.)
+    #[tokio::test]
+    async fn eviction_reclaims_files_no_longer_in_the_playlist() {
+        let cache = tempfile::tempdir().unwrap();
+        let gone = write(cache.path(), "gone.mkv", b"left the playlist");
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hash(1),
+                path: gone.clone(),
+                size_bytes: std::fs::metadata(&gone).unwrap().len(),
+                last_access: 0,
+            })
+            .unwrap();
+        // AfterWatch retention, never watched, and — crucially — the empty
+        // playlist means it is unreferenced.
+        let mut rig = spawn_rig(storage, vec![], CacheRetention::AfterWatch);
+        rig.commands
+            .send(FileCommand::RunEviction {
+                protected: HashSet::new(),
+                group_watched: HashSet::new(),
+                playlist: HashSet::new(),
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Evicted { files } => assert_eq!(files, vec![hash(1)]),
+            other => panic!("unexpected output: {other:?}"),
+        }
+        assert!(!gone.exists());
+    }
+
+    /// Regression: a hash-named cache file with no `cache_entries` row is
+    /// an orphan — a DB reset dropped the bookkeeping (files stay), or an
+    /// abandoned peer-download partial (`download_path` is the final cache
+    /// path). run_eviction only iterates cache_entries, so orphans are
+    /// invisible to it and leak forever. Startup sweeps orphans older than
+    /// a week; a recent one (possibly still in flight), a file that still
+    /// has a row, and non-hash-named files are all left alone.
+    #[tokio::test]
+    async fn startup_sweeps_stale_orphaned_cache_files() {
+        let cache = tempfile::tempdir().unwrap();
+
+        // A stale orphan: hash-named, no DB row.
+        let stale = ed2k_hash_bytes(b"stale orphan payload").root;
+        let stale_path = cache.path().join(stale.to_string());
+        std::fs::write(&stale_path, b"stale orphan payload").unwrap();
+        let stale_mtime = mtime_millis(&std::fs::metadata(&stale_path).unwrap()).unwrap();
+
+        // A second orphan: also hash-named and row-less.
+        let orphan2 = ed2k_hash_bytes(b"second orphan payload").root;
+        let orphan2_path = cache.path().join(orphan2.to_string());
+        std::fs::write(&orphan2_path, b"second orphan payload").unwrap();
+
+        // A tracked file (has a row): reconciled, never swept.
+        let tracked = ed2k_hash_bytes(b"tracked payload").root;
+        let tracked_path = cache.path().join(tracked.to_string());
+        std::fs::write(&tracked_path, b"tracked payload").unwrap();
+
+        // A non-hash-named file (e.g. the placeholder): ignored.
+        let placeholder = cache.path().join("placeholder.png");
+        std::fs::write(&placeholder, b"png").unwrap();
+
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: tracked,
+                path: tracked_path.clone(),
+                size_bytes: std::fs::metadata(&tracked_path).unwrap().len(),
+                last_access: 0,
+            })
+            .unwrap();
+
+        // Clock a fortnight past the orphans' mtime, so anything row-less
+        // and hash-named is past the week cutoff. (The `recent`/`stale`
+        // naming just reflects intent; both freshly-written files share a
+        // wall-clock mtime, so both are swept here. The under-the-cutoff
+        // "keep a recent orphan" branch is covered by the next test, which
+        // uses a clock only an hour past mtime.)
+        let week = 7 * 24 * 3600 * 1000;
+        let clock_old: Clock = Arc::new(move || (stale_mtime + 2 * week) as u64);
+        let mut rig = spawn_rig_clocked(
+            storage,
+            vec![],
+            CacheRetention::default(),
+            cache.path().into(),
+            clock_old,
+        );
+        // Synchronize: a Resolve reply guarantees Actor::new (and its
+        // synchronous sweep) has completed.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: tracked,
+                filename: "tracked.mkv".into(),
+            })
+            .await
+            .unwrap();
+        let _ = next_output(&mut rig).await;
+
+        assert!(!stale_path.exists(), "stale orphan must be swept");
+        assert!(
+            !orphan2_path.exists(),
+            "the second stale orphan is swept too"
+        );
+        assert!(tracked_path.exists(), "a file with a cache row is kept");
+        assert!(placeholder.exists(), "non-hash-named files are ignored");
+    }
+
+    /// The age cutoff: an orphan younger than a week is left alone (it may
+    /// be an in-flight or just-abandoned partial we shouldn't race).
+    #[tokio::test]
+    async fn startup_keeps_recent_orphaned_cache_files() {
+        let cache = tempfile::tempdir().unwrap();
+        let recent = ed2k_hash_bytes(b"recent partial").root;
+        let recent_path = cache.path().join(recent.to_string());
+        std::fs::write(&recent_path, b"recent partial").unwrap();
+        let mtime = mtime_millis(&std::fs::metadata(&recent_path).unwrap()).unwrap();
+
+        let storage = Storage::open_in_memory().unwrap();
+        // Clock only an hour past the file's mtime: under the week cutoff.
+        let clock: Clock = Arc::new(move || (mtime + 3600 * 1000) as u64);
+        let mut rig = spawn_rig_clocked(
+            storage,
+            vec![],
+            CacheRetention::default(),
+            cache.path().into(),
+            clock,
+        );
+        // Resolve a missing file to synchronize past Actor::new.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: ed2k_hash_bytes(b"nothing").root,
+                filename: "nothing.mkv".into(),
+            })
+            .await
+            .unwrap();
+        let _ = next_output(&mut rig).await;
+
+        assert!(recent_path.exists(), "a recent orphan must be left alone");
     }
 
     // ---- media-library scan.
@@ -5040,6 +5298,7 @@ mod tests {
             .send(FileCommand::RunEviction {
                 protected: HashSet::new(),
                 group_watched: [file].into(),
+                playlist: [file].into(),
             })
             .await
             .unwrap();

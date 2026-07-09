@@ -171,6 +171,9 @@ pub enum Directive {
         protected: HashSet<Ed2kHash>,
         /// Hashes the group has watched.
         group_watched: HashSet<Ed2kHash>,
+        /// Every current playlist entry's hash; a cached file not in this
+        /// set is unreferenced and evictable regardless of watched.
+        playlist: HashSet<Ed2kHash>,
     },
     /// Tell the file actor a local copy vanished under us (a player load
     /// failure): drop it from the servable set, prune its cache/hash
@@ -966,6 +969,7 @@ impl PlayerWiring {
     /// now-playing. A watched playlist entry behind the group's progress is
     /// deliberately left evictable.
     fn plan_eviction(&self, view: &StateView) -> Directive {
+        let playlist: HashSet<Ed2kHash> = view.playlist.iter().map(|e| e.hash).collect();
         let mut protected: HashSet<Ed2kHash> = view
             .playlist
             .iter()
@@ -984,6 +988,7 @@ impl PlayerWiring {
         Directive::RunEviction {
             protected,
             group_watched,
+            playlist,
         }
     }
 
@@ -2103,12 +2108,14 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 Directive::RunEviction {
                     protected,
                     group_watched,
+                    playlist,
                 } => {
                     let _ = self
                         .file
                         .send(FileCommand::RunEviction {
                             protected,
                             group_watched,
+                            playlist,
                         })
                         .await;
                 }
@@ -3084,14 +3091,17 @@ mod tests {
     }
 
     /// The single RunEviction directive in a list (panics if absent).
-    fn eviction(directives: &[Directive]) -> (&HashSet<Ed2kHash>, &HashSet<Ed2kHash>) {
+    fn eviction(
+        directives: &[Directive],
+    ) -> (&HashSet<Ed2kHash>, &HashSet<Ed2kHash>, &HashSet<Ed2kHash>) {
         directives
             .iter()
             .find_map(|d| match d {
                 Directive::RunEviction {
                     protected,
                     group_watched,
-                } => Some((protected, group_watched)),
+                    playlist,
+                } => Some((protected, group_watched, playlist)),
                 _ => None,
             })
             .expect("a RunEviction directive")
@@ -3121,6 +3131,7 @@ mod tests {
         let Directive::RunEviction {
             protected,
             group_watched,
+            playlist,
         } = directive
         else {
             panic!("expected RunEviction");
@@ -3133,6 +3144,9 @@ mod tests {
         assert!(!protected.contains(&hash(3)));
         // group_watched carries every watched flag.
         assert_eq!(group_watched, HashSet::from([hash(1), hash(3)]));
+        // playlist carries every entry (so a cached file *not* here is
+        // recognized as unreferenced and evictable).
+        assert_eq!(playlist, HashSet::from([hash(1), hash(2), hash(3)]));
     }
 
     #[test]
@@ -3146,7 +3160,7 @@ mod tests {
         // Startup: a pass fires.
         let first = wiring.on_state(&state.view(), &[peer("kim")]);
         assert!(has_eviction(&first));
-        let (protected, _) = eviction(&first);
+        let (protected, _, _) = eviction(&first);
         assert!(protected.contains(&hash(1)));
 
         // Same now-playing on the next snapshot: no pass.

@@ -1415,7 +1415,17 @@ user may delete, move, or truncate files behind the app's back. So at
 **startup the file actor reconciles `cache_entries` against disk** — a row
 whose file is gone or whose size disagrees is pruned (along with its
 `hash_cache` row), which makes the playlist entry re-resolve to Missing and
-re-download; a surviving row is re-registered as a servable copy. Resolution
+re-download; a surviving row is re-registered as a servable copy. The
+reconciliation is bidirectional: it also **sweeps orphans** — hash-named
+cache files with *no* `cache_entries` row. An orphan is either a completed
+download whose bookkeeping was lost (a DB reset leaves the files but not the
+rows) or an abandoned peer-download partial (`download_path` is the final
+`<cache>/<hash>` path, so an interrupted download leaves one). Because
+eviction only iterates `cache_entries`, an orphan is invisible to it and
+would leak forever. Orphans **older than a week by mtime** are deleted at
+startup — matching the "in-flight downloads don't survive restarts"
+contract — while anything more recent is left alone (it may still be in
+flight or wanted). Resolution
 then finds a cached download **by hash** (it checks `<cache>/<hash>`
 directly), because the cache is hash-named and the media-root *filename*
 search can never match it. Two **runtime guards** cover deletions that
@@ -1425,9 +1435,11 @@ longer hold) both drop the local copy, prune its bookkeeping, and flip the
 file to Missing so it re-resolves.
 
 **Retention** (`cache_retention`, per client): a cached file becomes
-*evictable* once it has been watched (85% rule) or sits behind the group's
-progress in the playlist (watched flag set). An evictable file is deleted
-`cache_retention` after its last access. Special values:
+*evictable* once it is no longer needed — either it has been watched (85%
+rule, or it sits behind the group's progress via the watched flag) **or it
+is no longer referenced by the playlist at all** (an abandoned download must
+not pin cache space just because nobody happened to watch it). An evictable
+file is deleted `cache_retention` after its last access. Special values:
 
 - `0`: deleted at the next eviction pass after watching -- the
   "small laptop" setting; nothing accumulates
@@ -2027,7 +2039,7 @@ inserted) so the previous layout is a strict prefix.
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
-| `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned) |
+| `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned; row-less hash-named files >1 week old swept) |
 | `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size); skips re-hashing unchanged files (Phase 9A); doubles as the **library index** populated by the periodic media-root scan; pruned alongside a removed cache entry |
 | `manual_mappings` | Playlist hash → user-picked local path |
 | `torrents` | ed2k hash → BitTorrent info hash for torrents in the engine (torrent-first downloads); reconciled at startup against the cache |
