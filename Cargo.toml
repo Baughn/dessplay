@@ -74,6 +74,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # clean with no workarounds.)
 mimalloc = "0.1"
 
+# Dependencies compile once and are never stepped through incrementally;
+# their full DWARF was the bulk of a 50GB target/. Workspace crates keep
+# full debug info. Dep backtraces keep function names, lose line numbers.
+[profile.dev.package."*"]
+debug = false
+
 # Debug-build MD4 hashes at ~70 MiB/s — a 1.4GB episode takes 20s and
 # feels broken (release: >1.2 GiB/s). Always optimize the hash inner
 # loops; debug info elsewhere is unaffected.
