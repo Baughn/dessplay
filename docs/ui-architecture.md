@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-02
+Last updated: 2026-07-09
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -82,6 +82,7 @@ A behavior that exists in one place cannot drift.
 | `Form` / `FormModel` (`widgets/form.rs`) | Field modals as data: a model declares rows and what Enter means per row (edit / toggle / cycle / emit); the Form owns the cursor, the pop-up editor, the save triple (capital `S`, the `[Save]` row with its "needs …" hint, the unadvertised Ctrl-S alias — capital-S exists because Ctrl-S is XOFF in terminals lacking the enhanced keyboard protocol), and Esc | Settings and the List-entry editor are declarations; a new field or form cannot behave differently from its neighbors |
 | `Keymap` (`widgets/keymap.rs`) | Bindings as data: (pattern, bar entry, action method), one table per component or mode | The keybinding bar and the dispatch derive from the same table — a key shown in the bar always dispatches; a dispatched key is advertised or deliberately hidden. Actions return `None` to *decline* (guards), letting the event fall through to the structural layers |
 | `widgets/keys.rs` | Key-event matchers | The terminal-compatibility policy lives in one place: bare letters over Ctrl-letters (Ctrl-J == LF, Ctrl-M == Enter, Ctrl-S == XOFF without the enhanced keyboard protocol); Ctrl *and* Alt accepted for word ops (macOS terminals send Alt); `.contains` matching for kitty's extra modifier bits |
+| `table_row` / `Cell` (`widgets/table.rs`) | The one table row: a flexible name cell (styled spans, truncated with `…`) plus fixed-width columns, all in display cells (CJK-aware) | Columns never drift with content: whatever the name's length or script, every fixed cell starts at the same column (property-tested) — used by the playlist's `temp`/watch-state columns and The List's episode/watchers spreadsheet; "a long filename shoved the tags off the pane" is unrepresentable |
 
 Event routing inside a component is layered, most-specific first:
 

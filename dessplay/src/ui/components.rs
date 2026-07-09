@@ -14,44 +14,19 @@ use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use tuirealm::state::State;
-use unicode_width::UnicodeWidthStr;
 
 use super::msg::Msg;
 use super::props::{
     ChatLine, FranchiseRow, ListGroup, PlaylistProps, SeriesSort, StatusProps, Tone, UsersProps,
 };
 use super::theme;
-use super::widgets::{Binding, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, render_list};
+use super::widgets::{
+    Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, render_list,
+    table_row,
+};
 
 /// A key the pane responds to, for the keybinding bar.
 pub type Keybinding = (&'static str, &'static str);
-
-/// Truncate `s` to at most `max` display cells, appending `…` (one cell)
-/// when anything was cut. Returns the text and its display width — cells,
-/// not chars, so CJK (two cells per glyph) truncates and pads correctly.
-fn truncate_display(s: &str, max: usize) -> (String, usize) {
-    use unicode_width::UnicodeWidthChar;
-    if max == 0 {
-        return (String::new(), 0);
-    }
-    let full = s.width();
-    if full <= max {
-        return (s.to_string(), full);
-    }
-    let budget = max - 1; // reserve a cell for the ellipsis
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in s.chars() {
-        let w = ch.width().unwrap_or(0);
-        if used + w > budget {
-            break;
-        }
-        out.push(ch);
-        used += w;
-    }
-    out.push('…');
-    (out, used + 1)
-}
 
 /// Shared no-op implementations for the trait methods our panes don't
 /// use (they're driven by typed props, not tui-realm attrs).
@@ -911,6 +886,25 @@ impl PlaylistPane {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
+        let inner = area.width.saturating_sub(2) as usize;
+        // Table columns after the title: an optional "temp" column (only
+        // reserved when some row is cache-only) and the always-shown
+        // watch state, sized to the widest tag on screen. The title cell
+        // truncates — a long filename must not shove the columns off the
+        // pane.
+        let watch_tag = |row: &crate::ui::props::PlaylistRow| match row.watch {
+            dessplay_core::types::SeriesWatchState::Watching => "watching",
+            dessplay_core::types::SeriesWatchState::Maybe => "maybe",
+            dessplay_core::types::SeriesWatchState::NotWatching => "not watching",
+        };
+        let show_temp = self.props.rows.iter().any(|row| row.temporary);
+        let watch_width = self
+            .props
+            .rows
+            .iter()
+            .map(|row| watch_tag(row).len())
+            .max()
+            .unwrap_or(0);
         let mut items: Vec<ListItem> = self
             .props
             .rows
@@ -918,29 +912,19 @@ impl PlaylistPane {
             .map(|row| {
                 let marker = if row.is_now { "▶ " } else { "  " };
                 let style = theme::tone_style(row.tone);
-                let left = format!("{marker}{}", row.title);
-                // Right-aligned dim tags: the always-shown watch state,
-                // prefixed by "temporary" for a cache-only copy. Title
-                // clips before the tags when space is tight.
-                let watch_tag = match row.watch {
-                    dessplay_core::types::SeriesWatchState::Watching => "watching",
-                    dessplay_core::types::SeriesWatchState::Maybe => "maybe",
-                    dessplay_core::types::SeriesWatchState::NotWatching => "not watching",
-                };
-                let right = if row.temporary {
-                    format!("temporary  {watch_tag}")
-                } else {
-                    watch_tag.to_string()
-                };
-                let inner = area.width.saturating_sub(2) as usize;
-                let pad = inner
-                    .saturating_sub(left.chars().count() + right.chars().count() + 1)
-                    .max(1);
-                ListItem::new(Line::from(vec![
-                    Span::styled(left, style),
-                    Span::raw(" ".repeat(pad)),
-                    Span::styled(right, theme::dim()),
-                ]))
+                let flex = vec![Span::styled(format!("{marker}{}", row.title), style)];
+                let mut cells = Vec::new();
+                if show_temp {
+                    let text = if row.temporary { "temp" } else { "" };
+                    cells.push(Cell::new(text, theme::dim(), 4, Align::Left));
+                }
+                cells.push(Cell::new(
+                    watch_tag(row),
+                    theme::dim(),
+                    watch_width,
+                    Align::Left,
+                ));
+                ListItem::new(table_row(inner, flex, cells))
             })
             .collect();
         items.push(ListItem::new(Span::styled("  [Add New]", theme::dim())));
@@ -1297,72 +1281,54 @@ impl SeriesPane {
                         // A plain table: episode #, out-this-week, and
                         // watchers are the spreadsheet's load-bearing
                         // columns, so they get fixed-width, aligned cells
-                        // instead of drifting with the name's length.
+                        // instead of drifting with the name's length
+                        // (`table_row` truncates the name cell and keeps
+                        // the columns put).
                         const EP_WIDTH: usize = 8;
                         const AVAIL_WIDTH: usize = 3;
                         const WATCHERS_WIDTH: usize = 10;
-                        const INDENT: usize = 2;
-                        let reserved = INDENT + EP_WIDTH + AVAIL_WIDTH + WATCHERS_WIDTH + 3;
-                        let name_width = (area.width as usize).saturating_sub(reserved).max(8);
+                        let inner = area.width.saturating_sub(2) as usize;
 
                         let entry = &self.groups[*g].rows[*e];
-                        let mut spans = vec![Span::raw(" ".repeat(INDENT))];
-                        // Cell widths are terminal *display* widths (CJK
-                        // glyphs occupy two cells), not char counts —
-                        // char-count padding drifts the columns on every
-                        // Japanese title. And the name cell truncates to
-                        // its width: an over-long title must not shove
-                        // the episode/watchers columns sideways either.
-                        let mut visible_len = 0;
+                        let mut flex = vec![Span::raw("  ")];
                         // A search that came up empty is a durable "AniDB
                         // doesn't have this" callout (design.md, Series
                         // Identity) -- distinct from an unlinked entry
                         // nobody's tried linking yet, which gets no marker.
                         if entry.series_id.is_none() && entry.anidb_unavailable {
-                            let marker = "⊘ ";
-                            visible_len += marker.width();
-                            spans.push(Span::styled(marker, theme::dim()));
+                            flex.push(Span::styled("⊘ ", theme::dim()));
                         }
-                        let (name, w) =
-                            truncate_display(&entry.name, name_width - visible_len.min(name_width));
-                        visible_len += w;
-                        spans.push(Span::raw(name));
-                        if let Some(nero) = &entry.nero_name
-                            && visible_len < name_width
-                        {
-                            let (text, w) =
-                                truncate_display(&format!(" “{nero}”"), name_width - visible_len);
-                            visible_len += w;
-                            spans.push(Span::styled(text, theme::dim()));
+                        flex.push(Span::raw(entry.name.clone()));
+                        if let Some(nero) = &entry.nero_name {
+                            flex.push(Span::styled(format!(" “{nero}”"), theme::dim()));
                         }
-                        if visible_len < name_width {
-                            spans.push(Span::raw(" ".repeat(name_width - visible_len)));
-                        }
-
-                        let ep_text = entry.next_ep.as_deref().unwrap_or("");
-                        spans.push(Span::raw(" "));
-                        spans.push(Span::styled(
-                            format!("{ep_text:<EP_WIDTH$}"),
-                            theme::tone_style(Tone::Normal),
-                        ));
 
                         let avail_text = if entry.next_ep.is_some() && entry.available {
                             "✓"
                         } else {
                             ""
                         };
-                        spans.push(Span::raw(" "));
-                        spans.push(Span::styled(
-                            format!("{avail_text:^AVAIL_WIDTH$}"),
-                            theme::tone_style(Tone::Good),
-                        ));
-
-                        spans.push(Span::raw(" "));
-                        spans.push(Span::styled(
-                            format!("{:<WATCHERS_WIDTH$}", entry.watchers),
-                            theme::dim(),
-                        ));
-                        ListItem::new(Line::from(spans))
+                        let cells = vec![
+                            Cell::new(
+                                entry.next_ep.as_deref().unwrap_or(""),
+                                theme::tone_style(Tone::Normal),
+                                EP_WIDTH,
+                                Align::Left,
+                            ),
+                            Cell::new(
+                                avail_text,
+                                theme::tone_style(Tone::Good),
+                                AVAIL_WIDTH,
+                                Align::Center,
+                            ),
+                            Cell::new(
+                                entry.watchers.clone(),
+                                theme::dim(),
+                                WATCHERS_WIDTH,
+                                Align::Left,
+                            ),
+                        ];
+                        ListItem::new(table_row(inner, flex, cells))
                     }
                 })
                 .collect(),

@@ -1459,9 +1459,12 @@ single series name is already one season's folder. The series-name component
 is sanitized to a safe path component.
 
 Cache-only files (those with a download-cache row, i.e. not yet in a media
-root) are flagged in the playlist pane with a dim right-aligned **`temporary`**
-marker; `A` only acts on such rows. Archiving moves the file into the library,
-so the marker clears — that is the success feedback. Both success and failure
+root) are flagged in the playlist pane with a dim **`temp`** marker in its
+own table column (reserved only while some row is cache-only; the playlist
+renders as a table — filename, `temp`, watch state — so an over-long
+filename truncates rather than pushing the tag columns off the pane); `A`
+only acts on such rows. Archiving moves the file into the library, so the
+marker clears — that is the success feedback. Both success and failure
 also post a local-only system line to the chat pane ("Archived …" / "Archive
 failed (…): …"); these notices are local, not synced.
 

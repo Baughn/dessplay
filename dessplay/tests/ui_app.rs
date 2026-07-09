@@ -767,7 +767,27 @@ fn temporary_marker_renders_for_cache_only_files() {
         &[hash(1)],
     ));
     let screen = render(&mut ui, 100, 30);
-    assert!(screen.contains("temporary"), "{screen}");
+    assert!(screen.contains("temp"), "{screen}");
+}
+
+/// Regression: an over-long filename used to shove the right-aligned tag
+/// columns ("temp", the watch state) past the pane border — the title
+/// must truncate instead, keeping the tag columns visible (the playlist
+/// renders as a table).
+#[test]
+fn long_filename_does_not_push_tags_offscreen() {
+    let mut state = CrdtState::new();
+    let long = format!("[SubGroup] {} - 01 [1080p][ABCD1234].mkv", "A".repeat(80));
+    state.push_playlist_entry(A, ts(1), entry(1, &long));
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot_with_cache(
+        state.view(),
+        vec![peer("kim")],
+        &[hash(1)],
+    ));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("temp"), "{screen}");
+    assert!(screen.contains("maybe"), "{screen}");
 }
 
 #[test]

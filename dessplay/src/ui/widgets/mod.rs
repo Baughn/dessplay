@@ -19,9 +19,11 @@ pub mod keymap;
 pub mod keys;
 pub mod line;
 pub mod list;
+pub mod table;
 
 pub use form::{CharOutcome, Form, FormEvent, FormModel, RowAction, overlay};
 pub use keymap::{BarEntry, Binding, KeyPattern, Keymap};
 pub(crate) use keys::{plain, typed};
 pub use line::{LineBuffer, TextField};
 pub use list::{ListCursor, render_list};
+pub use table::{Align, Cell, table_row, truncate_display};
