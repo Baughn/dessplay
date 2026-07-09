@@ -59,6 +59,21 @@ impl RqbitEngine {
         torrents_dir: PathBuf,
         upload_limit: Option<u64>,
     ) -> Result<Arc<Self>, String> {
+        Self::new_inner(torrents_dir, upload_limit, false).await
+    }
+
+    /// Test-only session: no DHT (a live client on the same machine
+    /// already holds librqbit's DHT port) and no listener. Public so the
+    /// manual live smoke tests can use it; not for production wiring.
+    pub async fn new_for_tests(torrents_dir: PathBuf) -> Result<Arc<Self>, String> {
+        Self::new_inner(torrents_dir, None, true).await
+    }
+
+    async fn new_inner(
+        torrents_dir: PathBuf,
+        upload_limit: Option<u64>,
+        isolated: bool,
+    ) -> Result<Arc<Self>, String> {
         std::fs::create_dir_all(&torrents_dir)
             .map_err(|e| format!("creating {}: {e}", torrents_dir.display()))?;
         let session = Session::new_with_opts(
@@ -74,6 +89,10 @@ impl RqbitEngine {
                         .and_then(NonZeroU32::new),
                     download_bps: None,
                 },
+                disable_dht: isolated,
+                // An ephemeral high range; the default listener port may
+                // be held by a live client on the same machine.
+                listen_port_range: if isolated { Some(49152..65535) } else { None },
                 ..Default::default()
             },
         )
@@ -83,6 +102,28 @@ impl RqbitEngine {
             session,
             torrents: Arc::new(Mutex::new(HashMap::new())),
         }))
+    }
+
+    /// Fetch a `.torrent` file's bytes. Done here rather than by passing
+    /// the URL to librqbit: its `AddTorrent::Url` routes any 40-character
+    /// string to the magnet parser (its heuristic for a raw hex
+    /// infohash) before checking for an http scheme — and every current
+    /// nyaa download URL (7-digit id) is exactly 40 characters, so the
+    /// URL path always failed and start-up fell to the slower
+    /// DHT-metadata magnet route (2026-07-09). Blocking; call from
+    /// `spawn_blocking`.
+    fn fetch_torrent_bytes(url: &str) -> Result<Vec<u8>, String> {
+        let response = ureq::get(url)
+            .header("User-Agent", "dessplay/1")
+            .call()
+            .map_err(|e| format!("fetching {url}: {e}"))?;
+        response
+            .into_body()
+            .with_config()
+            // .torrent metadata is tens of KB; anything past 16MB is not it.
+            .limit(16 * 1024 * 1024)
+            .read_to_vec()
+            .map_err(|e| format!("reading {url}: {e}"))
     }
 
     /// The largest payload file's absolute path, once metadata is known.
@@ -129,24 +170,43 @@ impl TorrentEngine for RqbitEngine {
                 overwrite: true,
                 ..Default::default()
             };
-            let result = match session
-                .add_torrent(AddTorrent::Url(url.clone().into()), Some(opts()))
-                .await
+            // A magnet "url" (startup reconciliation re-adds by magnet)
+            // goes straight to librqbit; an http(s) URL is fetched here
+            // and added as bytes (see `fetch_torrent_bytes` for why the
+            // URL is never handed to librqbit directly).
+            let direct: Result<librqbit::AddTorrentResponse, String> = if url.starts_with("magnet:")
             {
+                session
+                    .add_torrent(AddTorrent::Url(url.clone().into()), Some(opts()))
+                    .await
+                    .map_err(|e| format!("{e:#}"))
+            } else {
+                let fetch_url = url.clone();
+                match tokio::task::spawn_blocking(move || Self::fetch_torrent_bytes(&fetch_url))
+                    .await
+                {
+                    Ok(Ok(bytes)) => session
+                        .add_torrent(AddTorrent::TorrentFileBytes(bytes.into()), Some(opts()))
+                        .await
+                        .map_err(|e| format!("{e:#}")),
+                    Ok(Err(e)) => Err(e),
+                    Err(e) => Err(format!("torrent fetch task: {e}")),
+                }
+            };
+            let result = match direct {
                 Ok(response) => Ok(response),
                 Err(e) => {
                     tracing::warn!(
                         %file, url,
-                        "adding torrent by URL failed ({e:#}); trying magnet"
+                        "adding torrent by .torrent file failed ({e}); trying magnet"
                     );
                     session
                         .add_torrent(AddTorrent::Url(magnet.into()), Some(opts()))
                         .await
+                        .map_err(|e| format!("{e:#}"))
                 }
             };
-            let handle = result
-                .map(|response| response.into_handle())
-                .map_err(|e| format!("{e:#}"));
+            let handle = result.map(|response| response.into_handle());
             let Ok(mut torrents) = torrents.lock() else {
                 return;
             };
