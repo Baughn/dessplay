@@ -856,7 +856,14 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         Some(socket) => crate::player::mpv::MpvFactory::attach(socket.clone()),
         None => crate::player::mpv::MpvFactory::new("mpv"),
     };
-    let (torrent, nyaa) = torrent_wiring(&cache_dir, settings.upload_limit).await;
+    // Behind a default-off setting: the engine opens ports and joins the
+    // DHT, so it never starts unless the user opted in. Like the player
+    // choice and upload limit, the setting applies at startup.
+    let (torrent, nyaa) = if settings.torrent_enabled {
+        torrent_wiring(&cache_dir, settings.upload_limit).await
+    } else {
+        (None, None)
+    };
     let shell = crate::session::SessionShell::new(
         me.clone(),
         player_factory,

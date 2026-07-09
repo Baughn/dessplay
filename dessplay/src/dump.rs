@@ -169,6 +169,7 @@ fn settings_json(s: &Settings) -> Value {
         "subtitle_mode": format!("{:?}", s.subtitle_mode),
         "series_sort": format!("{:?}", s.series_sort),
         "auto_download": s.auto_download,
+        "torrent_enabled": s.torrent_enabled,
         "irc_enabled": s.irc_enabled,
         "irc_server": s.irc_server,
         "irc_tls": s.irc_tls,

@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -66,6 +66,10 @@ Optional settings (sensible defaults, editable later):
   file contents from peers -- neither the prefetch window nor the missing
   now-playing file -- so it relies entirely on its own media roots. See
   [Pre-fetching](#download-cache-and-retention).
+- BitTorrent downloads (toggle, default **off**). When on, missing files
+  are fetched torrent-first (nyaa) before falling back to the peer relay;
+  when off the torrent engine never starts. Applies at startup. See
+  [BitTorrent Downloads](#bittorrent-downloads).
 - IRC bridge (toggle, default **on**) plus IRC server (default
   `irc.rizon.net`), IRC TLS (toggle, default on -- selects port 6697 vs
   6667), and IRC channel (default `#dess`). See [IRC Bridge](#irc-bridge).
@@ -1499,7 +1503,12 @@ current-season release sitting on nyaa.si with hundreds of seeders. So
 fetching is **torrent-first** on **interactive clients**: they try a
 public torrent before falling back to the relay path. Both routes sit
 behind the same `StartDownload`, honor the same `auto_download` /
-NotWatching gates, and converge on the same completion contract.
+NotWatching gates, and converge on the same completion contract. The
+torrent path is gated behind the **BitTorrent downloads** setting
+(`torrent_enabled`, default **off**) — the engine opens ports and joins
+the DHT, so it never starts unless the user opted in; when off, every
+fetch goes straight to the peer relay. Like the player choice and
+upload limit, the setting applies at startup.
 **Seeders run no torrent path at all** — a file nyaa can supply makes
 the seeder redundant; its job is the rare, peer-only files, so it
 downloads only from peers (and only when a peer source exists).
@@ -2013,7 +2022,8 @@ crashes should be rare enough not to matter, and an edit that *caused* a
 crash should not be replayed into the next session.
 
 **Settings** (username, server, password, media roots, player choice, cache
-retention, upload limit, subtitle mode, auto-download, and the IRC bridge
+retention, upload limit, subtitle mode, auto-download, BitTorrent
+downloads, and the IRC bridge
 settings -- enabled, server, TLS, channel) live in the same SQLite database
 and are edited through the settings screen. The password is stored in plaintext
 — consistent with the threat model below. Command-line flags and environment
@@ -2041,7 +2051,7 @@ inserted) so the previous layout is a strict prefix.
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, auto_download, irc_enabled, irc_server, irc_tls, irc_channel) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, auto_download, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |

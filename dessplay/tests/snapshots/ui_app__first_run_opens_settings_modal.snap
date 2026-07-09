@@ -1,5 +1,6 @@
 ---
 source: dessplay/tests/ui_app.rs
+assertion_line: 199
 expression: "render(&mut ui, 100, 30)"
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -14,14 +15,14 @@ expression: "render(&mut ui, 100, 30)"
 │              │Subtitles: Off                                                      │──────────────┐
 │              │Cache: 7 days                                                       │              │
 │              │Auto-download: yes                                                  │              │
+│              │BitTorrent downloads: no (applies at restart)                       │              │
 │              │IRC bridge: yes                                                     │              │
 │              │IRC server:  irc.rizon.net                                          │              │
 │              │IRC TLS:     yes                                                    │              │
-│              │IRC channel: #dess                                                  │              │
-│              │Subtitle speaker colors: yes                                        │──────────────┘
-│              │[Add media root]                                                    │──────────────┐
+│              │IRC channel: #dess                                                  │──────────────┘
+│              │Subtitle speaker colors: yes                                        │──────────────┐
+│              │[Add media root]                                                    │              │
 │              │[Save] — needs a username, a password, a media root                 │              │
-│              │                                                                    │              │
 │              │                                                                    │              │
 └──────────────│                                                                    │              │
 ┌──────────────│                                                                    │              │

@@ -219,6 +219,11 @@ pub struct Settings {
     /// downloads — it relies on its own library (design.md,
     /// Pre-fetching). Default true.
     pub auto_download: bool,
+    /// Try a public torrent (nyaa) before the peer relay when fetching a
+    /// missing file (design.md, BitTorrent Downloads). When false the
+    /// torrent engine is never started — peer transfer only. Applies at
+    /// startup. Default off.
+    pub torrent_enabled: bool,
     /// Bridge our own chat to IRC so the conversation survives the app
     /// being closed (design.md, IRC bridge). Default on.
     pub irc_enabled: bool,
@@ -246,6 +251,7 @@ impl Default for Settings {
             series_sort: SeriesSort::default(),
             file_browser_sort: BrowserSort::default(),
             auto_download: true,
+            torrent_enabled: false,
             irc_enabled: true,
             irc_server: "irc.rizon.net".into(),
             irc_tls: true,
@@ -330,6 +336,11 @@ impl Settings {
                 .map(|value| parse_bool("auto_download", &value))
                 .transpose()?
                 .unwrap_or(defaults.auto_download),
+            torrent_enabled: storage
+                .setting("torrent_enabled")?
+                .map(|value| parse_bool("torrent_enabled", &value))
+                .transpose()?
+                .unwrap_or(defaults.torrent_enabled),
             irc_enabled: storage
                 .setting("irc_enabled")?
                 .map(|value| parse_bool("irc_enabled", &value))
@@ -383,6 +394,14 @@ impl Settings {
             Some(if self.auto_download { "true" } else { "false" }),
         )?;
         storage.set_setting(
+            "torrent_enabled",
+            Some(if self.torrent_enabled {
+                "true"
+            } else {
+                "false"
+            }),
+        )?;
+        storage.set_setting(
             "irc_enabled",
             Some(if self.irc_enabled { "true" } else { "false" }),
         )?;
@@ -424,6 +443,7 @@ mod tests {
             series_sort: SeriesSort::Year,
             file_browser_sort: BrowserSort::Newest,
             auto_download: false,
+            torrent_enabled: true,
             irc_enabled: false,
             irc_server: "irc.example.org".into(),
             irc_tls: false,

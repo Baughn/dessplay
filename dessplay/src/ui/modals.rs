@@ -921,12 +921,13 @@ const FIELD_READY: usize = 3;
 const FIELD_SUBTITLE: usize = 4;
 const FIELD_CACHE: usize = 5;
 const FIELD_AUTO_DOWNLOAD: usize = 6;
-const FIELD_IRC_ENABLED: usize = 7;
-const FIELD_IRC_SERVER: usize = 8;
-const FIELD_IRC_TLS: usize = 9;
-const FIELD_IRC_CHANNEL: usize = 10;
-const FIELD_SUBTITLE_SPEAKER_COLORS: usize = 11;
-const FIXED_FIELDS: usize = 12;
+const FIELD_TORRENT: usize = 7;
+const FIELD_IRC_ENABLED: usize = 8;
+const FIELD_IRC_SERVER: usize = 9;
+const FIELD_IRC_TLS: usize = 10;
+const FIELD_IRC_CHANNEL: usize = 11;
+const FIELD_SUBTITLE_SPEAKER_COLORS: usize = 12;
+const FIXED_FIELDS: usize = 13;
 
 /// First-run and later settings editing: a [`Form`] over the working
 /// settings and media roots. All form behavior (cursor, editor, save
@@ -1029,6 +1030,13 @@ impl FormModel for SettingsForm {
             format!("Subtitles: {}", self.settings.subtitle_mode.label()).into(),
             format!("Cache: {}", self.settings.cache_retention.label()).into(),
             format!("Auto-download: {}", yes_no(self.settings.auto_download)).into(),
+            Line::from(vec![
+                Span::raw(format!(
+                    "BitTorrent downloads: {}",
+                    yes_no(self.settings.torrent_enabled)
+                )),
+                Span::styled(" (applies at restart)", theme::dim()),
+            ]),
             format!("IRC bridge: {}", yes_no(self.settings.irc_enabled)).into(),
             format!("IRC server:  {}", self.field_value(FIELD_IRC_SERVER)).into(),
             format!("IRC TLS:     {}", yes_no(self.settings.irc_tls)).into(),
@@ -1078,6 +1086,10 @@ impl FormModel for SettingsForm {
             }
             FIELD_AUTO_DOWNLOAD => {
                 self.settings.auto_download = !self.settings.auto_download;
+                RowAction::Handled
+            }
+            FIELD_TORRENT => {
+                self.settings.torrent_enabled = !self.settings.torrent_enabled;
                 RowAction::Handled
             }
             FIELD_SUBTITLE_SPEAKER_COLORS => {
@@ -1905,6 +1917,22 @@ mod tests {
             modal.form.model.settings.cache_retention,
             crate::config::CacheRetention::default().next()
         );
+    }
+
+    #[test]
+    fn enter_toggles_torrent_field() {
+        let mut modal = SettingsModal::new(crate::config::Settings::default(), vec![]);
+        // Default off; the row's Enter flips it on.
+        assert!(!modal.form.model.settings.torrent_enabled);
+        for _ in 0..FIELD_TORRENT {
+            modal.on(&down());
+        }
+        modal.on(&enter());
+        assert!(modal.form.model.settings.torrent_enabled);
+        // And the label the cursor is on is really the torrent row.
+        let rows = modal.form.model.rows();
+        let line = rows[FIELD_TORRENT].to_string();
+        assert!(line.contains("BitTorrent"), "row was {line:?}");
     }
 
     #[test]
