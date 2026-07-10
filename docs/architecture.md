@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -42,8 +42,8 @@ without owning business logic.
 ### Testability at Every Level
 
 Each actor can be tested in isolation by sending it messages and asserting on
-outputs. The `SyncActor` can be tested without a network. The `UiActor` can
-be tested without a terminal. The `PlayerActor` can be tested with a mock
+outputs. The `SyncActor` can be tested without a network. The synchronous
+`Ui` can be tested without a terminal. The `PlayerActor` can be tested with a mock
 player.
 
 Beyond isolation, the *whole client* must be constructible from a test —
@@ -100,7 +100,7 @@ inputs is a bug: it would be behavior the harness cannot see.
            +------------+ | | +------------+
            |              | |              |
    +-------v------+ +----v-v----+ +--------v-------+
-   |  SyncActor   | | UiActor   | | PlayerActor    |
+   |  SyncActor   | | UI system | | PlayerActor    |
    | (CRDT state, | | (tui-realm| | (mpv IPC,      |
    |  op log)     | |  components| |  echo filter)  |
    +-------+------+ +-----------+ +--------+-------+
@@ -113,7 +113,7 @@ inputs is a bug: it would be behavior the harness cannot see.
 ```
 
 **Seeder composition:** in seeder mode (`--seeder`), only SyncActor,
-NetworkActor, and FileActor are spawned -- no UiActor, no PlayerActor. The
+NetworkActor, and FileActor are spawned -- no UI subsystem, no PlayerActor. The
 main loop is the same; the routing arms for absent actors simply never fire.
 
 The interactive client additionally spawns an [IrcActor](#ircactor) (the
@@ -153,7 +153,7 @@ dispatcher.
 - `GetState` -- request for current snapshot (for UI rendering)
 
 **Produces:**
-- `StateChanged(CrdtSnapshot)` -- sent to UiActor when state changes
+- `StateChanged(CrdtSnapshot)` -- sent through the event router to the UI
 - `OutboundOp(CrdtOp)` -- sent to NetworkActor for transmission to server
 
 **Persistence:** Periodically flushes state to SQLite. Playback position
@@ -183,9 +183,12 @@ is relayed through it), connection state, time sync state.
 - `PeerMessageReceived(PeerId, PeerMessage)` -- relayed file transfer traffic
 - `ConnectionStateChange(...)` -- connected/disconnected/error
 
-### UiActor
+### UI subsystem
 
-**Owns:** tui-realm `Application`, component state, terminal handle.
+There is no asynchronous `UiActor` task. `ui::app::Ui` is the synchronous
+dispatcher that owns component state, focus, and the modal stack. Production's
+`ui::shell` owns the terminal/input threads and exchanges `UiInput` and
+`UserAction` values with the bridge loop; tests drive the same `Ui` directly.
 
 **Receives:**
 - `StateUpdate(CrdtSnapshot)` -- new CRDT state to display
@@ -201,10 +204,10 @@ is relayed through it), connection state, time sync state.
 - These are translated by the main loop into `LocalOp` for SyncActor or
   commands for PlayerActor as appropriate.
 
-**Rendering:** The UiActor runs tui-realm's event loop internally. It receives
-state updates and maps them to component props. Input events flow through
-tui-realm's focus and routing system, producing `Msg` values that become
-`UserAction` outputs.
+**Rendering:** the UI shell feeds state and local inputs into `Ui`, which maps
+them to component props and renders with ratatui. Input events flow through
+the synchronous dispatcher and tui-realm component `on` methods, producing
+`Msg` values that become `UserAction` outputs.
 
 ### PlayerActor
 
@@ -482,7 +485,7 @@ promptly.
 ### User Sends Chat Message
 
 ```
-UiActor                 Main Loop               SyncActor           NetworkActor
+UI subsystem            Main Loop               SyncActor           NetworkActor
   |                        |                       |                     |
   |-- UserAction(Chat)  -->|                       |                     |
   |                        |-- LocalOp(Chat)  ---->|                     |
@@ -640,7 +643,7 @@ dessplay-rendezvous/          (server: lib + thin binary)
 | `tokio` | Async runtime, channels, timers |
 | `quinn` | QUIC transport |
 | `rustls` + `rcgen` | TLS and certificate generation |
-| `crdts` | CRDT data types (MVReg, Map, GList, GSet, Identifier) |
+| `crdts` | CRDT data types (Map, GList, GSet, Identifier) |
 | `postcard` | Compact binary serialization |
 | `rusqlite` (bundled) | SQLite persistence |
 | `tui-realm` | Elm-architecture TUI framework |

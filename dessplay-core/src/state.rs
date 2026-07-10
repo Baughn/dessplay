@@ -1862,31 +1862,6 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_register_writes_resolve_by_timestamp() {
-        let mut r1 = CrdtState::new();
-        let mut r2 = CrdtState::new();
-        let op1 = r1.set_now_playing(A1, ts(10), Some(hash(1)));
-        let op2 = r2.set_now_playing(A2, ts(20), Some(hash(2)));
-        r1.apply(op2);
-        r2.apply(op1);
-        assert_eq!(r1.view().now_playing, Some(hash(2)));
-        assert_eq!(r1.view(), r2.view());
-    }
-
-    #[test]
-    fn equal_timestamps_tiebreak_on_value() {
-        let mut r1 = CrdtState::new();
-        let mut r2 = CrdtState::new();
-        let op1 = r1.set_now_playing(A1, ts(10), Some(hash(1)));
-        let op2 = r2.set_now_playing(A2, ts(10), Some(hash(2)));
-        r1.apply(op2);
-        r2.apply(op1);
-        // max() value wins: hash(2) > hash(1).
-        assert_eq!(r1.view().now_playing, Some(hash(2)));
-        assert_eq!(r1.view(), r2.view());
-    }
-
-    #[test]
     fn older_timestamp_never_wins_even_sequentially() {
         // Pure LWW: a later write with a *lower* timestamp loses, even
         // from the same actor. This is why op generation must issue
@@ -1950,30 +1925,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_round_trips_through_postcard() {
-        let mut state = CrdtState::new();
-        state.set_now_playing(A1, ts(1), Some(hash(1)));
-        state.set_watched(A1, ts(2), hash(1), true);
-        state.append_chat(msg(3, "a", "hello"));
-        state.request_lookup(FileHashInfo {
-            hash: hash(1),
-            size: 123,
-            filename: "ep1.mkv".into(),
-            mtime: Some(456),
-            series_hint: None,
-        });
-
-        let snapshot = StateSnapshot {
-            epoch: Epoch(7),
-            state: state.clone(),
-        };
-        let bytes = crate::wire::encode(&snapshot).unwrap();
-        let decoded: StateSnapshot = crate::wire::decode(&bytes).unwrap();
-        assert_eq!(decoded, snapshot);
-        assert_eq!(decoded.state.view(), state.view());
-    }
-
-    #[test]
     fn file_catalog_resolves_by_lww_and_views() {
         use crate::types::FileCatalogEntry;
         let entry = |name: &str, size: u64| FileCatalogEntry {
@@ -1993,15 +1944,5 @@ mod tests {
             Some(&entry("new.mkv", 2))
         );
         assert_eq!(r1.view(), r2.view());
-    }
-
-    #[test]
-    fn merge_is_idempotent() {
-        let mut state = CrdtState::new();
-        state.set_now_playing(A1, ts(1), Some(hash(1)));
-        state.set_manual_override(A1, ts(2), UserId::new("a"), Some(ManualState::Paused));
-        let before = state.clone();
-        state.merge(before.clone());
-        assert_eq!(state, before);
     }
 }

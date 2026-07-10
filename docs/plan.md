@@ -1,8 +1,9 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-07-04
+Last updated: 2026-07-10
 
-10 phases, bottom-up. Each phase produces testable artifacts. The first
+The initial 10 phases are bottom-up; later numbered phases capture feature
+batches. Each phase produces testable artifacts. The first
 user-facing demo (TUI with chat + shared playlist) arrives at Phase 6;
 full watch-party experience at Phase 7.
 
@@ -180,7 +181,8 @@ handshake gained an **upward client->server StateMerge** after chaos
 testing proved per-op replay loses ops that died in flight with the
 old connection. The divergence alarm and FIFO datagram guard are in.
 
-**Goal**: CRDTs sync through server. Op broadcast, version vectors, gap fill.
+**Goal**: CRDTs sync through the server: op broadcast, eager datagram delivery,
+and merge-based reconnection/recovery.
 
 ### What gets built
 - SyncActor: wraps CrdtState, handles local and remote ops, issues
@@ -294,7 +296,7 @@ now the binary's default mode (`--headless` opts out).
 **Goal**: Full terminal interface using tui-realm.
 
 ### What gets built
-- UiActor with tui-realm Application
+- Synchronous `ui::app::Ui` dispatcher plus production terminal/input shell
 - Components:
   - ChatPane (log + input; `/afk` command)
   - SubtitlePane (rolling log component; fed with real data in Phase 7)
@@ -391,8 +393,8 @@ Interactive TUI client: connect, see peers, chat, manage shared playlist.
 - `Player` trait + `MockPlayer` (for tests)
 - `MpvPlayer`: JSON IPC over Unix socket
 - PlayerActor: manages mpv process, echo filter, position broadcast
-- Echo suppression: tag commands, filter echoed events, use mpv's
-  user-initiated vs programmatic event distinction
+- Echo suppression: track expected command effects and filter matching mpv
+  observations on our side (mpv does not identify event origin)
 - Play/pause sync (derived from presence + user states)
 - Seek authority: user seek -> write SeekAuthority + position, others follow
 - Position broadcast (100ms playing, 1s paused)
@@ -1176,9 +1178,11 @@ The request sheet's interface rows are done or consciously deferred.
 - The migration landed as unit tests over crafted legacy blobs
   (`state.rs::legacy_blob_*`: link-reuse and synthesis both asserted)
   rather than the promised property test over fixtures; the
-  resolution-order and linked/unlinked-gating tests landed 2026-07-05
-  with the scoped-review fixes (`series_identity.rs` tests,
-  `derive.rs::absent_committed_user_blocks` parameterized). The
+  resolution-order property now generates series identities and verifies
+  link > manual file > name > deterministic auto-create, including
+  idempotence after persistence (`series_identity.rs`). Linked/unlinked
+  gating tests landed 2026-07-05 with the scoped-review fixes
+  (`derive.rs::absent_committed_user_blocks` parameterized). The
   disambiguation view is covered behaviorally (opens-the-browser +
   ranking assertions) rather than by an insta snapshot.
 - The resolution function's step 2 (`manual_files`) runs *before* the

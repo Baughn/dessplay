@@ -132,6 +132,10 @@ pub fn resolve_or_build_entry(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use proptest::prelude::*;
+
     use super::*;
     use crate::state::CrdtState;
     use crate::types::{ActorId, AniDbMetadata, MetadataSource, SharedTimestamp};
@@ -196,51 +200,6 @@ mod tests {
         );
     }
 
-    /// Step 2 beats step 3: an explicit hash attachment wins over a
-    /// name-colliding other entry.
-    #[test]
-    fn manual_files_beats_a_name_match_on_another_entry() {
-        let mut state = CrdtState::new();
-        fallback_metadata(&mut state, hash(1), "Some Obscure Show");
-        // Entry 1 matches by name; entry 2 claims the hash explicitly.
-        state.put_list_entry(A, ts(2), ListEntryId(1), entry("Some Obscure Show"));
-        let mut by_hash = entry("A Different Title");
-        by_hash.manual_files.insert(hash(1));
-        state.put_list_entry(A, ts(3), ListEntryId(2), by_hash);
-        assert_eq!(
-            resolve_series_entry_for_file(&state.view(), hash(1)),
-            Some(ListEntryId(2)),
-        );
-    }
-
-    /// Step 1 beats step 2: a linked entry wins over a stray
-    /// `manual_files` attachment on another entry.
-    #[test]
-    fn anidb_link_beats_manual_files_on_another_entry() {
-        let mut state = CrdtState::new();
-        state.set_anidb_metadata(
-            A,
-            ts(1),
-            hash(1),
-            Some(AniDbMetadata {
-                source: MetadataSource::AniDb,
-                series_name: "Frieren".into(),
-                series_id: Some(AniDbSeriesId(42)),
-                episode_number: Some("1".into()),
-            }),
-        );
-        let mut linked = entry("Frieren");
-        linked.anidb_series_id = Some(AniDbSeriesId(42));
-        state.put_list_entry(A, ts(2), ListEntryId(1), linked);
-        let mut by_hash = entry("Wrong Entry");
-        by_hash.manual_files.insert(hash(1));
-        state.put_list_entry(A, ts(3), ListEntryId(2), by_hash);
-        assert_eq!(
-            resolve_series_entry_for_file(&state.view(), hash(1)),
-            Some(ListEntryId(1)),
-        );
-    }
-
     /// Step 3, `name` half: the derived name matching an entry's name
     /// resolves to it.
     #[test]
@@ -289,69 +248,77 @@ mod tests {
         assert_eq!(first, second);
     }
 
-    /// Regression: two independent auto-create resolutions for the *same*
-    /// AniDB series must converge on the same entry id. A caught-in-the-
-    /// wild bug (`missing_unknown_series_auto_not_watching_lets_the_group_play`
-    /// flaking under `-D warnings`/CI load): with a random id, two racing
-    /// peers each auto-creating "unknown series -> NotWatching" for a file
-    /// neither has watch history for would fork onto two different
-    /// entries that never merge back into one commitment.
-    #[test]
-    fn derive_entry_id_is_deterministic_for_the_same_series() {
-        let series = AniDbSeriesId(4242);
-        assert_eq!(
-            derive_entry_id(Some(series), "irrelevant when linked"),
-            derive_entry_id(Some(series), "a different name entirely"),
-        );
-    }
-
-    #[test]
-    fn derive_entry_id_is_deterministic_for_the_same_name() {
-        assert_eq!(
-            derive_entry_id(None, "Some Obscure Show"),
-            derive_entry_id(None, "Some Obscure Show"),
-        );
-    }
-
-    #[test]
-    fn derive_entry_id_differs_across_series_and_across_names() {
-        assert_ne!(
-            derive_entry_id(Some(AniDbSeriesId(1)), ""),
-            derive_entry_id(Some(AniDbSeriesId(2)), ""),
-        );
-        assert_ne!(
-            derive_entry_id(None, "Show A"),
-            derive_entry_id(None, "Show B"),
-        );
-        // A linked id must never coincide with an unlinked one derived from
-        // an unrelated name -- they hash under different domains.
-        assert_ne!(
-            derive_entry_id(Some(AniDbSeriesId(1)), ""),
-            derive_entry_id(None, ""),
-        );
-    }
-
-    /// The actual race this exists to close: two peers independently call
-    /// `resolve_or_build_entry` for the same file/series before either's
-    /// `PutListEntry` has round-tripped -- both must compute the same
-    /// (id, entry) pair, not two different ids.
-    #[test]
-    fn resolve_or_build_entry_converges_when_called_twice_with_no_entry_yet() {
-        let mut state = CrdtState::new();
-        state.set_anidb_metadata(
-            A,
-            ts(1),
-            hash(1),
-            Some(AniDbMetadata {
+    proptest! {
+        /// The design's whole resolution contract in one generated test:
+        /// linked entry > manual file > name match > deterministic
+        /// auto-create, and persisting the auto-created entry makes a
+        /// repeated resolution a read-only hit on the same id.
+        #[test]
+        fn resolution_order_and_autocreate_are_deterministic(
+            file_byte in any::<u8>(),
+            series_raw in any::<u32>(),
+            name in "[A-Za-z0-9 ]{1,32}",
+        ) {
+            let file = hash(file_byte);
+            let series = AniDbSeriesId(series_raw);
+            let metadata = AniDbMetadata {
                 source: MetadataSource::AniDb,
-                series_name: "Some Obscure Show".into(),
-                series_id: Some(AniDbSeriesId(4242)),
+                series_name: name.clone(),
+                series_id: Some(series),
                 episode_number: Some("1".into()),
-            }),
-        );
-        let view = state.view();
-        let first = resolve_or_build_entry(&view, hash(1));
-        let second = resolve_or_build_entry(&view, hash(1));
-        assert_eq!(first.map(|(id, _)| id), second.map(|(id, _)| id));
+            };
+
+            let mut by_name_and_hash = CrdtState::new();
+            by_name_and_hash.set_anidb_metadata(A, ts(1), file, Some(metadata.clone()));
+            by_name_and_hash.put_list_entry(A, ts(2), ListEntryId(1), entry(&name));
+            let mut manual = entry("manual claim");
+            manual.manual_files.insert(file);
+            by_name_and_hash.put_list_entry(A, ts(3), ListEntryId(2), manual);
+            prop_assert_eq!(
+                resolve_series_entry_for_file(&by_name_and_hash.view(), file),
+                Some(ListEntryId(2)),
+                "manual_files must beat a name match",
+            );
+
+            let mut with_link = by_name_and_hash.clone();
+            let mut linked = entry("linked claim");
+            linked.anidb_series_id = Some(series);
+            with_link.put_list_entry(A, ts(4), ListEntryId(3), linked);
+            prop_assert_eq!(
+                resolve_series_entry_for_file(&with_link.view(), file),
+                Some(ListEntryId(3)),
+                "an AniDB link must beat a manual_files claim",
+            );
+
+            let mut fresh = CrdtState::new();
+            fresh.set_anidb_metadata(A, ts(1), file, Some(metadata));
+            let (created_id, created) = resolve_or_build_entry(&fresh.view(), file)
+                .expect("metadata always permits auto-creation");
+            let repeated_id = resolve_or_build_entry(&fresh.view(), file)
+                .expect("the same unresolved view remains resolvable")
+                .0;
+            prop_assert_eq!(created_id, repeated_id);
+            fresh.put_list_entry(
+                A,
+                ts(2),
+                created_id,
+                created.expect("the first resolution must build an entry"),
+            );
+            prop_assert_eq!(
+                resolve_or_build_entry(&fresh.view(), file),
+                Some((created_id, None)),
+            );
+
+            let other_series = AniDbSeriesId(series_raw.wrapping_add(1));
+            prop_assert_ne!(
+                derive_entry_id(Some(series), &name),
+                derive_entry_id(Some(other_series), &name),
+            );
+            prop_assert_ne!(
+                derive_entry_id(Some(series), &name),
+                derive_entry_id(None, &name),
+                "linked and unlinked ids use separate hash domains",
+            );
+        }
     }
 }

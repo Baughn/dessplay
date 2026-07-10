@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 ## Table of Contents
 
@@ -173,9 +173,10 @@ Slower, may spawn external processes. Cover:
 - Relayed file transfer: chunking, reassembly, block-hash verification,
   corrupted-block re-fetch, resume-after-restart from on-disk chunks
 
-### System Tests (`cargo test --features system-test` or manual)
+### System Tests (manual tmux smoke)
 
-Full end-to-end in tmux. Cover:
+Full end-to-end in tmux. There is currently no `system-test` Cargo feature or
+automated tmux runner; this tier is run manually. Cover:
 - The complete user workflow (connect, add file, play, chat, disconnect)
 - See [System Tests (tmux)](#system-tests-tmux)
 
@@ -474,10 +475,9 @@ whole-app tests.
 Per-component tests can all pass while the *assembly* misbehaves: focus
 cycling, modal open/close stacking, the keybinding bar following focus,
 state→props plumbing across event sequences. Whole-app tests close that
-gap: instantiate the real tui-realm `Application` with all components
-mounted, feed a synthetic event sequence through the UiActor's injected
-event source (a constructor input — there is no separate test path),
-render to `TestBackend`, and assert with the same locator-style queries
+gap: instantiate the real synchronous `ui::app::Ui` dispatcher with all
+components mounted, feed it synthetic events (the same path production's UI
+shell drives), render to `TestBackend`, and assert with the same locator-style queries
 the multi-client harness uses.
 
 > Press Tab twice; press `a`; the file browser modal is visible and the
@@ -518,7 +518,7 @@ async fn sync_actor_applies_local_op() {
 - NetworkActor: connection state machine, message routing
 - PlayerActor: echo suppression, position broadcasting, crash handling
 - FileActor: hash caching, file matching, download state machine
-- UiActor: message -> action mapping, state -> props mapping
+- UI dispatcher: message -> action mapping, state -> props mapping
 
 ---
 
@@ -526,12 +526,13 @@ async fn sync_actor_applies_local_op() {
 
 All fuzz targets use structured `Arbitrary`-based input generation.
 
-Run with `cargo +nightly fuzz run <target>`, or the convenience script:
+Run with `cargo +nightly fuzz run <target>` from the relevant fuzz crate, or
+use its convenience script from the repository root:
 
 ```bash
-./fuzz/run.sh                     # all targets, 300s each, parallel
-./fuzz/run.sh crdt_op             # one target, 300s
-./fuzz/run.sh --quick             # all targets, 30s each
+dessplay-core/fuzz/run.sh                     # core targets, 300s each
+dessplay-core/fuzz/run.sh crdt_op             # one core target
+dessplay/fuzz/run.sh --quick                  # client targets, 30s each
 ```
 
 Fuzz for at least 10 minutes per target before release.
@@ -579,9 +580,10 @@ panic.
 #### Framing Deserialize (`framing_deserialize`) — Phase 3
 Raw bytes -> stream/datagram framing layer. Must not panic.
 
-#### Sync Engine (`sync_engine`) — Phase 4
-2-4 SyncActors through random event sequences with partitions and loss.
-Mid-run convergence checks.
+The actual SyncActor/network/server path is covered by the seeded chaos test
+in `dessplay-rendezvous/tests/sync.rs`; it is not duplicated as a libFuzzer
+target. The `crdt_convergence` target above owns arbitrary schedules at the
+pure cluster-model layer.
 
 ### Client Targets (`dessplay/fuzz`)
 

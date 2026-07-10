@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -167,7 +167,7 @@ enum Msg {
     CloseModal,
     ModalSelect(usize),
 
-    // State sync (from UiActor, not user input)
+    // State sync (from the UI shell, not user input)
     StateUpdated,
 }
 ```
@@ -196,7 +196,7 @@ State Update --> Props --> Component.view() --> Render
 
 ### The update() Function
 
-The `update()` function in the UiActor processes messages from components:
+The `update()` function in `Ui` processes messages from components:
 
 ```rust
 fn update(&mut self, msg: Msg) -> Option<UserAction> {
@@ -226,11 +226,12 @@ state, scroll position).
 
 ## Integration with Actor System
 
-The UiActor bridges tui-realm and the actor system:
+The synchronous `Ui` dispatcher and its production shell bridge tui-realm
+components to the rest of the application:
 
 ```
                   +----------------------------------+
-                  |            UiActor               |
+                  |       Ui + production shell      |
                   |                                  |
  StateUpdate ---->|  CrdtSnapshot -> component Props |
                   |                                  |
@@ -245,7 +246,7 @@ The UiActor bridges tui-realm and the actor system:
 
 ### State to Props Mapping
 
-When the UiActor receives a `StateUpdate(CrdtSnapshot)`, it maps the
+When `Ui` receives a `StateUpdate(CrdtSnapshot)`, it maps the
 snapshot data to component props:
 
 - **ChatPane**: snapshot.chat -> list of formatted message lines. It is also
@@ -404,7 +405,7 @@ Test that the update function maps messages to correct user actions:
 ```rust
 #[test]
 fn test_send_chat_produces_action() {
-    let mut ui = UiActor::new_for_test();
+    let mut ui = Ui::new_for_test();
     let action = ui.update(Msg::SendChat("hello".into()));
     assert_eq!(action, Some(UserAction::SendChat("hello".into())));
 }

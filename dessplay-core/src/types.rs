@@ -266,7 +266,8 @@ pub enum SeekAuthority {
 /// the gating set.
 ///
 /// Users write it on play/pause; the server forces `Paused` on Lost, on
-/// graceful quit, on departure, and when EOF advances now-playing.
+/// graceful quit (the immediate-departure path), and when EOF advances
+/// now-playing. The later Lost -> Departed timeout sweep does not re-pause.
 #[derive(
     Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize,
 )]

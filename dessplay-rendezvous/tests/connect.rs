@@ -214,16 +214,17 @@ async fn bad_password_is_rejected() {
     assert!(client.events.recv().await.is_none());
 }
 
-/// A client declaring a different `PROTOCOL_VERSION` is refused with a
-/// readable "please update" message and does not retry (#23).
+/// A protocol mismatch is checked before the password: even a client whose
+/// stored password is also stale gets the actionable update refusal and does
+/// not retry (#23).
 #[tokio::test(start_paused = true)]
-async fn mismatched_protocol_version_is_refused() {
+async fn protocol_mismatch_precedes_password_rejection() {
     let (net, server_id) = setup();
     let mut client = spawn_client_versioned(
         &net,
         "kim",
         &server_id,
-        PASSWORD,
+        "wrong too",
         Role::Interactive,
         0,
         PROTOCOL_VERSION + 1,

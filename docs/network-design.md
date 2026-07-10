@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -101,9 +101,11 @@ Each client-server QUIC connection uses three kinds of channels:
    the control stream only. Long chat messages and large playlist ops simply
    skip the eager-push optimization.
 
-3. **On-demand streams** -- short-lived bidirectional streams opened as needed
-   for gap fill (recovering missed state ops) and relayed file transfer.
-   Opened by the requesting side, closed when the transfer completes.
+3. **Relay stream** -- one long-lived bidirectional stream opened by each
+   client after authentication, separate from control traffic. Every relayed
+   file-transfer envelope for that peer shares it. Reconnection uses full
+   CvRDT merge rather than a gap-fill stream; there are no other application
+   streams in the current protocol.
 
 **Stream priority:** the control stream is prioritized above transfer
 streams (quinn `set_priority`), so a bulk download never starves state sync.
@@ -180,18 +182,13 @@ enum ServerControl {
     /// The client waits for the server's close after sending, so the
     /// frame is flushed before teardown.
     Goodbye,
-    /// Manual mark-watched from the episode browser (design.md #10): set
-    /// a file's group watched flag directly, not scoped to now-playing.
-    /// Setting `true` also runs the EOF path's List `next_ep`
-    /// auto-advance. Appended after `ProtocolMismatch` on the wire (the
-    /// bump policy forbids reordering existing variants) though it
-    /// belongs here logically.
-    MarkWatched { file: Ed2kHash, watched: bool },
-
     // Server -> Client
     AuthOk { observed_addr: SocketAddr },
     AuthFailed,
-    PeerList { peers: Vec<PeerInfo> },
+    PeerList {
+        peers: Vec<PeerInfo>,
+        known_offline: Vec<KnownUser>,
+    },
     TimeSyncResponse {
         client_send: u64,
         server_recv: u64,
@@ -199,7 +196,7 @@ enum ServerControl {
     },
 
     // Bidirectional (state sync)
-    StateSnapshot { epoch: u64, crdts: CrdtSnapshot },
+    StateSnapshot(StateSnapshot),
     /// Epoch-tagged: both sides drop ops generated against another
     /// epoch. Without the tag, an op in flight across a compaction
     /// would land on the freshly rebuilt state and pollute its reset
@@ -212,7 +209,7 @@ enum ServerControl {
     /// reconnection and divergence healing; client -> server as the
     /// upward half of the reconnect handshake (recovers ops that died
     /// in flight with the old connection; the server rebroadcasts).
-    StateMerge { epoch: u64, crdts: CrdtSnapshot },
+    StateMerge(StateSnapshot),
 
     // Divergence alarm (see sync-state.md, Divergence Alarm)
     /// Server -> client, every 30s: hash of the server's resolved view
@@ -222,10 +219,21 @@ enum ServerControl {
     /// send a StateMerge.
     RequestMerge,
 
+    // AniDB title search (client request + server response)
+    AniDbSearch { query: String },
+    AniDbSearchResults { query: String, results: Vec<AniDbSearchHit> },
+
     /// Server -> client: your Auth carried a different PROTOCOL_VERSION;
     /// admission refused, connection closed. The client exits with a
     /// "please update" message instead of retrying.
     ProtocolMismatch { server_version: u32 },
+
+    /// Manual mark-watched from the episode browser (design.md #10): set
+    /// a file's group watched flag directly, not scoped to now-playing.
+    /// Setting `true` also runs the EOF path's List `next_ep`
+    /// auto-advance. Appended here after `ProtocolMismatch` because the
+    /// bump policy forbids reordering existing wire variants.
+    MarkWatched { file: Ed2kHash, watched: bool },
 }
 
 enum Role { Interactive, Seeder }
@@ -261,7 +269,7 @@ while playing.
 |-------|---------|---------------|
 | Present | Normal traffic | -- |
 | Lost | 30s silence (QUIC idle timeout) | Push `PeerList` update; force playback intent to Paused (interactive peers only); system chat message |
-| Departed | 60s silence | Push `PeerList` update; peer leaves the gating set; intent forced Paused again (no auto-resume); server takes seek authority if the departed peer held it |
+| Departed | 60s silence | Push `PeerList` update; peer leaves ordinary gating; do **not** write playback intent again; server takes seek authority if the departed peer held it |
 
 Implementation note: with 10s keep-alives, "30s without traffic" coincides
 exactly with the QUIC idle timeout killing the connection — so the server
@@ -269,6 +277,12 @@ marks Lost when the connection dies, and a 1s sweeper promotes Lost entries
 to Departed 30s later (60s of silence total). Lost and Departed entries stay
 in the `PeerList` (with their presence) until the user reconnects; a
 reconnecting user's new connection supersedes the old entry.
+
+The Lost -> Departed timeout promotion deliberately does not force another
+pause. Lost already wrote Paused; if the present users deliberately resume
+during the next 30 seconds (valid for an absent Maybe user), the sweep must
+not overwrite that decision. Playback does not auto-resume merely because a
+peer departs: the Lost write remains latched until a user presses play.
 
 Graceful disconnects (`Goodbye`) skip the Lost stage and go straight to
 removal -- but still force the intent to Paused, and hand seek authority to
@@ -368,33 +382,38 @@ are mapped onto the wire.
 
 ### CrdtOp Encoding
 
-Each variant wraps the native `Op` type from the corresponding `crdts` crate
-type. All ops are serializable via serde/postcard.
+Each variant wraps the native operation type for the corresponding field.
+`LwwMapOp<K, V>` is `crdts::map::Op<K, LwwCell<V>, ActorId>` and
+`LwwRegOp<V>` is the timestamped `Lww<V>` value itself. All ops are
+serializable via serde/postcard.
 
 ```rust
 /// A single CRDT operation, sent over the wire.
 /// Each variant wraps the native crdts Op type for that field.
 enum CrdtOp {
-    Playlist(<Map<Ed2kHash, MVReg<Lww<PlaylistFileState>, ActorId>, ActorId> as CmRDT>::Op),
-    WatchedFlag(<Map<Ed2kHash, MVReg<Lww<bool>, ActorId>, ActorId> as CmRDT>::Op),
-    NowPlaying(<MVReg<Lww<Option<Ed2kHash>>, ActorId> as CmRDT>::Op),
-    SeekAuthority(<MVReg<Lww<ActorId>, ActorId> as CmRDT>::Op),
-    SeriesPreference(<Map<(UserId, AniDbSeriesId), MVReg<Lww<SeriesWatchState>, ActorId>, ActorId> as CmRDT>::Op),
-    ManualOverride(<Map<UserId, MVReg<Lww<Option<ManualState>>, ActorId>, ActorId> as CmRDT>::Op),
-    FileAvailability(<Map<(UserId, Ed2kHash), MVReg<Lww<FileAvailability>, ActorId>, ActorId> as CmRDT>::Op),
-    AniDbMetadata(<Map<Ed2kHash, MVReg<Lww<Option<AniDbMetadata>>, ActorId>, ActorId> as CmRDT>::Op),
-    SeriesRelations(<Map<AniDbSeriesId, MVReg<Lww<SeriesRelations>, ActorId>, ActorId> as CmRDT>::Op),
-    ListEntry(<Map<ListEntryId, MVReg<Lww<SeriesListEntry>, ActorId>, ActorId> as CmRDT>::Op),
-    ListNextEp(<Map<ListEntryId, MVReg<Lww<NextEpState>, ActorId>, ActorId> as CmRDT>::Op),
-    PlaybackPosition(<Map<UserId, MVReg<Lww<PlaybackPosition>, ActorId>, ActorId> as CmRDT>::Op),
-    Chat(<GList<ChatMessage> as CmRDT>::Op),
-    LookupRequest(<GSet<FileHashInfo> as CmRDT>::Op),
+    Playlist(LwwMapOp<Ed2kHash, Option<PlaylistFileState>>),
+    Watched(LwwMapOp<Ed2kHash, bool>),
+    NowPlaying(LwwRegOp<Option<Ed2kHash>>),
+    SeekAuthority(LwwRegOp<SeekAuthority>),
+    PlaybackIntent(LwwRegOp<PlaybackIntent>),
+    SeriesPreference(LwwMapOp<(UserId, ListEntryId), SeriesPreference>),
+    ManualOverride(LwwMapOp<UserId, Option<ManualState>>),
+    FileAvailability(LwwMapOp<(UserId, Ed2kHash), FileAvailability>),
+    AniDbMetadata(LwwMapOp<Ed2kHash, Option<AniDbMetadata>>),
+    SeriesRelations(LwwMapOp<AniDbSeriesId, SeriesRelations>),
+    FileCatalog(LwwMapOp<Ed2kHash, FileCatalogEntry>),
+    ListEntry(LwwMapOp<ListEntryId, SeriesListEntry>),
+    ListNextEp(LwwMapOp<ListEntryId, NextEpState>),
+    LookupRequest(FileHashInfo),
+    Chat(glist::Op<ChatMessage>),
+    PlaybackPosition(LwwMapOp<UserId, PlaybackPosition>),
+    AcknowledgeAbsent((Ed2kHash, UserId)),
 }
 ```
 
-In practice, `Map::Op` is `map::Op::Up(key, dot, mvreg_op) | map::Op::Rm(key, vclock)`,
-and `MVReg::Op` carries the value and a dot for causality tracking. The
-concrete types are determined by the crdts crate -- we just wrap and tag them.
+In practice, `Map::Op` can represent `Up` or `Rm`, but DessPlay emits only
+`Up`: removals are LWW `None` tombstones. Standalone LWW registers carry no
+causal metadata; applying or merging them keeps `max((timestamp, value))`.
 
 ### Sync Flow
 

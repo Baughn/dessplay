@@ -455,37 +455,6 @@ mod tests {
     }
 
     #[test]
-    fn file_states_gate_watching_users() {
-        for (availability, expected) in [
-            (FileAvailability::Ready, None),
-            (FileAvailability::Missing, Some(BlockReason::FileMissing)),
-            (
-                FileAvailability::Downloading {
-                    progress_bps: 1_999,
-                },
-                Some(BlockReason::Downloading),
-            ),
-            (
-                FileAvailability::Downloading {
-                    progress_bps: 2_000,
-                },
-                None,
-            ),
-        ] {
-            let mut state = playing_state();
-            state.set_file_availability(SERVER, ts(3), UserId::new("kim"), hash(1), availability);
-            let blockers = playback_blockers(&state.view(), &[present("kim")]);
-            match expected {
-                None => assert!(blockers.is_empty(), "{availability:?} should permit"),
-                Some(reason) => {
-                    assert_eq!(blockers.len(), 1, "{availability:?} should block");
-                    assert_eq!(blockers[0].reason, reason);
-                }
-            }
-        }
-    }
-
-    #[test]
     fn unreported_availability_permits() {
         // Nobody has written availability at all (pre-Phase-9 reality):
         // playback must not deadlock on absent data.
@@ -524,6 +493,116 @@ mod tests {
             );
         }
         state
+    }
+
+    /// The complete finite gating matrix promised by testing-strategy.md:
+    /// role x presence x commitment x manual override x file state. Keeping
+    /// the truth table in one test makes omissions visible and replaces a
+    /// collection of overlapping one-axis examples.
+    #[test]
+    fn gating_matrix_matches_the_playback_rules() {
+        let roles = [Role::Interactive, Role::Seeder];
+        let presences = [Presence::Present, Presence::Lost, Presence::Departed];
+        let preferences = [
+            None,
+            Some(SeriesWatchState::Watching),
+            Some(SeriesWatchState::Maybe),
+            Some(SeriesWatchState::NotWatching),
+        ];
+        let manuals = [
+            None,
+            Some(ManualState::Paused),
+            Some(ManualState::Away {
+                set_by: UserId::new("setter"),
+            }),
+        ];
+        let availabilities = [
+            (None, None),
+            (Some(FileAvailability::Ready), None),
+            (
+                Some(FileAvailability::Missing),
+                Some(BlockReason::FileMissing),
+            ),
+            (
+                Some(FileAvailability::Downloading {
+                    progress_bps: 1_999,
+                }),
+                Some(BlockReason::Downloading),
+            ),
+            (
+                Some(FileAvailability::Downloading {
+                    progress_bps: 2_000,
+                }),
+                None,
+            ),
+        ];
+
+        for role in roles {
+            for presence in presences {
+                for preference in preferences {
+                    for manual in &manuals {
+                        for (availability, file_reason) in availabilities {
+                            let prefs: Vec<_> =
+                                preference.into_iter().map(|pref| ("kim", pref)).collect();
+                            let mut state = committed_state(&prefs);
+                            if let Some(manual) = manual {
+                                state.set_manual_override(
+                                    SERVER,
+                                    ts(20),
+                                    UserId::new("kim"),
+                                    Some(manual.clone()),
+                                );
+                            }
+                            if let Some(availability) = availability {
+                                state.set_file_availability(
+                                    SERVER,
+                                    ts(21),
+                                    UserId::new("kim"),
+                                    hash(1),
+                                    availability,
+                                );
+                            }
+
+                            let effective = preference.unwrap_or(SeriesWatchState::Maybe);
+                            let expected = if role == Role::Seeder
+                                || matches!(manual, Some(ManualState::Away { .. }))
+                                || effective == SeriesWatchState::NotWatching
+                            {
+                                None
+                            } else {
+                                match (effective, presence) {
+                                    (
+                                        SeriesWatchState::Maybe,
+                                        Presence::Lost | Presence::Departed,
+                                    ) => None,
+                                    (
+                                        SeriesWatchState::Watching,
+                                        Presence::Lost | Presence::Departed,
+                                    ) => Some(BlockReason::CommittedAbsent),
+                                    (_, Presence::Present) => {
+                                        if matches!(manual, Some(ManualState::Paused)) {
+                                            Some(BlockReason::Paused)
+                                        } else {
+                                            file_reason
+                                        }
+                                    }
+                                    (SeriesWatchState::NotWatching, _) => None,
+                                }
+                            };
+
+                            let blockers =
+                                playback_blockers(&state.view(), &[peer("kim", role, presence)]);
+                            let actual = blockers.first().map(|blocker| blocker.reason);
+                            assert_eq!(
+                                actual, expected,
+                                "role={role:?}, presence={presence:?}, preference={preference:?}, manual={manual:?}, availability={availability:?}"
+                            );
+                            assert!(blockers.len() <= 1);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Unlinked mirror of [`committed_state`]: the same commitments, but
@@ -586,20 +665,6 @@ mod tests {
             user_state(&view, &UserId::new("kim")),
             DerivedUserState::Maybe
         );
-    }
-
-    #[test]
-    fn absent_maybe_user_does_not_block() {
-        // The new rule: a Lost/Departed Maybe (default) user never blocks.
-        let view = playing_state().view();
-        for presence in [Presence::Lost, Presence::Departed] {
-            let peers = [present("kim"), peer("baughn", Role::Interactive, presence)];
-            assert!(
-                playback_blockers(&view, &peers).is_empty(),
-                "absent Maybe ({presence:?}) must not block"
-            );
-            assert!(playback_active(&view, &peers));
-        }
     }
 
     #[test]
@@ -674,31 +739,6 @@ mod tests {
     }
 
     #[test]
-    fn present_committed_and_maybe_users_gate_on_file_state_alike() {
-        // Present commitment doesn't change the present-user rule: a
-        // Missing file blocks whether you're committed or Maybe.
-        for pref in [SeriesWatchState::Watching, SeriesWatchState::Maybe] {
-            let mut state = committed_state(&[("baughn", pref)]);
-            state.set_file_availability(
-                SERVER,
-                ts(20),
-                UserId::new("baughn"),
-                hash(1),
-                FileAvailability::Missing,
-            );
-            let blockers = playback_blockers(&state.view(), &[present("baughn")]);
-            assert_eq!(
-                blockers,
-                vec![Blocker {
-                    user: UserId::new("baughn"),
-                    reason: BlockReason::FileMissing,
-                }],
-                "present {pref:?} with a Missing file must block"
-            );
-        }
-    }
-
-    #[test]
     fn acknowledging_a_committed_absent_user_unblocks_the_current_file() {
         let mut state = committed_state(&[("baughn", SeriesWatchState::Watching)]);
         let peers = [
@@ -754,8 +794,9 @@ mod tests {
     #[test]
     fn departed_user_is_removed_from_gating() {
         // A departed user who was Paused no longer blocks — the intent
-        // latch (forced Paused by the server on departure) is what
-        // keeps playback stopped, not their gating entry.
+        // latch (forced Paused when the peer first became Lost) is what
+        // keeps playback stopped, not their ordinary gating entry. The
+        // later timeout promotion to Departed does not write it again.
         let mut state = playing_state();
         state.set_manual_override(SERVER, ts(3), UserId::new("kim"), Some(ManualState::Paused));
         let view = state.view();
@@ -765,23 +806,6 @@ mod tests {
         ];
         assert!(playback_blockers(&view, &peers).is_empty());
         assert!(playback_active(&view, &peers));
-    }
-
-    #[test]
-    fn seeders_never_gate() {
-        let mut state = playing_state();
-        // A paused, lost seeder with a missing file: maximally blocked,
-        // if it could block.
-        state.set_manual_override(SERVER, ts(3), UserId::new("nas"), Some(ManualState::Paused));
-        state.set_file_availability(
-            SERVER,
-            ts(4),
-            UserId::new("nas"),
-            hash(1),
-            FileAvailability::Missing,
-        );
-        let peers = [present("kim"), peer("nas", Role::Seeder, Presence::Lost)];
-        assert!(playback_active(&state.view(), &peers));
     }
 
     #[test]
@@ -795,115 +819,5 @@ mod tests {
             Some(ManualState::Paused),
         );
         assert!(playback_active(&state.view(), &[present("kim")]));
-    }
-
-    // ---- Feature-request #12 closure: "allow starting when someone who
-    // is away / not watching doesn't have the file". The spec (design.md,
-    // Playback Rules) says Away and NotWatching users never block, at any
-    // presence, whatever their file state — this property pins it against
-    // every combination, so the request closes as verified-fixed.
-    mod excused_users_never_block {
-        use proptest::prelude::*;
-
-        use super::*;
-
-        /// One user's full gating-relevant configuration.
-        #[derive(Clone, Debug)]
-        struct UserSpec {
-            presence: Presence,
-            seeder: bool,
-            manual: Option<ManualState>,
-            /// `None` = no map entry (the implicit Maybe).
-            pref: Option<SeriesWatchState>,
-            avail: Option<FileAvailability>,
-        }
-
-        fn arb_user() -> impl Strategy<Value = UserSpec> {
-            let presence = prop_oneof![
-                Just(Presence::Present),
-                Just(Presence::Lost),
-                Just(Presence::Departed),
-            ];
-            let manual = prop_oneof![
-                Just(None),
-                Just(Some(ManualState::Paused)),
-                Just(Some(ManualState::Away {
-                    set_by: UserId::new("setter"),
-                })),
-            ];
-            let pref = prop_oneof![
-                Just(None),
-                Just(Some(SeriesWatchState::Watching)),
-                Just(Some(SeriesWatchState::NotWatching)),
-                Just(Some(SeriesWatchState::Maybe)),
-            ];
-            let avail = prop_oneof![
-                Just(None),
-                Just(Some(FileAvailability::Ready)),
-                Just(Some(FileAvailability::Missing)),
-                (0u16..=10_000)
-                    .prop_map(|progress_bps| Some(FileAvailability::Downloading { progress_bps })),
-            ];
-            (presence, any::<bool>(), manual, pref, avail).prop_map(
-                |(presence, seeder, manual, pref, avail)| UserSpec {
-                    presence,
-                    seeder,
-                    manual,
-                    pref,
-                    avail,
-                },
-            )
-        }
-
-        proptest! {
-            #[test]
-            fn away_notwatching_and_seeders_never_block(
-                specs in proptest::collection::vec(arb_user(), 1..6),
-            ) {
-                let series = AniDbSeriesId(42);
-                let mut state = playing_state();
-                state.set_anidb_metadata(
-                    SERVER,
-                    ts(3),
-                    hash(1),
-                    Some(AniDbMetadata {
-                        source: MetadataSource::AniDb,
-                        series_name: "Frieren".into(),
-                        series_id: Some(series),
-                        episode_number: Some("1".into()),
-                    }),
-                );
-                let entry = link_series(&mut state, ts(3), series);
-                let mut peers = Vec::new();
-                for (i, spec) in specs.iter().enumerate() {
-                    let user = UserId::new(format!("user{i}"));
-                    let t = 10 + i as u64 * 10;
-                    if let Some(manual) = &spec.manual {
-                        state.set_manual_override(SERVER, ts(t), user.clone(), Some(manual.clone()));
-                    }
-                    if let Some(pref) = spec.pref {
-                        state.set_series_preference(SERVER, ts(t + 1), user.clone(), entry, pref, None);
-                    }
-                    if let Some(avail) = spec.avail {
-                        state.set_file_availability(SERVER, ts(t + 2), user.clone(), hash(1), avail);
-                    }
-                    let role = if spec.seeder { Role::Seeder } else { Role::Interactive };
-                    peers.push(peer(&format!("user{i}"), role, spec.presence));
-                }
-                let blockers = playback_blockers(&state.view(), &peers);
-                for (i, spec) in specs.iter().enumerate() {
-                    let user = UserId::new(format!("user{i}"));
-                    let excused = spec.seeder
-                        || matches!(spec.manual, Some(ManualState::Away { .. }))
-                        || spec.pref == Some(SeriesWatchState::NotWatching);
-                    if excused {
-                        prop_assert!(
-                            !blockers.iter().any(|b| b.user == user),
-                            "excused user blocked: {spec:?}, blockers: {blockers:?}",
-                        );
-                    }
-                }
-            }
-        }
     }
 }

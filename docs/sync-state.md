@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-07-03
+Last updated: 2026-07-10
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -184,7 +184,7 @@ and the wire protocol uniform.
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>, ActorId>` | Server only (at EOF) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Any peer; server on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Whoever last seeked; server on file change or authority departure |
-| Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Any user (play/pause); server forces Paused on lost/quit/departure/EOF-advance |
+| Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Any user (play/pause); server forces Paused on Lost, graceful quit, and EOF-advance; not on the later timeout promotion to Departed |
 | Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>, ActorId>` | Any user (design.md #7/#13: `SeriesPreference { state, set_by }` lets one user write another's) |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
 | Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Any peer inserts; cleared on compaction |
@@ -318,8 +318,10 @@ playback would silently auto-resume the moment a paused/lost user departs
   their own override and writes `Playing` (if others still block, the
   local player is re-paused by derivation -- "you tried").
 - The server forces `Paused` when a user becomes Lost, on graceful quit
-  during playback, on departure, and when EOF advances now-playing
-  (the next episode loads paused).
+  during playback (the immediate-departure path), and when EOF advances
+  now-playing (the next episode loads paused). The later Lost -> Departed
+  timeout sweep does not write it again: a deliberate resume during the
+  Lost window must survive that bookkeeping transition.
 
 ### Series Preference
 
