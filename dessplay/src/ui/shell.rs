@@ -85,6 +85,31 @@ pub enum UiInput {
         /// The hits.
         results: Vec<dessplay_core::net::AniDbSearchHit>,
     },
+    /// Nyaa single-file browse results for the open modal.
+    NyaaResults {
+        /// Echoed query.
+        query: String,
+        /// Safe results or request-level failure.
+        result: Result<Vec<crate::torrent::nyaa::NyaaBrowseResult>, String>,
+    },
+    /// Pending Nyaa import progress.
+    NyaaImportProgress {
+        /// Local pending-import identity.
+        id: crate::torrent::engine::TorrentImportId,
+        /// Payload filename.
+        filename: String,
+        /// Current work stage.
+        stage: crate::actors::file::NyaaImportStage,
+        /// Completed bytes.
+        done_bytes: u64,
+        /// Total bytes.
+        total_bytes: u64,
+    },
+    /// Remove a pending Nyaa import from local UI state.
+    NyaaImportFinished {
+        /// Local pending-import identity to remove.
+        id: crate::torrent::engine::TorrentImportId,
+    },
     /// Restore the terminal and exit the UI thread. The explicit
     /// message exists because channel-closure can't signal it: the
     /// input thread holds a sender clone forever (it's blocked in
@@ -206,6 +231,15 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                     }
                 }
             }
+            UiInput::NyaaResults { query, result } => ui.set_nyaa_results(&query, result),
+            UiInput::NyaaImportProgress {
+                id,
+                filename,
+                stage,
+                done_bytes,
+                total_bytes,
+            } => ui.set_nyaa_import_progress(id, filename, stage, done_bytes, total_bytes),
+            UiInput::NyaaImportFinished { id } => ui.finish_nyaa_import(id),
             UiInput::Probe(cell) => {
                 // Stamp the moment we dequeued this input — measured by a
                 // test against the send time. Fall through to a draw so

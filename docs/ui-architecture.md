@@ -291,12 +291,15 @@ local-only inputs through `UiInput`: `Subtitle { text, speaker,
 video_millis, arrival_millis }` (the rolling subtitle log), `Hashing { filename, done_bytes, total_bytes,
 finished }` (playlist-add hash progress), and `SearchResults { query,
 results }` (AniDB name-search answers, routed to the search modal if
-it is open; the modal drops results for superseded queries). The
-hashing rows render as a centered overlay drawn on top of everything —
+it is open; the modal drops results for superseded queries). The Nyaa
+workflow similarly uses `NyaaResults` plus local import-progress inputs;
+its pending-import map feeds both a passive add-progress overlay and the
+modal's cancellable active list. None of this is snapshot or replicated
+state. Progress rows render as a centered overlay drawn on top of everything —
 design.md's no-silent-work rule — but the overlay is *not* in the
 modal stack: it captures no input, so chat and navigation keep working
-while files hash. `finished` removes a row; the overlay disappears
-when no hashes remain.
+while files hash or download. The Nyaa modal replaces the passive overlay
+while open so its cancellation controls remain visible.
 
 ---
 
@@ -347,6 +350,10 @@ Modal types:
   over the anime-titles dump (not the rate-limited UDP API), results
   arrive asynchronously as a `UiInput`. Enter on fresh results links;
   editing the query re-arms search
+- **NyaaSearch**: Playlist `n`; query/results mode lists inspected single-file
+  torrents, while reopening during background imports defaults to an active
+  list with `d` cancel and `s` new search. Selection closes the modal so the
+  rest of the TUI remains usable during the download.
 
 Unlike the prototype (which used blocking sub-loops for modals), the main
 event loop continues running while modals are open. Network messages, player

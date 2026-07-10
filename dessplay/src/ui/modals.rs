@@ -1822,6 +1822,326 @@ impl AppComponent<Msg, NoUserEvent> for ListEditModal {
     }
 }
 
+/// One pending Nyaa import shown when the search modal is reopened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NyaaActiveImport {
+    /// Local pending-import identity.
+    pub id: crate::torrent::engine::TorrentImportId,
+    /// Payload filename.
+    pub filename: String,
+    /// Current work stage.
+    pub stage: crate::actors::file::NyaaImportStage,
+    /// Completed bytes in the current stage.
+    pub done_bytes: u64,
+    /// Total bytes in the current stage.
+    pub total_bytes: u64,
+}
+
+/// Search Nyaa for a single-file anime torrent or manage active imports.
+pub struct NyaaSearchModal {
+    after: Option<Ed2kHash>,
+    editor: FieldEditor,
+    answered: Option<String>,
+    results: Vec<crate::torrent::nyaa::NyaaBrowseResult>,
+    error: Option<String>,
+    searching: bool,
+    active: Vec<NyaaActiveImport>,
+    showing_active: bool,
+    cursor: ListCursor,
+}
+
+impl NyaaSearchModal {
+    /// Open on active imports when any exist, otherwise on an empty query.
+    pub fn new(after: Option<Ed2kHash>, active: Vec<NyaaActiveImport>) -> Self {
+        let showing_active = !active.is_empty();
+        Self {
+            after,
+            editor: FieldEditor::new(""),
+            answered: None,
+            results: Vec::new(),
+            error: None,
+            searching: false,
+            active,
+            showing_active,
+            cursor: ListCursor::default(),
+        }
+    }
+
+    /// Deliver a search answer, dropping stale or no-longer-visible replies.
+    pub fn set_results(
+        &mut self,
+        query: &str,
+        result: Result<Vec<crate::torrent::nyaa::NyaaBrowseResult>, String>,
+    ) {
+        if query != self.editor.text() || self.showing_active {
+            return;
+        }
+        self.answered = Some(query.to_string());
+        match result {
+            Ok(results) => {
+                self.results = results;
+                self.error = None;
+            }
+            Err(error) => {
+                self.results.clear();
+                self.error = Some(error);
+            }
+        }
+        self.searching = false;
+        self.cursor.reset();
+    }
+
+    /// Replace the active-import rows from the UI's authoritative local map.
+    pub fn set_active(&mut self, active: Vec<NyaaActiveImport>) {
+        self.active = active;
+        if self.showing_active && self.active.is_empty() {
+            self.showing_active = false;
+        }
+        let len = if self.showing_active {
+            self.active.len()
+        } else {
+            self.results.len()
+        };
+        self.cursor.clamp(len);
+    }
+
+    /// Context-sensitive bindings for search versus active-import mode.
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        let mut items = if self.showing_active {
+            NYAA_ACTIVE_KEYMAP.bar()
+        } else {
+            NYAA_SEARCH_KEYMAP.bar()
+        };
+        items.insert(1, ("↑↓", "Pick"));
+        items
+    }
+
+    fn act_enter(&mut self) -> Option<Msg> {
+        if self.showing_active {
+            return Some(Msg::None);
+        }
+        let query = self.editor.text();
+        if self.answered.as_deref() == Some(query.as_str())
+            && let Some(result) = self.results.get(self.cursor.index())
+        {
+            return Some(Msg::NyaaResultChosen {
+                result: result.clone(),
+                after: self.after,
+            });
+        }
+        if query.trim().is_empty() {
+            return Some(Msg::None);
+        }
+        self.searching = true;
+        self.answered = None;
+        self.error = None;
+        Some(Msg::NyaaSearchRequested(query))
+    }
+
+    fn act_close(&mut self) -> Option<Msg> {
+        Some(Msg::CloseModal)
+    }
+
+    fn act_new_search(&mut self) -> Option<Msg> {
+        self.showing_active = false;
+        self.cursor.reset();
+        Some(Msg::NewNyaaSearch)
+    }
+
+    fn act_cancel_import(&mut self) -> Option<Msg> {
+        self.active
+            .get(self.cursor.index())
+            .map(|row| Msg::CancelNyaaImport(row.id))
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
+        let modal = overlay(area, 72, 65);
+        frame.render_widget(Clear, modal);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_style(true))
+                .title(if self.showing_active {
+                    "Nyaa imports"
+                } else {
+                    "Search Nyaa — Anime"
+                }),
+            modal,
+        );
+        let list_area = if self.showing_active {
+            Rect {
+                x: modal.x + 2,
+                y: modal.y + 1,
+                width: modal.width.saturating_sub(4),
+                height: modal.height.saturating_sub(2),
+            }
+        } else {
+            let input_area = Rect {
+                x: modal.x + 2,
+                y: modal.y + 1,
+                width: modal.width.saturating_sub(4),
+                height: 3,
+            };
+            self.editor.view(frame, input_area);
+            Rect {
+                x: modal.x + 2,
+                y: modal.y + 4,
+                width: modal.width.saturating_sub(4),
+                height: modal.height.saturating_sub(5),
+            }
+        };
+        if self.showing_active {
+            let items: Vec<ListItem> = self
+                .active
+                .iter()
+                .map(|row| {
+                    let stage = match row.stage {
+                        crate::actors::file::NyaaImportStage::Downloading => "downloading",
+                        crate::actors::file::NyaaImportStage::Hashing => "hashing",
+                    };
+                    let pct = row
+                        .done_bytes
+                        .saturating_mul(100)
+                        .checked_div(row.total_bytes)
+                        .unwrap_or(0);
+                    ListItem::new(Line::from(vec![
+                        Span::raw(row.filename.clone()),
+                        Span::styled(format!("  {stage} {pct}%"), theme::dim()),
+                    ]))
+                })
+                .collect();
+            let mut state = ListState::default();
+            if !items.is_empty() {
+                state.select(Some(self.cursor.index()));
+            }
+            frame.render_stateful_widget(
+                List::new(items).highlight_style(theme::highlight_style()),
+                list_area,
+                &mut state,
+            );
+            return;
+        }
+        if self.searching {
+            frame.render_widget(
+                tuirealm::ratatui::widgets::Paragraph::new(
+                    "searching and inspecting torrent metadata…",
+                ),
+                list_area,
+            );
+            return;
+        }
+        if let Some(error) = &self.error {
+            frame.render_widget(
+                tuirealm::ratatui::widgets::Paragraph::new(error.as_str()),
+                list_area,
+            );
+            return;
+        }
+        if self.answered.is_some() && self.results.is_empty() {
+            frame.render_widget(
+                tuirealm::ratatui::widgets::Paragraph::new("no single-file matches"),
+                list_area,
+            );
+            return;
+        }
+        let items: Vec<ListItem> = self
+            .results
+            .iter()
+            .map(|result| {
+                let mut spans = vec![Span::raw(result.filename.clone())];
+                if result.title != result.filename {
+                    spans.push(Span::styled(format!("  {}", result.title), theme::dim()));
+                }
+                spans.push(Span::styled(
+                    format!(
+                        "  {} MiB  {} seeders",
+                        result.size_bytes / (1024 * 1024),
+                        result.seeders
+                    ),
+                    theme::dim(),
+                ));
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+        let mut state = ListState::default();
+        if !items.is_empty() {
+            state.select(Some(self.cursor.index()));
+        }
+        frame.render_stateful_widget(
+            List::new(items).highlight_style(theme::highlight_style()),
+            list_area,
+            &mut state,
+        );
+    }
+}
+
+passive_modal!(NyaaSearchModal);
+
+impl AppComponent<Msg, NoUserEvent> for NyaaSearchModal {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        let len = if self.showing_active {
+            self.active.len()
+        } else {
+            self.results.len()
+        };
+        if let Some(key) = plain(ev)
+            && self.cursor.nav(key, len)
+        {
+            return Some(Msg::None);
+        }
+        let keymap = if self.showing_active {
+            &NYAA_ACTIVE_KEYMAP
+        } else {
+            &NYAA_SEARCH_KEYMAP
+        };
+        if let Some(msg) = keymap.dispatch(self, ev) {
+            return Some(msg);
+        }
+        if !self.showing_active {
+            let before = self.editor.text();
+            self.editor.on(ev);
+            if self.editor.text() != before {
+                self.answered = None;
+                self.error = None;
+                self.searching = false;
+            }
+            return Some(Msg::None);
+        }
+        None
+    }
+}
+
+static NYAA_SEARCH_KEYMAP: Keymap<NyaaSearchModal, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Search/Add")),
+        action: NyaaSearchModal::act_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Close")),
+        action: NyaaSearchModal::act_close,
+    },
+]);
+
+static NYAA_ACTIVE_KEYMAP: Keymap<NyaaSearchModal, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Char('s'),
+        bar: Some(("s", "Search")),
+        action: NyaaSearchModal::act_new_search,
+    },
+    Binding {
+        pattern: KeyPattern::Char('d'),
+        bar: Some(("d", "Cancel")),
+        action: NyaaSearchModal::act_cancel_import,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Close")),
+        action: NyaaSearchModal::act_close,
+    },
+]);
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

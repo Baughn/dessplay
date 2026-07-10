@@ -27,7 +27,7 @@ use librqbit::{
     SessionPersistenceConfig,
 };
 
-use super::engine::{TorrentEngine, TorrentStatus};
+use super::engine::{TorrentEngine, TorrentImportId, TorrentStatus};
 use super::nyaa::NyaaMatch;
 
 /// The production engine: a librqbit session plus the ed2k → torrent
@@ -36,7 +36,13 @@ pub struct RqbitEngine {
     session: Arc<Session>,
     /// Shared with the spawned add tasks, which write the resolved
     /// handle (or the failure) back in.
-    torrents: Arc<Mutex<HashMap<Ed2kHash, Entry>>>,
+    torrents: Arc<Mutex<HashMap<EngineKey, Entry>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum EngineKey {
+    File(Ed2kHash),
+    Import(TorrentImportId),
 }
 
 struct Entry {
@@ -138,19 +144,17 @@ impl RqbitEngine {
             .clone();
         Some(entry.output_dir.join(largest))
     }
-}
 
-impl TorrentEngine for RqbitEngine {
-    fn add(&self, file: Ed2kHash, chosen: &NyaaMatch, output_dir: PathBuf) {
+    fn add_key(&self, key: EngineKey, chosen: &NyaaMatch, output_dir: PathBuf) {
         {
             let Ok(mut torrents) = self.torrents.lock() else {
                 return;
             };
-            if torrents.contains_key(&file) {
+            if torrents.contains_key(&key) {
                 return;
             }
             torrents.insert(
-                file,
+                key,
                 Entry {
                     handle: None,
                     output_dir: output_dir.clone(),
@@ -163,17 +167,12 @@ impl TorrentEngine for RqbitEngine {
         let torrents = self.torrents.clone();
         let url = chosen.torrent_url.clone();
         let magnet = format!("magnet:?xt=urn:btih:{}", chosen.info_hash);
-        // Fire-and-forget: failures surface through `status`.
         tokio::spawn(async move {
             let opts = || AddTorrentOptions {
                 output_folder: Some(output_dir.to_string_lossy().into_owned()),
                 overwrite: true,
                 ..Default::default()
             };
-            // A magnet "url" (startup reconciliation re-adds by magnet)
-            // goes straight to librqbit; an http(s) URL is fetched here
-            // and added as bytes (see `fetch_torrent_bytes` for why the
-            // URL is never handed to librqbit directly).
             let direct: Result<librqbit::AddTorrentResponse, String> = if url.starts_with("magnet:")
             {
                 session
@@ -196,10 +195,7 @@ impl TorrentEngine for RqbitEngine {
             let result = match direct {
                 Ok(response) => Ok(response),
                 Err(e) => {
-                    tracing::warn!(
-                        %file, url,
-                        "adding torrent by .torrent file failed ({e}); trying magnet"
-                    );
+                    tracing::warn!(?key, url, "adding torrent file failed ({e}); trying magnet");
                     session
                         .add_torrent(AddTorrent::Url(magnet.into()), Some(opts()))
                         .await
@@ -210,10 +206,9 @@ impl TorrentEngine for RqbitEngine {
             let Ok(mut torrents) = torrents.lock() else {
                 return;
             };
-            match (torrents.get_mut(&file), handle) {
+            match (torrents.get_mut(&key), handle) {
                 (Some(entry), Ok(Some(handle))) if entry.removed => {
-                    // Removed while resolving: delete what just landed.
-                    torrents.remove(&file);
+                    torrents.remove(&key);
                     let session = session.clone();
                     tokio::spawn(async move {
                         let _ = session.delete(TorrentIdOrHash::Id(handle.id()), true).await;
@@ -221,17 +216,14 @@ impl TorrentEngine for RqbitEngine {
                 }
                 (Some(entry), Ok(Some(handle))) => entry.handle = Some(handle),
                 (Some(entry), Ok(None)) => {
-                    // list_only response — can't happen (we never ask for
-                    // it), but a missing handle is a failure all the same.
-                    tracing::warn!(%file, "torrent add returned no handle");
+                    tracing::warn!(?key, "torrent add returned no handle");
                     entry.failed = true;
                 }
                 (Some(entry), Err(e)) => {
-                    tracing::warn!(%file, "adding torrent failed: {e}");
+                    tracing::warn!(?key, "adding torrent failed: {e}");
                     entry.failed = true;
                 }
                 (None, Ok(Some(handle))) => {
-                    // Entry vanished (removed + already cleaned up).
                     let session = session.clone();
                     tokio::spawn(async move {
                         let _ = session.delete(TorrentIdOrHash::Id(handle.id()), true).await;
@@ -242,20 +234,19 @@ impl TorrentEngine for RqbitEngine {
         });
     }
 
-    fn remove(&self, file: Ed2kHash, delete_files: bool) {
+    fn remove_key(&self, key: EngineKey, delete_files: bool) {
         let handle = {
             let Ok(mut torrents) = self.torrents.lock() else {
                 return;
             };
-            if let Some(entry) = torrents.get_mut(&file)
+            if let Some(entry) = torrents.get_mut(&key)
                 && entry.handle.is_none()
                 && !entry.failed
             {
-                // Still resolving: flag it; the add task cleans up.
                 entry.removed = true;
                 return;
             }
-            torrents.remove(&file).and_then(|e| e.handle)
+            torrents.remove(&key).and_then(|e| e.handle)
         };
         let Some(handle) = handle else {
             return;
@@ -266,14 +257,14 @@ impl TorrentEngine for RqbitEngine {
                 .delete(TorrentIdOrHash::Id(handle.id()), delete_files)
                 .await
             {
-                tracing::warn!(%file, "deleting torrent: {e:#}");
+                tracing::warn!(?key, "deleting torrent: {e:#}");
             }
         });
     }
 
-    fn status(&self, file: &Ed2kHash) -> Option<TorrentStatus> {
+    fn status_key(&self, key: EngineKey) -> Option<TorrentStatus> {
         let torrents = self.torrents.lock().ok()?;
-        let entry = torrents.get(file)?;
+        let entry = torrents.get(&key)?;
         if entry.failed {
             return Some(TorrentStatus {
                 error: true,
@@ -281,7 +272,6 @@ impl TorrentEngine for RqbitEngine {
             });
         }
         let Some(handle) = &entry.handle else {
-            // Still resolving the .torrent/magnet: no progress yet.
             return Some(TorrentStatus::default());
         };
         let stats = handle.stats();
@@ -293,12 +283,56 @@ impl TorrentEngine for RqbitEngine {
             payload: Self::payload_path(entry, handle),
         })
     }
+}
+
+impl TorrentEngine for RqbitEngine {
+    fn add(&self, file: Ed2kHash, chosen: &NyaaMatch, output_dir: PathBuf) {
+        self.add_key(EngineKey::File(file), chosen, output_dir);
+    }
+
+    fn remove(&self, file: Ed2kHash, delete_files: bool) {
+        self.remove_key(EngineKey::File(file), delete_files);
+    }
+
+    fn status(&self, file: &Ed2kHash) -> Option<TorrentStatus> {
+        self.status_key(EngineKey::File(*file))
+    }
 
     fn active(&self) -> Vec<Ed2kHash> {
         self.torrents
             .lock()
-            .map(|torrents| torrents.keys().copied().collect())
+            .map(|torrents| {
+                torrents
+                    .keys()
+                    .filter_map(|key| match key {
+                        EngineKey::File(file) => Some(*file),
+                        EngineKey::Import(_) => None,
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
+    }
+
+    fn add_import(&self, id: TorrentImportId, chosen: &NyaaMatch, output_dir: PathBuf) {
+        self.add_key(EngineKey::Import(id), chosen, output_dir);
+    }
+
+    fn remove_import(&self, id: TorrentImportId, delete_files: bool) {
+        self.remove_key(EngineKey::Import(id), delete_files);
+    }
+
+    fn import_status(&self, id: TorrentImportId) -> Option<TorrentStatus> {
+        self.status_key(EngineKey::Import(id))
+    }
+
+    fn promote_import(&self, id: TorrentImportId, file: Ed2kHash) {
+        let Ok(mut torrents) = self.torrents.lock() else {
+            return;
+        };
+        let Some(entry) = torrents.remove(&EngineKey::Import(id)) else {
+            return;
+        };
+        torrents.entry(EngineKey::File(file)).or_insert(entry);
     }
 }
 

@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 
 use dessplay::actors::sync::Mutation;
 use dessplay::config::Settings;
+use dessplay::torrent::engine::TorrentImportId;
+use dessplay::torrent::nyaa::{NyaaBrowseResult, NyaaMatch};
 use dessplay::ui::app::{Ui, UiSnapshot};
 use dessplay::ui::msg::{BrowseRequest, UserAction};
 use dessplay_core::net::{PeerInfo, Presence, Role};
@@ -69,6 +71,16 @@ fn ui() -> Ui {
     let settings = Settings {
         username: Some("kim".into()),
         password: Some("hunter2".into()),
+        ..Settings::default()
+    };
+    Ui::new(UserId::new("kim"), settings, vec!["/media".into()])
+}
+
+fn torrent_ui() -> Ui {
+    let settings = Settings {
+        username: Some("kim".into()),
+        password: Some("hunter2".into()),
+        torrent_enabled: true,
         ..Settings::default()
     };
     Ui::new(UserId::new("kim"), settings, vec!["/media".into()])
@@ -412,6 +424,76 @@ fn playlist_actions() {
         vec![UserAction::Mutate(Mutation::RemovePlaylist {
             hash: hash(2)
         })]
+    );
+}
+
+#[test]
+fn nyaa_requires_the_startup_setting() {
+    let mut ui = ui();
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab));
+    }
+    let actions = ui.handle(key(Key::Char('n')));
+    assert!(matches!(actions.as_slice(), [UserAction::Notice(text)] if text.contains("enable")));
+    assert!(!ui.modal_open());
+}
+
+#[test]
+fn nyaa_search_select_progress_reopen_and_cancel() {
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "anchor.mkv"));
+    let mut ui = torrent_ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab));
+    }
+    assert!(ui.handle(key(Key::Char('n'))).is_empty());
+    assert!(render(&mut ui, 100, 30).contains("Search Nyaa"));
+    type_str(&mut ui, "karen");
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::SearchNyaa {
+            query: "karen".into()
+        }]
+    );
+    let result = NyaaBrowseResult {
+        title: "Karen release".into(),
+        filename: "karen-01.mkv".into(),
+        size_bytes: 1_000_000,
+        seeders: 42,
+        chosen: NyaaMatch {
+            title: "Karen release".into(),
+            torrent_url: "https://nyaa.si/download/1.torrent".into(),
+            info_hash: "0123456789abcdef0123456789abcdef01234567".into(),
+        },
+    };
+    ui.set_nyaa_results("karen", Ok(vec![result.clone()]));
+    assert!(render(&mut ui, 100, 30).contains("karen-01.mkv"));
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::StartNyaaImport {
+            id: TorrentImportId(1),
+            result,
+            after: Some(hash(1)),
+        }]
+    );
+    ui.set_nyaa_import_progress(
+        TorrentImportId(1),
+        "karen-01.mkv".into(),
+        dessplay::actors::file::NyaaImportStage::Downloading,
+        500_000,
+        1_000_000,
+    );
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Adding to playlist"), "{screen}");
+    assert!(screen.contains("Downloading karen-01.mkv"), "{screen}");
+    assert!(ui.handle(key(Key::Char('n'))).is_empty());
+    assert!(render(&mut ui, 100, 30).contains("Nyaa imports"));
+    assert_eq!(
+        ui.handle(key(Key::Char('d'))),
+        vec![UserAction::CancelNyaaImport {
+            id: TorrentImportId(1)
+        }]
     );
 }
 

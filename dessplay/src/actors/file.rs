@@ -29,8 +29,8 @@ use crate::actors::network::Clock;
 use crate::config::CacheRetention;
 use crate::download::{DownloadAction, DownloadConfig, Downloads};
 use crate::storage::{CacheEntry, SeriesKey, Storage, TorrentRow, WatchRecord};
-use crate::torrent::engine::TorrentEngine;
-use crate::torrent::nyaa::{self, NyaaMatch, NyaaSource};
+use crate::torrent::engine::{TorrentEngine, TorrentImportId};
+use crate::torrent::nyaa::{self, NyaaBrowseResult, NyaaMatch, NyaaSource};
 use crate::torrent::{TorrentFetchAction, TorrentFetchConfig, TorrentFetches};
 
 /// What resolving a playlist entry against the media roots found.
@@ -77,6 +77,15 @@ pub enum HashEvent {
     Done(HashedAdd),
 }
 
+/// Visible stage of a user-selected Nyaa import.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NyaaImportStage {
+    /// Torrent pieces are arriving.
+    Downloading,
+    /// The complete payload is being assigned its ed2k identity.
+    Hashing,
+}
+
 /// Commands into the actor.
 #[derive(Debug)]
 pub enum FileCommand {
@@ -94,6 +103,25 @@ pub enum FileCommand {
         path: PathBuf,
         /// Playlist anchor.
         after: Option<Ed2kHash>,
+    },
+    /// Search Nyaa's anime category for safe single-file torrents.
+    SearchNyaa {
+        /// Free-form user query.
+        query: String,
+    },
+    /// Download a selected Nyaa result, then hash and add it.
+    StartNyaaImport {
+        /// UI-generated local import identity.
+        id: TorrentImportId,
+        /// Inspected single-file result.
+        result: NyaaBrowseResult,
+        /// Playlist anchor captured when search opened.
+        after: Option<Ed2kHash>,
+    },
+    /// Cancel and delete a pending Nyaa import.
+    CancelNyaaImport {
+        /// Pending import identity.
+        id: TorrentImportId,
     },
     /// The user manually mapped `file` to `path`. Persisted, and
     /// resolves Verified immediately (no hash check by design).
@@ -222,6 +250,38 @@ pub enum FileOutput {
     },
     /// Playlist-add hashing progress or completion.
     Hash(HashEvent),
+    /// A user-initiated Nyaa search completed.
+    NyaaSearchFinished {
+        /// Echoed query, used to reject stale modal results.
+        query: String,
+        /// Safe single-file results or a request-level error.
+        result: Result<Vec<NyaaBrowseResult>, String>,
+    },
+    /// Pending Nyaa import progress for the local overlay/active list.
+    NyaaImportProgress {
+        /// Local import identity.
+        id: TorrentImportId,
+        /// Payload filename.
+        filename: String,
+        /// Downloading or hashing.
+        stage: NyaaImportStage,
+        /// Completed bytes for the stage.
+        done_bytes: u64,
+        /// Total bytes for the stage.
+        total_bytes: u64,
+    },
+    /// A pending import ended. Successful imports carry the discovered
+    /// identity and become ordinary playlist entries in the session layer.
+    NyaaImportFinished {
+        /// Local import identity.
+        id: TorrentImportId,
+        /// Payload filename.
+        filename: String,
+        /// Playlist anchor captured at selection time.
+        after: Option<Ed2kHash>,
+        /// Discovered identity and local path, or failure/cancellation text.
+        result: Result<(Ed2kFileHash, PathBuf), String>,
+    },
     /// Answer to [`FileCommand::CheckSeriesKnown`].
     SeriesKnown {
         /// The playlist entry that triggered the check.
@@ -385,6 +445,17 @@ enum Done {
         /// The accepted match, or `None` (no match / search error).
         found: Option<NyaaMatch>,
     },
+    /// User-initiated browse search completed.
+    NyaaBrowseSearched {
+        query: String,
+        result: Result<Vec<NyaaBrowseResult>, String>,
+    },
+    /// A user-selected torrent payload finished ed2k hashing.
+    NyaaImportHashed {
+        id: TorrentImportId,
+        payload: PathBuf,
+        result: std::io::Result<Ed2kFileHash>,
+    },
     /// A completed torrent payload finished ed2k-hashing.
     TorrentHashed {
         /// The file the torrent was fetched for.
@@ -497,6 +568,8 @@ struct Actor {
     torrent: Option<Arc<dyn TorrentEngine>>,
     /// The nyaa search source (`None` = torrent path disabled).
     nyaa: Option<Arc<dyn NyaaSource>>,
+    /// User-selected torrents that do not have an ed2k identity yet.
+    nyaa_imports: HashMap<TorrentImportId, PendingNyaaImport>,
     /// Pending chunks to serve to peers: (requester, file, chunk).
     serve_queue: std::collections::VecDeque<(PeerId, Ed2kHash, u32)>,
     /// Upload pacing for serving chunks (`None` = unlimited).
@@ -546,6 +619,13 @@ struct Actor {
     scan_pending_commits: Vec<(PathBuf, i64, Ed2kFileHash)>,
     out: mpsc::Sender<FileOutput>,
     done_tx: mpsc::Sender<Done>,
+}
+
+struct PendingNyaaImport {
+    result: NyaaBrowseResult,
+    after: Option<Ed2kHash>,
+    hashing: bool,
+    last_progress_bytes: u64,
 }
 
 /// How many library-scan hash results to buffer before folding them into
@@ -730,6 +810,7 @@ impl Actor {
             fetches: TorrentFetches::new(config.torrent_fetch),
             torrent: config.torrent,
             nyaa: config.nyaa,
+            nyaa_imports: HashMap::new(),
             serve_queue: std::collections::VecDeque::new(),
             upload: UploadLimiter::new(config.upload_limit),
             last_progress_at: HashMap::new(),
@@ -756,6 +837,14 @@ impl Actor {
         match cmd {
             FileCommand::Resolve { file, filename } => self.resolve(file, filename).await,
             FileCommand::HashAdd { path, after } => self.hash_add(path, after).await,
+            FileCommand::SearchNyaa { query } => self.search_nyaa(query).await,
+            FileCommand::StartNyaaImport { id, result, after } => {
+                self.start_nyaa_import(id, result, after).await;
+            }
+            FileCommand::CancelNyaaImport { id } => {
+                self.finish_nyaa_import(id, Err("Cancelled".to_string()))
+                    .await;
+            }
             FileCommand::SetManualMapping { file, path, series } => {
                 self.set_manual_mapping(file, path, series).await;
             }
@@ -873,6 +962,7 @@ impl Actor {
         let actions = self.downloads.tick((self.clock)());
         self.run_download_actions(actions).await;
         self.poll_torrents().await;
+        self.poll_nyaa_imports().await;
         self.drain_serve_queue().await;
         self.poll_rechecks().await;
         // Resume deferred scan hashing once transfers go quiet (#21).
@@ -922,6 +1012,197 @@ impl Actor {
         }
         let actions = self.fetches.tick(now);
         self.run_torrent_actions(actions).await;
+    }
+
+    async fn search_nyaa(&mut self, query: String) {
+        let Some(source) = self.nyaa.clone() else {
+            let _ = self
+                .out
+                .send(FileOutput::NyaaSearchFinished {
+                    query,
+                    result: Err(
+                        "BitTorrent downloads are disabled; enable them and restart.".to_string(),
+                    ),
+                })
+                .await;
+            return;
+        };
+        let done_tx = self.done_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = nyaa::browse_single_file_results(source.as_ref(), &query, 20)
+                .map_err(|e| e.to_string());
+            let _ = done_tx.blocking_send(Done::NyaaBrowseSearched { query, result });
+        });
+    }
+
+    async fn start_nyaa_import(
+        &mut self,
+        id: TorrentImportId,
+        result: NyaaBrowseResult,
+        after: Option<Ed2kHash>,
+    ) {
+        let Some(engine) = self.torrent.clone() else {
+            let _ = self
+                .out
+                .send(FileOutput::NyaaImportFinished {
+                    id,
+                    filename: result.filename,
+                    after,
+                    result: Err(
+                        "BitTorrent downloads are disabled; enable them and restart.".to_string(),
+                    ),
+                })
+                .await;
+            return;
+        };
+        if self.nyaa_imports.contains_key(&id)
+            || self
+                .nyaa_imports
+                .values()
+                .any(|pending| pending.result.chosen.info_hash == result.chosen.info_hash)
+        {
+            let _ = self
+                .out
+                .send(FileOutput::NyaaImportFinished {
+                    id,
+                    filename: result.filename,
+                    after,
+                    result: Err("That torrent is already being added.".to_string()),
+                })
+                .await;
+            return;
+        }
+        let filename = result.filename.clone();
+        let size_bytes = result.size_bytes;
+        engine.add_import(id, &result.chosen, self.nyaa_import_dir(id));
+        self.nyaa_imports.insert(
+            id,
+            PendingNyaaImport {
+                result,
+                after,
+                hashing: false,
+                last_progress_bytes: 0,
+            },
+        );
+        let _ = self
+            .out
+            .send(FileOutput::NyaaImportProgress {
+                id,
+                filename,
+                stage: NyaaImportStage::Downloading,
+                done_bytes: 0,
+                total_bytes: size_bytes,
+            })
+            .await;
+    }
+
+    async fn poll_nyaa_imports(&mut self) {
+        let Some(engine) = self.torrent.clone() else {
+            return;
+        };
+        let ids: Vec<TorrentImportId> = self.nyaa_imports.keys().copied().collect();
+        for id in ids {
+            let Some(status) = engine.import_status(id) else {
+                continue;
+            };
+            if status.error {
+                self.finish_nyaa_import(id, Err("Torrent download failed.".to_string()))
+                    .await;
+                continue;
+            }
+            let Some(pending) = self.nyaa_imports.get_mut(&id) else {
+                continue;
+            };
+            if status.finished {
+                if pending.hashing {
+                    continue;
+                }
+                let Some(payload) = status.payload else {
+                    continue;
+                };
+                pending.hashing = true;
+                let filename = pending.result.filename.clone();
+                let total_bytes = pending.result.size_bytes;
+                let _ = self
+                    .out
+                    .send(FileOutput::NyaaImportProgress {
+                        id,
+                        filename: filename.clone(),
+                        stage: NyaaImportStage::Hashing,
+                        done_bytes: 0,
+                        total_bytes,
+                    })
+                    .await;
+                let done_tx = self.done_tx.clone();
+                let out = self.out.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = std::fs::File::open(&payload).and_then(|file| {
+                        ed2k_hash_reader(NyaaImportProgressReader {
+                            inner: file,
+                            id,
+                            filename,
+                            total_bytes,
+                            done_bytes: 0,
+                            last_reported: 0,
+                            events: out,
+                        })
+                    });
+                    let _ = done_tx.blocking_send(Done::NyaaImportHashed {
+                        id,
+                        payload,
+                        result,
+                    });
+                });
+            } else if status.progress_bytes != pending.last_progress_bytes {
+                pending.last_progress_bytes = status.progress_bytes;
+                let _ = self
+                    .out
+                    .send(FileOutput::NyaaImportProgress {
+                        id,
+                        filename: pending.result.filename.clone(),
+                        stage: NyaaImportStage::Downloading,
+                        done_bytes: status.progress_bytes,
+                        total_bytes: pending.result.size_bytes,
+                    })
+                    .await;
+            }
+        }
+    }
+
+    fn nyaa_import_dir(&self, id: TorrentImportId) -> PathBuf {
+        self.cache_dir
+            .join("torrents")
+            .join(format!("import-{}", id.0))
+    }
+
+    async fn finish_nyaa_import(
+        &mut self,
+        id: TorrentImportId,
+        result: Result<(Ed2kFileHash, PathBuf), String>,
+    ) {
+        let Some(pending) = self.nyaa_imports.remove(&id) else {
+            return;
+        };
+        if result.is_err() {
+            if let Some(engine) = &self.torrent {
+                engine.remove_import(id, true);
+            }
+            let dir = self.nyaa_import_dir(id);
+            if let Err(e) = std::fs::remove_dir_all(&dir)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %dir.display(), "removing cancelled import: {e}");
+            }
+        }
+        let _ = self
+            .out
+            .send(FileOutput::NyaaImportFinished {
+                id,
+                filename: pending.result.filename,
+                after: pending.after,
+                result,
+            })
+            .await;
     }
 
     /// Poll watched mismatches (#26): about one `stat` per second per
@@ -1460,6 +1741,61 @@ impl Actor {
         }
     }
 
+    async fn on_nyaa_import_hashed(
+        &mut self,
+        id: TorrentImportId,
+        payload: PathBuf,
+        result: std::io::Result<Ed2kFileHash>,
+    ) {
+        let Some(pending) = self.nyaa_imports.get(&id) else {
+            return;
+        };
+        let expected_size = pending.result.size_bytes;
+        let chosen = pending.result.chosen.clone();
+        let hashed = match result {
+            Ok(hashed) if hashed.size_bytes == expected_size => hashed,
+            Ok(hashed) => {
+                self.finish_nyaa_import(
+                    id,
+                    Err(format!(
+                        "Torrent payload size changed (expected {expected_size}, got {}).",
+                        hashed.size_bytes
+                    )),
+                )
+                .await;
+                return;
+            }
+            Err(e) => {
+                self.finish_nyaa_import(id, Err(format!("Hashing downloaded file failed: {e}")))
+                    .await;
+                return;
+            }
+        };
+        let file = hashed.root;
+        let cache_path = self.download_path(file);
+        let local_path = match place_in_cache(&payload, &cache_path) {
+            Ok(()) => cache_path,
+            Err(e) => {
+                tracing::warn!(%file, "placing Nyaa import in cache failed ({e}); using it in place");
+                payload
+            }
+        };
+        if let Some(engine) = &self.torrent {
+            engine.promote_import(id, file);
+        }
+        if let Err(e) = self.storage.upsert_torrent(&TorrentRow {
+            hash: file,
+            info_hash: chosen.info_hash,
+            name: chosen.title,
+            added_at: (self.clock)() as i64,
+        }) {
+            tracing::error!(%file, "recording imported torrent: {e}");
+        }
+        self.on_download_complete(file, local_path.clone(), hashed.blocks.clone())
+            .await;
+        self.finish_nyaa_import(id, Ok((hashed, local_path))).await;
+    }
+
     /// Serve a peer the per-block hashes of a file we hold (from the
     /// hash cache). Silently ignored if we don't have the file or its
     /// hashes cached.
@@ -1742,6 +2078,17 @@ impl Actor {
                 let actions = self.fetches.on_searched(file, found, now);
                 self.run_torrent_actions(actions).await;
             }
+            Done::NyaaBrowseSearched { query, result } => {
+                let _ = self
+                    .out
+                    .send(FileOutput::NyaaSearchFinished { query, result })
+                    .await;
+            }
+            Done::NyaaImportHashed {
+                id,
+                payload,
+                result,
+            } => self.on_nyaa_import_hashed(id, payload, result).await,
             Done::TorrentHashed {
                 file,
                 payload,
@@ -2759,6 +3106,35 @@ impl<R: std::io::Read> std::io::Read for ProgressReader<R> {
                 done_bytes: self.done_bytes,
                 total_bytes: self.total_bytes,
             }));
+        }
+        Ok(n)
+    }
+}
+
+/// Hash-progress reader for a pending Nyaa import.
+struct NyaaImportProgressReader<R> {
+    inner: R,
+    id: TorrentImportId,
+    filename: String,
+    total_bytes: u64,
+    done_bytes: u64,
+    last_reported: u64,
+    events: mpsc::Sender<FileOutput>,
+}
+
+impl<R: std::io::Read> std::io::Read for NyaaImportProgressReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.done_bytes += n as u64;
+        if self.done_bytes - self.last_reported >= HASH_PROGRESS_STRIDE {
+            self.last_reported = self.done_bytes;
+            let _ = self.events.try_send(FileOutput::NyaaImportProgress {
+                id: self.id,
+                filename: self.filename.clone(),
+                stage: NyaaImportStage::Hashing,
+                done_bytes: self.done_bytes,
+                total_bytes: self.total_bytes,
+            });
         }
         Ok(n)
     }
@@ -5031,6 +5407,117 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("torrent was never added to the engine");
+    }
+
+    fn browse_result(filename: &str, size_bytes: u64) -> NyaaBrowseResult {
+        NyaaBrowseResult {
+            title: format!("Release {filename}"),
+            filename: filename.to_string(),
+            size_bytes,
+            seeders: 10,
+            chosen: NyaaMatch {
+                title: format!("Release {filename}"),
+                torrent_url: "https://nyaa.si/download/99.torrent".into(),
+                info_hash: "0123456789abcdef0123456789abcdef01234567".into(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_nyaa_import_hashes_promotes_and_finishes() {
+        let contents = b"selected current-season episode".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        let id = TorrentImportId(7);
+        let (mut rig, engine) = spawn_torrent_rig(
+            vec![],
+            Some(String::new()),
+            TorrentFetchConfig::default(),
+            test_clock(),
+        );
+        rig.commands
+            .send(FileCommand::StartNyaaImport {
+                id,
+                result: browse_result("chosen.mkv", contents.len() as u64),
+                after: Some(hash(9)),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_output(&mut rig).await,
+            FileOutput::NyaaImportProgress {
+                id: TorrentImportId(7),
+                stage: NyaaImportStage::Downloading,
+                ..
+            }
+        ));
+        let (_, out_dir) = engine.added_import(id).expect("import added");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let payload = out_dir.join("chosen.mkv");
+        std::fs::write(&payload, contents).unwrap();
+        engine.set_import_status(
+            id,
+            TorrentStatus {
+                progress_bytes: contents.len() as u64,
+                finished: true,
+                error: false,
+                payload: Some(payload),
+            },
+        );
+        let mut saw_hashing = false;
+        let finished = loop {
+            match next_output(&mut rig).await {
+                FileOutput::NyaaImportProgress {
+                    stage: NyaaImportStage::Hashing,
+                    ..
+                } => saw_hashing = true,
+                FileOutput::NyaaImportFinished { result, after, .. } => {
+                    assert_eq!(after, Some(hash(9)));
+                    break result;
+                }
+                _ => {}
+            }
+        };
+        let (actual, path) = finished.unwrap();
+        assert!(saw_hashing);
+        assert_eq!(actual.root, hashed.root);
+        assert!(path.exists());
+        assert!(
+            engine.added(&hashed.root).is_some(),
+            "import must be promoted"
+        );
+        assert!(engine.added_import(id).is_none());
+    }
+
+    #[tokio::test]
+    async fn selected_nyaa_import_can_be_cancelled() {
+        let id = TorrentImportId(8);
+        let (mut rig, engine) = spawn_torrent_rig(
+            vec![],
+            Some(String::new()),
+            TorrentFetchConfig::default(),
+            test_clock(),
+        );
+        rig.commands
+            .send(FileCommand::StartNyaaImport {
+                id,
+                result: browse_result("cancel.mkv", 100),
+                after: None,
+            })
+            .await
+            .unwrap();
+        let _ = next_output(&mut rig).await;
+        assert!(engine.added_import(id).is_some());
+        rig.commands
+            .send(FileCommand::CancelNyaaImport { id })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::NyaaImportFinished { result, .. } => {
+                assert_eq!(result.unwrap_err(), "Cancelled");
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        assert!(engine.added_import(id).is_none());
     }
 
     /// No acceptable nyaa result: the fetch falls back to the peer

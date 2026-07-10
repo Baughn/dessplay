@@ -1262,6 +1262,25 @@ queued without relying on a dedicated directory. #9 and #25 unblocked.
 
 ---
 
+## Phase 20: Nyaa Playlist Search
+
+**Status: complete (2026-07-10).**
+
+Playlist `n` opens a local Nyaa Anime-category search. The client inspects the
+first 20 RSS results' torrent metadata and lists only safe single-file payloads.
+Selection downloads in the background under a temporary local import id;
+reopening the modal shows active imports with cancellation. Completion assigns
+the payload its ed2k identity, promotes the torrent into the ordinary cache and
+seeding lifecycle, then emits the existing hash-keyed playlist mutation. No
+wire or CRDT schema change was needed.
+
+Tests use canned RSS/metainfo and the fake torrent engine; no automated test
+contacts Nyaa. Coverage includes category/limit/order filtering, malformed and
+multi-file metadata, unsafe names, actor completion/promotion and cancellation,
+plus the full UI key/search/progress/reopen/cancel flow.
+
+---
+
 ## Deferred from the 2026-07-02 batch
 
 Tracked here so they aren't re-triaged from scratch:

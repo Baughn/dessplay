@@ -25,8 +25,8 @@ use super::components::{
     ChatPane, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
 };
 use super::modals::{
-    AniDbSearchModal, BrowserLibrary, EpisodeBrowser, FileBrowser, ListEditModal, Season,
-    SettingsModal,
+    AniDbSearchModal, BrowserLibrary, EpisodeBrowser, FileBrowser, ListEditModal, NyaaActiveImport,
+    NyaaSearchModal, Season, SettingsModal,
 };
 use super::msg::{BrowseRequest, Msg, UserAction};
 use super::props;
@@ -81,6 +81,15 @@ fn log_action(action: &UserAction) {
         }
         UserAction::AddByHash { hash, .. } => {
             tracing::debug!(%hash, "user action: AddByHash");
+        }
+        UserAction::SearchNyaa { query } => {
+            tracing::debug!(%query, "user action: SearchNyaa");
+        }
+        UserAction::StartNyaaImport { id, result, .. } => {
+            tracing::debug!(import = id.0, title = %result.title, "user action: StartNyaaImport");
+        }
+        UserAction::CancelNyaaImport { id } => {
+            tracing::debug!(import = id.0, "user action: CancelNyaaImport");
         }
         UserAction::SaveSettings(..) => tracing::debug!("user action: SaveSettings"),
         UserAction::AniDbSearch { query } => {
@@ -137,6 +146,7 @@ enum Modal {
     Episodes(EpisodeBrowser),
     ListEdit(ListEditModal),
     AniDbSearch(AniDbSearchModal),
+    NyaaSearch(NyaaSearchModal),
 }
 
 impl Modal {
@@ -147,6 +157,7 @@ impl Modal {
             Modal::Episodes(modal) => modal,
             Modal::ListEdit(modal) => modal,
             Modal::AniDbSearch(modal) => modal,
+            Modal::NyaaSearch(modal) => modal,
         }
     }
 
@@ -157,6 +168,7 @@ impl Modal {
             Modal::Episodes(modal) => modal.keybindings(),
             Modal::ListEdit(modal) => modal.keybindings(),
             Modal::AniDbSearch(modal) => modal.keybindings(),
+            Modal::NyaaSearch(modal) => modal.keybindings(),
         }
     }
 
@@ -168,6 +180,7 @@ impl Modal {
             Modal::Episodes(_) => "Episodes",
             Modal::ListEdit(_) => "ListEdit",
             Modal::AniDbSearch(_) => "AniDbSearch",
+            Modal::NyaaSearch(_) => "NyaaSearch",
         }
     }
 }
@@ -203,6 +216,10 @@ pub struct Ui {
     /// In-flight playlist-add hashes: (filename, done, total). Drawn as
     /// a progress overlay while non-empty (the no-silent-work rule).
     hashing: Vec<(String, u64, u64)>,
+    /// Pending user-selected torrent imports, local until hashing discovers
+    /// their playlist identity.
+    nyaa_imports: BTreeMap<crate::torrent::engine::TorrentImportId, NyaaActiveImport>,
+    next_nyaa_import_id: u64,
     /// Local-only system chat lines (archive results, etc.), merged into
     /// the chat log by timestamp. Never synced.
     system_log: Vec<props::ChatLine>,
@@ -267,6 +284,8 @@ impl Ui {
             subtitle_mode: settings.subtitle_mode,
             subtitles: std::collections::VecDeque::new(),
             hashing: Vec::new(),
+            nyaa_imports: BTreeMap::new(),
+            next_nyaa_import_id: 1,
             system_log: Vec::new(),
             irc_log: Vec::new(),
             snapshot: UiSnapshot::default(),
@@ -501,6 +520,54 @@ impl Ui {
         let mut entry = entry.clone();
         entry.anidb_unavailable = unavailable;
         vec![UserAction::Mutate(Mutation::PutListEntry { id, entry })]
+    }
+
+    /// Deliver a Nyaa browse answer to the open modal. The modal rejects
+    /// stale queries and answers that arrive after it switched to active
+    /// imports.
+    pub fn set_nyaa_results(
+        &mut self,
+        query: &str,
+        result: Result<Vec<crate::torrent::nyaa::NyaaBrowseResult>, String>,
+    ) {
+        if let Some(Modal::NyaaSearch(modal)) = self.modals.last_mut() {
+            modal.set_results(query, result);
+        }
+    }
+
+    /// Update the local pending-import model used by both the progress
+    /// overlay and the Nyaa modal's active list.
+    pub fn set_nyaa_import_progress(
+        &mut self,
+        id: crate::torrent::engine::TorrentImportId,
+        filename: String,
+        stage: crate::actors::file::NyaaImportStage,
+        done_bytes: u64,
+        total_bytes: u64,
+    ) {
+        self.nyaa_imports.insert(
+            id,
+            NyaaActiveImport {
+                id,
+                filename,
+                stage,
+                done_bytes,
+                total_bytes,
+            },
+        );
+        self.refresh_nyaa_modal_active();
+    }
+
+    /// Remove a completed, failed, or cancelled pending import.
+    pub fn finish_nyaa_import(&mut self, id: crate::torrent::engine::TorrentImportId) {
+        self.nyaa_imports.remove(&id);
+        self.refresh_nyaa_modal_active();
+    }
+
+    fn refresh_nyaa_modal_active(&mut self) {
+        if let Some(Modal::NyaaSearch(modal)) = self.modals.last_mut() {
+            modal.set_active(self.nyaa_imports.values().cloned().collect());
+        }
     }
 
     /// Open a file browser: the main loop's answer to
@@ -1081,6 +1148,19 @@ impl Ui {
                 // [`UiInput::Browse`] and opens the modal.
                 Some(UserAction::Browse(BrowseRequest::Add { after }))
             }
+            Msg::OpenNyaa(after) => {
+                if !self.settings.torrent_enabled {
+                    return Some(UserAction::Notice(
+                        "BitTorrent downloads are disabled; enable them in settings and restart."
+                            .to_string(),
+                    ));
+                }
+                let after =
+                    after.or_else(|| self.snapshot.view.playlist.last().map(|entry| entry.hash));
+                let active = self.nyaa_imports.values().cloned().collect();
+                self.push_modal(Modal::NyaaSearch(NyaaSearchModal::new(after, active)));
+                None
+            }
             Msg::MoveUp(hash) => {
                 let index = self.playlist_index(hash)?;
                 if index == 0 {
@@ -1126,6 +1206,16 @@ impl Ui {
                     series: self.series_key_of(file),
                 })
             }
+            Msg::NyaaSearchRequested(query) => Some(UserAction::SearchNyaa { query }),
+            Msg::NyaaResultChosen { result, after } => {
+                self.pop_modal();
+                self.sync_focus_attr();
+                let id = crate::torrent::engine::TorrentImportId(self.next_nyaa_import_id);
+                self.next_nyaa_import_id = self.next_nyaa_import_id.saturating_add(1);
+                Some(UserAction::StartNyaaImport { id, result, after })
+            }
+            Msg::CancelNyaaImport(id) => Some(UserAction::CancelNyaaImport { id }),
+            Msg::NewNyaaSearch => None,
             Msg::ArchiveFile(hash) => {
                 let entry = self
                     .snapshot
@@ -1617,28 +1707,58 @@ impl Ui {
         if let Some(modal) = self.modals.last_mut() {
             modal.as_component().view(frame, frame.area());
         }
-        self.draw_hash_overlay(frame);
+        self.draw_work_overlay(frame);
     }
 
     /// The hashing progress overlay: visually modal (centered, on top
     /// of everything), but it captures no input — chat keeps working
     /// while files hash. Design.md's no-silent-work rule.
-    fn draw_hash_overlay(&self, frame: &mut Frame<'_>) {
+    fn draw_work_overlay(&self, frame: &mut Frame<'_>) {
         use tuirealm::ratatui::layout::Rect;
         use tuirealm::ratatui::widgets::{Clear, Paragraph};
 
-        if self.hashing.is_empty() {
+        // The Nyaa modal itself shows active imports and their cancellation
+        // controls; do not paint the passive overlay over those controls.
+        if matches!(self.modals.last(), Some(Modal::NyaaSearch(_)))
+            || (self.hashing.is_empty() && self.nyaa_imports.is_empty())
+        {
             return;
         }
-        let overlay = hash_overlay_rect(frame.area(), self.hashing.len());
+        let has_nyaa = !self.nyaa_imports.is_empty();
+        let mut rows: Vec<(String, u64, u64)> = self
+            .hashing
+            .iter()
+            .map(|(filename, done, total)| {
+                let label = if has_nyaa {
+                    format!("Hashing {filename}")
+                } else {
+                    filename.clone()
+                };
+                (label, *done, *total)
+            })
+            .collect();
+        rows.extend(self.nyaa_imports.values().map(|row| {
+            let stage = match row.stage {
+                crate::actors::file::NyaaImportStage::Downloading => "Downloading",
+                crate::actors::file::NyaaImportStage::Hashing => "Hashing",
+            };
+            (
+                format!("{stage} {}", row.filename),
+                row.done_bytes,
+                row.total_bytes,
+            )
+        }));
+        let overlay = hash_overlay_rect(frame.area(), rows.len());
         frame.render_widget(Clear, overlay);
         frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Hashing for playlist"),
+            Block::default().borders(Borders::ALL).title(if has_nyaa {
+                "Adding to playlist"
+            } else {
+                "Hashing for playlist"
+            }),
             overlay,
         );
-        for (i, (filename, done, total)) in self.hashing.iter().enumerate() {
+        for (i, (filename, done, total)) in rows.iter().enumerate() {
             let y = overlay.y + 1 + (i as u16) * 2;
             if y + 1 >= overlay.y + overlay.height {
                 break;

@@ -366,6 +366,10 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
 - `RunEviction { protected, group_watched }` -- eviction pass (startup and
   EOF-advance; never evicts now-playing/queued/protected)
 - `SetMediaRoots` / `SetRetention` -- settings changes
+- `SearchNyaa` / `StartNyaaImport` / `CancelNyaaImport` -- playlist-pane
+  browse search and local pending imports. Search/metainfo reads and final
+  ed2k hashing run off-thread; the actor polls the torrent engine on its normal
+  tick and promotes a completed temporary import to its discovered hash.
 
 **Produces (`FileOutput`):**
 - `Resolved { file, resolution }` -- `Verified | HashMismatch | NotFound`
@@ -373,6 +377,9 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
 - `SeriesKnown { file, series, known }` -- answer to `CheckSeriesKnown`
 - `PlaceholderReady { file, path }` -- the PNG is on disk
 - `Archived { file, result }` / `Evicted { files }`
+- `NyaaSearchFinished` / `NyaaImportProgress` / `NyaaImportFinished` --
+  local-only UI/session events; only successful completion produces the
+  ordinary shared playlist mutation.
 
 Phase 9B added the transfer side: `StartDownload` / `PeerMessage`
 commands and `SendPeer` / `Availability` / `DownloadComplete` outputs.
@@ -411,6 +418,11 @@ Three seams, all inside the file actor:
   `torrent/rqbit.rs` (librqbit session, persistence + fastresume) in
   production. `FileConfig` carries both handles as `Option`s — `None`
   disables the torrent path entirely.
+
+The engine seam also has a temporary `TorrentImportId` namespace for
+user-selected torrents whose ed2k hash cannot exist before download. Promotion
+re-keys the live engine handle to `Ed2kHash`; no provisional identity enters
+the CRDT or wire protocol.
 
 A finished payload is ed2k-hashed off-thread (`Done::TorrentHashed`); a
 root match hardlinks it to the hash-addressed cache path and converges

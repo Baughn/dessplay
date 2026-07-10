@@ -171,6 +171,23 @@ sync state with each other. See [network-design.md](network-design.md).
    (its `s` key stays live, and the whole filesystem has no index).
 6. Select file to add. (Enter)
 
+**From Nyaa:**
+1. With the Playlist pane focused, press `n`. This requires the
+   startup-applied **BitTorrent downloads** setting; when disabled the client
+   points to Settings and does not start the engine implicitly.
+2. Enter a query. DessPlay searches Nyaa's Anime category (`c=1_0`) and
+   inspects the first 20 RSS results' `.torrent` metadata. Only torrents with
+   at least one seeder and exactly one safe payload file are listed, with
+   filename, exact size, release title, and seeder count.
+3. Select a result to download it in the background. The search modal closes
+   and the non-blocking add-progress overlay shows download and ed2k-hashing
+   stages. Reopening with `n` shows active imports; `s` starts another search
+   and `d` cancels the selected import and deletes its partial data.
+4. The shared playlist entry is created only after the payload finishes and
+   its ed2k identity is known, inserted after the row selected when the search
+   opened. Failed/cancelled imports remain local notices and never create a
+   provisional shared entry.
+
 **Sort order (#8):** `Tab` toggles the add/map browser between
 alphabetical (the default) and newest-mtime-first, both in a plain
 directory listing and in search results — so files that just landed float
@@ -1207,6 +1224,7 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 | `n` | Users | Mark selected user NotWatching for the now-playing series (works on a known-offline row too) |
 | `Enter` | Playlist | Play selected entry (or open file browser on [Add New]) |
 | `a` | Playlist | Add file (insert after selected entry) |
+| `n` | Playlist | Search Nyaa for a single-file anime torrent; reopen to manage/cancel active imports |
 | Paste | Playlist | Add a pasted existing-file path (insert after selected entry); any other paste goes to the chat input instead |
 | `d` | Playlist | Remove selected entry |
 | `w` | Playlist | Cycle the selected entry's series watch state: Watching -> Maybe -> NotWatching |
@@ -1527,6 +1545,16 @@ Searches for the same file are spaced at least 15 minutes apart (the
 session re-emits `StartDownload` every snapshot; a no-match must not
 re-hit nyaa each time) — so an episode queued before it hits nyaa is
 found on a later retry.
+
+The Playlist pane also provides an explicit **browse search** (`n`) for files
+that are not yet known to the collective catalog. It queries the Anime
+category, inspects at most the first 20 RSS entries in feed order, and fetches
+their torrent metainfo before display so multi-file batches are excluded rather
+than failing after selection. The selected torrent has no ed2k identity yet,
+so it remains a local pending import while it downloads. After completion its
+single payload is ed2k-hashed, promoted into the ordinary hash-addressed cache
+and seeding registry, and only then added to the shared playlist. Pending
+imports are not restored after restart, matching other in-flight downloads.
 
 **Fallback ladder.** The relay path engages (with whatever peer sources
 exist — possibly none, which is the ordinary awaiting-source state)

@@ -839,6 +839,10 @@ impl PlaylistPane {
         Some(Msg::AddFileAfter(self.selected_hash()))
     }
 
+    fn act_nyaa(&mut self) -> Option<Msg> {
+        Some(Msg::OpenNyaa(self.selected_hash()))
+    }
+
     fn act_remove(&mut self) -> Option<Msg> {
         self.selected_hash().map(Msg::RemoveEntry)
     }
@@ -961,6 +965,11 @@ static PLAYLIST_KEYMAP: Keymap<PlaylistPane, Msg> = Keymap(&[
         pattern: KeyPattern::Char('a'),
         bar: Some(("a", "Add")),
         action: PlaylistPane::act_add,
+    },
+    Binding {
+        pattern: KeyPattern::Char('n'),
+        bar: Some(("n", "Nyaa")),
+        action: PlaylistPane::act_nyaa,
     },
     Binding {
         pattern: KeyPattern::Char('d'),

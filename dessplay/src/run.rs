@@ -1164,6 +1164,15 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // unprocessable Quit (2026-06-12).
                             self.shell.hash_and_add(path, after).await;
                         }
+                        Some(UserAction::SearchNyaa { query }) => {
+                            self.shell.search_nyaa(query).await;
+                        }
+                        Some(UserAction::StartNyaaImport { id, result, after }) => {
+                            self.shell.start_nyaa_import(id, result, after).await;
+                        }
+                        Some(UserAction::CancelNyaaImport { id }) => {
+                            self.shell.cancel_nyaa_import(id).await;
+                        }
                         Some(UserAction::AddByHash { hash, after }) => {
                             if let Some(text) =
                                 self.shell.add_by_hash(hash, after, &last_view).await
@@ -1437,6 +1446,39 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 done_bytes: 0,
                                 total_bytes: 0,
                                 finished: true,
+                            });
+                        }
+                        crate::session::FileEffect::NyaaSearchFinished { query, result } => {
+                            let _ = self.ui.try_send(UiInput::NyaaResults { query, result });
+                        }
+                        crate::session::FileEffect::NyaaImportProgress {
+                            id,
+                            filename,
+                            stage,
+                            done_bytes,
+                            total_bytes,
+                        } => {
+                            let _ = self.ui.try_send(UiInput::NyaaImportProgress {
+                                id,
+                                filename,
+                                stage,
+                                done_bytes,
+                                total_bytes,
+                            });
+                        }
+                        crate::session::FileEffect::NyaaImportFinished {
+                            id,
+                            filename,
+                            error,
+                        } => {
+                            let _ = self.ui.try_send(UiInput::NyaaImportFinished { id });
+                            let text = match error {
+                                Some(error) => format!("Nyaa add failed ({filename}): {error}"),
+                                None => format!("Added {filename} from Nyaa"),
+                            };
+                            let _ = self.ui.try_send(UiInput::System {
+                                timestamp: (system_clock())(),
+                                text,
                             });
                         }
                         crate::session::FileEffect::Archived { timestamp, text } => {

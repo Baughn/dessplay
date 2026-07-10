@@ -1838,6 +1838,29 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         let _ = self.file.send(FileCommand::HashAdd { path, after }).await;
     }
 
+    /// Search Nyaa without blocking the bridge loop.
+    pub async fn search_nyaa(&self, query: String) {
+        let _ = self.file.send(FileCommand::SearchNyaa { query }).await;
+    }
+
+    /// Start a selected, inspected single-file torrent import.
+    pub async fn start_nyaa_import(
+        &self,
+        id: crate::torrent::engine::TorrentImportId,
+        result: crate::torrent::nyaa::NyaaBrowseResult,
+        after: Option<Ed2kHash>,
+    ) {
+        let _ = self
+            .file
+            .send(FileCommand::StartNyaaImport { id, result, after })
+            .await;
+    }
+
+    /// Cancel a pending user-selected torrent import.
+    pub async fn cancel_nyaa_import(&self, id: crate::torrent::engine::TorrentImportId) {
+        let _ = self.file.send(FileCommand::CancelNyaaImport { id }).await;
+    }
+
     /// A background hash finished: add the file to the playlist.
     pub async fn on_hashed(&mut self, done: HashedAdd) -> UiLines {
         self.hashing.remove(&done.path);
@@ -2202,6 +2225,56 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 self.on_hashed(done).await;
                 FileEffect::HashDone { path }
             }
+            FileOutput::NyaaSearchFinished { query, result } => {
+                FileEffect::NyaaSearchFinished { query, result }
+            }
+            FileOutput::NyaaImportProgress {
+                id,
+                filename,
+                stage,
+                done_bytes,
+                total_bytes,
+            } => FileEffect::NyaaImportProgress {
+                id,
+                filename,
+                stage,
+                done_bytes,
+                total_bytes,
+            },
+            FileOutput::NyaaImportFinished {
+                id,
+                filename,
+                after,
+                result,
+            } => match result {
+                Ok((hashed, _path)) => {
+                    let _ = self
+                        .sync
+                        .send(crate::actors::sync::SyncCommand::Mutate(Box::new(
+                            Mutation::AddPlaylistAfter {
+                                anchor: after,
+                                new: dessplay_core::playlist::NewPlaylistEntry {
+                                    hash: hashed.root,
+                                    added_by: self.me.clone(),
+                                    filename: filename.clone(),
+                                    size_bytes: hashed.size_bytes,
+                                    duration_millis: None,
+                                },
+                            },
+                        )))
+                        .await;
+                    FileEffect::NyaaImportFinished {
+                        id,
+                        filename,
+                        error: None,
+                    }
+                }
+                Err(error) => FileEffect::NyaaImportFinished {
+                    id,
+                    filename,
+                    error: Some(error),
+                },
+            },
             FileOutput::SeriesKnown {
                 file,
                 series,
@@ -2385,6 +2458,35 @@ pub enum FileEffect {
     HashDone {
         /// The file that finished.
         path: PathBuf,
+    },
+    /// Results for the Nyaa search modal.
+    NyaaSearchFinished {
+        /// Echoed query.
+        query: String,
+        /// Safe single-file results or a request error.
+        result: Result<Vec<crate::torrent::nyaa::NyaaBrowseResult>, String>,
+    },
+    /// Pending Nyaa import progress.
+    NyaaImportProgress {
+        /// Local import identity.
+        id: crate::torrent::engine::TorrentImportId,
+        /// Payload filename.
+        filename: String,
+        /// Current stage.
+        stage: crate::actors::file::NyaaImportStage,
+        /// Completed bytes.
+        done_bytes: u64,
+        /// Total bytes.
+        total_bytes: u64,
+    },
+    /// A pending Nyaa import ended.
+    NyaaImportFinished {
+        /// Local import identity.
+        id: crate::torrent::engine::TorrentImportId,
+        /// Payload filename.
+        filename: String,
+        /// Failure/cancellation text; `None` means it was added.
+        error: Option<String>,
     },
     /// An archive attempt finished (success or failure): show a local
     /// system chat line, and refresh the snapshot so a now-archived

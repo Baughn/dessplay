@@ -55,6 +55,8 @@ pub enum Msg {
     /// Open the file browser to add after this entry (`None` = append
     /// from the [Add New] row, which anchors to the end).
     AddFileAfter(Option<Ed2kHash>),
+    /// Open the Nyaa search/active-import modal, anchored after this row.
+    OpenNyaa(Option<Ed2kHash>),
     /// Episode browser: add this file (by hash) to the playlist. The file
     /// may or may not be held locally; if not, it downloads.
     EpisodeChosen {
@@ -115,6 +117,19 @@ pub enum Msg {
         /// The chosen local file.
         path: PathBuf,
     },
+    /// Nyaa modal: execute the current query.
+    NyaaSearchRequested(String),
+    /// Nyaa modal: download the selected inspected result.
+    NyaaResultChosen {
+        /// Inspected single-file search result.
+        result: crate::torrent::nyaa::NyaaBrowseResult,
+        /// Playlist anchor captured when search opened.
+        after: Option<Ed2kHash>,
+    },
+    /// Nyaa active-import list: cancel the selected download.
+    CancelNyaaImport(crate::torrent::engine::TorrentImportId),
+    /// Nyaa active-import list: switch to a fresh search field.
+    NewNyaaSearch,
 
     // Navigation / global
     /// Cycle pane focus.
@@ -147,6 +162,7 @@ impl Msg {
             Msg::SetNotWatching(_) => "SetNotWatching",
             Msg::PlaySelected(_) => "PlaySelected",
             Msg::AddFileAfter(_) => "AddFileAfter",
+            Msg::OpenNyaa(_) => "OpenNyaa",
             Msg::EpisodeChosen { .. } => "EpisodeChosen",
             Msg::ToggleEpisodeWatched { .. } => "ToggleEpisodeWatched",
             Msg::MoveDown(_) => "MoveDown",
@@ -156,6 +172,10 @@ impl Msg {
             Msg::ArchiveFile(_) => "ArchiveFile",
             Msg::CycleSeriesWatch(_) => "CycleSeriesWatch",
             Msg::FileMapped { .. } => "FileMapped",
+            Msg::NyaaSearchRequested(_) => "NyaaSearchRequested",
+            Msg::NyaaResultChosen { .. } => "NyaaResultChosen",
+            Msg::CancelNyaaImport(_) => "CancelNyaaImport",
+            Msg::NewNyaaSearch => "NewNyaaSearch",
             Msg::CloseModal => "CloseModal",
             Msg::FileChosen { .. } => "FileChosen",
             Msg::ToggleBrowserSort => "ToggleBrowserSort",
@@ -225,6 +245,25 @@ pub enum UserAction {
         hash: Ed2kHash,
         /// Anchor entry; `None` = append at the end.
         after: Option<Ed2kHash>,
+    },
+    /// Search Nyaa's anime category.
+    SearchNyaa {
+        /// Free-form query.
+        query: String,
+    },
+    /// Start a selected single-file torrent import.
+    StartNyaaImport {
+        /// Local pending-import identity.
+        id: crate::torrent::engine::TorrentImportId,
+        /// Inspected search result.
+        result: crate::torrent::nyaa::NyaaBrowseResult,
+        /// Playlist anchor captured when search opened.
+        after: Option<Ed2kHash>,
+    },
+    /// Cancel a pending Nyaa import.
+    CancelNyaaImport {
+        /// Local pending-import identity.
+        id: crate::torrent::engine::TorrentImportId,
     },
     /// Persist settings + media roots.
     SaveSettings(Box<Settings>, Vec<PathBuf>),

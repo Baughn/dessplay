@@ -7,7 +7,9 @@
 //! like the server's anime-titles fetch.
 
 use std::collections::HashSet;
+use std::path::{Component, Path};
 
+use librqbit::{TorrentMetaV1Owned, torrent_from_bytes};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -41,11 +43,59 @@ pub struct NyaaMatch {
     pub info_hash: String,
 }
 
+/// A user-selected search result whose `.torrent` metadata proves it has
+/// exactly one safe payload file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NyaaBrowseResult {
+    /// Release title from the RSS feed.
+    pub title: String,
+    /// Actual single-file payload name from the torrent metainfo.
+    pub filename: String,
+    /// Exact payload size from the torrent metainfo.
+    pub size_bytes: u64,
+    /// Current seeder count from the RSS feed.
+    pub seeders: u32,
+    /// Torrent identity and download location.
+    pub chosen: NyaaMatch,
+}
+
+/// Nyaa search category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NyaaCategory {
+    /// Every category, used by the automatic exact-filename lookup.
+    All,
+    /// Anime, all subcategories (`c=1_0`), used by the playlist browser.
+    Anime,
+}
+
+impl NyaaCategory {
+    fn query_value(self) -> &'static str {
+        match self {
+            Self::All => "0_0",
+            Self::Anime => "1_0",
+        }
+    }
+}
+
 /// Source of raw RSS for a filename query. Mocked in tests; HTTP in
 /// production. Blocking by design — call from `spawn_blocking`.
 pub trait NyaaSource: Send + Sync + 'static {
     /// Fetch the RSS results for searching `filename`.
     fn search(&self, filename: &str) -> std::io::Result<String>;
+
+    /// Fetch an RSS feed in a specific category. Existing test sources only
+    /// need exact lookup, so the default preserves the old behavior.
+    fn search_category(&self, query: &str, _category: NyaaCategory) -> std::io::Result<String> {
+        self.search(query)
+    }
+
+    /// Fetch raw `.torrent` metadata for browse-result inspection.
+    fn fetch_torrent(&self, _url: &str) -> std::io::Result<Vec<u8>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "torrent metadata fetching is unsupported",
+        ))
+    }
 }
 
 /// The real thing: one GET against nyaa.si.
@@ -53,15 +103,25 @@ pub struct HttpNyaaSource;
 
 /// Build the RSS search URL for an exact filename query.
 pub fn search_url(filename: &str) -> String {
+    search_url_for(filename, NyaaCategory::All)
+}
+
+/// Build an RSS search URL for a query and category.
+pub fn search_url_for(query: &str, category: NyaaCategory) -> String {
     format!(
-        "https://nyaa.si/?page=rss&q={}&c=0_0&f=0",
-        utf8_percent_encode(filename, NON_ALPHANUMERIC)
+        "https://nyaa.si/?page=rss&q={}&c={}&f=0",
+        utf8_percent_encode(query, NON_ALPHANUMERIC),
+        category.query_value(),
     )
 }
 
 impl NyaaSource for HttpNyaaSource {
     fn search(&self, filename: &str) -> std::io::Result<String> {
-        let response = ureq::get(search_url(filename))
+        self.search_category(filename, NyaaCategory::All)
+    }
+
+    fn search_category(&self, query: &str, category: NyaaCategory) -> std::io::Result<String> {
+        let response = ureq::get(search_url_for(query, category))
             .header("User-Agent", "dessplay/1")
             .call()
             .map_err(std::io::Error::other)?;
@@ -74,6 +134,78 @@ impl NyaaSource for HttpNyaaSource {
             .map_err(std::io::Error::other)?;
         String::from_utf8(body).map_err(std::io::Error::other)
     }
+
+    fn fetch_torrent(&self, url: &str) -> std::io::Result<Vec<u8>> {
+        let response = ureq::get(url)
+            .header("User-Agent", "dessplay/1")
+            .call()
+            .map_err(std::io::Error::other)?;
+        response
+            .into_body()
+            .with_config()
+            .limit(16 * 1024 * 1024)
+            .read_to_vec()
+            .map_err(std::io::Error::other)
+    }
+}
+
+/// Search the anime category and inspect at most `limit` RSS entries,
+/// returning only safe, single-file torrents in feed order. A bad individual
+/// result is skipped so one removed or malformed torrent does not fail the
+/// whole search.
+pub fn browse_single_file_results(
+    source: &dyn NyaaSource,
+    query: &str,
+    limit: usize,
+) -> std::io::Result<Vec<NyaaBrowseResult>> {
+    let xml = source.search_category(query, NyaaCategory::Anime)?;
+    let mut results = Vec::new();
+    for item in parse_rss(&xml).into_iter().take(limit) {
+        if item.seeders == 0 {
+            continue;
+        }
+        let Ok(bytes) = source.fetch_torrent(&item.torrent_url) else {
+            continue;
+        };
+        let Some((filename, size_bytes)) = single_file_payload(&bytes) else {
+            continue;
+        };
+        results.push(NyaaBrowseResult {
+            title: item.title.clone(),
+            filename,
+            size_bytes,
+            seeders: item.seeders,
+            chosen: NyaaMatch {
+                title: item.title,
+                torrent_url: item.torrent_url,
+                info_hash: item.info_hash,
+            },
+        });
+    }
+    Ok(results)
+}
+
+/// Extract a safe single payload from `.torrent` bytes.
+fn single_file_payload(bytes: &[u8]) -> Option<(String, u64)> {
+    let torrent: TorrentMetaV1Owned = torrent_from_bytes(bytes).ok()?;
+    let length = torrent.info.length?;
+    if length == 0 {
+        return None;
+    }
+    if torrent.info.files.is_some() {
+        return None;
+    }
+    let raw_name = torrent.info.name?;
+    let raw = raw_name.as_ref();
+    let name = std::str::from_utf8(raw).ok()?.trim();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return None;
+    }
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return None;
+    }
+    Some((name.to_string(), length))
 }
 
 /// Parse a nyaa RSS feed into items. Malformed items are skipped — the
@@ -471,5 +603,119 @@ mod tests {
         assert!(url.ends_with("&c=0_0&f=0"));
         assert!(!url.contains('['));
         assert!(!url.contains(' '));
+    }
+
+    #[test]
+    fn anime_search_url_uses_anime_category() {
+        let url = search_url_for("karen", NyaaCategory::Anime);
+        assert_eq!(url, "https://nyaa.si/?page=rss&q=karen&c=1_0&f=0");
+    }
+
+    fn single_torrent(name: &str, length: u64) -> Vec<u8> {
+        format!(
+            "d4:infod6:lengthi{length}e4:name{}:{name}12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee",
+            name.len()
+        )
+        .into_bytes()
+    }
+
+    fn multi_torrent() -> Vec<u8> {
+        b"d4:infod5:filesld6:lengthi123e4:pathl8:file.mkveee4:name3:dir12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee".to_vec()
+    }
+
+    #[test]
+    fn single_file_metadata_is_accepted_and_unsafe_names_are_rejected() {
+        assert_eq!(
+            single_file_payload(&single_torrent("file.mkv", 123)),
+            Some(("file.mkv".to_string(), 123))
+        );
+        assert_eq!(
+            single_file_payload(&single_torrent("../file.mkv", 123)),
+            None
+        );
+        assert_eq!(
+            single_file_payload(&single_torrent("dir\\file.mkv", 123)),
+            None
+        );
+        assert_eq!(single_file_payload(&multi_torrent()), None);
+    }
+
+    struct BrowseSource {
+        rss: String,
+        torrents: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    impl NyaaSource for BrowseSource {
+        fn search(&self, _filename: &str) -> std::io::Result<String> {
+            Ok(self.rss.clone())
+        }
+
+        fn search_category(&self, _query: &str, category: NyaaCategory) -> std::io::Result<String> {
+            assert_eq!(category, NyaaCategory::Anime);
+            Ok(self.rss.clone())
+        }
+
+        fn fetch_torrent(&self, url: &str) -> std::io::Result<Vec<u8>> {
+            self.torrents
+                .get(url)
+                .cloned()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
+        }
+    }
+
+    #[test]
+    fn browse_keeps_feed_order_and_only_single_file_results() {
+        let item = |id: u8, seeders: u32| {
+            format!(
+                "<item><title>Release {id}</title><link>https://nyaa.si/download/{id}.torrent</link><nyaa:infoHash>{id:040}</nyaa:infoHash><nyaa:size>123 B</nyaa:size><nyaa:seeders>{seeders}</nyaa:seeders></item>"
+            )
+        };
+        let rss = format!(
+            r#"<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>{}{}{}</channel></rss>"#,
+            item(1, 10),
+            item(2, 20),
+            item(3, 0),
+        );
+        let source = BrowseSource {
+            rss,
+            torrents: [
+                (
+                    "https://nyaa.si/download/1.torrent".to_string(),
+                    single_torrent("one.mkv", 123),
+                ),
+                (
+                    "https://nyaa.si/download/2.torrent".to_string(),
+                    multi_torrent(),
+                ),
+            ]
+            .into(),
+        };
+        let results = browse_single_file_results(&source, "release", 20).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].filename, "one.mkv");
+        assert_eq!(results[0].title, "Release 1");
+    }
+
+    #[test]
+    fn browse_inspects_only_the_requested_prefix() {
+        let mut items = String::new();
+        let mut torrents = std::collections::HashMap::new();
+        for id in 0..25 {
+            let url = format!("https://nyaa.si/download/{id}.torrent");
+            items.push_str(&format!(
+                "<item><title>R{id}</title><link>{url}</link><nyaa:infoHash>{id:040}</nyaa:infoHash><nyaa:size>1 B</nyaa:size><nyaa:seeders>1</nyaa:seeders></item>"
+            ));
+            torrents.insert(url, single_torrent(&format!("{id}.mkv"), 1));
+        }
+        let source = BrowseSource {
+            rss: format!(
+                r#"<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>{items}</channel></rss>"#
+            ),
+            torrents,
+        };
+        let results = browse_single_file_results(&source, "r", 20).unwrap();
+        assert_eq!(results.len(), 20);
+        assert_eq!(results.first().unwrap().filename, "0.mkv");
+        assert_eq!(results.last().unwrap().filename, "19.mkv");
     }
 }

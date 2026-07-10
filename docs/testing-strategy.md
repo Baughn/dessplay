@@ -118,6 +118,9 @@ behind two traits so the whole flow is testable without a network:
   production; tests hand back fixture/canned RSS. The parse/match logic
   (`parse_rss`, `pick_match`) is pure and unit-tested against a
   committed real-shape fixture (entity-escaped titles, `nyaa:` fields).
+  The same seam provides category search and `.torrent` bytes for the manual
+  browser; pure tests pin the 20-entry cap, feed ordering, single-file
+  metainfo filter, and unsafe-name rejection.
 - `TorrentEngine` (`add`/`remove`/sync `status` poll): `RqbitEngine`
   (librqbit) in production; `FakeTorrentEngine` lets actor tests script
   progress, completion, and failure. The fetch *policy* (`TorrentFetches`
@@ -129,6 +132,11 @@ peer fallback, stall → fallback, completion → ed2k verify → Ready,
 mismatch → ban + fallback, local-copy adoption cancelling the torrent,
 eviction removing it, and startup reconciliation. One `#[ignore]`d smoke
 test starts a real librqbit session.
+
+Manual-import actor tests additionally cover selection -> progress -> ed2k
+hash -> cache/promotion -> playlist completion and cancellation cleanup.
+Whole-app UI tests cover the disabled-setting notice, `n` routing, the
+progress overlay, reopening active imports, and `d` cancellation.
 
 ---
 
