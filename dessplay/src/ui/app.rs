@@ -73,6 +73,22 @@ pub struct UiSnapshot {
 /// settings carry the password).
 fn log_action(action: &UserAction) {
     match action {
+        UserAction::Mutate(Mutation::SetSeriesPreference {
+            user,
+            entry,
+            pref,
+            set_by,
+        }) => {
+            let actor = set_by.as_ref().unwrap_or(user);
+            tracing::info!(
+                %user,
+                entry = entry.0,
+                ?pref,
+                set_by = %actor,
+                reason = "user action",
+                "requesting series preference change"
+            );
+        }
         UserAction::Mutate(mutation) => {
             tracing::debug!(mutation = mutation.name(), "user action: Mutate");
         }

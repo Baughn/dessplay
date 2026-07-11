@@ -418,6 +418,61 @@ fn current_interactive(peers: &[PeerInfo]) -> BTreeMap<UserId, dessplay_core::ne
         .collect()
 }
 
+/// Emit the durable diagnostic counterpart to watch-preference narration.
+/// Unlike chat narration this covers every List entry, not only now-playing,
+/// and is never burst-suppressed. That makes an INFO log sufficient to audit
+/// a preference arriving through a remote op, merge, or reconnect snapshot.
+fn log_series_preference_changes(
+    previous: Option<&BTreeMap<(UserId, ListEntryId), dessplay_core::types::SeriesPreference>>,
+    view: &StateView,
+) {
+    let empty = BTreeMap::new();
+    let previous = previous.unwrap_or(&empty);
+    let keys = previous
+        .keys()
+        .chain(view.series_preference.keys())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for (user, entry) in keys {
+        let was = previous.get(&(user.clone(), entry));
+        let now = view.series_preference.get(&(user.clone(), entry));
+        if was == now {
+            continue;
+        }
+        let Some(now) = now else {
+            continue;
+        };
+        let prior = was.map_or(SeriesWatchState::Maybe, |pref| pref.state);
+        let name = view
+            .list_entries
+            .get(&entry)
+            .map_or("<missing List entry>", |list| list.name.as_str());
+        let set_by = now.set_by.as_ref().unwrap_or(&user);
+        let implied = list_implied_pref(view, entry, &user);
+        let cause = if now.set_by.is_some() {
+            "explicit change by another user"
+        } else if was.is_none() && implied == Some(now.state) {
+            "initial List watchers assignment"
+        } else {
+            "self action or local automation"
+        };
+        let watchers = view.list_entries.get(&entry).map(|list| &list.watchers);
+        tracing::info!(
+            %user,
+            entry = entry.0,
+            %name,
+            previous = ?prior,
+            current = ?now.state,
+            %set_by,
+            %cause,
+            list_implied = ?implied,
+            list_watchers = ?watchers,
+            "series preference changed"
+        );
+    }
+}
+
 /// Present interactive peers whose latest reported position is **for the
 /// now-playing file**, paired with that position. This is the only set
 /// drift correction keys on: it excludes peers who are absent, on a
@@ -578,9 +633,13 @@ impl PlayerWiring {
     fn narrate(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
         let current = NarratorState::capture(view, peers);
         let Some(prev) = self.narrator.replace(current) else {
-            // First snapshot: baseline only.
+            // First snapshot: baseline only for chat, but record existing
+            // preferences so a restart tells us the state was restored
+            // rather than changed during this process lifetime.
+            log_series_preference_changes(None, view);
             return vec![];
         };
+        log_series_preference_changes(Some(&prev.series_preference), view);
         let mut lines: Vec<String> = Vec::new();
 
         // New now-playing file. The EOF-advance signature (the prior
@@ -1049,10 +1108,23 @@ impl PlayerWiring {
             }
             return out;
         }
-        tracing::info!("missing file from an unknown series; marking NotWatching");
         let Some((entry, create)) = resolve_or_create_series_entry(view, file) else {
             return vec![];
         };
+        let name = view
+            .list_entries
+            .get(&entry)
+            .map_or("<new List entry>", |list| list.name.as_str());
+        tracing::info!(
+            user = %self.me,
+            %file,
+            series = series.map(|id| id.0),
+            entry = entry.0,
+            %name,
+            auto_download = self.auto_download,
+            reason = "unknown series and no usable source",
+            "automatically marking series NotWatching"
+        );
         let mut out: Vec<Directive> = create.into_iter().map(Directive::Mutate).collect();
         out.push(Directive::Mutate(Mutation::SetSeriesPreference {
             user: self.me.clone(),
@@ -1371,7 +1443,15 @@ impl PlayerWiring {
             } else {
                 dessplay_core::types::SeriesWatchState::NotWatching
             };
-            tracing::info!(entry = id.0, name = %entry.name, ?pref, "List watchers: writing series preference");
+            tracing::info!(
+                user = %self.me,
+                entry = id.0,
+                name = %entry.name,
+                ?pref,
+                watchers = ?entry.watchers,
+                reason = "initial List watchers assignment",
+                "automatically writing series preference"
+            );
             out.push(Directive::Mutate(Mutation::SetSeriesPreference {
                 user: self.me.clone(),
                 entry: *id,
@@ -2892,6 +2972,62 @@ mod tests {
             narrate_diff(&v0, &peers, &v1, &peers),
             ["kim set to not-watching Some Show (by baughn)"]
         );
+    }
+
+    #[test]
+    fn series_preference_change_is_logged_at_info_with_diagnostic_context() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer = LogWriter(Arc::clone(&captured));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let peers = [peer("kim"), peer("baughn")];
+            let mut state = playing_state();
+            with_metadata(&mut state, hash(1), Some(7));
+            let entry = link_series(&mut state, ts(1), 7);
+            let v0 = state.view();
+            state.set_series_preference(
+                A,
+                ts(7),
+                UserId::new("kim"),
+                entry,
+                SeriesWatchState::NotWatching,
+                Some(UserId::new("baughn")),
+            );
+            let v1 = state.view();
+            let _ = narrate_diff(&v0, &peers, &v1, &peers);
+        });
+
+        let bytes = captured.lock().unwrap().clone();
+        let logs = String::from_utf8(bytes).unwrap();
+        assert!(logs.contains("series preference changed"), "{logs}");
+        assert!(logs.contains("user=kim"), "{logs}");
+        assert!(logs.contains("entry=7"), "{logs}");
+        assert!(logs.contains("name=Some Show"), "{logs}");
+        assert!(logs.contains("previous=Maybe"), "{logs}");
+        assert!(logs.contains("current=NotWatching"), "{logs}");
+        assert!(logs.contains("set_by=baughn"), "{logs}");
     }
 
     #[test]
