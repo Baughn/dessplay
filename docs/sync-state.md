@@ -183,7 +183,7 @@ and the wire protocol uniform.
 | Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>, ActorId>` | Any peer |
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>, ActorId>` | Server only (at EOF) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Any peer; server on EOF |
-| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Whoever last seeked; server on file change or authority departure |
+| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserSeek)`) | Whoever last seeked; the user variant records the explicit scrub for attribution; server on file change or authority departure |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Any user (play/pause); server forces Paused on Lost, graceful quit, and EOF-advance; not on the later timeout promotion to Departed |
 | Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>, ActorId>` | Any user (design.md #7/#13: `SeriesPreference { state, set_by }` lets one user write another's) |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>, ActorId>` | Owning user; *anyone* may write `Away` |
@@ -273,22 +273,27 @@ ignored -- the transition is idempotent without any dedup bookkeeping.
 
 ### Seek Authority
 
-`LwwCell<SeekAuthority>` where `SeekAuthority = Server | User(UserId)` --
-whoever most recently initiated a seek. A user identity, not an
-`ActorId`: actors are session-scoped (see Actor IDs), so a raw actor
-could not be mapped to a user across reconnects.
+`LwwCell<SeekAuthority>` where `SeekAuthority = Server | User(UserSeek)` --
+whoever most recently initiated a seek. `UserSeek` contains the user, file,
+unique Lamport occurrence stamp, and the initial/final positions of the
+debounced scrub. This is control-plane causality: continuous position reports
+remain lossy telemetry for drift correction and are never used to infer that a
+seek occurred.
 
 **How it works:**
-1. User A seeks -> their client writes `User(A)` to the seek authority register
+1. User A seeks -> their client writes `User(UserSeek { user: A, ... })` to the seek authority register
 2. All clients see "A is authoritative" and sync their position to A's
    `PlaybackPosition`
 3. Normal playback continues; small drift between clients is ignored
 4. User B seeks -> B becomes authoritative; everyone syncs to B's position
 5. Drift threshold: if >3s off from authority's position, trigger a seek
 
-**Debounce:** Seek authority and position writes are debounced at 1500ms in
-the PlayerActor. While the user is scrubbing, no authority change is broadcast.
-Only after scrubbing stops does the PlayerActor write SeekAuthority + position.
+**Debounce:** the PlayerActor captures the position at the beginning of a
+scrub, updates its destination as the user continues, and emits one explicit
+`UserSeeked { from_millis, to_millis }` after 1500ms of quiet. Only then does
+the client write user seek-authority plus the final position. Automatic seeks
+(file load to zero, drift correction, crash restore) are echo-suppressed and
+never produce `UserSeek`.
 
 **Echo suppression:** When you receive a seek authority change naming *you*,
 ignore it -- you already performed the seek.

@@ -276,7 +276,13 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
             if *authority % ACTORS == 0 {
                 crate::types::SeekAuthority::Server
             } else {
-                crate::types::SeekAuthority::User(user(*authority))
+                crate::types::SeekAuthority::User(crate::types::UserSeek {
+                    user: user(*authority),
+                    file: file(0),
+                    event_at: ts,
+                    from_millis: 0,
+                    to_millis: u64::from(*authority) * 1_000,
+                })
             },
         ),
         ScriptOp::SetIntent { playing } => state.set_playback_intent(

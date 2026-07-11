@@ -235,8 +235,8 @@ crash supervision (relaunch via a `PlayerFactory`).
 **Produces** (`PlayerOutput`):
 - `UserPaused` / `UserUnpaused` -- a pause flip that was *not* an echo
   of our command
-- `UserSeeked { position }` -- user seek, debounced 1500ms (scrubbing
-  coalesces)
+- `UserSeeked { from_millis, to_millis }` -- explicit user seek, debounced
+  1500ms (scrubbing coalesces; automatic seeks never emit it)
 - `PositionTick { position }` -- current position (100ms playing, 1s
   paused; extrapolated between player reports)
 - `DurationKnown { file, duration }` -- probed duration (backfills the
@@ -512,8 +512,8 @@ UI subsystem            Main Loop               SyncActor           NetworkActor
 ```
 PlayerActor             Main Loop               SyncActor           NetworkActor
   |                        |                       |                     |
-  |-- UserSeeked(pos)  --->|                       |                     |
-  |                        |-- LocalOp(SeekAuth) ->|                     |
+  |-- UserSeeked(from,to)->|                       |                     |
+  |                        |-- LocalOp(UserSeek) ->|                     |
   |                        |-- LocalOp(Position) ->|                     |
   |                        |                       |-- OutboundOps  ---->|
   |                        |                       |-- StateChanged  --->|

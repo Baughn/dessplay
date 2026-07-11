@@ -129,8 +129,9 @@ async fn seek_follows_the_authority() {
     baughn
         .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
         .await;
-    // Baughn's player needs a known position before drift correction
-    // can act (a fresh load has none until the player reports one).
+    // Both players report their loaded position: Kim's is the explicit
+    // seek's `from`, while Baughn's lets drift correction act.
+    kim.user(PlayerEvent::Position { position_millis: 0 });
     baughn.user(PlayerEvent::Position { position_millis: 0 });
 
     // Kim scrubs to the minute mark; the debounce (1.5s) coalesces it.
@@ -155,13 +156,24 @@ async fn seek_follows_the_authority() {
     // The state agrees about who has authority.
     eventually(&[&kim, &baughn], BUDGET, |snaps| {
         snaps.iter().all(|s| {
-            s.view.seek_authority
-                == Some(dessplay_core::types::SeekAuthority::User(UserId::new(
-                    "kim",
-                )))
+            matches!(
+                &s.view.seek_authority,
+                Some(dessplay_core::types::SeekAuthority::User(seek))
+                    if seek.user == UserId::new("kim")
+            )
         })
     })
     .await;
+
+    // Attribution is driven by the explicit seek occurrence, so the first
+    // genuine seek after Server authority is narrated identically on both
+    // clients. The automatic file load at 0 produced no such line.
+    for client in [&mut kim, &mut baughn] {
+        let line = client
+            .expect_system_line(BUDGET, |text| text.starts_with("kim skipped "))
+            .await;
+        assert!(line.ends_with("→ 1:00"), "unexpected seek line: {line}");
+    }
 
     // Kim must never have been told to follow their own authority.
     let kim_cmds = kim.control.drain_commands();
@@ -488,9 +500,7 @@ async fn missing_unknown_series_auto_not_watching_lets_the_group_play() {
 /// deterministically (no downloads to race).
 #[tokio::test(start_paused = true)]
 async fn placeholder_client_cannot_take_seek_authority() {
-    use dessplay_core::types::{
-        AniDbMetadata, AniDbSeriesId, MetadataSource, SeekAuthority, SeriesWatchState,
-    };
+    use dessplay_core::types::{AniDbMetadata, AniDbSeriesId, MetadataSource, SeriesWatchState};
 
     let harness = Harness::new(707);
     let kim = harness.player_client("kim", 1);
@@ -555,7 +565,7 @@ async fn placeholder_client_cannot_take_seek_authority() {
     let snap = snapshot_of(&baughn).await;
     assert_ne!(
         snap.view.seek_authority,
-        Some(SeekAuthority::User(UserId::new("baughn"))),
+        Some(user_seek_authority("baughn", 1)),
         "a placeholder client must never take seek authority"
     );
     // The group is still playing, not frozen on a bogus position.

@@ -130,6 +130,7 @@ impl Harness {
         let sync = handle.sync.clone();
         let network = handle.network.clone();
         let peers = handle.peers.clone();
+        let (ui_lines_tx, ui_lines) = mpsc::unbounded_channel();
         let pump_sync = sync.clone();
         let pump_peers = peers.clone();
         tokio::spawn(async move {
@@ -155,12 +156,14 @@ impl Harness {
                         }
                         let Ok(view) = rx.await else { break };
                         let peer_list = pump_peers.borrow().clone();
-                        shell.on_state(&view, &peer_list).await;
+                        let lines = shell.on_state(&view, &peer_list).await;
+                        let _ = ui_lines_tx.send(lines);
                         last_view = view;
                     }
                     output = shell.player_outputs.recv() => {
                         let Some(output) = output else { break };
-                        shell.on_player_output(output, &last_view).await;
+                        let lines = shell.on_player_output(output, &last_view).await;
+                        let _ = ui_lines_tx.send(lines);
                     }
                     output = shell.file_outputs.recv() => {
                         let Some(output) = output else { break };
@@ -176,6 +179,7 @@ impl Harness {
             network,
             peers,
             control,
+            ui_lines,
             root,
             _cache_dir: cache_dir,
         }
@@ -288,6 +292,8 @@ pub struct PlayerClient {
     pub peers: watch::Receiver<Vec<PeerInfo>>,
     /// The "user in mpv": inject events, observe commands.
     pub control: MockControl,
+    /// Local-only narrator/subtitle effects produced by the real session shell.
+    pub ui_lines: mpsc::UnboundedReceiver<dessplay::session::UiLines>,
     /// This client's media root.
     pub root: tempfile::TempDir,
     /// The file actor's download cache (placeholder PNG home); kept
@@ -328,6 +334,26 @@ impl PlayerClient {
                     "{}: expected player command never arrived; saw {seen:#?}",
                     self.name
                 );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Wait for a local narrator line matching `pred`.
+    pub async fn expect_system_line<F: FnMut(&str) -> bool>(
+        &mut self,
+        budget: Duration,
+        mut pred: F,
+    ) -> String {
+        let deadline = tokio::time::Instant::now() + budget;
+        loop {
+            while let Ok(lines) = self.ui_lines.try_recv() {
+                if let Some(notice) = lines.system.into_iter().find(|n| pred(&n.text)) {
+                    return notice.text;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("{}: expected narrator line never arrived", self.name);
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -547,4 +573,14 @@ pub fn entry(i: u8) -> NewPlaylistEntry {
 
 pub fn hash(i: u8) -> Ed2kHash {
     Ed2kHash([i; 16])
+}
+
+pub fn user_seek_authority(name: &str, event_at: u64) -> dessplay_core::types::SeekAuthority {
+    dessplay_core::types::SeekAuthority::User(dessplay_core::types::UserSeek {
+        user: UserId::new(name),
+        file: hash(1),
+        event_at: dessplay_core::types::SharedTimestamp(event_at),
+        from_millis: 0,
+        to_millis: 10_000,
+    })
 }

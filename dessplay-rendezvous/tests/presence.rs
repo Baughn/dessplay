@@ -546,12 +546,12 @@ async fn authority_rescued_from_departed_user() {
     mutate(
         &kim,
         Mutation::SetSeekAuthority {
-            authority: SeekAuthority::User(UserId::new("kim")),
+            authority: user_seek_authority("kim", 1),
         },
     )
     .await;
     eventually(&[&baughn], Duration::from_secs(30), |snaps| {
-        snaps[0].view.seek_authority == Some(SeekAuthority::User(UserId::new("kim")))
+        matches!(&snaps[0].view.seek_authority, Some(SeekAuthority::User(seek)) if seek.user == UserId::new("kim"))
     })
     .await;
 
@@ -575,12 +575,12 @@ async fn authority_rescued_from_quitting_user() {
     mutate(
         &kim,
         Mutation::SetSeekAuthority {
-            authority: SeekAuthority::User(UserId::new("kim")),
+            authority: user_seek_authority("kim", 2),
         },
     )
     .await;
     eventually(&[&baughn], Duration::from_secs(30), |snaps| {
-        snaps[0].view.seek_authority == Some(SeekAuthority::User(UserId::new("kim")))
+        matches!(&snaps[0].view.seek_authority, Some(SeekAuthority::User(seek)) if seek.user == UserId::new("kim"))
     })
     .await;
 

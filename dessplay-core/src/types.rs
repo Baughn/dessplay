@@ -246,15 +246,32 @@ pub struct SeriesPreference {
     pub set_by: Option<UserId>,
 }
 
-/// Who is currently the playback-position authority. A user identity
-/// rather than an `ActorId`: actors are session-scoped, so a raw actor
-/// could not be mapped back to a user across reconnects.
+/// One explicit, user-initiated seek. Continuous position reports are
+/// deliberately separate: they drive drift correction but are not evidence
+/// that a user sought.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct UserSeek {
+    /// The user who moved the playhead.
+    pub user: UserId,
+    /// The file on which the seek occurred.
+    pub file: Ed2kHash,
+    /// Unique occurrence marker assigned by the sync actor's Lamport clock.
+    pub event_at: SharedTimestamp,
+    /// Position when this scrub began.
+    pub from_millis: u64,
+    /// Final position after the debounce settled.
+    pub to_millis: u64,
+}
+
+/// Who is currently the playback-position authority. User authority carries
+/// the explicit seek which granted it, so attribution never has to infer an
+/// action from lossy continuous position samples.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub enum SeekAuthority {
     /// The server holds authority (file changes, authority departure).
     Server,
-    /// The named user holds authority (they seeked last).
-    User(UserId),
+    /// The user holds authority because of this seek.
+    User(UserSeek),
 }
 
 /// The group's shared play/pause latch. Whether video *actually* plays

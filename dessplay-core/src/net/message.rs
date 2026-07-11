@@ -20,7 +20,7 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// its stability is what lets a mismatched future client still be
 /// decoded and answered with a readable [`ServerControl::ProtocolMismatch`]
 /// instead of a silent decode failure.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as

@@ -724,7 +724,7 @@ mechanism that already posts command feedback and archive results).
 |-------|--------------|--------------|----------|
 | **Player crashed** (died twice in 30s) | the crashing client writes a chat message | "Baughn: my player crashed -- pausing" | **Synced** (a real chat message: persisted, shows the sender, late joiners see it) |
 | **Player gave up** (died three times in 30s) | the crashing client writes a chat message | "Baughn: my player keeps crashing -- giving up until someone picks another file" | **Synced** (a real chat message; same rationale as Player crashed) |
-| **Seek** (> 5s jump) | seek-authority + the authority's position | "Baughn skipped 08:12 → 12:34" (from = the previous sample extrapolated to the seek) | Local (only the *second and later* seeks in an episode -- the first is a Server->User authority flip with no prior sample to diff, and following the leader for a baseline would emit false jumps; intentional) |
+| **Seek** (> 5s user scrub) | the explicit `UserSeek` carried by user seek-authority | "Baughn skipped 08:12 → 12:34" (`from` = where the debounced scrub began; `to` = where it settled) | Local (every genuine user seek, including the first in an episode; automatic load-to-zero, drift-correction, and restore seeks never create a `UserSeek`) |
 | **New file** (manual select) | now-playing register change, no watched flip | "Now playing: [Frieren] - 02.mkv" | Local (the *what* persists in the playlist pane) |
 | **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
 | **Joined** | `PeerList`: a peer becomes Present | "Nero joined" | Local |
@@ -764,9 +764,10 @@ action, not one per register. In particular, the server-forced intent ->
 Paused on Lost / departure / EOF is never narrated as a bare "paused" --
 it is already explained by the corresponding lost / left / new-file line.
 Brief presence glitches under 30s never reach Lost, so they stay silent.
-Drift-correction slews and the < 100ms ignore band never write the
-seek-authority register, so they never produce a "skipped to" line; the
-1500ms seek debounce already coalesces scrubbing into a single write.
+Drift-correction slews and automatic hard seeks never create a `UserSeek`, so
+they never produce a "skipped to" line. The 1500ms debounce captures the
+scrub's initial and final positions and coalesces it into one authority write.
+Continuous `PlaybackPosition` samples are never interpreted as seek events.
 
 **Seeders** are excluded from every presence-derived line, exactly as they
 are excluded from the Users pane and playback gating.
@@ -1297,7 +1298,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Playlist | `Map<Ed2kHash, LwwCell<Option<PlaylistFileState>>>` | `Identifier`-based ordering; includes size and duration; `None` = removal tombstone (purged at compaction) |
 | Watched flags | `Map<Ed2kHash, LwwCell<bool>>` | Server-only writes (at EOF, or a manual `MarkWatched` request from the episode browser) |
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
-| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserId)`) | Standalone register; last seeker is position authority |
+| Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserSeek { user, file, event_at, from_millis, to_millis })`) | Standalone register; last seeker is position authority, with the explicit user action that granted it |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion -- already paused at Lost) |
 | Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>>` | Compound key, keyed on the List entry (not AniDB id -- see [Series Identity](#series-identity)); `SeriesPreference { state: Watching \| NotWatching \| Maybe, set_by: Option<UserId> }`, absent entry = Maybe; any user may write (design.md #7/#13) |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |

@@ -146,8 +146,10 @@ pub enum PlayerOutput {
     UserUnpaused,
     /// The user seeked (debounced; scrubbing already coalesced).
     UserSeeked {
-        /// Position landed on, milliseconds.
-        position_millis: u64,
+        /// Position when the debounced scrub began.
+        from_millis: u64,
+        /// Final position after the debounce settled.
+        to_millis: u64,
     },
     /// Periodic position report (100ms playing / 1s paused).
     PositionTick {
@@ -233,7 +235,8 @@ struct Actor<F: PlayerFactory> {
     /// Seeks we commanded and haven't seen echoed yet.
     pending_seek_echoes: usize,
     /// A user seek waiting out the debounce window.
-    pending_user_seek: Option<(u64, Instant)>,
+    /// Debounced user scrub: initial position, latest destination, last move.
+    pending_user_seek: Option<(u64, u64, Instant)>,
     /// Restore-after-relaunch position.
     restore_millis: Option<u64>,
     estimate: Option<Estimate>,
@@ -319,7 +322,7 @@ pub async fn run<F: PlayerFactory>(
     cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        let debounce_at = actor.pending_user_seek.map(|(_, at)| at + SEEK_DEBOUNCE);
+        let debounce_at = actor.pending_user_seek.map(|(_, _, at)| at + SEEK_DEBOUNCE);
         let reattach_at = actor.reattach_at;
         // Constant retention means the oldest chat line expires first.
         let osd_expiry_at = actor.osd_chat.front().map(|(_, at)| *at);
@@ -656,12 +659,17 @@ impl<F: PlayerFactory> Actor<F> {
             }
             PlayerEvent::Seeked { position_millis } => {
                 self.eof_reported = false;
+                let from_millis = self
+                    .pending_user_seek
+                    .map(|(from, _, _)| from)
+                    .or_else(|| self.estimate_now())
+                    .unwrap_or(position_millis);
                 self.note_position(position_millis);
                 if self.pending_seek_echoes > 0 {
                     self.pending_seek_echoes -= 1;
                 } else {
                     tracing::debug!(position_millis, "user seek (debouncing)");
-                    self.pending_user_seek = Some((position_millis, Instant::now()));
+                    self.pending_user_seek = Some((from_millis, position_millis, Instant::now()));
                 }
             }
             PlayerEvent::Position { position_millis } => {
@@ -680,6 +688,12 @@ impl<F: PlayerFactory> Actor<F> {
             }
             PlayerEvent::Loaded => {
                 self.believed_pause = Some(true);
+                // A normal load starts at zero. Seed the estimate so an
+                // immediate first user seek still has an honest `from` even
+                // before mpv's first time-pos observation arrives.
+                if self.estimate.is_none() {
+                    self.note_position(0);
+                }
                 if let Some(millis) = self.restore_millis.take() {
                     self.seek_programmatic(millis).await;
                 }
@@ -778,11 +792,14 @@ impl<F: PlayerFactory> Actor<F> {
     }
 
     async fn flush_user_seek(&mut self) {
-        if let Some((position_millis, _)) = self.pending_user_seek.take() {
-            tracing::info!(position_millis, "user seek (reporting)");
+        if let Some((from_millis, to_millis, _)) = self.pending_user_seek.take() {
+            tracing::info!(from_millis, to_millis, "user seek (reporting)");
             let _ = self
                 .outputs
-                .send(PlayerOutput::UserSeeked { position_millis })
+                .send(PlayerOutput::UserSeeked {
+                    from_millis,
+                    to_millis,
+                })
                 .await;
         }
     }
@@ -1359,7 +1376,8 @@ mod tests {
         assert_eq!(
             drain_outputs(&mut outputs),
             vec![PlayerOutput::UserSeeked {
-                position_millis: 90_000
+                from_millis: 10_000,
+                to_millis: 90_000,
             }],
             "scrubbing must coalesce to the final position"
         );
@@ -1422,7 +1440,8 @@ mod tests {
         assert_eq!(
             drain_outputs(&mut outputs),
             vec![PlayerOutput::UserSeeked {
-                position_millis: 55_000
+                from_millis: 0,
+                to_millis: 55_000,
             }],
             "the user's seek on the new file was swallowed as a stale echo"
         );

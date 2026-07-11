@@ -236,6 +236,16 @@ struct PlaybackPositionV1 {
     timestamp: SharedTimestamp,
 }
 
+/// Seek-authority layout through protocol v5. Old user authority did not
+/// carry an explicit seek occurrence, so it cannot be migrated as an
+/// attributable action; migration safely hands authority to the server.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
+enum SeekAuthorityV1 {
+    Server,
+    User(UserId),
+}
+
 /// The on-disk/wire layout of [`SeriesListEntry`] **before** `local_aliases`
 /// and `manual_files` were added (Phase 19, Series Identity). Frozen: a
 /// record of the format, not live state.
@@ -289,7 +299,7 @@ struct CrdtStateV3 {
     playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
     watched: LwwMap<Ed2kHash, bool>,
     now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthority>,
+    seek_authority: LwwCell<SeekAuthorityV1>,
     playback_intent: LwwCell<PlaybackIntent>,
     series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     manual_override: LwwMap<UserId, Option<ManualState>>,
@@ -478,7 +488,7 @@ impl From<CrdtStateV3> for CrdtState {
             playlist: v3.playlist,
             watched: v3.watched,
             now_playing: v3.now_playing,
-            seek_authority: v3.seek_authority,
+            seek_authority: upgrade_seek_authority(v3.seek_authority),
             playback_intent: v3.playback_intent,
             series_preference,
             manual_override: v3.manual_override,
@@ -510,7 +520,7 @@ struct CrdtStateV2 {
     playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
     watched: LwwMap<Ed2kHash, bool>,
     now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthority>,
+    seek_authority: LwwCell<SeekAuthorityV1>,
     playback_intent: LwwCell<PlaybackIntent>,
     series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     manual_override: LwwMap<UserId, Option<ManualState>>,
@@ -540,7 +550,7 @@ impl From<CrdtStateV2> for CrdtState {
             playlist: v2.playlist,
             watched: v2.watched,
             now_playing: v2.now_playing,
-            seek_authority: v2.seek_authority,
+            seek_authority: upgrade_seek_authority(v2.seek_authority),
             playback_intent: v2.playback_intent,
             series_preference,
             manual_override: v2.manual_override,
@@ -570,7 +580,7 @@ struct CrdtStateV1 {
     playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
     watched: LwwMap<Ed2kHash, bool>,
     now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthority>,
+    seek_authority: LwwCell<SeekAuthorityV1>,
     playback_intent: LwwCell<PlaybackIntent>,
     series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
     manual_override: LwwMap<UserId, Option<ManualState>>,
@@ -599,7 +609,7 @@ impl From<CrdtStateV1> for CrdtState {
             playlist: v1.playlist,
             watched: v1.watched,
             now_playing: v1.now_playing,
-            seek_authority: v1.seek_authority,
+            seek_authority: upgrade_seek_authority(v1.seek_authority),
             playback_intent: v1.playback_intent,
             series_preference,
             manual_override: v1.manual_override,
@@ -631,7 +641,7 @@ struct CrdtStateV4 {
     playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
     watched: LwwMap<Ed2kHash, bool>,
     now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthority>,
+    seek_authority: LwwCell<SeekAuthorityV1>,
     playback_intent: LwwCell<PlaybackIntent>,
     series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesPreference>,
     manual_override: LwwMap<UserId, Option<ManualState>>,
@@ -661,7 +671,7 @@ struct CrdtStateV5 {
     playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
     watched: LwwMap<Ed2kHash, bool>,
     now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthority>,
+    seek_authority: LwwCell<SeekAuthorityV1>,
     playback_intent: LwwCell<PlaybackIntent>,
     series_preference: LwwMap<(UserId, ListEntryId), SeriesPreference>,
     manual_override: LwwMap<UserId, Option<ManualState>>,
@@ -678,6 +688,67 @@ struct CrdtStateV5 {
     /// Read for layout only (postcard is positional, so the name is
     /// free); the stored value (4) is discarded on upgrade.
     _protocol_version: u32,
+}
+
+/// Protocol-v5 state immediately before explicit user-seek metadata was added.
+/// All other fields have the current layout.
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Default, Serialize))]
+struct CrdtStateProtocol5 {
+    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
+    watched: LwwMap<Ed2kHash, bool>,
+    now_playing: LwwCell<Option<Ed2kHash>>,
+    seek_authority: LwwCell<SeekAuthorityV1>,
+    playback_intent: LwwCell<PlaybackIntent>,
+    series_preference: LwwMap<(UserId, ListEntryId), SeriesPreference>,
+    manual_override: LwwMap<UserId, Option<ManualState>>,
+    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
+    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
+    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
+    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_next_ep: LwwMap<ListEntryId, NextEpState>,
+    lookup_requests: GSet<FileHashInfo>,
+    chat: GList<ChatMessage>,
+    playback_position: LwwMap<UserId, PlaybackPosition>,
+    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+    _protocol_version: u32,
+}
+
+fn upgrade_seek_authority(old: LwwCell<SeekAuthorityV1>) -> LwwCell<SeekAuthority> {
+    let mut upgraded = LwwCell::new();
+    if let Some(winner) = old.read() {
+        // A v5 User value proves only who was followed, not whether or where
+        // an attributable seek occurred. Reset the transient authority rather
+        // than inventing an event during migration.
+        reg_put(&mut upgraded, winner.timestamp, SeekAuthority::Server);
+    }
+    upgraded
+}
+
+impl From<CrdtStateProtocol5> for CrdtState {
+    fn from(v5: CrdtStateProtocol5) -> Self {
+        CrdtState {
+            playlist: v5.playlist,
+            watched: v5.watched,
+            now_playing: v5.now_playing,
+            seek_authority: upgrade_seek_authority(v5.seek_authority),
+            playback_intent: v5.playback_intent,
+            series_preference: v5.series_preference,
+            manual_override: v5.manual_override,
+            file_availability: v5.file_availability,
+            anidb_metadata: v5.anidb_metadata,
+            series_relations: v5.series_relations,
+            file_catalog: v5.file_catalog,
+            list_entries: v5.list_entries,
+            list_next_ep: v5.list_next_ep,
+            lookup_requests: v5.lookup_requests,
+            chat: v5.chat,
+            playback_position: v5.playback_position,
+            acknowledged_absent: v5.acknowledged_absent,
+            protocol_version: crate::net::message::PROTOCOL_VERSION,
+        }
+    }
 }
 
 /// Rebuild a `list_entries` map from its mid-Phase-19 shape
@@ -723,7 +794,7 @@ impl From<CrdtStateV5> for CrdtState {
             playlist: v5.playlist,
             watched: v5.watched,
             now_playing: v5.now_playing,
-            seek_authority: v5.seek_authority,
+            seek_authority: upgrade_seek_authority(v5.seek_authority),
             playback_intent: v5.playback_intent,
             series_preference: v5.series_preference,
             manual_override: v5.manual_override,
@@ -754,7 +825,7 @@ impl From<CrdtStateV4> for CrdtState {
             playlist: v4.playlist,
             watched: v4.watched,
             now_playing: v4.now_playing,
-            seek_authority: v4.seek_authority,
+            seek_authority: upgrade_seek_authority(v4.seek_authority),
             playback_intent: v4.playback_intent,
             series_preference,
             manual_override: v4.manual_override,
@@ -777,7 +848,8 @@ impl CrdtState {
     /// Decode a persisted snapshot blob, migrating an older on-disk layout
     /// forward. The postcard blob carries no version tag, so try the
     /// current layout first and, on failure, fall back through the previous
-    /// layouts: [`CrdtStateV5`] (mid-Phase-19: re-keyed and with
+    /// layouts: [`CrdtStateProtocol5`] (the immediately previous protocol),
+    /// then [`CrdtStateV5`] (mid-Phase-19: re-keyed and with
     /// `local_aliases`/`manual_files`, but before `anidb_unavailable` — a
     /// dev-window build of this shape ran on the rendezvous server and
     /// wrote authoritative snapshots), then [`CrdtStateV4`] (before
@@ -812,8 +884,9 @@ impl CrdtState {
     ) -> Result<(CrdtState, bool), crate::wire::WireError> {
         match crate::wire::decode::<CrdtState>(blob) {
             Ok(state) => Ok((state, false)),
-            Err(primary) => crate::wire::decode::<CrdtStateV5>(blob)
+            Err(primary) => crate::wire::decode::<CrdtStateProtocol5>(blob)
                 .map(CrdtState::from)
+                .or_else(|_| crate::wire::decode::<CrdtStateV5>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV4>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV3>(blob).map(CrdtState::from))
                 .or_else(|_| crate::wire::decode::<CrdtStateV2>(blob).map(CrdtState::from))
@@ -1719,6 +1792,32 @@ mod tests {
                 state: SeriesWatchState::Maybe,
                 set_by: None,
             })
+        );
+    }
+
+    /// Protocol v5 stored only the authority's username. Migration preserves
+    /// durable state but resets that transient authority to Server rather than
+    /// fabricating an attributable seek occurrence.
+    #[test]
+    fn protocol_v5_seek_authority_migrates_without_inventing_a_seek() {
+        let mut legacy = CrdtStateProtocol5::default();
+        reg_put(&mut legacy.now_playing, ts(1), Some(hash(1)));
+        reg_put(
+            &mut legacy.seek_authority,
+            ts(2),
+            SeekAuthorityV1::User(UserId::new("kim")),
+        );
+        legacy._protocol_version = 5;
+        let blob = crate::wire::encode(&legacy).unwrap();
+
+        let (decoded, migrated) =
+            CrdtState::decode_snapshot_flagged(&blob).expect("protocol v5 blob must decode");
+        assert!(migrated);
+        assert_eq!(decoded.view().now_playing, Some(hash(1)));
+        assert_eq!(decoded.view().seek_authority, Some(SeekAuthority::Server));
+        assert_eq!(
+            decoded.protocol_version,
+            crate::net::message::PROTOCOL_VERSION
         );
     }
 

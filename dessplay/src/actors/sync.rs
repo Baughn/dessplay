@@ -78,6 +78,15 @@ pub enum Mutation {
         /// The new authority.
         authority: SeekAuthority,
     },
+    /// Record an explicit user seek and grant that user authority.
+    SetUserSeek {
+        /// The now-playing file on which the seek occurred.
+        file: Ed2kHash,
+        /// Position when scrubbing began.
+        from_millis: u64,
+        /// Final position after debouncing.
+        to_millis: u64,
+    },
     /// Write the play/pause latch. The player layer pairs this with a
     /// manual-override write (pause sets both; play clears the override
     /// and writes `Playing`).
@@ -197,6 +206,7 @@ impl Mutation {
             Mutation::SetWatched { .. } => "SetWatched",
             Mutation::SetNowPlaying { .. } => "SetNowPlaying",
             Mutation::SetSeekAuthority { .. } => "SetSeekAuthority",
+            Mutation::SetUserSeek { .. } => "SetUserSeek",
             Mutation::SetPlaybackIntent { .. } => "SetPlaybackIntent",
             Mutation::SetSeriesPreference { .. } => "SetSeriesPreference",
             Mutation::SetManualOverride { .. } => "SetManualOverride",
@@ -526,6 +536,21 @@ impl SyncActor {
             Mutation::SetSeekAuthority { authority } => {
                 self.state.set_seek_authority(actor, ts, authority)
             }
+            Mutation::SetUserSeek {
+                file,
+                from_millis,
+                to_millis,
+            } => self.state.set_seek_authority(
+                actor,
+                ts,
+                SeekAuthority::User(dessplay_core::types::UserSeek {
+                    user,
+                    file,
+                    event_at: ts,
+                    from_millis,
+                    to_millis,
+                }),
+            ),
             Mutation::SetPlaybackIntent { intent } => {
                 self.state.set_playback_intent(actor, ts, intent)
             }

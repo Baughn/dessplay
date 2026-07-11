@@ -718,8 +718,8 @@ in both the narrator's language and the Users pane's colors.
   internal `Presence::Departed` name stays.
 - **#27**: `/me` action lines render grey/dim in the chat log (and OSD).
 - **#2**: seek narrator lines carry from→to: "Baughn skipped 08:12 →
-  12:34" (the prior sample is already tracked for second-and-later
-  seeks; the unattributed first seek stays a documented gap).
+  12:34". Phase 21 replaces the original position-diff inference, closing
+  the first-seek attribution gap without narrating automatic seeks.
 - **#12 closure**: a property test over the gating derivation — for all
   presence × file-state combinations, an Away or NotWatching user never
   blocks playback. Believed already true; the test pins it and the
@@ -1191,7 +1191,7 @@ The request sheet's interface rows are done or consciously deferred.
 - The edit modal's Aliases / Manual files rows landed 2026-07-05
   (semicolon-separated; manual files as ed2k hex, unparsable tokens
   dropped). `watchers` editing remains deferred to import.
-- `PROTOCOL_VERSION` ended at **5**, not 4: the review's manual-mapping
+- `PROTOCOL_VERSION` ended this phase at **5**, not 4: the review's manual-mapping
   fix added `PeerMessage::CannotServe` within the same upgrade window
   (network-design.md, Peer Messages).
 
@@ -1278,6 +1278,25 @@ Tests use canned RSS/metainfo and the fake torrent engine; no automated test
 contacts Nyaa. Coverage includes category/limit/order filtering, malformed and
 multi-file metadata, unsafe names, actor completion/promotion and cancellation,
 plus the full UI key/search/progress/reopen/cancel flow.
+
+---
+
+## Phase 21: Explicit User-Seek Attribution
+
+**Status: complete (2026-07-11).**
+
+Seek narration no longer infers user actions from continuous playback-position
+samples. The debounced player output records the scrub's initial and final
+positions; user seek-authority carries that explicit `UserSeek` occurrence.
+This narrates the first genuine seek in an episode while automatic load-to-zero,
+drift-correction, and restore seeks remain silent. Protocol version 6 changes
+the seek-authority value encoding; persisted v5 snapshots migrate by preserving
+durable state and resetting the old, unattributable transient authority to
+Server.
+
+Regression coverage includes the formerly missing first seek, gradual scrub
+coalescing, wrong-file rejection, programmatic-seek echo suppression, v5
+snapshot migration, and a two-client scenario asserting identical attribution.
 
 ---
 

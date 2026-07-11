@@ -30,7 +30,7 @@ use dessplay_core::net::PeerInfo;
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
     Ed2kHash, FileAvailability, ListEntryId, ManualState, PlaybackIntent, SeekAuthority,
-    SeriesWatchState, UserId, decode_action,
+    SeriesWatchState, UserId, UserSeek, decode_action,
 };
 
 use crate::actors::file::{
@@ -345,15 +345,15 @@ const SEEK_NARRATE_MILLIS: u64 = 5_000;
 /// deliberately small — it is captured every UI tick, so cloning the
 /// whole `StateView` (chat, playlist, metadata maps) would be wasteful
 /// (see the perf notes on the ~100ms tick).
+#[derive(Clone)]
 struct NarratorState {
     now_playing: Option<Ed2kHash>,
     /// Whether `now_playing`'s watched flag was set at capture time — the
     /// EOF-advance signature (watched flips true as now-playing moves on).
     now_playing_watched: bool,
-    /// The followed (seek-authority) position sample, when a user holds
-    /// authority and a real video is playing: `(position_millis,
-    /// sample_timestamp)`. `None` under Server authority / no now-playing.
-    seek_sample: Option<(u64, u64)>,
+    /// The explicit user seek which granted the current authority. Continuous
+    /// position reports never enter the narrator's event model.
+    user_seek: Option<UserSeek>,
     /// Per-user manual override (Paused / Away).
     manual_override: BTreeMap<UserId, Option<ManualState>>,
     /// Per-(user, List entry) watch preference (small; one or two per user).
@@ -374,20 +374,16 @@ impl NarratorState {
         let now_playing_watched = view
             .now_playing
             .is_some_and(|f| view.watched.get(&f) == Some(&true));
-        // Filter the authority's sample by file tag, exactly as the
-        // "current" side does (`current_seek_sample`): a sample still tagged
-        // for a previous file is stale (the authority just changed files)
-        // and must not become a `prev` baseline the fresh sample is diffed
-        // against — that fabricated a phantom "skipped to" once the tag
-        // caught up (bc4607c guarded only the current side).
-        let seek_sample = match &view.seek_authority {
-            Some(SeekAuthority::User(user)) => current_seek_sample(view, user),
+        let user_seek = match &view.seek_authority {
+            Some(SeekAuthority::User(seek)) if Some(seek.file) == view.now_playing => {
+                Some(seek.clone())
+            }
             _ => None,
         };
         NarratorState {
             now_playing: view.now_playing,
             now_playing_watched,
-            seek_sample,
+            user_seek,
             manual_override: view.manual_override.clone(),
             series_preference: view.series_preference.clone(),
             peers: current_interactive(peers),
@@ -395,18 +391,6 @@ impl NarratorState {
             active: derive::playback_active(view, peers),
         }
     }
-}
-
-/// The followed (seek-authority) position sample for `authority`, if it
-/// has published a position **for the now-playing file**. A sample tagged
-/// for a previous file is stale (the authority just changed files) and must
-/// not be surfaced as a "skipped to" position. See [`same_file_positions`].
-fn current_seek_sample(view: &StateView, authority: &UserId) -> Option<(u64, u64)> {
-    let now_playing = view.now_playing?;
-    view.playback_position
-        .get(authority)
-        .filter(|p| p.file == now_playing)
-        .map(|p| (p.position_millis, p.timestamp.0))
 }
 
 /// Present/Lost/Departed presence of interactive peers (seeders excluded).
@@ -577,7 +561,7 @@ impl PlayerWiring {
     /// replacement (reconnect / compaction) and suppressed.
     fn narrate(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
         let current = NarratorState::capture(view, peers);
-        let Some(prev) = self.narrator.replace(current) else {
+        let Some(prev) = self.narrator.replace(current.clone()) else {
             // First snapshot: baseline only.
             return vec![];
         };
@@ -600,42 +584,20 @@ impl PlayerWiring {
             });
         }
 
-        // Seek > 5s by the authority, on the *same* file (a new file
-        // resets the position domain and is covered by the line above).
-        //
-        // Intentional: only the *second and later* seeks in an episode
-        // narrate. The block needs both a current and a `prev` seek sample,
-        // and `prev.seek_sample` is `None` while the Server holds authority
-        // (the default after every EOF-advance / manual now-playing change).
-        // The first user seek is a Server->User transition, so `prev` is
-        // `None` and no line is emitted. We deliberately do *not* fabricate a
-        // baseline for it: under Server authority the group follows the
-        // leader (the furthest-ahead peer), whose position jitters as the
-        // leader changes, so diffing the first seek against it would emit
-        // *false* "skipped to" lines — a worse break of the same-lines
-        // invariant than a silently-missed first seek. (Audit 2026-07-01 #11.)
+        // An explicit user seek on the unchanged file. `event_at` makes
+        // repeated identical seeks distinct; ordinary position reports and
+        // automatic load/drift seeks cannot enter this branch.
         if prev.now_playing == view.now_playing
-            && let Some(SeekAuthority::User(authority)) = &view.seek_authority
-            && let (Some((pos, ts)), Some((prev_pos, prev_ts))) =
-                (current_seek_sample(view, authority), prev.seek_sample)
+            && let Some(seek) = &current.user_seek
+            && prev.user_seek.as_ref().map(|old| old.event_at) != Some(seek.event_at)
+            && seek.from_millis.abs_diff(seek.to_millis) > SEEK_NARRATE_MILLIS
         {
-            let active = derive::playback_active(view, peers);
-            let expected = prev_pos
-                + if active {
-                    ts.saturating_sub(prev_ts)
-                } else {
-                    0
-                };
-            if pos.abs_diff(expected) > SEEK_NARRATE_MILLIS {
-                // From -> to (#2): "from" is where playback would have
-                // been (the previous sample extrapolated), not the raw
-                // previous sample — under paused playback they coincide.
-                lines.push(format!(
-                    "{authority} skipped {} → {}",
-                    fmt_mmss(expected),
-                    fmt_mmss(pos)
-                ));
-            }
+            lines.push(format!(
+                "{} skipped {} → {}",
+                seek.user,
+                fmt_mmss(seek.from_millis),
+                fmt_mmss(seek.to_millis)
+            ));
         }
 
         // Manual override changes (pause / resume / away / back), keyed by
@@ -1194,7 +1156,8 @@ impl PlayerWiring {
         view: &StateView,
         peers: &[PeerInfo],
     ) -> Option<(UserId, dessplay_core::types::PlaybackPosition)> {
-        if let Some(SeekAuthority::User(authority)) = &view.seek_authority {
+        if let Some(SeekAuthority::User(seek)) = &view.seek_authority {
+            let authority = &seek.user;
             if *authority == self.me {
                 return None;
             }
@@ -1621,7 +1584,10 @@ impl PlayerWiring {
                     intent: PlaybackIntent::Playing,
                 }),
             ],
-            PlayerOutput::UserSeeked { position_millis } => {
+            PlayerOutput::UserSeeked {
+                from_millis,
+                to_millis,
+            } => {
                 match view.now_playing.filter(|_| self.holds_now_playing(view)) {
                     // A seek while a placeholder / stale frame is loaded (a
                     // file dragged into mpv, or a scrubbed placeholder) must
@@ -1632,11 +1598,13 @@ impl PlayerWiring {
                     // `holds_now_playing` guarantees `now_playing` is the file
                     // we hold, so it tags the published position.
                     Some(file) => vec![
-                        Directive::Mutate(Mutation::SetSeekAuthority {
-                            authority: SeekAuthority::User(self.me.clone()),
+                        Directive::Mutate(Mutation::SetUserSeek {
+                            file,
+                            from_millis,
+                            to_millis,
                         }),
                         Directive::Mutate(Mutation::SetPlaybackPosition {
-                            position_millis,
+                            position_millis: to_millis,
                             file,
                         }),
                     ],
@@ -2542,6 +2510,16 @@ mod tests {
         UserId::new("kim")
     }
 
+    fn user_seek(user: UserId, event_at: u64, from_millis: u64, to_millis: u64) -> UserSeek {
+        UserSeek {
+            user,
+            file: hash(1),
+            event_at: ts(event_at),
+            from_millis,
+            to_millis,
+        }
+    }
+
     fn peer(name: &str) -> PeerInfo {
         PeerInfo {
             username: UserId::new(name),
@@ -3066,20 +3044,16 @@ mod tests {
     fn narrator_seek_over_threshold_only() {
         let baughn = UserId::new("baughn");
         let peers = [peer("kim"), peer("baughn")];
-        let pos = |p: u64, t: u64| PlaybackPosition {
-            position_millis: p,
-            timestamp: ts(t),
-            file: hash(1),
-        };
 
         let mut state = playing_state();
-        state.set_seek_authority(A, ts(5), SeekAuthority::User(baughn.clone()));
-        state.set_playback_position(A, ts(6), baughn.clone(), pos(1_000, 10_000));
+        state.set_seek_authority(A, ts(5), SeekAuthority::Server);
         let v0 = state.view();
 
-        // A 59s jump well past 100ms of elapsed time -> narrated, with
-        // the from-position extrapolated to the moment of the seek (#2).
-        state.set_playback_position(A, ts(7), baughn.clone(), pos(60_000, 10_100));
+        state.set_seek_authority(
+            A,
+            ts(7),
+            SeekAuthority::User(user_seek(baughn.clone(), 7, 1_000, 60_000)),
+        );
         let v_jump = state.view();
         assert_eq!(
             narrate_diff(&v0, &peers, &v_jump, &peers),
@@ -3088,44 +3062,54 @@ mod tests {
 
         // A sub-5s move -> not narrated.
         let mut state = playing_state();
-        state.set_seek_authority(A, ts(5), SeekAuthority::User(baughn.clone()));
-        state.set_playback_position(A, ts(6), baughn.clone(), pos(1_000, 10_000));
+        state.set_seek_authority(A, ts(5), SeekAuthority::Server);
         let v0 = state.view();
-        state.set_playback_position(A, ts(7), baughn.clone(), pos(3_000, 10_100));
+        state.set_seek_authority(
+            A,
+            ts(7),
+            SeekAuthority::User(user_seek(baughn, 7, 1_000, 3_000)),
+        );
         let v_small = state.view();
         assert!(narrate_diff(&v0, &peers, &v_small, &peers).is_empty());
     }
 
-    /// Regression: a `prev` seek sample still tagged for a *previous* file
-    /// (the authority's position register lagging a now-playing transition)
-    /// must be filtered out at capture, exactly as the current side is —
-    /// otherwise, once the tag catches up, `expected = stale_prev + elapsed`
-    /// fabricates a phantom "skipped to" line, and the timing-dependent lag
-    /// makes one client narrate it while another does not.
+    #[test]
+    fn narrator_reports_the_first_user_seek_after_server_authority() {
+        let baughn = UserId::new("baughn");
+        let peers = [peer("kim"), peer("baughn")];
+        let mut state = playing_state();
+        state.set_seek_authority(A, ts(5), SeekAuthority::Server);
+        let before = state.view();
+
+        state.set_seek_authority(
+            A,
+            ts(7),
+            SeekAuthority::User(user_seek(baughn, 7, 1_000, 60_000)),
+        );
+
+        assert_eq!(
+            narrate_diff(&before, &peers, &state.view(), &peers),
+            ["baughn skipped 0:01 → 1:00"]
+        );
+    }
+
+    /// A delayed explicit seek for another file must not be narrated after a
+    /// now-playing transition.
     #[test]
     fn narrator_ignores_a_stale_wrong_file_prev_seek_sample() {
         let baughn = UserId::new("baughn");
         let peers = [peer("kim"), peer("baughn")];
-        let posf = |p: u64, t: u64, f: u8| PlaybackPosition {
-            position_millis: p,
-            timestamp: ts(t),
-            file: hash(f),
-        };
-
-        // now-playing is hash(1) throughout; baughn holds seek authority.
         let mut state = playing_state();
-        state.set_seek_authority(A, ts(5), SeekAuthority::User(baughn.clone()));
-        // prev: baughn's position register still holds the *previous* file's
-        // sample (hash(2)), lagging the transition to now-playing hash(1).
-        state.set_playback_position(A, ts(6), baughn.clone(), posf(60_000, 10_000, 2));
+        state.set_seek_authority(A, ts(5), SeekAuthority::Server);
         let v0 = state.view();
-        // current: the register catches up to now-playing (hash(1)) at 0:01.
-        state.set_playback_position(A, ts(7), baughn.clone(), posf(1_000, 10_100, 1));
+        let mut seek = user_seek(baughn, 7, 1_000, 60_000);
+        seek.file = hash(2);
+        state.set_seek_authority(A, ts(7), SeekAuthority::User(seek));
         let v1 = state.view();
 
         assert!(
             narrate_diff(&v0, &peers, &v1, &peers).is_empty(),
-            "a wrong-file prev seek sample must be filtered, not diffed into a phantom skip"
+            "a wrong-file seek occurrence must not be narrated"
         );
     }
 
@@ -3540,7 +3524,12 @@ mod tests {
         state.set_seek_authority(
             A,
             ts(10),
-            dessplay_core::types::SeekAuthority::User(UserId::new("baughn")),
+            dessplay_core::types::SeekAuthority::User(user_seek(
+                UserId::new("baughn"),
+                4,
+                0,
+                10_000,
+            )),
         );
         state.set_playback_position(
             A,
@@ -3590,7 +3579,11 @@ mod tests {
         );
 
         // Authority moves to us: our own samples must not echo back.
-        state.set_seek_authority(A, ts(20), dessplay_core::types::SeekAuthority::User(me()));
+        state.set_seek_authority(
+            A,
+            ts(20),
+            dessplay_core::types::SeekAuthority::User(user_seek(me(), 20, 0, 10_000)),
+        );
         state.set_playback_position(
             A,
             ts(21),
@@ -3770,7 +3763,12 @@ mod tests {
         state.set_seek_authority(
             A,
             ts(4),
-            dessplay_core::types::SeekAuthority::User(UserId::new("dagger")),
+            dessplay_core::types::SeekAuthority::User(user_seek(
+                UserId::new("dagger"),
+                4,
+                0,
+                10_000,
+            )),
         );
         // dagger: the (bogus) authority — a frozen position but NOT Ready for
         // the now-playing file (he is watching a placeholder).
@@ -3974,14 +3972,15 @@ mod tests {
         let view = playing_state().view(); // now_playing hash(1), not loaded
         let directives = wiring.on_player(
             PlayerOutput::UserSeeked {
-                position_millis: 5_000,
+                from_millis: 0,
+                to_millis: 5_000,
             },
             &view,
         );
         assert!(
             !directives
                 .iter()
-                .any(|d| matches!(d, Directive::Mutate(Mutation::SetSeekAuthority { .. }))),
+                .any(|d| matches!(d, Directive::Mutate(Mutation::SetUserSeek { .. }))),
             "a placeholder seek must not take authority"
         );
         assert!(
@@ -3995,17 +3994,14 @@ mod tests {
         wiring.loaded = Some(hash(1));
         let real = wiring.on_player(
             PlayerOutput::UserSeeked {
-                position_millis: 5_000,
+                from_millis: 0,
+                to_millis: 5_000,
             },
             &view,
         );
         assert!(
-            real.iter().any(|d| matches!(
-                d,
-                Directive::Mutate(Mutation::SetSeekAuthority {
-                    authority: SeekAuthority::User(_)
-                })
-            )),
+            real.iter()
+                .any(|d| matches!(d, Directive::Mutate(Mutation::SetUserSeek { .. }))),
             "a seek on the real now-playing video must take authority"
         );
     }
@@ -4123,8 +4119,13 @@ mod tests {
             }
             let authority = match authority_sel {
                 0 => SeekAuthority::Server,
-                1 => SeekAuthority::User(me()),
-                k => SeekAuthority::User(UserId::new(names[(k - 2) % names.len()])),
+                1 => SeekAuthority::User(user_seek(me(), t, 0, 10_000)),
+                k => SeekAuthority::User(user_seek(
+                    UserId::new(names[(k - 2) % names.len()]),
+                    t,
+                    0,
+                    10_000,
+                )),
             };
             state.set_seek_authority(A, ts(t), authority);
             let view = state.view();
@@ -4345,16 +4346,16 @@ mod tests {
         let view = playing_state().view();
         let directives = wiring.on_player(
             PlayerOutput::UserSeeked {
-                position_millis: 90_000,
+                from_millis: 10_000,
+                to_millis: 90_000,
             },
             &view,
         );
-        assert!(directives.iter().any(|d| matches!(
-            d,
-            Directive::Mutate(Mutation::SetSeekAuthority {
-                authority: SeekAuthority::User(_)
-            })
-        )));
+        assert!(
+            directives
+                .iter()
+                .any(|d| matches!(d, Directive::Mutate(Mutation::SetUserSeek { .. })))
+        );
         assert!(directives.iter().any(|d| matches!(
             d,
             Directive::Mutate(Mutation::SetPlaybackPosition {

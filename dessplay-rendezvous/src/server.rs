@@ -363,8 +363,10 @@ impl<T: Transport> Shared<T> {
     async fn take_authority_from(&self, user: &UserId) {
         let holds = {
             let state = lock(&self.state);
-            dessplay_core::resolve_value(&state.seek_authority)
-                == Some(SeekAuthority::User(user.clone()))
+            matches!(
+                dessplay_core::resolve_value(&state.seek_authority),
+                Some(SeekAuthority::User(seek)) if seek.user == *user
+            )
         };
         if holds {
             tracing::debug!(user = %user.0, "rescuing seek authority from a gone user");
