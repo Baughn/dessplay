@@ -219,6 +219,18 @@ const MIGRATIONS: &[&str] = &[
         added_at  INTEGER NOT NULL
     ) STRICT;
     ",
+    // v5: media-root lifecycle.  Hash rows owned by a library root survive
+    // wholesale root disappearance (removable/ZFS storage) while the root
+    // record carries whether it is temporarily vanished or was removed from
+    // the effective configuration.  Rows outside media roots keep NULL.
+    "
+    ALTER TABLE hash_cache ADD COLUMN media_root BLOB;
+    CREATE TABLE library_roots (
+        path        BLOB PRIMARY KEY,
+        vanished_at INTEGER,
+        removed_at  INTEGER
+    ) STRICT;
+    ",
 ];
 
 /// Apply any unapplied migrations. Exposed shape (a slice parameter) so
@@ -319,6 +331,19 @@ pub struct CachedHash {
     pub mtime: i64,
     /// Root + per-block hashes + size.
     pub hash: dessplay_core::hash::Ed2kFileHash,
+    /// Media root that owns this library row; `None` for cache/manual rows.
+    pub media_root: Option<PathBuf>,
+}
+
+/// Durable state for one media root previously seen by the file actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryRoot {
+    /// Root path.
+    pub path: PathBuf,
+    /// When every recorded file first appeared absent.
+    pub vanished_at: Option<i64>,
+    /// When the root left the effective runtime configuration.
+    pub removed_at: Option<i64>,
 }
 
 fn hash_from_blob(blob: Vec<u8>) -> Result<Ed2kHash> {
@@ -768,12 +793,21 @@ impl Storage {
         Ok(())
     }
 
+    /// Associate an existing hash row with the media root that owns it.
+    pub fn set_hash_cache_root(&self, path: &Path, root: &Path) -> Result<()> {
+        self.conn.execute(
+            "UPDATE hash_cache SET media_root = ?2 WHERE path = ?1",
+            params![path_to_bytes(path), path_to_bytes(root)],
+        )?;
+        Ok(())
+    }
+
     /// Every hash-cache row (loaded into memory at session start; the
     /// table is one row per known media file).
     pub fn hash_cache(&self) -> Result<Vec<CachedHash>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT path, mtime, size_bytes, root, blocks FROM hash_cache")?;
+            .prepare("SELECT path, mtime, size_bytes, root, blocks, media_root FROM hash_cache")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
@@ -781,11 +815,12 @@ impl Storage {
                 row.get::<_, i64>(2)?,
                 row.get::<_, Vec<u8>>(3)?,
                 row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Option<Vec<u8>>>(5)?,
             ))
         })?;
         let mut entries = Vec::new();
         for row in rows {
-            let (path_bytes, mtime, size_bytes, root, blocks) = row?;
+            let (path_bytes, mtime, size_bytes, root, blocks, media_root) = row?;
             let path = path_from_bytes(&path_bytes);
             if !blocks.len().is_multiple_of(16) {
                 return Err(StorageError::Corrupt(format!(
@@ -809,6 +844,7 @@ impl Storage {
                         .collect(),
                     size_bytes: size_bytes as u64,
                 },
+                media_root: media_root.as_deref().map(path_from_bytes),
             });
         }
         Ok(entries)
@@ -819,9 +855,13 @@ impl Storage {
     /// the file browser's recursive search on every browser open. mtime
     /// backs the browser's newest-first sort (design.md #8).
     pub fn library_paths(&self) -> Result<Vec<(PathBuf, Ed2kHash, i64)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path, root, mtime FROM hash_cache")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT h.path, h.root, h.mtime
+                 FROM hash_cache h
+                 LEFT JOIN library_roots r ON r.path = h.media_root
+                 WHERE h.media_root IS NULL
+                    OR (r.removed_at IS NULL AND r.vanished_at IS NULL)",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
@@ -842,6 +882,93 @@ impl Storage {
         self.conn.execute(
             "DELETE FROM hash_cache WHERE path = ?1",
             params![path_to_bytes(path)],
+        )?;
+        Ok(())
+    }
+
+    /// Load every durable media-root lifecycle row.
+    pub fn library_roots(&self) -> Result<Vec<LibraryRoot>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, vanished_at, removed_at FROM library_roots")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        let mut roots = Vec::new();
+        for row in rows {
+            let (path, vanished_at, removed_at) = row?;
+            roots.push(LibraryRoot {
+                path: path_from_bytes(&path),
+                vanished_at,
+                removed_at,
+            });
+        }
+        Ok(roots)
+    }
+
+    /// Reconcile the effective runtime root list and purge roots whose
+    /// removal grace has elapsed. Returns purged root paths.
+    pub fn reconcile_library_roots(
+        &mut self,
+        active: &[PathBuf],
+        now: i64,
+        grace_millis: i64,
+    ) -> Result<Vec<PathBuf>> {
+        let tx = self.conn.transaction()?;
+        for root in active {
+            tx.execute(
+                "INSERT INTO library_roots (path, vanished_at, removed_at)
+                 VALUES (?1, NULL, NULL)
+                 ON CONFLICT(path) DO UPDATE SET removed_at = NULL",
+                params![path_to_bytes(root)],
+            )?;
+        }
+        let active_bytes: Vec<Vec<u8>> = active.iter().map(|p| path_to_bytes(p)).collect();
+        {
+            let mut stmt = tx.prepare("SELECT path FROM library_roots WHERE removed_at IS NULL")?;
+            let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+            for row in rows {
+                let path = row?;
+                if !active_bytes.contains(&path) {
+                    tx.execute(
+                        "UPDATE library_roots SET removed_at = ?2 WHERE path = ?1",
+                        params![path, now],
+                    )?;
+                }
+            }
+        }
+        let cutoff = now.saturating_sub(grace_millis);
+        let mut purged = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT path FROM library_roots
+                 WHERE removed_at IS NOT NULL AND removed_at <= ?1",
+            )?;
+            let rows = stmt.query_map(params![cutoff], |row| row.get::<_, Vec<u8>>(0))?;
+            for row in rows {
+                purged.push(row?);
+            }
+        }
+        for root in &purged {
+            tx.execute(
+                "DELETE FROM hash_cache WHERE media_root = ?1",
+                params![root],
+            )?;
+            tx.execute("DELETE FROM library_roots WHERE path = ?1", params![root])?;
+        }
+        tx.commit()?;
+        Ok(purged.iter().map(|p| path_from_bytes(p)).collect())
+    }
+
+    /// Mark or clear wholesale disappearance for an active media root.
+    pub fn set_library_root_vanished(&self, root: &Path, vanished_at: Option<i64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE library_roots SET vanished_at = ?2 WHERE path = ?1",
+            params![path_to_bytes(root), vanished_at],
         )?;
         Ok(())
     }
@@ -1210,6 +1337,7 @@ mod tests {
                 path: PathBuf::from("/anime/ep1.mkv"),
                 mtime: 1_000,
                 hash: hashed.clone(),
+                media_root: None,
             }]
         );
 
@@ -1227,6 +1355,46 @@ mod tests {
             .remove_hash_cache(Path::new("/anime/ep1.mkv"))
             .unwrap();
         assert!(storage.hash_cache().unwrap().is_empty());
+    }
+
+    #[test]
+    fn media_root_vanish_and_removed_grace_lifecycle() {
+        const DAY: i64 = 24 * 60 * 60 * 1_000;
+        let mut storage = Storage::open_in_memory().unwrap();
+        let root = PathBuf::from("/media/removable");
+        let path = root.join("show/ep1.mkv");
+        let hashed = dessplay_core::hash::ed2k_hash_bytes(b"episode contents");
+        storage
+            .upsert_hash_cache(&path, 1_000, &hashed, 50)
+            .unwrap();
+        storage
+            .reconcile_library_roots(std::slice::from_ref(&root), 100, 7 * DAY)
+            .unwrap();
+        storage.set_hash_cache_root(&path, &root).unwrap();
+
+        storage.set_library_root_vanished(&root, Some(200)).unwrap();
+        assert_eq!(storage.hash_cache().unwrap().len(), 1);
+        assert!(storage.library_paths().unwrap().is_empty());
+
+        // Removal hides immediately, but re-adding inside the grace period
+        // clears the clock and keeps the cached hash.
+        storage.reconcile_library_roots(&[], 300, 7 * DAY).unwrap();
+        storage
+            .reconcile_library_roots(std::slice::from_ref(&root), 6 * DAY, 7 * DAY)
+            .unwrap();
+        assert_eq!(storage.hash_cache().unwrap().len(), 1);
+        assert_eq!(storage.library_roots().unwrap()[0].removed_at, None);
+
+        // A new removal clock expires inclusively at seven days.
+        storage
+            .reconcile_library_roots(&[], 7 * DAY, 7 * DAY)
+            .unwrap();
+        let purged = storage
+            .reconcile_library_roots(&[], 14 * DAY, 7 * DAY)
+            .unwrap();
+        assert_eq!(purged, vec![root]);
+        assert!(storage.hash_cache().unwrap().is_empty());
+        assert!(storage.library_roots().unwrap().is_empty());
     }
 
     #[test]

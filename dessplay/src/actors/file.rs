@@ -430,6 +430,11 @@ enum Done {
         /// Index rows whose files vanished from under the roots (moved
         /// or deleted behind the app's back) — to be pruned.
         stale: Vec<PathBuf>,
+        /// Active roots for which none of the previously recorded files
+        /// remains reachable.
+        vanished_roots: Vec<PathBuf>,
+        /// Active roots proven online by at least one recorded file.
+        online_roots: Vec<PathBuf>,
     },
     /// One library-scan file finished hashing.
     LibraryHashed {
@@ -489,6 +494,8 @@ pub struct ScanItem {
     filename: String,
     /// A title-like containing-directory name (see [`dir_series_hint`]).
     series_hint: Option<String>,
+    /// Media root that owns this indexed path.
+    media_root: PathBuf,
 }
 
 /// Run the actor until the command channel closes.
@@ -668,6 +675,8 @@ const RECHECK_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 
 /// is the final cache path, so an interrupted download leaves one — and
 /// is left alone; the age cutoff keeps the sweep off anything recent.
 const ORPHAN_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+/// Removed roots keep their index long enough for a quick remove/re-add.
+const REMOVED_ROOT_GRACE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Put a verified torrent payload at the hash-addressed cache path:
 /// hardlink (same filesystem by construction — both under the cache
@@ -701,7 +710,25 @@ impl Actor {
         out: mpsc::Sender<FileOutput>,
         done_tx: mpsc::Sender<Done>,
     ) -> Result<Self, crate::storage::StorageError> {
+        let mut config = config;
         let started = std::time::Instant::now();
+        let now = (config.clock)() as i64;
+        let _ = config.storage.reconcile_library_roots(
+            &config.media_roots,
+            now,
+            REMOVED_ROOT_GRACE.as_millis() as i64,
+        )?;
+        // v5 backfill and deterministic overlap ownership: the first
+        // effective root containing a path owns it, matching walk order.
+        for row in config.storage.hash_cache()? {
+            if let Some(root) = config
+                .media_roots
+                .iter()
+                .find(|root| row.path.starts_with(root))
+            {
+                config.storage.set_hash_cache_root(&row.path, root)?;
+            }
+        }
         let mut hash_cache: HashMap<PathBuf, (i64, Ed2kFileHash)> = config
             .storage
             .hash_cache()?
@@ -751,7 +778,6 @@ impl Actor {
         // or an abandoned peer-download partial produces. Delete only
         // those older than a week by mtime (see ORPHAN_MAX_AGE), leaving
         // anything recent that might still be wanted.
-        let now = (config.clock)() as i64;
         let mut orphans_swept = 0usize;
         if let Ok(dir) = std::fs::read_dir(&config.cache_dir) {
             for dirent in dir.flatten() {
@@ -895,7 +921,7 @@ impl Actor {
                     .await
             }
             FileCommand::SetMediaRoots(roots) => {
-                self.media_roots = roots;
+                self.reconcile_media_roots(roots).await;
                 // New roots may hold files we've never indexed.
                 self.start_library_scan();
             }
@@ -1283,17 +1309,20 @@ impl Actor {
         if self.scan_walking {
             return;
         }
+        self.expire_removed_roots();
         self.scan_walking = true;
         let roots = self.media_roots.clone();
         let cache = Arc::clone(&self.hash_cache);
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            let (hits, worklist, stale) = scan_library(&roots, &cache);
+            let (hits, worklist, stale, vanished_roots, online_roots) =
+                scan_library(&roots, &cache);
             tracing::debug!(
                 hits = hits.len(),
                 to_hash = worklist.len(),
                 stale = stale.len(),
+                vanished = vanished_roots.len(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "library walk finished"
             );
@@ -1301,6 +1330,8 @@ impl Actor {
                 hits,
                 worklist,
                 stale,
+                vanished_roots,
+                online_roots,
             });
         });
     }
@@ -2107,9 +2138,12 @@ impl Actor {
                 hits,
                 worklist,
                 stale,
+                vanished_roots,
+                online_roots,
             } => {
                 self.scan_walking = false;
-                self.prune_stale_index(stale);
+                self.reconcile_scan_roots(vanished_roots, online_roots, stale)
+                    .await;
                 // Cache hits are known immediately.
                 if !hits.is_empty() {
                     let _ = self
@@ -2172,7 +2206,12 @@ impl Actor {
                     Ok(hashed) => {
                         let root = hashed.root;
                         let size = hashed.size_bytes;
-                        self.queue_scan_hash_commit(item.path.clone(), item.mtime, hashed);
+                        self.queue_scan_hash_commit(
+                            item.path.clone(),
+                            item.mtime,
+                            hashed,
+                            &item.media_root,
+                        );
                         // The scan hashed a file whose *contents* match an
                         // unmet resolve or an active download: adopt it.
                         // By-hash, so it works even under a different
@@ -2266,11 +2305,12 @@ impl Actor {
     /// a file moved between directories kept its old row forever,
     /// polluting everything built on the index (browser search ghosts,
     /// add-browser anchoring in the wrong directory — 2026-07-02).
-    fn prune_stale_index(&mut self, stale: Vec<PathBuf>) {
+    fn prune_stale_index(&mut self, stale: Vec<PathBuf>) -> Vec<Ed2kHash> {
         if stale.is_empty() {
-            return;
+            return Vec::new();
         }
         let mut cache = (*self.hash_cache).clone();
+        let mut lost = Vec::new();
         for path in stale {
             tracing::info!(path = %path.display(), "index row for a vanished file; pruning");
             if let Err(e) = self.storage.remove_hash_cache(&path) {
@@ -2281,10 +2321,119 @@ impl Actor {
                 // (never at a re-resolved live copy — the == guards that).
                 if self.local_files.get(&hashed.root) == Some(&path) {
                     self.local_files.remove(&hashed.root);
+                    lost.push(hashed.root);
                 }
             }
         }
         self.hash_cache = Arc::new(cache);
+        lost
+    }
+
+    /// Apply the root-level disappearance heuristic after a walk.
+    async fn reconcile_scan_roots(
+        &mut self,
+        vanished: Vec<PathBuf>,
+        online: Vec<PathBuf>,
+        stale: Vec<PathBuf>,
+    ) {
+        let now = (self.clock)() as i64;
+        for root in &online {
+            if let Err(e) = self.storage.set_library_root_vanished(root, None) {
+                tracing::error!(root = %root.display(), "clearing vanished root: {e}");
+            }
+        }
+        let mut lost = self.prune_stale_index(stale);
+        for root in &vanished {
+            if let Err(e) = self.storage.set_library_root_vanished(root, Some(now)) {
+                tracing::error!(root = %root.display(), "marking vanished root: {e}");
+            }
+            tracing::warn!(root = %root.display(), "all indexed files vanished; retaining index");
+            let held: Vec<Ed2kHash> = self
+                .local_files
+                .iter()
+                .filter(|(_, path)| path.starts_with(root))
+                .map(|(hash, _)| *hash)
+                .collect();
+            for hash in held {
+                self.local_files.remove(&hash);
+                lost.push(hash);
+            }
+        }
+        lost.sort_unstable();
+        lost.dedup();
+        for file in lost {
+            let _ = self
+                .out
+                .send(FileOutput::Availability {
+                    file,
+                    availability: FileAvailability::Missing,
+                })
+                .await;
+        }
+    }
+
+    async fn reconcile_media_roots(&mut self, roots: Vec<PathBuf>) {
+        let removed: Vec<PathBuf> = self
+            .media_roots
+            .iter()
+            .filter(|old| !roots.contains(old))
+            .cloned()
+            .collect();
+        let now = (self.clock)() as i64;
+        if let Err(e) =
+            self.storage
+                .reconcile_library_roots(&roots, now, REMOVED_ROOT_GRACE.as_millis() as i64)
+        {
+            tracing::error!("reconciling media roots: {e}");
+        }
+        for row in self.storage.hash_cache().unwrap_or_default() {
+            if let Some(root) = roots.iter().find(|root| row.path.starts_with(root))
+                && let Err(e) = self.storage.set_hash_cache_root(&row.path, root)
+            {
+                tracing::error!(path = %row.path.display(), "associating media root: {e}");
+            }
+        }
+        self.media_roots = roots;
+        let lost: Vec<Ed2kHash> = self
+            .local_files
+            .iter()
+            .filter(|(_, path)| removed.iter().any(|root| path.starts_with(root)))
+            .map(|(hash, _)| *hash)
+            .collect();
+        for file in lost {
+            self.local_files.remove(&file);
+            let _ = self
+                .out
+                .send(FileOutput::Availability {
+                    file,
+                    availability: FileAvailability::Missing,
+                })
+                .await;
+        }
+    }
+
+    fn expire_removed_roots(&mut self) {
+        let now = (self.clock)() as i64;
+        let purged = match self.storage.reconcile_library_roots(
+            &self.media_roots,
+            now,
+            REMOVED_ROOT_GRACE.as_millis() as i64,
+        ) {
+            Ok(roots) => roots,
+            Err(e) => {
+                tracing::error!("expiring removed media roots: {e}");
+                return;
+            }
+        };
+        if purged.is_empty() {
+            return;
+        }
+        let mut cache = (*self.hash_cache).clone();
+        cache.retain(|path, _| !purged.iter().any(|root| path.starts_with(root)));
+        self.hash_cache = Arc::new(cache);
+        for root in purged {
+            tracing::info!(root = %root.display(), "purged removed media-root index after grace period");
+        }
     }
 
     /// Persist one library-scan hash result to SQLite immediately, but
@@ -2292,10 +2441,22 @@ impl Actor {
     /// [`SCAN_COMMIT_BATCH`] results have piled up (or
     /// [`Self::flush_scan_hash_commits`] is called explicitly, at scan
     /// completion) -- see [`SCAN_COMMIT_BATCH`] for why.
-    fn queue_scan_hash_commit(&mut self, path: PathBuf, mtime: i64, hash: Ed2kFileHash) {
+    fn queue_scan_hash_commit(
+        &mut self,
+        path: PathBuf,
+        mtime: i64,
+        hash: Ed2kFileHash,
+        media_root: &Path,
+    ) {
         let now = (self.clock)() as i64;
         if let Err(e) = self.storage.upsert_hash_cache(&path, mtime, &hash, now) {
             tracing::error!("persisting hash cache: {e}");
+        }
+        if let Err(e) = self.storage.set_hash_cache_root(&path, media_root) {
+            tracing::error!("associating hash cache with media root: {e}");
+        }
+        if let Err(e) = self.storage.set_library_root_vanished(media_root, None) {
+            tracing::error!("reactivating media root after hash: {e}");
         }
         self.scan_pending_commits.push((path, mtime, hash));
         if self.scan_pending_commits.len() >= SCAN_COMMIT_BATCH {
@@ -2325,6 +2486,11 @@ impl Actor {
         for (path, mtime, hash) in fresh {
             if let Err(e) = self.storage.upsert_hash_cache(&path, mtime, &hash, now) {
                 tracing::error!("persisting hash cache: {e}");
+            }
+            if let Some(root) = self.media_roots.iter().find(|root| path.starts_with(root))
+                && let Err(e) = self.storage.set_hash_cache_root(&path, root)
+            {
+                tracing::error!("associating hash cache with media root: {e}");
             }
             cache.insert(path, (mtime, hash));
         }
@@ -2997,14 +3163,15 @@ fn walk_files(roots: &[PathBuf], mut on_file: impl FnMut(PathBuf, &Path)) {
 /// (a known root, returned immediately) or a worklist item (new or
 /// changed since the last scan, needing a hash). Uses the shared
 /// symlink-following [`walk_files`] traversal, visiting every video file.
-fn scan_library(
-    roots: &[PathBuf],
-    cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>,
-) -> (
+type LibraryScan = (
     Vec<IndexedFile>,
     std::collections::VecDeque<ScanItem>,
     Vec<PathBuf>,
-) {
+    Vec<PathBuf>,
+    Vec<PathBuf>,
+);
+
+fn scan_library(roots: &[PathBuf], cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>) -> LibraryScan {
     let mut hits = Vec::new();
     let mut worklist = std::collections::VecDeque::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
@@ -3046,23 +3213,57 @@ fn scan_library(
                 mtime,
                 filename,
                 series_hint,
+                media_root: root.to_path_buf(),
             }),
         }
     });
-    // Index rows for files that vanished from under the roots (moved or
-    // deleted behind the app's back) — the disk is the truth, the index
-    // follows it. The `seen` check spares a stat per live row; the
-    // `exists` double-check protects rows the walk deliberately skips
-    // (e.g. a non-video file hashed via playlist-add) and files created
-    // mid-walk. Rows outside the roots (the download cache, removed
-    // roots) are none of the scan's business.
-    let stale: Vec<PathBuf> = cache
-        .keys()
-        .filter(|path| roots.iter().any(|root| path.starts_with(root)))
-        .filter(|path| !seen.contains(*path) && !path.exists())
-        .cloned()
-        .collect();
-    (hits, worklist, stale)
+    // Classify disappearance per root. If even one previously recorded
+    // file is still a regular file, the root is online and independently
+    // missing rows are genuine deletions. If none survive, retain the whole
+    // cohort: removable storage commonly leaves an empty mountpoint behind.
+    let mut stale = Vec::new();
+    let mut vanished_roots = Vec::new();
+    let mut online_roots = Vec::new();
+    for root in roots {
+        let recorded: Vec<&PathBuf> = cache
+            .keys()
+            .filter(|path| roots.iter().find(|candidate| path.starts_with(candidate)) == Some(root))
+            .collect();
+        let live: Vec<bool> = recorded.iter().map(|path| path.is_file()).collect();
+        if root_disposition(&live) != RootDisposition::Vanished {
+            online_roots.push(root.clone());
+            stale.extend(
+                recorded
+                    .into_iter()
+                    .zip(live)
+                    .filter(|(path, is_live)| !seen.contains(*path) && !is_live)
+                    .map(|(path, _)| path.clone()),
+            );
+        } else {
+            vanished_roots.push(root.clone());
+        }
+    }
+    (hits, worklist, stale, vanished_roots, online_roots)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootDisposition {
+    Empty,
+    Online,
+    Vanished,
+}
+
+/// Pure policy seam for root-wide disappearance. An empty, never-indexed
+/// root is online; any surviving recorded file proves individual absences
+/// are deletions; only a non-empty cohort with zero survivors vanishes.
+fn root_disposition(recorded_file_exists: &[bool]) -> RootDisposition {
+    if recorded_file_exists.is_empty() {
+        RootDisposition::Empty
+    } else if recorded_file_exists.iter().any(|exists| *exists) {
+        RootDisposition::Online
+    } else {
+        RootDisposition::Vanished
+    }
 }
 
 /// Every file named exactly `filename` under the roots, in breadth-first
@@ -3147,6 +3348,7 @@ mod tests {
     use std::time::Duration;
 
     use dessplay_core::hash::ed2k_hash_bytes;
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -3520,7 +3722,7 @@ mod tests {
         for i in 0..n {
             let path = PathBuf::from(format!("/media/ep{i}.mkv"));
             let hash = ed2k_hash_bytes(format!("episode {i}").as_bytes());
-            actor.queue_scan_hash_commit(path, 1, hash);
+            actor.queue_scan_hash_commit(path, 1, hash, Path::new("/media"));
             let ptr = Arc::as_ptr(&actor.hash_cache);
             if ptr != last_ptr {
                 rebuilds += 1;
@@ -3716,6 +3918,180 @@ mod tests {
         assert!(!paths.contains(&stale), "stale row must be pruned");
         assert!(paths.contains(&moved));
         assert!(paths.contains(&outside));
+    }
+
+    /// Regression: a removable filesystem may leave its mountpoint present
+    /// while every file below it disappears.  Treating each missing path as
+    /// an independent deletion throws away the complete hash index and makes
+    /// reconnecting the filesystem re-hash the whole library.
+    #[tokio::test]
+    async fn rescan_retains_index_when_the_whole_root_disappears() {
+        let root = tempfile::tempdir().unwrap();
+        let first = write(root.path(), "Series/ep1.mkv", b"episode one");
+        let second = write(root.path(), "Series/ep2.mkv", b"episode two");
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        for (path, contents) in [
+            (&first, b"episode one".as_slice()),
+            (&second, b"episode two".as_slice()),
+        ] {
+            let metadata = std::fs::metadata(path).unwrap();
+            storage
+                .upsert_hash_cache(
+                    path,
+                    mtime_millis(&metadata).unwrap(),
+                    &ed2k_hash_bytes(contents),
+                    1,
+                )
+                .unwrap();
+        }
+        std::fs::remove_file(&first).unwrap();
+        std::fs::remove_file(&second).unwrap();
+
+        let rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if Storage::open(&db_path)
+                    .unwrap()
+                    .library_roots()
+                    .unwrap()
+                    .iter()
+                    .any(|state| state.vanished_at.is_some())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("scan never reconciled the missing paths");
+
+        let check = Storage::open(&db_path).unwrap();
+        assert_eq!(
+            check.hash_cache().unwrap().len(),
+            2,
+            "a wholesale root disappearance must retain its cached hashes"
+        );
+        assert!(
+            check.library_paths().unwrap().is_empty(),
+            "vanished records must stay out of the active library"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnecting_vanished_root_reuses_cached_hashes() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("mount");
+        std::fs::create_dir_all(&root).unwrap();
+        let first = write(&root, "Series/ep1.mkv", b"episode one");
+        let second = write(&root, "Series/ep2.mkv", b"episode two");
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        for (path, contents) in [
+            (&first, b"episode one".as_slice()),
+            (&second, b"episode two".as_slice()),
+        ] {
+            let metadata = std::fs::metadata(path).unwrap();
+            storage
+                .upsert_hash_cache(
+                    path,
+                    mtime_millis(&metadata).unwrap(),
+                    &ed2k_hash_bytes(contents),
+                    1,
+                )
+                .unwrap();
+        }
+
+        // Model an unmounted dataset: its old tree is parked elsewhere and
+        // the mountpoint itself remains as an empty directory.
+        let parked = base.path().join("parked");
+        std::fs::rename(&root, &parked).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let rig = spawn_rig(storage, vec![root.clone()], CacheRetention::default());
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if Storage::open(&db_path)
+                    .unwrap()
+                    .library_roots()
+                    .unwrap()
+                    .iter()
+                    .any(|state| state.vanished_at.is_some())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        std::fs::remove_dir(&root).unwrap();
+        std::fs::rename(&parked, &root).unwrap();
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        let mut outputs = rig.outputs;
+        match tokio::time::timeout(Duration::from_secs(10), outputs.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            FileOutput::LibraryIndexed { files } => assert_eq!(files.len(), 2),
+            other => panic!("expected cache-hit library result, got {other:?}"),
+        }
+        let check = Storage::open(&db_path).unwrap();
+        assert_eq!(check.library_paths().unwrap().len(), 2);
+        assert_eq!(check.library_roots().unwrap()[0].vanished_at, None);
+    }
+
+    #[tokio::test]
+    async fn vanished_root_retracts_previously_ready_availability() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"episode one".as_slice();
+        let path = write(root.path(), "ep1.mkv", contents);
+        let file = ed2k_hash_bytes(contents).root;
+        let storage = Storage::open_in_memory().unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+        rig.commands
+            .send(FileCommand::Resolve {
+                file,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_output(&mut rig).await,
+            FileOutput::Resolved {
+                resolution: Resolution::Verified(_),
+                ..
+            }
+        ));
+
+        std::fs::remove_file(path).unwrap();
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Availability {
+                file: got,
+                availability,
+            } => {
+                assert_eq!(got, file);
+                assert_eq!(availability, FileAvailability::Missing);
+            }
+            other => panic!("expected Missing availability, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -4793,6 +5169,22 @@ mod tests {
         HashMap::from([(path.to_path_buf(), (mtime, ed2k_hash_bytes(contents)))])
     }
 
+    proptest! {
+        #[test]
+        fn root_disappearance_policy_depends_only_on_whether_any_record_survives(
+            exists in proptest::collection::vec(any::<bool>(), 0..128)
+        ) {
+            let expected = if exists.is_empty() {
+                RootDisposition::Empty
+            } else if exists.iter().any(|value| *value) {
+                RootDisposition::Online
+            } else {
+                RootDisposition::Vanished
+            };
+            prop_assert_eq!(root_disposition(&exists), expected);
+        }
+    }
+
     #[test]
     fn scan_library_classifies_hits_worklist_and_skips_non_video() {
         let root = tempfile::tempdir().unwrap();
@@ -4802,7 +5194,8 @@ mod tests {
         write(root.path(), "Frieren/ep1.nfo", b"<nfo/>");
 
         // Empty cache: the video needs hashing, the junk is ignored.
-        let (hits, worklist, _stale) = scan_library(&[root.path().to_path_buf()], &HashMap::new());
+        let (hits, worklist, _stale, _, _) =
+            scan_library(&[root.path().to_path_buf()], &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(worklist.len(), 1);
         assert_eq!(worklist[0].path, video);
@@ -4811,7 +5204,7 @@ mod tests {
         // With the video already cached (matching mtime/size) it's a hit,
         // not re-hashed.
         let cache = cache_of(&video, b"episode one");
-        let (hits, worklist, _stale) = scan_library(&[root.path().to_path_buf()], &cache);
+        let (hits, worklist, _stale, _, _) = scan_library(&[root.path().to_path_buf()], &cache);
         assert!(worklist.is_empty());
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].hash, ed2k_hash_bytes(b"episode one").root);
@@ -4828,7 +5221,7 @@ mod tests {
             video.clone(),
             (stale_mtime, ed2k_hash_bytes(b"episode one")),
         )]);
-        let (hits, worklist, _stale) = scan_library(&[root.path().to_path_buf()], &cache);
+        let (hits, worklist, _stale, _, _) = scan_library(&[root.path().to_path_buf()], &cache);
         assert!(hits.is_empty(), "stale mtime must not count as a hit");
         assert_eq!(worklist.len(), 1);
         assert_eq!(worklist[0].path, video);
@@ -4849,7 +5242,8 @@ mod tests {
         std::os::unix::fs::symlink(base.path().join("store/Frieren"), root.join("Frieren"))
             .unwrap();
 
-        let (hits, worklist, _stale) = scan_library(std::slice::from_ref(&root), &HashMap::new());
+        let (hits, worklist, _stale, _, _) =
+            scan_library(std::slice::from_ref(&root), &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(
             worklist.len(),
@@ -4871,7 +5265,8 @@ mod tests {
         let link = root.join("ep1.mkv");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let (hits, worklist, _stale) = scan_library(std::slice::from_ref(&root), &HashMap::new());
+        let (hits, worklist, _stale, _, _) =
+            scan_library(std::slice::from_ref(&root), &HashMap::new());
         assert!(hits.is_empty());
         assert_eq!(worklist.len(), 1, "symlinked video file must be seen");
         assert_eq!(worklist[0].path, link);
@@ -4889,7 +5284,8 @@ mod tests {
         write(root.path(), "Frieren/ep1.mkv", b"episode one");
         std::os::unix::fs::symlink(root.path(), root.path().join("Frieren/loop")).unwrap();
 
-        let (_hits, worklist, _stale) = scan_library(&[root.path().to_path_buf()], &HashMap::new());
+        let (_hits, worklist, _stale, _, _) =
+            scan_library(&[root.path().to_path_buf()], &HashMap::new());
         assert_eq!(worklist.len(), 1, "cycle must not duplicate or hang");
         assert_eq!(worklist[0].filename, "ep1.mkv");
     }

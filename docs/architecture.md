@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -339,6 +339,14 @@ recent and resumes when it goes quiet (design.md, Media Library Scanning
 — #21). The actor also watches **mismatched resolutions** for quiescence
 (design.md, Content Hash — #26): a 1s `stat` poll per watched file,
 re-resolving once a changed file holds still.
+
+The actor owns media-root lifecycle as well. Each hash row records its owning
+root and SQLite stores whether that root is wholly vanished or was removed
+from the effective configuration. A scan with no surviving recorded file
+marks the root vanished and retracts locally advertised availability without
+deleting hashes; one surviving record proves the root online and permits
+per-file pruning. Removed roots retain hidden rows for seven days. This policy
+is local-only and introduces no CRDT or wire state.
 
 Spawned and driven by the `SessionShell` (Phase 7's session policy
 layer): the shell sends `FileCommand`s and receives `FileOutput`s on one
