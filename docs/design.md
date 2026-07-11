@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1383,12 +1383,21 @@ no longer filled only on demand.
   an active download would defer the discovery of the very file that makes
   it redundant (see [Download Cache](#download-cache-and-retention), "a
   local copy trumps the download").
-- **The walk also prunes**: an index row whose file has vanished from under
-  the roots (moved or deleted behind the app's back) is removed — the disk
-  is the truth, the index follows it. Without this a moved file kept its old
-  row forever, leaving ghosts in everything built on the index (the file
-  browser's search and anchor placement). Rows outside the roots (the
-  download cache) are reconciled by their own startup pass, not the scan.
+- **The walk also reconciles disappearance per media root.** If at least one
+  previously indexed file in a root still exists, the root is online and
+  missing sibling rows are genuine moves/deletions, so they are removed
+  immediately. If *none* of that root's recorded files exists, the client
+  assumes removable storage was disconnected: it retains the hashes
+  indefinitely but marks the root vanished. Vanished rows are hidden from
+  library browsing/search and lookup announcements and are not advertised as
+  locally available. When any recorded file returns, matching `(mtime, size)`
+  rows reactivate without re-hashing and genuinely absent siblings are pruned.
+  Rows outside media roots (the download cache) remain governed by their own
+  startup reconciliation.
+- Removing a root from the effective runtime root list hides it immediately
+  and starts a **seven-day grace period**. Re-adding the identical path within
+  that window preserves its hashes; after seven days the root record and its
+  index rows are deleted. A configured-but-vanished root never expires.
 - For every indexed hash that lacks metadata in the synced state, the client
   inserts a `FileHashInfo` (hash, size, filename, mtime, and a title-like
   containing-directory `series_hint`) into the
@@ -2084,7 +2093,8 @@ inserted) so the previous layout is a strict prefix.
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned; row-less hash-named files >1 week old swept) |
-| `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size); skips re-hashing unchanged files (Phase 9A); doubles as the **library index** populated by the periodic media-root scan; pruned alongside a removed cache entry |
+| `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size), plus nullable owning media root; skips re-hashing unchanged files and doubles as the library index |
+| `library_roots` | Durable root lifecycle (`vanished_at`, `removed_at`); hides disconnected roots indefinitely and expires removed-root index rows after seven days |
 | `manual_mappings` | Playlist hash → user-picked local path |
 | `torrents` | ed2k hash → BitTorrent info hash for torrents in the engine (torrent-first downloads); reconciled at startup against the cache |
 | `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |

@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -1278,6 +1278,24 @@ Tests use canned RSS/metainfo and the fake torrent engine; no automated test
 contacts Nyaa. Coverage includes category/limit/order filtering, malformed and
 multi-file metadata, unsafe names, actor completion/promotion and cancellation,
 plus the full UI key/search/progress/reopen/cancel flow.
+
+---
+
+## Phase 21: Disconnected Media-Root Retention
+
+**Status: complete (2026-07-11).**
+
+The library index now distinguishes an individually deleted file from a whole
+media root disappearing. If any recorded file survives, missing siblings are
+pruned immediately; if none survive, the root is marked vanished and its hashes
+are retained indefinitely but hidden/inactive. Returning unchanged files are
+cache hits. Roots removed from the effective runtime configuration retain their
+hidden index for seven days so remove/re-add is cheap, then expire.
+
+SQLite records root ownership on `hash_cache` and stores durable lifecycle in
+`library_roots`; no protocol state changed. Regression, property, actor, and
+migration/storage tests cover wholesale disappearance, partial pruning,
+availability retraction, reconnect without hashing, and removal expiry.
 
 ---
 
