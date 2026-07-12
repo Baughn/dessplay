@@ -7,6 +7,7 @@
 - Testing strategy: docs/testing-strategy.md
 - UI architecture (tui-realm, Elm model): docs/ui-architecture.md
 - Implementation plan: docs/plan.md
+- Draft settings-screen proposal: docs/proposals/2026-07-12-settings-screen.md
 
 Read the design docs before any planning phase. Update the docs after any design change, and update CLAUDE.md if a document is added.
 
@@ -73,4 +74,3 @@ Test comprehensively, especially on high-risk areas (echo suppression, network c
 ---
 
 design.md follows: @docs/design.md
-
