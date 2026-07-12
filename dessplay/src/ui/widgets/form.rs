@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_commit_and_save_roundtrip() {
+    fn edit_commit_roundtrip() {
         let mut form = form();
         assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
         for c in "hi".chars() {
@@ -779,11 +779,32 @@ mod tests {
         }
         assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
         assert_eq!(form.model.text, "hi");
-        let save = Event::Keyboard(KeyEvent {
+    }
+
+    #[test]
+    fn every_successful_save_path_emits() {
+        let capital_s = Event::Keyboard(KeyEvent {
             code: Key::Char('S'),
             modifiers: KeyModifiers::SHIFT,
         });
-        assert!(matches!(form.on(&save), FormEvent::Out((text, false)) if text == "hi"));
+        let ctrl_s = Event::Keyboard(KeyEvent {
+            code: Key::Char('s'),
+            modifiers: KeyModifiers::CONTROL,
+        });
+
+        let valid = || {
+            Form::new(TestModel {
+                text: "hi".into(),
+                flag: false,
+            })
+        };
+        assert!(matches!(valid().on(&capital_s), FormEvent::Out((text, false)) if text == "hi"));
+        assert!(matches!(valid().on(&ctrl_s), FormEvent::Out((text, false)) if text == "hi"));
+        let mut save_row = valid();
+        save_row.select_save();
+        assert!(
+            matches!(save_row.on(&key(Key::Enter)), FormEvent::Out((text, false)) if text == "hi")
+        );
     }
 
     #[test]
@@ -814,10 +835,15 @@ mod tests {
     #[test]
     fn blocked_save_is_swallowed_not_emitted() {
         let mut form = form();
+        let capital_s = Event::Keyboard(KeyEvent {
+            code: Key::Char('S'),
+            modifiers: KeyModifiers::SHIFT,
+        });
         let ctrl_s = Event::Keyboard(KeyEvent {
             code: Key::Char('s'),
             modifiers: KeyModifiers::CONTROL,
         });
+        assert!(matches!(form.on(&capital_s), FormEvent::Handled));
         assert!(matches!(form.on(&ctrl_s), FormEvent::Handled));
         form.select_save();
         assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));

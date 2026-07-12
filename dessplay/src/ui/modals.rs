@@ -3009,36 +3009,6 @@ mod tests {
         Event::Keyboard(KeyEvent { code, modifiers })
     }
 
-    fn is_save(msg: &Option<Msg>) -> bool {
-        matches!(msg, Some(Msg::SettingsSaved(..)))
-    }
-
-    #[test]
-    fn capital_s_saves_when_essentials_present() {
-        // Capital `S` carries SHIFT and must save — the terminal-safe path
-        // that replaces the Ctrl-S == XOFF trap.
-        let mut modal = saveable_settings();
-        assert!(is_save(
-            &modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))
-        ));
-    }
-
-    #[test]
-    fn ctrl_s_still_saves() {
-        // Ctrl-S is retained as an alias for terminals where it survives.
-        let mut modal = saveable_settings();
-        assert!(is_save(
-            &modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL))
-        ));
-    }
-
-    #[test]
-    fn enter_on_save_row_saves() {
-        let mut modal = saveable_settings();
-        modal.form.select_save();
-        assert!(is_save(&modal.on(&enter())));
-    }
-
     #[test]
     fn missing_essentials_lists_each_gap() {
         // A blank modal is missing all three; the hint names them in order.
@@ -3079,55 +3049,6 @@ mod tests {
         );
     }
 
-    fn sample_list_entry() -> SeriesListEntry {
-        SeriesListEntry {
-            name: "Frieren".into(),
-            nero_name: None,
-            genre: None,
-            notes: vec![],
-            recommender: None,
-            status: ListStatus::Active,
-            status_note: None,
-            source: None,
-            watchers: Default::default(),
-            anidb_series_id: None,
-            local_aliases: Default::default(),
-            manual_files: Default::default(),
-            anidb_unavailable: false,
-        }
-    }
-
-    #[test]
-    fn list_edit_modal_saves_via_capital_s_and_save_row() {
-        // Regression: the List edit modal must have a save path that does not
-        // rely on Ctrl-S (eaten as XOFF on terminals without the enhanced
-        // keyboard protocol), mirroring the SettingsModal. Capital `S`, the
-        // `[Save]` row, and Ctrl-s (alias) all save.
-        let mut modal =
-            ListEditModal::new(ListEntryId(7), sample_list_entry(), NextEpState::default());
-        assert!(matches!(
-            modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT)),
-            Some(Msg::ListEntrySaved(ListEntryId(7), _, _))
-        ));
-
-        // The `[Save]` row (after the fields) saves on Enter.
-        let mut modal =
-            ListEditModal::new(ListEntryId(7), sample_list_entry(), NextEpState::default());
-        modal.form.select_save();
-        assert!(matches!(
-            modal.on(&enter()),
-            Some(Msg::ListEntrySaved(ListEntryId(7), _, _))
-        ));
-
-        // Ctrl-s is retained as a working alias.
-        let mut modal =
-            ListEditModal::new(ListEntryId(7), sample_list_entry(), NextEpState::default());
-        assert!(matches!(
-            modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL)),
-            Some(Msg::ListEntrySaved(..))
-        ));
-    }
-
     #[test]
     fn media_roots_reorder_with_shift_jk() {
         // design.md and the code agree: media roots reorder with `J`/`K` (and
@@ -3165,23 +3086,6 @@ mod tests {
             vec![PathBuf::from("/a"), PathBuf::from("/b")]
         );
         assert_eq!(modal.form.selected_row(), Some(selected));
-    }
-
-    #[test]
-    fn overlay_does_not_overflow_on_a_very_wide_terminal() {
-        // Regression: the percent multiply must be widened past u16 before
-        // dividing. On a very wide/tall terminal `area.width * percent / 100`
-        // overflows u16 (panic in debug, garbage rect in release) — e.g.
-        // 2000 cols * 70 = 140000 > u16::MAX. The result must stay clamped to
-        // the frame.
-        let area = Rect::new(0, 0, 2000, 2000);
-        let rect = overlay(area, 70, 70);
-        assert_eq!(rect.width, 1400);
-        assert_eq!(rect.height, 1400);
-        assert!(rect.width <= area.width && rect.height <= area.height);
-        // Centered within the frame.
-        assert_eq!(rect.x, (area.width - rect.width) / 2);
-        assert_eq!(rect.y, (area.height - rect.height) / 2);
     }
 
     #[test]

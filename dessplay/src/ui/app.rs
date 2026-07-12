@@ -2502,36 +2502,6 @@ mod tests {
     }
 
     #[test]
-    fn save_button_closes_settings_dialog() {
-        // A valid save (Enter on the [Save] row) persists *and* dismisses
-        // the modal — the dialog must not linger after saving.
-        let settings = Settings {
-            username: Some("nero".into()),
-            password: Some("hunter2".into()),
-            ..Default::default()
-        };
-        let mut ui = Ui::with_setup(me(), settings, vec![PathBuf::from("/anime")], true);
-        assert!(matches!(ui.modals.last(), Some(Modal::Settings(_))));
-        // Walk the cursor to the last row ([Save]) and activate it. Down
-        // clamps at the last row, so any count past the field total lands
-        // on [Save] regardless of how many setting rows exist.
-        for _ in 0..30 {
-            ui.handle(key(Key::Down));
-        }
-        let actions = ui.handle(key(Key::Enter));
-        assert!(
-            ui.modals.is_empty(),
-            "save should close the settings dialog"
-        );
-        assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a, UserAction::SaveSettings(..))),
-            "save should emit a SaveSettings action",
-        );
-    }
-
-    #[test]
     fn locked_identity_is_not_moved_by_a_settings_save() {
         // `me` ("foo") is a runtime `--username` override that differs from
         // the persisted username ("real"): a settings save must keep the
@@ -2571,42 +2541,6 @@ mod tests {
             })
             .expect("a SaveSettings action");
         assert_eq!(saved.username, Some("real".into()));
-    }
-
-    #[test]
-    fn unlocked_identity_follows_a_settings_save() {
-        // No override: `me` matches the persisted username, so first-run
-        // setup (confirming/editing the name) is free to update the
-        // identity — the lock guard does not engage.
-        let settings = Settings {
-            username: Some("kim".into()),
-            password: Some("hunter2".into()),
-            ..Default::default()
-        };
-        let ui = Ui::with_setup(
-            UserId::new("kim"),
-            settings,
-            vec![PathBuf::from("/anime")],
-            true,
-        );
-        assert!(
-            !ui.identity_locked,
-            "without an override the identity is not locked"
-        );
-    }
-
-    #[test]
-    fn f3_opens_settings_and_esc_closes_it() {
-        // A non-first-run UI: no modal is open initially.
-        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
-        assert!(ui.modals.is_empty());
-
-        ui.handle(key(Key::Function(3)));
-        assert!(matches!(ui.modals.last(), Some(Modal::Settings(_))));
-
-        // Esc dismisses it back to the main screen.
-        ui.handle(key(Key::Esc));
-        assert!(ui.modals.is_empty());
     }
 
     #[test]

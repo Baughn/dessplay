@@ -223,6 +223,8 @@ fn settings_playback_layout_snapshot() {
     assert!(screen.contains("Settings — Playback & display"), "{screen}");
     assert!(screen.contains("WIP — not applied"), "{screen}");
     insta::assert_snapshot!(screen);
+    ui.handle(key(Key::Esc));
+    assert!(!ui.modal_open(), "Esc should close the settings modal");
 }
 
 #[test]
@@ -280,6 +282,7 @@ fn settings_save_from_playback_emits_the_complete_draft() {
     assert_eq!(settings.password.as_deref(), Some("hunter2"));
     assert_eq!(settings.player, dessplay::config::PlayerKind::Vlc);
     assert_eq!(roots, &[std::path::PathBuf::from("/media")]);
+    assert!(!ui.modal_open(), "saving should close the settings modal");
 }
 
 #[test]
