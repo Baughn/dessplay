@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-07-11
+Last updated: 2026-07-12
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -1315,6 +1315,30 @@ SQLite records root ownership on `hash_cache` and stores durable lifecycle in
 `library_roots`; no protocol state changed. Regression, property, actor, and
 migration/storage tests cover wholesale disappearance, partial pruning,
 availability retraction, reconnect without hashing, and removal expiry.
+
+---
+
+## Phase 23: Categorised Settings
+
+**Status: planned (accepted 2026-07-12).** See
+[`docs/proposals/2026-07-12-settings-screen.md`](proposals/2026-07-12-settings-screen.md).
+
+Replace the settings modal's mixed integer-indexed list with Account,
+Playback, Files, and IRC tabs over typed semantic form rows. The shared Form
+derives control rendering and activation from row data; Settings and List edit
+stop dispatching fields by `usize`. Save remains atomic, all existing
+first-run validation and runtime-override isolation stays intact, and controls
+show their actual live/restart lifecycle.
+
+Add the missing human-readable upload-limit editor. Also expose the persisted
+mpv/VLC player choice as a clearly marked `WIP -- not applied` placeholder;
+the composition root continues to use mpv in this phase.
+
+Coverage includes typed-row uniqueness and edit-kind tests, upload-rate
+round-trip properties, semantic selection across root reorder/removal,
+per-category navigation and missing markers, secret rendering, invalid editor
+commits, one 100x30 snapshot per category, and preservation of the existing
+save-path and runtime-override regressions. No CRDT or wire change is needed.
 
 ---
 

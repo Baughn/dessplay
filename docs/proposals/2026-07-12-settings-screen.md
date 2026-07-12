@@ -1,6 +1,9 @@
 # Proposal: Categorised, declarative settings screen
 
-Status: **DRAFT**
+Status: **ACCEPTED, 2026-07-12.** Decisions: category tabs; include the
+upload-limit control; include the persisted player choice as a visibly WIP,
+non-functional placeholder. Implementation is scheduled in `plan.md` Phase
+23.
 
 ## Summary
 
@@ -115,6 +118,7 @@ by the modal.
 
 #### Playback & display
 
+- Player: mpv / VLC (`WIP -- selection is not applied`)
 - Subtitle display: Off / Intermixed / Separate
 - Subtitle speaker colours
 
@@ -122,10 +126,12 @@ Speaker colours remain configurable in every subtitle mode, but render dim
 with the hint `separate pane only` unless Separate is selected. This permits
 preconfiguration without implying that the toggle currently has an effect.
 
-Do **not** expose the persisted `player` field yet. Selecting VLC would be a
-dead control because the composition root always creates an mpv factory.
-Either remove the stale choice from the design/configuration in a separate
-decision or add it when a VLC backend exists.
+Expose the persisted `player` field as an explicit placeholder. It cycles
+between mpv and VLC and is saved, but the row is dimly annotated
+`WIP -- not applied`; the composition root continues to construct mpv
+regardless of the selected value. This is intentionally a visible promise,
+not a claim that VLC works. When backend selection is implemented, remove the
+annotation and make it a normal `next restart` control.
 
 #### Files & transfers
 
@@ -200,6 +206,7 @@ enum SettingId {
     Server,
     Password,
     ReadyOnStartup,
+    Player,
     SubtitleMode,
     SubtitleSpeakerColors,
     MediaRoot(PathBuf),
@@ -363,6 +370,8 @@ easy to review.
   picker/reorder/remove, all three save paths, cancellation, password masking,
   runtime override isolation, and IRC's change-only live reconfiguration.
 - Upload limit is editable and stored as the existing `Option<u64>` value.
+- Player choice is visible, persisted, and unmistakably marked as a WIP
+  placeholder which does not yet affect the backend.
 - Startup-only controls are visibly labelled as such.
 - Settings rows have semantic identities; no `FIELD_*`, `FIXED_FIELDS`, or
   settings-field `usize` dispatch remains.
@@ -370,11 +379,9 @@ easy to review.
 - The shared form widget remains the only implementation of cursor,
   TextField, and save behaviour for both Settings and List edit forms.
 
-## Decisions requested
+## Decisions taken
 
-1. Accept category tabs (recommended), or prefer section headings in one
-   scrollable list?
-2. Add the already-designed upload-limit control in this work (recommended),
-   or keep the change strictly to currently visible controls?
-3. Keep the non-functional player choice hidden and correct the design
-   (recommended), or make player-backend completion part of this scope?
+1. Use category tabs.
+2. Add the upload-limit control.
+3. Show the non-functional player choice as a clearly marked WIP placeholder;
+   backend completion is not part of this scope.

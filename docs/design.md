@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-11
+Last updated: 2026-07-12
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -34,47 +34,50 @@ This section describes the full workflow from a user's perspective.
 2. **Settings screen** appears (automatically on first run; reopen any time
    later with `F3` or the `/settings` chat command):
    - Enter your username
-   - Choose your player (mpv or vlc; terminal version only)
+   - Choose your player (mpv or VLC; WIP placeholder -- mpv is still used)
    - Add media root directories (where your anime/shows live; terminal version only)
 3. **Main screen** appears with chat pane, users list, playlist and video library
 
 ### Settings Screen
 
-The settings screen includes several required settings:
-- Username (Defaults to $USER on Linux/OSX, equivalent on Windows)
-- Server (Defaults to dessplay.brage.info)
-- Ready on startup (Toggle, defaults to off). When off, the user starts as
-  Paused on connection. When on, the user starts as Ready.
-- Media roots (Selected by file browser; at least one must be selected).
-  The topmost media directory is listed as "download target" (blue text on the right).
-  Media roots can be reordered with `J`/`K` (or `j`/`k`) -- bare letters
-  rather than Ctrl-J/Ctrl-K, which collide with control codes (Ctrl-J ==
-  LF) in terminals lacking the enhanced keyboard protocol, consistent with
-  the playlist pane's reorder keys.
+The settings screen is divided into four tabs, selected with Left/Right;
+Up/Down moves between controls in the active tab. Capital `S`, the visible
+`[Save]` row, or Ctrl-S where the terminal delivers it saves the complete
+working copy atomically. Tabs containing a missing required value carry a
+`!`, and the Save row names every missing requirement.
 
-Optional settings (sensible defaults, editable later):
-- Cache retention (duration; `0` = delete watched downloads at end of session,
-  `infinite` = keep everything; see [Download Cache](#download-cache-and-retention))
-- Upload limit (bytes/sec cap for serving files to peers; default unlimited)
-- Subtitle mode (off / intermixed / separate pane; default off; also
-  cycled live with `F2`). See [Subtitle Display](#subtitle-display).
-- Subtitle speaker colors (toggle, default on). When off, separate-pane
-  subtitle lines render uniformly dim regardless of speaker; has no effect
-  on Intermixed mode, which is already uniformly dim. See
-  [Subtitle Display](#subtitle-display).
-- Auto-download (toggle, default on). When off the client never fetches
-  file contents from peers -- neither the prefetch window nor the missing
-  now-playing file -- so it relies entirely on its own media roots. See
-  [Pre-fetching](#download-cache-and-retention).
-- BitTorrent downloads (toggle, default **off**). When on, missing files
-  are fetched torrent-first (nyaa) before falling back to the peer relay;
-  when off the torrent engine never starts. Applies at startup. See
-  [BitTorrent Downloads](#bittorrent-downloads).
-- IRC bridge (toggle, default **on**) plus IRC server (default
-  `irc.rizon.net`), IRC TLS (toggle, default on -- selects port 6697 vs
-  6667), and IRC channel (default `#dess`). See [IRC Bridge](#irc-bridge).
-  A dim hint reminds the user the channel is **public**: chat leaves the
-  encrypted group.
+- **Account & connection**: Username (defaults to `$USER` on Linux/macOS,
+  equivalent on Windows), server (defaults to `dessplay.brage.info`), room
+  password, and Ready on startup. When Ready on startup is off the user joins
+  Paused; when on they join Ready. Server and password changes apply on the
+  next launch.
+- **Playback & display**: Player, subtitle mode, and subtitle speaker colors.
+  Player cycles between mpv and VLC and is persisted, but is explicitly
+  marked **WIP -- not applied**: the client still starts mpv regardless of
+  this placeholder value. Subtitle mode is off / intermixed / separate pane
+  (default off; also cycled live with `F2`). Speaker colors default on and
+  affect only separate-pane lines; Intermixed is uniformly dim.
+- **Files & transfers**: Ordered media roots, cache retention, auto-download,
+  BitTorrent downloads, and upload limit. At least one media root is required;
+  the topmost is marked `download target`. Roots are chosen with the directory
+  picker, removed with `d`, and reordered with `J`/`K` (lowercase also works).
+  Cache retention accepts `0` (delete watched downloads at session end) through
+  `infinite`; auto-download defaults on. BitTorrent defaults off and applies at
+  restart. Upload limit accepts human-readable byte rates such as `500 KiB/s`
+  and `2 MiB/s`, or `unlimited`, and applies at restart.
+- **IRC bridge**: Enabled (default on), server (default `irc.rizon.net`), TLS
+  (default on, selecting port 6697 rather than 6667), and channel (default
+  `#dess`). The subordinate values stay editable while disabled. A dim hint
+  warns that IRC is **public**: bridged chat leaves the encrypted group. Saving
+  changed IRC values reconfigures the bridge live.
+
+Rows whose values do not apply immediately carry a dim lifecycle annotation
+(`next restart`, `reconnects IRC`, or the player's WIP warning). Media roots,
+cache retention, and auto-download reconfigure their owning actor live.
+
+Bare `J`/`K` are used for root reordering rather than Ctrl-J/Ctrl-K, which
+collide with control codes (Ctrl-J == LF) in terminals without the enhanced
+keyboard protocol, consistent with the playlist pane.
 
 Seeder-specific configuration (role, retention) is provided via
 command-line flags / environment only -- seeders are headless, never show
