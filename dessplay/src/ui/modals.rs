@@ -1172,7 +1172,7 @@ impl SettingsForm {
                 row
             });
         }
-        rows.push(FormRow::action(SettingId::AddMediaRoot, "Add media root"));
+        rows.push(FormRow::action(SettingId::AddMediaRoot, "Add media root").with_gap_after());
         rows.extend([
             FormRow::choice(
                 SettingId::CacheRetention,

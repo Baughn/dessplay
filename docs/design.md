@@ -61,6 +61,8 @@ working copy atomically. Tabs containing a missing required value carry a
   BitTorrent downloads, and upload limit. At least one media root is required;
   the topmost is marked `download target`. Roots are chosen with the directory
   picker, removed with `d`, and reordered with `J`/`K` (lowercase also works).
+  A blank line after `[Add media root]` separates root management from transfer
+  policy.
   Cache retention accepts `0` (delete watched downloads at session end) through
   `infinite`; auto-download defaults on. BitTorrent defaults off and applies at
   restart. Upload limit accepts human-readable byte rates such as `500 KiB/s`

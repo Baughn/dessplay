@@ -101,6 +101,7 @@ pub struct FormRow<Id> {
     /// Optional right-aligned lifecycle or scope annotation.
     pub annotation: Option<(String, Style)>,
     preserve_value_end: bool,
+    gap_after: bool,
 }
 
 impl<Id> FormRow<Id> {
@@ -172,6 +173,7 @@ impl<Id> FormRow<Id> {
             style: Style::default(),
             annotation: None,
             preserve_value_end: false,
+            gap_after: false,
         }
     }
 
@@ -190,6 +192,12 @@ impl<Id> FormRow<Id> {
     /// Keep the end of an overlong value visible (used for media-root paths).
     pub fn preserving_value_end(mut self) -> Self {
         self.preserve_value_end = true;
+        self
+    }
+
+    /// Add one non-selectable blank display line after this row.
+    pub fn with_gap_after(mut self) -> Self {
+        self.gap_after = true;
         self
     }
 
@@ -636,14 +644,19 @@ impl<M: FormModel> Form<M> {
 
         let rows = self.model.rows();
         if body_height > 0 {
-            let items: Vec<ListItem> = rows
-                .iter()
-                .map(|row| ListItem::new(row.line(inner.width as usize)))
-                .collect();
-            let mut state = ListState::default();
-            if self.cursor.index() < rows.len() {
-                state.select(Some(self.cursor.index()));
+            let mut items = Vec::with_capacity(rows.len());
+            let mut selected_item = None;
+            for (index, row) in rows.iter().enumerate() {
+                if self.cursor.index() == index {
+                    selected_item = Some(items.len());
+                }
+                items.push(ListItem::new(row.line(inner.width as usize)));
+                if row.gap_after {
+                    items.push(ListItem::new(Line::raw("")));
+                }
             }
+            let mut state = ListState::default();
+            state.select(selected_item);
             frame.render_stateful_widget(
                 List::new(items).highlight_style(theme::highlight_style()),
                 body_area,

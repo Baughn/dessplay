@@ -8,19 +8,19 @@ expression: screen
 │                                                ││                                                │
 │              ┌Settings — Files & transfers────────────────────────────────────────┐              │
 │              │[Account] [Playback] [Files] [IRC]                                  │              │
-│              │Media root              …ng-library-root-name-that-needs-clipping/08│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/09│              │
-│              │Media root              …ng-library-root-name-that-needs-clipping/10│──────────────┘
-│              │Media root              …ng-library-root-name-that-needs-clipping/11│──────────────┐
-│              │Media root              …ng-library-root-name-that-needs-clipping/12│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/10│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/11│──────────────┘
+│              │Media root              …ng-library-root-name-that-needs-clipping/12│──────────────┐
 │              │Media root              …ng-library-root-name-that-needs-clipping/13│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/14│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/15│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/16│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/17│              │
-│              │Media root              …ng-library-root-name-that-needs-clipping/18│──────────────┘
-│              │Media root              …ng-library-root-name-that-needs-clipping/19│──────────────┐
-│              │[Add media root]                                                    │              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/18│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/19│──────────────┘
+│              │[Add media root]                                                    │──────────────┐
+│              │                                                                    │              │
 │              │Cache retention         7 days                                      │              │
 │              │Auto-download           yes                                         │              │
 └──────────────│BitTorrent downloads    no                               next launch│              │

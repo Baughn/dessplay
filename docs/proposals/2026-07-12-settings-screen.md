@@ -143,6 +143,9 @@ annotation and make it a normal `next restart` control.
 - BitTorrent downloads (`next restart`)
 - Upload limit (`next restart`)
 
+A blank, non-selectable line after `[Add media root]` visually separates root
+management from transfer policy.
+
 Media-root behaviour stays unchanged: Enter on Add opens the stacked
 directory picker; `d` removes a selected root; `J`/`K` reorders roots and
 the cursor follows the moved root. Roots retain the persistable/runtime split
