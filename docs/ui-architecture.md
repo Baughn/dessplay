@@ -66,6 +66,16 @@ Application
 +-- KeybindingBar (derived from active focus)
 ```
 
+The production shell detects terminal color depth once during setup through
+crossterm plus standard `COLORTERM`/`*-direct` hints and injects `Limited` or
+`TrueColor` into this same synchronous `Ui`. Rendering stays
+capability-independent until the completed frame: on a
+true-color terminal the theme layer gives every cell the explicit dark
+background and maps semantic foregrounds to RGB, so panes, modals, and passive
+overlays cannot drift onto different schemes. On a limited terminal the pass
+is a no-op, preserving the terminal's configured theme. Tests inject the
+capability directly rather than consulting the real terminal.
+
 ### Shared Widgets
 
 Every pane and modal is built on the interaction primitives in
@@ -264,9 +274,25 @@ snapshot data to component props:
   Local-only; not part of the snapshot. Surfaced per `subtitle_mode`: Off,
   Intermixed (folded into the chat lines via `props::subtitle_line`,
   ordered by arrival, uniformly dim), or a Separate pane that splits the
-  ChatPane area -- there lines are shown newest-first and colored by
-  speaker (the ASS `Name` hashed into chat's name->color palette; the name
-  is never displayed).
+  ChatPane area -- there lines are shown newest-first and colored by speaker
+  identity (the name is never displayed). `SpeakerColors` tracks named
+  speakers in an inclusive rolling five-minute wall-clock window, advancing
+  on subtitle arrivals, the explicit UI snapshot clock, and a one-second
+  production-shell clock tick during otherwise quiet scenes. Active slot
+  assignments are unique and stable; expired slots are recycled. Backward
+  clock corrections never rewind the window.
+
+  A true-color slot extends a cached, deterministic HSLuv palette by choosing
+  the candidate with the greatest minimum CIEDE2000 distance from prior RGB8
+  colors. Old slots therefore remain stable and there is no application cap;
+  the explicit dark frame background gives the generator a known contrast
+  target. A limited terminal preserves the prior
+  deterministic speaker-name hash into the finite ten-color application/user
+  palette, where collisions can occur. Above that capacity, the persisted
+  Playback setting chooses continued hashing (default/backward-compatible) or
+  uniform dim text for every speaker until the active set is within capacity
+  again. The existing speaker-colors master toggle takes precedence and makes
+  all separate-pane lines uniformly dim; Intermixed is always dim.
 - **SeriesPane**: snapshot.anidb_metadata + snapshot.series_relations + local
   watch history -> franchise list (Recent/All modes). Recent shows only
   *watched* franchises (recency-keyed), newest first; a `/`-initiated filter
@@ -346,9 +372,12 @@ Modal types:
   Playback, Files, and IRC tabs. Left/Right changes category and each category
   remembers its semantic-row selection. Missing-required markers and the
   global Save hint derive from one validation result. The player row is a
-  deliberately non-functional WIP placeholder; all other lifecycle hints
-  reflect the current session-loop behavior. Header, category notes, and Save
-  stay fixed while large media-root lists scroll.
+  deliberately non-functional WIP placeholder. Playback also holds the
+  speaker-colors master toggle and **Color overflow** choice; the latter is
+  annotated `limited-color terminals only` because true-color allocation has
+  no application cap. All other lifecycle hints reflect the current
+  session-loop behavior. Header, category notes, and Save stay fixed while
+  large media-root lists scroll.
 - **EpisodeBrowser**: Browse franchise seasons/episodes
 - **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)
 - **AniDbSearch**: Link a List entry to an AniDB series (`l` in List

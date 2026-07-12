@@ -26,6 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tuirealm = { workspace = true }
 crossterm = { workspace = true }
+palette = { workspace = true }
 unicode-width = { workspace = true }
 image = { workspace = true }
 ab_glyph = { workspace = true }

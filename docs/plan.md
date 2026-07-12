@@ -1351,6 +1351,45 @@ mpv composition root.
 
 ---
 
+## Phase 24: Terminal Color Depth & Subtitle Speaker Scaling
+
+**Status: complete (2026-07-12).** The reported six-speaker ceiling was not a
+literal cap: the old subtitle path hashed speakers into the shared finite
+palette, so collisions could appear before or after its ten entries. A local
+tracker now maintains the inclusive rolling five-minute active set and stable
+slots for true-color generation. Active speakers retain their slots; expired
+slots are recycled. Limited terminals deliberately retain the prior direct
+name hash for backward-compatible rendering.
+
+Production asks crossterm for terminal color depth once during setup and
+injects the result into `Ui`. True-color mode gives the completed frame one
+explicit dark theme across every pane, modal, and overlay, then generates
+speaker colors without an application cap from a progressive HSLuv palette.
+Each slot deterministically maximizes its minimum CIEDE2000 distance from the
+quantized colors already assigned, while the known background makes contrast
+testable. Limited-color mode remains a no-op theme pass, preserving the user's
+terminal theme, and continues hashing speaker names into the existing
+ten-color application palette.
+
+The Playback tab gains the persisted **Color overflow** choice for an active
+set larger than that finite palette: **Reuse colors** continues the existing
+name hashing and is the default for backward compatibility; **Disable colors**
+removes all speaker identity (uniform dim text) until enough speakers expire.
+The window also advances on a quiet-scene UI clock tick, so recovery does not
+require another cue. The existing **Speaker colors** setting remains the
+master toggle on both terminal paths. This is entirely local presentation
+state: no CRDT or wire change.
+
+Regression coverage pins five-minute boundary inclusion, lease refresh,
+expiry/reuse and backward-clock behavior; both limited overflow policies and
+recovery; the persisted setting's default/cycle/round trip and Playback
+snapshot; true-color continuation past ten speakers; whole-frame dark-theme
+coverage; perceptual-separation bounds through the first 256 generated colors;
+and at least 4.5:1 contrast for that prefix and every semantic foreground
+against the fixed background.
+
+---
+
 ## Deferred from the 2026-07-02 batch
 
 Tracked here so they aren't re-triaged from scratch:

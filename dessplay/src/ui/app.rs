@@ -30,8 +30,10 @@ use super::modals::{
 };
 use super::msg::{BrowseRequest, Msg, UserAction};
 use super::props;
+use super::speaker_colors::SpeakerColors;
+use super::theme::ColorDepth;
 use crate::actors::sync::Mutation;
-use crate::config::{Settings, SubtitleMode};
+use crate::config::{Settings, SubtitleMode, SubtitleSpeakerOverflow};
 
 /// Everything the UI renders from, refreshed on every state/peer
 /// change.
@@ -212,6 +214,10 @@ struct SubtitleEntry {
     /// The ASS speaker/actor, if the cue carried one. Never displayed —
     /// only hashed to a color in separate-pane mode.
     speaker: Option<String>,
+    /// Stable color slot assigned while this speaker was active. Kept on
+    /// the entry so a sparse, older visible line does not change color when
+    /// the rolling activity tracker later recycles its slot.
+    speaker_slot: Option<usize>,
 }
 
 /// The whole TUI.
@@ -226,9 +232,14 @@ pub struct Ui {
     modals: Vec<Modal>,
     focus: Focus,
     subtitle_mode: SubtitleMode,
+    /// Terminal color capability, detected by the production shell and
+    /// injected by rendering tests. Limited is the deterministic default.
+    color_depth: ColorDepth,
     /// Rolling log of the local player's subtitle lines (with in-video
     /// and arrival timestamps). Local only — never synced.
     subtitles: std::collections::VecDeque<SubtitleEntry>,
+    /// Named speakers active within the last five wall-clock minutes.
+    speaker_colors: SpeakerColors,
     /// In-flight playlist-add hashes: (filename, done, total). Drawn as
     /// a progress overlay while non-empty (the no-silent-work rule).
     hashing: Vec<(String, u64, u64)>,
@@ -298,7 +309,9 @@ impl Ui {
             modals: Vec::new(),
             focus: Focus::Chat,
             subtitle_mode: settings.subtitle_mode,
+            color_depth: ColorDepth::Limited,
             subtitles: std::collections::VecDeque::new(),
+            speaker_colors: SpeakerColors::default(),
             hashing: Vec::new(),
             nyaa_imports: BTreeMap::new(),
             next_nyaa_import_id: 1,
@@ -318,6 +331,19 @@ impl Ui {
         ui.sync_focus_attr();
         ui.refresh_keybar();
         ui
+    }
+
+    /// Set the terminal color capability before the first draw. Production
+    /// calls this once during terminal setup; tests use it as an injection
+    /// seam for true-color rendering.
+    pub fn set_color_depth(&mut self, color_depth: ColorDepth) {
+        self.color_depth = color_depth;
+    }
+
+    /// Advance local subtitle-speaker leases independently of subtitle or
+    /// session traffic. Returns whether a redraw can change overflow policy.
+    pub(crate) fn advance_clock(&mut self, now_millis: u64) -> bool {
+        self.speaker_colors.advance(now_millis)
     }
 
     /// Append a subtitle line to the rolling log (empty lines are
@@ -357,8 +383,15 @@ impl Ui {
     ) {
         let text = text.replace('\r', "").replace('\n', " ");
         if text.is_empty() {
+            self.speaker_colors.advance(arrival_millis);
             return;
         }
+        // Observe every incoming cue before collapse: a contained overlap
+        // can be dropped from the log while its named speaker still counts
+        // toward the five-minute active set.
+        let speaker_slot = self
+            .speaker_colors
+            .observe(speaker.as_deref(), arrival_millis);
         // Classify the new text against the last entry: does it *extend* it
         // (same cue, fuller — a reveal or a neighbour appearing) or is it
         // *contained* in it (same cue, receding — a neighbour ending)? The
@@ -378,6 +411,7 @@ impl Ui {
             // latest text and speaker.
             last.text = text;
             last.speaker = speaker;
+            last.speaker_slot = speaker_slot;
         } else if contained {
             // Same cue receding (an overlapping neighbour ended); the fuller
             // text is already logged — drop the redundant re-show.
@@ -387,6 +421,7 @@ impl Ui {
                 arrival_millis,
                 text,
                 speaker,
+                speaker_slot,
             });
             while self.subtitles.len() > 100 {
                 self.subtitles.pop_front();
@@ -627,6 +662,7 @@ impl Ui {
 
     /// Replace the snapshot and recompute every pane's props.
     pub fn apply_snapshot(&mut self, snapshot: UiSnapshot) {
+        self.speaker_colors.advance(snapshot.now);
         let chat = self.merged_chat(&snapshot.view);
         self.chat.set_lines(chat);
         self.chat
@@ -1667,24 +1703,37 @@ impl Ui {
             self.status.render_progress(frame, progress_area);
             // The newest lines that fit, newest first (top) — the input box
             // sits just below, so the freshest line is closest to the eye.
-            // Each line: a dim in-video timestamp, then the text colored by
-            // its ASS speaker (reusing chat's name->color hash), so each
-            // speaker is visually distinct. The speaker name itself is never
-            // shown (spoilers).
+            // Each line: a dim in-video timestamp, then text colored by its
+            // ASS speaker. Limited terminals preserve the existing name hash
+            // into the app palette; RGB terminals use the stable
+            // activity-window slot to generate another perceptually spaced
+            // color as needed. The speaker name itself is never shown
+            // (spoilers).
             use tuirealm::ratatui::text::{Line, Span};
             let visible = (subs_area.height as usize).saturating_sub(2);
+            let limited_palette_overflow = self.color_depth == ColorDepth::Limited
+                && self.speaker_colors.len() > super::theme::LIMITED_SPEAKER_CAPACITY;
+            let speaker_colors_enabled = self.settings.subtitle_speaker_colors
+                && !(limited_palette_overflow
+                    && self.settings.subtitle_speaker_overflow
+                        == SubtitleSpeakerOverflow::DisableColors);
             let lines: Vec<Line> = self
                 .subtitles
                 .iter()
                 .rev()
                 .take(visible)
                 .map(|entry| {
-                    let text_style = if !self.settings.subtitle_speaker_colors {
+                    let text_style = if !speaker_colors_enabled {
                         super::theme::dim()
                     } else {
-                        match &entry.speaker {
-                            Some(name) => super::theme::user_style(name),
-                            None => tuirealm::ratatui::style::Style::default(),
+                        match entry.speaker_slot {
+                            Some(slot) if self.color_depth == ColorDepth::TrueColor => {
+                                super::theme::speaker_truecolor(slot)
+                            }
+                            _ => match &entry.speaker {
+                                Some(name) => super::theme::user_style(name),
+                                None => tuirealm::ratatui::style::Style::default(),
+                            },
                         }
                     };
                     Line::from(vec![
@@ -1724,6 +1773,7 @@ impl Ui {
             modal.as_component().view(frame, frame.area());
         }
         self.draw_work_overlay(frame);
+        super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth);
     }
 
     /// The hashing progress overlay: visually modal (centered, on top
@@ -2171,6 +2221,17 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_subtitle_updates_still_track_every_named_speaker() {
+        let mut ui = intermixed_ui();
+        ui.push_subtitle(1_000, 10, "H".into(), Some("First".into()));
+        ui.push_subtitle(1_100, 11, "He".into(), Some("Second".into()));
+
+        assert_eq!(ui.subtitles.len(), 1, "the reveal still collapses");
+        assert_eq!(ui.speaker_colors.len(), 2);
+        assert_eq!(ui.subtitles.back().unwrap().speaker_slot, Some(1));
+    }
+
+    #[test]
     fn subtitle_exact_duplicate_collapses() {
         let mut ui = intermixed_ui();
         ui.push_subtitle(1000, 10, "same".into(), None);
@@ -2265,6 +2326,176 @@ mod tests {
         assert_eq!(ui.subtitles.front().unwrap().text, "line 50");
     }
 
+    fn render_test_buffer(ui: &mut Ui) -> tuirealm::ratatui::buffer::Buffer {
+        use tuirealm::ratatui::Terminal;
+        use tuirealm::ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| ui.draw(frame))
+            .unwrap()
+            .buffer
+            .clone()
+    }
+
+    fn rendered_text_color(
+        buffer: &tuirealm::ratatui::buffer::Buffer,
+        needle: &str,
+    ) -> tuirealm::ratatui::style::Color {
+        let first = needle.chars().next().expect("non-empty test needle");
+        for y in 0..buffer.area.height {
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            if line.contains(needle) {
+                return (0..buffer.area.width)
+                    .map(|x| &buffer[(x, y)])
+                    .find(|cell| cell.symbol().starts_with(first))
+                    .expect("subtitle text cell")
+                    .fg;
+            }
+        }
+        panic!("{needle:?} not found in render");
+    }
+
+    /// Regression: once RGB is available, every cell belongs to DessPlay's
+    /// own dark theme instead of inheriting an arbitrary terminal background.
+    #[test]
+    fn truecolor_renders_the_entire_app_in_dark_mode() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.set_color_depth(ColorDepth::TrueColor);
+
+        let buffer = render_test_buffer(&mut ui);
+
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| cell.bg == crate::ui::theme::TRUECOLOR_BACKGROUND),
+            "every true-color cell should use the app background"
+        );
+    }
+
+    /// Regression: an RGB terminal is not constrained by the finite ANSI
+    /// speaker palette. Even after that many active speakers, visible cues
+    /// receive distinct generated RGB colors.
+    #[test]
+    fn truecolor_speaker_colors_continue_past_the_limited_palette() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        ui.set_color_depth(ColorDepth::TrueColor);
+        let count = crate::ui::theme::LIMITED_SPEAKER_CAPACITY + 5;
+        for index in 0..count {
+            let label = char::from(b'A' + index as u8);
+            ui.push_subtitle(
+                index as u64,
+                index as u64,
+                format!("{label} utterance"),
+                Some(format!("speaker-{index}")),
+            );
+        }
+
+        let buffer = render_test_buffer(&mut ui);
+        let visible = (count - 5..count)
+            .map(|index| {
+                let label = char::from(b'A' + index as u8);
+                rendered_text_color(&buffer, &format!("{label} utterance"))
+            })
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(visible.len(), 5, "visible speakers should not share colors");
+        assert!(
+            visible
+                .iter()
+                .all(|color| matches!(color, tuirealm::ratatui::style::Color::Rgb(..))),
+            "true-color speakers should use generated RGB colors: {visible:?}"
+        );
+    }
+
+    /// Regression: limited terminals may remove speaker identity when their
+    /// finite palette overflows. The active set is an inclusive rolling five
+    /// minutes: the boundary cue is uncolored, then colors return once every
+    /// original speaker is more than five minutes old.
+    #[test]
+    fn limited_overflow_disable_colors_uses_a_five_minute_window() {
+        use crate::config::SubtitleSpeakerOverflow;
+
+        let settings = Settings {
+            subtitle_mode: SubtitleMode::SeparatePane,
+            subtitle_speaker_overflow: SubtitleSpeakerOverflow::DisableColors,
+            ..Settings::default()
+        };
+        let mut ui = Ui::with_setup(me(), settings, vec![], false);
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        let base = 1_000;
+        for index in 0..crate::ui::theme::LIMITED_SPEAKER_CAPACITY {
+            ui.push_subtitle(
+                index as u64,
+                base + index as u64,
+                format!("{index} original"),
+                Some(format!("speaker-{index}")),
+            );
+        }
+        let boundary = base + crate::ui::theme::SPEAKER_WINDOW_MILLIS;
+        ui.push_subtitle(
+            20_000,
+            boundary,
+            "Z boundary".into(),
+            Some("boundary".into()),
+        );
+
+        let overflow = render_test_buffer(&mut ui);
+        assert_eq!(
+            rendered_text_color(&overflow, "Z boundary"),
+            crate::ui::theme::dim().fg.unwrap(),
+            "speaker identity should be removed while the palette is over capacity"
+        );
+
+        let after_expiry = base
+            + crate::ui::theme::LIMITED_SPEAKER_CAPACITY as u64
+            + crate::ui::theme::SPEAKER_WINDOW_MILLIS;
+        assert!(ui.advance_clock(after_expiry));
+        let recovered = render_test_buffer(&mut ui);
+        assert_ne!(
+            rendered_text_color(&recovered, "Z boundary"),
+            crate::ui::theme::dim().fg.unwrap(),
+            "speaker colors should return during a quiet scene once the old active set expires"
+        );
+    }
+
+    #[test]
+    fn limited_overflow_reuse_colors_preserves_colored_speaker_identity() {
+        let settings = Settings {
+            subtitle_mode: SubtitleMode::SeparatePane,
+            subtitle_speaker_overflow: SubtitleSpeakerOverflow::ReuseColors,
+            ..Settings::default()
+        };
+        let mut ui = Ui::with_setup(me(), settings, vec![], false);
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        for index in 0..=crate::ui::theme::LIMITED_SPEAKER_CAPACITY {
+            ui.push_subtitle(
+                index as u64,
+                index as u64,
+                format!("R{index} reuse"),
+                Some(format!("speaker-{index}")),
+            );
+        }
+
+        let buffer = render_test_buffer(&mut ui);
+        assert_eq!(
+            rendered_text_color(
+                &buffer,
+                &format!("R{} reuse", crate::ui::theme::LIMITED_SPEAKER_CAPACITY),
+            ),
+            crate::ui::theme::user_style(&format!(
+                "speaker-{}",
+                crate::ui::theme::LIMITED_SPEAKER_CAPACITY
+            ))
+            .fg
+            .unwrap()
+        );
+    }
+
     #[test]
     fn separate_pane_renders_newest_on_top_colored_by_speaker() {
         use tuirealm::ratatui::Terminal;
@@ -2305,8 +2536,8 @@ mod tests {
             "expected newest-on-top order, got newest={newest} middle={middle} oldest={oldest}"
         );
 
-        // Feature 2: the speaker'd line's text is colored with the same
-        // hash->palette color chat uses; the timestamp prefix stays dim.
+        // Feature 2: a limited terminal retains the existing deterministic
+        // name hash into the app palette; the timestamp prefix stays dim.
         let want = crate::ui::theme::user_style("Frieren").fg.unwrap();
         let y = newest;
         let n_cell = (0..buffer.area.width)

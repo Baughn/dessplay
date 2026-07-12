@@ -6,6 +6,11 @@ visibly WIP, non-functional placeholder. The implementation landed as
 `plan.md` Phase 23. Long media-root paths retain their distinguishing suffix
 when clipped; header, notes, and Save remain fixed around the scrollable rows.
 
+Post-implementation extension: Phase 24 added a fourth Playback row, **Color
+overflow**, for the limited-terminal subtitle-speaker fallback. It is a
+persisted local display setting and does not change the declarative form or
+category decisions below.
+
 ## Summary
 
 Replace the settings modal's single mixed list with four categories:

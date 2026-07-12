@@ -822,6 +822,7 @@ dependencies = [
  "insta",
  "librqbit",
  "mimalloc",
+ "palette",
  "percent-encoding",
  "proptest",
  "quick-xml",

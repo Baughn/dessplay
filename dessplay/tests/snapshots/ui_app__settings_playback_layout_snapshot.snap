@@ -11,7 +11,7 @@ expression: screen
 │              │Player                  mpv                        WIP — not applied│              │
 │              │Subtitle display        Off                                         │              │
 │              │Speaker colors          yes                       separate pane only│──────────────┘
-│              │                                                                    │──────────────┐
+│              │Color overflow          Reuse colors    limited-color terminals only│──────────────┐
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │

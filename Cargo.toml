@@ -28,6 +28,7 @@ proptest = "1"
 csv = "1.4"
 tuirealm = "4"
 crossterm = "0.29"
+palette = { version = "0.7", default-features = false, features = ["std"] }
 # Terminal display width (CJK-aware) for the UI's aligned columns —
 # char counts under-pad wide glyphs. Already in the tree via ratatui, so
 # a direct dep adds no weight.

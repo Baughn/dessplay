@@ -106,6 +106,56 @@ impl SubtitleMode {
     }
 }
 
+/// What to do when a limited-color terminal has more recently active
+/// subtitle speakers than the fixed palette can distinguish.
+///
+/// True-color terminals are not constrained by this preference: they can
+/// allocate another distinct speaker color instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SubtitleSpeakerOverflow {
+    /// Preserve today's behavior by reusing colors from the fixed palette.
+    #[default]
+    ReuseColors,
+    /// Render subtitle lines without speaker colors while the palette is
+    /// over capacity.
+    DisableColors,
+}
+
+impl SubtitleSpeakerOverflow {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReuseColors => "reuse_colors",
+            Self::DisableColors => "disable_colors",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "reuse_colors" => Ok(Self::ReuseColors),
+            "disable_colors" => Ok(Self::DisableColors),
+            other => Err(StorageError::Corrupt(format!(
+                "unknown subtitle_speaker_overflow {other:?}"
+            ))),
+        }
+    }
+
+    /// Cycle the limited-color terminal fallback on the settings screen.
+    pub fn next(self) -> Self {
+        match self {
+            Self::ReuseColors => Self::DisableColors,
+            Self::DisableColors => Self::ReuseColors,
+        }
+    }
+
+    /// Human-readable settings-screen label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ReuseColors => "Reuse colors",
+            Self::DisableColors => "Disable colors",
+        }
+    }
+}
+
 /// How long watched cache downloads are kept after their last access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CacheRetention {
@@ -282,6 +332,10 @@ pub struct Settings {
     /// regardless of speaker. Default true. Has no effect on Intermixed
     /// mode, which is already uniformly dim.
     pub subtitle_speaker_colors: bool,
+    /// Fallback when a limited-color terminal's fixed speaker palette is
+    /// smaller than the set of recently active speakers. Defaulting to color
+    /// reuse preserves the behavior from before this setting existed.
+    pub subtitle_speaker_overflow: SubtitleSpeakerOverflow,
     /// Sort order for the All Series browser mode (toggled with `s`).
     /// Local-only display preference; persisted across sessions.
     pub series_sort: SeriesSort,
@@ -322,6 +376,7 @@ impl Default for Settings {
             upload_limit: None,
             subtitle_mode: SubtitleMode::default(),
             subtitle_speaker_colors: true,
+            subtitle_speaker_overflow: SubtitleSpeakerOverflow::default(),
             series_sort: SeriesSort::default(),
             file_browser_sort: BrowserSort::default(),
             auto_download: true,
@@ -393,6 +448,11 @@ impl Settings {
                 .map(|value| parse_bool("subtitle_speaker_colors", &value))
                 .transpose()?
                 .unwrap_or(defaults.subtitle_speaker_colors),
+            subtitle_speaker_overflow: storage
+                .setting("subtitle_speaker_overflow")?
+                .map(|value| SubtitleSpeakerOverflow::parse(&value))
+                .transpose()?
+                .unwrap_or(defaults.subtitle_speaker_overflow),
             series_sort: match storage.setting("series_sort")? {
                 Some(value) => SeriesSort::parse(&value).ok_or_else(|| {
                     StorageError::Corrupt(format!("unknown series_sort {value:?}"))
@@ -461,6 +521,10 @@ impl Settings {
                 "false"
             }),
         )?;
+        storage.set_setting(
+            "subtitle_speaker_overflow",
+            Some(self.subtitle_speaker_overflow.as_str()),
+        )?;
         storage.set_setting("series_sort", Some(self.series_sort.as_str()))?;
         storage.set_setting("file_browser_sort", Some(self.file_browser_sort.as_str()))?;
         storage.set_setting(
@@ -514,6 +578,7 @@ mod tests {
             upload_limit: Some(1_000_000),
             subtitle_mode: SubtitleMode::Intermixed,
             subtitle_speaker_colors: false,
+            subtitle_speaker_overflow: SubtitleSpeakerOverflow::DisableColors,
             series_sort: SeriesSort::Year,
             file_browser_sort: BrowserSort::Newest,
             auto_download: false,
@@ -692,6 +757,37 @@ mod tests {
         assert_eq!(SubtitleMode::Off.next(), SubtitleMode::Intermixed);
         assert_eq!(SubtitleMode::Intermixed.next(), SubtitleMode::SeparatePane);
         assert_eq!(SubtitleMode::SeparatePane.next(), SubtitleMode::Off);
+    }
+
+    #[test]
+    fn subtitle_speaker_overflow_representations_and_cycle() {
+        for overflow in [
+            SubtitleSpeakerOverflow::ReuseColors,
+            SubtitleSpeakerOverflow::DisableColors,
+        ] {
+            assert_eq!(
+                SubtitleSpeakerOverflow::parse(overflow.as_str()).unwrap(),
+                overflow
+            );
+        }
+        assert!(SubtitleSpeakerOverflow::parse("invent-colors").is_err());
+        assert_eq!(
+            SubtitleSpeakerOverflow::ReuseColors.next(),
+            SubtitleSpeakerOverflow::DisableColors
+        );
+        assert_eq!(
+            SubtitleSpeakerOverflow::DisableColors.next(),
+            SubtitleSpeakerOverflow::ReuseColors
+        );
+    }
+
+    #[test]
+    fn missing_subtitle_speaker_overflow_keeps_current_behavior() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().subtitle_speaker_overflow,
+            SubtitleSpeakerOverflow::ReuseColors
+        );
     }
 
     #[test]

@@ -129,7 +129,7 @@ pub enum UiInput {
 /// channel closes or the action receiver goes away. Returns the
 /// terminal to its normal state on exit.
 pub fn run_ui_thread(
-    ui: Ui,
+    mut ui: Ui,
     inputs: std::sync::mpsc::Receiver<UiInput>,
     actions: mpsc::Sender<UserAction>,
 ) {
@@ -164,7 +164,10 @@ pub fn run_ui_thread(
     if let Err(e) = adapter.enable_bracketed_paste() {
         tracing::warn!("cannot enable bracketed paste: {e}");
     }
+    let color_depth = super::theme::ColorDepth::detect();
+    ui.set_color_depth(color_depth);
     tracing::debug!(
+        ?color_depth,
         elapsed_ms = started.elapsed().as_millis() as u64,
         "terminal setup complete"
     );
@@ -194,7 +197,23 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     // screen is already blank and the first fullscreen draw paints
     // every cell.
     let _ = adapter.raw_mut().draw(|frame| ui.draw(frame));
-    while let Ok(input) = inputs.recv() {
+    loop {
+        let input = match inputs.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(input) => input,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let now_millis = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or_default();
+                if ui.advance_clock(now_millis)
+                    && adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match input {
             UiInput::Shutdown => break,
             UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),

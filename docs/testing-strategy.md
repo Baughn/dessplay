@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-07-10
+Last updated: 2026-07-12
 
 ## Table of Contents
 
@@ -492,15 +492,42 @@ the multi-client harness uses.
 > keybinding bar shows browser bindings.
 
 What stays untestable headless — and is deliberately left to the tmux
-tier and manual use: real-terminal resize quirks, color-depth
-differences, mouse protocol variations across emulators.
+tier and manual use: real-terminal resize quirks, whether a particular
+emulator advertises its color depth correctly, and mouse protocol variations.
+The resulting color-depth behavior itself is headlessly testable because the
+capability is injected into `Ui`: limited mode must leave the completed buffer
+untouched, while true-color mode must apply the explicit dark background to
+every cell, including panes, modals, and passive overlays.
 
 The shared Form additionally tests semantic row identity: selection follows a
 row through insertion/reorder, typed controls route only their matching edit
 kind, invalid text keeps the masked/plain editor open with an error, and the
 fixed Save footer retains all three save paths. Settings has one 100x30 layout
 snapshot per category plus model tests for missing-category markers, dormant
-control styling, upload-rate parsing, and media-root selection.
+control styling, upload-rate parsing, media-root selection, and the persisted
+speaker-color overflow default/cycle/round trip.
+
+Subtitle speaker colors have deterministic policy tests below the snapshot
+layer:
+
+- speaker slot assignments stay stable and unique throughout the inclusive
+  five-minute activity window, expire immediately after its boundary, and
+  recycle holes; repeated cues refresh the lease, backward clock corrections
+  cannot resurrect an expired speaker, and passive clock advancement restores
+  limited-terminal colors without requiring another cue;
+- limited-color rendering preserves deterministic name hashing into the
+  ten-color application palette, then exercises both configured overflow
+  paths: continued hashing under **Reuse colors** and uniformly dim text under
+  **Disable colors**, with colors returning when the active count drops within
+  capacity;
+- true-color rendering remains distinct past the limited palette, has no
+  application-level prefix cap, and uses progressive HSLuv maximin selection.
+  Minimum CIEDE2000 distance is pinned at 10.5 through 32 colors, 5.5 through
+  128, and 4.25 through 256; the first 256 colors must also remain unique and
+  meet at least 4.5:1 contrast against the explicit dark background, as must
+  every mapped semantic foreground; and
+- turning off the existing speaker-colors master toggle produces uniformly dim
+  text regardless of terminal capability or overflow preference.
 
 ---
 

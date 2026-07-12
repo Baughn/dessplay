@@ -222,6 +222,8 @@ fn settings_playback_layout_snapshot() {
     let screen = render(&mut ui, 100, 30);
     assert!(screen.contains("Settings — Playback & display"), "{screen}");
     assert!(screen.contains("WIP — not applied"), "{screen}");
+    assert!(screen.contains("Color overflow"), "{screen}");
+    assert!(screen.contains("Reuse colors"), "{screen}");
     insta::assert_snapshot!(screen);
     ui.handle(key(Key::Esc));
     assert!(!ui.modal_open(), "Esc should close the settings modal");

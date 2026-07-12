@@ -976,6 +976,7 @@ enum SettingId {
     Player,
     SubtitleMode,
     SubtitleSpeakerColors,
+    SubtitleSpeakerOverflow,
     MediaRoot(PathBuf),
     AddMediaRoot,
     CacheRetention,
@@ -1135,6 +1136,13 @@ impl SettingsForm {
             "Speaker colors",
             self.settings.subtitle_speaker_colors,
         );
+        let overflow_row = FormRow::choice(
+            SettingId::SubtitleSpeakerOverflow,
+            "Color overflow",
+            self.settings.subtitle_speaker_overflow.label(),
+        )
+        .annotated("limited-color terminals only", theme::dim());
+        let speaker_colors_active = self.settings.subtitle_mode == SubtitleMode::SeparatePane;
         vec![
             FormRow::choice(SettingId::Player, "Player", self.settings.player.label())
                 .styled(theme::dim())
@@ -1144,12 +1152,17 @@ impl SettingsForm {
                 "Subtitle display",
                 self.settings.subtitle_mode.label(),
             ),
-            if self.settings.subtitle_mode == SubtitleMode::SeparatePane {
+            if speaker_colors_active {
                 speaker_row
             } else {
                 speaker_row
                     .styled(theme::dim())
                     .annotated("separate pane only", theme::dim())
+            },
+            if speaker_colors_active && self.settings.subtitle_speaker_colors {
+                overflow_row
+            } else {
+                overflow_row.styled(theme::dim())
             },
         ]
     }
@@ -1276,6 +1289,10 @@ impl FormModel for SettingsForm {
             }
             (SettingId::SubtitleSpeakerColors, FormEdit::SetBool(value)) => {
                 self.settings.subtitle_speaker_colors = value;
+            }
+            (SettingId::SubtitleSpeakerOverflow, FormEdit::Cycle) => {
+                self.settings.subtitle_speaker_overflow =
+                    self.settings.subtitle_speaker_overflow.next();
             }
             (SettingId::AddMediaRoot, FormEdit::Activate) => {
                 return Ok(FormEffect::Out(Msg::OpenDirPicker));
@@ -3231,6 +3248,31 @@ mod tests {
             panic!("expected settings save");
         };
         assert_eq!(settings.player, crate::config::PlayerKind::Vlc);
+    }
+
+    #[test]
+    fn limited_color_speaker_overflow_cycles_and_is_saved() {
+        let mut modal = saveable_settings();
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::SubtitleSpeakerOverflow));
+        assert_eq!(
+            modal.form.model.settings.subtitle_speaker_overflow,
+            crate::config::SubtitleSpeakerOverflow::ReuseColors
+        );
+        assert_eq!(modal.on(&enter()), Some(Msg::None));
+        assert_eq!(
+            modal.form.model.settings.subtitle_speaker_overflow,
+            crate::config::SubtitleSpeakerOverflow::DisableColors
+        );
+        let Some(Msg::SettingsSaved(settings, _)) =
+            modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))
+        else {
+            panic!("expected settings save");
+        };
+        assert_eq!(
+            settings.subtitle_speaker_overflow,
+            crate::config::SubtitleSpeakerOverflow::DisableColors
+        );
     }
 
     #[test]

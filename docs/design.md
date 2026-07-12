@@ -51,12 +51,18 @@ working copy atomically. Tabs containing a missing required value carry a
   password, and Ready on startup. When Ready on startup is off the user joins
   Paused; when on they join Ready. Server and password changes apply on the
   next launch.
-- **Playback & display**: Player, subtitle mode, and subtitle speaker colors.
+- **Playback & display**: Player, subtitle mode, subtitle speaker colors, and
+  the limited-terminal color-overflow policy.
   Player cycles between mpv and VLC and is persisted, but is explicitly
   marked **WIP -- not applied**: the client still starts mpv regardless of
   this placeholder value. Subtitle mode is off / intermixed / separate pane
   (default off; also cycled live with `F2`). Speaker colors default on and
-  affect only separate-pane lines; Intermixed is uniformly dim.
+  affect only separate-pane lines; Intermixed is uniformly dim. **Color
+  overflow** applies only when the terminal lacks true-color and more than
+  ten speakers have been active in the rolling five-minute window: **Reuse
+  colors** (the default) preserves the previous deterministic name hashing
+  into the fixed palette, while **Disable colors** renders every speaker
+  uniformly dim until the active count returns to ten or fewer.
 - **Files & transfers**: Ordered media roots, cache retention, auto-download,
   BitTorrent downloads, and upload limit. At least one media root is required;
   the topmost is marked `download target`. Roots are chosen with the directory
@@ -1117,6 +1123,18 @@ CSVs:
 
 ### UI Principles
 
+**One color scheme when true-color is available.** During production terminal
+setup DessPlay asks crossterm for the terminal's advertised color count once,
+supplemented by the standard `COLORTERM` and `*-direct` `TERM` hints. A
+true-color terminal gets an explicit app-wide dark theme: the complete
+alternate-screen buffer uses a known dark background and mapped RGB semantic
+foregrounds, including panes, modals, and passive overlays. This makes text
+contrast deterministic instead of depending on the user's terminal theme.
+A terminal without true-color retains its own foreground/background theme and
+uses DessPlay's finite ten-color application palette where identity colors are
+needed. The capability is injected into the synchronous `Ui`, so tests do not
+depend on process-global terminal state.
+
 **No silent long-running work.** Any operation that can take more than
 a moment (hashing a file for the playlist, scanning media roots,
 downloading from peers, archiving) must show visible progress in the
@@ -1998,14 +2016,33 @@ the `subtitle_mode` setting):
   (No speaker coloring here -- the lines stay uniformly dim.)
 - **Separate pane**: the chat area is split horizontally and the lower
   portion shows recent subtitle lines, **newest first (on top)** so the
-  freshest line sits next to the chat input box just below it. Each line's
-  text is **colored by its speaker** -- the ASS `Name` field hashed into
-  the same name->color palette chat uses for usernames, so each speaker is
-  visually distinct -- unless the `subtitle_speaker_colors` setting
-  (default on) is off, in which case every line renders uniformly dim like
-  Intermixed mode. The speaker name itself is **never displayed** (it is
-  often a character name -- a spoiler); only its color is. The `MM:SS`
-  timestamp prefix stays dim.
+  freshest line sits next to the chat input box just below it. The local UI
+  tracks each named speaker within the **inclusive rolling five-minute
+  wall-clock window** and assigns a stable slot while active. Slots do not
+  change while speakers remain active; after more than five minutes without a
+  cue, a speaker expires and its slot can be reused. A one-second UI clock
+  tick advances this window even during a quiet scene. The speaker name itself
+  is **never displayed** (it is often a character name -- a spoiler); only
+  its color is. The `MM:SS` timestamp prefix stays dim.
+
+  On a true-color terminal there is no application-level speaker cap. Each
+  slot extends a deterministic HSLuv palette: from a candidate batch it keeps
+  the RGB color whose nearest earlier color is farthest away in CIEDE2000.
+  Quantizing before comparison and caching the progressive prefix keeps old
+  slots stable while continuing to improve separation as the set grows. The
+  colors are built against the explicit dark background and regression-tested
+  for at least 4.5:1 text contrast; practical prefixes through 256 speakers
+  also have explicit perceptual-distance bounds. On a limited-color terminal,
+  speaker names retain the existing
+  deterministic hash into the same finite ten-color application palette used
+  for usernames; colors can therefore collide or repeat. If the active set
+  exceeds ten, the persisted `subtitle_speaker_overflow` policy chooses either
+  **Reuse colors** (default/backward-compatible; continue that hashing) or
+  **Disable colors** (remove all speaker identity and render every line
+  uniformly dim until the active set falls back within capacity).
+  The `subtitle_speaker_colors` master setting (default on) remains above this
+  policy: when off, all lines are uniformly dim on every terminal. Intermixed
+  mode is always uniformly dim.
 
 Each line carries the **in-video position** (mpv `time-pos` at the moment
 the cue appeared), shown as its `MM:SS` timestamp -- *not* the wall clock.
@@ -2065,9 +2102,10 @@ crashes should be rare enough not to matter, and an edit that *caused* a
 crash should not be replayed into the next session.
 
 **Settings** (username, server, password, media roots, player choice, cache
-retention, upload limit, subtitle mode, auto-download, BitTorrent
-downloads, and the IRC bridge
-settings -- enabled, server, TLS, channel) live in the same SQLite database
+retention, upload limit, subtitle mode, subtitle speaker colors, the
+limited-terminal speaker-color overflow policy, auto-download, BitTorrent
+downloads, and IRC bridge settings -- enabled, server, TLS, channel) live in
+the same SQLite database
 and are edited through the settings screen. The password is stored in plaintext
 — consistent with the threat model below. Command-line flags and environment
 variables override stored settings at runtime but are never persisted.
@@ -2094,7 +2132,7 @@ inserted) so the previous layout is a strict prefix.
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, auto_download, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_colors, subtitle_speaker_overflow, auto_download, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
