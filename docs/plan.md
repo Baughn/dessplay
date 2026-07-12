@@ -1320,7 +1320,7 @@ availability retraction, reconnect without hashing, and removal expiry.
 
 ## Phase 23: Categorised Settings
 
-**Status: planned (accepted 2026-07-12).** See
+**Status: complete (2026-07-12).** See
 [`docs/proposals/2026-07-12-settings-screen.md`](proposals/2026-07-12-settings-screen.md).
 
 Replace the settings modal's mixed integer-indexed list with Account,
@@ -1339,6 +1339,15 @@ round-trip properties, semantic selection across root reorder/removal,
 per-category navigation and missing markers, secret rendering, invalid editor
 commits, one 100x30 snapshot per category, and preservation of the existing
 save-path and runtime-override regressions. No CRDT or wire change is needed.
+
+Implementation notes: Form now owns `FormRow<RowId>` / `FormControl` and one
+`FormEdit` mutation boundary, retains semantic selection across externally
+inserted rows, and keeps header/notes/Save fixed around the scrolling list.
+Long media-root paths clip from the left so their final components remain
+distinguishable. Upload rates accept exact whole binary units through GiB/s
+and round-trip without losing byte precision. The player choice persists but,
+as designed, is visibly annotated `WIP — not applied` and does not alter the
+mpv composition root.
 
 ---
 

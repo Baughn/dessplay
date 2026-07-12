@@ -7,7 +7,7 @@
 - Testing strategy: docs/testing-strategy.md
 - UI architecture (tui-realm, Elm model): docs/ui-architecture.md
 - Implementation plan: docs/plan.md
-- Accepted settings-screen proposal: docs/proposals/2026-07-12-settings-screen.md
+- Implemented settings-screen proposal: docs/proposals/2026-07-12-settings-screen.md
 
 Read the design docs before any planning phase. Update the docs after any design change, and update CLAUDE.md if a document is added.
 

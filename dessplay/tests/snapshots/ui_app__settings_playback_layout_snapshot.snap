@@ -6,12 +6,12 @@ expression: screen
 │                                                ││                                                │
 │                                                ││                                                │
 │                                                ││                                                │
-│              ┌Settings — Account & connection─────────────────────────────────────┐              │
-│              │[Account !] [Playback] [Files !] [IRC]                              │              │
-│              │Username                                                            │              │
-│              │Server                  dessplay.brage.info              next launch│              │
-│              │Password                                                 next launch│──────────────┘
-│              │Ready on startup        no                               next launch│──────────────┐
+│              ┌Settings — Playback & display───────────────────────────────────────┐              │
+│              │[Account] [Playback] [Files] [IRC]                                  │              │
+│              │Player                  mpv                        WIP — not applied│              │
+│              │Subtitle display        Off                                         │              │
+│              │Speaker colors          yes                       separate pane only│──────────────┘
+│              │                                                                    │──────────────┐
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │
@@ -25,7 +25,7 @@ expression: screen
 │              │                                                                    │              │
 └──────────────│                                                                    │              │
 ┌──────────────│                                                                    │              │
-│say something…│[Save] — needs a username, a password, a media root                 │              │
+│say something…│[Save]                                                              │              │
 └──────────────└────────────────────────────────────────────────────────────────────┘              │
                                                   └────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────

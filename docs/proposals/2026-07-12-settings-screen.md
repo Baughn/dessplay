@@ -1,9 +1,10 @@
 # Proposal: Categorised, declarative settings screen
 
-Status: **ACCEPTED, 2026-07-12.** Decisions: category tabs; include the
-upload-limit control; include the persisted player choice as a visibly WIP,
-non-functional placeholder. Implementation is scheduled in `plan.md` Phase
-23.
+Status: **ACCEPTED and implemented, 2026-07-12.** Decisions: category tabs;
+include the upload-limit control; include the persisted player choice as a
+visibly WIP, non-functional placeholder. The implementation landed as
+`plan.md` Phase 23. Long media-root paths retain their distinguishing suffix
+when clipped; header, notes, and Save remain fixed around the scrollable rows.
 
 ## Summary
 

@@ -79,7 +79,7 @@ A behavior that exists in one place cannot drift.
 |--------|-----|-----------|
 | `LineBuffer` / `TextField` (`widgets/line.rs`) | The one line editor: text, cursor, horizontal scroll as pure state; `TextField` adds the bordered box, placeholder, cursor cell | The full editing vocabulary (word motion via Ctrl/Alt-arrows and Alt-b/f, word kill via Ctrl-W and Ctrl/Alt-Backspace, Ctrl-A/E, Home/End) works in **every** field — chat input, modal field editors, the series filter. Scroll invariants (`offset <= cursor <= len`, reset on set/clear) are property-tested; the "field renders from a stale column" bug class is unrepresentable |
 | `ListCursor` (`widgets/list.rs`) | The one selection cursor + the standard bordered list render | Up/Down/PgUp/PgDn and edge clamping behave identically in every list (panes, browsers, forms, search results) |
-| `Form` / `FormModel` (`widgets/form.rs`) | Field modals as data: a model declares rows and what Enter means per row (edit / toggle / cycle / emit); the Form owns the cursor, the pop-up editor, the save triple (capital `S`, the `[Save]` row with its "needs …" hint, the unadvertised Ctrl-S alias — capital-S exists because Ctrl-S is XOFF in terminals lacking the enhanced keyboard protocol), and Esc | Settings and the List-entry editor share all interaction mechanics. Phase 23 replaces their remaining numeric row identities with typed controls so display order cannot retarget activation or commit logic |
+| `Form` / `FormModel` (`widgets/form.rs`) | Field modals as typed data: models project semantic row IDs plus text / secret / toggle / choice / read-only / action controls and accept `FormEdit` at one mutation boundary. Form owns semantic selection, scrolling, masked editing, validation errors, category chrome hooks, and the save triple (capital `S`, fixed `[Save]`, unadvertised Ctrl-S alias) | Display order is not identity: insertion/reorder cannot retarget a field or active editor. Settings layers tabs over the same Form used by the typed List-entry editor |
 | `Keymap` (`widgets/keymap.rs`) | Bindings as data: (pattern, bar entry, action method), one table per component or mode | The keybinding bar and the dispatch derive from the same table — a key shown in the bar always dispatches; a dispatched key is advertised or deliberately hidden. Actions return `None` to *decline* (guards), letting the event fall through to the structural layers |
 | `widgets/keys.rs` | Key-event matchers | The terminal-compatibility policy lives in one place: bare letters over Ctrl-letters (Ctrl-J == LF, Ctrl-M == Enter, Ctrl-S == XOFF without the enhanced keyboard protocol); Ctrl *and* Alt accepted for word ops (macOS terminals send Alt); `.contains` matching for kitty's extra modifier bits |
 | `table_row` / `Cell` (`widgets/table.rs`) | The one table row: a flexible name cell (styled spans, truncated with `…`) plus fixed-width columns, all in display cells (CJK-aware) | Columns never drift with content: whatever the name's length or script, every fixed cell starts at the same column (property-tested) — used by the playlist's `temp`/watch-state columns and The List's episode/watchers spreadsheet; "a long filename shoved the tags off the pane" is unrepresentable |
@@ -342,12 +342,13 @@ Modal types:
   modal. Fetch-on-open keeps the data fresh with nothing to invalidate,
   and keeps the per-tick `UiSnapshot` lean (the library index can be
   large)
-- **Settings**: First-run and later configuration. Phase 23's accepted design
-  splits it into Account, Playback, Files, and IRC tabs. Left/Right changes
-  category and each category remembers its semantic-row selection.
-  Missing-required markers and the global Save hint derive from one validation
-  result. The player row is a deliberately non-functional WIP placeholder;
-  all other lifecycle hints reflect the current session-loop behavior.
+- **Settings**: First-run and later configuration, split into Account,
+  Playback, Files, and IRC tabs. Left/Right changes category and each category
+  remembers its semantic-row selection. Missing-required markers and the
+  global Save hint derive from one validation result. The player row is a
+  deliberately non-functional WIP placeholder; all other lifecycle hints
+  reflect the current session-loop behavior. Header, category notes, and Save
+  stay fixed while large media-root lists scroll.
 - **EpisodeBrowser**: Browse franchise seasons/episodes
 - **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)
 - **AniDbSearch**: Link a List entry to an AniDB series (`l` in List

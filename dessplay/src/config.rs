@@ -35,6 +35,22 @@ impl PlayerKind {
             other => Err(StorageError::Corrupt(format!("unknown player {other:?}"))),
         }
     }
+
+    /// Advance the settings-screen placeholder choice.
+    pub fn next(self) -> Self {
+        match self {
+            PlayerKind::Mpv => PlayerKind::Vlc,
+            PlayerKind::Vlc => PlayerKind::Mpv,
+        }
+    }
+
+    /// Human-readable settings-screen label.
+    pub fn label(self) -> &'static str {
+        match self {
+            PlayerKind::Mpv => "mpv",
+            PlayerKind::Vlc => "VLC",
+        }
+    }
 }
 
 /// How the local player's subtitle lines are surfaced in the chat pane.
@@ -178,6 +194,64 @@ fn humanize(d: Duration) -> String {
         }
     }
     plural(secs, "second")
+}
+
+const UPLOAD_LIMIT_ERROR: &str = "enter `unlimited` or a whole byte rate such as `500 KiB/s`";
+
+/// Parse the upload-rate syntax used by the settings screen.
+///
+/// A bare integer retains the persisted representation's bytes-per-second
+/// meaning. Human-readable input uses binary units and must be a whole number;
+/// the multiplication is checked so an oversized rate is rejected.
+pub(crate) fn parse_upload_limit(value: &str) -> std::result::Result<Option<u64>, String> {
+    let value = value.trim();
+    if value == "unlimited" {
+        return Ok(None);
+    }
+
+    let mut parts = value.split_whitespace();
+    let amount = parts.next().ok_or_else(|| UPLOAD_LIMIT_ERROR.to_owned())?;
+    let unit = parts.next();
+    if parts.next().is_some() || !amount.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(UPLOAD_LIMIT_ERROR.to_owned());
+    }
+
+    let multiplier = match unit {
+        None | Some("B/s") => 1,
+        Some("KiB/s") => 1024,
+        Some("MiB/s") => 1024 * 1024,
+        Some("GiB/s") => 1024 * 1024 * 1024,
+        Some(_) => return Err(UPLOAD_LIMIT_ERROR.to_owned()),
+    };
+    let amount = amount
+        .parse::<u64>()
+        .map_err(|_| UPLOAD_LIMIT_ERROR.to_owned())?;
+    amount
+        .checked_mul(multiplier)
+        .map(Some)
+        .ok_or_else(|| UPLOAD_LIMIT_ERROR.to_owned())
+}
+
+/// Format an upload limit for editing without losing byte-level precision.
+pub(crate) fn format_upload_limit(limit: Option<u64>) -> String {
+    let Some(bytes_per_second) = limit else {
+        return "unlimited".into();
+    };
+
+    if bytes_per_second == 0 {
+        return "0 B/s".into();
+    }
+
+    for (size, unit) in [
+        (1024 * 1024 * 1024, "GiB/s"),
+        (1024 * 1024, "MiB/s"),
+        (1024, "KiB/s"),
+    ] {
+        if bytes_per_second.is_multiple_of(size) {
+            return format!("{} {unit}", bytes_per_second / size);
+        }
+    }
+    format!("{bytes_per_second} B/s")
 }
 
 /// All persisted client settings. `username` and `password` are `None`
@@ -473,6 +547,68 @@ mod tests {
         assert_eq!(loaded.username, None);
         assert_eq!(loaded.upload_limit, None);
         assert!(loaded.needs_setup());
+    }
+
+    #[test]
+    fn upload_limit_accepts_bytes_human_rates_and_unlimited() {
+        for (text, expected) in [
+            ("unlimited", None),
+            ("  unlimited\t", None),
+            ("0", Some(0)),
+            ("123", Some(123)),
+            ("123 B/s", Some(123)),
+            ("500 KiB/s", Some(500 * 1024)),
+            ("2 MiB/s", Some(2 * 1024 * 1024)),
+            ("3 GiB/s", Some(3 * 1024 * 1024 * 1024)),
+        ] {
+            assert_eq!(parse_upload_limit(text), Ok(expected), "input {text:?}");
+        }
+        assert_eq!(
+            parse_upload_limit(&u64::MAX.to_string()),
+            Ok(Some(u64::MAX))
+        );
+    }
+
+    #[test]
+    fn upload_limit_rejects_invalid_fractional_and_overflow_values() {
+        for text in [
+            "",
+            "none",
+            "-1",
+            "+1",
+            "1.5 MiB/s",
+            "1 MB/s",
+            "1 MiB",
+            "1 MiB/s trailing",
+            "18446744073709551616",
+            "18014398509481984 KiB/s",
+        ] {
+            assert!(
+                parse_upload_limit(text).is_err(),
+                "unexpectedly accepted {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn upload_limit_formatter_uses_exact_binary_units() {
+        assert_eq!(format_upload_limit(None), "unlimited");
+        assert_eq!(format_upload_limit(Some(0)), "0 B/s");
+        assert_eq!(format_upload_limit(Some(513)), "513 B/s");
+        assert_eq!(format_upload_limit(Some(500 * 1024)), "500 KiB/s");
+        assert_eq!(format_upload_limit(Some(2 * 1024 * 1024)), "2 MiB/s");
+        assert_eq!(format_upload_limit(Some(3 * 1024 * 1024 * 1024)), "3 GiB/s");
+        assert_eq!(
+            format_upload_limit(Some(u64::MAX)),
+            format!("{} B/s", u64::MAX)
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn upload_limit_format_parse_round_trip(limit in proptest::option::of(proptest::num::u64::ANY)) {
+            proptest::prop_assert_eq!(parse_upload_limit(&format_upload_limit(limit)), Ok(limit));
+        }
     }
 
     #[test]

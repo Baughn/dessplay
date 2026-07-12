@@ -21,7 +21,9 @@ pub mod line;
 pub mod list;
 pub mod table;
 
-pub use form::{CharOutcome, Form, FormEvent, FormModel, RowAction, overlay};
+pub use form::{
+    Form, FormControl, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormRow, overlay,
+};
 pub use keymap::{BarEntry, Binding, KeyPattern, Keymap};
 pub(crate) use keys::{plain, typed};
 pub use line::{LineBuffer, TextField};

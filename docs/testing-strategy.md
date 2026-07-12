@@ -495,6 +495,13 @@ What stays untestable headless — and is deliberately left to the tmux
 tier and manual use: real-terminal resize quirks, color-depth
 differences, mouse protocol variations across emulators.
 
+The shared Form additionally tests semantic row identity: selection follows a
+row through insertion/reorder, typed controls route only their matching edit
+kind, invalid text keeps the masked/plain editor open with an error, and the
+fixed Save footer retains all three save paths. Settings has one 100x30 layout
+snapshot per category plus model tests for missing-category markers, dormant
+control styling, upload-rate parsing, and media-root selection.
+
 ---
 
 ## Actor Tests

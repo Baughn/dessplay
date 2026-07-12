@@ -10,6 +10,7 @@ use tuirealm::event::{Event, Key, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute, QueryResult};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
+use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 use tuirealm::state::State;
@@ -23,11 +24,13 @@ use unicode_width::UnicodeWidthStr;
 use super::msg::Msg;
 use super::props::{self, EpisodeRow};
 use super::theme;
+#[cfg(test)]
+use super::widgets::FormControl;
 use super::widgets::{
-    Binding, CharOutcome, Form, FormEvent, FormModel, KeyPattern, Keymap, LineBuffer, ListCursor,
-    RowAction, TextField, render_list,
+    Binding, Form, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormRow, KeyPattern,
+    Keymap, LineBuffer, ListCursor, TextField, render_list,
 };
-use crate::config::Settings;
+use crate::config::{Settings, SubtitleMode, format_upload_limit, parse_upload_limit};
 
 /// Like `passive_component!` but without a focus field (modals are
 /// always focused while open).
@@ -912,43 +915,106 @@ static BROWSER_DIR_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
 
 // ---- Settings ----------------------------------------------------------
 
-/// Field index layout: fixed fields then one row per media root, then
-/// the add-root row.
-const FIELD_USERNAME: usize = 0;
-const FIELD_SERVER: usize = 1;
-const FIELD_PASSWORD: usize = 2;
-const FIELD_READY: usize = 3;
-const FIELD_SUBTITLE: usize = 4;
-const FIELD_CACHE: usize = 5;
-const FIELD_AUTO_DOWNLOAD: usize = 6;
-const FIELD_TORRENT: usize = 7;
-const FIELD_IRC_ENABLED: usize = 8;
-const FIELD_IRC_SERVER: usize = 9;
-const FIELD_IRC_TLS: usize = 10;
-const FIELD_IRC_CHANNEL: usize = 11;
-const FIELD_SUBTITLE_SPEAKER_COLORS: usize = 12;
-const FIXED_FIELDS: usize = 13;
+/// The four settings tabs, in keyboard-navigation order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsCategory {
+    Account,
+    Playback,
+    Files,
+    Irc,
+}
+
+impl SettingsCategory {
+    const ALL: [Self; 4] = [Self::Account, Self::Playback, Self::Files, Self::Irc];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Account => 0,
+            Self::Playback => 1,
+            Self::Files => 2,
+            Self::Irc => 3,
+        }
+    }
+
+    fn caption(self) -> &'static str {
+        match self {
+            Self::Account => "Account",
+            Self::Playback => "Playback",
+            Self::Files => "Files",
+            Self::Irc => "IRC",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Account => "Account & connection",
+            Self::Playback => "Playback & display",
+            Self::Files => "Files & transfers",
+            Self::Irc => "IRC bridge",
+        }
+    }
+
+    fn step(self, right: bool) -> Self {
+        let index = self.index();
+        let target = if right {
+            (index + 1) % Self::ALL.len()
+        } else {
+            index.checked_sub(1).unwrap_or(Self::ALL.len() - 1)
+        };
+        Self::ALL[target]
+    }
+}
+
+/// Stable identity of a settings control. Paths are unique within the draft,
+/// so a media root keeps its identity while it is reordered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SettingId {
+    Username,
+    Server,
+    Password,
+    ReadyOnStartup,
+    Player,
+    SubtitleMode,
+    SubtitleSpeakerColors,
+    MediaRoot(PathBuf),
+    AddMediaRoot,
+    CacheRetention,
+    AutoDownload,
+    TorrentEnabled,
+    UploadLimit,
+    IrcEnabled,
+    IrcServer,
+    IrcTls,
+    IrcChannel,
+}
 
 /// First-run and later settings editing: a [`Form`] over the working
 /// settings and media roots. All form behavior (cursor, editor, save
 /// keys) is the shared widget; this file only declares the rows.
 pub struct SettingsModal {
     form: Form<SettingsForm>,
+    selections: [Option<SettingId>; 4],
 }
 
 /// The settings form model: working copies, committed on save.
-pub struct SettingsForm {
+struct SettingsForm {
     /// The working copy.
     pub settings: Settings,
     /// Working media roots (position 0 is the download target).
     pub roots: Vec<PathBuf>,
+    category: SettingsCategory,
 }
 
 impl SettingsModal {
     /// Open with current values.
     pub fn new(settings: Settings, roots: Vec<PathBuf>) -> Self {
         Self {
-            form: Form::new(SettingsForm { settings, roots }),
+            form: Form::new(SettingsForm {
+                settings,
+                roots,
+                category: SettingsCategory::Account,
+            }),
+            selections: [None, None, None, None],
         }
     }
 
@@ -961,188 +1027,340 @@ impl SettingsModal {
 
     /// Keys for the keybinding bar (derived from the Form).
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        self.form.bar()
+        let mut bar = self.form.bar();
+        bar.insert(0, ("←→", "Category"));
+        if matches!(self.form.selected_row(), Some(SettingId::MediaRoot(_))) {
+            bar.insert(2, ("d", "Remove"));
+            bar.insert(3, ("J/K", "Reorder"));
+        }
+        bar
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         self.form.render(frame, area);
     }
+
+    fn switch_category(&mut self, right: bool) {
+        let current = self.form.model.category;
+        self.selections[current.index()] = self.form.selected_row();
+        let next = current.step(right);
+        self.form.model.category = next;
+        if let Some(id) = self.selections[next.index()].clone()
+            && self.form.select_row(&id)
+        {
+            return;
+        }
+        if let Some(id) = self.form.model.rows().first().map(|row| row.id.clone()) {
+            self.form.select_row(&id);
+        } else {
+            self.form.select_save();
+        }
+    }
 }
 
 impl SettingsForm {
-    /// Index of the `[Add media root]` row.
-    fn add_root_index(&self) -> usize {
-        FIXED_FIELDS + self.roots.len()
-    }
-
-    /// Essentials still missing for a save, in display order. Empty == saveable.
-    fn missing_essentials(&self) -> Vec<&'static str> {
+    /// Required values still missing, with their owning category, in Save-hint
+    /// order. This single list drives both tab markers and the save gate.
+    fn missing_requirements(&self) -> Vec<(SettingsCategory, &'static str)> {
         let mut missing = Vec::new();
         if self.settings.username.is_none() {
-            missing.push("a username");
+            missing.push((SettingsCategory::Account, "a username"));
         }
         if self.settings.password.is_none() {
-            missing.push("a password");
+            missing.push((SettingsCategory::Account, "a password"));
         }
         if self.roots.is_empty() {
-            missing.push("a media root");
+            missing.push((SettingsCategory::Files, "a media root"));
         }
         missing
+    }
+
+    /// Essentials still missing for a save, in display order.
+    #[cfg(test)]
+    fn missing_essentials(&self) -> Vec<&'static str> {
+        self.missing_requirements()
+            .into_iter()
+            .map(|(_, label)| label)
+            .collect()
     }
 
     /// Can the current working copy be saved? (username, password, ≥1 root)
     #[cfg(test)]
     fn can_save(&self) -> bool {
-        self.missing_essentials().is_empty()
+        self.missing_requirements().is_empty()
     }
 
-    fn field_value(&self, index: usize) -> String {
-        match index {
-            FIELD_USERNAME => self.settings.username.clone().unwrap_or_default(),
-            FIELD_SERVER => self.settings.server.clone(),
-            FIELD_PASSWORD => self.settings.password.clone().unwrap_or_default(),
-            FIELD_IRC_SERVER => self.settings.irc_server.clone(),
-            FIELD_IRC_CHANNEL => self.settings.irc_channel.clone(),
-            _ => String::new(),
+    fn category_missing(&self, category: SettingsCategory) -> bool {
+        self.missing_requirements()
+            .iter()
+            .any(|(owner, _)| *owner == category)
+    }
+
+    fn text_required(value: String, label: &str) -> Result<String, FormError> {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            Err(FormError::Validation(format!("{label} is required")))
+        } else {
+            Ok(value)
         }
+    }
+
+    fn account_rows(&self) -> Vec<FormRow<SettingId>> {
+        vec![
+            FormRow::text(
+                SettingId::Username,
+                "Username",
+                self.settings.username.clone().unwrap_or_default(),
+            ),
+            FormRow::text(SettingId::Server, "Server", self.settings.server.clone())
+                .annotated("next launch", theme::dim()),
+            FormRow::secret(
+                SettingId::Password,
+                "Password",
+                self.settings.password.clone().unwrap_or_default(),
+            )
+            .annotated("next launch", theme::dim()),
+            FormRow::toggle(
+                SettingId::ReadyOnStartup,
+                "Ready on startup",
+                self.settings.ready_on_startup,
+            )
+            .annotated("next launch", theme::dim()),
+        ]
+    }
+
+    fn playback_rows(&self) -> Vec<FormRow<SettingId>> {
+        let speaker_row = FormRow::toggle(
+            SettingId::SubtitleSpeakerColors,
+            "Speaker colors",
+            self.settings.subtitle_speaker_colors,
+        );
+        vec![
+            FormRow::choice(SettingId::Player, "Player", self.settings.player.label())
+                .styled(theme::dim())
+                .annotated("WIP — not applied", theme::dim()),
+            FormRow::choice(
+                SettingId::SubtitleMode,
+                "Subtitle display",
+                self.settings.subtitle_mode.label(),
+            ),
+            if self.settings.subtitle_mode == SubtitleMode::SeparatePane {
+                speaker_row
+            } else {
+                speaker_row
+                    .styled(theme::dim())
+                    .annotated("separate pane only", theme::dim())
+            },
+        ]
+    }
+
+    fn files_rows(&self) -> Vec<FormRow<SettingId>> {
+        let mut rows = Vec::with_capacity(self.roots.len() + 5);
+        for (index, root) in self.roots.iter().enumerate() {
+            let row = FormRow::read_only(
+                SettingId::MediaRoot(root.clone()),
+                "Media root",
+                root.display().to_string(),
+            )
+            .preserving_value_end();
+            rows.push(if index == 0 {
+                row.annotated(
+                    "download target",
+                    theme::tone_style(super::props::Tone::Transfer),
+                )
+            } else {
+                row
+            });
+        }
+        rows.push(FormRow::action(SettingId::AddMediaRoot, "Add media root"));
+        rows.extend([
+            FormRow::choice(
+                SettingId::CacheRetention,
+                "Cache retention",
+                self.settings.cache_retention.label(),
+            ),
+            FormRow::toggle(
+                SettingId::AutoDownload,
+                "Auto-download",
+                self.settings.auto_download,
+            ),
+            FormRow::toggle(
+                SettingId::TorrentEnabled,
+                "BitTorrent downloads",
+                self.settings.torrent_enabled,
+            )
+            .annotated("next launch", theme::dim()),
+            FormRow::text(
+                SettingId::UploadLimit,
+                "Upload limit",
+                format_upload_limit(self.settings.upload_limit),
+            )
+            .annotated("next launch", theme::dim()),
+        ]);
+        rows
+    }
+
+    fn irc_rows(&self) -> Vec<FormRow<SettingId>> {
+        let dormant = (!self.settings.irc_enabled).then_some(theme::dim());
+        let style = |row: FormRow<SettingId>| match dormant {
+            Some(style) => row.styled(style),
+            None => row,
+        };
+        vec![
+            FormRow::toggle(
+                SettingId::IrcEnabled,
+                "IRC bridge",
+                self.settings.irc_enabled,
+            )
+            .annotated("reconnects IRC", theme::dim()),
+            style(
+                FormRow::text(
+                    SettingId::IrcServer,
+                    "IRC server",
+                    self.settings.irc_server.clone(),
+                )
+                .annotated("reconnects IRC", theme::dim()),
+            ),
+            style(
+                FormRow::toggle(SettingId::IrcTls, "IRC TLS", self.settings.irc_tls)
+                    .annotated("reconnects IRC", theme::dim()),
+            ),
+            style(
+                FormRow::text(
+                    SettingId::IrcChannel,
+                    "IRC channel",
+                    self.settings.irc_channel.clone(),
+                )
+                .annotated("reconnects IRC", theme::dim()),
+            ),
+        ]
     }
 }
 
 impl FormModel for SettingsForm {
+    type RowId = SettingId;
     type Out = Msg;
 
     fn title(&self) -> String {
-        "Settings".to_string()
+        format!("Settings — {}", self.category.title())
     }
 
-    fn rows(&self) -> Vec<Line<'static>> {
-        let mask = |s: &str| "*".repeat(s.chars().count());
-        let yes_no = |b: bool| if b { "yes" } else { "no" };
-        let mut lines: Vec<Line<'static>> = vec![
-            format!("Username:  {}", self.field_value(FIELD_USERNAME)).into(),
-            format!("Server:    {}", self.field_value(FIELD_SERVER)).into(),
-            format!("Password:  {}", mask(&self.field_value(FIELD_PASSWORD))).into(),
-            format!(
-                "Ready on startup: {}",
-                yes_no(self.settings.ready_on_startup)
-            )
-            .into(),
-            format!("Subtitles: {}", self.settings.subtitle_mode.label()).into(),
-            format!("Cache: {}", self.settings.cache_retention.label()).into(),
-            format!("Auto-download: {}", yes_no(self.settings.auto_download)).into(),
-            Line::from(vec![
-                Span::raw(format!(
-                    "BitTorrent downloads: {}",
-                    yes_no(self.settings.torrent_enabled)
-                )),
-                Span::styled(" (applies at restart)", theme::dim()),
-            ]),
-            format!("IRC bridge: {}", yes_no(self.settings.irc_enabled)).into(),
-            format!("IRC server:  {}", self.field_value(FIELD_IRC_SERVER)).into(),
-            format!("IRC TLS:     {}", yes_no(self.settings.irc_tls)).into(),
-            format!("IRC channel: {}", self.field_value(FIELD_IRC_CHANNEL)).into(),
-            format!(
-                "Subtitle speaker colors: {}",
-                yes_no(self.settings.subtitle_speaker_colors)
-            )
-            .into(),
-        ];
-        for (index, root) in self.roots.iter().enumerate() {
-            let marker = if index == 0 { " (download target)" } else { "" };
-            lines.push(Line::from(vec![
-                Span::raw(format!("Media root: {}", root.display())),
-                Span::styled(marker, theme::tone_style(super::props::Tone::Transfer)),
-            ]));
+    fn rows(&self) -> Vec<FormRow<SettingId>> {
+        match self.category {
+            SettingsCategory::Account => self.account_rows(),
+            SettingsCategory::Playback => self.playback_rows(),
+            SettingsCategory::Files => self.files_rows(),
+            SettingsCategory::Irc => self.irc_rows(),
         }
-        lines.push(Line::from(Span::styled("[Add media root]", theme::dim())));
-        lines
     }
 
-    fn activate(&mut self, index: usize) -> RowAction<Msg> {
-        match index {
-            FIELD_USERNAME | FIELD_SERVER | FIELD_PASSWORD | FIELD_IRC_SERVER
-            | FIELD_IRC_CHANNEL => RowAction::Edit {
-                current: self.field_value(index),
-            },
-            FIELD_READY => {
-                self.settings.ready_on_startup = !self.settings.ready_on_startup;
-                RowAction::Handled
+    fn apply(&mut self, id: &SettingId, edit: FormEdit) -> Result<FormEffect<Msg>, FormError> {
+        match (id, edit) {
+            (SettingId::Username, FormEdit::SetText(value)) => {
+                self.settings.username = Some(Self::text_required(value, "username")?);
             }
-            FIELD_IRC_ENABLED => {
-                self.settings.irc_enabled = !self.settings.irc_enabled;
-                RowAction::Handled
+            (SettingId::Server, FormEdit::SetText(value)) => {
+                self.settings.server = Self::text_required(value, "server")?;
             }
-            FIELD_IRC_TLS => {
-                self.settings.irc_tls = !self.settings.irc_tls;
-                RowAction::Handled
+            (SettingId::Password, FormEdit::SetText(value)) => {
+                self.settings.password = Some(Self::text_required(value, "password")?);
             }
-            FIELD_SUBTITLE => {
+            (SettingId::ReadyOnStartup, FormEdit::SetBool(value)) => {
+                self.settings.ready_on_startup = value;
+            }
+            (SettingId::Player, FormEdit::Cycle) => {
+                self.settings.player = self.settings.player.next();
+            }
+            (SettingId::SubtitleMode, FormEdit::Cycle) => {
                 self.settings.subtitle_mode = self.settings.subtitle_mode.next();
-                RowAction::Handled
             }
-            FIELD_CACHE => {
+            (SettingId::SubtitleSpeakerColors, FormEdit::SetBool(value)) => {
+                self.settings.subtitle_speaker_colors = value;
+            }
+            (SettingId::AddMediaRoot, FormEdit::Activate) => {
+                return Ok(FormEffect::Out(Msg::OpenDirPicker));
+            }
+            (SettingId::CacheRetention, FormEdit::Cycle) => {
                 self.settings.cache_retention = self.settings.cache_retention.next();
-                RowAction::Handled
             }
-            FIELD_AUTO_DOWNLOAD => {
-                self.settings.auto_download = !self.settings.auto_download;
-                RowAction::Handled
+            (SettingId::AutoDownload, FormEdit::SetBool(value)) => {
+                self.settings.auto_download = value;
             }
-            FIELD_TORRENT => {
-                self.settings.torrent_enabled = !self.settings.torrent_enabled;
-                RowAction::Handled
+            (SettingId::TorrentEnabled, FormEdit::SetBool(value)) => {
+                self.settings.torrent_enabled = value;
             }
-            FIELD_SUBTITLE_SPEAKER_COLORS => {
-                self.settings.subtitle_speaker_colors = !self.settings.subtitle_speaker_colors;
-                RowAction::Handled
+            (SettingId::UploadLimit, FormEdit::SetText(value)) => {
+                self.settings.upload_limit =
+                    parse_upload_limit(&value).map_err(FormError::Validation)?;
             }
-            index if index == self.add_root_index() => RowAction::Out(Msg::OpenDirPicker),
-            _ => RowAction::Handled,
-        }
-    }
-
-    fn commit(&mut self, index: usize, value: String) {
-        let value = value.trim().to_string();
-        match index {
-            FIELD_USERNAME => {
-                self.settings.username = (!value.is_empty()).then_some(value);
+            (SettingId::IrcEnabled, FormEdit::SetBool(value)) => {
+                self.settings.irc_enabled = value;
             }
-            FIELD_SERVER if !value.is_empty() => self.settings.server = value,
-            FIELD_PASSWORD => {
-                self.settings.password = (!value.is_empty()).then_some(value);
+            (SettingId::IrcServer, FormEdit::SetText(value)) => {
+                self.settings.irc_server = Self::text_required(value, "IRC server")?;
             }
-            FIELD_IRC_SERVER if !value.is_empty() => self.settings.irc_server = value,
-            FIELD_IRC_CHANNEL if !value.is_empty() => self.settings.irc_channel = value,
-            _ => {}
-        }
-    }
-
-    /// `J`/`K` (and lowercase) reorder the selected media root, carrying the
-    /// cursor with it; `d` removes it. Bare letters rather than
-    /// Ctrl-J/Ctrl-K, which collide with control codes (Ctrl-J == LF) in
-    /// terminals lacking the enhanced keyboard protocol.
-    fn on_char(&mut self, index: usize, c: char) -> CharOutcome {
-        if index < FIXED_FIELDS {
-            return CharOutcome::Ignored;
-        }
-        let root = index - FIXED_FIELDS;
-        match c {
-            'j' | 'J' | 'k' | 'K' => {
+            (SettingId::IrcTls, FormEdit::SetBool(value)) => {
+                self.settings.irc_tls = value;
+            }
+            (SettingId::IrcChannel, FormEdit::SetText(value)) => {
+                self.settings.irc_channel = Self::text_required(value, "IRC channel")?;
+            }
+            (SettingId::MediaRoot(path), FormEdit::Command(c @ ('j' | 'J' | 'k' | 'K'))) => {
+                let Some(index) = self.roots.iter().position(|root| root == path) else {
+                    return Ok(FormEffect::Handled);
+                };
                 let down = matches!(c, 'j' | 'J');
-                let target = if down { root + 1 } else { root.wrapping_sub(1) };
-                if root < self.roots.len() && target < self.roots.len() {
-                    self.roots.swap(root, target);
-                    return CharOutcome::MoveTo(FIXED_FIELDS + target);
+                let target = if down {
+                    index + 1
+                } else {
+                    index.wrapping_sub(1)
+                };
+                if target < self.roots.len() {
+                    self.roots.swap(index, target);
                 }
-                CharOutcome::Handled
             }
-            'd' => {
-                if root < self.roots.len() {
-                    self.roots.remove(root);
+            (SettingId::MediaRoot(path), FormEdit::Command('d')) => {
+                if let Some(index) = self.roots.iter().position(|root| root == path) {
+                    self.roots.remove(index);
                 }
-                CharOutcome::Handled
             }
-            _ => CharOutcome::Ignored,
+            (_, FormEdit::Command(_)) => return Ok(FormEffect::Ignored),
+            _ => return Err(FormError::InvalidEdit),
+        }
+        Ok(FormEffect::Handled)
+    }
+
+    fn header(&self) -> Vec<Line<'static>> {
+        let mut spans = Vec::new();
+        for category in SettingsCategory::ALL {
+            let missing = self.category_missing(category);
+            let label = format!(
+                "[{}{}]",
+                category.caption(),
+                if missing { " !" } else { "" }
+            );
+            let mut style = if category == self.category {
+                theme::highlight_style()
+            } else {
+                Style::default()
+            };
+            if missing {
+                style = style.patch(theme::tone_style(super::props::Tone::Blocked));
+            }
+            spans.push(Span::styled(label, style));
+            spans.push(Span::raw(" "));
+        }
+        vec![Line::from(spans)]
+    }
+
+    fn notes(&self) -> Vec<Line<'static>> {
+        if self.category == SettingsCategory::Irc {
+            vec![Line::styled(
+                "IRC is public; bridged chat leaves the encrypted group.",
+                theme::dim().add_modifier(Modifier::ITALIC),
+            )]
+        } else {
+            Vec::new()
         }
     }
 
@@ -1150,14 +1368,14 @@ impl FormModel for SettingsForm {
         "Edit/Toggle"
     }
 
-    fn extra_bar(&self) -> Vec<super::widgets::BarEntry> {
-        vec![("d", "Remove root"), ("J/K", "Reorder")]
-    }
-
     /// The "needs …" gate: drives both the save refusal and the `[Save]`
     /// row's hint, so a refused save explains itself.
     fn save_hint(&self) -> Option<String> {
-        let missing = self.missing_essentials();
+        let missing: Vec<_> = self
+            .missing_requirements()
+            .into_iter()
+            .map(|(_, label)| label)
+            .collect();
         (!missing.is_empty()).then(|| missing.join(", "))
     }
 
@@ -1170,7 +1388,16 @@ passive_modal!(SettingsModal);
 
 impl AppComponent<Msg, NoUserEvent> for SettingsModal {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        match self.form.on(ev) {
+        let event = self.form.on(ev);
+        if matches!(event, FormEvent::Ignored)
+            && !self.form.is_editing()
+            && let Some(key) = plain(ev)
+            && matches!(key, Key::Left | Key::Right)
+        {
+            self.switch_category(key == Key::Right);
+            return Some(Msg::None);
+        }
+        match event {
             FormEvent::Handled => Some(Msg::None),
             FormEvent::Out(msg) => Some(msg),
             FormEvent::Cancelled => Some(Msg::CloseModal),
@@ -1418,25 +1645,55 @@ static EPISODES_KEYMAP: Keymap<EpisodeBrowser, Msg> = Keymap(&[
 
 // ---- List entry editor -------------------------------------------------
 
-const LIST_FIELDS: &[&str] = &[
-    "Name",
-    "Nero's name",
-    "Genre",
-    "Notes",
-    "Recommender",
-    "Status",
-    "Status note",
-    "Source",
-    "Next ep",
-    "Available",
-    "Aliases",
-    "Manual files",
-];
-const LIST_FIELD_STATUS: usize = 5;
-const LIST_FIELD_NEXT_EP: usize = 8;
-const LIST_FIELD_AVAILABLE: usize = 9;
-const LIST_FIELD_ALIASES: usize = 10;
-const LIST_FIELD_MANUAL_FILES: usize = 11;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListField {
+    Name,
+    NeroName,
+    Genre,
+    Notes,
+    Recommender,
+    Status,
+    StatusNote,
+    Source,
+    NextEp,
+    Available,
+    Aliases,
+    ManualFiles,
+}
+
+impl ListField {
+    const ALL: [Self; 12] = [
+        Self::Name,
+        Self::NeroName,
+        Self::Genre,
+        Self::Notes,
+        Self::Recommender,
+        Self::Status,
+        Self::StatusNote,
+        Self::Source,
+        Self::NextEp,
+        Self::Available,
+        Self::Aliases,
+        Self::ManualFiles,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::NeroName => "Nero's name",
+            Self::Genre => "Genre",
+            Self::Notes => "Notes",
+            Self::Recommender => "Recommender",
+            Self::Status => "Status",
+            Self::StatusNote => "Status note",
+            Self::Source => "Source",
+            Self::NextEp => "Next ep",
+            Self::Available => "Available",
+            Self::Aliases => "Aliases",
+            Self::ManualFiles => "Manual files",
+        }
+    }
+}
 
 /// Edit one List entry's fields (watchers are edited via import or a
 /// later refinement): a [`Form`] over the entry plus its progress
@@ -1500,33 +1757,32 @@ impl ListEditForm {
         (self.next_ep != self.original_next_ep).then(|| self.next_ep.clone())
     }
 
-    fn field_value(&self, index: usize) -> String {
-        match index {
-            0 => self.entry.name.clone(),
-            1 => self.entry.nero_name.clone().unwrap_or_default(),
-            2 => self.entry.genre.clone().unwrap_or_default(),
-            3 => self.entry.notes.join("; "),
-            4 => self.entry.recommender.clone().unwrap_or_default(),
-            5 => format!("{:?}", self.entry.status),
-            6 => self.entry.status_note.clone().unwrap_or_default(),
-            7 => self.entry.source.clone().unwrap_or_default(),
-            LIST_FIELD_NEXT_EP => self.next_ep.next_ep.clone().unwrap_or_default(),
-            LIST_FIELD_AVAILABLE => if self.next_ep.available { "yes" } else { "no" }.to_string(),
-            LIST_FIELD_ALIASES => self
+    fn field_value(&self, field: ListField) -> String {
+        match field {
+            ListField::Name => self.entry.name.clone(),
+            ListField::NeroName => self.entry.nero_name.clone().unwrap_or_default(),
+            ListField::Genre => self.entry.genre.clone().unwrap_or_default(),
+            ListField::Notes => self.entry.notes.join("; "),
+            ListField::Recommender => self.entry.recommender.clone().unwrap_or_default(),
+            ListField::Status => format!("{:?}", self.entry.status),
+            ListField::StatusNote => self.entry.status_note.clone().unwrap_or_default(),
+            ListField::Source => self.entry.source.clone().unwrap_or_default(),
+            ListField::NextEp => self.next_ep.next_ep.clone().unwrap_or_default(),
+            ListField::Available => if self.next_ep.available { "yes" } else { "no" }.to_string(),
+            ListField::Aliases => self
                 .entry
                 .local_aliases
                 .iter()
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("; "),
-            LIST_FIELD_MANUAL_FILES => self
+            ListField::ManualFiles => self
                 .entry
                 .manual_files
                 .iter()
                 .map(|hash| hash.to_string())
                 .collect::<Vec<_>>()
                 .join("; "),
-            _ => String::new(),
         }
     }
 
@@ -1546,71 +1802,75 @@ impl ListEditForm {
 }
 
 impl FormModel for ListEditForm {
+    type RowId = ListField;
     type Out = Msg;
 
     fn title(&self) -> String {
         format!("Edit — {}", self.entry.name)
     }
 
-    fn rows(&self) -> Vec<Line<'static>> {
-        LIST_FIELDS
+    fn rows(&self) -> Vec<FormRow<ListField>> {
+        ListField::ALL
             .iter()
-            .enumerate()
-            .map(|(index, label)| Line::raw(format!("{label:>12}: {}", self.field_value(index))))
+            .copied()
+            .map(|field| match field {
+                ListField::Status => FormRow::choice(field, field.label(), self.field_value(field)),
+                ListField::Available => {
+                    FormRow::toggle(field, field.label(), self.next_ep.available)
+                }
+                _ => FormRow::text(field, field.label(), self.field_value(field)),
+            })
             .collect()
     }
 
-    fn activate(&mut self, index: usize) -> RowAction<Msg> {
-        match index {
-            LIST_FIELD_STATUS => {
+    fn apply(&mut self, field: &ListField, edit: FormEdit) -> Result<FormEffect<Msg>, FormError> {
+        match (field, edit) {
+            (ListField::Status, FormEdit::Cycle) => {
                 self.cycle_status();
-                RowAction::Handled
             }
-            LIST_FIELD_AVAILABLE => {
-                self.next_ep.available = !self.next_ep.available;
-                RowAction::Handled
+            (ListField::Available, FormEdit::SetBool(value)) => {
+                self.next_ep.available = value;
             }
-            index => RowAction::Edit {
-                current: self.field_value(index),
-            },
+            (field, FormEdit::SetText(value)) => {
+                let value = value.trim().to_string();
+                let opt = (!value.is_empty()).then_some(value.clone());
+                match field {
+                    ListField::Name if !value.is_empty() => self.entry.name = value,
+                    ListField::NeroName => self.entry.nero_name = opt,
+                    ListField::Genre => self.entry.genre = opt,
+                    ListField::Notes => {
+                        self.entry.notes = value
+                            .split(';')
+                            .map(|note| note.trim().to_string())
+                            .filter(|note| !note.is_empty())
+                            .collect();
+                    }
+                    ListField::Recommender => self.entry.recommender = opt,
+                    ListField::StatusNote => self.entry.status_note = opt,
+                    ListField::Source => self.entry.source = opt,
+                    ListField::NextEp => self.next_ep.next_ep = opt,
+                    ListField::Aliases => {
+                        self.entry.local_aliases = value
+                            .split(';')
+                            .map(|alias| alias.trim().to_string())
+                            .filter(|alias| !alias.is_empty())
+                            .collect();
+                    }
+                    ListField::ManualFiles => {
+                        // Tokens that don't parse as ed2k hex are dropped; the
+                        // redisplayed row shows what stuck.
+                        self.entry.manual_files = value
+                            .split(';')
+                            .filter_map(|token| token.trim().parse().ok())
+                            .collect();
+                    }
+                    ListField::Name | ListField::Status | ListField::Available => {}
+                }
+            }
+            (_, FormEdit::Command(_)) => return Ok(FormEffect::Ignored),
+            _ => return Err(FormError::InvalidEdit),
         }
-    }
-
-    fn commit(&mut self, index: usize, value: String) {
-        let value = value.trim().to_string();
-        let opt = (!value.is_empty()).then_some(value.clone());
-        match index {
-            0 if !value.is_empty() => self.entry.name = value,
-            1 => self.entry.nero_name = opt,
-            2 => self.entry.genre = opt,
-            3 => {
-                self.entry.notes = value
-                    .split(';')
-                    .map(|note| note.trim().to_string())
-                    .filter(|note| !note.is_empty())
-                    .collect();
-            }
-            4 => self.entry.recommender = opt,
-            6 => self.entry.status_note = opt,
-            7 => self.entry.source = opt,
-            LIST_FIELD_NEXT_EP => self.next_ep.next_ep = opt,
-            LIST_FIELD_ALIASES => {
-                self.entry.local_aliases = value
-                    .split(';')
-                    .map(|alias| alias.trim().to_string())
-                    .filter(|alias| !alias.is_empty())
-                    .collect();
-            }
-            LIST_FIELD_MANUAL_FILES => {
-                // Tokens that don't parse as ed2k hex are dropped; the
-                // redisplayed row shows what stuck.
-                self.entry.manual_files = value
-                    .split(';')
-                    .filter_map(|token| token.trim().parse().ok())
-                    .collect();
-            }
-            _ => {}
-        }
+        Ok(FormEffect::Handled)
     }
 
     fn save(&self) -> Msg {
@@ -2144,7 +2404,7 @@ static NYAA_ACTIVE_KEYMAP: Keymap<NyaaSearchModal, Msg> = Keymap(&[
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use tuirealm::event::{KeyEvent, KeyModifiers};
     use tuirealm::ratatui::Terminal;
@@ -2228,10 +2488,9 @@ mod tests {
             modal.form.model.settings.cache_retention,
             crate::config::CacheRetention::default()
         );
-        // Move the cursor onto the Cache field and cycle it.
-        for _ in 0..FIELD_CACHE {
-            modal.on(&down());
-        }
+        modal.switch_category(true);
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::CacheRetention));
         modal.on(&enter());
         assert_eq!(
             modal.form.model.settings.cache_retention,
@@ -2244,15 +2503,12 @@ mod tests {
         let mut modal = SettingsModal::new(crate::config::Settings::default(), vec![]);
         // Default off; the row's Enter flips it on.
         assert!(!modal.form.model.settings.torrent_enabled);
-        for _ in 0..FIELD_TORRENT {
-            modal.on(&down());
-        }
+        modal.switch_category(true);
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::TorrentEnabled));
         modal.on(&enter());
         assert!(modal.form.model.settings.torrent_enabled);
-        // And the label the cursor is on is really the torrent row.
-        let rows = modal.form.model.rows();
-        let line = rows[FIELD_TORRENT].to_string();
-        assert!(line.contains("BitTorrent"), "row was {line:?}");
+        assert_eq!(modal.form.selected_row(), Some(SettingId::TorrentEnabled));
     }
 
     #[test]
@@ -2779,7 +3035,7 @@ mod tests {
     #[test]
     fn enter_on_save_row_saves() {
         let mut modal = saveable_settings();
-        modal.form.select(modal.form.save_index());
+        modal.form.select_save();
         assert!(is_save(&modal.on(&enter())));
     }
 
@@ -2791,6 +3047,15 @@ mod tests {
             blank.form.model.missing_essentials(),
             vec!["a username", "a password", "a media root"]
         );
+        assert!(blank.form.model.category_missing(SettingsCategory::Account));
+        assert!(blank.form.model.category_missing(SettingsCategory::Files));
+        assert!(
+            !blank
+                .form
+                .model
+                .category_missing(SettingsCategory::Playback)
+        );
+        assert!(!blank.form.model.category_missing(SettingsCategory::Irc));
         // Fill username + root; only the password remains.
         let settings = Settings {
             username: Some("nero".into()),
@@ -2805,6 +3070,12 @@ mod tests {
                 .model
                 .missing_essentials()
                 .is_empty()
+        );
+        assert!(
+            !saveable_settings()
+                .form
+                .model
+                .category_missing(SettingsCategory::Account)
         );
     }
 
@@ -2842,7 +3113,7 @@ mod tests {
         // The `[Save]` row (after the fields) saves on Enter.
         let mut modal =
             ListEditModal::new(ListEntryId(7), sample_list_entry(), NextEpState::default());
-        modal.form.select(modal.form.save_index());
+        modal.form.select_save();
         assert!(matches!(
             modal.on(&enter()),
             Some(Msg::ListEntrySaved(ListEntryId(7), _, _))
@@ -2870,8 +3141,10 @@ mod tests {
         };
         let mut modal =
             SettingsModal::new(settings, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
-        // Put the cursor on the first media root.
-        modal.form.select(FIXED_FIELDS);
+        modal.switch_category(true);
+        modal.switch_category(true);
+        let selected = SettingId::MediaRoot(PathBuf::from("/a"));
+        assert!(modal.form.select_row(&selected));
         // `J` (shifted) moves it down; the cursor carries with it.
         assert_eq!(
             modal.on(&key(Key::Char('J'), KeyModifiers::SHIFT)),
@@ -2881,7 +3154,7 @@ mod tests {
             modal.form.model.roots,
             vec![PathBuf::from("/b"), PathBuf::from("/a")]
         );
-        assert_eq!(modal.form.selected(), FIXED_FIELDS + 1);
+        assert_eq!(modal.form.selected_row(), Some(selected.clone()));
         // Lowercase `k` moves it back up.
         assert_eq!(
             modal.on(&key(Key::Char('k'), KeyModifiers::NONE)),
@@ -2891,7 +3164,7 @@ mod tests {
             modal.form.model.roots,
             vec![PathBuf::from("/a"), PathBuf::from("/b")]
         );
-        assert_eq!(modal.form.selected(), FIXED_FIELDS);
+        assert_eq!(modal.form.selected_row(), Some(selected));
     }
 
     #[test]
@@ -2919,7 +3192,6 @@ mod tests {
             ..Default::default()
         };
         let mut modal = SettingsModal::new(settings, vec![PathBuf::from("/anime")]);
-        let save_row = modal.form.save_index();
         assert!(!modal.form.model.can_save());
         assert_eq!(
             modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT)),
@@ -2929,7 +3201,161 @@ mod tests {
             modal.on(&key(Key::Char('s'), KeyModifiers::CONTROL)),
             Some(Msg::None)
         );
-        modal.form.select(save_row);
+        modal.form.select_save();
         assert_eq!(modal.on(&enter()), Some(Msg::None));
+    }
+
+    #[test]
+    fn category_switching_remembers_semantic_selection() {
+        let mut modal = saveable_settings();
+        assert!(modal.form.select_row(&SettingId::Password));
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::SubtitleMode));
+        modal.switch_category(true);
+        modal.switch_category(false);
+        assert_eq!(modal.form.selected_row(), Some(SettingId::SubtitleMode));
+        modal.switch_category(false);
+        assert_eq!(modal.form.selected_row(), Some(SettingId::Password));
+    }
+
+    #[test]
+    fn category_arrows_stay_in_an_active_editor() {
+        let mut modal = saveable_settings();
+        assert!(modal.form.select_row(&SettingId::Username));
+        modal.on(&enter());
+        assert!(modal.form.is_editing());
+        assert_eq!(
+            modal.on(&key(Key::Left, KeyModifiers::NONE)),
+            Some(Msg::None)
+        );
+        assert!(modal.form.is_editing());
+        assert_eq!(modal.form.model.category, SettingsCategory::Account);
+    }
+
+    #[test]
+    fn every_category_projects_unique_semantic_rows() {
+        let mut modal = saveable_settings();
+        for category in SettingsCategory::ALL {
+            modal.form.model.category = category;
+            let rows = modal.form.model.rows();
+            for (index, row) in rows.iter().enumerate() {
+                assert!(
+                    rows[index + 1..].iter().all(|other| other.id != row.id),
+                    "duplicate row identity in {category:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dormant_dependent_controls_are_dim_but_remain_controls() {
+        let settings = Settings {
+            irc_enabled: false,
+            subtitle_mode: SubtitleMode::Off,
+            ..Settings::default()
+        };
+        let mut modal = SettingsModal::new(settings, vec![]);
+        modal.form.model.category = SettingsCategory::Playback;
+        let speaker = modal
+            .form
+            .model
+            .rows()
+            .into_iter()
+            .find(|row| row.id == SettingId::SubtitleSpeakerColors)
+            .expect("speaker row");
+        assert_eq!(speaker.style, theme::dim());
+        assert!(matches!(speaker.control, FormControl::Toggle { .. }));
+
+        modal.form.model.category = SettingsCategory::Irc;
+        let server = modal
+            .form
+            .model
+            .rows()
+            .into_iter()
+            .find(|row| row.id == SettingId::IrcServer)
+            .expect("IRC server row");
+        assert_eq!(server.style, theme::dim());
+        assert!(matches!(server.control, FormControl::Text { .. }));
+    }
+
+    #[test]
+    fn removing_selected_root_chooses_the_next_semantic_row() {
+        let mut modal = saveable_settings();
+        modal.form.model.roots.push(PathBuf::from("/second"));
+        modal.switch_category(true);
+        modal.switch_category(true);
+        assert!(
+            modal
+                .form
+                .select_row(&SettingId::MediaRoot(PathBuf::from("/anime")))
+        );
+        assert_eq!(modal.on(&char_key('d')), Some(Msg::None));
+        assert_eq!(modal.form.model.roots, vec![PathBuf::from("/second")]);
+        assert_eq!(
+            modal.form.selected_row(),
+            Some(SettingId::MediaRoot(PathBuf::from("/second")))
+        );
+    }
+
+    #[test]
+    fn adding_a_root_does_not_retarget_the_add_action_selection() {
+        let mut modal = saveable_settings();
+        modal.switch_category(true);
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::AddMediaRoot));
+        modal.add_root(PathBuf::from("/second"));
+        assert_eq!(modal.form.selected_row(), Some(SettingId::AddMediaRoot));
+    }
+
+    #[test]
+    fn player_placeholder_cycles_and_is_saved() {
+        let mut modal = saveable_settings();
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::Player));
+        assert_eq!(
+            modal.form.model.settings.player,
+            crate::config::PlayerKind::Mpv
+        );
+        assert_eq!(modal.on(&enter()), Some(Msg::None));
+        assert_eq!(
+            modal.form.model.settings.player,
+            crate::config::PlayerKind::Vlc
+        );
+        let Some(Msg::SettingsSaved(settings, _)) =
+            modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))
+        else {
+            panic!("expected settings save");
+        };
+        assert_eq!(settings.player, crate::config::PlayerKind::Vlc);
+    }
+
+    #[test]
+    fn upload_limit_editor_commits_human_rate() {
+        let mut modal = saveable_settings();
+        modal.switch_category(true);
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::UploadLimit));
+        modal.on(&enter());
+        for _ in 0.."unlimited".len() {
+            modal.on(&key(Key::Backspace, KeyModifiers::NONE));
+        }
+        for c in "500 KiB/s".chars() {
+            modal.on(&char_key(c));
+        }
+        assert_eq!(modal.on(&enter()), Some(Msg::None));
+        assert_eq!(modal.form.model.settings.upload_limit, Some(500 * 1024));
+    }
+
+    #[test]
+    fn invalid_upload_limit_keeps_editor_open_and_value_unchanged() {
+        let mut modal = saveable_settings();
+        modal.switch_category(true);
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::UploadLimit));
+        modal.on(&enter());
+        modal.on(&char_key('x'));
+        assert_eq!(modal.on(&enter()), Some(Msg::None));
+        assert!(modal.form.is_editing());
+        assert_eq!(modal.form.model.settings.upload_limit, None);
     }
 }

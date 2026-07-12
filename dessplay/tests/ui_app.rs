@@ -208,7 +208,78 @@ fn first_run_opens_settings_modal() {
         Vec::new(),
     );
     assert!(ui.modal_open());
-    insta::assert_snapshot!(render(&mut ui, 100, 30));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("[Account !]"), "{screen}");
+    assert!(screen.contains("[Files !]"), "{screen}");
+    insta::assert_snapshot!(screen);
+}
+
+#[test]
+fn settings_playback_layout_snapshot() {
+    let mut ui = ui();
+    ui.handle(key(Key::Function(3)));
+    ui.handle(key(Key::Right));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Settings — Playback & display"), "{screen}");
+    assert!(screen.contains("WIP — not applied"), "{screen}");
+    insta::assert_snapshot!(screen);
+}
+
+#[test]
+fn settings_files_layout_snapshot_scrolls_many_roots() {
+    let settings = Settings {
+        username: Some("kim".into()),
+        password: Some("hunter2".into()),
+        ..Settings::default()
+    };
+    let roots = (0..20)
+        .map(|index| {
+            format!("/media/a-very-long-library-root-name-that-needs-clipping/{index:02}").into()
+        })
+        .collect();
+    let mut ui = Ui::new(UserId::new("kim"), settings, roots);
+    ui.handle(key(Key::Function(3)));
+    ui.handle(key(Key::Right));
+    ui.handle(key(Key::Right));
+    ui.handle(key(Key::PageDown));
+    ui.handle(key(Key::PageDown));
+    ui.handle(key(Key::PageDown));
+    ui.handle(key(Key::Up));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Settings — Files & transfers"), "{screen}");
+    assert!(screen.contains("/18") || screen.contains("/19"), "{screen}");
+    assert!(screen.contains("Upload limit"), "{screen}");
+    assert!(screen.contains("[Save]"), "{screen}");
+    insta::assert_snapshot!(screen);
+}
+
+#[test]
+fn settings_irc_layout_snapshot() {
+    let mut ui = ui();
+    ui.handle(key(Key::Function(3)));
+    for _ in 0..3 {
+        ui.handle(key(Key::Right));
+    }
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Settings — IRC bridge"), "{screen}");
+    assert!(screen.contains("IRC is public"), "{screen}");
+    insta::assert_snapshot!(screen);
+}
+
+#[test]
+fn settings_save_from_playback_emits_the_complete_draft() {
+    let mut ui = ui();
+    ui.handle(key(Key::Function(3)));
+    ui.handle(key(Key::Right));
+    ui.handle(key(Key::Enter)); // mpv -> VLC placeholder
+    let actions = ui.handle(shift('S'));
+    let [UserAction::SaveSettings(settings, roots)] = actions.as_slice() else {
+        panic!("expected a complete settings save, got {actions:?}");
+    };
+    assert_eq!(settings.username.as_deref(), Some("kim"));
+    assert_eq!(settings.password.as_deref(), Some("hunter2"));
+    assert_eq!(settings.player, dessplay::config::PlayerKind::Vlc);
+    assert_eq!(roots, &[std::path::PathBuf::from("/media")]);
 }
 
 #[test]

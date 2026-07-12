@@ -1,21 +1,21 @@
 //! The one field-editing form. Settings and the List-entry editor are
-//! *declarations* over this widget: a model says what the rows are and
-//! what Enter means on each; the form owns everything behavioral —
-//! cursor movement, the pop-up text editor, the save paths (capital `S`,
-//! the `[Save]` row, and the unadvertised Ctrl-S alias — capital-S
-//! exists because Ctrl-S is eaten as XOFF in terminals lacking the
-//! enhanced keyboard protocol), and Esc-to-cancel. A new field, or a
-//! whole new form, cannot behave differently from its neighbors.
+//! declarations over this widget: a model provides typed rows and one
+//! semantic edit boundary; the form owns cursor movement, control
+//! activation, the pop-up text editor, validation display, the save paths,
+//! and Esc-to-cancel. Display order is never a field's identity.
 
 use tuirealm::event::{Event, Key, NoUserEvent};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
-use tuirealm::ratatui::text::Line;
-use tuirealm::ratatui::widgets::{Clear, ListItem};
+use tuirealm::ratatui::style::Style;
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use super::keys::{ctrl, plain, typed};
 use super::line::TextField;
-use super::list::{ListCursor, render_list};
+use super::list::ListCursor;
+use super::table::{Align, Cell, table_row, truncate_display_start};
 use crate::ui::theme;
 
 /// The centered overlay area: `percent` of the frame, clamped.
@@ -38,76 +38,286 @@ pub fn overlay(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     }
 }
 
-/// What Enter does on a form row, decided by the model.
-pub enum RowAction<Out> {
-    /// Open the pop-up text editor prefilled with the row's value.
-    Edit {
-        /// The current value, loaded into the editor.
-        current: String,
+/// A standard form control. The form derives Enter's behavior from this
+/// value, so a model cannot render a toggle while accidentally opening a text
+/// editor for the same row.
+#[derive(Clone, PartialEq, Eq)]
+pub enum FormControl {
+    /// Plain one-line text.
+    Text {
+        /// Current text.
+        value: String,
     },
-    /// The model changed its own state (toggle, cycle); just re-render.
+    /// Masked one-line text, both in the row and the pop-up editor.
+    Secret {
+        /// Current unmasked value (never rendered directly).
+        value: String,
+    },
+    /// A yes/no value. Enter sends [`FormEdit::SetBool`] with the inverse.
+    Toggle {
+        /// Current boolean value.
+        value: bool,
+    },
+    /// A finite choice. Enter sends [`FormEdit::Cycle`].
+    Choice {
+        /// Current choice label.
+        value: String,
+    },
+    /// Selectable display data which only model-specific commands mutate.
+    ReadOnly {
+        /// Current display value.
+        value: String,
+    },
+    /// A named action. Enter sends [`FormEdit::Activate`].
+    Action {
+        /// Bracketed action label.
+        label: String,
+    },
+}
+
+impl FormControl {
+    fn display(&self) -> String {
+        match self {
+            FormControl::Text { value }
+            | FormControl::Choice { value }
+            | FormControl::ReadOnly { value } => value.clone(),
+            FormControl::Secret { value } => "*".repeat(value.chars().count()),
+            FormControl::Toggle { value } => if *value { "yes" } else { "no" }.into(),
+            FormControl::Action { label } => format!("[{label}]"),
+        }
+    }
+}
+
+/// A typed row projected from a form model.
+pub struct FormRow<Id> {
+    /// Stable semantic identity, independent of display order.
+    pub id: Id,
+    /// Field label. Action controls render their own bracketed label instead.
+    pub label: &'static str,
+    /// The control and its current display value.
+    pub control: FormControl,
+    /// Style for the label and value (e.g. dormant IRC controls are dim).
+    pub style: Style,
+    /// Optional right-aligned lifecycle or scope annotation.
+    pub annotation: Option<(String, Style)>,
+    preserve_value_end: bool,
+}
+
+impl<Id> FormRow<Id> {
+    /// Plain text control.
+    pub fn text(id: Id, label: &'static str, value: impl Into<String>) -> Self {
+        Self::new(
+            id,
+            label,
+            FormControl::Text {
+                value: value.into(),
+            },
+        )
+    }
+
+    /// Masked text control.
+    pub fn secret(id: Id, label: &'static str, value: impl Into<String>) -> Self {
+        Self::new(
+            id,
+            label,
+            FormControl::Secret {
+                value: value.into(),
+            },
+        )
+    }
+
+    /// Boolean toggle.
+    pub fn toggle(id: Id, label: &'static str, value: bool) -> Self {
+        Self::new(id, label, FormControl::Toggle { value })
+    }
+
+    /// Cycled finite choice.
+    pub fn choice(id: Id, label: &'static str, value: impl Into<String>) -> Self {
+        Self::new(
+            id,
+            label,
+            FormControl::Choice {
+                value: value.into(),
+            },
+        )
+    }
+
+    /// Selectable read-only value (usually with model-specific commands).
+    pub fn read_only(id: Id, label: &'static str, value: impl Into<String>) -> Self {
+        Self::new(
+            id,
+            label,
+            FormControl::ReadOnly {
+                value: value.into(),
+            },
+        )
+    }
+
+    /// Enter-triggered action.
+    pub fn action(id: Id, label: impl Into<String>) -> Self {
+        Self::new(
+            id,
+            "",
+            FormControl::Action {
+                label: label.into(),
+            },
+        )
+    }
+
+    fn new(id: Id, label: &'static str, control: FormControl) -> Self {
+        Self {
+            id,
+            label,
+            control,
+            style: Style::default(),
+            annotation: None,
+            preserve_value_end: false,
+        }
+    }
+
+    /// Style the field's label and value.
+    pub fn styled(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Add a right-aligned annotation.
+    pub fn annotated(mut self, text: impl Into<String>, style: Style) -> Self {
+        self.annotation = Some((text.into(), style));
+        self
+    }
+
+    /// Keep the end of an overlong value visible (used for media-root paths).
+    pub fn preserving_value_end(mut self) -> Self {
+        self.preserve_value_end = true;
+        self
+    }
+
+    fn line(&self, width: usize) -> Line<'static> {
+        let annotation_width = self
+            .annotation
+            .as_ref()
+            .map(|(text, _)| text.width().min((width / 2).max(1)))
+            .unwrap_or(0);
+        let reserved = if annotation_width == 0 {
+            0
+        } else {
+            annotation_width + 1
+        };
+        let flex_width = width.saturating_sub(reserved).max(8);
+        let display = self.control.display();
+        let content = match &self.control {
+            FormControl::Action { .. } => self.control.display(),
+            _ if self.preserve_value_end => {
+                let value_width = flex_width.saturating_sub(24);
+                let (value, _) = truncate_display_start(&display, value_width);
+                format!("{:<24}{value}", self.label)
+            }
+            _ => format!("{:<24}{display}", self.label),
+        };
+        let cells = self
+            .annotation
+            .as_ref()
+            .map_or_else(Vec::new, |(text, style)| {
+                vec![Cell::new(
+                    text.clone(),
+                    *style,
+                    annotation_width,
+                    Align::Right,
+                )]
+            });
+        table_row(width, vec![Span::styled(content, self.style)], cells)
+    }
+}
+
+/// A semantic edit emitted by the shared form interaction layer.
+pub enum FormEdit {
+    /// Commit a text editor.
+    SetText(String),
+    /// Set a toggle to this value.
+    SetBool(bool),
+    /// Advance a choice to its next value.
+    Cycle,
+    /// Activate an action row.
+    Activate,
+    /// A form-specific command typed on the selected row.
+    Command(char),
+}
+
+/// Successful result of applying a semantic edit.
+pub enum FormEffect<Out> {
+    /// The model did not use this edit; let structural routing continue.
+    Ignored,
+    /// The model changed locally.
     Handled,
-    /// The row produces an output for the app (e.g. open a picker).
+    /// The model produced an output for the application.
     Out(Out),
 }
 
-/// What a typed letter did in the model (reorder, delete, ...).
-pub enum CharOutcome {
-    /// Not a model key; the form ignores it.
-    Ignored,
-    /// The model changed; keep the cursor where it is (re-clamped).
-    Handled,
-    /// The model changed and the cursor should follow to this row.
-    MoveTo(usize),
+/// An edit which could not be applied.
+pub enum FormError {
+    /// The control and edit kinds disagree. This indicates a declaration bug.
+    InvalidEdit,
+    /// User-entered text failed domain validation.
+    Validation(String),
 }
 
-/// A form's content and semantics. Everything behavioral lives in
-/// [`Form`]; the model only answers "what are the rows" and "what does
-/// this row do".
+impl FormError {
+    fn message(self) -> String {
+        match self {
+            FormError::InvalidEdit => "this field cannot accept that edit".into(),
+            FormError::Validation(message) => message,
+        }
+    }
+}
+
+/// A form's content and semantics. Everything behavioral lives in [`Form`];
+/// the model projects owned rows and applies edits by semantic row identity.
 pub trait FormModel {
+    /// Stable row identity.
+    type RowId: Clone + Eq;
     /// What a completed form emits (the app's message type).
     type Out;
 
     /// The modal title.
     fn title(&self) -> String;
 
-    /// The rows, in display order, excluding the trailing `[Save]` row
-    /// (the form appends and handles that one).
-    fn rows(&self) -> Vec<Line<'static>>;
+    /// Rows in display order, excluding the fixed `[Save]` footer.
+    fn rows(&self) -> Vec<FormRow<Self::RowId>>;
 
-    /// Enter on row `index`.
-    fn activate(&mut self, index: usize) -> RowAction<Self::Out>;
+    /// Apply one semantic edit.
+    fn apply(
+        &mut self,
+        id: &Self::RowId,
+        edit: FormEdit,
+    ) -> Result<FormEffect<Self::Out>, FormError>;
 
-    /// Commit the pop-up editor's text back to row `index`.
-    fn commit(&mut self, index: usize, value: String);
-
-    /// A typed letter on row `index` (model-specific extras like
-    /// reorder/delete). Default: none.
-    fn on_char(&mut self, _index: usize, _c: char) -> CharOutcome {
-        CharOutcome::Ignored
+    /// Fixed lines above the scrollable rows (settings category tabs).
+    fn header(&self) -> Vec<Line<'static>> {
+        Vec::new()
     }
 
-    /// The keybinding-bar label for Enter (what activating a row means
-    /// in this form).
+    /// Fixed notes below the rows and above Save (the public-IRC warning).
+    fn notes(&self) -> Vec<Line<'static>> {
+        Vec::new()
+    }
+
+    /// Keybinding-bar label for Enter.
     fn enter_label(&self) -> &'static str {
         "Edit"
     }
 
-    /// Extra advertised keys, matching what [`FormModel::on_char`]
-    /// handles. Declared on the model, next to the handler, so the two
-    /// stay in one place.
+    /// Extra advertised keys matching [`FormEdit::Command`] handling.
     fn extra_bar(&self) -> Vec<super::keymap::BarEntry> {
         Vec::new()
     }
 
-    /// Why the form cannot save right now (`None` = saveable). Drives
-    /// both the save gate and the `[Save]` row's "needs …" hint, so a
-    /// refused save always explains itself.
+    /// Why the form cannot save right now (`None` = saveable).
     fn save_hint(&self) -> Option<String> {
         None
     }
 
-    /// The output of a successful save.
+    /// Output of a successful save.
     fn save(&self) -> Self::Out;
 
     /// Overlay size as (percent_x, percent_y).
@@ -116,12 +326,12 @@ pub trait FormModel {
     }
 }
 
-/// What one event did to the form, for the modal wrapper to map onto
-/// the app's message type.
+/// What one event did to the form, for the modal wrapper to map onto the
+/// application's message type.
 pub enum FormEvent<Out> {
     /// Consumed; re-render.
     Handled,
-    /// The form produced an output (a save, or a row's action).
+    /// The form produced an output (a save or row action).
     Out(Out),
     /// Esc outside the editor: close the modal.
     Cancelled,
@@ -129,49 +339,89 @@ pub enum FormEvent<Out> {
     Ignored,
 }
 
+struct Editor<Id> {
+    id: Id,
+    input: TextField,
+    masked: bool,
+    error: Option<String>,
+}
+
+enum Selection<Id> {
+    Row(Id),
+    Save,
+}
+
 /// The form widget: a [`FormModel`] plus all editing behavior.
 pub struct Form<M: FormModel> {
-    /// The model (public: wrappers reach through for domain accessors).
+    /// The model (public: modal wrappers expose domain-specific accessors).
     pub model: M,
     cursor: ListCursor,
-    editor: Option<(usize, TextField)>,
+    selection: Selection<M::RowId>,
+    editor: Option<Editor<M::RowId>>,
 }
 
 impl<M: FormModel> Form<M> {
     /// A form over `model`, cursor on the first row.
     pub fn new(model: M) -> Self {
+        let selection = model
+            .rows()
+            .first()
+            .map(|row| Selection::Row(row.id.clone()))
+            .unwrap_or(Selection::Save);
         Self {
             model,
             cursor: ListCursor::default(),
+            selection,
             editor: None,
         }
     }
 
-    /// Rows plus the `[Save]` row.
     fn row_count(&self) -> usize {
         self.model.rows().len() + 1
     }
 
-    /// Index of the `[Save]` row (last).
-    pub fn save_index(&self) -> usize {
-        self.model.rows().len()
+    /// Is a text/secret editor active?
+    pub fn is_editing(&self) -> bool {
+        self.editor.is_some()
     }
 
-    /// Put the cursor on a row (tests).
-    pub fn select(&mut self, index: usize) {
+    /// Select a row by semantic identity. Returns false when it is absent.
+    pub fn select_row(&mut self, id: &M::RowId) -> bool {
+        let Some(index) = self.model.rows().iter().position(|row| &row.id == id) else {
+            return false;
+        };
         self.cursor.set(index);
+        self.selection = Selection::Row(id.clone());
+        true
     }
 
-    /// The row the cursor is on.
-    pub fn selected(&self) -> usize {
-        self.cursor.index()
+    /// Select the fixed Save footer.
+    pub fn select_save(&mut self) {
+        self.cursor.set(self.model.rows().len());
+        self.selection = Selection::Save;
     }
 
-    /// The keybinding bar: Enter (model-labeled), the model's extra keys,
-    /// then the save/cancel keys the form itself owns. Derived from the
-    /// same widget that dispatches them, so a form's bar cannot drift
-    /// from Form behavior. (Ctrl-S works too but is unadvertised — see
-    /// the module docs.)
+    /// Currently selected semantic row (`None` means Save).
+    pub fn selected_row(&self) -> Option<M::RowId> {
+        match &self.selection {
+            Selection::Row(id) if self.model.rows().iter().any(|row| &row.id == id) => {
+                Some(id.clone())
+            }
+            Selection::Row(_) => self
+                .model
+                .rows()
+                .get(self.cursor.index())
+                .map(|row| row.id.clone()),
+            Selection::Save => None,
+        }
+    }
+
+    /// Is the fixed Save footer selected?
+    pub fn save_selected(&self) -> bool {
+        matches!(self.selection, Selection::Save)
+    }
+
+    /// The keybinding bar: Enter, model commands, then save/cancel.
     pub fn bar(&self) -> Vec<super::keymap::BarEntry> {
         let mut items = vec![("Enter", self.model.enter_label())];
         items.extend(self.model.extra_bar());
@@ -187,26 +437,92 @@ impl<M: FormModel> Form<M> {
         }
     }
 
-    /// Route one event.
-    pub fn on(&mut self, ev: &Event<NoUserEvent>) -> FormEvent<M::Out> {
-        // An active text editor swallows everything.
-        if let Some((index, editor)) = &mut self.editor {
-            match plain(ev) {
-                Some(Key::Enter) => {
-                    let index = *index;
-                    let value = editor.text();
-                    self.editor = None;
-                    self.model.commit(index, value);
-                }
-                Some(Key::Esc) => {
-                    self.editor = None;
-                }
-                _ => {
-                    editor.edit(ev);
+    fn restore_selection(&mut self, id: &M::RowId) {
+        if !self.select_row(id) {
+            self.cursor.clamp(self.row_count());
+            self.selection_from_cursor();
+        }
+    }
+
+    fn reconcile_selection(&mut self) {
+        let rows = self.model.rows();
+        match &self.selection {
+            Selection::Row(id) => {
+                if let Some(index) = rows.iter().position(|row| &row.id == id) {
+                    self.cursor.set(index);
+                } else {
+                    self.cursor.clamp(rows.len() + 1);
+                    self.selection = rows
+                        .get(self.cursor.index())
+                        .map(|row| Selection::Row(row.id.clone()))
+                        .unwrap_or(Selection::Save);
                 }
             }
-            return FormEvent::Handled;
+            Selection::Save => self.cursor.set(rows.len()),
         }
+    }
+
+    fn selection_from_cursor(&mut self) {
+        let rows = self.model.rows();
+        self.selection = rows
+            .get(self.cursor.index())
+            .map(|row| Selection::Row(row.id.clone()))
+            .unwrap_or(Selection::Save);
+    }
+
+    fn apply(&mut self, id: M::RowId, edit: FormEdit) -> Result<FormEvent<M::Out>, String> {
+        let effect = self.model.apply(&id, edit).map_err(FormError::message)?;
+        self.restore_selection(&id);
+        Ok(match effect {
+            FormEffect::Ignored => FormEvent::Ignored,
+            FormEffect::Handled => FormEvent::Handled,
+            FormEffect::Out(out) => FormEvent::Out(out),
+        })
+    }
+
+    fn on_editor(&mut self, ev: &Event<NoUserEvent>) -> FormEvent<M::Out> {
+        match plain(ev) {
+            Some(Key::Enter) => {
+                let Some(mut editor) = self.editor.take() else {
+                    return FormEvent::Handled;
+                };
+                let id = editor.id.clone();
+                let value = editor.input.text();
+                match self.apply(id, FormEdit::SetText(value)) {
+                    Ok(FormEvent::Ignored | FormEvent::Cancelled) => {
+                        editor.error = Some("this field cannot accept text".into());
+                        self.editor = Some(editor);
+                        FormEvent::Handled
+                    }
+                    Ok(event) => event,
+                    Err(message) => {
+                        editor.error = Some(message);
+                        self.editor = Some(editor);
+                        FormEvent::Handled
+                    }
+                }
+            }
+            Some(Key::Esc) => {
+                self.editor = None;
+                FormEvent::Handled
+            }
+            _ => {
+                if let Some(editor) = &mut self.editor {
+                    editor.error = None;
+                    editor.input.edit(ev);
+                }
+                FormEvent::Handled
+            }
+        }
+    }
+
+    /// Route one event.
+    pub fn on(&mut self, ev: &Event<NoUserEvent>) -> FormEvent<M::Out> {
+        self.reconcile_selection();
+        if self.editor.is_some() {
+            return self.on_editor(ev);
+        }
+
         // Ctrl-S is kept as an alias for terminals where it isn't eaten as
         // XOFF; capital `S` and the `[Save]` row are the reliable paths.
         if ctrl(ev) == Some(Key::Char('s')) {
@@ -216,38 +532,58 @@ impl<M: FormModel> Form<M> {
             if c == 'S' {
                 return self.try_save();
             }
-            match self.model.on_char(self.cursor.index(), c) {
-                CharOutcome::Ignored => {}
-                CharOutcome::Handled => {
-                    self.cursor.clamp(self.row_count());
-                    return FormEvent::Handled;
-                }
-                CharOutcome::MoveTo(index) => {
-                    self.cursor.set(index);
-                    self.cursor.clamp(self.row_count());
-                    return FormEvent::Handled;
-                }
+            if let Some(id) = self.selected_row() {
+                return match self.apply(id, FormEdit::Command(c)) {
+                    Ok(FormEvent::Ignored) => FormEvent::Ignored,
+                    Ok(event) => event,
+                    Err(_) => FormEvent::Handled,
+                };
             }
         }
+
         let Some(key) = plain(ev) else {
             return FormEvent::Ignored;
         };
         if self.cursor.nav(key, self.row_count()) {
+            self.selection_from_cursor();
             return FormEvent::Handled;
         }
         match key {
             Key::Enter => {
-                let index = self.cursor.index();
-                if index == self.save_index() {
+                let rows = self.model.rows();
+                let Some(row) = rows.get(self.cursor.index()) else {
                     return self.try_save();
-                }
-                match self.model.activate(index) {
-                    RowAction::Edit { current } => {
-                        self.editor = Some((index, TextField::with_text(&current)));
+                };
+                let id = row.id.clone();
+                match &row.control {
+                    FormControl::Text { value } => {
+                        self.editor = Some(Editor {
+                            id,
+                            input: TextField::with_text(value),
+                            masked: false,
+                            error: None,
+                        });
                         FormEvent::Handled
                     }
-                    RowAction::Handled => FormEvent::Handled,
-                    RowAction::Out(out) => FormEvent::Out(out),
+                    FormControl::Secret { value } => {
+                        self.editor = Some(Editor {
+                            id,
+                            input: TextField::with_text(value),
+                            masked: true,
+                            error: None,
+                        });
+                        FormEvent::Handled
+                    }
+                    FormControl::Toggle { value } => self
+                        .apply(id, FormEdit::SetBool(!value))
+                        .unwrap_or(FormEvent::Handled),
+                    FormControl::Choice { .. } => self
+                        .apply(id, FormEdit::Cycle)
+                        .unwrap_or(FormEvent::Handled),
+                    FormControl::Action { .. } => self
+                        .apply(id, FormEdit::Activate)
+                        .unwrap_or(FormEvent::Handled),
+                    FormControl::ReadOnly { .. } => FormEvent::Handled,
                 }
             }
             Key::Esc => FormEvent::Cancelled,
@@ -255,35 +591,104 @@ impl<M: FormModel> Form<M> {
         }
     }
 
-    /// Render as a centered modal: the rows, the `[Save]` row (with its
-    /// "needs …" hint when blocked), and the pop-up editor when active.
+    /// Render a centered modal with fixed header, notes, and Save footer
+    /// around a scrollable list of controls.
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        self.reconcile_selection();
         let (px, py) = self.model.overlay_percent();
         let modal = overlay(area, px, py);
         frame.render_widget(Clear, modal);
-        let mut items: Vec<ListItem> = self.model.rows().into_iter().map(ListItem::new).collect();
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::border_style(true))
+            .title(self.model.title());
+        let inner = block.inner(modal);
+        frame.render_widget(block, modal);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        let header = self.model.header();
+        let notes = self.model.notes();
+        let header_height = (header.len() as u16).min(inner.height.saturating_sub(1));
+        let notes_height =
+            (notes.len() as u16).min(inner.height.saturating_sub(header_height).saturating_sub(1));
+        let body_height = inner
+            .height
+            .saturating_sub(header_height)
+            .saturating_sub(notes_height)
+            .saturating_sub(1);
+
+        let header_area = Rect::new(inner.x, inner.y, inner.width, header_height);
+        let body_area = Rect::new(inner.x, inner.y + header_height, inner.width, body_height);
+        let notes_area = Rect::new(
+            inner.x,
+            body_area.y + body_area.height,
+            inner.width,
+            notes_height,
+        );
+        let save_area = Rect::new(inner.x, notes_area.y + notes_area.height, inner.width, 1);
+
+        if header_height > 0 {
+            frame.render_widget(Paragraph::new(header), header_area);
+        }
+
+        let rows = self.model.rows();
+        if body_height > 0 {
+            let items: Vec<ListItem> = rows
+                .iter()
+                .map(|row| ListItem::new(row.line(inner.width as usize)))
+                .collect();
+            let mut state = ListState::default();
+            if self.cursor.index() < rows.len() {
+                state.select(Some(self.cursor.index()));
+            }
+            frame.render_stateful_widget(
+                List::new(items).highlight_style(theme::highlight_style()),
+                body_area,
+                &mut state,
+            );
+        }
+
+        if notes_height > 0 {
+            frame.render_widget(Paragraph::new(notes), notes_area);
+        }
+
         let save_line = match self.model.save_hint() {
             None => Line::raw("[Save]"),
             Some(hint) => Line::styled(format!("[Save] — needs {hint}"), theme::dim()),
         };
-        items.push(ListItem::new(save_line));
-        render_list(
-            frame,
-            modal,
-            self.model.title(),
-            items,
-            Some(self.cursor.index()),
-            true,
-        );
-        if let Some((_, editor)) = &mut self.editor {
+        let save = Paragraph::new(save_line).style(if self.cursor.index() == rows.len() {
+            theme::highlight_style()
+        } else {
+            Style::default()
+        });
+        frame.render_widget(save, save_area);
+
+        if let Some(editor) = &mut self.editor {
+            let edit_height = if editor.error.is_some() { 4 } else { 3 };
             let edit_area = Rect {
                 x: modal.x + 2,
-                y: modal.y + modal.height.saturating_sub(4),
+                y: modal
+                    .y
+                    .saturating_add(modal.height.saturating_sub(edit_height + 1)),
                 width: modal.width.saturating_sub(4),
-                height: 3,
+                height: edit_height,
             };
             frame.render_widget(Clear, edit_area);
-            editor.render(frame, edit_area, true, false);
+            let field_area = Rect::new(edit_area.x, edit_area.y, edit_area.width, 3);
+            editor.input.render(frame, field_area, true, editor.masked);
+            if let Some(error) = &editor.error {
+                let error_area = Rect::new(edit_area.x, edit_area.y + 3, edit_area.width, 1);
+                frame.render_widget(
+                    Paragraph::new(Line::styled(
+                        error.clone(),
+                        theme::tone_style(crate::ui::props::Tone::Blocked),
+                    )),
+                    error_area,
+                );
+            }
         }
     }
 }
@@ -294,6 +699,12 @@ mod tests {
     use tuirealm::event::{KeyEvent, KeyModifiers};
     use tuirealm::ratatui::layout::Rect;
 
+    #[derive(Clone, PartialEq, Eq)]
+    enum Field {
+        Text,
+        Flag,
+    }
+
     fn key(code: Key) -> Event<NoUserEvent> {
         Event::Keyboard(KeyEvent {
             code,
@@ -301,41 +712,46 @@ mod tests {
         })
     }
 
-    /// A two-field model: one text field, one toggle; saveable only when
-    /// the text is non-empty.
     struct TestModel {
         text: String,
         flag: bool,
     }
 
     impl FormModel for TestModel {
+        type RowId = Field;
         type Out = (String, bool);
 
         fn title(&self) -> String {
             "Test".into()
         }
 
-        fn rows(&self) -> Vec<Line<'static>> {
+        fn rows(&self) -> Vec<FormRow<Field>> {
             vec![
-                Line::raw(format!("Text: {}", self.text)),
-                Line::raw(format!("Flag: {}", self.flag)),
+                FormRow::text(Field::Text, "Text", self.text.clone()),
+                FormRow::toggle(Field::Flag, "Flag", self.flag),
             ]
         }
 
-        fn activate(&mut self, index: usize) -> RowAction<Self::Out> {
-            match index {
-                0 => RowAction::Edit {
-                    current: self.text.clone(),
-                },
-                _ => {
-                    self.flag = !self.flag;
-                    RowAction::Handled
+        fn apply(
+            &mut self,
+            id: &Field,
+            edit: FormEdit,
+        ) -> Result<FormEffect<Self::Out>, FormError> {
+            match (id, edit) {
+                (Field::Text, FormEdit::SetText(value)) if value.trim().is_empty() => {
+                    Err(FormError::Validation("text is required".into()))
                 }
+                (Field::Text, FormEdit::SetText(value)) => {
+                    self.text = value.trim().into();
+                    Ok(FormEffect::Handled)
+                }
+                (Field::Flag, FormEdit::SetBool(value)) => {
+                    self.flag = value;
+                    Ok(FormEffect::Handled)
+                }
+                (_, FormEdit::Command(_)) => Ok(FormEffect::Ignored),
+                _ => Err(FormError::InvalidEdit),
             }
-        }
-
-        fn commit(&mut self, _index: usize, value: String) {
-            self.text = value.trim().to_string();
         }
 
         fn save_hint(&self) -> Option<String> {
@@ -356,58 +772,96 @@ mod tests {
 
     #[test]
     fn edit_commit_and_save_roundtrip() {
-        let mut f = form();
-        // Enter on the text row opens the editor; type; Enter commits.
-        assert!(matches!(f.on(&key(Key::Enter)), FormEvent::Handled));
+        let mut form = form();
+        assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
         for c in "hi".chars() {
-            f.on(&key(Key::Char(c)));
+            form.on(&key(Key::Char(c)));
         }
-        assert!(matches!(f.on(&key(Key::Enter)), FormEvent::Handled));
-        assert_eq!(f.model.text, "hi");
-        // Capital S saves now that the gate is satisfied.
-        let ev = Event::Keyboard(KeyEvent {
+        assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
+        assert_eq!(form.model.text, "hi");
+        let save = Event::Keyboard(KeyEvent {
             code: Key::Char('S'),
             modifiers: KeyModifiers::SHIFT,
         });
-        assert!(matches!(f.on(&ev), FormEvent::Out((text, false)) if text == "hi"));
+        assert!(matches!(form.on(&save), FormEvent::Out((text, false)) if text == "hi"));
+    }
+
+    #[test]
+    fn invalid_commit_keeps_editor_and_value_until_corrected() {
+        let mut form = Form::new(TestModel {
+            text: "old".into(),
+            flag: false,
+        });
+        form.on(&key(Key::Enter));
+        for _ in 0..3 {
+            form.on(&key(Key::Backspace));
+        }
+        assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
+        assert!(form.is_editing());
+        assert_eq!(form.model.text, "old");
+        assert_eq!(
+            form.editor
+                .as_ref()
+                .and_then(|editor| editor.error.as_deref()),
+            Some("text is required")
+        );
+        form.on(&key(Key::Char('n')));
+        form.on(&key(Key::Enter));
+        assert!(!form.is_editing());
+        assert_eq!(form.model.text, "n");
     }
 
     #[test]
     fn blocked_save_is_swallowed_not_emitted() {
-        let mut f = form(); // empty text: save gated
+        let mut form = form();
         let ctrl_s = Event::Keyboard(KeyEvent {
             code: Key::Char('s'),
             modifiers: KeyModifiers::CONTROL,
         });
-        assert!(matches!(f.on(&ctrl_s), FormEvent::Handled));
-        f.select(f.save_index());
-        assert!(matches!(f.on(&key(Key::Enter)), FormEvent::Handled));
+        assert!(matches!(form.on(&ctrl_s), FormEvent::Handled));
+        form.select_save();
+        assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
     }
 
     #[test]
     fn editor_esc_discards_and_form_esc_cancels() {
-        let mut f = form();
-        f.on(&key(Key::Enter)); // open editor
-        f.on(&key(Key::Char('x')));
-        assert!(matches!(f.on(&key(Key::Esc)), FormEvent::Handled));
-        assert_eq!(f.model.text, ""); // discarded
-        // Esc with no editor open cancels the whole form.
-        assert!(matches!(f.on(&key(Key::Esc)), FormEvent::Cancelled));
+        let mut form = Form::new(TestModel {
+            text: "ok".into(),
+            flag: false,
+        });
+        form.on(&key(Key::Enter));
+        form.on(&key(Key::Char('x')));
+        assert!(matches!(form.on(&key(Key::Esc)), FormEvent::Handled));
+        assert_eq!(form.model.text, "ok");
+        assert!(matches!(form.on(&key(Key::Esc)), FormEvent::Cancelled));
     }
 
     #[test]
     fn enter_on_toggle_row_flips_it() {
-        let mut f = form();
-        f.on(&key(Key::Down));
-        assert!(matches!(f.on(&key(Key::Enter)), FormEvent::Handled));
-        assert!(f.model.flag);
+        let mut form = Form::new(TestModel {
+            text: "ok".into(),
+            flag: false,
+        });
+        assert!(form.select_row(&Field::Flag));
+        assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
+        assert!(form.model.flag);
+    }
+
+    #[test]
+    fn secret_row_masks_its_value() {
+        let row = FormRow::secret(Field::Text, "Password", "hunter2");
+        let rendered: String = row
+            .line(50)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(!rendered.contains("hunter2"), "{rendered:?}");
+        assert!(rendered.contains("*******"), "{rendered:?}");
     }
 
     #[test]
     fn overlay_does_not_overflow_on_a_very_wide_terminal() {
-        // Regression: the percent multiply must be widened past u16 before
-        // dividing — e.g. 2000 cols * 70 = 140000 > u16::MAX. The result
-        // must stay clamped to the frame.
         let area = Rect::new(0, 0, 2000, 2000);
         let rect = overlay(area, 70, 70);
         assert_eq!(rect.width, 1400);

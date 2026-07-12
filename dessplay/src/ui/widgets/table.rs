@@ -22,6 +22,8 @@ pub enum Align {
     Left,
     /// Text centered in the column (odd padding leans left).
     Center,
+    /// Text at the right edge of the column, padding to the left.
+    Right,
 }
 
 /// One fixed-width table cell.
@@ -80,6 +82,35 @@ pub fn truncate_display(s: &str, max: usize) -> (String, usize) {
     (out, used + 1)
 }
 
+/// Truncate the start of `s` to at most `max` display cells, retaining its
+/// suffix behind an ellipsis. Useful for paths whose final component is the
+/// part that distinguishes otherwise-identical roots.
+pub fn truncate_display_start(s: &str, max: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+    if max == 0 {
+        return (String::new(), 0);
+    }
+    let full = s.width();
+    if full <= max {
+        return (s.to_string(), full);
+    }
+    let budget = max - 1;
+    let mut suffix = Vec::new();
+    let mut used = 0;
+    for ch in s.chars().rev() {
+        let width = ch.width().unwrap_or(0);
+        if used + width > budget {
+            break;
+        }
+        suffix.push(ch);
+        used += width;
+    }
+    suffix.reverse();
+    let mut out = String::from("…");
+    out.extend(suffix);
+    (out, used + 1)
+}
+
 /// Build one table row exactly `width` display cells wide: the `flex`
 /// spans truncated and padded to the width the fixed `cells` leave over,
 /// then each cell padded to its declared width behind a single-space
@@ -109,6 +140,7 @@ pub fn table_row(width: usize, flex: Vec<Span<'static>>, cells: Vec<Cell>) -> Li
         let (left, right) = match cell.align {
             Align::Left => (0, pad),
             Align::Center => (pad / 2, pad - pad / 2),
+            Align::Right => (pad, 0),
         };
         spans.push(Span::raw(" ".repeat(1 + left)));
         spans.push(Span::styled(text, cell.style));
@@ -208,6 +240,13 @@ mod tests {
         );
         let text = line_text(&line);
         assert!(text.starts_with("somename"), "{text:?}");
+    }
+
+    #[test]
+    fn start_truncation_keeps_the_distinguishing_suffix() {
+        let (text, width) = truncate_display_start("/a/very/long/path/19", 10);
+        assert_eq!(text, "…g/path/19");
+        assert_eq!(width, 10);
     }
 
     mod properties {

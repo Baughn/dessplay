@@ -1,0 +1,34 @@
+---
+source: dessplay/tests/ui_app.rs
+expression: screen
+---
+┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│              ┌Settings — Files & transfers────────────────────────────────────────┐              │
+│              │[Account] [Playback] [Files] [IRC]                                  │              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/08│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/09│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/10│──────────────┘
+│              │Media root              …ng-library-root-name-that-needs-clipping/11│──────────────┐
+│              │Media root              …ng-library-root-name-that-needs-clipping/12│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/13│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/14│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/15│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/16│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/17│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/18│──────────────┘
+│              │Media root              …ng-library-root-name-that-needs-clipping/19│──────────────┐
+│              │[Add media root]                                                    │              │
+│              │Cache retention         7 days                                      │              │
+│              │Auto-download           yes                                         │              │
+└──────────────│BitTorrent downloads    no                               next launch│              │
+┌──────────────│Upload limit            unlimited                        next launch│              │
+│say something…│[Save]                                                              │              │
+└──────────────└────────────────────────────────────────────────────────────────────┘              │
+                                                  └────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────
+⚡  connecting to server…
+Nothing playing
+←→ Category | Enter Edit/Toggle | S Save | Esc Cancel | Ctrl-r Ready | Ctrl-c Quit
