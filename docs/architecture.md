@@ -369,8 +369,10 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
 - `CheckSeriesKnown { file, series, key }` -- is the series in watch
   history? (drives the missing-file branch)
 - `RenderPlaceholder { file, lines }` -- render the not-watching PNG
-- `Archive { file, series_name, filename }` -- move a cached download to
-  `<download root>/<series>/<filename>`
+- `Archive { file, series_name, filename, subdirectory }` -- move a cached
+  download to `<download root>/<series>/<filename>` or directly to
+  `<download root>/<filename>` according to the saved archive policy carried
+  with the command
 - `RunEviction { protected, group_watched }` -- eviction pass (startup and
   EOF-advance; never evicts now-playing/queued/protected)
 - `SetMediaRoots` / `SetRetention` -- settings changes

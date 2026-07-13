@@ -379,7 +379,9 @@ Modal types:
   annotated `limited-color terminals only` because true-color allocation has
   no application cap. All other lifecycle hints reflect the current
   session-loop behavior. Header, category notes, and Save stay fixed while
-  large media-root lists scroll.
+  large media-root lists scroll. Files includes the default-on **Archive
+  subdirectory** toggle; the UI carries its current value in each archive
+  action so the file actor receives a complete destination policy.
 - **EpisodeBrowser**: Browse franchise seasons/episodes
 - **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)
 - **AniDbSearch**: Link a List entry to an AniDB series (`l` in List

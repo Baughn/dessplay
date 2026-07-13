@@ -66,15 +66,18 @@ working copy atomically. Tabs containing a missing required value carry a
   into the fixed palette, while **Disable colors** renders every speaker
   uniformly dim until the active count returns to ten or fewer.
 - **Files & transfers**: Ordered media roots, cache retention, auto-download,
-  BitTorrent downloads, and upload limit. At least one media root is required;
+  archive subdirectory policy, BitTorrent downloads, and upload limit. At
+  least one media root is required;
   the topmost is marked `download target`. Roots are chosen with the directory
   picker, removed with `d`, and reordered with `J`/`K` (lowercase also works).
   A blank line after `[Add media root]` separates root management from transfer
   policy.
   Cache retention accepts `0` (delete watched downloads at session end) through
-  `infinite`; auto-download defaults on. BitTorrent defaults off and applies at
-  restart. Upload limit accepts human-readable byte rates such as `500 KiB/s`
-  and `2 MiB/s`, or `unlimited`, and applies at restart.
+  `infinite`; auto-download defaults on. **Archive subdirectory** defaults
+  on: `A` moves a cached file under a sanitized series-name subdirectory; when
+  off it moves the file directly into the download root. BitTorrent defaults
+  off and applies at restart. Upload limit accepts human-readable byte rates
+  such as `500 KiB/s` and `2 MiB/s`, or `unlimited`, and applies at restart.
 - **IRC bridge**: Enabled (default on), server (default `irc.rizon.net`), TLS
   (default on, selecting port 6697 rather than 6667), and channel (default
   `#dess`). The subordinate values stay editable while disabled. A dim hint
@@ -258,9 +261,11 @@ When someone adds a file, everyone needs to find their local copy:
 4c. By default: The file is retrieved from peers using a bittorrent-like protocol.
     Downloaded files live in the **download cache** and are evicted according to
     the retention policy; they are never automatically placed in a media root.
-    An explicit **archive** action moves a cached file into
-    [Series name]/[Season #]/[Original filename] in the download root, aka. the
-    topmost media root. See [Download Cache](#download-cache-and-retention).
+    An explicit **archive** action moves a cached file into the download root,
+    aka. the topmost media root. By default it uses
+    [Series name]/[Season #]/[Original filename]; the Files setting can instead
+    place [Original filename] directly in the root. See
+    [Download Cache](#download-cache-and-retention).
 
 ### User States
 
@@ -1506,14 +1511,14 @@ Eviction passes run at startup and on EOF-advance. The now-playing file and
 queued unwatched playlist entries are never evicted, regardless of retention.
 
 **Archive**: an explicit action (`A` in the playlist pane) that moves a cached
-file into `[Series name]/[Season #]/[Original filename]` under the download
-root (the topmost media root). This is the deliberate "keep this in the
-library" decision; retention is the default "it was just for the watch party"
-path. *Implementation note (Phase 9A):* the destination is
-`[Series name]/[Original filename]` — the `Season #` level is collapsed,
-since AniDB models each season as its own anime (a franchise member), so a
-single series name is already one season's folder. The series-name component
-is sanitized to a safe path component.
+file under the download root (the topmost media root). The default **Archive
+subdirectory** setting produces `[Series name]/[Original filename]`; when
+disabled, the destination is `[Original filename]` directly under the root.
+This is the deliberate "keep this in the library" decision; retention is the
+default "it was just for the watch party" path. The originally designed
+`Season #` level is collapsed because AniDB models each season as its own
+anime (a franchise member), so a single series name is already one season's
+folder. Both the series-name and filename components are sanitized.
 
 Cache-only files (those with a download-cache row, i.e. not yet in a media
 root) are flagged in the playlist pane with a dim **`temp`** marker in its
@@ -2108,7 +2113,7 @@ crashes should be rare enough not to matter, and an edit that *caused* a
 crash should not be replayed into the next session.
 
 **Settings** (username, server, password, media roots, player choice, cache
-retention, upload limit, subtitle mode, subtitle speaker names, subtitle
+retention, archive subdirectory policy, upload limit, subtitle mode, subtitle speaker names, subtitle
 speaker colors, the limited-terminal speaker-color overflow policy, auto-download, BitTorrent
 downloads, and IRC bridge settings -- enabled, server, TLS, channel) live in
 the same SQLite database
@@ -2138,7 +2143,7 @@ inserted) so the previous layout is a strict prefix.
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, auto_download, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, auto_download, archive_subdirectory, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |

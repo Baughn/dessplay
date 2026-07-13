@@ -1412,6 +1412,22 @@ cues, live buffered-cue updates, and the existing color-policy interaction.
 
 ---
 
+## Phase 26: Configurable Archive Subdirectory
+
+**Status: complete (2026-07-13).**
+
+The Files & transfers tab now has a persisted **Archive subdirectory**
+toggle, default on to preserve the existing layout. Each `A` action carries
+the current choice through the UI/session boundary to the file actor. Enabled
+archives use `<download root>/<sanitized series>/<sanitized filename>`;
+disabled archives use `<download root>/<sanitized filename>`.
+
+Coverage pins the missing-key default and persistence round trip, typed Files
+row toggle/save behavior, action propagation of the default, and both archive
+destination layouts at the file-actor boundary.
+
+---
+
 ## Deferred from the 2026-07-02 batch
 
 Tracked here so they aren't re-triaged from scratch:

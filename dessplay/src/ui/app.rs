@@ -1291,6 +1291,7 @@ impl Ui {
                     file: hash,
                     series_name,
                     filename,
+                    subdirectory: self.settings.archive_subdirectory,
                 })
             }
             Msg::CloseModal => {

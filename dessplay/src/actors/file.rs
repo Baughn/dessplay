@@ -153,9 +153,9 @@ pub enum FileCommand {
         lines: Vec<String>,
     },
     /// Move a cached download into the library under the download root
-    /// (the first media root). The actor builds the destination —
-    /// `<download root>/<series>/<filename>` — since it owns the media
-    /// roots (design.md, Archive).
+    /// (the first media root). The actor builds the destination, optionally
+    /// including a series-name subdirectory, since it owns the media roots
+    /// (design.md, Archive).
     Archive {
         /// The cached file.
         file: Ed2kHash,
@@ -164,6 +164,8 @@ pub enum FileCommand {
         series_name: Option<String>,
         /// Original filename to archive under.
         filename: String,
+        /// Whether to place the file in a series-name subdirectory.
+        subdirectory: bool,
     },
     /// Eviction pass (startup and EOF-advance).
     RunEviction {
@@ -911,7 +913,11 @@ impl Actor {
                 file,
                 series_name,
                 filename,
-            } => self.archive(file, series_name, filename).await,
+                subdirectory,
+            } => {
+                self.archive(file, series_name, filename, subdirectory)
+                    .await
+            }
             FileCommand::RunEviction {
                 protected,
                 group_watched,
@@ -2668,8 +2674,14 @@ impl Actor {
         });
     }
 
-    async fn archive(&mut self, file: Ed2kHash, series_name: Option<String>, filename: String) {
-        let result = self.archive_inner(file, series_name, &filename);
+    async fn archive(
+        &mut self,
+        file: Ed2kHash,
+        series_name: Option<String>,
+        filename: String,
+        subdirectory: bool,
+    ) {
+        let result = self.archive_inner(file, series_name, &filename, subdirectory);
         if let Ok(new_path) = &result {
             tracing::info!(path = %new_path.display(), "archived cached file into the library");
         }
@@ -2681,19 +2693,21 @@ impl Actor {
         file: Ed2kHash,
         series_name: Option<String>,
         filename: &str,
+        subdirectory: bool,
     ) -> Result<PathBuf, String> {
-        // `[Series name]/[Original filename]` under the download root.
-        // AniDB models each season as its own anime, so a single series
-        // name is effectively one season's folder; the explicit
-        // "Season #" the design mentions is deferred with that note.
         let download_root = self
             .media_roots
             .first()
             .ok_or("no download root configured")?;
-        let folder = sanitize_component(series_name.as_deref().unwrap_or("Unsorted"));
-        let dest = download_root
-            .join(folder)
-            .join(sanitize_component(filename));
+        let filename = sanitize_component(filename);
+        let dest = if subdirectory {
+            // AniDB models each season as its own anime, so a single series
+            // name is effectively one season's folder.
+            let folder = sanitize_component(series_name.as_deref().unwrap_or("Unsorted"));
+            download_root.join(folder).join(filename)
+        } else {
+            download_root.join(filename)
+        };
         let entries = self.storage.cache_entries().map_err(|e| e.to_string())?;
         let entry = entries
             .iter()
@@ -4403,6 +4417,7 @@ mod tests {
                 file: hashed.root,
                 series_name: Some("Frieren".into()),
                 filename: "ep1.mkv".into(),
+                subdirectory: true,
             })
             .await
             .unwrap();
@@ -4425,6 +4440,7 @@ mod tests {
                 file: hash(7),
                 series_name: None,
                 filename: "nope.mkv".into(),
+                subdirectory: true,
             })
             .await
             .unwrap();
@@ -4432,6 +4448,48 @@ mod tests {
             FileOutput::Archived { result, .. } => assert!(result.is_err()),
             other => panic!("unexpected output: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn archive_can_move_directly_into_the_download_root() {
+        let cache = tempfile::tempdir().unwrap();
+        let library = tempfile::tempdir().unwrap();
+        let contents = b"an unsorted cached episode".as_slice();
+        let cached_path = write(cache.path(), "ep2.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hashed.root,
+                path: cached_path,
+                size_bytes: contents.len() as u64,
+                last_access: 1,
+            })
+            .unwrap();
+
+        let expected = library.path().join("ep2.mkv");
+        let mut rig = spawn_rig(
+            storage,
+            vec![library.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+        rig.commands
+            .send(FileCommand::Archive {
+                file: hashed.root,
+                series_name: Some("Frieren".into()),
+                filename: "ep2.mkv".into(),
+                subdirectory: false,
+            })
+            .await
+            .unwrap();
+
+        match next_output(&mut rig).await {
+            FileOutput::Archived { result, .. } => assert_eq!(result.unwrap(), expected),
+            other => panic!("unexpected output: {other:?}"),
+        }
+        assert!(expected.is_file());
+        assert!(!library.path().join("Frieren/ep2.mkv").exists());
     }
 
     /// Regression: archiving a cached download must keep it servable. The
@@ -4480,6 +4538,7 @@ mod tests {
                 file: hashed.root,
                 series_name: Some("Frieren".into()),
                 filename: "ep1.mkv".into(),
+                subdirectory: true,
             })
             .await
             .unwrap();

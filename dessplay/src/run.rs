@@ -1212,8 +1212,15 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         Some(UserAction::MapFile { file, path, series }) => {
                             self.shell.set_manual_mapping(file, path, series).await;
                         }
-                        Some(UserAction::Archive { file, series_name, filename }) => {
-                            self.shell.archive(file, series_name, filename).await;
+                        Some(UserAction::Archive {
+                            file,
+                            series_name,
+                            filename,
+                            subdirectory,
+                        }) => {
+                            self.shell
+                                .archive(file, series_name, filename, subdirectory)
+                                .await;
                         }
                         Some(UserAction::Notice(text)) => {
                             // Command feedback — stamp with the shared clock

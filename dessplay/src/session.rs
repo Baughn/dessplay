@@ -2003,13 +2003,20 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     }
 
     /// Archive a cached file into the library under the download root.
-    pub async fn archive(&self, file: Ed2kHash, series_name: Option<String>, filename: String) {
+    pub async fn archive(
+        &self,
+        file: Ed2kHash,
+        series_name: Option<String>,
+        filename: String,
+        subdirectory: bool,
+    ) {
         let _ = self
             .file
             .send(FileCommand::Archive {
                 file,
                 series_name,
                 filename,
+                subdirectory,
             })
             .await;
     }

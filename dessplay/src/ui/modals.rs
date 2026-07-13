@@ -982,6 +982,7 @@ enum SettingId {
     AddMediaRoot,
     CacheRetention,
     AutoDownload,
+    ArchiveSubdirectory,
     TorrentEnabled,
     UploadLimit,
     IrcEnabled,
@@ -1181,7 +1182,7 @@ impl SettingsForm {
     }
 
     fn files_rows(&self) -> Vec<FormRow<SettingId>> {
-        let mut rows = Vec::with_capacity(self.roots.len() + 5);
+        let mut rows = Vec::with_capacity(self.roots.len() + 6);
         for (index, root) in self.roots.iter().enumerate() {
             let row = FormRow::read_only(
                 SettingId::MediaRoot(root.clone()),
@@ -1209,6 +1210,11 @@ impl SettingsForm {
                 SettingId::AutoDownload,
                 "Auto-download",
                 self.settings.auto_download,
+            ),
+            FormRow::toggle(
+                SettingId::ArchiveSubdirectory,
+                "Archive subdirectory",
+                self.settings.archive_subdirectory,
             ),
             FormRow::toggle(
                 SettingId::TorrentEnabled,
@@ -1318,6 +1324,9 @@ impl FormModel for SettingsForm {
             }
             (SettingId::AutoDownload, FormEdit::SetBool(value)) => {
                 self.settings.auto_download = value;
+            }
+            (SettingId::ArchiveSubdirectory, FormEdit::SetBool(value)) => {
+                self.settings.archive_subdirectory = value;
             }
             (SettingId::TorrentEnabled, FormEdit::SetBool(value)) => {
                 self.settings.torrent_enabled = value;
@@ -2542,6 +2551,23 @@ mod tests {
         modal.on(&enter());
         assert!(modal.form.model.settings.torrent_enabled);
         assert_eq!(modal.form.selected_row(), Some(SettingId::TorrentEnabled));
+    }
+
+    #[test]
+    fn archive_subdirectory_toggle_is_saved() {
+        let mut modal = saveable_settings();
+        modal.switch_category(true);
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::ArchiveSubdirectory));
+        assert!(modal.form.model.settings.archive_subdirectory);
+        modal.on(&enter());
+        assert!(!modal.form.model.settings.archive_subdirectory);
+        let Some(Msg::SettingsSaved(settings, _)) =
+            modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))
+        else {
+            panic!("expected settings save");
+        };
+        assert!(!settings.archive_subdirectory);
     }
 
     #[test]

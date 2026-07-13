@@ -301,6 +301,8 @@ pub enum UserAction {
         series_name: Option<String>,
         /// Original filename.
         filename: String,
+        /// Whether to place the file in a series-name subdirectory.
+        subdirectory: bool,
     },
     /// Post a local-only system line to the chat log (command feedback,
     /// e.g. an unknown command or a `/skip` with no series info). The

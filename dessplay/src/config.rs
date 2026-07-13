@@ -351,6 +351,10 @@ pub struct Settings {
     /// downloads — it relies on its own library (design.md,
     /// Pre-fetching). Default true.
     pub auto_download: bool,
+    /// Put archived downloads in a sanitized series-name subdirectory under
+    /// the download root. When false, archive directly into the root.
+    /// Default true, preserving the original archive layout.
+    pub archive_subdirectory: bool,
     /// Try a public torrent (nyaa) before the peer relay when fetching a
     /// missing file (design.md, BitTorrent Downloads). When false the
     /// torrent engine is never started — peer transfer only. Applies at
@@ -385,6 +389,7 @@ impl Default for Settings {
             series_sort: SeriesSort::default(),
             file_browser_sort: BrowserSort::default(),
             auto_download: true,
+            archive_subdirectory: true,
             torrent_enabled: false,
             irc_enabled: true,
             irc_server: "irc.rizon.net".into(),
@@ -480,6 +485,11 @@ impl Settings {
                 .map(|value| parse_bool("auto_download", &value))
                 .transpose()?
                 .unwrap_or(defaults.auto_download),
+            archive_subdirectory: storage
+                .setting("archive_subdirectory")?
+                .map(|value| parse_bool("archive_subdirectory", &value))
+                .transpose()?
+                .unwrap_or(defaults.archive_subdirectory),
             torrent_enabled: storage
                 .setting("torrent_enabled")?
                 .map(|value| parse_bool("torrent_enabled", &value))
@@ -550,6 +560,14 @@ impl Settings {
             Some(if self.auto_download { "true" } else { "false" }),
         )?;
         storage.set_setting(
+            "archive_subdirectory",
+            Some(if self.archive_subdirectory {
+                "true"
+            } else {
+                "false"
+            }),
+        )?;
+        storage.set_setting(
             "torrent_enabled",
             Some(if self.torrent_enabled {
                 "true"
@@ -581,6 +599,7 @@ mod tests {
         assert_eq!(settings, Settings::default());
         assert!(settings.needs_setup());
         assert_eq!(settings.server, "dessplay.brage.info");
+        assert!(settings.archive_subdirectory);
     }
 
     #[test]
@@ -601,6 +620,7 @@ mod tests {
             series_sort: SeriesSort::Year,
             file_browser_sort: BrowserSort::Newest,
             auto_download: false,
+            archive_subdirectory: false,
             torrent_enabled: true,
             irc_enabled: false,
             irc_server: "irc.example.org".into(),
