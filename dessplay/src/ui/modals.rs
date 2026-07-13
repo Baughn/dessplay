@@ -975,6 +975,7 @@ enum SettingId {
     ReadyOnStartup,
     Player,
     SubtitleMode,
+    SubtitleSpeakerNames,
     SubtitleSpeakerColors,
     SubtitleSpeakerOverflow,
     MediaRoot(PathBuf),
@@ -1131,6 +1132,11 @@ impl SettingsForm {
     }
 
     fn playback_rows(&self) -> Vec<FormRow<SettingId>> {
+        let speaker_names_row = FormRow::toggle(
+            SettingId::SubtitleSpeakerNames,
+            "Speaker names",
+            self.settings.subtitle_speaker_names,
+        );
         let speaker_row = FormRow::toggle(
             SettingId::SubtitleSpeakerColors,
             "Speaker colors",
@@ -1152,6 +1158,13 @@ impl SettingsForm {
                 "Subtitle display",
                 self.settings.subtitle_mode.label(),
             ),
+            if self.settings.subtitle_mode == SubtitleMode::Off {
+                speaker_names_row
+                    .styled(theme::dim())
+                    .annotated("subtitles are off", theme::dim())
+            } else {
+                speaker_names_row
+            },
             if speaker_colors_active {
                 speaker_row
             } else {
@@ -1286,6 +1299,9 @@ impl FormModel for SettingsForm {
             }
             (SettingId::SubtitleMode, FormEdit::Cycle) => {
                 self.settings.subtitle_mode = self.settings.subtitle_mode.next();
+            }
+            (SettingId::SubtitleSpeakerNames, FormEdit::SetBool(value)) => {
+                self.settings.subtitle_speaker_names = value;
             }
             (SettingId::SubtitleSpeakerColors, FormEdit::SetBool(value)) => {
                 self.settings.subtitle_speaker_colors = value;
@@ -3186,6 +3202,15 @@ mod tests {
             .expect("speaker row");
         assert_eq!(speaker.style, theme::dim());
         assert!(matches!(speaker.control, FormControl::Toggle { .. }));
+        let names = modal
+            .form
+            .model
+            .rows()
+            .into_iter()
+            .find(|row| row.id == SettingId::SubtitleSpeakerNames)
+            .expect("speaker names row");
+        assert_eq!(names.style, theme::dim());
+        assert!(matches!(names.control, FormControl::Toggle { .. }));
 
         modal.form.model.category = SettingsCategory::Irc;
         let server = modal
@@ -3273,6 +3298,22 @@ mod tests {
             settings.subtitle_speaker_overflow,
             crate::config::SubtitleSpeakerOverflow::DisableColors
         );
+    }
+
+    #[test]
+    fn speaker_names_toggle_is_saved() {
+        let mut modal = saveable_settings();
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::SubtitleSpeakerNames));
+        assert!(!modal.form.model.settings.subtitle_speaker_names);
+        assert_eq!(modal.on(&enter()), Some(Msg::None));
+        assert!(modal.form.model.settings.subtitle_speaker_names);
+        let Some(Msg::SettingsSaved(settings, _)) =
+            modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))
+        else {
+            panic!("expected settings save");
+        };
+        assert!(settings.subtitle_speaker_names);
     }
 
     #[test]

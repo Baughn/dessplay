@@ -51,13 +51,15 @@ working copy atomically. Tabs containing a missing required value carry a
   password, and Ready on startup. When Ready on startup is off the user joins
   Paused; when on they join Ready. Server and password changes apply on the
   next launch.
-- **Playback & display**: Player, subtitle mode, subtitle speaker colors, and
-  the limited-terminal color-overflow policy.
+- **Playback & display**: Player, subtitle mode, subtitle speaker names,
+  subtitle speaker colors, and the limited-terminal color-overflow policy.
   Player cycles between mpv and VLC and is persisted, but is explicitly
   marked **WIP -- not applied**: the client still starts mpv regardless of
   this placeholder value. Subtitle mode is off / intermixed / separate pane
-  (default off; also cycled live with `F2`). Speaker colors default on and
-  affect only separate-pane lines; Intermixed is uniformly dim. **Color
+  (default off; also cycled live with `F2`). Speaker names default off to
+  preserve the spoiler-safe behavior; when enabled, named ASS cues render as
+  `Name: dialogue` in both Intermixed and separate-pane modes. Speaker colors
+  default on and affect only separate-pane lines; Intermixed is uniformly dim. **Color
   overflow** applies only when the terminal lacks true-color and more than
   ten speakers have been active in the rolling five-minute window: **Reuse
   colors** (the default) preserves the previous deterministic name hashing
@@ -2013,7 +2015,9 @@ the `subtitle_mode` setting):
 - **Off**: subtitles are not shown.
 - **Intermixed**: subtitle lines are folded into the chat log, dim with a
   `»` marker, ordered by arrival. They share the chat's interleave domain.
-  (No speaker coloring here -- the lines stay uniformly dim.)
+  (No speaker coloring here -- the lines stay uniformly dim.) When the
+  persisted `subtitle_speaker_names` setting is on and the cue carries an ASS
+  Name, the body is prefixed `Name: `.
 - **Separate pane**: the chat area is split horizontally and the lower
   portion shows recent subtitle lines, **newest first (on top)** so the
   freshest line sits next to the chat input box just below it. The local UI
@@ -2021,9 +2025,11 @@ the `subtitle_mode` setting):
   wall-clock window** and assigns a stable slot while active. Slots do not
   change while speakers remain active; after more than five minutes without a
   cue, a speaker expires and its slot can be reused. A one-second UI clock
-  tick advances this window even during a quiet scene. The speaker name itself
-  is **never displayed** (it is often a character name -- a spoiler); only
-  its color is. The `MM:SS` timestamp prefix stays dim.
+  tick advances this window even during a quiet scene. Speaker names remain
+  hidden by default because character names can be spoilers; the persisted
+  `subtitle_speaker_names` toggle can opt into a `Name: dialogue` prefix. The
+  prefix and dialogue use the same line style. The `MM:SS` timestamp prefix
+  stays dim.
 
   On a true-color terminal there is no application-level speaker cap. Each
   slot extends a deterministic HSLuv palette: from a candidate batch it keeps
@@ -2102,8 +2108,8 @@ crashes should be rare enough not to matter, and an edit that *caused* a
 crash should not be replayed into the next session.
 
 **Settings** (username, server, password, media roots, player choice, cache
-retention, upload limit, subtitle mode, subtitle speaker colors, the
-limited-terminal speaker-color overflow policy, auto-download, BitTorrent
+retention, upload limit, subtitle mode, subtitle speaker names, subtitle
+speaker colors, the limited-terminal speaker-color overflow policy, auto-download, BitTorrent
 downloads, and IRC bridge settings -- enabled, server, TLS, channel) live in
 the same SQLite database
 and are edited through the settings screen. The password is stored in plaintext
@@ -2132,7 +2138,7 @@ inserted) so the previous layout is a strict prefix.
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_colors, subtitle_speaker_overflow, auto_download, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, auto_download, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |

@@ -10,9 +10,9 @@ expression: screen
 │              │[Account] [Playback] [Files] [IRC]                                  │              │
 │              │Player                  mpv                        WIP — not applied│              │
 │              │Subtitle display        Off                                         │              │
-│              │Speaker colors          yes                       separate pane only│──────────────┘
-│              │Color overflow          Reuse colors    limited-color terminals only│──────────────┐
-│              │                                                                    │              │
+│              │Speaker names           no                         subtitles are off│──────────────┘
+│              │Speaker colors          yes                       separate pane only│──────────────┐
+│              │Color overflow          Reuse colors    limited-color terminals only│              │
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │

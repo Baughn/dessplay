@@ -507,6 +507,13 @@ snapshot per category plus model tests for missing-category markers, dormant
 control styling, upload-rate parsing, media-root selection, and the persisted
 speaker-color overflow default/cycle/round trip.
 
+The subtitle speaker-name preference is tested at the same layers: missing
+storage defaults to hidden names, the Playback form toggles and saves the
+value, and one shared formatter produces `Name: dialogue` in both Intermixed
+and Separate modes without changing unnamed cues. Rendering tests also pin
+that the preference applies immediately to buffered cues, Intermixed remains
+uniformly dim, and Separate retains its existing speaker-color policy.
+
 Subtitle speaker colors have deterministic policy tests below the snapshot
 layer:
 

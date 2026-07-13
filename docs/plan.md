@@ -1390,6 +1390,28 @@ against the fixed background.
 
 ---
 
+## Phase 25: Subtitle Speaker Names
+
+**Status: complete (2026-07-13).**
+
+The Playback tab now has a persisted **Speaker names** toggle, default off to
+preserve the existing spoiler-safe presentation. When enabled, named ASS cues
+render as `Name: dialogue` in both Intermixed and Separate modes; unnamed and
+non-ASS cues remain unchanged. One display-time formatter serves both modes,
+so toggling the setting updates already-buffered cues immediately without
+changing subtitle collapsing, timestamps, or speaker tracking.
+
+Intermixed subtitles remain uniformly dim. Separate-pane names and dialogue
+share the line's existing speaker color, or become uniformly dim together when
+speaker colors are disabled. This is a local key-value setting only: no CRDT,
+wire, database-schema, or protocol-version change.
+
+Coverage includes the missing-key default and persistence round trip, typed
+Playback-row toggle/save behavior and snapshot, both rendering modes, unnamed
+cues, live buffered-cue updates, and the existing color-policy interaction.
+
+---
+
 ## Deferred from the 2026-07-02 batch
 
 Tracked here so they aren't re-triaged from scratch:

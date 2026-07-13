@@ -167,6 +167,7 @@ fn settings_json(s: &Settings) -> Value {
         "cache_retention": format!("{:?}", s.cache_retention),
         "upload_limit": s.upload_limit,
         "subtitle_mode": format!("{:?}", s.subtitle_mode),
+        "subtitle_speaker_names": s.subtitle_speaker_names,
         "subtitle_speaker_colors": s.subtitle_speaker_colors,
         "subtitle_speaker_overflow": format!("{:?}", s.subtitle_speaker_overflow),
         "series_sort": format!("{:?}", s.series_sort),
@@ -413,13 +414,15 @@ mod tests {
     }
 
     #[test]
-    fn settings_dump_includes_both_subtitle_speaker_color_preferences() {
+    fn settings_dump_includes_subtitle_speaker_preferences() {
         let settings = Settings {
+            subtitle_speaker_names: true,
             subtitle_speaker_colors: false,
             subtitle_speaker_overflow: crate::config::SubtitleSpeakerOverflow::DisableColors,
             ..Settings::default()
         };
         let json = settings_json(&settings);
+        assert_eq!(json["subtitle_speaker_names"], json!(true));
         assert_eq!(json["subtitle_speaker_colors"], json!(false));
         assert_eq!(json["subtitle_speaker_overflow"], json!("DisableColors"));
     }

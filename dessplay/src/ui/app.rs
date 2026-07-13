@@ -211,8 +211,8 @@ struct SubtitleEntry {
     video_millis: u64,
     arrival_millis: u64,
     text: String,
-    /// The ASS speaker/actor, if the cue carried one. Never displayed —
-    /// only hashed to a color in separate-pane mode.
+    /// The ASS speaker/actor, if the cue carried one. Used for optional name
+    /// display in both text modes and for coloring in separate-pane mode.
     speaker: Option<String>,
     /// Stable color slot assigned while this speaker was active. Kept on
     /// the entry so a sparse, older visible line does not change color when
@@ -485,11 +485,15 @@ impl Ui {
         lines.extend(self.system_log.iter().cloned());
         lines.extend(self.irc_log.iter().cloned());
         if self.subtitle_mode == SubtitleMode::Intermixed {
-            lines.extend(
-                self.subtitles.iter().map(|s| {
-                    props::subtitle_line(s.video_millis, s.arrival_millis, s.text.clone())
-                }),
-            );
+            lines.extend(self.subtitles.iter().map(|s| {
+                props::subtitle_line(
+                    s.video_millis,
+                    s.arrival_millis,
+                    s.text.clone(),
+                    s.speaker.as_deref(),
+                    self.settings.subtitle_speaker_names,
+                )
+            }));
         }
         lines.sort_by_key(|line| line.millis);
         Self::insert_day_separators(lines)
@@ -1707,8 +1711,8 @@ impl Ui {
             // ASS speaker. Limited terminals preserve the existing name hash
             // into the app palette; RGB terminals use the stable
             // activity-window slot to generate another perceptually spaced
-            // color as needed. The speaker name itself is never shown
-            // (spoilers).
+            // color as needed. Speaker names are opt-in and formatted by the
+            // same helper used for Intermixed mode.
             use tuirealm::ratatui::text::{Line, Span};
             let visible = (subs_area.height as usize).saturating_sub(2);
             let limited_palette_overflow = self.color_depth == ColorDepth::Limited
@@ -1723,6 +1727,11 @@ impl Ui {
                 .rev()
                 .take(visible)
                 .map(|entry| {
+                    let text = props::subtitle_text(
+                        &entry.text,
+                        entry.speaker.as_deref(),
+                        self.settings.subtitle_speaker_names,
+                    );
                     let text_style = if !speaker_colors_enabled {
                         super::theme::dim()
                     } else {
@@ -1741,7 +1750,7 @@ impl Ui {
                             format!("{}  ", props::mmss(entry.video_millis)),
                             super::theme::dim(),
                         ),
-                        Span::styled(entry.text.clone(), text_style),
+                        Span::styled(text, text_style),
                     ])
                 })
                 .collect();
@@ -2631,6 +2640,48 @@ mod tests {
         let sub = lines.iter().find(|l| l.subtitle).unwrap();
         assert_eq!(sub.time, "01:05");
         assert!(sub.sender.is_empty());
+    }
+
+    #[test]
+    fn speaker_names_apply_live_to_both_subtitle_text_modes() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.subtitle_mode = SubtitleMode::Intermixed;
+        ui.push_subtitle(65_000, 200, "Hello".into(), Some("Frieren".into()));
+
+        let line = ui
+            .merged_chat(&ui.snapshot.view)
+            .into_iter()
+            .find(|line| line.subtitle)
+            .unwrap();
+        assert_eq!(line.text, "Hello", "names default to hidden");
+
+        ui.settings.subtitle_speaker_names = true;
+        let line = ui
+            .merged_chat(&ui.snapshot.view)
+            .into_iter()
+            .find(|line| line.subtitle)
+            .unwrap();
+        assert_eq!(line.text, "Frieren: Hello");
+
+        // Settings save calls this after replacing the working settings.
+        ui.refresh_chat();
+        let buffer = render_test_buffer(&mut ui);
+        assert_eq!(
+            rendered_text_color(&buffer, "Frieren: Hello"),
+            crate::ui::theme::dim().fg.unwrap(),
+            "Intermixed speaker names remain uniformly dim"
+        );
+
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        ui.refresh_chat();
+        let buffer = render_test_buffer(&mut ui);
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(rendered.contains("Frieren: Hello"), "{rendered}");
+        assert_eq!(
+            rendered_text_color(&buffer, "Frieren: Hello"),
+            crate::ui::theme::user_style("Frieren").fg.unwrap(),
+            "Separate-pane names retain the cue's speaker color"
+        );
     }
 
     #[test]

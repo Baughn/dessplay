@@ -275,7 +275,9 @@ snapshot data to component props:
   Intermixed (folded into the chat lines via `props::subtitle_line`,
   ordered by arrival, uniformly dim), or a Separate pane that splits the
   ChatPane area -- there lines are shown newest-first and colored by speaker
-  identity (the name is never displayed). `SpeakerColors` tracks named
+  identity. The persisted speaker-name toggle defaults off; when enabled, a
+  named cue is formatted as `Name: dialogue` in both Intermixed and Separate
+  modes by one shared display helper. `SpeakerColors` tracks named
   speakers in an inclusive rolling five-minute wall-clock window, advancing
   on subtitle arrivals, the explicit UI snapshot clock, and a one-second
   production-shell clock tick during otherwise quiet scenes. Active slot
@@ -373,7 +375,7 @@ Modal types:
   remembers its semantic-row selection. Missing-required markers and the
   global Save hint derive from one validation result. The player row is a
   deliberately non-functional WIP placeholder. Playback also holds the
-  speaker-colors master toggle and **Color overflow** choice; the latter is
+  opt-in **Speaker names** toggle, speaker-colors master toggle, and **Color overflow** choice; the latter is
   annotated `limited-color terminals only` because true-color allocation has
   no application cap. All other lifecycle hints reflect the current
   session-loop behavior. Header, category notes, and Save stay fixed while

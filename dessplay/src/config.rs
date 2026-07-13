@@ -327,6 +327,10 @@ pub struct Settings {
     pub upload_limit: Option<u64>,
     /// How local player subtitles are surfaced in the chat pane.
     pub subtitle_mode: SubtitleMode,
+    /// Prefix text subtitle cues with their ASS speaker/actor name when one
+    /// is available. Local display preference; default false preserves the
+    /// spoiler-safe behavior from before speaker names were exposed.
+    pub subtitle_speaker_names: bool,
     /// Color separate-pane subtitle lines by ASS speaker (design.md #22).
     /// When false, every separate-pane line renders uniformly dim
     /// regardless of speaker. Default true. Has no effect on Intermixed
@@ -375,6 +379,7 @@ impl Default for Settings {
             cache_retention: CacheRetention::default(),
             upload_limit: None,
             subtitle_mode: SubtitleMode::default(),
+            subtitle_speaker_names: false,
             subtitle_speaker_colors: true,
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::default(),
             series_sort: SeriesSort::default(),
@@ -443,6 +448,11 @@ impl Settings {
                     _ => defaults.subtitle_mode,
                 },
             },
+            subtitle_speaker_names: storage
+                .setting("subtitle_speaker_names")?
+                .map(|value| parse_bool("subtitle_speaker_names", &value))
+                .transpose()?
+                .unwrap_or(defaults.subtitle_speaker_names),
             subtitle_speaker_colors: storage
                 .setting("subtitle_speaker_colors")?
                 .map(|value| parse_bool("subtitle_speaker_colors", &value))
@@ -514,6 +524,14 @@ impl Settings {
         )?;
         storage.set_setting("subtitle_mode", Some(self.subtitle_mode.as_str()))?;
         storage.set_setting(
+            "subtitle_speaker_names",
+            Some(if self.subtitle_speaker_names {
+                "true"
+            } else {
+                "false"
+            }),
+        )?;
+        storage.set_setting(
             "subtitle_speaker_colors",
             Some(if self.subtitle_speaker_colors {
                 "true"
@@ -577,6 +595,7 @@ mod tests {
             cache_retention: CacheRetention::Infinite,
             upload_limit: Some(1_000_000),
             subtitle_mode: SubtitleMode::Intermixed,
+            subtitle_speaker_names: true,
             subtitle_speaker_colors: false,
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::DisableColors,
             series_sort: SeriesSort::Year,
@@ -757,6 +776,12 @@ mod tests {
         assert_eq!(SubtitleMode::Off.next(), SubtitleMode::Intermixed);
         assert_eq!(SubtitleMode::Intermixed.next(), SubtitleMode::SeparatePane);
         assert_eq!(SubtitleMode::SeparatePane.next(), SubtitleMode::Off);
+    }
+
+    #[test]
+    fn missing_subtitle_speaker_names_preserves_hidden_names() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert!(!storage.load_settings().unwrap().subtitle_speaker_names);
     }
 
     #[test]

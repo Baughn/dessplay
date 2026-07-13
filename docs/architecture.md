@@ -195,8 +195,8 @@ dispatcher that owns component state, focus, and the modal stack. Production's
 - `TerminalEvent(Event)` -- keyboard/mouse input from crossterm
 - `PlayerStatus(PlayerState)` -- current player position/state
 - `SubtitleLine { text, speaker }` -- appended to the subtitle pane's
-  rolling log; `speaker` (ASS `Name` field) colors the line in
-  separate-pane mode and is never displayed
+  rolling log; `speaker` (ASS `Name` field) optionally prefixes the cue in
+  both text modes and colors the line in separate-pane mode
 - `PresenceUpdate(Vec<PeerInfo>)` -- presence/role data for the Users pane
 
 **Produces:**

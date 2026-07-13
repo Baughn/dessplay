@@ -78,9 +78,9 @@ pub enum PlayerEvent {
         path: String,
     },
     /// The displayed subtitle line changed (empty text = cleared).
-    /// `speaker` is the ASS `Name`/actor field when present (never
-    /// displayed — used only to color the line); `None` for formats
-    /// without one (SRT) or events with an empty Name.
+    /// `speaker` is the ASS `Name`/actor field when present (used for
+    /// optional name display and separate-pane coloring); `None` for
+    /// formats without one (SRT) or events with an empty Name.
     SubtitleLine {
         /// The subtitle text, ASS override tags already stripped.
         text: String,

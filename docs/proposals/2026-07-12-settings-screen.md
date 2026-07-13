@@ -11,6 +11,10 @@ overflow**, for the limited-terminal subtitle-speaker fallback. It is a
 persisted local display setting and does not change the declarative form or
 category decisions below.
 
+Phase 25 added **Speaker names** after Subtitle display. It defaults off and
+prefixes named ASS cues as `Name: dialogue` in both text subtitle modes. Like
+the other subtitle controls it applies immediately and remains local-only.
+
 ## Summary
 
 Replace the settings modal's single mixed list with four categories:

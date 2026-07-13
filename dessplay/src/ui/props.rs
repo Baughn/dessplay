@@ -433,14 +433,30 @@ pub fn day_separator(millis: u64) -> ChatLine {
 /// can share it; re-exported here for the chat day separators.
 pub use crate::timeutil::biblical_date;
 
-/// Build a local subtitle chat line for Intermixed mode: the displayed
-/// time is the in-video position (`video_millis`), but interleaving uses
-/// wall-clock `arrival_millis`.
-pub fn subtitle_line(video_millis: u64, arrival_millis: u64, text: String) -> ChatLine {
+/// Format the body shared by both subtitle text modes, optionally prefixing
+/// the ASS speaker name. Unnamed cues remain byte-for-byte unchanged.
+pub fn subtitle_text(text: &str, speaker: Option<&str>, show_speaker: bool) -> String {
+    match speaker.filter(|name| show_speaker && !name.is_empty()) {
+        Some(speaker) => format!("{speaker}: {text}"),
+        None => text.to_owned(),
+    }
+}
+
+/// Build a local subtitle chat line for Intermixed mode. The displayed time
+/// is the in-video position, while interleaving uses wall-clock arrival.
+/// Speaker names use the same helper as Separate mode so the modes cannot
+/// drift.
+pub fn subtitle_line(
+    video_millis: u64,
+    arrival_millis: u64,
+    text: String,
+    speaker: Option<&str>,
+    show_speaker: bool,
+) -> ChatLine {
     ChatLine {
         time: mmss(video_millis),
         sender: String::new(),
-        text,
+        text: subtitle_text(&text, speaker, show_speaker),
         system: false,
         subtitle: true,
         separator: false,
@@ -1378,6 +1394,17 @@ mod tests {
         let lines = chat_lines(&state.view());
         assert_eq!((lines[0].text.as_str(), lines[0].action), ("hello", false));
         assert_eq!((lines[1].text.as_str(), lines[1].action), ("waves", true));
+    }
+
+    #[test]
+    fn subtitle_text_prefixes_only_named_opted_in_cues() {
+        assert_eq!(
+            subtitle_text("Hello", Some("Frieren"), true),
+            "Frieren: Hello"
+        );
+        assert_eq!(subtitle_text("Hello", Some("Frieren"), false), "Hello");
+        assert_eq!(subtitle_text("Hello", None, true), "Hello");
+        assert_eq!(subtitle_text("Hello", Some(""), true), "Hello");
     }
 
     fn hash(i: u8) -> Ed2kHash {

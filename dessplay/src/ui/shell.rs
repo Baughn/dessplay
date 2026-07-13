@@ -23,8 +23,8 @@ pub enum UiInput {
     Subtitle {
         /// Subtitle text.
         text: String,
-        /// The ASS speaker/actor, if any (never displayed — used only to
-        /// color the line in separate-pane mode).
+        /// The ASS speaker/actor, if any (used for optional name display and
+        /// to color the line in separate-pane mode).
         speaker: Option<String>,
         /// In-video position when the cue appeared (milliseconds).
         video_millis: u64,

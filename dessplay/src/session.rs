@@ -47,8 +47,8 @@ use crate::actors::sync::Mutation;
 pub struct SubtitleLine {
     /// Subtitle text.
     pub text: String,
-    /// The ASS speaker/actor, if the cue carried one (never displayed —
-    /// used only to color the line in separate-pane mode).
+    /// The ASS speaker/actor, if the cue carried one (used for optional name
+    /// display and to color the line in separate-pane mode).
     pub speaker: Option<String>,
     /// In-video position when the cue appeared (milliseconds).
     pub video_millis: u64,
@@ -110,8 +110,8 @@ pub enum Directive {
     Subtitle {
         /// Subtitle text.
         text: String,
-        /// The ASS speaker/actor, if any (never displayed — used only to
-        /// color the line).
+        /// The ASS speaker/actor, if any (used for optional name display and
+        /// to color the line).
         speaker: Option<String>,
         /// In-video position when the cue appeared (milliseconds).
         video_millis: u64,

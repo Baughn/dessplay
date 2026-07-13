@@ -544,7 +544,7 @@ pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Ve
 ///
 /// Each event is a `.ass` file event line:
 /// `Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`
-/// — so field index 4 is the `Name`/actor (the speaker, never displayed)
+/// — so field index 4 is the `Name`/actor (the speaker, optionally displayed)
 /// and field 9 (the remainder, since `Text` may contain commas) is the
 /// text, still carrying ASS override tags we strip here. Multiple
 /// simultaneous events arrive newline-separated; we join their texts and
