@@ -2189,7 +2189,15 @@ impl Actor {
                     self.resolve(hash, filename).await;
                 }
                 if self.scan_total > 0 {
-                    tracing::info!(to_hash = self.scan_total, "indexing media library");
+                    tracing::info!(
+                        to_hash = self.scan_total,
+                        files = ?self
+                            .scan_worklist
+                            .iter()
+                            .map(|item| &item.path)
+                            .collect::<Vec<_>>(),
+                        "indexing media library"
+                    );
                     self.scan_started = Some(std::time::Instant::now());
                     self.scan_failed = 0;
                     // ~20 info-level checkpoints regardless of library size;
