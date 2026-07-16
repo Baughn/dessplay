@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-07-12
+Last updated: 2026-07-17
 
 ## Table of Contents
 
@@ -497,7 +497,11 @@ emulator advertises its color depth correctly, and mouse protocol variations.
 The resulting color-depth behavior itself is headlessly testable because the
 capability is injected into `Ui`: limited mode must leave the completed buffer
 untouched, while true-color mode must apply the explicit dark background to
-every cell, including panes, modals, and passive overlays.
+every cell, including panes, modals, and passive overlays. True-color tests also
+require dim cells to leave the completed buffer with the explicit muted RGB
+foreground and no `DIM` modifier, preserve every unrelated modifier, and keep
+that muted foreground above the theme's 4.5:1 contrast floor. A whole-app
+regression pins this behavior on a group-watched playlist row.
 
 The shared Form additionally tests semantic row identity: selection follows a
 row through insertion/reorder, typed controls route only their matching edit

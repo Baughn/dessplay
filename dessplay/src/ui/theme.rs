@@ -75,6 +75,11 @@ pub const TRUECOLOR_BACKGROUND: Color = Color::Rgb(13, 17, 23);
 /// Default text color paired with [`TRUECOLOR_BACKGROUND`].
 pub const TRUECOLOR_FOREGROUND: Color = Color::Rgb(230, 237, 243);
 
+/// Muted text color paired with [`TRUECOLOR_BACKGROUND`]. True-color mode
+/// materializes `DIM` into this foreground instead of relying on SGR 2,
+/// whose interaction with explicit RGB colors varies between terminals.
+pub const TRUECOLOR_MUTED_FOREGROUND: Color = Color::Rgb(139, 148, 158);
+
 /// Distinct speakers remain active for this rolling wall-clock window.
 pub const SPEAKER_WINDOW_MILLIS: u64 = 5 * 60 * 1_000;
 
@@ -222,7 +227,12 @@ pub fn apply_color_depth(buffer: &mut Buffer, depth: ColorDepth) {
         return;
     }
     for cell in &mut buffer.content {
-        cell.fg = dark_foreground(cell.fg);
+        if cell.modifier.contains(Modifier::DIM) {
+            cell.fg = TRUECOLOR_MUTED_FOREGROUND;
+            cell.modifier.remove(Modifier::DIM);
+        } else {
+            cell.fg = dark_foreground(cell.fg);
+        }
         // DessPlay owns the whole alternate-screen canvas in true-color
         // mode. A single explicit background makes contrast deterministic
         // instead of guessing the user's terminal theme.
@@ -235,7 +245,7 @@ fn dark_foreground(color: Color) -> Color {
         Color::Reset => TRUECOLOR_FOREGROUND,
         // An explicit ANSI Black foreground would disappear on the forced
         // dark canvas. Map it to the subdued readable tone instead.
-        Color::Black => Color::Rgb(139, 148, 158),
+        Color::Black => TRUECOLOR_MUTED_FOREGROUND,
         Color::Red => Color::Rgb(248, 81, 73),
         Color::Green => Color::Rgb(86, 211, 100),
         Color::Yellow => Color::Rgb(227, 179, 65),
@@ -243,7 +253,7 @@ fn dark_foreground(color: Color) -> Color {
         Color::Magenta => Color::Rgb(219, 97, 162),
         Color::Cyan => Color::Rgb(86, 212, 221),
         Color::Gray => Color::Rgb(177, 186, 196),
-        Color::DarkGray => Color::Rgb(139, 148, 158),
+        Color::DarkGray => TRUECOLOR_MUTED_FOREGROUND,
         Color::LightRed => Color::Rgb(255, 123, 114),
         Color::LightGreen => Color::Rgb(126, 231, 135),
         Color::LightYellow => Color::Rgb(242, 204, 96),
@@ -315,6 +325,7 @@ pub fn dim() -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn rgb(color: Color) -> palette::Srgb<f32> {
         match color {
@@ -393,6 +404,43 @@ mod tests {
         assert_eq!(buffer[(3, 0)].bg, TRUECOLOR_BACKGROUND);
     }
 
+    proptest! {
+        /// SGR DIM is the compatibility problem; materializing it must not
+        /// erase independent presentation such as the selected-row reverse
+        /// or the known-offline italic style.
+        #[test]
+        fn truecolor_materializes_dim_without_disturbing_other_modifiers(
+            bold in any::<bool>(),
+            italic in any::<bool>(),
+            reversed in any::<bool>(),
+            underlined in any::<bool>(),
+        ) {
+            use tuirealm::ratatui::{buffer::Buffer, layout::Rect};
+
+            let mut retained = Modifier::empty();
+            if bold {
+                retained.insert(Modifier::BOLD);
+            }
+            if italic {
+                retained.insert(Modifier::ITALIC);
+            }
+            if reversed {
+                retained.insert(Modifier::REVERSED);
+            }
+            if underlined {
+                retained.insert(Modifier::UNDERLINED);
+            }
+
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+            buffer[(0, 0)].modifier = retained | Modifier::DIM;
+
+            apply_color_depth(&mut buffer, ColorDepth::TrueColor);
+
+            prop_assert_eq!(buffer[(0, 0)].fg, TRUECOLOR_MUTED_FOREGROUND);
+            prop_assert_eq!(buffer[(0, 0)].modifier, retained);
+        }
+    }
+
     #[test]
     fn limited_buffer_mapping_is_a_noop() {
         use tuirealm::ratatui::{buffer::Buffer, layout::Rect};
@@ -400,6 +448,7 @@ mod tests {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
         buffer[(0, 0)].fg = Color::Indexed(208);
         buffer[(0, 0)].bg = Color::Reset;
+        buffer[(0, 0)].modifier = Modifier::DIM | Modifier::ITALIC;
         let original = buffer.clone();
 
         apply_color_depth(&mut buffer, ColorDepth::Limited);
@@ -464,6 +513,11 @@ mod tests {
                 "dark-theme {source:?} has only {contrast:.2}:1 contrast"
             );
         }
+        let muted_contrast = rgb(TRUECOLOR_MUTED_FOREGROUND).relative_contrast(background);
+        assert!(
+            muted_contrast >= 4.5,
+            "muted true-color text has only {muted_contrast:.2}:1 contrast"
+        );
     }
 
     #[test]

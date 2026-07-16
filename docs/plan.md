@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-07-12
+Last updated: 2026-07-17
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -1387,6 +1387,13 @@ snapshot; true-color continuation past ten speakers; whole-frame dark-theme
 coverage; perceptual-separation bounds through the first 256 generated colors;
 and at least 4.5:1 contrast for that prefix and every semantic foreground
 against the fixed background.
+
+**Compatibility follow-up (2026-07-17):** true-color dim text is now
+materialized as the theme's explicit muted RGB foreground before terminal
+output. This preserves the limited-color path's native SGR 2 behavior while
+avoiding VTE-family differences when SGR 2 is combined with explicit RGB; a
+whole-app watched-playlist regression and modifier-preservation property test
+pin the boundary.
 
 ---
 

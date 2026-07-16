@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -72,8 +72,12 @@ crossterm plus standard `COLORTERM`/`*-direct` hints and injects `Limited` or
 capability-independent until the completed frame: on a
 true-color terminal the theme layer gives every cell the explicit dark
 background and maps semantic foregrounds to RGB, so panes, modals, and passive
-overlays cannot drift onto different schemes. On a limited terminal the pass
-is a no-op, preserving the terminal's configured theme. Tests inject the
+overlays cannot drift onto different schemes. The same completed-frame pass
+materializes `DIM` as the theme's muted RGB foreground and removes only that
+modifier before crossterm output; this avoids emulator-specific SGR 2 behavior
+while retaining combinations such as dim-plus-italic or selected-row reverse.
+On a limited terminal the pass is a strict no-op, preserving both the
+terminal's configured theme and native dim attribute. Tests inject the
 capability directly rather than consulting the real terminal.
 
 ### Shared Widgets

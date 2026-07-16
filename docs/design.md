@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1137,10 +1137,14 @@ true-color terminal gets an explicit app-wide dark theme: the complete
 alternate-screen buffer uses a known dark background and mapped RGB semantic
 foregrounds, including panes, modals, and passive overlays. This makes text
 contrast deterministic instead of depending on the user's terminal theme.
+Dim semantic text is materialized as an explicit muted RGB foreground in this
+final pass rather than left as SGR 2, whose treatment alongside explicit RGB
+colors varies between terminal emulators. Other text modifiers are preserved.
 A terminal without true-color retains its own foreground/background theme and
 uses DessPlay's finite ten-color application palette where identity colors are
-needed. The capability is injected into the synchronous `Ui`, so tests do not
-depend on process-global terminal state.
+needed; its dim text continues to use the terminal's native attribute. The
+capability is injected into the synchronous `Ui`, so tests do not depend on
+process-global terminal state.
 
 **No silent long-running work.** Any operation that can take more than
 a moment (hashing a file for the playlist, scanning media roots,

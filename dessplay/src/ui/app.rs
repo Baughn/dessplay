@@ -2368,6 +2368,67 @@ mod tests {
         panic!("{needle:?} not found in render");
     }
 
+    fn rendered_text_style(
+        buffer: &tuirealm::ratatui::buffer::Buffer,
+        needle: &str,
+    ) -> (
+        tuirealm::ratatui::style::Color,
+        tuirealm::ratatui::style::Modifier,
+    ) {
+        let first = needle.chars().next().expect("non-empty test needle");
+        for y in 0..buffer.area.height {
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            if line.contains(needle) {
+                let cell = (0..buffer.area.width)
+                    .map(|x| &buffer[(x, y)])
+                    .find(|cell| cell.symbol().starts_with(first))
+                    .expect("rendered text cell");
+                return (cell.fg, cell.modifier);
+            }
+        }
+        panic!("{needle:?} not found in render");
+    }
+
+    /// Regression: VTE-based terminals can fail to visibly apply SGR 2 to
+    /// explicit RGB colors. A watched playlist row in true-color mode must
+    /// therefore leave the completed frame with a concrete muted foreground,
+    /// not a terminal-dependent DIM attribute.
+    #[test]
+    fn truecolor_watched_playlist_row_uses_explicit_muted_foreground() {
+        use dessplay_core::playlist::NewPlaylistEntry;
+        use tuirealm::ratatui::style::Modifier;
+
+        let file = Ed2kHash([42; 16]);
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(
+            A,
+            SharedTimestamp(1),
+            NewPlaylistEntry {
+                hash: file,
+                added_by: UserId::new("baughn"),
+                filename: "watched-regression.mkv".into(),
+                size_bytes: 1,
+                duration_millis: None,
+            },
+        );
+        state.set_watched(A, SharedTimestamp(2), file, true);
+
+        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
+        ui.apply_snapshot(UiSnapshot {
+            view: std::sync::Arc::new(state.view()),
+            ..Default::default()
+        });
+        ui.set_color_depth(ColorDepth::TrueColor);
+
+        let buffer = render_test_buffer(&mut ui);
+        let (foreground, modifier) = rendered_text_style(&buffer, "watched-regression.mkv");
+
+        assert_eq!(foreground, crate::ui::theme::TRUECOLOR_MUTED_FOREGROUND);
+        assert!(!modifier.contains(Modifier::DIM));
+    }
+
     /// Regression: once RGB is available, every cell belongs to DessPlay's
     /// own dark theme instead of inheriting an arbitrary terminal background.
     #[test]
