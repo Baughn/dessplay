@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-12
+Last updated: 2026-07-16
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1194,6 +1194,12 @@ text ("⏸ paused") while silently failing to connect read as a hang
 - Right 50%, top: Series (three modes: Recent Series / All Series / The List)
 - Right 50%, middle: Users
 - Right 50%, bottom: Playlist
+
+When the playlist is taller than its pane, its viewport keeps the focused
+cursor as close to the vertical center as the playlist edges permit. While
+another pane is focused, it centers on the now-playing entry instead. This
+keeps useful entries visible on both sides rather than pinning the active row
+to the bottom edge.
 
 **Subtitle display (optional):** the local player's subtitles can be
 surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->

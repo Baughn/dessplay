@@ -84,8 +84,29 @@ pub fn render_list<'a>(
     selected: Option<usize>,
     focused: bool,
 ) {
-    let mut state = ListState::default();
-    state.select(selected);
+    render_list_centered(frame, area, title, items, selected, focused, None);
+}
+
+/// Render the standard list with an optional row kept as close to the
+/// vertical center as the list edges permit. The scroll target is separate
+/// from `selected`: an unfocused pane can follow an important row without
+/// drawing the selection highlight.
+pub fn render_list_centered<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    title: impl Into<Line<'a>>,
+    items: Vec<ListItem<'a>>,
+    selected: Option<usize>,
+    focused: bool,
+    center: Option<usize>,
+) {
+    let visible = area.height.saturating_sub(2) as usize;
+    let offset = center
+        .map(|target| centered_offset(items.len(), visible, target))
+        .unwrap_or(0);
+    let mut state = ListState::default()
+        .with_selected(selected)
+        .with_offset(offset);
     frame.render_stateful_widget(
         List::new(items)
             .highlight_style(theme::highlight_style())
@@ -98,6 +119,16 @@ pub fn render_list<'a>(
         area,
         &mut state,
     );
+}
+
+/// First visible row for a one-line-item viewport centered on `target`,
+/// clamped so the viewport stays full near either edge.
+fn centered_offset(len: usize, visible: usize, target: usize) -> usize {
+    let max_offset = len.saturating_sub(visible);
+    target
+        .min(len.saturating_sub(1))
+        .saturating_sub(visible / 2)
+        .min(max_offset)
 }
 
 #[cfg(test)]
@@ -138,5 +169,13 @@ mod tests {
         assert_eq!(c.index(), 3);
         c.clamp(0);
         assert_eq!(c.index(), 0);
+    }
+
+    #[test]
+    fn centered_viewport_clamps_at_both_edges() {
+        assert_eq!(centered_offset(20, 7, 10), 7);
+        assert_eq!(centered_offset(20, 7, 1), 0);
+        assert_eq!(centered_offset(20, 7, 19), 13);
+        assert_eq!(centered_offset(5, 7, 3), 0);
     }
 }

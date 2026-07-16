@@ -22,7 +22,7 @@ use super::props::{
 use super::theme;
 use super::widgets::{
     Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, render_list,
-    table_row,
+    render_list_centered, table_row,
 };
 
 /// A key the pane responds to, for the keybinding bar.
@@ -933,7 +933,20 @@ impl PlaylistPane {
             .collect();
         items.push(ListItem::new(Span::styled("  [Add New]", theme::dim())));
         let selected = self.focused.then(|| self.cursor.index());
-        render_list(frame, area, "Playlist", items, selected, self.focused);
+        let center = if self.focused {
+            Some(self.cursor.index())
+        } else {
+            self.props.now_index
+        };
+        render_list_centered(
+            frame,
+            area,
+            "Playlist",
+            items,
+            selected,
+            self.focused,
+            center,
+        );
     }
 }
 
@@ -1823,6 +1836,8 @@ mod playlist_pane_tests {
     use crate::ui::props::PlaylistRow;
     use dessplay_core::types::Ed2kHash;
     use tuirealm::event::{KeyEvent, KeyModifiers};
+    use tuirealm::ratatui::Terminal;
+    use tuirealm::ratatui::backend::TestBackend;
 
     fn shifted(c: char) -> Event<NoUserEvent> {
         Event::Keyboard(KeyEvent {
@@ -1883,6 +1898,63 @@ mod playlist_pane_tests {
             ..Default::default()
         });
         (p, hashes)
+    }
+
+    fn render(pane: &mut PlaylistPane, height: u16) -> tuirealm::ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(40, height)).unwrap();
+        terminal
+            .draw(|frame| pane.render(frame, frame.area()))
+            .unwrap()
+            .buffer
+            .clone()
+    }
+
+    fn row_y(buffer: &tuirealm::ratatui::buffer::Buffer, title: &str) -> Option<u16> {
+        (0..buffer.area.height).find(|&y| {
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            line.contains(title)
+        })
+    }
+
+    fn long_pane(focused: bool, target: usize) -> PlaylistPane {
+        let mut pane = PlaylistPane {
+            focused,
+            ..Default::default()
+        };
+        pane.set_props(PlaylistProps {
+            rows: (0..20)
+                .map(|i| PlaylistRow {
+                    title: format!("episode-{i:02}"),
+                    is_now: i == target,
+                    ..row(Ed2kHash([i as u8; 16]))
+                })
+                .collect(),
+            now_index: Some(target),
+        });
+        pane.cursor.set(target);
+        pane
+    }
+
+    /// A long focused playlist keeps context on both sides of the cursor
+    /// instead of putting the selected row at the bottom of the viewport.
+    #[test]
+    fn focused_cursor_is_centered_in_long_playlist() {
+        let mut pane = long_pane(true, 10);
+        let buffer = render(&mut pane, 9); // seven rows inside the border
+
+        assert_eq!(row_y(&buffer, "episode-10"), Some(4));
+    }
+
+    /// When another pane has focus, the playlist follows now-playing with
+    /// the same centered context rather than jumping back to its first rows.
+    #[test]
+    fn unfocused_now_playing_is_centered_in_long_playlist() {
+        let mut pane = long_pane(false, 10);
+        let buffer = render(&mut pane, 9); // seven rows inside the border
+
+        assert_eq!(row_y(&buffer, "episode-10"), Some(4));
     }
 
     /// Mimic the app applying a `MoveDown`/`MoveUp`: reorder the props to put

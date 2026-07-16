@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-12
+Last updated: 2026-07-16
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -306,7 +306,10 @@ snapshot data to component props:
   + snapshot.file_availability + peer presence/roles -> colored user list,
   with departed users and seeders on separate dim lines
 - **PlaylistPane**: snapshot.playlist (sorted by position) + watched flags ->
-  list items with colors based on availability, watched entries muted
+  list items with colors based on availability, watched entries muted. Its
+  viewport centers the focused cursor, or the now-playing row while
+  unfocused, with edge clamping; scroll targeting stays separate from the
+  selection highlight in the shared list renderer.
 - **PlayerStatus**: snapshot.now_playing + player position -> progress bar
 
 This mapping is a pure function (presence and subtitle data arrive as
