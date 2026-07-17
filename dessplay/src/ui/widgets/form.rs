@@ -9,12 +9,12 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use tuirealm::ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::keys::{ctrl, plain, typed};
 use super::line::TextField;
-use super::list::ListCursor;
+use super::list::{ListCursor, render_list_body};
 use super::table::{Align, Cell, table_row, truncate_display_start};
 use crate::ui::theme;
 
@@ -655,13 +655,7 @@ impl<M: FormModel> Form<M> {
                     items.push(ListItem::new(Line::raw("")));
                 }
             }
-            let mut state = ListState::default();
-            state.select(selected_item);
-            frame.render_stateful_widget(
-                List::new(items).highlight_style(theme::highlight_style()),
-                body_area,
-                &mut state,
-            );
+            render_list_body(frame, body_area, items, selected_item, selected_item);
         }
 
         if notes_height > 0 {
@@ -710,6 +704,8 @@ impl<M: FormModel> Form<M> {
 mod tests {
     use super::*;
     use tuirealm::event::{KeyEvent, KeyModifiers};
+    use tuirealm::ratatui::Terminal;
+    use tuirealm::ratatui::backend::TestBackend;
     use tuirealm::ratatui::layout::Rect;
 
     #[derive(Clone, PartialEq, Eq)]
@@ -908,5 +904,62 @@ mod tests {
         assert!(rect.width <= area.width && rect.height <= area.height);
         assert_eq!(rect.x, (area.width - rect.width) / 2);
         assert_eq!(rect.y, (area.height - rect.height) / 2);
+    }
+
+    struct LongModel;
+
+    impl FormModel for LongModel {
+        type RowId = usize;
+        type Out = ();
+
+        fn title(&self) -> String {
+            "Long form".into()
+        }
+
+        fn rows(&self) -> Vec<FormRow<Self::RowId>> {
+            (0..20)
+                .map(|i| {
+                    let row = FormRow::read_only(i, "Row", format!("value-{i:02}"));
+                    if i == 4 { row.with_gap_after() } else { row }
+                })
+                .collect()
+        }
+
+        fn apply(
+            &mut self,
+            _id: &Self::RowId,
+            _edit: FormEdit,
+        ) -> Result<FormEffect<Self::Out>, FormError> {
+            Ok(FormEffect::Handled)
+        }
+
+        fn save(&self) -> Self::Out {}
+
+        fn overlay_percent(&self) -> (u16, u16) {
+            (100, 100)
+        }
+    }
+
+    #[test]
+    fn centers_long_list_inside_form_body() {
+        let mut form = Form::new(LongModel);
+        assert!(form.select_row(&10));
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let buffer = terminal
+            .draw(|frame| form.render(frame, frame.area()))
+            .unwrap()
+            .buffer
+            .clone();
+        let y = (0..buffer.area.height).find(|&y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains("value-10")
+        });
+
+        // Border leaves eight rows and fixed Save leaves seven for the body.
+        // The blank display row after field 4 must count when centering.
+        assert_eq!(y, Some(4));
     }
 }

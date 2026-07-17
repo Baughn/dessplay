@@ -12,7 +12,7 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
+use tuirealm::ratatui::widgets::{Block, Borders, Clear, ListItem};
 use tuirealm::state::State;
 
 use dessplay_core::net::AniDbSearchHit;
@@ -28,7 +28,7 @@ use super::theme;
 use super::widgets::FormControl;
 use super::widgets::{
     Binding, Form, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormRow, KeyPattern,
-    Keymap, LineBuffer, ListCursor, TextField, render_list,
+    Keymap, LineBuffer, ListCursor, TextField, render_list, render_list_body,
 };
 use crate::config::{Settings, SubtitleMode, format_upload_limit, parse_upload_limit};
 
@@ -104,7 +104,7 @@ fn render_modal_list<'a>(
     let area = overlay(area, 70, 70);
     frame.render_widget(Clear, area);
     let selected = (!items.is_empty()).then_some(sel);
-    render_list(frame, area, title, items, selected, true);
+    render_list(frame, area, title, items, selected, true, selected);
 }
 
 // ---- File browser ------------------------------------------------------
@@ -2066,15 +2066,8 @@ impl AniDbSearchModal {
                 ListItem::new(Line::from(spans))
             })
             .collect();
-        let mut state = ListState::default();
-        if !self.results.is_empty() {
-            state.select(Some(self.cursor.index()));
-        }
-        frame.render_stateful_widget(
-            List::new(items).highlight_style(theme::highlight_style()),
-            list_area,
-            &mut state,
-        );
+        let selected = (!self.results.is_empty()).then(|| self.cursor.index());
+        render_list_body(frame, list_area, items, selected, selected);
     }
 }
 
@@ -2312,15 +2305,8 @@ impl NyaaSearchModal {
                     ]))
                 })
                 .collect();
-            let mut state = ListState::default();
-            if !items.is_empty() {
-                state.select(Some(self.cursor.index()));
-            }
-            frame.render_stateful_widget(
-                List::new(items).highlight_style(theme::highlight_style()),
-                list_area,
-                &mut state,
-            );
+            let selected = (!items.is_empty()).then(|| self.cursor.index());
+            render_list_body(frame, list_area, items, selected, selected);
             return;
         }
         if self.searching {
@@ -2365,15 +2351,8 @@ impl NyaaSearchModal {
                 ListItem::new(Line::from(spans))
             })
             .collect();
-        let mut state = ListState::default();
-        if !items.is_empty() {
-            state.select(Some(self.cursor.index()));
-        }
-        frame.render_stateful_widget(
-            List::new(items).highlight_style(theme::highlight_style()),
-            list_area,
-            &mut state,
-        );
+        let selected = (!items.is_empty()).then(|| self.cursor.index());
+        render_list_body(frame, list_area, items, selected, selected);
     }
 }
 
@@ -2460,11 +2439,29 @@ mod tests {
     /// Render just the browser (a passive modal, so `Component::view` is
     /// `render`) to a buffer string for insta snapshots.
     fn render(browser: &mut EpisodeBrowser, width: u16, height: u16) -> String {
+        buffer_to_string(&render_buffer(browser, width, height))
+    }
+
+    fn render_buffer(
+        browser: &mut EpisodeBrowser,
+        width: u16,
+        height: u16,
+    ) -> tuirealm::ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let completed = terminal
+        terminal
             .draw(|frame| browser.render(frame, frame.area()))
-            .unwrap();
-        buffer_to_string(completed.buffer)
+            .unwrap()
+            .buffer
+            .clone()
+    }
+
+    fn row_y(buffer: &tuirealm::ratatui::buffer::Buffer, text: &str) -> Option<u16> {
+        (0..buffer.area.height).find(|&y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains(text)
+        })
     }
 
     fn enter() -> Event<NoUserEvent> {
@@ -3052,6 +3049,44 @@ mod tests {
             browser.on(&enter()),
             Some(Msg::EpisodeChosen { hash: hash(2) })
         );
+    }
+
+    #[test]
+    fn centers_long_list_inside_episode_browser() {
+        let episodes = (0..20)
+            .map(|i| single(hash(i), &format!("episode-{i:02}")))
+            .collect();
+        let mut browser = EpisodeBrowser::new("Frieren".into(), vec![season("S1", episodes)]);
+        browser.cursor.set(10);
+
+        let buffer = render_buffer(&mut browser, 40, 15);
+
+        assert_eq!(row_y(&buffer, "episode-10"), Some(7));
+    }
+
+    #[test]
+    fn centers_long_list_inside_embedded_search_results() {
+        let mut modal = AniDbSearchModal::new(ListEntryId(1), "query".into());
+        modal.set_results(
+            "query",
+            (0..20)
+                .map(|i| AniDbSearchHit {
+                    series: dessplay_core::types::AniDbSeriesId(i),
+                    title: format!("series-{i:02}"),
+                    matched: format!("series-{i:02}"),
+                })
+                .collect(),
+        );
+        modal.cursor.set(10);
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 25)).unwrap();
+        let buffer = terminal
+            .draw(|frame| modal.render(frame, frame.area()))
+            .unwrap()
+            .buffer
+            .clone();
+
+        assert_eq!(row_y(&buffer, "series-10"), Some(14));
     }
 
     /// A SettingsModal with all the essentials filled in (saveable).

@@ -74,24 +74,10 @@ pub fn step_by(sel: usize, len: usize, down: bool, delta: usize) -> usize {
 }
 
 /// Render the standard bordered, highlight-selected list — the one shape
-/// every pane and modal list uses. `selected` is the caller's policy
-/// (panes highlight only while focused; modals always).
+/// every pane and modal list uses. `selected` is the caller's highlight
+/// policy (panes highlight only while focused; modals always); `center` is
+/// the independent viewport target.
 pub fn render_list<'a>(
-    frame: &mut Frame,
-    area: Rect,
-    title: impl Into<Line<'a>>,
-    items: Vec<ListItem<'a>>,
-    selected: Option<usize>,
-    focused: bool,
-) {
-    render_list_centered(frame, area, title, items, selected, focused, None);
-}
-
-/// Render the standard list with an optional row kept as close to the
-/// vertical center as the list edges permit. The scroll target is separate
-/// from `selected`: an unfocused pane can follow an important row without
-/// drawing the selection highlight.
-pub fn render_list_centered<'a>(
     frame: &mut Frame,
     area: Rect,
     title: impl Into<Line<'a>>,
@@ -101,12 +87,7 @@ pub fn render_list_centered<'a>(
     center: Option<usize>,
 ) {
     let visible = area.height.saturating_sub(2) as usize;
-    let offset = center
-        .map(|target| centered_offset(items.len(), visible, target))
-        .unwrap_or(0);
-    let mut state = ListState::default()
-        .with_selected(selected)
-        .with_offset(offset);
+    let mut state = centered_state(items.len(), visible, selected, center);
     frame.render_stateful_widget(
         List::new(items)
             .highlight_style(theme::highlight_style())
@@ -119,6 +100,39 @@ pub fn render_list_centered<'a>(
         area,
         &mut state,
     );
+}
+
+/// Render a selectable list into an already-defined body area (no border).
+/// Forms and search modals use this while bordered panes use [`render_list`];
+/// both therefore share exactly the same viewport policy.
+pub fn render_list_body<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    items: Vec<ListItem<'a>>,
+    selected: Option<usize>,
+    center: Option<usize>,
+) {
+    let mut state = centered_state(items.len(), area.height as usize, selected, center);
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(theme::highlight_style()),
+        area,
+        &mut state,
+    );
+}
+
+/// Ratatui selection/highlight state with an independent scroll target.
+fn centered_state(
+    len: usize,
+    visible: usize,
+    selected: Option<usize>,
+    center: Option<usize>,
+) -> ListState {
+    let offset = center
+        .map(|target| centered_offset(len, visible, target))
+        .unwrap_or(0);
+    ListState::default()
+        .with_selected(selected)
+        .with_offset(offset)
 }
 
 /// First visible row for a one-line-item viewport centered on `target`,

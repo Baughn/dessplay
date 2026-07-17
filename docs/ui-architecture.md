@@ -92,7 +92,7 @@ A behavior that exists in one place cannot drift.
 | Widget | Job | Guarantee |
 |--------|-----|-----------|
 | `LineBuffer` / `TextField` (`widgets/line.rs`) | The one line editor: text, cursor, horizontal scroll as pure state; `TextField` adds the bordered box, placeholder, cursor cell | The full editing vocabulary (word motion via Ctrl/Alt-arrows and Alt-b/f, word kill via Ctrl-W and Ctrl/Alt-Backspace, Ctrl-A/E, Home/End) works in **every** field — chat input, modal field editors, the series filter. Scroll invariants (`offset <= cursor <= len`, reset on set/clear) are property-tested; the "field renders from a stale column" bug class is unrepresentable |
-| `ListCursor` (`widgets/list.rs`) | The one selection cursor + the standard bordered list render | Up/Down/PgUp/PgDn and edge clamping behave identically in every list (panes, browsers, forms, search results) |
+| `ListCursor` (`widgets/list.rs`) | The one selection cursor + shared bordered/body list renders | Up/Down/PgUp/PgDn, edge clamping, and cursor-centered viewports behave identically in every selectable list (panes, browsers, forms, search results); selection highlighting remains separate from the scroll target so unfocused panes can retain context |
 | `Form` / `FormModel` (`widgets/form.rs`) | Field modals as typed data: models project semantic row IDs plus text / secret / toggle / choice / read-only / action controls, optional non-selectable spacing, and accept `FormEdit` at one mutation boundary. Form owns semantic selection, scrolling, masked editing, validation errors, category chrome hooks, and the save triple (capital `S`, fixed `[Save]`, unadvertised Ctrl-S alias) | Display order is not identity: insertion/reorder or visual spacing cannot retarget a field or active editor. Settings layers tabs over the same Form used by the typed List-entry editor |
 | `Keymap` (`widgets/keymap.rs`) | Bindings as data: (pattern, bar entry, action method), one table per component or mode | The keybinding bar and the dispatch derive from the same table — a key shown in the bar always dispatches; a dispatched key is advertised or deliberately hidden. Actions return `None` to *decline* (guards), letting the event fall through to the structural layers |
 | `widgets/keys.rs` | Key-event matchers | The terminal-compatibility policy lives in one place: bare letters over Ctrl-letters (Ctrl-J == LF, Ctrl-M == Enter, Ctrl-S == XOFF without the enhanced keyboard protocol); Ctrl *and* Alt accepted for word ops (macOS terminals send Alt); `.contains` matching for kitty's extra modifier bits |
@@ -310,10 +310,10 @@ snapshot data to component props:
   + snapshot.file_availability + peer presence/roles -> colored user list,
   with departed users and seeders on separate dim lines
 - **PlaylistPane**: snapshot.playlist (sorted by position) + watched flags ->
-  list items with colors based on availability, watched entries muted. Its
-  viewport centers the focused cursor, or the now-playing row while
-  unfocused, with edge clamping; scroll targeting stays separate from the
-  selection highlight in the shared list renderer.
+  list items with colors based on availability, watched entries muted. Like
+  every selectable list it uses the shared cursor-centered renderer, but its
+  unfocused scroll target is the now-playing row rather than its stored
+  cursor.
 - **PlayerStatus**: snapshot.now_playing + player position -> progress bar
 
 This mapping is a pure function (presence and subtitle data arrive as

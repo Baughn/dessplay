@@ -22,7 +22,7 @@ use super::props::{
 use super::theme;
 use super::widgets::{
     Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, render_list,
-    render_list_centered, table_row,
+    table_row,
 };
 
 /// A key the pane responds to, for the keybinding bar.
@@ -767,7 +767,15 @@ impl UsersPane {
             )));
         }
         let selected = (self.focused && self.selectable_len() > 0).then(|| self.cursor.index());
-        render_list(frame, area, "Users", items, selected, self.focused);
+        render_list(
+            frame,
+            area,
+            "Users",
+            items,
+            selected,
+            self.focused,
+            Some(self.cursor.index()),
+        );
     }
 }
 
@@ -938,7 +946,7 @@ impl PlaylistPane {
         } else {
             self.props.now_index
         };
-        render_list_centered(
+        render_list(
             frame,
             area,
             "Playlist",
@@ -1356,7 +1364,15 @@ impl SeriesPane {
                 .collect(),
         };
         let selected = (self.focused && !items.is_empty()).then(|| self.cursor.index());
-        render_list(frame, area, title, items, selected, self.focused);
+        render_list(
+            frame,
+            area,
+            title,
+            items,
+            selected,
+            self.focused,
+            Some(self.cursor.index()),
+        );
     }
 }
 
@@ -1635,6 +1651,8 @@ mod series_pane_tests {
     use super::*;
     use crate::ui::widgets::list::PAGE_STEP;
     use tuirealm::event::{KeyEvent, KeyModifiers};
+    use tuirealm::ratatui::Terminal;
+    use tuirealm::ratatui::backend::TestBackend;
 
     fn key(code: Key) -> Event<NoUserEvent> {
         Event::Keyboard(KeyEvent {
@@ -1722,6 +1740,39 @@ mod series_pane_tests {
                 year: None,
             })
             .collect()
+    }
+
+    /// Long list panes keep their stored cursor centered even while another
+    /// pane has focus, without drawing the selection highlight.
+    #[test]
+    fn centers_long_list_around_unfocused_series_cursor() {
+        let mut pane = SeriesPane::default();
+        pane.on(&key(Key::Char('m'))); // The List -> Recent
+        pane.set_franchises(
+            (0..20)
+                .map(|i| FranchiseRow {
+                    key: dessplay_core::franchise::FranchiseKey::Name(i.to_string()),
+                    title: format!("series-{i:02}"),
+                    year: None,
+                })
+                .collect(),
+        );
+        pane.cursor.set(10);
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 9)).unwrap();
+        let buffer = terminal
+            .draw(|frame| pane.render(frame, frame.area()))
+            .unwrap()
+            .buffer
+            .clone();
+        let y = (0..buffer.area.height).find(|&y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains("series-10")
+        });
+
+        assert_eq!(y, Some(4));
     }
 
     /// PageUp/PageDown jump the selection by a page in both Recent/All and
@@ -2028,6 +2079,8 @@ mod playlist_pane_tests {
 mod users_pane_tests {
     use super::*;
     use crate::ui::props::{KnownOfflineRow, UserRow};
+    use tuirealm::ratatui::Terminal;
+    use tuirealm::ratatui::backend::TestBackend;
 
     fn present(name: &str) -> UserRow {
         UserRow {
@@ -2070,6 +2123,32 @@ mod users_pane_tests {
         // Simulate an unrelated snapshot refresh (props unchanged).
         p.set_props(props);
         assert_eq!(p.selected_username(), Some("Kim".to_string()));
+    }
+
+    #[test]
+    fn centers_long_list_around_unfocused_users_cursor() {
+        let mut pane = UsersPane::default();
+        pane.set_props(UsersProps {
+            rows: (0..20).map(|i| present(&format!("user-{i:02}"))).collect(),
+            known_offline: vec![],
+            seeders: vec![],
+        });
+        pane.cursor.set(10);
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 9)).unwrap();
+        let buffer = terminal
+            .draw(|frame| pane.render(frame, frame.area()))
+            .unwrap()
+            .buffer
+            .clone();
+        let y = (0..buffer.area.height).find(|&y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains("user-10")
+        });
+
+        assert_eq!(y, Some(4));
     }
 }
 

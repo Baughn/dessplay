@@ -1199,11 +1199,12 @@ text ("⏸ paused") while silently failing to connect read as a hang
 - Right 50%, middle: Users
 - Right 50%, bottom: Playlist
 
-When the playlist is taller than its pane, its viewport keeps the focused
-cursor as close to the vertical center as the playlist edges permit. While
-another pane is focused, it centers on the now-playing entry instead. This
-keeps useful entries visible on both sides rather than pinning the active row
-to the bottom edge.
+When any selectable list is taller than its pane or modal, its viewport keeps
+the cursor as close to the vertical center as the list edges permit. Series
+and Users retain that cursor-centered context while unfocused; Playlist
+centers on the now-playing entry while another pane is focused. The chat log
+is deliberately separate: it keeps its history/newest-first scrolling policy
+rather than following a selection cursor.
 
 **Subtitle display (optional):** the local player's subtitles can be
 surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->
