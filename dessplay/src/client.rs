@@ -35,7 +35,11 @@ pub struct ClientHandle {
     pub events: mpsc::Receiver<ClientEvent>,
     /// The latest peer list (presence included) — one input to the
     /// derived playback state (`dessplay_core::derive`). Borrow, don't
-    /// consume: `peers.borrow().clone()`.
+    /// consume: `peers.borrow().clone()`. Includes synthesized Departed
+    /// entries for recently-seen known-offline users
+    /// (`derive::merge_known_offline`), so a committed user still gates
+    /// across a server restart; the raw server list is only on the
+    /// surfaced `NetworkEvent::PeerList`.
     pub peers: watch::Receiver<Vec<PeerInfo>>,
     /// Known usernames not currently in `peers` (design.md #15). Borrow,
     /// don't consume, same as `peers`.
@@ -95,6 +99,7 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
         sync_config.flush_interval = interval;
     }
 
+    let router_clock = Arc::clone(&config.clock);
     let network_config = NetworkConfig::new(
         config.username,
         config.password,
@@ -120,13 +125,27 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
     let router_sync = sync_tx.clone();
     let router_events = event_tx.clone();
     tokio::spawn(async move {
+        // Shared-clock offset, tracked so the known-offline gating horizon
+        // is measured against the server's clock domain (`last_seen` is
+        // server-written). Before the first ClockSync it is 0 — local
+        // time, close enough for a 7-day horizon.
+        let mut clock_offset: i64 = 0;
         while let Some(event) = net_event_rx.recv().await {
+            if let NetworkEvent::ClockSync { offset_millis } = &event {
+                clock_offset = *offset_millis;
+            }
             if let NetworkEvent::PeerList {
                 peers,
                 known_offline,
             } = &event
             {
-                let _ = peers_tx.send(peers.clone());
+                // Known-offline users seen within the last week gate like
+                // Departed peers (design.md #15/Presence): without this a
+                // server restart empties the registry and silently waives
+                // every absent user's commitment.
+                let now = ((router_clock)() as i64 + clock_offset).max(0) as u64;
+                let merged = dessplay_core::derive::merge_known_offline(peers, known_offline, now);
+                let _ = peers_tx.send(merged);
                 let _ = known_offline_tx.send(known_offline.clone());
             }
             let to_sync = match &event {

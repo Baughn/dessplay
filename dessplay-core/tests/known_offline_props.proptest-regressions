@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b043c1261f9a8e96bcb47e00c5630fa332e4b8f21740025921edc20e3a83dc72 # shrinks to peers = [], known = [KnownUser { username: UserId(kim), last_seen: 0 }, KnownUser { username: UserId(kim), last_seen: 7814222450026063522 }], now = 604800001

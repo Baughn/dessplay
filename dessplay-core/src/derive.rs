@@ -4,7 +4,10 @@
 //!
 //! Everything here quantifies over the **peer list** (the server's
 //! presence view), not over the CRDT maps: a user with no peer entry does
-//! not exist for gating purposes, and seeders never gate anything. A
+//! not exist for gating purposes, and seeders never gate anything. The
+//! caller should therefore pass a list pre-merged with
+//! [`merge_known_offline`], or a committed user unseen since the last
+//! server restart silently stops gating. A
 //! departed user's replicated state is ignored **unless** they are
 //! *committed* (Watching) to the now-playing series — a commitment gates
 //! across absence ("wait for me even if I've been gone a week"), cleared
@@ -12,7 +15,7 @@
 //!
 //! See docs/design.md (User States, Playback Rules, Presence).
 
-use crate::net::{PeerInfo, Presence, Role};
+use crate::net::{KnownUser, PeerInfo, Presence, Role};
 use crate::state::StateView;
 use crate::types::{FileAvailability, ManualState, PlaybackIntent, SeriesWatchState, UserId};
 
@@ -208,6 +211,55 @@ pub fn playback_blockers(view: &StateView, peers: &[PeerInfo]) -> Vec<Blocker> {
         }
     }
     blockers
+}
+
+/// How long a known-offline user keeps gating after their last connect or
+/// disconnect: within this window they are synthesized into the peer list
+/// as Departed (see [`merge_known_offline`]), past it they age out. A week
+/// matches the design's own commitment phrasing ("wait for me even if I've
+/// been gone a week") and bounds how long a stale username (e.g. after a
+/// naming-convention change) can keep gating.
+pub const KNOWN_OFFLINE_GATING_HORIZON_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Merge the server's `known_offline` registry (design.md #15) into the
+/// peer list as synthesized **Departed** interactive entries, so a
+/// committed (Watching) user who hasn't connected this server-process
+/// lifetime still gates playback. Without this, a server restart silently
+/// waived every absent user's commitment: [`playback_blockers`] quantifies
+/// over peer entries only, and the restart empties the in-memory registry
+/// (regression 2026-07-18, an unpause played past a committed Nero).
+///
+/// Real peer entries are preserved verbatim and are never shadowed — the
+/// server's `known_offline` also lists Lost/Departed peers that still hold
+/// a registry entry. Only users seen within
+/// [`KNOWN_OFFLINE_GATING_HORIZON_MILLIS`] of `now_millis` (shared-clock)
+/// are synthesized. Seeders never appear: the server records only
+/// interactive connections in `known_users`.
+pub fn merge_known_offline(
+    peers: &[PeerInfo],
+    known_offline: &[KnownUser],
+    now_millis: u64,
+) -> Vec<PeerInfo> {
+    let mut merged = peers.to_vec();
+    for user in known_offline {
+        // saturating_sub: a last_seen slightly in the future (clock skew
+        // between the server's registry and our shared-clock estimate)
+        // counts as just-seen, not as ancient.
+        if now_millis.saturating_sub(user.last_seen) > KNOWN_OFFLINE_GATING_HORIZON_MILLIS {
+            continue;
+        }
+        if merged.iter().any(|p| p.username == user.username) {
+            continue;
+        }
+        merged.push(PeerInfo {
+            username: user.username.clone(),
+            role: Role::Interactive,
+            presence: Presence::Departed,
+            addresses: Vec::new(),
+            connected_since: user.last_seen,
+        });
+    }
+    merged
 }
 
 /// The derived playback state: video plays iff the intent latch is
@@ -819,5 +871,83 @@ mod tests {
             Some(ManualState::Paused),
         );
         assert!(playback_active(&state.view(), &[present("kim")]));
+    }
+
+    const DAY_MILLIS: u64 = 24 * 60 * 60 * 1000;
+
+    fn known(name: &str, last_seen: u64) -> KnownUser {
+        KnownUser {
+            username: UserId::new(name),
+            last_seen,
+        }
+    }
+
+    #[test]
+    fn known_offline_committed_user_still_blocks() {
+        // Regression (2026-07-18): a committed user who hadn't connected
+        // since a server restart had no peer entry — only a known_offline
+        // row — and gating ignored them entirely, so an unpause played
+        // past their commitment. Merged in, they must block like any
+        // committed-absent peer.
+        let state = committed_state(&[("baughn", SeriesWatchState::Watching)]);
+        let now = 10 * DAY_MILLIS;
+        let peers = merge_known_offline(
+            &[present("kim")],
+            &[known("baughn", now - 3 * DAY_MILLIS)],
+            now,
+        );
+        let view = state.view();
+        assert_eq!(
+            playback_blockers(&view, &peers),
+            vec![Blocker {
+                user: UserId::new("baughn"),
+                reason: BlockReason::CommittedAbsent,
+            }]
+        );
+        assert!(!playback_active(&view, &peers));
+    }
+
+    #[test]
+    fn known_offline_gating_ages_out_after_a_week() {
+        let state = committed_state(&[("baughn", SeriesWatchState::Watching)]);
+        let now = 10 * DAY_MILLIS + KNOWN_OFFLINE_GATING_HORIZON_MILLIS;
+        let peers = merge_known_offline(
+            &[present("kim")],
+            &[known("baughn", 10 * DAY_MILLIS - 1)],
+            now,
+        );
+        assert!(peers.iter().all(|p| p.username != UserId::new("baughn")));
+        assert!(playback_active(&state.view(), &peers));
+    }
+
+    #[test]
+    fn known_offline_never_shadows_a_real_peer_entry() {
+        // The server's known_offline also lists Lost/Departed peers (they
+        // still hold a registry entry); the real entry must win.
+        let real = peer("baughn", Role::Interactive, Presence::Lost);
+        let peers = merge_known_offline(
+            std::slice::from_ref(&real),
+            &[known("baughn", DAY_MILLIS)],
+            DAY_MILLIS,
+        );
+        assert_eq!(peers, vec![real]);
+    }
+
+    #[test]
+    fn known_offline_maybe_user_does_not_block() {
+        // No preference for the now-playing series: the synthesized
+        // Departed entry derives Maybe, and an absent Maybe never blocks.
+        let state = committed_state(&[]);
+        let peers = merge_known_offline(
+            &[present("kim")],
+            &[known("baughn", DAY_MILLIS)],
+            DAY_MILLIS,
+        );
+        assert!(
+            peers
+                .iter()
+                .any(|p| p.username == UserId::new("baughn") && p.presence == Presence::Departed)
+        );
+        assert!(playback_active(&state.view(), &peers));
     }
 }

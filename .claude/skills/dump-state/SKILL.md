@@ -53,7 +53,7 @@ Everything else is a field of `state`. Selectable `--section` names:
 | `now_playing` | hex hash or null | the current file |
 | `seek_authority` | `"Server"` or `{User: "<name>"}` | |
 | `playback_intent` | `"Playing"` / `"Paused"` | the play/pause latch |
-| `series_preference` | array | `{user, series, state}`, state ∈ Watching/Maybe/NotWatching |
+| `series_preference` | array | `{user, entry, state, set_by}`, state ∈ Watching/Maybe/NotWatching; `entry` is a **ListEntryId** (decimal u128), not an AniDB series id |
 | `manual_override` | `{user: null \| "Paused" \| {Away:{set_by}}}` | |
 | `file_availability` | array | `{user, hash, availability}` (Ready/Missing/Downloading) |
 | `anidb_metadata` | `{hex_hash: meta\|null}` | `meta = {source, series_name, series_id, episode_number}` |
@@ -71,28 +71,40 @@ them directly.
 ## Recipes
 
 **Why is the now-playing file showing a given watch state for a user?**
-Watch state is keyed per **AniDB series**, not per file. A file with no
-`anidb_metadata` entry (or no `series_id`) has no series to look up, so it
-falls back to **Maybe** — see `series_watch_for_file` in
-`dessplay-core/src/derive.rs`. This is the usual cause of "committed to one
-episode but not the next": the next episode's AniDB lookup hasn't landed
-yet.
+Watch state is keyed per **List entry** (`ListEntryId`), not per file and
+not per AniDB series. The file is resolved to an entry by
+`resolve_series_entry_for_file` in `dessplay-core/src/series_identity.rs`,
+in order: the file's AniDB `series_id` matches a linked entry → the file's
+hash is in an entry's `manual_files` → the file's derived `series_name`
+matches an entry's `name` or `local_aliases`. No claiming entry (or no
+stored preference on it) ⇒ **Maybe**. Note a file whose AniDB lookup
+hasn't landed (`series_id: null`, `source: "FilenameDerived"`) can still
+resolve via the name match — commitment does not require the AniDB link.
 
 ```bash
 cargo run -q --bin dessplay -- --dump \
-  --section now_playing --section anidb_metadata --section series_preference \
-  2>/dev/null | jq '
+  --section now_playing --section anidb_metadata --section list_entries \
+  --section series_preference 2>/dev/null | jq '
     .state.now_playing as $np
     | (.state.anidb_metadata[$np] // null) as $meta
+    | ( [ .state.list_entries | to_entries[]
+          | select( (.value.anidb_series_id != null
+                       and .value.anidb_series_id == $meta.series_id)
+                    or .value.name == $meta.series_name
+                    or ((.value.local_aliases // []) | index($meta.series_name)) )
+        ][0] // null ) as $e
     | { now_playing: $np,
         series_id: ($meta.series_id // null),
         series_name: ($meta.series_name // null),
+        entry: ($e.key // null),
+        entry_name: ($e.value.name // null),
         my_pref: ( [ .state.series_preference[]
-                     | select(.user=="<NAME>" and .series==($meta.series_id))
+                     | select(.user=="<NAME>" and .entry==($e.key))
                      | .state ][0] // null ) }'
-# my_pref null ⇒ no stored preference for that series ⇒ derives to Maybe.
-# A null series_id (no metadata yet) also derives to Maybe — wrap the
-# select in [ ... ][0] // null so the row still prints in that case.
+# my_pref null ⇒ no stored preference on the claiming entry ⇒ Maybe.
+# This jq approximates the resolution (it skips manual_files and checks
+# the clauses together, not in priority order) — for a disputed case,
+# read series_identity.rs.
 ```
 
 **A user's full series preferences:**
@@ -131,9 +143,18 @@ cargo run -q --bin dessplay -- --dump \
 
 The displayed states are **derived**, not stored. When a dump doesn't
 obviously explain the UI, read `dessplay-core/src/derive.rs` — it is the
-source of truth for how `series_preference` + `anidb_metadata` +
-presence + `manual_override` + `playback_intent` combine. Key rule:
-absent metadata/series_id ⇒ **Maybe**, not committed.
+source of truth for how `series_preference` + `list_entries` +
+`anidb_metadata` + presence + `manual_override` + `playback_intent`
+combine. Key rule: no List entry claiming the file (see the resolution
+recipe above) ⇒ **Maybe**, not committed.
+
+Presence is **not in the dump** (it lives in the server's `PeerList`, not
+CRDT state). Gating quantifies over that peer list *plus* synthesized
+Departed entries for known-offline users seen within the last 7 days
+(`derive::merge_known_offline`, design.md #15) — so a committed user can
+block even if they haven't connected since the server last restarted. A
+stale `playback_position` timestamp for a user (days behind the others')
+is a good hint they've been absent that long.
 
 ## When the fix is "wait"
 

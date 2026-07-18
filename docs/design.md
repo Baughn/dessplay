@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -918,6 +918,26 @@ equally valid `n` / `/skip <name>` targets (the point of #15: rule on
 someone's commitment without waiting for them to reconnect). A committed
 (Watching) absent user is excluded from this list and shown instead as the
 red "committed, away" blocker row, exactly as before.
+
+**Known-offline users gate too (for a week).** Playback gating quantifies
+over peer entries, and the server's registry spans only its own process
+lifetime -- so a server restart would silently waive every absent user's
+commitment (2026-07-18: an unpause played past a committed, offline Nero).
+Clients therefore merge `known_offline` into the peer list before any
+derivation (`derive::merge_known_offline`): each known-offline user seen
+within the last **seven days** is synthesized as a Departed interactive
+entry, so a committed user blocks -- and reads as the red "committed,
+away" row -- exactly as if they had departed this session; a Maybe or
+NotWatching user's synthesized entry changes nothing (absent Maybe never
+blocks). Real peer entries are never shadowed. Past seven days the
+synthesis ages out: the horizon matches the commitment's own "wait for me
+even if I've been gone a week" phrasing, and bounds how long a stale
+username (e.g. after a naming-convention change -- commitments are keyed
+by username, and identity aliasing was deliberately rejected as a fuzzy
+heuristic in the gating path) can keep blocking. A stale blocker is
+dismissible at any time via `/skip <name>`, marking them Away, or a
+per-file `/ack`. Seeders never appear (only interactive connections are
+recorded in `known_users`).
 
 ---
 
