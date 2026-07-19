@@ -1873,7 +1873,20 @@ mod tests {
         };
         let blob = crate::wire::encode(&legacy).unwrap();
 
-        let decoded = CrdtState::decode_snapshot(&blob).expect("mid-Phase-19 blob must decode");
+        let (decoded, migrated) =
+            CrdtState::decode_snapshot_flagged(&blob).expect("mid-Phase-19 blob must decode");
+        // The migrated flag is load-bearing beyond bookkeeping: the three
+        // newest layouts all carry the trailing protocol_version u32, so
+        // they are the same length-class and only a decode *failure* on
+        // the wrong layout routes a V5 blob to the V5 fallback. If
+        // `decode::<CrdtState>` ever spuriously succeeded on a V5 blob,
+        // the state would be silently corrupt AND `migrated` would be
+        // false — skipping the server's pre-migration database backup.
+        // Asserting `migrated` here pins the disambiguation.
+        assert!(
+            migrated,
+            "a V5 blob must decode via the fallback chain, not as the current layout"
+        );
         let view = decoded.view();
         let entry = view.list_entries.get(&entry_id).expect("entry preserved");
         assert_eq!(entry.name, "Some Obscure Show");
