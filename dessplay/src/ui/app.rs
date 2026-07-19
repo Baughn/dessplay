@@ -815,10 +815,12 @@ impl Ui {
     /// Route a mouse event (design.md, Mouse support): a left-click
     /// focuses the pane under the pointer and moves the pane's selection
     /// to the clicked row; the wheel scrolls the pane under the pointer
-    /// without touching focus (the chat scrolls its log, list panes move
-    /// their cursor). Ignored while a modal is open — modals capture all
-    /// input and none of them speak mouse yet — and before the first
-    /// draw (the stored rects are zero-sized, so every hit-test misses).
+    /// only when it is *already focused* — touchpads emit wheel events by
+    /// accident, and an unfocused pane scrolling invisibly (or stealing
+    /// focus) would turn each graze into a surprise. Ignored while a
+    /// modal is open — modals capture all input and none of them speak
+    /// mouse yet — and before the first draw (the stored rects are
+    /// zero-sized, so every hit-test misses).
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<UserAction> {
         if !self.modals.is_empty() {
             return Vec::new();
@@ -838,21 +840,14 @@ impl Ui {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 tracing::debug!(?target, column = mouse.column, row = mouse.row, "click");
-                // Row selection first, focus second: the viewport the
-                // user clicked on was rendered with the *pre-click*
-                // focus (an unfocused playlist centers on now-playing,
-                // not its cursor), and the panes reproduce that
-                // viewport from their current focused flag.
+                // The panes hit-test against the viewport they recorded
+                // at render time, so the click lands on the row the
+                // user saw regardless of focus or centering policy.
                 match target {
                     Focus::Chat => {}
-                    Focus::Series => self
-                        .series
-                        .click(self.panes.series, mouse.column, mouse.row),
-                    Focus::Users => self.users.click(self.panes.users, mouse.column, mouse.row),
-                    Focus::Playlist => {
-                        self.playlist
-                            .click(self.panes.playlist, mouse.column, mouse.row)
-                    }
+                    Focus::Series => self.series.click(mouse.column, mouse.row),
+                    Focus::Users => self.users.click(mouse.column, mouse.row),
+                    Focus::Playlist => self.playlist.click(mouse.column, mouse.row),
                 }
                 if self.focus != target {
                     self.focus = target;
@@ -862,6 +857,9 @@ impl Ui {
                 self.refresh_keybar();
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                if target != self.focus {
+                    return Vec::new();
+                }
                 let up = mouse.kind == MouseEventKind::ScrollUp;
                 match target {
                     Focus::Chat => self.chat.scroll_wheel(up),

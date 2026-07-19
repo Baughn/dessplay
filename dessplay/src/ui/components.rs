@@ -21,7 +21,7 @@ use super::props::{
 };
 use super::theme;
 use super::widgets::{
-    Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, clicked_index,
+    Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, RenderedList, TextField,
     render_list, table_row,
 };
 
@@ -698,6 +698,8 @@ pub struct UsersPane {
     props: UsersProps,
     cursor: ListCursor,
     focused: bool,
+    /// The viewport of the last render, for mouse hit-testing.
+    rendered: RenderedList,
 }
 
 impl UsersPane {
@@ -752,15 +754,12 @@ impl UsersPane {
         self.props.rows.len() + self.props.known_offline.len()
     }
 
-    /// A left-click at (column, row) while the pane occupies `area`:
-    /// select the row under the pointer. The offset math must mirror the
-    /// last render, so the rendered length includes the seeders line —
-    /// which is then rejected as a target (it is display-only, exactly as
-    /// for keyboard selection).
-    pub(crate) fn click(&mut self, area: Rect, column: u16, row: u16) {
-        let rendered_len = self.selectable_len() + usize::from(!self.props.seeders.is_empty());
-        if let Some(index) =
-            clicked_index(rendered_len, area, Some(self.cursor.index()), column, row)
+    /// A left-click at (column, row): select the row under the pointer,
+    /// per the recorded last-render viewport. The seeders line renders
+    /// below the selectable range and is rejected as a target (it is
+    /// display-only, exactly as for keyboard selection).
+    pub(crate) fn click(&mut self, column: u16, row: u16) {
+        if let Some(index) = self.rendered.hit(column, row)
             && index < self.selectable_len()
         {
             self.cursor.set(index);
@@ -801,7 +800,7 @@ impl UsersPane {
             )));
         }
         let selected = (self.focused && self.selectable_len() > 0).then(|| self.cursor.index());
-        render_list(
+        self.rendered = render_list(
             frame,
             area,
             "Users",
@@ -848,6 +847,8 @@ pub struct PlaylistPane {
     props: PlaylistProps,
     cursor: ListCursor,
     focused: bool,
+    /// The viewport of the last render, for mouse hit-testing.
+    rendered: RenderedList,
 }
 
 impl PlaylistPane {
@@ -925,19 +926,13 @@ impl PlaylistPane {
         self.selected_hash().map(Msg::MapFile)
     }
 
-    /// A left-click at (column, row) while the pane occupies `area`:
-    /// select the row under the pointer (the trailing [Add New] row
-    /// included). Must run *before* the dispatcher moves focus here: the
-    /// viewport the user clicked on was centered per the pre-click focus
-    /// (now-playing while unfocused, the cursor while focused).
-    pub(crate) fn click(&mut self, area: Rect, column: u16, row: u16) {
-        let len = self.props.rows.len() + 1;
-        let center = if self.focused {
-            Some(self.cursor.index())
-        } else {
-            self.props.now_index
-        };
-        if let Some(index) = clicked_index(len, area, center, column, row) {
+    /// A left-click at (column, row): select the row under the pointer
+    /// (the trailing [Add New] row included), per the recorded
+    /// last-render viewport — which already embodies the pane's
+    /// centering policy (now-playing while unfocused, the cursor while
+    /// focused).
+    pub(crate) fn click(&mut self, column: u16, row: u16) {
+        if let Some(index) = self.rendered.hit(column, row) {
             self.cursor.set(index);
         }
     }
@@ -1003,7 +998,7 @@ impl PlaylistPane {
         } else {
             self.props.now_index
         };
-        render_list(
+        self.rendered = render_list(
             frame,
             area,
             "Playlist",
@@ -1125,6 +1120,8 @@ pub struct SeriesPane {
     filtering: bool,
     cursor: ListCursor,
     focused: bool,
+    /// The viewport of the last render, for mouse hit-testing.
+    rendered: RenderedList,
 }
 
 impl SeriesPane {
@@ -1321,12 +1318,11 @@ impl SeriesPane {
         }
     }
 
-    /// A left-click at (column, row) while the pane occupies `area`:
-    /// select the row under the pointer (headings included — Enter
-    /// toggles them, same as keyboard selection).
-    pub(crate) fn click(&mut self, area: Rect, column: u16, row: u16) {
-        if let Some(index) = clicked_index(self.len(), area, Some(self.cursor.index()), column, row)
-        {
+    /// A left-click at (column, row): select the row under the pointer
+    /// (headings included — Enter toggles them, same as keyboard
+    /// selection), per the recorded last-render viewport.
+    pub(crate) fn click(&mut self, column: u16, row: u16) {
+        if let Some(index) = self.rendered.hit(column, row) {
             self.cursor.set(index);
         }
     }
@@ -1437,7 +1433,7 @@ impl SeriesPane {
                 .collect(),
         };
         let selected = (self.focused && !items.is_empty()).then(|| self.cursor.index());
-        render_list(
+        self.rendered = render_list(
             frame,
             area,
             title,

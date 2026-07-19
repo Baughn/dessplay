@@ -1242,11 +1242,13 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 **Mouse support:** a left-click focuses the pane under the pointer and,
 in the list panes, simultaneously selects the clicked row (the seeders
 line and other non-selectable rows are ignored). The wheel scrolls the
-pane under the pointer *without* changing focus: the chat scrolls its
-log, list panes move their selection like Up/Down. Clicking never
-activates (no double-click Enter); mouse events are ignored while a
-modal is open. Keyboard-only terminals lose nothing — every mouse
-action has a key equivalent.
+pane under the pointer only when that pane is **already focused** (the
+chat scrolls its log, list panes move their selection like Up/Down);
+over an unfocused pane it is ignored — touchpads emit wheel events by
+accident, so a graze must neither scroll invisibly nor steal focus.
+Clicking never activates (no double-click Enter); mouse events are
+ignored while a modal is open. Keyboard-only terminals lose nothing —
+every mouse action has a key equivalent.
 
 ### Keyboard Shortcuts
 

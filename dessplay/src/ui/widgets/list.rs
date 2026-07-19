@@ -73,10 +73,42 @@ pub fn step_by(sel: usize, len: usize, down: bool, delta: usize) -> usize {
     }
 }
 
+/// The concrete viewport a bordered list actually rendered: its screen
+/// area, the scroll offset used, and the row count. [`render_list`]
+/// returns it and panes store it, so a later mouse click maps to the row
+/// the user *saw* — the centering policy lives only in the render call
+/// and can never drift from a re-derivation at click time. The default
+/// (zero-sized area) misses every click, covering "not drawn yet".
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderedList {
+    area: Rect,
+    offset: usize,
+    len: usize,
+}
+
+impl RenderedList {
+    /// Map a click at (column, row) to the rendered row index under it.
+    /// `None` for a click on the border or past the end of the list.
+    pub fn hit(&self, column: u16, row: u16) -> Option<usize> {
+        // Strictly inside the border (the saturating_subs make a
+        // degenerate zero-sized area a miss rather than an underflow).
+        if column <= self.area.x
+            || column >= self.area.x + self.area.width.saturating_sub(1)
+            || row <= self.area.y
+            || row >= self.area.y + self.area.height.saturating_sub(1)
+        {
+            return None;
+        }
+        let index = self.offset + (row - self.area.y - 1) as usize;
+        (index < self.len).then_some(index)
+    }
+}
+
 /// Render the standard bordered, highlight-selected list — the one shape
 /// every pane and modal list uses. `selected` is the caller's highlight
 /// policy (panes highlight only while focused; modals always); `center` is
-/// the independent viewport target.
+/// the independent viewport target. Returns the viewport it drew, for
+/// mouse hit-testing (see [`RenderedList`]).
 pub fn render_list<'a>(
     frame: &mut Frame,
     area: Rect,
@@ -85,9 +117,10 @@ pub fn render_list<'a>(
     selected: Option<usize>,
     focused: bool,
     center: Option<usize>,
-) {
+) -> RenderedList {
+    let len = items.len();
     let visible = area.height.saturating_sub(2) as usize;
-    let mut state = centered_state(items.len(), visible, selected, center);
+    let mut state = centered_state(len, visible, selected, center);
     frame.render_stateful_widget(
         List::new(items)
             .highlight_style(theme::highlight_style())
@@ -100,6 +133,14 @@ pub fn render_list<'a>(
         area,
         &mut state,
     );
+    // Read the offset back *after* the render: the widget may nudge it
+    // (it keeps the selected row visible), and the hit-test must match
+    // what actually reached the screen.
+    RenderedList {
+        area,
+        offset: state.offset(),
+        len,
+    }
 }
 
 /// Render a selectable list into an already-defined body area (no border).
@@ -133,35 +174,6 @@ fn centered_state(
     ListState::default()
         .with_selected(selected)
         .with_offset(offset)
-}
-
-/// Map a click inside a bordered list (the [`render_list`] shape) to the
-/// row index it landed on, reproducing the centered viewport the last
-/// render used — so `len` and `center` must be the same values the pane
-/// passed to [`render_list`]. `None` for a click on the border or past
-/// the end of the list.
-pub fn clicked_index(
-    len: usize,
-    area: Rect,
-    center: Option<usize>,
-    column: u16,
-    row: u16,
-) -> Option<usize> {
-    // Strictly inside the border (the saturating_subs make a degenerate
-    // zero-sized area a miss rather than an underflow).
-    if column <= area.x
-        || column >= area.x + area.width.saturating_sub(1)
-        || row <= area.y
-        || row >= area.y + area.height.saturating_sub(1)
-    {
-        return None;
-    }
-    let visible = area.height.saturating_sub(2) as usize;
-    let offset = center
-        .map(|target| centered_offset(len, visible, target))
-        .unwrap_or(0);
-    let index = offset + (row - area.y - 1) as usize;
-    (index < len).then_some(index)
 }
 
 /// First visible row for a one-line-item viewport centered on `target`,
@@ -223,37 +235,45 @@ mod tests {
     }
 
     #[test]
-    fn clicked_index_maps_body_rows_and_rejects_borders() {
+    fn hit_maps_body_rows_and_rejects_borders() {
         // A 10x9 bordered list at (5, 3): body rows are y 4..=10.
-        let area = Rect::new(5, 3, 10, 9);
-        // Short list, no scrolling: body row N is index N.
-        assert_eq!(clicked_index(5, area, Some(0), 6, 4), Some(0));
-        assert_eq!(clicked_index(5, area, Some(0), 10, 7), Some(3));
+        let rendered = RenderedList {
+            area: Rect::new(5, 3, 10, 9),
+            offset: 0,
+            len: 5,
+        };
+        // No scrolling: body row N is index N.
+        assert_eq!(rendered.hit(6, 4), Some(0));
+        assert_eq!(rendered.hit(10, 7), Some(3));
         // Borders and outside are misses.
-        assert_eq!(clicked_index(5, area, Some(0), 5, 4), None); // left border
-        assert_eq!(clicked_index(5, area, Some(0), 14, 4), None); // right border
-        assert_eq!(clicked_index(5, area, Some(0), 6, 3), None); // top border
-        assert_eq!(clicked_index(5, area, Some(0), 6, 11), None); // bottom border
-        assert_eq!(clicked_index(5, area, Some(0), 20, 20), None);
+        assert_eq!(rendered.hit(5, 4), None); // left border
+        assert_eq!(rendered.hit(14, 4), None); // right border
+        assert_eq!(rendered.hit(6, 3), None); // top border
+        assert_eq!(rendered.hit(6, 11), None); // bottom border
+        assert_eq!(rendered.hit(20, 20), None);
         // Past the end of a short list is a miss, not a clamp.
-        assert_eq!(clicked_index(5, area, Some(0), 6, 10), None);
+        assert_eq!(rendered.hit(6, 10), None);
     }
 
     #[test]
-    fn clicked_index_honors_the_centered_scroll() {
-        // 7 visible rows of 20, centered on 10 => offset 7 (see above), so
-        // the top body row is index 7.
-        let area = Rect::new(0, 0, 10, 9);
-        assert_eq!(clicked_index(20, area, Some(10), 1, 1), Some(7));
-        assert_eq!(clicked_index(20, area, Some(10), 1, 7), Some(13));
-        // No center (an unfocused playlist with nothing playing) pins the
-        // viewport to the top.
-        assert_eq!(clicked_index(20, area, None, 1, 1), Some(0));
+    fn hit_applies_the_recorded_scroll_offset() {
+        let rendered = RenderedList {
+            area: Rect::new(0, 0, 10, 9),
+            offset: 7,
+            len: 20,
+        };
+        assert_eq!(rendered.hit(1, 1), Some(7));
+        assert_eq!(rendered.hit(1, 7), Some(13));
     }
 
     #[test]
-    fn clicked_index_on_a_degenerate_area_is_a_miss() {
-        assert_eq!(clicked_index(5, Rect::new(0, 0, 0, 0), Some(0), 0, 0), None);
-        assert_eq!(clicked_index(5, Rect::new(0, 0, 2, 2), Some(0), 1, 1), None);
+    fn hit_on_a_degenerate_or_default_viewport_is_a_miss() {
+        assert_eq!(RenderedList::default().hit(0, 0), None);
+        let tiny = RenderedList {
+            area: Rect::new(0, 0, 2, 2),
+            offset: 0,
+            len: 5,
+        };
+        assert_eq!(tiny.hit(1, 1), None);
     }
 }

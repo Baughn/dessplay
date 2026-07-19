@@ -618,12 +618,12 @@ fn mouse_is_ignored_while_a_modal_is_open() {
     assert!(render(&mut ui, 100, 30).contains("Send"));
 }
 
-/// The wheel scrolls the pane under the pointer without stealing focus:
-/// two down-ticks over the unfocused playlist move its cursor to the
-/// third row (visible once Tab reaches the pane), while the keybar
-/// stays on Chat throughout.
+/// The wheel only scrolls the pane under the pointer when that pane is
+/// already focused: an unfocused pane neither scrolls (its cursor is
+/// invisible, so the movement would be silent) nor steals focus
+/// (touchpads emit wheel events by accident).
 #[test]
-fn wheel_scrolls_hovered_pane_without_stealing_focus() {
+fn wheel_scrolls_only_the_focused_pane() {
     let mut state = CrdtState::new();
     state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
     state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
@@ -633,6 +633,7 @@ fn wheel_scrolls_hovered_pane_without_stealing_focus() {
     render(&mut ui, 100, 30);
     let (_, _, _, playlist) = pane_rects(100, 30);
 
+    // Chat is focused: wheel ticks over the playlist are ignored.
     ui.handle(wheel(playlist.x + 2, playlist.y + 1, false));
     ui.handle(wheel(playlist.x + 2, playlist.y + 1, false));
     assert!(
@@ -642,6 +643,17 @@ fn wheel_scrolls_hovered_pane_without_stealing_focus() {
     for _ in 0..3 {
         ui.handle(key(Key::Tab)); // Chat -> Series -> Users -> Playlist
     }
+    assert_eq!(
+        ui.handle(key(Key::Char('d'))),
+        vec![UserAction::Mutate(Mutation::RemovePlaylist {
+            hash: hash(1)
+        })],
+        "the ignored wheel ticks left the cursor on the first row"
+    );
+
+    // Focused, the same wheel ticks move the selection.
+    ui.handle(wheel(playlist.x + 2, playlist.y + 1, false));
+    ui.handle(wheel(playlist.x + 2, playlist.y + 1, false));
     assert_eq!(
         ui.handle(key(Key::Char('d'))),
         vec![UserAction::Mutate(Mutation::RemovePlaylist {
