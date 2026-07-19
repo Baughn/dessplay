@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-17
+Last updated: 2026-07-20
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -352,6 +352,37 @@ Each pane (and modal) exposes `keybindings()`; the dispatcher rebuilds
 the `KeyBar` items from the focused component (or topmost modal) plus
 global bindings (Tab, Ctrl-C) after every event. When focus changes or a
 modal opens, the bar updates automatically.
+
+---
+
+## Mouse Input
+
+Mouse events route by **position, not focus**, so they are handled at the
+dispatcher level (`Ui::handle_mouse`), never inside a component's `on()`
+— a pane cannot know where it was drawn. `draw` records the four pane
+rectangles (`PaneRects`; the chat entry spans the whole left column) and
+the handler hit-tests against them:
+
+- **Left-click**: selects the clicked row *then* focuses the pane
+  (mirroring the Tab path: `sync_focus_attr` + `refresh_keybar`). Order
+  matters — the viewport the user clicked on was rendered under the
+  *pre-click* focus, and each pane's `click()` method reproduces that
+  viewport from its own state (the shared `clicked_index` in
+  `widgets/list.rs` inverts the cursor-centered offset; the playlist's
+  unfocused center is the now-playing row). Non-selectable rows (the
+  seeders line) and border cells are misses.
+- **Wheel**: scrolls the pane under the pointer *without* touching focus
+  — the chat scrolls its log a few lines per tick, list panes move their
+  cursor like Up/Down.
+- **Modals**: while any modal is open, mouse events are ignored entirely
+  (modals capture all input, and none of them speak mouse yet).
+
+The production shell enables crossterm mouse capture at setup (non-fatal
+if the terminal refuses; the adapter's `restore()` disables it on exit)
+and the input thread forwards only left-click and wheel events — capture
+also reports every motion, and each forwarded event costs a full redraw.
+Tests inject `Event::Mouse` through the same `Ui::handle` as keys; the
+first `draw` must happen before a click can land (zero rects miss).
 
 ---
 

@@ -5,7 +5,7 @@
 //! directly — that's the point of the synchronous dispatcher.
 
 use tokio::sync::mpsc;
-use tuirealm::event::{Event, NoUserEvent};
+use tuirealm::event::{Event, MouseButton, MouseEventKind, NoUserEvent};
 use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 
 use super::app::{Ui, UiSnapshot};
@@ -164,6 +164,14 @@ pub fn run_ui_thread(
     if let Err(e) = adapter.enable_bracketed_paste() {
         tracing::warn!("cannot enable bracketed paste: {e}");
     }
+    // Mouse capture (design.md, Mouse support): clicks focus panes and
+    // select list rows, the wheel scrolls. Non-fatal — a terminal
+    // without mouse reporting keeps the full keyboard UI. Unlike
+    // bracketed paste this *is* tracked by the adapter, so restore()
+    // (and the panic hook) disable it on exit.
+    if let Err(e) = adapter.enable_mouse_capture() {
+        tracing::warn!("cannot enable mouse capture: {e}");
+    }
     let color_depth = super::theme::ColorDepth::detect();
     ui.set_color_depth(color_depth);
     tracing::debug!(
@@ -313,6 +321,20 @@ pub fn run_input_thread(inputs: std::sync::mpsc::SyncSender<UiInput>) {
             Ok(event) => {
                 let event: Event<NoUserEvent> = event.into();
                 if matches!(event, Event::None) {
+                    continue;
+                }
+                // Mouse capture reports every motion and button release,
+                // but only left-clicks and wheel ticks do anything — and
+                // each forwarded event costs a full redraw on the UI
+                // thread, so drop the rest here.
+                if let Event::Mouse(mouse) = &event
+                    && !matches!(
+                        mouse.kind,
+                        MouseEventKind::Down(MouseButton::Left)
+                            | MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown
+                    )
+                {
                     continue;
                 }
                 tracing::trace!(kind = event_kind(&event), "input event forwarded");

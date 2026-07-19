@@ -135,6 +135,35 @@ fn centered_state(
         .with_offset(offset)
 }
 
+/// Map a click inside a bordered list (the [`render_list`] shape) to the
+/// row index it landed on, reproducing the centered viewport the last
+/// render used — so `len` and `center` must be the same values the pane
+/// passed to [`render_list`]. `None` for a click on the border or past
+/// the end of the list.
+pub fn clicked_index(
+    len: usize,
+    area: Rect,
+    center: Option<usize>,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    // Strictly inside the border (the saturating_subs make a degenerate
+    // zero-sized area a miss rather than an underflow).
+    if column <= area.x
+        || column >= area.x + area.width.saturating_sub(1)
+        || row <= area.y
+        || row >= area.y + area.height.saturating_sub(1)
+    {
+        return None;
+    }
+    let visible = area.height.saturating_sub(2) as usize;
+    let offset = center
+        .map(|target| centered_offset(len, visible, target))
+        .unwrap_or(0);
+    let index = offset + (row - area.y - 1) as usize;
+    (index < len).then_some(index)
+}
+
 /// First visible row for a one-line-item viewport centered on `target`,
 /// clamped so the viewport stays full near either edge.
 fn centered_offset(len: usize, visible: usize, target: usize) -> usize {
@@ -191,5 +220,40 @@ mod tests {
         assert_eq!(centered_offset(20, 7, 1), 0);
         assert_eq!(centered_offset(20, 7, 19), 13);
         assert_eq!(centered_offset(5, 7, 3), 0);
+    }
+
+    #[test]
+    fn clicked_index_maps_body_rows_and_rejects_borders() {
+        // A 10x9 bordered list at (5, 3): body rows are y 4..=10.
+        let area = Rect::new(5, 3, 10, 9);
+        // Short list, no scrolling: body row N is index N.
+        assert_eq!(clicked_index(5, area, Some(0), 6, 4), Some(0));
+        assert_eq!(clicked_index(5, area, Some(0), 10, 7), Some(3));
+        // Borders and outside are misses.
+        assert_eq!(clicked_index(5, area, Some(0), 5, 4), None); // left border
+        assert_eq!(clicked_index(5, area, Some(0), 14, 4), None); // right border
+        assert_eq!(clicked_index(5, area, Some(0), 6, 3), None); // top border
+        assert_eq!(clicked_index(5, area, Some(0), 6, 11), None); // bottom border
+        assert_eq!(clicked_index(5, area, Some(0), 20, 20), None);
+        // Past the end of a short list is a miss, not a clamp.
+        assert_eq!(clicked_index(5, area, Some(0), 6, 10), None);
+    }
+
+    #[test]
+    fn clicked_index_honors_the_centered_scroll() {
+        // 7 visible rows of 20, centered on 10 => offset 7 (see above), so
+        // the top body row is index 7.
+        let area = Rect::new(0, 0, 10, 9);
+        assert_eq!(clicked_index(20, area, Some(10), 1, 1), Some(7));
+        assert_eq!(clicked_index(20, area, Some(10), 1, 7), Some(13));
+        // No center (an unfocused playlist with nothing playing) pins the
+        // viewport to the top.
+        assert_eq!(clicked_index(20, area, None, 1, 1), Some(0));
+    }
+
+    #[test]
+    fn clicked_index_on_a_degenerate_area_is_a_miss() {
+        assert_eq!(clicked_index(5, Rect::new(0, 0, 0, 0), Some(0), 0, 0), None);
+        assert_eq!(clicked_index(5, Rect::new(0, 0, 2, 2), Some(0), 1, 1), None);
     }
 }

@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-18
+Last updated: 2026-07-20
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1239,7 +1239,14 @@ the active component's keybinding declarations (see [ui-architecture.md](ui-arch
 
 **Focus cycling:** `Tab` cycles through Chat, Series, Users, Playlist
 
-**Mouse support:** Click to focus panes, scroll, select items (if convenient to implement)
+**Mouse support:** a left-click focuses the pane under the pointer and,
+in the list panes, simultaneously selects the clicked row (the seeders
+line and other non-selectable rows are ignored). The wheel scrolls the
+pane under the pointer *without* changing focus: the chat scrolls its
+log, list panes move their selection like Up/Down. Clicking never
+activates (no double-click Enter); mouse events are ignored while a
+modal is open. Keyboard-only terminals lose nothing — every mouse
+action has a key equivalent.
 
 ### Keyboard Shortcuts
 

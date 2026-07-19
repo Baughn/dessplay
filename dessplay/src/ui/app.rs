@@ -15,10 +15,12 @@ use dessplay_core::types::{
     SeriesWatchState, UserId, encode_action,
 };
 use tuirealm::component::AppComponent;
-use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
+use tuirealm::event::{
+    Event, Key, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind, NoUserEvent,
+};
 use tuirealm::props::{AttrValue, Attribute};
 use tuirealm::ratatui::Frame;
-use tuirealm::ratatui::layout::{Constraint, Layout};
+use tuirealm::ratatui::layout::{Constraint, Layout, Position, Rect};
 use tuirealm::ratatui::widgets::{Block, Borders};
 
 use super::components::{
@@ -146,6 +148,19 @@ enum Focus {
     Playlist,
 }
 
+/// Screen rectangles of the four panes as of the last draw, for mouse
+/// hit-testing. Zero-sized until the first draw, so every click misses
+/// — no `Option` dance needed. `chat` spans the whole left column
+/// (log, input, progress line, and the subtitle pane when shown): a
+/// click anywhere in it means "the chat side".
+#[derive(Clone, Copy, Default)]
+struct PaneRects {
+    chat: Rect,
+    series: Rect,
+    users: Rect,
+    playlist: Rect,
+}
+
 impl Focus {
     fn next(self) -> Self {
         match self {
@@ -231,6 +246,8 @@ pub struct Ui {
     keybar: KeyBar,
     modals: Vec<Modal>,
     focus: Focus,
+    /// Where the panes landed in the last draw (mouse hit-testing).
+    panes: PaneRects,
     subtitle_mode: SubtitleMode,
     /// Terminal color capability, detected by the production shell and
     /// injected by rendering tests. Limited is the deterministic default.
@@ -308,6 +325,7 @@ impl Ui {
             keybar: KeyBar::default(),
             modals: Vec::new(),
             focus: Focus::Chat,
+            panes: PaneRects::default(),
             subtitle_mode: settings.subtitle_mode,
             color_depth: ColorDepth::Limited,
             subtitles: std::collections::VecDeque::new(),
@@ -794,6 +812,69 @@ impl Ui {
         }
     }
 
+    /// Route a mouse event (design.md, Mouse support): a left-click
+    /// focuses the pane under the pointer and moves the pane's selection
+    /// to the clicked row; the wheel scrolls the pane under the pointer
+    /// without touching focus (the chat scrolls its log, list panes move
+    /// their cursor). Ignored while a modal is open — modals capture all
+    /// input and none of them speak mouse yet — and before the first
+    /// draw (the stored rects are zero-sized, so every hit-test misses).
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<UserAction> {
+        if !self.modals.is_empty() {
+            return Vec::new();
+        }
+        let position = Position::new(mouse.column, mouse.row);
+        let target = [
+            (self.panes.chat, Focus::Chat),
+            (self.panes.series, Focus::Series),
+            (self.panes.users, Focus::Users),
+            (self.panes.playlist, Focus::Playlist),
+        ]
+        .into_iter()
+        .find_map(|(rect, focus)| rect.contains(position).then_some(focus));
+        let Some(target) = target else {
+            return Vec::new(); // status bar, keybar, or off-layout
+        };
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                tracing::debug!(?target, column = mouse.column, row = mouse.row, "click");
+                // Row selection first, focus second: the viewport the
+                // user clicked on was rendered with the *pre-click*
+                // focus (an unfocused playlist centers on now-playing,
+                // not its cursor), and the panes reproduce that
+                // viewport from their current focused flag.
+                match target {
+                    Focus::Chat => {}
+                    Focus::Series => self
+                        .series
+                        .click(self.panes.series, mouse.column, mouse.row),
+                    Focus::Users => self.users.click(self.panes.users, mouse.column, mouse.row),
+                    Focus::Playlist => {
+                        self.playlist
+                            .click(self.panes.playlist, mouse.column, mouse.row)
+                    }
+                }
+                if self.focus != target {
+                    self.focus = target;
+                    tracing::debug!(focus = ?self.focus, "focus changed (click)");
+                }
+                self.sync_focus_attr();
+                self.refresh_keybar();
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = mouse.kind == MouseEventKind::ScrollUp;
+                match target {
+                    Focus::Chat => self.chat.scroll_wheel(up),
+                    Focus::Series => self.series.scroll_wheel(up),
+                    Focus::Users => self.users.scroll_wheel(up),
+                    Focus::Playlist => self.playlist.scroll_wheel(up),
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
     /// Route one input event; returns the actions it produced.
     pub fn handle(&mut self, ev: Event<NoUserEvent>) -> Vec<UserAction> {
         // SECURITY: never log keystroke contents while the settings
@@ -802,6 +883,10 @@ impl Ui {
             tracing::trace!("ui event (contents redacted: settings modal open)");
         } else {
             tracing::trace!(event = ?ev, "ui event");
+        }
+        // Mouse events route by position, not focus.
+        if let Event::Mouse(mouse) = &ev {
+            return self.handle_mouse(*mouse);
         }
         // Globals first.
         if let Event::Keyboard(KeyEvent {
@@ -1692,6 +1777,13 @@ impl Ui {
             Constraint::Percentage(33),
         ])
         .areas(right);
+        // Remember where the panes landed for mouse hit-testing.
+        self.panes = PaneRects {
+            chat: left,
+            series: series_area,
+            users: users_area,
+            playlist: playlist_area,
+        };
 
         if self.subtitle_mode == SubtitleMode::SeparatePane {
             // Progress bar + time get their own line (design.md #6) between

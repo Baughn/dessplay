@@ -21,8 +21,8 @@ use super::props::{
 };
 use super::theme;
 use super::widgets::{
-    Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, render_list,
-    table_row,
+    Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, clicked_index,
+    render_list, table_row,
 };
 
 /// A key the pane responds to, for the keybinding bar.
@@ -65,6 +65,9 @@ pub(crate) use super::widgets::{plain, typed};
 
 /// How many visual lines PgUp/PgDown move the chat view.
 const CHAT_PAGE_STEP: usize = 5;
+/// How many visual lines one mouse-wheel tick moves the chat view —
+/// smaller than a page, matching the wheel's fine-grained feel.
+const CHAT_WHEEL_STEP: usize = 3;
 /// Indent applied to wrapped continuation lines in the chat log.
 const CHAT_WRAP_INDENT: usize = 2;
 /// Most command suggestions shown at once in the discoverability popup.
@@ -237,6 +240,16 @@ impl ChatPane {
     fn act_scroll_up(&mut self) -> Option<Msg> {
         self.scroll_offset += CHAT_PAGE_STEP;
         Some(Msg::None)
+    }
+
+    /// Mouse wheel over the chat column: scroll the log. Render clamps
+    /// the offset to the top of the history, so over-scrolling is safe.
+    pub(crate) fn scroll_wheel(&mut self, up: bool) {
+        if up {
+            self.scroll_offset += CHAT_WHEEL_STEP;
+        } else {
+            self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_WHEEL_STEP);
+        }
     }
 
     fn act_scroll_down(&mut self) -> Option<Msg> {
@@ -739,6 +752,27 @@ impl UsersPane {
         self.props.rows.len() + self.props.known_offline.len()
     }
 
+    /// A left-click at (column, row) while the pane occupies `area`:
+    /// select the row under the pointer. The offset math must mirror the
+    /// last render, so the rendered length includes the seeders line —
+    /// which is then rejected as a target (it is display-only, exactly as
+    /// for keyboard selection).
+    pub(crate) fn click(&mut self, area: Rect, column: u16, row: u16) {
+        let rendered_len = self.selectable_len() + usize::from(!self.props.seeders.is_empty());
+        if let Some(index) =
+            clicked_index(rendered_len, area, Some(self.cursor.index()), column, row)
+            && index < self.selectable_len()
+        {
+            self.cursor.set(index);
+        }
+    }
+
+    /// A mouse-wheel tick over the pane: move the selection like Up/Down.
+    pub(crate) fn scroll_wheel(&mut self, up: bool) {
+        let key = if up { Key::Up } else { Key::Down };
+        self.cursor.nav(key, self.selectable_len());
+    }
+
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         let mut items: Vec<ListItem> = self
             .props
@@ -889,6 +923,29 @@ impl PlaylistPane {
     /// `M`: manually map the entry to a local file.
     fn act_map(&mut self) -> Option<Msg> {
         self.selected_hash().map(Msg::MapFile)
+    }
+
+    /// A left-click at (column, row) while the pane occupies `area`:
+    /// select the row under the pointer (the trailing [Add New] row
+    /// included). Must run *before* the dispatcher moves focus here: the
+    /// viewport the user clicked on was centered per the pre-click focus
+    /// (now-playing while unfocused, the cursor while focused).
+    pub(crate) fn click(&mut self, area: Rect, column: u16, row: u16) {
+        let len = self.props.rows.len() + 1;
+        let center = if self.focused {
+            Some(self.cursor.index())
+        } else {
+            self.props.now_index
+        };
+        if let Some(index) = clicked_index(len, area, center, column, row) {
+            self.cursor.set(index);
+        }
+    }
+
+    /// A mouse-wheel tick over the pane: move the selection like Up/Down.
+    pub(crate) fn scroll_wheel(&mut self, up: bool) {
+        let key = if up { Key::Up } else { Key::Down };
+        self.cursor.nav(key, self.props.rows.len() + 1);
     }
 
     /// `A`: archive — only cache-only ("temporary") rows.
@@ -1262,6 +1319,22 @@ impl SeriesPane {
             ListNavRow::Entry(g, e) => Some(Msg::LinkListEntry(self.groups[*g].rows[*e].id)),
             ListNavRow::Heading(_) => None,
         }
+    }
+
+    /// A left-click at (column, row) while the pane occupies `area`:
+    /// select the row under the pointer (headings included — Enter
+    /// toggles them, same as keyboard selection).
+    pub(crate) fn click(&mut self, area: Rect, column: u16, row: u16) {
+        if let Some(index) = clicked_index(self.len(), area, Some(self.cursor.index()), column, row)
+        {
+            self.cursor.set(index);
+        }
+    }
+
+    /// A mouse-wheel tick over the pane: move the selection like Up/Down.
+    pub(crate) fn scroll_wheel(&mut self, up: bool) {
+        let key = if up { Key::Up } else { Key::Down };
+        self.cursor.nav(key, self.len());
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {

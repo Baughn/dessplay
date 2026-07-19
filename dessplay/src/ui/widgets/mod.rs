@@ -27,5 +27,5 @@ pub use form::{
 pub use keymap::{BarEntry, Binding, KeyPattern, Keymap};
 pub(crate) use keys::{plain, typed};
 pub use line::{LineBuffer, TextField};
-pub use list::{ListCursor, render_list, render_list_body};
+pub use list::{ListCursor, clicked_index, render_list, render_list_body};
 pub use table::{Align, Cell, table_row, truncate_display};

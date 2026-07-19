@@ -19,9 +19,12 @@ use dessplay_core::types::{
     SeriesListEntry, SharedTimestamp, UserId,
 };
 use dessplay_core::{CrdtState, StateView};
-use tuirealm::event::{Event, Key, KeyEvent, KeyModifiers, NoUserEvent};
+use tuirealm::event::{
+    Event, Key, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind, NoUserEvent,
+};
 use tuirealm::ratatui::Terminal;
 use tuirealm::ratatui::backend::TestBackend;
+use tuirealm::ratatui::layout::{Constraint, Layout, Rect};
 use tuirealm::testing::buffer_to_string;
 
 const A: ActorId = ActorId::SERVER;
@@ -57,6 +60,49 @@ fn shift(c: char) -> Event<NoUserEvent> {
 
 fn paste(text: &str) -> Event<NoUserEvent> {
     Event::Paste(text.to_string())
+}
+
+fn click(column: u16, row: u16) -> Event<NoUserEvent> {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        modifiers: KeyModifiers::NONE,
+        column,
+        row,
+    })
+}
+
+fn wheel(column: u16, row: u16, up: bool) -> Event<NoUserEvent> {
+    Event::Mouse(MouseEvent {
+        kind: if up {
+            MouseEventKind::ScrollUp
+        } else {
+            MouseEventKind::ScrollDown
+        },
+        modifiers: KeyModifiers::NONE,
+        column,
+        row,
+    })
+}
+
+/// The pane rectangles `Ui::draw` produces for a frame of this size —
+/// the same Layout splits, so click coordinates in tests are derived,
+/// not hand-counted. Returns (chat column, series, users, playlist).
+fn pane_rects(width: u16, height: u16) -> (Rect, Rect, Rect, Rect) {
+    let [main, _status, _keybar] = Layout::vertical([
+        Constraint::Min(8),
+        Constraint::Length(3),
+        Constraint::Length(1),
+    ])
+    .areas(Rect::new(0, 0, width, height));
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
+    let [series, users, playlist] = Layout::vertical([
+        Constraint::Percentage(34),
+        Constraint::Percentage(33),
+        Constraint::Percentage(33),
+    ])
+    .areas(right);
+    (left, series, users, playlist)
 }
 
 /// Type a string into the focused component.
@@ -499,6 +545,107 @@ fn playlist_actions() {
         ui.handle(key(Key::Char('d'))),
         vec![UserAction::Mutate(Mutation::RemovePlaylist {
             hash: hash(2)
+        })]
+    );
+}
+
+/// A left-click focuses the pane under the pointer *and* selects the
+/// clicked row (design.md, Mouse support): clicking playlist row 2 then
+/// pressing `d` removes exactly that entry — proof of both the focus
+/// change and the row selection in one observable action.
+#[test]
+fn click_focuses_pane_and_selects_the_clicked_row() {
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
+    state.push_playlist_entry(A, ts(3), entry(3, "ep3.mkv"));
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    // The first draw records the pane rects; clicks before it miss.
+    render(&mut ui, 100, 30);
+    let (_, _, _, playlist) = pane_rects(100, 30);
+
+    // Nothing is playing, so the unfocused playlist viewport starts at
+    // the top: body row 1 is the second entry.
+    assert!(
+        ui.handle(click(playlist.x + 2, playlist.y + 2)).is_empty(),
+        "a click selects locally, producing no outward actions"
+    );
+    let bar = render(&mut ui, 100, 30);
+    assert!(bar.contains("Remove"), "focus moved to Playlist: {bar}");
+    assert_eq!(
+        ui.handle(key(Key::Char('d'))),
+        vec![UserAction::Mutate(Mutation::RemovePlaylist {
+            hash: hash(2)
+        })]
+    );
+}
+
+/// Clicking back into the chat column returns focus there (the keybar
+/// follows, exactly like Tab).
+#[test]
+fn click_moves_focus_back_to_chat() {
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    render(&mut ui, 100, 30);
+    let (chat, _, _, playlist) = pane_rects(100, 30);
+
+    ui.handle(click(playlist.x + 2, playlist.y + 1));
+    assert!(render(&mut ui, 100, 30).contains("Remove"));
+    ui.handle(click(chat.x + 2, chat.y + 2));
+    assert!(render(&mut ui, 100, 30).contains("Send"));
+}
+
+/// While a modal is open it captures all input; mouse events are
+/// ignored rather than reaching the panes underneath.
+#[test]
+fn mouse_is_ignored_while_a_modal_is_open() {
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    render(&mut ui, 100, 30);
+    let (_, _, _, playlist) = pane_rects(100, 30);
+
+    ui.handle(key(Key::Function(3))); // settings modal
+    assert!(ui.modal_open());
+    assert!(ui.handle(click(playlist.x + 2, playlist.y + 1)).is_empty());
+    assert!(
+        ui.handle(wheel(playlist.x + 2, playlist.y + 1, false))
+            .is_empty()
+    );
+    assert!(ui.modal_open());
+    // Focus is untouched: closing the modal lands back in Chat.
+    ui.handle(key(Key::Esc));
+    assert!(render(&mut ui, 100, 30).contains("Send"));
+}
+
+/// The wheel scrolls the pane under the pointer without stealing focus:
+/// two down-ticks over the unfocused playlist move its cursor to the
+/// third row (visible once Tab reaches the pane), while the keybar
+/// stays on Chat throughout.
+#[test]
+fn wheel_scrolls_hovered_pane_without_stealing_focus() {
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
+    state.push_playlist_entry(A, ts(3), entry(3, "ep3.mkv"));
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    render(&mut ui, 100, 30);
+    let (_, _, _, playlist) = pane_rects(100, 30);
+
+    ui.handle(wheel(playlist.x + 2, playlist.y + 1, false));
+    ui.handle(wheel(playlist.x + 2, playlist.y + 1, false));
+    assert!(
+        render(&mut ui, 100, 30).contains("Send"),
+        "focus stays on Chat"
+    );
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab)); // Chat -> Series -> Users -> Playlist
+    }
+    assert_eq!(
+        ui.handle(key(Key::Char('d'))),
+        vec![UserAction::Mutate(Mutation::RemovePlaylist {
+            hash: hash(3)
         })]
     );
 }
