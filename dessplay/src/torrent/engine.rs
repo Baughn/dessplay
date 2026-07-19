@@ -57,6 +57,17 @@ pub trait TorrentEngine: Send + Sync + 'static {
     /// Re-key a completed import so normal cache eviction and restart
     /// reconciliation own its seeding lifecycle.
     fn promote_import(&self, id: TorrentImportId, file: Ed2kHash);
+    /// Startup-only: reconcile the implementation's own persisted session
+    /// against the app registry. `keep` maps a registered torrent's info
+    /// hash (lowercase hex) to its file; a session-restored torrent whose
+    /// info hash is not in `keep` is deleted along with its files —
+    /// in-flight downloads (abandoned imports, mid-download leftovers)
+    /// don't survive restarts (design.md, BitTorrent Downloads). Kept
+    /// torrents are adopted under their file key so later `remove`/`status`
+    /// calls see them. Returns the output directories kept torrents still
+    /// use, so the caller can sweep abandoned per-import directories
+    /// without racing a live one.
+    fn reconcile_session(&self, keep: &HashMap<String, Ed2kHash>) -> Vec<PathBuf>;
 }
 
 /// In-memory fake for actor tests: `add`/`remove` record themselves,
@@ -74,6 +85,12 @@ struct FakeInner {
     imports: HashMap<TorrentImportId, (NyaaMatch, PathBuf)>,
     import_status: HashMap<TorrentImportId, TorrentStatus>,
     removed_imports: Vec<(TorrentImportId, bool)>,
+    /// Torrents the fake "session" restored from its own persistence
+    /// (info hash → output dir), as librqbit's fastresume does; consumed
+    /// by `reconcile_session`.
+    restored: HashMap<String, PathBuf>,
+    /// Info hashes `reconcile_session` deleted from the fake session.
+    session_deleted: Vec<String>,
 }
 
 impl FakeTorrentEngine {
@@ -113,6 +130,22 @@ impl FakeTorrentEngine {
             .lock()
             .ok()
             .and_then(|inner| inner.imports.get(&id).cloned())
+    }
+
+    /// Model a torrent the underlying session restored from its own
+    /// persistence at startup (as librqbit's fastresume does).
+    pub fn restore_session_torrent(&self, info_hash: &str, output_dir: PathBuf) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.restored.insert(info_hash.to_string(), output_dir);
+        }
+    }
+
+    /// Info hashes `reconcile_session` deleted from the fake session.
+    pub fn session_deleted(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .map(|inner| inner.session_deleted.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -181,5 +214,30 @@ impl TorrentEngine for FakeTorrentEngine {
                 inner.status.insert(file, status);
             }
         }
+    }
+
+    fn reconcile_session(&self, keep: &HashMap<String, Ed2kHash>) -> Vec<PathBuf> {
+        let mut kept_dirs = Vec::new();
+        if let Ok(mut inner) = self.inner.lock() {
+            for (info_hash, output_dir) in std::mem::take(&mut inner.restored) {
+                match keep.get(&info_hash) {
+                    Some(&file) => {
+                        kept_dirs.push(output_dir.clone());
+                        inner.torrents.entry(file).or_insert_with(|| {
+                            (
+                                NyaaMatch {
+                                    title: String::new(),
+                                    torrent_url: format!("magnet:?xt=urn:btih:{info_hash}"),
+                                    info_hash,
+                                },
+                                output_dir,
+                            )
+                        });
+                    }
+                    None => inner.session_deleted.push(info_hash),
+                }
+            }
+        }
+        kept_dirs
     }
 }

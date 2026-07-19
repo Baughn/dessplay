@@ -101,6 +101,20 @@ pub trait NyaaSource: Send + Sync + 'static {
 /// The real thing: one GET against nyaa.si.
 pub struct HttpNyaaSource;
 
+/// An agent with a hard 30s per-call timeout, matching the fetch
+/// policy's `search_timeout_millis` watchdog. ureq's default has *no*
+/// timeout, so a connected-but-silent host would park the blocking
+/// thread until TCP gives up — the policy-side watchdog recovers the
+/// fetch but not the thread, and leaked threads accumulate across the
+/// 15-minute search retries.
+pub(super) fn http_agent() -> ureq::Agent {
+    ureq::Agent::from(
+        ureq::config::Config::builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build(),
+    )
+}
+
 /// Build the RSS search URL for an exact filename query.
 pub fn search_url(filename: &str) -> String {
     search_url_for(filename, NyaaCategory::All)
@@ -121,7 +135,8 @@ impl NyaaSource for HttpNyaaSource {
     }
 
     fn search_category(&self, query: &str, category: NyaaCategory) -> std::io::Result<String> {
-        let response = ureq::get(search_url_for(query, category))
+        let response = http_agent()
+            .get(search_url_for(query, category))
             .header("User-Agent", "dessplay/1")
             .call()
             .map_err(std::io::Error::other)?;
@@ -136,7 +151,8 @@ impl NyaaSource for HttpNyaaSource {
     }
 
     fn fetch_torrent(&self, url: &str) -> std::io::Result<Vec<u8>> {
-        let response = ureq::get(url)
+        let response = http_agent()
+            .get(url)
             .header("User-Agent", "dessplay/1")
             .call()
             .map_err(std::io::Error::other)?;

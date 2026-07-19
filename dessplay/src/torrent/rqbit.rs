@@ -119,7 +119,8 @@ impl RqbitEngine {
     /// DHT-metadata magnet route (2026-07-09). Blocking; call from
     /// `spawn_blocking`.
     fn fetch_torrent_bytes(url: &str) -> Result<Vec<u8>, String> {
-        let response = ureq::get(url)
+        let response = super::nyaa::http_agent()
+            .get(url)
             .header("User-Agent", "dessplay/1")
             .call()
             .map_err(|e| format!("fetching {url}: {e}"))?;
@@ -333,6 +334,53 @@ impl TorrentEngine for RqbitEngine {
             return;
         };
         torrents.entry(EngineKey::File(file)).or_insert(entry);
+    }
+
+    fn reconcile_session(&self, keep: &HashMap<String, Ed2kHash>) -> Vec<PathBuf> {
+        // The session restores its persisted torrents at startup
+        // (fastresume), but our `torrents` map starts empty — so a
+        // restored torrent is invisible to `remove`, which finds the
+        // handle to delete through that map. Adopt the claimed ones
+        // (handle + real output dir, so `remove`/`status` work) and
+        // delete the rest with their files.
+        let api = librqbit::Api::new(self.session.clone(), None);
+        let listed =
+            api.api_torrent_list_ext(librqbit::api::ApiTorrentListOpts { with_stats: false });
+        let mut kept_dirs = Vec::new();
+        for details in listed.torrents {
+            let Some(id) = details.id else {
+                continue;
+            };
+            match keep.get(&details.info_hash.to_lowercase()) {
+                Some(&file) => {
+                    let output_dir = PathBuf::from(&details.output_folder);
+                    kept_dirs.push(output_dir.clone());
+                    let handle = self.session.get(TorrentIdOrHash::Id(id));
+                    if let Ok(mut torrents) = self.torrents.lock() {
+                        torrents.entry(EngineKey::File(file)).or_insert(Entry {
+                            handle,
+                            output_dir,
+                            failed: false,
+                            removed: false,
+                        });
+                    }
+                }
+                None => {
+                    tracing::info!(
+                        info_hash = details.info_hash,
+                        name = details.name,
+                        "dropping session-restored torrent no registry row claims"
+                    );
+                    let session = self.session.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = session.delete(TorrentIdOrHash::Id(id), true).await {
+                            tracing::warn!("deleting unclaimed restored torrent: {e:#}");
+                        }
+                    });
+                }
+            }
+        }
+        kept_dirs
     }
 }
 

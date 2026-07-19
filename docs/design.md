@@ -1662,7 +1662,17 @@ files are still cached rejoin the engine (librqbit session persistence +
 fastresume makes this instant), and rows for files evicted while the app
 was closed are cleaned up. A torrent mid-download at shutdown is
 dropped — in-flight downloads don't survive restarts, matching the peer
-path — and re-searched on the next `StartDownload`.
+path — and re-searched on the next `StartDownload`. The drop is
+enforced against the engine's **own persisted session**, not just the
+app's registry: fastresume restores every torrent of the previous run,
+so startup reconciliation enumerates the restored session and deletes
+(with files) any torrent no registry row claims — mid-download
+leftovers, and abandoned browse imports (whose registry row is only
+written on completion) — and sweeps abandoned `import-*` payload
+directories, sparing one a surviving promoted import still seeds from.
+Without this the librqbit session was a second source of truth: a
+"dropped" torrent silently resumed, untracked, on every startup
+(2026-07-19).
 
 The engine is librqbit, embedded (one session per process, rooted at
 `<cache>/torrents/`, DHT enabled). A session that fails to start

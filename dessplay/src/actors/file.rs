@@ -1673,6 +1673,15 @@ impl Actor {
     /// yet and is dropped too — in-flight downloads don't survive
     /// restarts (matching the peer path), and the next `StartDownload`
     /// re-searches.
+    ///
+    /// The engine's own persisted session is reconciled first: fastresume
+    /// restores every torrent of the previous run, including ones no
+    /// registry row claims (a mid-download auto torrent, an abandoned
+    /// import — its row is only written on completion), which would
+    /// otherwise resume and seed untracked forever. Import directories
+    /// no surviving torrent uses are swept in the same pass. When the
+    /// torrent path is disabled there is no session either; leftovers
+    /// are reconciled on the next torrent-enabled start.
     fn reconcile_torrents(&mut self) {
         let Some(engine) = self.torrent.clone() else {
             return;
@@ -1684,6 +1693,13 @@ impl Actor {
                 return;
             }
         };
+        let keep: HashMap<String, Ed2kHash> = rows
+            .iter()
+            .filter(|row| self.local_files.contains_key(&row.hash))
+            .map(|row| (row.info_hash.to_lowercase(), row.hash))
+            .collect();
+        let kept_dirs: HashSet<PathBuf> = engine.reconcile_session(&keep).into_iter().collect();
+        self.sweep_import_dirs(&kept_dirs);
         for row in rows {
             if self.local_files.contains_key(&row.hash) {
                 tracing::debug!(file = %row.hash, name = row.name, "re-adding torrent to seed");
@@ -1700,6 +1716,35 @@ impl Actor {
                     "cached file gone; removing its torrent"
                 );
                 self.drop_torrent(row.hash);
+            }
+        }
+    }
+
+    /// Delete abandoned `torrents/import-*` payload directories. Import
+    /// ids reset every launch and pending imports don't survive restarts,
+    /// so at startup any import dir is abandoned — except one a surviving
+    /// session torrent (a *promoted* import, claimed by its registry row)
+    /// still seeds from, which `kept` protects.
+    fn sweep_import_dirs(&self, kept: &HashSet<PathBuf>) {
+        let torrents_dir = self.cache_dir.join("torrents");
+        let Ok(dir) = std::fs::read_dir(&torrents_dir) else {
+            return;
+        };
+        for dirent in dir.flatten() {
+            let path = dirent.path();
+            let is_import = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("import-"));
+            if !is_import || kept.contains(&path) {
+                continue;
+            }
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {
+                    tracing::info!(path = %path.display(), "sweeping abandoned import dir")
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(path = %path.display(), "sweeping import dir: {e}"),
             }
         }
     }
@@ -1732,6 +1777,16 @@ impl Actor {
         payload: PathBuf,
         result: std::io::Result<Ed2kFileHash>,
     ) {
+        // The fetch may have been cancelled while the payload hash was in
+        // flight — a local copy adopted from a media root cancels the
+        // fetch and deletes the payload dir. Acting on the stale result
+        // anyway would overwrite the adopted path in `local_files` with
+        // the dead payload path (advertising Ready for a file we don't
+        // hold), so a completion for a no-longer-active fetch is dropped.
+        if !self.fetches.is_active(&file) {
+            tracing::debug!(%file, "dropping torrent hash result for a cancelled fetch");
+            return;
+        }
         let now = (self.clock)();
         match result {
             Ok(hashed) if hashed.root == file => {
@@ -1746,7 +1801,7 @@ impl Actor {
                         self.on_download_complete(file, cache_path, hashed.blocks)
                             .await;
                     }
-                    Err(e) => {
+                    Err(e) if payload.exists() => {
                         // Disk trouble, not the release's fault: keep the
                         // payload where it is and register it directly —
                         // the cache entry's path is what matters, and
@@ -1758,6 +1813,17 @@ impl Actor {
                         self.fetches.on_verified(&file);
                         self.on_download_complete(file, payload, hashed.blocks)
                             .await;
+                    }
+                    Err(e) => {
+                        // The payload itself is gone (deleted under us),
+                        // not mere cache-dir trouble: registering its path
+                        // would advertise Ready for a file we don't hold.
+                        tracing::warn!(
+                            %file,
+                            "torrent payload vanished before cache placement ({e}); falling back"
+                        );
+                        let actions = self.fetches.on_engine_failed(file, now);
+                        self.run_torrent_actions(actions).await;
                     }
                 }
             }
@@ -6340,5 +6406,219 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("startup reconciliation never ran");
+    }
+
+    /// Regression (2026-07-19 audit): a torrent completes and its payload
+    /// is being ed2k-hashed when the library scan adopts a media-root
+    /// copy of the same file — adoption cancels the fetch and deletes the
+    /// payload dir. The late `TorrentHashed` must then be dropped: acting
+    /// on it overwrote the valid adopted path in `local_files` with the
+    /// deleted payload path and advertised Ready for a file we don't
+    /// hold, which the next serve attempt flipped to Missing.
+    #[tokio::test]
+    async fn late_torrent_hash_never_clobbers_an_adopted_local_copy() {
+        let contents = b"the adopted episode".as_slice();
+        let file = ed2k_hash_bytes(contents).root;
+
+        let storage = Storage::open_in_memory().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let media_root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(FakeTorrentEngine::default());
+        let (out_tx, mut out_rx) = mpsc::channel(1024);
+        let (done_tx, _done_rx) = mpsc::channel(1024);
+        let mut actor = Actor::new(
+            FileConfig {
+                storage,
+                media_roots: vec![media_root.path().to_path_buf()],
+                retention: CacheRetention::Infinite,
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: Some(engine.clone() as Arc<dyn TorrentEngine>),
+                nyaa: Some(Arc::new(FixedNyaa(None))),
+                torrent_fetch: TorrentFetchConfig::default(),
+            },
+            out_tx,
+            done_tx,
+        )
+        .unwrap();
+
+        // Drive the fetch to Verifying: search resolved, torrent
+        // completed, payload ed2k hash in flight.
+        let payload = actor.torrent_dir(file).join("release.mkv");
+        std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
+        std::fs::write(&payload, contents).unwrap();
+        actor.fetches.on_start_download(
+            file,
+            "release.mkv".into(),
+            contents.len() as u64,
+            vec![],
+            0,
+            0,
+        );
+        actor.fetches.on_searched(
+            file,
+            Some(NyaaMatch {
+                title: "release".into(),
+                torrent_url: "magnet:?xt=urn:btih:dd".into(),
+                info_hash: "dd".into(),
+            }),
+            0,
+        );
+        assert!(
+            actor.fetches.on_completed(file),
+            "fetch must reach Verifying"
+        );
+
+        // The library scan finds the same file in a media root and adopts
+        // it while the hash is still in flight (the scan-adoption path:
+        // record the copy, cancel the now-redundant download — which
+        // deletes the torrent payload dir).
+        let adopted = media_root.path().join("release.mkv");
+        std::fs::write(&adopted, contents).unwrap();
+        actor.local_files.insert(file, adopted.clone());
+        actor.cancel_redundant_download(file).await;
+        assert!(
+            !actor.fetches.is_active(&file),
+            "cancel must clear the fetch"
+        );
+
+        // The stale hash result lands after the cancel.
+        actor
+            .on_torrent_hashed(file, payload.clone(), Ok(ed2k_hash_bytes(contents)))
+            .await;
+
+        assert_eq!(
+            actor.local_files.get(&file),
+            Some(&adopted),
+            "a late torrent hash must not clobber the adopted local copy"
+        );
+        while let Ok(output) = out_rx.try_recv() {
+            if let FileOutput::DownloadComplete { path, .. } = output {
+                assert_eq!(
+                    path, adopted,
+                    "DownloadComplete must never carry the dead payload path"
+                );
+            }
+        }
+    }
+
+    /// Startup reconciliation must also cover torrents the engine's *own*
+    /// persistence restored (librqbit fastresume): a mid-download auto
+    /// torrent and an abandoned Nyaa import resume invisibly unless the
+    /// session itself is reconciled — the app-side registry ("torrents"
+    /// table) knows nothing about the import, and the wrapper's in-memory
+    /// map is empty after a restart, so `remove` alone can't reach either
+    /// (design.md, BitTorrent Downloads: in-flight downloads and pending
+    /// imports don't survive restarts). A *promoted* import that still
+    /// seeds from its import dir is claimed by its registry row and must
+    /// survive, directory included.
+    #[tokio::test]
+    async fn startup_reconciles_the_engines_persisted_session() {
+        use crate::storage::TorrentRow;
+
+        let contents = b"a seeding, promoted nyaa import".as_slice();
+        let promoted = ed2k_hash_bytes(contents).root;
+        let mid_download = ed2k_hash_bytes(b"was 40% done at shutdown").root;
+
+        let storage = Storage::open_in_memory().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        // The promoted import: cached file, registry row, session torrent
+        // seeding out of its original import dir.
+        let promoted_path = cache_dir.path().join(promoted.to_string());
+        std::fs::write(&promoted_path, contents).unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: promoted,
+                path: promoted_path,
+                size_bytes: contents.len() as u64,
+                last_access: 0,
+            })
+            .unwrap();
+        storage
+            .upsert_torrent(&TorrentRow {
+                hash: promoted,
+                info_hash: "cc".into(),
+                name: "import.mkv".into(),
+                added_at: 0,
+            })
+            .unwrap();
+        // The mid-download auto torrent: registry row, no cached file.
+        storage
+            .upsert_torrent(&TorrentRow {
+                hash: mid_download,
+                info_hash: "aa".into(),
+                name: "ep.mkv".into(),
+                added_at: 0,
+            })
+            .unwrap();
+        let torrents_dir = cache_dir.path().join("torrents");
+        let import_live = torrents_dir.join("import-2");
+        let import_abandoned = torrents_dir.join("import-1");
+        for dir in [&import_live, &import_abandoned] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("payload.mkv"), b"partial").unwrap();
+        }
+
+        let engine = Arc::new(FakeTorrentEngine::default());
+        // What librqbit's fastresume brings back: the promoted import
+        // (claimed by its row), the mid-download torrent (row exists but
+        // its file was never cached), and an abandoned import (no row at
+        // all — the row is only written on completion).
+        engine.restore_session_torrent("cc", import_live.clone());
+        engine.restore_session_torrent("aa", torrents_dir.join(mid_download.to_string()));
+        engine.restore_session_torrent("bb", import_abandoned.clone());
+
+        let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (out_tx, _out_rx) = mpsc::channel(64);
+        tokio::spawn(run(
+            FileConfig {
+                storage,
+                media_roots: vec![],
+                retention: CacheRetention::Infinite,
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: Some(engine.clone() as Arc<dyn TorrentEngine>),
+                nyaa: Some(Arc::new(FixedNyaa(None))),
+                torrent_fetch: TorrentFetchConfig::default(),
+            },
+            cmd_rx,
+            out_tx,
+        ));
+
+        for _ in 0..100 {
+            let deleted = engine.session_deleted();
+            if deleted.contains(&"aa".to_string()) && deleted.contains(&"bb".to_string()) {
+                assert!(
+                    !deleted.contains(&"cc".to_string()),
+                    "the promoted import's session torrent must survive"
+                );
+                assert!(
+                    engine.added(&promoted).is_some(),
+                    "the promoted import must be adopted under its file key"
+                );
+                assert!(
+                    !import_abandoned.exists(),
+                    "the abandoned import dir must be swept"
+                );
+                assert!(
+                    import_live.exists(),
+                    "the promoted import's seeding dir must survive"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "session reconciliation never deleted the unclaimed torrents (deleted: {:?})",
+            engine.session_deleted()
+        );
     }
 }
