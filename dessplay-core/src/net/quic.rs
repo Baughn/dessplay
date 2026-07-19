@@ -210,12 +210,43 @@ pub struct QuicConnector {
     /// A `std` mutex: only held across synchronous bind/lookup, never
     /// an await.
     endpoints: std::sync::Mutex<Vec<quinn::Endpoint>>,
-    server_addrs: Vec<SocketAddr>,
+    /// The current address set, refreshed by re-resolution (see
+    /// [`QuicConnector::with_reresolve`]). A `std` mutex, never held
+    /// across an await.
+    server_addrs: std::sync::Mutex<Vec<SocketAddr>>,
     server_name: String,
+    /// `host:port` to re-resolve when every current address fails —
+    /// startup resolution is otherwise frozen, and a mid-session server
+    /// IP change (dynamic IPv6 prefix rotation, a DNS move) would leave
+    /// every reconnect dialing dead addresses until a process restart.
+    /// `None` (address-literal callers, tests) disables re-resolution.
+    reresolve: Option<String>,
     /// Handshake budget per address. [`PER_ADDRESS_HANDSHAKE_TIMEOUT`]
     /// in production; tests shorten it.
     per_address_timeout: Duration,
     observed: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+}
+
+/// Reorder resolved addresses so the two families alternate, keeping
+/// each family's own resolver order and starting with the resolver's
+/// first pick. The connector tries addresses in order with a bounded
+/// per-address timeout, so this guarantees the *other* family is the
+/// second thing tried when the preferred one is black-holed (post-sleep
+/// stale-NDP IPv6, 2026-07-06) rather than after every same-family
+/// address.
+pub fn interleave_families(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let first_is_v4 = addrs.first().is_some_and(|addr| addr.is_ipv4());
+    let (first, second): (Vec<_>, Vec<_>) = addrs
+        .into_iter()
+        .partition(|addr| addr.is_ipv4() == first_is_v4);
+    let mut out = Vec::with_capacity(first.len() + second.len());
+    let (mut first, mut second) = (first.into_iter(), second.into_iter());
+    loop {
+        match (first.next(), second.next()) {
+            (None, None) => return out,
+            (a, b) => out.extend(a.into_iter().chain(b)),
+        }
+    }
 }
 
 impl QuicConnector {
@@ -252,11 +283,29 @@ impl QuicConnector {
         Ok(Self {
             client_config,
             endpoints: std::sync::Mutex::new(Vec::new()),
-            server_addrs,
+            server_addrs: std::sync::Mutex::new(server_addrs),
             server_name: server_name.into(),
+            reresolve: None,
             per_address_timeout: PER_ADDRESS_HANDSHAKE_TIMEOUT,
             observed,
         })
+    }
+
+    /// Enable DNS re-resolution: when a full [`Connector::connect`] pass
+    /// over the current addresses fails, `server_addr_str` (`host:port`)
+    /// is looked up again, freshly-resolved addresses are tried in the
+    /// same call, and the stored set is replaced for later attempts.
+    pub fn with_reresolve(mut self, server_addr_str: String) -> Self {
+        self.reresolve = Some(server_addr_str);
+        self
+    }
+
+    /// The current address set (re-resolution may replace it).
+    fn current_addrs(&self) -> Vec<SocketAddr> {
+        self.server_addrs
+            .lock()
+            .map(|addrs| addrs.clone())
+            .unwrap_or_default()
     }
 
     /// The fingerprint presented during the most recent successful
@@ -334,14 +383,49 @@ impl Connector for QuicConnector {
     type Conn = QuicTransport;
 
     async fn connect(&self) -> Result<QuicTransport, TransportError> {
+        let tried = self.current_addrs();
         let mut last_err = None;
-        for &addr in &self.server_addrs {
+        for &addr in &tried {
             match self.connect_one(addr).await {
                 Ok(conn) => return Ok(conn),
                 Err(e) => {
                     tracing::warn!(addr = %addr, error = %e, "address failed; trying next");
                     last_err = Some(e);
                 }
+            }
+        }
+        // Every known address failed. The startup resolution may simply
+        // be stale (the server's records changed mid-session), so
+        // re-resolve and try anything genuinely new before giving up —
+        // and store the fresh set either way, so later attempts dial it.
+        if let Some(addr_str) = &self.reresolve {
+            match tokio::net::lookup_host(addr_str).await {
+                Ok(resolved) => {
+                    let fresh = interleave_families(resolved.collect());
+                    if !fresh.is_empty() && fresh != tried {
+                        tracing::info!(
+                            resolved = ?fresh,
+                            "re-resolved {addr_str}: server address set changed"
+                        );
+                        if let Ok(mut addrs) = self.server_addrs.lock() {
+                            *addrs = fresh.clone();
+                        }
+                        for addr in fresh.into_iter().filter(|a| !tried.contains(a)) {
+                            match self.connect_one(addr).await {
+                                Ok(conn) => return Ok(conn),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        addr = %addr,
+                                        error = %e,
+                                        "re-resolved address failed; trying next"
+                                    );
+                                    last_err = Some(e);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("re-resolving {addr_str}: {e}"),
             }
         }
         // new() rejects an empty address list, so last_err is Some here.
@@ -614,5 +698,86 @@ mod tests {
         .await
         .expect("connect/accept budget exhausted");
         accepted.expect("accept failed");
+    }
+
+    /// Audit 2026-07-19: startup resolution was frozen — a server whose
+    /// records changed mid-session (dynamic IPv6 prefix rotation, a DNS
+    /// move) left every reconnect dialing the dead cached addresses until
+    /// a process restart. With re-resolution enabled, a connect pass that
+    /// exhausts the stale set re-resolves and recovers in the same call;
+    /// without it (the control half), the same stale set fails forever.
+    #[tokio::test]
+    async fn stale_addresses_recover_via_reresolution() {
+        let cert_dir = tempfile::tempdir().unwrap();
+        let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
+        let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        // The "stale" resolution: a black hole where the server used to be.
+        let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let blackhole_addr = blackhole.local_addr().unwrap();
+
+        // Control: without re-resolution the frozen set never recovers.
+        let mut frozen = QuicConnector::new(vec![blackhole_addr], "dessplay", None).unwrap();
+        frozen.per_address_timeout = Duration::from_millis(300);
+        assert!(
+            frozen.connect().await.is_err(),
+            "a frozen stale address set must fail (the pre-fix behavior)"
+        );
+
+        // With re-resolution: the same stale set, but "localhost:<port>"
+        // now resolves to where the server actually is.
+        let mut connector = QuicConnector::new(vec![blackhole_addr], "dessplay", None)
+            .unwrap()
+            .with_reresolve(format!("localhost:{}", server_addr.port()));
+        connector.per_address_timeout = Duration::from_millis(300);
+
+        let client_fut = async {
+            let client = connector
+                .connect()
+                .await
+                .expect("re-resolution must recover a moved server");
+            client.send_control(b"hello").await.unwrap();
+            client
+        };
+        let (_client, accepted) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(client_fut, listener.accept())
+        })
+        .await
+        .expect("connect/accept budget exhausted");
+        accepted.expect("accept failed");
+
+        // The refreshed set replaced the stale one for later attempts.
+        assert!(
+            connector.current_addrs().contains(&server_addr)
+                || connector
+                    .current_addrs()
+                    .iter()
+                    .any(|a| a.port() == server_addr.port()),
+            "the stored address set must be the re-resolved one, got {:?}",
+            connector.current_addrs()
+        );
+    }
+
+    #[test]
+    fn interleave_families_alternates_starting_with_resolver_preference() {
+        fn v4(last: u8) -> SocketAddr {
+            format!("10.0.0.{last}:1").parse().unwrap()
+        }
+        fn v6(last: u8) -> SocketAddr {
+            format!("[2001:db8::{last}]:1").parse().unwrap()
+        }
+        // Resolver prefers v6: the first v4 lands second, per-family
+        // order preserved.
+        assert_eq!(
+            interleave_families(vec![v6(1), v6(2), v4(1), v4(2)]),
+            vec![v6(1), v4(1), v6(2), v4(2)]
+        );
+        // Resolver prefers v4: symmetric.
+        assert_eq!(interleave_families(vec![v4(1), v6(1)]), vec![v4(1), v6(1)]);
+        // Single family / single address: unchanged.
+        assert_eq!(interleave_families(vec![v6(1), v6(2)]), vec![v6(1), v6(2)]);
+        assert_eq!(interleave_families(vec![v4(9)]), vec![v4(9)]);
+        assert_eq!(interleave_families(vec![]), Vec::<SocketAddr>::new());
     }
 }

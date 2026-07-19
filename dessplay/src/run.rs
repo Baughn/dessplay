@@ -212,28 +212,6 @@ async fn torrent_wiring(
     }
 }
 
-/// Reorder resolved addresses so the two families alternate, keeping
-/// each family's own resolver order and starting with the resolver's
-/// first pick. The connector tries addresses in order with a bounded
-/// per-address timeout, so this guarantees the *other* family is the
-/// second thing tried when the preferred one is black-holed (post-sleep
-/// stale-NDP IPv6, 2026-07-06) rather than after every same-family
-/// address.
-fn interleave_families(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
-    let first_is_v4 = addrs.first().is_some_and(|addr| addr.is_ipv4());
-    let (first, second): (Vec<_>, Vec<_>) = addrs
-        .into_iter()
-        .partition(|addr| addr.is_ipv4() == first_is_v4);
-    let mut out = Vec::with_capacity(first.len() + second.len());
-    let (mut first, mut second) = (first.into_iter(), second.into_iter());
-    loop {
-        match (first.next(), second.next()) {
-            (None, None) => return out,
-            (a, b) => out.extend(a.into_iter().chain(b)),
-        }
-    }
-}
-
 /// Append the default port unless the address already has one. A
 /// `host:port` has exactly one colon; a bracketed IPv6 literal carries
 /// its port after `]:` (and if it has none, just needs `:port` appended,
@@ -381,7 +359,7 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
     // Interleave families so a black-holed IPv6 path falls through to
     // IPv4 after one per-address timeout, not after every AAAA address
     // (post-sleep stale NDP ate v6 for ~90s while v4 worked; 2026-07-06).
-    let addrs = interleave_families(addrs);
+    let addrs = dessplay_core::net::quic::interleave_families(addrs);
     tracing::info!(
         resolved = ?addrs,
         elapsed_ms = phase.elapsed().as_millis() as u64,
@@ -409,7 +387,10 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
     let phase = std::time::Instant::now();
     let connector = Arc::new(
         QuicConnector::new(addrs, server_name, pinned)
-            .map_err(|e| format!("building QUIC endpoint: {e}"))?,
+            .map_err(|e| format!("building QUIC endpoint: {e}"))?
+            // Startup resolution goes stale if the server's records
+            // change mid-session; failed reconnect passes re-resolve.
+            .with_reresolve(server_addr_str.clone()),
     );
     tracing::info!(
         elapsed_ms = phase.elapsed().as_millis() as u64,
@@ -1758,28 +1739,6 @@ mod tests {
         // directly, not another pair of brackets ([[::1]]:9876 was the bug).
         assert_eq!(with_default_port("[::1]"), "[::1]:9876");
         assert_eq!(with_default_port("[fe80::1]"), "[fe80::1]:9876");
-    }
-
-    #[test]
-    fn interleave_families_alternates_starting_with_resolver_preference() {
-        fn v4(last: u8) -> SocketAddr {
-            format!("10.0.0.{last}:1").parse().unwrap()
-        }
-        fn v6(last: u8) -> SocketAddr {
-            format!("[2001:db8::{last}]:1").parse().unwrap()
-        }
-        // Resolver prefers v6: the first v4 lands second, per-family
-        // order preserved.
-        assert_eq!(
-            interleave_families(vec![v6(1), v6(2), v4(1), v4(2)]),
-            vec![v6(1), v4(1), v6(2), v4(2)]
-        );
-        // Resolver prefers v4: symmetric.
-        assert_eq!(interleave_families(vec![v4(1), v6(1)]), vec![v4(1), v6(1)]);
-        // Single family / single address: unchanged.
-        assert_eq!(interleave_families(vec![v6(1), v6(2)]), vec![v6(1), v6(2)]);
-        assert_eq!(interleave_families(vec![v4(9)]), vec![v4(9)]);
-        assert_eq!(interleave_families(vec![]), Vec::<SocketAddr>::new());
     }
 
     #[test]

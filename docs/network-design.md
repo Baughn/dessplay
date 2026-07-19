@@ -81,6 +81,13 @@ addresses. Each connection attempt (initial or reconnect) is surfaced to
 the UI as a `Connecting { attempt }` event so the status bar can show link
 state (design.md, UI principles: no silent long-running work).
 
+Resolution is not frozen at startup: when a connect pass exhausts every
+known address, the connector **re-resolves** the server's hostname, tries
+any genuinely new addresses in the same pass, and stores the fresh set
+for later attempts — so a mid-session record change (dynamic IPv6 prefix
+rotation, a DNS move) recovers on the next reconnect cycle instead of
+requiring a process restart (2026-07-19 audit).
+
 ### Channel Usage (Client <-> Server)
 
 Each client-server QUIC connection uses three kinds of channels:
