@@ -1350,6 +1350,56 @@ mod tests {
                 pause_millis, anchored, start_pos,
             );
         }
+
+        /// The mpv layer answers an observed pause with a paused-position
+        /// query whose reply arrives as a Position event *after* the
+        /// PauseChanged (player/mpv.rs). That reported position must win
+        /// over whatever the estimate extrapolated while the pause
+        /// observation was in flight (the 250ms EOF-disambiguation hold
+        /// plus pipeline latency), and the estimate must stay frozen there
+        /// for the whole pause — a Position-while-paused must never be
+        /// ignored, or the overshoot silently returns.
+        ///
+        /// Regression (2026-07-20): Dagger paused mpv at 12.095s; dessplay
+        /// broadcast 12.392 for the whole pause.
+        #[test]
+        fn player_reported_paused_position_overrides_the_extrapolated_estimate(
+            anchor in 0u64..2_000_000,
+            in_flight_millis in 0u64..2_000,
+            reported_delta in 0u64..2_000,
+            idle_millis in 0u64..3_600_000,
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .start_paused(true)
+                .build()
+                .unwrap();
+            let reported = anchor + reported_delta;
+            let frozen = rt.block_on(async move {
+                let (mut actor, _outputs) = test_actor();
+                // Playing, last time-pos sample at `anchor`.
+                actor.believed_pause = Some(false);
+                actor.note_position(anchor);
+                // The pause observation lands `in_flight_millis` after the
+                // user actually paused; the estimate extrapolated on.
+                tokio::time::sleep(Duration::from_millis(in_flight_millis)).await;
+                actor.handle_player_event(Ok(PlayerEvent::PauseChanged(true))).await;
+                // The paused-position reply: where mpv actually stopped.
+                actor.handle_player_event(Ok(PlayerEvent::Position {
+                    position_millis: reported,
+                })).await;
+                // Any amount of paused time later, the estimate still
+                // reports the player's position, not the extrapolation.
+                tokio::time::sleep(Duration::from_millis(idle_millis)).await;
+                actor.estimate_now()
+            });
+            proptest::prop_assert_eq!(
+                frozen, Some(reported),
+                "paused estimate {:?} after a {}ms-late pause observation; \
+                 expected the player-reported {}",
+                frozen, in_flight_millis, reported,
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

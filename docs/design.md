@@ -2020,7 +2020,16 @@ for it to come back. Interactive-only; seeders have no player.
 ### Events from Player
 
 - Position updates (polled or subscribed)
-- Pause/unpause events (distinguished: user-initiated vs programmatic)
+- Pause/unpause events (distinguished: user-initiated vs programmatic).
+  An observed pause is followed by a `get_property time-pos` query, and
+  the reply re-anchors the client's position estimate on the frame mpv
+  actually stopped at. Without it the estimate — wall-clock extrapolation
+  from the last `time-pos` sample — counts the pause observation's
+  in-flight window (the 250ms EOF-disambiguation hold, plus IPC latency)
+  as phantom playback, and a paused mpv emits no further `time-pos`
+  changes to correct it, so the overshoot stays frozen in for the whole
+  pause (2026-07-20: paused at 12.095s, reported 12.392s for the whole
+  pause).
 - Seek events (distinguished: user-initiated vs programmatic)
 - Subtitle text changes (observed `sub-text/ass-full` property; feeds the
   subtitle log, with the ASS speaker field for per-speaker coloring)

@@ -10,7 +10,11 @@
 //!   that flip is the load contract, not news) and except the
 //!   mechanical pause mpv performs itself when `keep-open` hits end of
 //!   file (the EOF transition belongs to the server, not to a phantom
-//!   user pause).
+//!   user pause). A forwarded pause is followed by a
+//!   `get_property time-pos` query whose reply lands as a
+//!   [`PlayerEvent::Position`], re-anchoring the actor's estimate on the
+//!   frame mpv actually stopped at (the hold below means the estimate
+//!   extrapolated past it).
 //! - a `seek` event followed by `playback-restart` →
 //!   [`PlayerEvent::Seeked`], with the landed position fetched via
 //!   `get_property time-pos` (the property observation alone may be
@@ -326,6 +330,9 @@ pub struct Translate {
     seek_pending: bool,
     /// In-flight `get_property time-pos` request for a finished seek.
     seek_pos_request: Option<u64>,
+    /// In-flight `get_property time-pos` request for an observed pause
+    /// (re-anchors the estimate on where mpv actually stopped).
+    pause_pos_request: Option<u64>,
     /// Last observed eof-reached (the keep-open pause filter).
     eof_reached: bool,
     /// Last observed pause state, deduped (mpv re-announces on observe).
@@ -362,6 +369,7 @@ async fn read_loop(
                     if events.send(PlayerEvent::PauseChanged(true)).await.is_err() {
                         return;
                     }
+                    query_paused_position(&writer, &request_id, &mut state).await;
                     continue;
                 }
             }
@@ -395,10 +403,11 @@ async fn read_loop(
                 | PlayerEvent::SubtitleLine { .. }
                 | PlayerEvent::PathChanged { .. }) => neutral,
                 other => {
-                    if std::mem::take(&mut held_pause)
-                        && events.send(PlayerEvent::PauseChanged(true)).await.is_err()
-                    {
-                        return;
+                    if std::mem::take(&mut held_pause) {
+                        if events.send(PlayerEvent::PauseChanged(true)).await.is_err() {
+                            return;
+                        }
+                        query_paused_position(&writer, &request_id, &mut state).await;
                     }
                     other
                 }
@@ -421,6 +430,25 @@ async fn read_loop(
     // Exit reporting is the supervisor's job; nothing to send here.
 }
 
+/// Ask mpv where playback actually stopped after an observed pause.
+///
+/// The actor's position estimate extrapolates wall-clock time until the
+/// PauseChanged lands — the [`EOF_PAUSE_WINDOW`] hold plus pipeline latency
+/// counts as phantom playback — and a paused mpv emits no further time-pos
+/// changes to correct it, so without this query the overshoot (~300ms:
+/// 2026-07-20, paused at 12.095s, reported 12.392) stays frozen in for the
+/// whole pause. The reply is translated to a Position event, which
+/// re-anchors the estimate on the paused frame.
+async fn query_paused_position(
+    writer: &Mutex<OwnedWriteHalf>,
+    request_id: &AtomicU64,
+    state: &mut Translate,
+) {
+    let id = request_id.fetch_add(1, Ordering::Relaxed);
+    state.pause_pos_request = Some(id);
+    let _ = send_command(writer, json!(["get_property", "time-pos"]), id).await;
+}
+
 /// Translate one mpv IPC message into player events.
 pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<PlayerEvent> {
     // The reply to our post-seek position query.
@@ -430,6 +458,23 @@ pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Ve
         state.seek_pos_request = None;
         if let Some(seconds) = msg.get("data").and_then(Value::as_f64) {
             return vec![PlayerEvent::Seeked {
+                position_millis: (seconds * 1000.0).max(0.0) as u64,
+            }];
+        }
+        return vec![];
+    }
+
+    // The reply to our paused-position query, forwarded as an ordinary
+    // Position: the actor's estimate kept extrapolating until the (held)
+    // PauseChanged landed, and a paused mpv emits no further time-pos
+    // changes — this reply is the only thing that re-anchors the frozen
+    // estimate on the frame mpv actually stopped at.
+    if let Some(id) = state.pause_pos_request
+        && msg.get("request_id").and_then(Value::as_u64) == Some(id)
+    {
+        state.pause_pos_request = None;
+        if let Some(seconds) = msg.get("data").and_then(Value::as_f64) {
+            return vec![PlayerEvent::Position {
                 position_millis: (seconds * 1000.0).max(0.0) as u64,
             }];
         }
@@ -926,6 +971,36 @@ mod tests {
     }
 
     #[test]
+    fn pause_position_reply_translates_to_a_position_event() {
+        let mut state = Translate {
+            pause_pos_request: Some(7),
+            ..Default::default()
+        };
+        assert_eq!(
+            ev(
+                r#"{"error":"success","request_id":7,"data":12.095}"#,
+                &mut state,
+                false
+            ),
+            vec![PlayerEvent::Position {
+                position_millis: 12_095
+            }]
+        );
+        assert_eq!(state.pause_pos_request, None);
+        // A null reply (no file) produces nothing but still settles.
+        state.pause_pos_request = Some(8);
+        assert_eq!(
+            ev(
+                r#"{"error":"success","request_id":8,"data":null}"#,
+                &mut state,
+                false
+            ),
+            vec![]
+        );
+        assert_eq!(state.pause_pos_request, None);
+    }
+
+    #[test]
     fn positions_and_duration_convert_to_millis() {
         let mut state = Translate::default();
         assert_eq!(
@@ -1053,6 +1128,122 @@ mod tests {
         assert_eq!(
             strip_ass_tags(r"{\p1}m -6 -56 l -611 -56 l -600 -155{\p0}"),
             ""
+        );
+    }
+
+    /// Test budget for events that should arrive promptly (generous so a
+    /// loaded CI machine never flakes; the hold window itself is 250ms).
+    const BUDGET: Duration = Duration::from_secs(5);
+
+    /// Drive a real [`read_loop`] over a socketpair. Returns the fake-mpv
+    /// end: a writer for mpv→dessplay IPC lines, a line reader for the
+    /// commands dessplay writes back, and the translated event stream.
+    fn spawn_read_loop() -> (
+        tokio::net::unix::OwnedWriteHalf,
+        tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        mpsc::Receiver<PlayerEvent>,
+    ) {
+        let (app, mpv) = UnixStream::pair().unwrap();
+        let (app_read, app_write) = app.into_split();
+        let (event_tx, event_rx) = mpsc::channel(64);
+        tokio::spawn(read_loop(
+            BufReader::new(app_read),
+            Arc::new(Mutex::new(app_write)),
+            Arc::new(AtomicU64::new(1)),
+            Arc::new(AtomicBool::new(false)),
+            event_tx,
+        ));
+        let (mpv_read, mpv_write) = mpv.into_split();
+        (mpv_write, BufReader::new(mpv_read).lines(), event_rx)
+    }
+
+    async fn recv_event(events: &mut mpsc::Receiver<PlayerEvent>) -> PlayerEvent {
+        tokio::time::timeout(BUDGET, events.recv())
+            .await
+            .expect("event budget exhausted")
+            .expect("read loop exited")
+    }
+
+    /// Regression (2026-07-20): a user paused mpv at 12.095s but dessplay
+    /// reported 12.392. The pause observation is held up to 250ms for EOF
+    /// disambiguation, the actor's estimate extrapolates through that hold
+    /// as phantom playback, and a paused mpv emits no further time-pos
+    /// changes to correct it — so the overshoot was frozen in for the whole
+    /// pause. A genuine user pause must therefore be followed by a
+    /// `get_property time-pos` query whose reply lands as a Position event,
+    /// re-anchoring the estimate on where mpv actually stopped.
+    #[tokio::test]
+    async fn user_pause_queries_where_playback_actually_stopped() {
+        let (mut mpv, mut commands, mut events) = spawn_read_loop();
+        // Playback is near 12s when the user hits space; the last time-pos
+        // sample predates the pause.
+        mpv.write_all(
+            b"{\"event\":\"property-change\",\"id\":2,\"name\":\"time-pos\",\"data\":11.9}\n\
+              {\"event\":\"property-change\",\"id\":1,\"name\":\"pause\",\"data\":true}\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            recv_event(&mut events).await,
+            PlayerEvent::Position {
+                position_millis: 11_900
+            }
+        );
+        // The hold window expires with no eof-reached: a genuine user pause.
+        assert_eq!(
+            recv_event(&mut events).await,
+            PlayerEvent::PauseChanged(true)
+        );
+        // The loop must now ask mpv where playback actually stopped.
+        let line = tokio::time::timeout(BUDGET, commands.next_line())
+            .await
+            .expect("no get_property time-pos was issued after the user pause")
+            .unwrap()
+            .expect("mpv end closed");
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(msg["command"], json!(["get_property", "time-pos"]));
+        let id = msg["request_id"].as_u64().expect("request_id present");
+        // The reply is the true paused position, forwarded as a Position so
+        // the actor re-anchors its frozen estimate on it.
+        mpv.write_all(
+            format!("{{\"error\":\"success\",\"request_id\":{id},\"data\":12.095}}\n").as_bytes(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            recv_event(&mut events).await,
+            PlayerEvent::Position {
+                position_millis: 12_095
+            }
+        );
+    }
+
+    /// The keep-open pause at EOF is mpv mechanics, not a user pause: no
+    /// PauseChanged is emitted, and no paused-position query must be issued
+    /// (the server owns the EOF transition; a stray query reply must not
+    /// re-anchor anything).
+    #[tokio::test]
+    async fn keep_open_eof_pause_issues_no_position_query() {
+        let (mut mpv, mut commands, mut events) = spawn_read_loop();
+        mpv.write_all(
+            b"{\"event\":\"property-change\",\"id\":1,\"name\":\"pause\",\"data\":true}\n\
+              {\"event\":\"property-change\",\"id\":5,\"name\":\"eof-reached\",\"data\":true}\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(recv_event(&mut events).await, PlayerEvent::Eof);
+        // No pause event follows, and dessplay writes no command back.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), events.recv())
+                .await
+                .is_err(),
+            "keep-open EOF pause leaked an event"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), commands.next_line())
+                .await
+                .is_err(),
+            "keep-open EOF pause issued a command"
         );
     }
 
