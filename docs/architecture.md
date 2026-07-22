@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-07-11
+Last updated: 2026-07-23
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -223,8 +223,11 @@ crash supervision (relaunch via a `PlayerFactory`).
   already doing
 - `SyncTo { position, timestamp, playing }` -- the seek authority's
   latest sample; the actor extrapolates it via the shared clock and
-  picks the drift band (ignore / slew via mpv `speed` / hard seek) per
-  design.md Playback Rules. Suspended while the local user is scrubbing.
+  feeds the delta to the `DriftController` (`actors/drift.rs`, pure
+  logic: hysteresis, engage/hard-seek debounce, tapered + rate-limited
+  slew -- shaped by what is audible, see its module docs), applying the
+  returned action (set speed / hard seek) per design.md Playback Rules.
+  Suspended while the local user is scrubbing.
 - `ClockOffset(i64)` -- shared-clock offset updates (for extrapolation)
 - `ShowOsd(text)` -- append a chat message to the rolling OSD log (the
   actor owns retention/expiry and renders it as one `osd-overlay` slot)

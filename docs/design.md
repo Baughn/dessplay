@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-20
+Last updated: 2026-07-23
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -508,10 +508,22 @@ never hides it and it survives player relaunches.
 4. When someone seeks, everyone seeks (via seek authority; see [sync-state.md](sync-state.md))
 5. **Drift correction** aligns each client to a **position reference** using
    three bands (thresholds configurable in one place; defaults below):
-   - **< 100ms**: ignore
-   - **100ms - 3s**: slew -- adjust playback speed by up to ±2% (mpv `speed`
-     property, pitch-corrected, invisible to the viewer) until converged
-   - **> 3s**: hard seek
+   - **< 150ms**: ignore
+   - **150ms - 3s** *sustained* (a few consecutive samples -- one noisy
+     sample never triggers): slew -- adjust playback speed proportionally,
+     up to ±2% far out and tapering as the gap closes (mpv `speed`
+     property, pitch-corrected), until the gap is under **25ms**
+   - **> 3s** sustained: hard seek
+
+   The engage (150ms) and release (25ms) thresholds are deliberately far
+   apart, and mid-correction speed updates are quantized and rate-limited
+   (~1/s). What is audible is not the slew but the speed *transitions*:
+   measured against real mpv (2026-07-22), a sustained pitch-corrected 2%
+   slew is spectrally identical to baseline, while each transition is a
+   broadband click. The original bang-bang controller (fixed ±2%, engage
+   and release both at 100ms) parked each client at the edge of its own
+   deadband and re-fired on every sample wobble -- hundreds of ~200ms ±2%
+   blips per hour, plainly audible as stutter.
 
    The position reference is the **seek authority's** position when a *user*
    holds authority -- **but only when that user is a valid same-file source**

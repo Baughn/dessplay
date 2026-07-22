@@ -15,9 +15,10 @@
 //!   re-pauses if someone blocks. (That's the design's "your player is
 //!   immediately re-paused".)
 //! - **Drift correction** against the seek authority's extrapolated
-//!   position, in three bands: ignore below [`DRIFT_IGNORE_MILLIS`],
-//!   slew by ±[`SLEW_RATE`] up to [`DRIFT_HARD_SEEK_MILLIS`], hard seek
-//!   beyond.
+//!   position. The banding, hysteresis, and slew tapering live in
+//!   [`DriftController`] (see [`super::drift`] for why its shape is
+//!   dictated by what is audible); this actor computes the delta and
+//!   applies the returned action.
 //! - **Seek debounce.** User scrubbing is only reported
 //!   [`SEEK_DEBOUNCE`] after the last seek; drift correction is
 //!   suspended while a debounce is pending (the scrubber is about to
@@ -40,16 +41,13 @@ use dessplay_core::types::{Ed2kHash, SharedTimestamp};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use super::drift::{DriftAction, DriftController};
 use super::network::Clock;
 use crate::player::{Player, PlayerError, PlayerEvent, PlayerFactory};
 
-/// Drift smaller than this is ignored.
-pub const DRIFT_IGNORE_MILLIS: u64 = 100;
-/// Drift larger than this is corrected with a hard seek; in between,
-/// playback speed is slewed.
-pub const DRIFT_HARD_SEEK_MILLIS: u64 = 3_000;
-/// Maximum slew, as a speed delta (±2%; pitch-corrected and invisible).
-pub const SLEW_RATE: f64 = 0.02;
+pub use super::drift::{
+    DRIFT_ENGAGE_MILLIS, DRIFT_HARD_SEEK_MILLIS, DRIFT_RELEASE_MILLIS, SLEW_RATE,
+};
 /// A user seek is reported this long after the *last* seek — scrubbing
 /// coalesces into one authority change.
 pub const SEEK_DEBOUNCE: Duration = Duration::from_millis(1500);
@@ -230,6 +228,8 @@ struct Actor<F: PlayerFactory> {
     believed_pause: Option<bool>,
     /// Current slew speed (1.0 = not slewing).
     speed: f64,
+    /// Drift-correction controller (banding, hysteresis, slew taper).
+    drift: DriftController,
     /// Pause flips we commanded and haven't seen echoed yet.
     pending_pause_echoes: VecDeque<bool>,
     /// Seeks we commanded and haven't seen echoed yet.
@@ -283,6 +283,7 @@ pub async fn run<F: PlayerFactory>(
         desired_playing: false,
         believed_pause: None,
         speed: 1.0,
+        drift: DriftController::new(),
         pending_pause_echoes: VecDeque::new(),
         pending_seek_echoes: 0,
         pending_user_seek: None,
@@ -434,6 +435,7 @@ impl<F: PlayerFactory> Actor<F> {
                 self.estimate = None;
                 // The load contract says the file opens paused.
                 self.believed_pause = Some(true);
+                self.drift.reset();
                 self.set_speed(1.0).await;
                 if different {
                     // A new file is a clean slate for the crash-loop counter.
@@ -481,6 +483,7 @@ impl<F: PlayerFactory> Actor<F> {
             }
             PlayerCommand::ReleaseSlew => {
                 // Idempotent: set_speed early-returns when already 1.0.
+                self.drift.reset();
                 self.set_speed(1.0).await;
             }
             PlayerCommand::ClockOffset(offset_millis) => {
@@ -623,23 +626,17 @@ impl<F: PlayerFactory> Actor<F> {
             sample
         };
         let delta = target as i64 - current as i64;
-        let magnitude = delta.unsigned_abs();
-        if magnitude < DRIFT_IGNORE_MILLIS {
-            // Converged; release any slew.
-            self.set_speed(1.0).await;
-        } else if magnitude <= DRIFT_HARD_SEEK_MILLIS {
-            // Behind the authority → speed up; ahead → slow down.
-            let slew = if delta > 0 {
-                1.0 + SLEW_RATE
-            } else {
-                1.0 - SLEW_RATE
-            };
-            tracing::debug!(delta, slew, "drift: slewing");
-            self.set_speed(slew).await;
-        } else {
-            tracing::info!(delta, target, "drift: hard seek");
-            self.set_speed(1.0).await;
-            self.seek_programmatic(target).await;
+        match self.drift.observe(delta) {
+            DriftAction::None => {}
+            DriftAction::SetSpeed(slew) => {
+                tracing::debug!(delta, slew, "drift: slewing");
+                self.set_speed(slew).await;
+            }
+            DriftAction::HardSeek => {
+                tracing::info!(delta, target, "drift: hard seek");
+                self.set_speed(1.0).await;
+                self.seek_programmatic(target).await;
+            }
         }
     }
 
@@ -862,6 +859,7 @@ impl<F: PlayerFactory> Actor<F> {
     fn begin_reattach(&mut self) {
         self.restore_millis = self.estimate_now();
         self.speed = 1.0;
+        self.drift.reset();
         self.estimate = None;
         self.reattach_backoff = REATTACH_BACKOFF_INITIAL;
         self.reattach_at = Some(Instant::now());
@@ -953,6 +951,7 @@ impl<F: PlayerFactory> Actor<F> {
 
         self.restore_millis = self.estimate_now();
         self.speed = 1.0;
+        self.drift.reset();
         self.estimate = None;
         match self.factory.spawn().await {
             Ok(player) => {
@@ -1094,6 +1093,7 @@ mod tests {
             desired_playing: false,
             believed_pause: None,
             speed: 1.0,
+            drift: DriftController::new(),
             pending_pause_echoes: VecDeque::new(),
             pending_seek_echoes: 0,
             pending_user_seek: None,
@@ -1446,15 +1446,7 @@ mod tests {
         // A >3s drift hard-seek issues a programmatic seek and arms a
         // pending echo; the manual mock does not ack, so it stays
         // outstanding.
-        commands
-            .send(PlayerCommand::SyncTo {
-                position_millis: 20_000,
-                timestamp: SharedTimestamp(1_000_000),
-                playing: false,
-            })
-            .await
-            .unwrap();
-        settle().await;
+        sync_to_repeatedly(&commands, 20_000).await;
         assert_eq!(control.drain_commands(), vec![MockCommand::Seek(20_000)]);
 
         // A new file loads before that echo ever comes back.
@@ -1497,25 +1489,36 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn drift_below_ignore_band_does_nothing() {
-        let (commands, _outputs, mut control) = loaded_rig().await;
-        commands
-            .send(PlayerCommand::SyncTo {
-                position_millis: 10_000 + DRIFT_IGNORE_MILLIS - 1,
-                timestamp: SharedTimestamp(1_000_000),
-                playing: false,
-            })
-            .await
-            .unwrap();
+    /// Send the same authority sample enough times to clear the
+    /// controller's engage debounce and re-command rate limit (one noisy
+    /// sample must never trigger a correction, so the tests feed a
+    /// sustained run).
+    async fn sync_to_repeatedly(commands: &mpsc::Sender<PlayerCommand>, position_millis: u64) {
+        for _ in 0..10 {
+            commands
+                .send(PlayerCommand::SyncTo {
+                    position_millis,
+                    timestamp: SharedTimestamp(1_000_000),
+                    playing: false,
+                })
+                .await
+                .unwrap();
+        }
         settle().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drift_below_engage_band_does_nothing() {
+        let (commands, _outputs, mut control) = loaded_rig().await;
+        sync_to_repeatedly(&commands, 10_000 + DRIFT_ENGAGE_MILLIS - 1).await;
         assert_eq!(control.drain_commands(), vec![]);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn drift_in_slew_band_slews_and_releases_on_convergence() {
+    async fn a_single_out_of_band_sample_does_not_slew() {
         let (commands, _outputs, mut control) = loaded_rig().await;
-        // 1s behind the authority: speed up.
+        // One noisy sample, then back in band: the engage debounce
+        // must swallow it (each slew transition is an audible blip).
         commands
             .send(PlayerCommand::SyncTo {
                 position_millis: 11_000,
@@ -1524,36 +1527,31 @@ mod tests {
             })
             .await
             .unwrap();
-        settle().await;
+        sync_to_repeatedly(&commands, 10_000).await;
+        assert_eq!(control.drain_commands(), vec![]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drift_in_slew_band_slews_and_releases_on_convergence() {
+        let (commands, _outputs, mut control) = loaded_rig().await;
+        // 1s behind the authority (sustained): speed up, full slew.
+        sync_to_repeatedly(&commands, 11_000).await;
         assert_eq!(
             control.drain_commands(),
             vec![MockCommand::SetSpeed(1.0 + SLEW_RATE)]
         );
-        // Converged: release the slew.
-        commands
-            .send(PlayerCommand::SyncTo {
-                position_millis: 10_050,
-                timestamp: SharedTimestamp(1_000_000),
-                playing: false,
-            })
-            .await
-            .unwrap();
-        settle().await;
+        // Closing in: the slew tapers instead of stepping to 1.0.
+        sync_to_repeatedly(&commands, 10_050).await;
+        assert_eq!(control.drain_commands(), vec![MockCommand::SetSpeed(1.005)]);
+        // Converged (under the release threshold): release the slew.
+        sync_to_repeatedly(&commands, 10_010).await;
         assert_eq!(control.drain_commands(), vec![MockCommand::SetSpeed(1.0)]);
     }
 
     #[tokio::test(start_paused = true)]
     async fn drift_ahead_slews_down() {
         let (commands, _outputs, mut control) = loaded_rig().await;
-        commands
-            .send(PlayerCommand::SyncTo {
-                position_millis: 9_000,
-                timestamp: SharedTimestamp(1_000_000),
-                playing: false,
-            })
-            .await
-            .unwrap();
-        settle().await;
+        sync_to_repeatedly(&commands, 9_000).await;
         assert_eq!(
             control.drain_commands(),
             vec![MockCommand::SetSpeed(1.0 - SLEW_RATE)]
@@ -1563,15 +1561,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn drift_beyond_band_hard_seeks_and_suppresses_the_echo() {
         let (commands, mut outputs, mut control) = loaded_rig().await;
-        commands
-            .send(PlayerCommand::SyncTo {
-                position_millis: 20_000,
-                timestamp: SharedTimestamp(1_000_000),
-                playing: false,
-            })
-            .await
-            .unwrap();
-        settle().await;
+        sync_to_repeatedly(&commands, 20_000).await;
         assert_eq!(control.drain_commands(), vec![MockCommand::Seek(20_000)]);
         // The player echoes the seek; it must not become a user seek.
         control
@@ -1588,17 +1578,100 @@ mod tests {
     async fn playing_authority_sample_is_extrapolated_to_now() {
         let (commands, _outputs, mut control) = loaded_rig().await;
         // Sampled 5s ago at 10_000 while playing: the authority is at
-        // ~15_000 now. We're at 10_000 → 5s behind → hard seek.
-        commands
-            .send(PlayerCommand::SyncTo {
-                position_millis: 10_000,
-                timestamp: SharedTimestamp(995_000),
-                playing: true,
-            })
-            .await
-            .unwrap();
+        // ~15_000 now. We're at 10_000 → 5s behind → hard seek (after
+        // the debounce run).
+        for _ in 0..3 {
+            commands
+                .send(PlayerCommand::SyncTo {
+                    position_millis: 10_000,
+                    timestamp: SharedTimestamp(995_000),
+                    playing: true,
+                })
+                .await
+                .unwrap();
+        }
         settle().await;
         assert_eq!(control.drain_commands(), vec![MockCommand::Seek(15_000)]);
+    }
+
+    /// Regression (2026-07-22): the bang-bang drift controller engaged
+    /// and released at the same 100ms threshold, so a correction always
+    /// ended parked at the edge of its own deadband — from where any
+    /// sample wobble or slow clock-rate drift immediately re-crossed it,
+    /// firing a fresh full-amplitude ±2% blip. Session logs showed
+    /// hundreds of 100–300ms speed blips per hour, clearly audible as
+    /// stutter even though a *sustained* 2% pitch-corrected slew is
+    /// measurably transparent (verified against real mpv: a steady 1.02
+    /// renders spectrally identical to baseline; the blip pattern puts
+    /// broadband transients within 10dB of the signal).
+    ///
+    /// Closed loop: our extrapolated position advances at the commanded
+    /// speed, the leader runs slightly fast, and every sample carries
+    /// bounded noise. The controller must correct without flapping — the
+    /// total number of speed *commands* stays small, and it must never
+    /// command a speed outside the ±2% slew band.
+    #[tokio::test(start_paused = true)]
+    async fn noisy_leader_does_not_flap_the_playback_speed() {
+        use rand::{Rng, SeedableRng, rngs::StdRng};
+
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        // Play, so the position estimate extrapolates (the loop closes:
+        // a commanded slew actually moves our position).
+        commands
+            .send(PlayerCommand::SetPlaying(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::SetPause(false)
+        );
+        control
+            .events
+            .send(PlayerEvent::PauseChanged(false))
+            .unwrap();
+        settle().await;
+        let _ = control.drain_commands();
+
+        // Reproducible from the seed alone (docs/testing-strategy.md).
+        let mut rng = StdRng::seed_from_u64(0xDE55);
+        // The rig anchors us at 10_000. The leader starts 200ms ahead
+        // and runs 0.05% fast — the kind of rate mismatch two real
+        // machines exhibit — and every sample wobbles by up to ±40ms
+        // (network jitter + clock-offset error).
+        let mut leader = 10_200.0f64;
+        let mut speed_commands = 0u32;
+        for _ in 0..3_000 {
+            // 5 simulated minutes of 10Hz leader samples.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            leader += 100.0 * 1.0005;
+            let noise: f64 = rng.random_range(-40.0..40.0);
+            commands
+                .send(PlayerCommand::SyncTo {
+                    position_millis: (leader + noise) as u64,
+                    timestamp: SharedTimestamp(1_000_000),
+                    playing: true,
+                })
+                .await
+                .unwrap();
+            settle().await;
+            for cmd in control.drain_commands() {
+                if let MockCommand::SetSpeed(speed) = cmd {
+                    speed_commands += 1;
+                    assert!(
+                        (1.0 - SLEW_RATE..=1.0 + SLEW_RATE).contains(&speed),
+                        "commanded speed {speed} outside the slew band"
+                    );
+                }
+            }
+            while outputs.try_recv().is_ok() {}
+        }
+
+        assert!(
+            speed_commands <= 40,
+            "{speed_commands} speed commands in 5 simulated minutes — the \
+             drift controller is flapping (each command is an audible \
+             tempo step; a handful per correction episode is the budget)"
+        );
     }
 
     #[tokio::test(start_paused = true)]
