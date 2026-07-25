@@ -1,6 +1,5 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 396
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -28,7 +27,7 @@ expression: screen
 ┌──────────────│                                                                    │              │
 │say something…│[Save]                                                              │              │
 └──────────────└────────────────────────────────────────────────────────────────────┘──────────────┘
-                                                                                   link: connecting…
+                                                                                  link: connecting…
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ⚡  connecting to server…
 Nothing playing

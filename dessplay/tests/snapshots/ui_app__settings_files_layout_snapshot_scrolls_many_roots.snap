@@ -1,6 +1,5 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 426
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -28,7 +27,7 @@ expression: screen
 ┌──────────────│Upload limit            unlimited                        next launch│              │
 │say something…│[Save]                                                              │              │
 └──────────────└────────────────────────────────────────────────────────────────────┘──────────────┘
-                                                                                   link: connecting…
+                                                                                  link: connecting…
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ⚡  connecting to server…
 Nothing playing

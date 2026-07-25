@@ -240,15 +240,19 @@ fn health_row_aligns_playlist_border_with_chat_input() {
     let border_row: Vec<char> = lines[playlist_bottom as usize].chars().collect();
     assert_eq!(border_row[0], '└', "chat input bottom border");
     assert_eq!(border_row[50], '└', "playlist bottom border, same row");
-    // The row below holds the bottom line, health right-aligned at the
-    // terminal edge (nothing is measured yet in this snapshot).
+    // The row below holds the bottom line, health right-aligned one
+    // space in from the terminal edge (nothing is measured yet in this
+    // snapshot).
     let bottom = lines[playlist_bottom as usize + 1];
     assert!(bottom.contains("link: measuring…"), "{rendered}");
+    // The render helper trims trailing whitespace, so the trailing
+    // space shows up as the line ending at column 98, not 99.
     assert_eq!(
-        bottom.chars().nth(99),
+        bottom.chars().nth(98),
         Some('…'),
-        "health hugs the terminal's right edge: {bottom:?}"
+        "health sits one space off the terminal's right edge: {bottom:?}"
     );
+    assert_eq!(bottom.chars().count(), 99, "{bottom:?}");
 }
 
 /// The bottom line composes: health metrics right-aligned at the
@@ -289,11 +293,17 @@ fn health_row_shows_metrics_and_right_aligned_suggestion() {
         .lines()
         .find(|line| line.contains("disable BitTorrent"))
         .expect("suggestion rendered");
-    // Health hugs the terminal's right edge ("sync 6s" is its last
-    // fragment); the suggestion sits in the middle with ≥2 spaces of
-    // margin on both sides.
+    // Health sits one space in from the terminal's right edge
+    // ("sync 6s" is its last fragment); the suggestion sits in the
+    // middle with ≥2 spaces of margin on both sides.
+    // The render helper trims trailing whitespace, so the trailing
+    // space shows up as the line ending at column 198, not 199.
     let chars: Vec<char> = row.chars().collect();
-    assert_eq!(chars[199], 's', "health hugs the right edge: {row:?}");
+    assert_eq!(
+        chars.len(),
+        199,
+        "health ends one space off the edge: {row:?}"
+    );
     assert!(row.ends_with("sync 6s"), "{row:?}");
     assert!(
         row.contains("  high latency — disable BitTorrent (F3)  "),

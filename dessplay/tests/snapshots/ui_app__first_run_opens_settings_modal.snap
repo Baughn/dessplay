@@ -1,6 +1,5 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 383
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -28,7 +27,7 @@ expression: screen
 ┌──────────────│                                                                    │              │
 │say something…│[Save] — needs a username, a password, a media root                 │              │
 └──────────────└────────────────────────────────────────────────────────────────────┘──────────────┘
-                                                                                   link: connecting…
+                                                                                  link: connecting…
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ⚡  connecting to server…
 Nothing playing

@@ -1701,13 +1701,17 @@ impl HealthLine {
         use unicode_width::UnicodeWidthStr;
         let width = area.width as usize;
 
-        // Right end: the health fragments, dim separators between.
+        // Right end: the health fragments, dim separators between, and
+        // one space of breathing room off the terminal edge.
         let mut health = Vec::new();
         for (text, tone) in super::props::health_fragments(&self.props) {
             if !health.is_empty() {
                 health.push(Span::styled(" · ", theme::dim()));
             }
             health.push(Span::styled(text, theme::tone_style(tone)));
+        }
+        if !health.is_empty() {
+            health.push(Span::raw(" "));
         }
         let health_width: usize = health.iter().map(|span| span.content.width()).sum();
 

@@ -1234,7 +1234,8 @@ text ("⏸ paused") while silently failing to connect read as a hang
   "waiting on ..." blocker text never shoves it sideways; the same
   placement in every subtitle mode), the
   [Connection Health Line](#connection-health-line)'s metrics
-  **right-aligned** at the terminal edge, and the middle space carrying
+  **right-aligned** with one space of margin off the terminal edge, and
+  the middle space carrying
   the suggestion slot (someday, marquee AI commentary), centered with a
   couple of spaces of margin. Reserving the row before the column split
   puts the playlist's bottom border level with the chat input's (they
