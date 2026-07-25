@@ -16,7 +16,7 @@ use dessplay_core::types::{
     AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileHashInfo, SharedTimestamp, UserId,
 };
 use dessplay_core::wire::WireError;
-use dessplay_core::{CrdtState, StateSnapshot, wire};
+use dessplay_core::{CrdtState, StateSnapshot};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Storage errors. SQLite failures, snapshot (de)serialization failures,
@@ -239,7 +239,9 @@ impl ServerStorage {
     /// Persist the authoritative snapshot (single implicit room).
     pub fn save_state(&self, snapshot: &StateSnapshot, now: i64) -> Result<()> {
         let started = std::time::Instant::now();
-        let blob = wire::encode(&snapshot.state)?;
+        // Tagged snapshot envelope (magic + version), not the raw wire
+        // shape — see `CrdtState::encode_snapshot`.
+        let blob = snapshot.state.encode_snapshot()?;
         let bytes = blob.len();
         self.conn.execute(
             "INSERT INTO crdt_state (room, epoch, state, saved_at)
@@ -919,10 +921,9 @@ mod tests {
     /// whole database next to itself before the caller can overwrite the
     /// only old-layout copy (user request, 2026-07-05: manual testing
     /// requires deploying, so mid-development layouts will keep reaching
-    /// the server). The legacy blob is fabricated by the byte-truncation
-    /// trick from dessplay-core's migration tests: stripping the trailing
-    /// empty `acknowledged_absent` + `protocol_version` bytes off a
-    /// current-layout encoding reproduces a faithful V1 blob.
+    /// the server). The legacy blob is a faithful **untagged v6** (the
+    /// pre-envelope on-disk shape), fabricated via dessplay-core's
+    /// test-support fixture encoder.
     #[test]
     fn migrated_load_backs_up_the_database_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -936,13 +937,8 @@ mod tests {
                 after: None,
             },
         }]);
-        let bytes = dessplay_core::wire::encode(&cluster.server).unwrap();
-        assert_eq!(
-            bytes[bytes.len() - 2..],
-            [0u8, dessplay_core::net::message::PROTOCOL_VERSION as u8],
-            "truncation trick precondition (see dessplay-core/tests/migration.rs)"
-        );
-        let legacy_blob = &bytes[..bytes.len() - 2];
+        let bytes = cluster.server.encode_untagged_v6_for_tests().unwrap();
+        let legacy_blob = &bytes[..];
         storage
             .conn
             .execute(

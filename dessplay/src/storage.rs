@@ -21,7 +21,7 @@ use std::time::Duration;
 use dessplay_core::hash::Ed2kFileHash;
 use dessplay_core::types::{AniDbSeriesId, Ed2kHash, Epoch};
 use dessplay_core::wire::WireError;
-use dessplay_core::{CrdtState, StateSnapshot, wire};
+use dessplay_core::{CrdtState, StateSnapshot};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::Settings;
@@ -497,8 +497,10 @@ impl Storage {
     // ---- CRDT snapshot.
 
     /// Persist the latest full-state snapshot (single implicit room).
+    /// Stored in the tagged snapshot envelope (magic + version), not the
+    /// raw wire shape — see [`CrdtState::encode_snapshot`].
     pub fn save_state(&self, snapshot: &StateSnapshot, now: i64) -> Result<()> {
-        let blob = wire::encode(&snapshot.state)?;
+        let blob = snapshot.state.encode_snapshot()?;
         let bytes = blob.len();
         self.conn.execute(
             "INSERT INTO crdt_state (room, epoch, state, saved_at)

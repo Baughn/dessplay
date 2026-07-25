@@ -1,27 +1,22 @@
-//! On-disk / wire forward-compatibility for the watch-state change.
+//! Snapshot storage-format compatibility.
 //!
-//! Two guarantees underpin the coordinated upgrade (docs/sync-state.md):
+//! Storage blobs carry a tagged envelope — [`SNAPSHOT_MAGIC`] plus the
+//! protocol version, see `CrdtState::encode_snapshot` — so a blob names
+//! its own layout instead of being identified by trial decode. Exactly
+//! one **untagged** legacy layout (protocol v6, pre-envelope) is still
+//! decoded and migrated forward: every database deployed at the envelope
+//! change held it. A tagged blob with any *other* version is refused
+//! outright (the server's refuse-to-start posture) rather than guessed
+//! at; a deliberate migration adds an explicit decode arm instead.
 //!
-//! 1. Appending `SeriesWatchState::Maybe` as a *trailing* enum variant
-//!    keeps the existing discriminants byte-identical, so values written
-//!    before `Maybe` existed still decode.
-//! 2. Appending `acknowledged_absent` to `CrdtState` is migrated by
-//!    `CrdtState::decode_snapshot`: an older blob (the field-less prefix)
-//!    decodes via the `CrdtStateV1` fallback with an empty set, so the
-//!    authoritative server never silently loses its List/playlist.
-//!
-//! `series_preference`'s Phase 16 value-shape change (bare `SeriesWatchState`
-//! -> attributed `SeriesPreference`) is **not** exercised here: unlike the
-//! trailing-field additions above, it changes a field in the *middle* of the
-//! struct, so the byte-truncation trick this file uses (chop a known
-//! trailing suffix off a *current*-layout encoding) can't fabricate a
-//! faithful old-layout blob for it — the private `CrdtStateV1`/`V2`/`V3`
-//! structs this integration test has no access to would need constructing
-//! directly. That migration is covered where those structs are reachable:
-//! `dessplay-core/src/state.rs`'s own `#[cfg(test)]` module.
+//! These tests pin the envelope format, the legacy fallback (via the
+//! test-support fixture encoder, which stays faithful to the frozen v6
+//! layout even as `CrdtState` changes), the version-mismatch error, and
+//! the corrupt-blob error the client's tolerant loader relies on.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use dessplay_core::state::SNAPSHOT_MAGIC;
 use dessplay_core::types::{
     ActorId, ChatMessage, Ed2kHash, SeriesWatchState, SharedTimestamp, UserId,
 };
@@ -37,18 +32,13 @@ fn hash(i: u8) -> Ed2kHash {
     Ed2kHash([i; 16])
 }
 
-/// A state populated across a spread of fields, with an **empty**
-/// `acknowledged_absent` — so its postcard encoding ends with exactly the
-/// one-byte empty-GSet that the v1 layout lacks. `series_preference` and
-/// `playback_position` are left **empty**: an empty map encodes identically
-/// regardless of its value type (no entry bytes carry the value layout), so
-/// stripping the trailing byte still reproduces a faithful pre-`file` v1
-/// blob even after `series_preference`'s Phase 16 value-shape change (see
-/// the module docs).
+/// A state populated across a spread of field kinds (register, map,
+/// GList, GSet).
 fn sample_state() -> CrdtState {
     let mut state = CrdtState::new();
     state.set_now_playing(A, ts(1), Some(hash(1)));
     state.set_watched(A, ts(2), hash(1), true);
+    state.acknowledge_absent(hash(1), UserId::new("baughn"));
     state.append_chat(ChatMessage {
         timestamp: ts(6),
         sender: UserId::new("baughn"),
@@ -79,54 +69,57 @@ fn series_watch_state_discriminants_are_stable() {
 }
 
 #[test]
-fn v1_snapshot_without_acknowledged_absent_upgrades() {
+fn tagged_snapshot_round_trips() {
     let state = sample_state();
-    let bytes = wire::encode(&state).unwrap();
+    let blob = state.encode_snapshot().unwrap();
 
-    // The trailing two bytes are the empty acknowledged_absent GSet
-    // (a single length-0 byte) followed by `protocol_version` (a small
-    // varint -- PROTOCOL_VERSION fits in one byte). Both are absent from
-    // the v1 layout (protocol_version postdates v1 by three more phases,
-    // Phase 19's Series Identity work -- see `CrdtState::protocol_version`
-    // for why it must be a real trailing field, not inferred from
-    // content), so stripping both reproduces the pre-`acknowledged_absent`
-    // on-disk layout.
+    // The envelope: magic, then the protocol version as u32 LE, then the
+    // raw postcard body.
+    assert_eq!(blob[..4], SNAPSHOT_MAGIC);
     assert_eq!(
-        bytes[bytes.len() - 2..],
-        [0u8, dessplay_core::net::message::PROTOCOL_VERSION as u8],
-        "an empty acknowledged_absent + small protocol_version must serialize to [0x00, version]"
+        u32::from_le_bytes(blob[4..8].try_into().unwrap()),
+        dessplay_core::net::message::PROTOCOL_VERSION
     );
-    let v1_bytes = &bytes[..bytes.len() - 2];
 
-    let upgraded =
-        CrdtState::decode_snapshot(v1_bytes).expect("v1 blob must decode via the fallback");
-    // Everything else survives; the new field comes up empty.
-    assert_eq!(upgraded.view(), state.view());
-    assert!(upgraded.view().acknowledged_absent.is_empty());
+    let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap();
+    assert!(!migrated, "a tagged current blob is not a migration");
+    assert_eq!(decoded.view(), state.view());
 }
 
 #[test]
-fn current_snapshot_round_trips_through_decode_snapshot() {
-    // The Ok path: a current-layout blob (with a populated set) decodes
-    // directly, no fallback.
-    let mut state = sample_state();
-    state.acknowledge_absent(hash(1), UserId::new("baughn"));
-    let bytes = wire::encode(&state).unwrap();
-
-    let decoded = CrdtState::decode_snapshot(&bytes).unwrap();
-    assert_eq!(decoded.view(), state.view());
-    assert!(
-        decoded
-            .view()
-            .acknowledged_absent
-            .contains(&(hash(1), UserId::new("baughn")))
+fn untagged_legacy_blob_decodes_flagged() {
+    // The one legacy fallback: an untagged v6 blob (fabricated via the
+    // test-support fixture encoder, which is frozen to the v6 layout).
+    let state = sample_state();
+    let blob = state.encode_untagged_v6_for_tests().unwrap();
+    assert_ne!(
+        blob[0], SNAPSHOT_MAGIC[0],
+        "legacy blobs must not collide with the envelope magic"
     );
+
+    let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap();
+    assert!(migrated, "an untagged blob must report the fallback");
+    assert_eq!(decoded.view(), state.view());
+}
+
+#[test]
+fn tagged_blob_with_a_different_version_is_refused() {
+    // Refuse-to-guess: a valid body under a wrong version tag must error,
+    // not decode — layout changes between versions are exactly what the
+    // tag exists to catch.
+    let state = sample_state();
+    let mut blob = state.encode_snapshot().unwrap();
+    blob[4..8].copy_from_slice(&999u32.to_le_bytes());
+    assert!(CrdtState::decode_snapshot(&blob).is_err());
+
+    // A truncated envelope (magic but no version) errors too.
+    assert!(CrdtState::decode_snapshot(&SNAPSHOT_MAGIC).is_err());
 }
 
 #[test]
 fn genuinely_corrupt_blob_still_errors() {
-    // Neither the current layout nor the v1 fallback can read garbage, so
-    // a real codec error surfaces (the client's tolerant loader relies on
+    // Neither the envelope nor the v6 fallback can read garbage, so a
+    // real codec error surfaces (the client's tolerant loader relies on
     // this to drop-and-resync).
     assert!(CrdtState::decode_snapshot(b"not a valid postcard CrdtState").is_err());
     assert!(CrdtState::decode_snapshot(&[]).is_err());

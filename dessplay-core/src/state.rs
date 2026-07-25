@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::lww::{Lww, LwwCell, resolve_value};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
-    FileCatalogEntry, FileHashInfo, ListEntryId, ListStatus, ManualState, NextEpState,
-    PlaybackIntent, PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry,
-    SeriesPreference, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    FileCatalogEntry, FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent,
+    PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry, SeriesPreference,
+    SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
@@ -80,23 +80,13 @@ pub struct CrdtState {
     /// block *for that file only*. Grow-only, cleared at compaction.
     pub acknowledged_absent: GSet<(Ed2kHash, UserId)>,
     /// The [`PROTOCOL_VERSION`](crate::net::message::PROTOCOL_VERSION) this
-    /// struct's shape matches. Exists purely so [`CrdtState::decode_snapshot`]
-    /// can tell an old blob from a new one *by length*, not content, even
-    /// when every field a shape change touched happens to be empty (an
-    /// empty collection's postcard encoding doesn't depend on its value
-    /// type, so emptiness alone can otherwise make an old, differently-typed
-    /// blob spuriously decode as current -- caught by the Phase 19
-    /// `series_preference` re-key, a key-*type* change with no natural
-    /// trailing-field length difference when `list_entries` is empty; see
-    /// `legacy_blob_synthesizes_one_shared_entry_with_watchers_seeded`).
-    ///
-    /// **Must stay the last field** and **always be present** — the
-    /// fallback layouts (`CrdtStateV1`..`CrdtStateV4`) deliberately omit it,
-    /// so any blob missing it decodes exactly `size_of::<u32>()` bytes
-    /// short, a byte-length guarantee no content-dependent check can give.
-    /// (`CrdtStateV5`, the mid-Phase-19 dev layout, post-dates the guard
-    /// and carries it too; it differs from current by `SeriesListEntry`'s
-    /// trailing `anidb_unavailable` bool instead.)
+    /// struct's shape matches. Storage snapshots carry an explicit version
+    /// tag (the [`SNAPSHOT_MAGIC`] envelope — see
+    /// [`CrdtState::encode_snapshot`]), so this field is no longer how
+    /// layouts are told apart there; it survives as a length guard for the
+    /// one **untagged** legacy layout ([`CrdtStateUntaggedV6`]) and as a
+    /// cheap self-description on the wire, where snapshots are embedded
+    /// raw. **Must stay the last field** — new fields go before it.
     pub protocol_version: u32,
 }
 
@@ -221,484 +211,32 @@ pub struct StateSnapshot {
     pub state: CrdtState,
 }
 
-/// The old wire/disk layout of [`PlaybackPosition`], before the `file`
-/// tag was appended. The snapshot fallbacks decode pre-`file` blobs with
-/// this and then **drop** the positions: they are ephemeral (sampled
-/// ~1/s, rebroadcast within a second of reconnecting), so nothing of value
-/// is lost, and it avoids ever decoding old-layout position bytes with the
-/// new (longer) layout — which postcard, being non-self-describing, cannot
-/// detect. See [`CrdtState::decode_snapshot`].
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Deserialize)]
-#[cfg_attr(test, derive(Serialize))]
-#[allow(dead_code)] // fields consumed only by (de)serialization
-struct PlaybackPositionV1 {
-    position_millis: u64,
-    timestamp: SharedTimestamp,
-}
+/// Storage-envelope magic prefixing every tagged snapshot blob. The
+/// first byte is 0xFF: an untagged postcard [`CrdtState`] begins with
+/// the playlist map's vclock length varint, and 0xFF there would claim
+/// a continuation-varint clock size no real state can reach — so the
+/// magic can never collide with a legacy blob (pinned by
+/// `untagged_v6_blob_decodes_via_the_legacy_fallback`).
+pub const SNAPSHOT_MAGIC: [u8; 4] = [0xFF, b'D', b'S', b'S'];
 
-/// Seek-authority layout through protocol v5. Old user authority did not
-/// carry an explicit seek occurrence, so it cannot be migrated as an
-/// attributable action; migration safely hands authority to the server.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Deserialize)]
-#[cfg_attr(test, derive(Serialize))]
-enum SeekAuthorityV1 {
-    Server,
-    User(UserId),
-}
-
-/// The on-disk/wire layout of [`SeriesListEntry`] **before** `local_aliases`
-/// and `manual_files` were added (Phase 19, Series Identity). Frozen: a
-/// record of the format, not live state.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Deserialize)]
-#[cfg_attr(test, derive(Serialize))]
-struct SeriesListEntryV1 {
-    name: String,
-    nero_name: Option<String>,
-    genre: Option<String>,
-    notes: Vec<String>,
-    recommender: Option<String>,
-    status: ListStatus,
-    status_note: Option<String>,
-    source: Option<String>,
-    watchers: BTreeSet<UserId>,
-    anidb_series_id: Option<AniDbSeriesId>,
-}
-
-/// The on-disk/wire layout of [`SeriesListEntry`] **mid-Phase-19**: after
-/// `local_aliases`/`manual_files`, before `anidb_unavailable`. A build of
-/// this exact window ran on the rendezvous server (deployed 2026-07-04
-/// evening) and wrote authoritative snapshots in it, so the layout is
-/// load-bearing history even though it never shipped as a numbered
-/// protocol version. Frozen: a record of the format, not live state.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Deserialize)]
-#[cfg_attr(test, derive(Serialize))]
-struct SeriesListEntryV5 {
-    name: String,
-    nero_name: Option<String>,
-    genre: Option<String>,
-    notes: Vec<String>,
-    recommender: Option<String>,
-    status: ListStatus,
-    status_note: Option<String>,
-    source: Option<String>,
-    watchers: BTreeSet<UserId>,
-    anidb_series_id: Option<AniDbSeriesId>,
-    local_aliases: BTreeSet<String>,
-    manual_files: BTreeSet<Ed2kHash>,
-}
-
-/// The on-disk/wire layout of [`CrdtState`] **before** `series_preference`
-/// entries gained [`SeriesPreference`] attribution (design.md #7/#13).
-/// Identical to the current struct except `series_preference` uses the
-/// bare [`SeriesWatchState`] value, and `list_entries` the pre-Phase-19
-/// [`SeriesListEntryV1`] value. Frozen: a record of the format, not
-/// live state.
+/// The **untagged** on-disk layout of [`CrdtState`] as written by
+/// protocol-v6 builds, before storage snapshots gained the
+/// [`SNAPSHOT_MAGIC`] envelope. Field-for-field the v6 shape, frozen so
+/// later [`CrdtState`] changes cannot silently alter what this decodes.
+/// This is the one legacy fallback [`CrdtState::decode_snapshot`]
+/// keeps: every database deployed at the envelope change (clients and
+/// the authoritative server) held exactly this layout. The older
+/// V1..V5 fallback chain — five frozen structs plus upgrade helpers,
+/// grown one per shape change because untagged blobs could only be
+/// told apart by trial decode — was deleted along with the trial
+/// decoding; docs/sync-state.md keeps the retrospective.
 #[derive(Deserialize)]
-#[cfg_attr(test, derive(Default, Serialize))]
-struct CrdtStateV3 {
+#[cfg_attr(any(test, feature = "test-support"), derive(Default, Serialize))]
+struct CrdtStateUntaggedV6 {
     playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
     watched: LwwMap<Ed2kHash, bool>,
     now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthorityV1>,
-    playback_intent: LwwCell<PlaybackIntent>,
-    series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
-    manual_override: LwwMap<UserId, Option<ManualState>>,
-    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
-    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
-    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
-    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
-    list_entries: LwwMap<ListEntryId, SeriesListEntryV1>,
-    list_next_ep: LwwMap<ListEntryId, NextEpState>,
-    lookup_requests: GSet<FileHashInfo>,
-    chat: GList<ChatMessage>,
-    playback_position: LwwMap<UserId, PlaybackPosition>,
-    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
-}
-
-/// A migration-only [`ActorId`], used solely to synthesize dots when
-/// rebuilding an [`LwwMap`] whose *value type* (or, for `series_preference`,
-/// *key type*) changed shape (see [`upgrade_series_preference`],
-/// [`upgrade_list_entries`], [`upgrade_series_preference_to_list_entries`]).
-/// Never issued to a real client or server session — safe because
-/// `ActorId`s are session-scoped (Phase 4): no live session's dot clock
-/// depends on a restart-time migration preserving the old map's internal
-/// dot structure, only the resolved `(timestamp, value)` per key matters
-/// for future LWW comparisons.
-const MIGRATION_ACTOR: ActorId = ActorId(u128::MAX);
-
-/// Rebuild a `series_preference` map from its pre-attribution shape,
-/// preserving each entry's resolved `(timestamp, value)` and writing
-/// `set_by: None` (falls back to the subject on display — see
-/// [`SeriesPreference`]).
-fn upgrade_series_preference(
-    old: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
-) -> LwwMap<(UserId, AniDbSeriesId), SeriesPreference> {
-    let mut upgraded = LwwMap::new();
-    for entry in old.iter() {
-        let (key, cell) = entry.val;
-        if let Some(lww) = crate::lww::resolve(cell) {
-            map_put(
-                &mut upgraded,
-                MIGRATION_ACTOR,
-                lww.timestamp,
-                key.clone(),
-                SeriesPreference {
-                    state: lww.value,
-                    set_by: None,
-                },
-            );
-        }
-    }
-    upgraded
-}
-
-/// Rebuild a `list_entries` map from its pre-Phase-19 shape, defaulting
-/// `local_aliases`/`manual_files` empty (nothing had a chance to populate
-/// them before this migration ever ran).
-fn upgrade_list_entries(
-    old: LwwMap<ListEntryId, SeriesListEntryV1>,
-) -> LwwMap<ListEntryId, SeriesListEntry> {
-    let mut upgraded = LwwMap::new();
-    for entry in old.iter() {
-        let (key, cell) = entry.val;
-        if let Some(lww) = crate::lww::resolve(cell) {
-            let old = lww.value;
-            map_put(
-                &mut upgraded,
-                MIGRATION_ACTOR,
-                lww.timestamp,
-                *key,
-                SeriesListEntry {
-                    name: old.name,
-                    nero_name: old.nero_name,
-                    genre: old.genre,
-                    notes: old.notes,
-                    recommender: old.recommender,
-                    status: old.status,
-                    status_note: old.status_note,
-                    source: old.source,
-                    watchers: old.watchers,
-                    anidb_series_id: old.anidb_series_id,
-                    local_aliases: BTreeSet::new(),
-                    manual_files: BTreeSet::new(),
-                    anidb_unavailable: false,
-                },
-            );
-        }
-    }
-    upgraded
-}
-
-/// Re-key `series_preference` from `AniDbSeriesId` to `ListEntryId`
-/// (Phase 19, Series Identity: AniDB linking is enrichment only, never a
-/// prerequisite for commitment). For each referenced series, reuses the
-/// List entry already linked to it if one exists (first match, by
-/// `ListEntryId`, if more than one somehow is -- nothing enforces
-/// uniqueness), else synthesizes one: name from cached `anidb_metadata`
-/// if present, else a placeholder; status `Active`; `watchers` seeded
-/// from every user whose preference for that series already resolves to
-/// `Watching`, so migrating doesn't visibly regress a real commitment to
-/// an empty watcher row in the now-default List pane. `list_entries` is
-/// mutated in place (synthesized entries are inserted into it).
-fn upgrade_series_preference_to_list_entries(
-    old: LwwMap<(UserId, AniDbSeriesId), SeriesPreference>,
-    list_entries: &mut LwwMap<ListEntryId, SeriesListEntry>,
-    anidb_metadata: &LwwMap<Ed2kHash, Option<AniDbMetadata>>,
-) -> LwwMap<(UserId, ListEntryId), SeriesPreference> {
-    let resolved: Vec<((UserId, AniDbSeriesId), Lww<SeriesPreference>)> = old
-        .iter()
-        .filter_map(|entry| {
-            let (key, cell) = entry.val;
-            crate::lww::resolve(cell).map(|lww| (key.clone(), lww))
-        })
-        .collect();
-
-    let mut linked: BTreeMap<AniDbSeriesId, ListEntryId> = BTreeMap::new();
-    for entry in list_entries.iter() {
-        let (id, cell) = entry.val;
-        if let Some(series) = crate::lww::resolve(cell).and_then(|lww| lww.value.anidb_series_id) {
-            linked.entry(series).or_insert(*id);
-        }
-    }
-
-    let mut watching: BTreeMap<AniDbSeriesId, BTreeSet<UserId>> = BTreeMap::new();
-    for ((user, series), lww) in &resolved {
-        if lww.value.state == SeriesWatchState::Watching {
-            watching.entry(*series).or_default().insert(user.clone());
-        }
-    }
-
-    let cached_name = |series: AniDbSeriesId| -> Option<String> {
-        anidb_metadata.iter().find_map(|entry| {
-            let (_, cell) = entry.val;
-            crate::lww::resolve(cell)?
-                .value
-                .filter(|m| m.series_id == Some(series))
-                .map(|m| m.series_name)
-        })
-    };
-
-    let mut upgraded = LwwMap::new();
-    for ((user, series), lww) in resolved {
-        let entry_id = *linked.entry(series).or_insert_with(|| {
-            let id = crate::series_identity::derive_entry_id(Some(series), "");
-            map_put(
-                list_entries,
-                MIGRATION_ACTOR,
-                lww.timestamp,
-                id,
-                SeriesListEntry {
-                    name: cached_name(series).unwrap_or_else(|| format!("series {}", series.0)),
-                    nero_name: None,
-                    genre: None,
-                    notes: Vec::new(),
-                    recommender: None,
-                    status: ListStatus::Active,
-                    status_note: None,
-                    source: None,
-                    watchers: watching.get(&series).cloned().unwrap_or_default(),
-                    anidb_series_id: Some(series),
-                    local_aliases: BTreeSet::new(),
-                    manual_files: BTreeSet::new(),
-                    anidb_unavailable: false,
-                },
-            );
-            id
-        });
-        map_put(
-            &mut upgraded,
-            MIGRATION_ACTOR,
-            lww.timestamp,
-            (user, entry_id),
-            lww.value,
-        );
-    }
-    upgraded
-}
-
-impl From<CrdtStateV3> for CrdtState {
-    fn from(v3: CrdtStateV3) -> Self {
-        let mut list_entries = upgrade_list_entries(v3.list_entries);
-        let series_preference = upgrade_series_preference_to_list_entries(
-            upgrade_series_preference(v3.series_preference),
-            &mut list_entries,
-            &v3.anidb_metadata,
-        );
-        CrdtState {
-            playlist: v3.playlist,
-            watched: v3.watched,
-            now_playing: v3.now_playing,
-            seek_authority: upgrade_seek_authority(v3.seek_authority),
-            playback_intent: v3.playback_intent,
-            series_preference,
-            manual_override: v3.manual_override,
-            file_availability: v3.file_availability,
-            anidb_metadata: v3.anidb_metadata,
-            series_relations: v3.series_relations,
-            file_catalog: v3.file_catalog,
-            list_entries,
-            list_next_ep: v3.list_next_ep,
-            lookup_requests: v3.lookup_requests,
-            chat: v3.chat,
-            playback_position: v3.playback_position,
-            acknowledged_absent: v3.acknowledged_absent,
-            protocol_version: crate::net::message::PROTOCOL_VERSION,
-        }
-    }
-}
-
-/// The on-disk/wire layout of [`CrdtState`] **before** the `file` tag was
-/// appended to [`PlaybackPosition`] (but after `acknowledged_absent`).
-/// Identical to the current struct except `playback_position` uses the old
-/// [`PlaybackPositionV1`] value, `series_preference` the pre-attribution
-/// [`SeriesWatchState`] value, and `list_entries` the pre-Phase-19
-/// [`SeriesListEntryV1`] value. Frozen: a record of the format, not live
-/// state.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Default, Serialize))]
-struct CrdtStateV2 {
-    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
-    watched: LwwMap<Ed2kHash, bool>,
-    now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthorityV1>,
-    playback_intent: LwwCell<PlaybackIntent>,
-    series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
-    manual_override: LwwMap<UserId, Option<ManualState>>,
-    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
-    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
-    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
-    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
-    list_entries: LwwMap<ListEntryId, SeriesListEntryV1>,
-    list_next_ep: LwwMap<ListEntryId, NextEpState>,
-    lookup_requests: GSet<FileHashInfo>,
-    chat: GList<ChatMessage>,
-    // Consumed only to advance the decoder; dropped on migration.
-    #[allow(dead_code)]
-    playback_position: LwwMap<UserId, PlaybackPositionV1>,
-    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
-}
-
-impl From<CrdtStateV2> for CrdtState {
-    fn from(v2: CrdtStateV2) -> Self {
-        let mut list_entries = upgrade_list_entries(v2.list_entries);
-        let series_preference = upgrade_series_preference_to_list_entries(
-            upgrade_series_preference(v2.series_preference),
-            &mut list_entries,
-            &v2.anidb_metadata,
-        );
-        CrdtState {
-            playlist: v2.playlist,
-            watched: v2.watched,
-            now_playing: v2.now_playing,
-            seek_authority: upgrade_seek_authority(v2.seek_authority),
-            playback_intent: v2.playback_intent,
-            series_preference,
-            manual_override: v2.manual_override,
-            file_availability: v2.file_availability,
-            anidb_metadata: v2.anidb_metadata,
-            series_relations: v2.series_relations,
-            file_catalog: v2.file_catalog,
-            list_entries,
-            list_next_ep: v2.list_next_ep,
-            lookup_requests: v2.lookup_requests,
-            chat: v2.chat,
-            playback_position: LwwMap::new(), // ephemeral; dropped on migration
-            acknowledged_absent: v2.acknowledged_absent,
-            protocol_version: crate::net::message::PROTOCOL_VERSION,
-        }
-    }
-}
-
-/// The on-disk/wire layout of [`CrdtState`] before `acknowledged_absent`
-/// was appended (and before the `file` tag). postcard snapshots have no
-/// version tag, so [`CrdtState::decode_snapshot`] falls back to decoding
-/// this (a strict field prefix of [`CrdtStateV2`]) and upgrading it.
-/// Frozen. Drop it once no blob predating `acknowledged_absent` can
-/// plausibly still be on disk.
-#[derive(Deserialize)]
-struct CrdtStateV1 {
-    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
-    watched: LwwMap<Ed2kHash, bool>,
-    now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthorityV1>,
-    playback_intent: LwwCell<PlaybackIntent>,
-    series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesWatchState>,
-    manual_override: LwwMap<UserId, Option<ManualState>>,
-    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
-    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
-    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
-    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
-    list_entries: LwwMap<ListEntryId, SeriesListEntryV1>,
-    list_next_ep: LwwMap<ListEntryId, NextEpState>,
-    lookup_requests: GSet<FileHashInfo>,
-    chat: GList<ChatMessage>,
-    // Consumed only to advance the decoder; dropped on migration.
-    #[allow(dead_code)]
-    playback_position: LwwMap<UserId, PlaybackPositionV1>,
-}
-
-impl From<CrdtStateV1> for CrdtState {
-    fn from(v1: CrdtStateV1) -> Self {
-        let mut list_entries = upgrade_list_entries(v1.list_entries);
-        let series_preference = upgrade_series_preference_to_list_entries(
-            upgrade_series_preference(v1.series_preference),
-            &mut list_entries,
-            &v1.anidb_metadata,
-        );
-        CrdtState {
-            playlist: v1.playlist,
-            watched: v1.watched,
-            now_playing: v1.now_playing,
-            seek_authority: upgrade_seek_authority(v1.seek_authority),
-            playback_intent: v1.playback_intent,
-            series_preference,
-            manual_override: v1.manual_override,
-            file_availability: v1.file_availability,
-            anidb_metadata: v1.anidb_metadata,
-            series_relations: v1.series_relations,
-            file_catalog: v1.file_catalog,
-            list_entries,
-            list_next_ep: v1.list_next_ep,
-            lookup_requests: v1.lookup_requests,
-            chat: v1.chat,
-            playback_position: LwwMap::new(), // ephemeral; dropped on migration
-            acknowledged_absent: GSet::new(),
-            protocol_version: crate::net::message::PROTOCOL_VERSION,
-        }
-    }
-}
-
-/// The on-disk/wire layout of [`CrdtState`] **before** `series_preference`
-/// was re-keyed from `AniDbSeriesId` to `ListEntryId` and `SeriesListEntry`
-/// gained `local_aliases`/`manual_files` (Phase 19, Series Identity).
-/// Otherwise identical to the current struct — `series_preference` already
-/// has [`SeriesPreference`] attribution and `playback_position` already has
-/// the `file` tag; only the two Phase 19 fields differ. Frozen: a record of
-/// the format, not live state.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Default, Serialize))]
-struct CrdtStateV4 {
-    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
-    watched: LwwMap<Ed2kHash, bool>,
-    now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthorityV1>,
-    playback_intent: LwwCell<PlaybackIntent>,
-    series_preference: LwwMap<(UserId, AniDbSeriesId), SeriesPreference>,
-    manual_override: LwwMap<UserId, Option<ManualState>>,
-    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
-    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
-    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
-    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
-    list_entries: LwwMap<ListEntryId, SeriesListEntryV1>,
-    list_next_ep: LwwMap<ListEntryId, NextEpState>,
-    lookup_requests: GSet<FileHashInfo>,
-    chat: GList<ChatMessage>,
-    playback_position: LwwMap<UserId, PlaybackPosition>,
-    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
-}
-
-/// The on-disk/wire layout of [`CrdtState`] **mid-Phase-19**: after the
-/// `series_preference` re-key to `ListEntryId` and the
-/// `local_aliases`/`manual_files` fields (so `series_preference` needs no
-/// re-keying here), before `SeriesListEntry` gained `anidb_unavailable`.
-/// Includes the trailing `protocol_version` guard (added with the
-/// re-key), stored as 4. A build of this window ran on the rendezvous
-/// server and wrote authoritative snapshots — see [`SeriesListEntryV5`].
-/// Frozen: a record of the format, not live state.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Default, Serialize))]
-struct CrdtStateV5 {
-    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
-    watched: LwwMap<Ed2kHash, bool>,
-    now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthorityV1>,
-    playback_intent: LwwCell<PlaybackIntent>,
-    series_preference: LwwMap<(UserId, ListEntryId), SeriesPreference>,
-    manual_override: LwwMap<UserId, Option<ManualState>>,
-    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
-    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
-    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
-    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
-    list_entries: LwwMap<ListEntryId, SeriesListEntryV5>,
-    list_next_ep: LwwMap<ListEntryId, NextEpState>,
-    lookup_requests: GSet<FileHashInfo>,
-    chat: GList<ChatMessage>,
-    playback_position: LwwMap<UserId, PlaybackPosition>,
-    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
-    /// Read for layout only (postcard is positional, so the name is
-    /// free); the stored value (4) is discarded on upgrade.
-    _protocol_version: u32,
-}
-
-/// Protocol-v5 state immediately before explicit user-seek metadata was added.
-/// All other fields have the current layout.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Default, Serialize))]
-struct CrdtStateProtocol5 {
-    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
-    watched: LwwMap<Ed2kHash, bool>,
-    now_playing: LwwCell<Option<Ed2kHash>>,
-    seek_authority: LwwCell<SeekAuthorityV1>,
+    seek_authority: LwwCell<SeekAuthority>,
     playback_intent: LwwCell<PlaybackIntent>,
     series_preference: LwwMap<(UserId, ListEntryId), SeriesPreference>,
     manual_override: LwwMap<UserId, Option<ManualState>>,
@@ -712,188 +250,121 @@ struct CrdtStateProtocol5 {
     chat: GList<ChatMessage>,
     playback_position: LwwMap<UserId, PlaybackPosition>,
     acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+    /// Read for layout only (postcard is positional, so the name is
+    /// free); the stored value (6) is discarded on upgrade.
     _protocol_version: u32,
 }
 
-fn upgrade_seek_authority(old: LwwCell<SeekAuthorityV1>) -> LwwCell<SeekAuthority> {
-    let mut upgraded = LwwCell::new();
-    if let Some(winner) = old.read() {
-        // A v5 User value proves only who was followed, not whether or where
-        // an attributable seek occurred. Reset the transient authority rather
-        // than inventing an event during migration.
-        reg_put(&mut upgraded, winner.timestamp, SeekAuthority::Server);
-    }
-    upgraded
-}
-
-impl From<CrdtStateProtocol5> for CrdtState {
-    fn from(v5: CrdtStateProtocol5) -> Self {
+impl From<CrdtStateUntaggedV6> for CrdtState {
+    fn from(v6: CrdtStateUntaggedV6) -> Self {
         CrdtState {
-            playlist: v5.playlist,
-            watched: v5.watched,
-            now_playing: v5.now_playing,
-            seek_authority: upgrade_seek_authority(v5.seek_authority),
-            playback_intent: v5.playback_intent,
-            series_preference: v5.series_preference,
-            manual_override: v5.manual_override,
-            file_availability: v5.file_availability,
-            anidb_metadata: v5.anidb_metadata,
-            series_relations: v5.series_relations,
-            file_catalog: v5.file_catalog,
-            list_entries: v5.list_entries,
-            list_next_ep: v5.list_next_ep,
-            lookup_requests: v5.lookup_requests,
-            chat: v5.chat,
-            playback_position: v5.playback_position,
-            acknowledged_absent: v5.acknowledged_absent,
+            playlist: v6.playlist,
+            watched: v6.watched,
+            now_playing: v6.now_playing,
+            seek_authority: v6.seek_authority,
+            playback_intent: v6.playback_intent,
+            series_preference: v6.series_preference,
+            manual_override: v6.manual_override,
+            file_availability: v6.file_availability,
+            anidb_metadata: v6.anidb_metadata,
+            series_relations: v6.series_relations,
+            file_catalog: v6.file_catalog,
+            list_entries: v6.list_entries,
+            list_next_ep: v6.list_next_ep,
+            lookup_requests: v6.lookup_requests,
+            chat: v6.chat,
+            playback_position: v6.playback_position,
+            acknowledged_absent: v6.acknowledged_absent,
             protocol_version: crate::net::message::PROTOCOL_VERSION,
         }
     }
 }
 
-/// Rebuild a `list_entries` map from its mid-Phase-19 shape
-/// ([`SeriesListEntryV5`]), defaulting `anidb_unavailable` false (the
-/// flag didn't exist yet, so no search had recorded an empty result).
-fn upgrade_list_entries_v5(
-    old: LwwMap<ListEntryId, SeriesListEntryV5>,
-) -> LwwMap<ListEntryId, SeriesListEntry> {
-    let mut upgraded = LwwMap::new();
-    for entry in old.iter() {
-        let (key, cell) = entry.val;
-        if let Some(lww) = crate::lww::resolve(cell) {
-            let old = lww.value;
-            map_put(
-                &mut upgraded,
-                MIGRATION_ACTOR,
-                lww.timestamp,
-                *key,
-                SeriesListEntry {
-                    name: old.name,
-                    nero_name: old.nero_name,
-                    genre: old.genre,
-                    notes: old.notes,
-                    recommender: old.recommender,
-                    status: old.status,
-                    status_note: old.status_note,
-                    source: old.source,
-                    watchers: old.watchers,
-                    anidb_series_id: old.anidb_series_id,
-                    local_aliases: old.local_aliases,
-                    manual_files: old.manual_files,
-                    anidb_unavailable: false,
-                },
-            );
-        }
-    }
-    upgraded
-}
-
-impl From<CrdtStateV5> for CrdtState {
-    fn from(v5: CrdtStateV5) -> Self {
-        CrdtState {
-            playlist: v5.playlist,
-            watched: v5.watched,
-            now_playing: v5.now_playing,
-            seek_authority: upgrade_seek_authority(v5.seek_authority),
-            playback_intent: v5.playback_intent,
-            series_preference: v5.series_preference,
-            manual_override: v5.manual_override,
-            file_availability: v5.file_availability,
-            anidb_metadata: v5.anidb_metadata,
-            series_relations: v5.series_relations,
-            file_catalog: v5.file_catalog,
-            list_entries: upgrade_list_entries_v5(v5.list_entries),
-            list_next_ep: v5.list_next_ep,
-            lookup_requests: v5.lookup_requests,
-            chat: v5.chat,
-            playback_position: v5.playback_position,
-            acknowledged_absent: v5.acknowledged_absent,
-            protocol_version: crate::net::message::PROTOCOL_VERSION,
-        }
-    }
-}
-
-impl From<CrdtStateV4> for CrdtState {
-    fn from(v4: CrdtStateV4) -> Self {
-        let mut list_entries = upgrade_list_entries(v4.list_entries);
-        let series_preference = upgrade_series_preference_to_list_entries(
-            v4.series_preference,
-            &mut list_entries,
-            &v4.anidb_metadata,
-        );
-        CrdtState {
-            playlist: v4.playlist,
-            watched: v4.watched,
-            now_playing: v4.now_playing,
-            seek_authority: upgrade_seek_authority(v4.seek_authority),
-            playback_intent: v4.playback_intent,
-            series_preference,
-            manual_override: v4.manual_override,
-            file_availability: v4.file_availability,
-            anidb_metadata: v4.anidb_metadata,
-            series_relations: v4.series_relations,
-            file_catalog: v4.file_catalog,
-            list_entries,
-            list_next_ep: v4.list_next_ep,
-            lookup_requests: v4.lookup_requests,
-            chat: v4.chat,
-            playback_position: v4.playback_position,
-            acknowledged_absent: v4.acknowledged_absent,
-            protocol_version: crate::net::message::PROTOCOL_VERSION,
-        }
+#[cfg(any(test, feature = "test-support"))]
+impl CrdtState {
+    /// Encode this state in the **untagged legacy v6** layout (the
+    /// pre-envelope on-disk shape), for fabricating faithful migration
+    /// fixtures — including from other crates' tests, which cannot reach
+    /// the private [`CrdtStateUntaggedV6`]. Drops any post-v6 fields.
+    pub fn encode_untagged_v6_for_tests(&self) -> Result<Vec<u8>, crate::wire::WireError> {
+        let state = self.clone();
+        crate::wire::encode(&CrdtStateUntaggedV6 {
+            playlist: state.playlist,
+            watched: state.watched,
+            now_playing: state.now_playing,
+            seek_authority: state.seek_authority,
+            playback_intent: state.playback_intent,
+            series_preference: state.series_preference,
+            manual_override: state.manual_override,
+            file_availability: state.file_availability,
+            anidb_metadata: state.anidb_metadata,
+            series_relations: state.series_relations,
+            file_catalog: state.file_catalog,
+            list_entries: state.list_entries,
+            list_next_ep: state.list_next_ep,
+            lookup_requests: state.lookup_requests,
+            chat: state.chat,
+            playback_position: state.playback_position,
+            acknowledged_absent: state.acknowledged_absent,
+            _protocol_version: 6,
+        })
     }
 }
 
 impl CrdtState {
-    /// Decode a persisted snapshot blob, migrating an older on-disk layout
-    /// forward. The postcard blob carries no version tag, so try the
-    /// current layout first and, on failure, fall back through the previous
-    /// layouts: [`CrdtStateProtocol5`] (the immediately previous protocol),
-    /// then [`CrdtStateV5`] (mid-Phase-19: re-keyed and with
-    /// `local_aliases`/`manual_files`, but before `anidb_unavailable` — a
-    /// dev-window build of this shape ran on the rendezvous server and
-    /// wrote authoritative snapshots), then [`CrdtStateV4`] (before
-    /// `series_preference` was re-keyed to `ListEntryId` and
-    /// `SeriesListEntry` gained `local_aliases`/`manual_files`, Phase 19),
-    /// then [`CrdtStateV3`] (before `series_preference` gained
-    /// attribution), then [`CrdtStateV2`] (before the `file` tag on
-    /// [`PlaybackPosition`]), then [`CrdtStateV1`] (also before
-    /// `acknowledged_absent`). V5 only defaults `anidb_unavailable` false
-    /// — see [`upgrade_list_entries_v5`]. The older four drop ephemeral
-    /// playback positions (V1/V2), re-key `series_preference` with
-    /// `set_by: None` (V1/V2/V3) — see [`upgrade_series_preference`]
-    /// — default `local_aliases`/`manual_files` empty (V1/V2/V3/V4) — see
-    /// [`upgrade_list_entries`] — and re-key `series_preference` onto a
-    /// `ListEntryId`, reusing or synthesizing a List entry per referenced
-    /// series (V1/V2/V3/V4) — see
-    /// [`upgrade_series_preference_to_list_entries`]. A blob that is none
-    /// of these (genuinely corrupt) surfaces the *original* error, so
-    /// callers still see a real codec failure.
+    /// Encode this state for **storage**: [`SNAPSHOT_MAGIC`] ++
+    /// [`PROTOCOL_VERSION`](crate::net::message::PROTOCOL_VERSION)
+    /// (u32 LE) ++ postcard(state). Wire messages embed the raw postcard
+    /// shape instead — cross-version wire compatibility is owned entirely
+    /// by the `Auth` handshake's version gate, while storage blobs
+    /// outlive deployments and need the self-describing tag.
+    pub fn encode_snapshot(&self) -> Result<Vec<u8>, crate::wire::WireError> {
+        let body = crate::wire::encode(self)?;
+        let mut blob = Vec::with_capacity(SNAPSHOT_MAGIC.len() + 4 + body.len());
+        blob.extend_from_slice(&SNAPSHOT_MAGIC);
+        blob.extend_from_slice(&crate::net::message::PROTOCOL_VERSION.to_le_bytes());
+        blob.extend_from_slice(&body);
+        Ok(blob)
+    }
+
+    /// Decode a persisted snapshot blob. A tagged blob (the
+    /// [`SNAPSHOT_MAGIC`] envelope) names its exact layout: the version
+    /// must equal the running binary's, or this errors rather than
+    /// guessing — the refuse-to-start posture; a deliberate migration
+    /// adds an explicit decode arm for the old version instead. An
+    /// untagged blob is the one legacy layout ([`CrdtStateUntaggedV6`])
+    /// and is migrated forward.
     pub fn decode_snapshot(blob: &[u8]) -> Result<CrdtState, crate::wire::WireError> {
         Ok(Self::decode_snapshot_flagged(blob)?.0)
     }
 
-    /// [`decode_snapshot`](Self::decode_snapshot), also reporting whether a
-    /// **fallback layout** was used (`true` = the blob was written by an
-    /// older build and migrated forward). A caller that will persist the
-    /// migrated result over the original — the rendezvous server — uses
-    /// the flag to back up the old database first, so a subtly-wrong
+    /// [`decode_snapshot`](Self::decode_snapshot), also reporting whether
+    /// the **legacy fallback** was used (`true` = the blob was written by
+    /// an older build and migrated forward). A caller that will persist
+    /// the migrated result over the original — the rendezvous server —
+    /// uses the flag to back up the old database first, so a subtly-wrong
     /// migration is recoverable.
     pub fn decode_snapshot_flagged(
         blob: &[u8],
     ) -> Result<(CrdtState, bool), crate::wire::WireError> {
-        match crate::wire::decode::<CrdtState>(blob) {
-            Ok(state) => Ok((state, false)),
-            Err(primary) => crate::wire::decode::<CrdtStateProtocol5>(blob)
-                .map(CrdtState::from)
-                .or_else(|_| crate::wire::decode::<CrdtStateV5>(blob).map(CrdtState::from))
-                .or_else(|_| crate::wire::decode::<CrdtStateV4>(blob).map(CrdtState::from))
-                .or_else(|_| crate::wire::decode::<CrdtStateV3>(blob).map(CrdtState::from))
-                .or_else(|_| crate::wire::decode::<CrdtStateV2>(blob).map(CrdtState::from))
-                .or_else(|_| crate::wire::decode::<CrdtStateV1>(blob).map(CrdtState::from))
-                .map(|state| (state, true))
-                .map_err(|_| primary),
+        if let Some(tagged) = blob.strip_prefix(&SNAPSHOT_MAGIC) {
+            let Some((version_bytes, body)) = tagged.split_first_chunk::<4>() else {
+                return Err(crate::wire::WireError::DeserializeUnexpectedEnd);
+            };
+            let version = u32::from_le_bytes(*version_bytes);
+            if version != crate::net::message::PROTOCOL_VERSION {
+                tracing::error!(
+                    stored = version,
+                    current = crate::net::message::PROTOCOL_VERSION,
+                    "snapshot blob is tagged with a different protocol version; \
+                     refusing to guess at its layout"
+                );
+                return Err(crate::wire::WireError::DeserializeBadEncoding);
+            }
+            return Ok((crate::wire::decode::<CrdtState>(body)?, false));
         }
+        crate::wire::decode::<CrdtStateUntaggedV6>(blob)
+            .map(|legacy| (CrdtState::from(legacy), true))
     }
 }
 
@@ -1562,348 +1033,40 @@ mod tests {
         }
     }
 
-    /// A real pre-`file` snapshot has *old-layout* positions ([pos, ts], no
-    /// file tag). Decoding it must fall through the current layout (which
-    /// would mis-read the shorter entries) to the `CrdtStateV2` fallback,
-    /// which reads the old layout exactly and drops the ephemeral positions.
+    /// The one surviving legacy fallback: an **untagged** protocol-v6
+    /// blob (the layout every deployed database held when storage
+    /// snapshots gained the [`SNAPSHOT_MAGIC`] envelope) must decode
+    /// flagged and migrate forward intact. Also pins the envelope's
+    /// discriminator: no legacy blob can begin with the magic's 0xFF.
     #[test]
-    fn legacy_blob_with_old_layout_positions_decodes_and_drops_them() {
-        let mut playback_position = LwwMap::new();
-        map_put(
-            &mut playback_position,
-            A1,
-            ts(7),
-            UserId::new("kim"),
-            PlaybackPositionV1 {
-                position_millis: 123,
-                timestamp: ts(7),
-            },
-        );
-        let mut now_playing = LwwCell::new();
-        now_playing.apply(now_playing.write(ts(1), Some(hash(1))));
-        let legacy = CrdtStateV2 {
-            now_playing,
-            playback_position,
-            ..Default::default()
-        };
-        let blob = crate::wire::encode(&legacy).unwrap();
-
-        let decoded = CrdtState::decode_snapshot(&blob).expect("legacy blob must decode");
-        // Durable state survives; the ephemeral positions are dropped.
-        assert_eq!(decoded.view().now_playing, Some(hash(1)));
-        assert!(decoded.view().playback_position.is_empty());
-    }
-
-    /// A pre-attribution snapshot's `series_preference` entries carry bare
-    /// `SeriesWatchState`. Decoding must fall through to `CrdtStateV3` and
-    /// upgrade each entry to `SeriesPreference { set_by: None, .. }`,
-    /// preserving the resolved value and timestamp (so a later real write
-    /// still LWW-compares correctly against the migrated entry) — and,
-    /// since Phase 19, additionally re-key it onto a synthesized List
-    /// entry (deterministic, so both decodes below agree on its id).
-    #[test]
-    fn legacy_blob_with_unattributed_series_preference_upgrades_to_set_by_none() {
-        let mut series_preference = LwwMap::new();
-        map_put(
-            &mut series_preference,
-            A1,
-            ts(5),
-            (UserId::new("kim"), AniDbSeriesId(1)),
-            SeriesWatchState::Watching,
-        );
-        let legacy = CrdtStateV3 {
-            series_preference,
-            ..Default::default()
-        };
-        let blob = crate::wire::encode(&legacy).unwrap();
-        let entry_id = crate::series_identity::derive_entry_id(Some(AniDbSeriesId(1)), "");
-
-        let decoded = CrdtState::decode_snapshot(&blob).expect("legacy blob must decode");
-        let key = (UserId::new("kim"), entry_id);
-        assert_eq!(
-            decoded.view().series_preference.get(&key),
-            Some(&SeriesPreference {
-                state: SeriesWatchState::Watching,
-                set_by: None,
-            })
-        );
-
-        // A later real write (with attribution) must still win by LWW —
-        // the migrated entry's timestamp must have survived the upgrade.
-        let mut decoded = decoded;
-        decoded.set_series_preference(
-            A2,
-            ts(6),
-            UserId::new("kim"),
-            entry_id,
-            SeriesWatchState::NotWatching,
-            Some(UserId::new("baughn")),
-        );
-        assert_eq!(
-            decoded.view().series_preference.get(&key),
-            Some(&SeriesPreference {
-                state: SeriesWatchState::NotWatching,
-                set_by: Some(UserId::new("baughn")),
-            })
-        );
-
-        // And an *older* real write (ts 4, before the migrated ts-5 entry)
-        // must still lose — the migration didn't reset the dominance order.
-        let mut decoded2 = CrdtState::decode_snapshot(&blob).unwrap();
-        decoded2.set_series_preference(
-            A2,
-            ts(4),
-            UserId::new("kim"),
-            entry_id,
-            SeriesWatchState::Maybe,
-            Some(UserId::new("baughn")),
-        );
-        assert_eq!(
-            decoded2.view().series_preference.get(&key),
-            Some(&SeriesPreference {
-                state: SeriesWatchState::Watching,
-                set_by: None,
-            })
-        );
-    }
-
-    /// A `CrdtStateV4` blob (current shape except the Phase 19 fields) whose
-    /// series already has a linked List entry: the rekey must **reuse** it,
-    /// not synthesize a duplicate.
-    #[test]
-    fn legacy_blob_reuses_an_existing_linked_list_entry() {
-        let series = AniDbSeriesId(7);
-        let entry_id = ListEntryId(99);
-        let mut list_entries = LwwMap::new();
-        map_put(
-            &mut list_entries,
-            A1,
-            ts(1),
-            entry_id,
-            SeriesListEntryV1 {
-                name: "Frieren".into(),
-                nero_name: None,
-                genre: None,
-                notes: Vec::new(),
-                recommender: None,
-                status: ListStatus::Active,
-                status_note: None,
-                source: None,
-                watchers: Default::default(),
-                anidb_series_id: Some(series),
-            },
-        );
-        let mut series_preference = LwwMap::new();
-        map_put(
-            &mut series_preference,
-            A1,
-            ts(2),
-            (UserId::new("kim"), series),
-            SeriesPreference {
-                state: SeriesWatchState::Watching,
-                set_by: None,
-            },
-        );
-        let legacy = CrdtStateV4 {
-            list_entries,
-            series_preference,
-            ..Default::default()
-        };
-        let blob = crate::wire::encode(&legacy).unwrap();
-
-        let decoded = CrdtState::decode_snapshot(&blob).expect("legacy V4 blob must decode");
-        let view = decoded.view();
-        assert_eq!(
-            view.series_preference.get(&(UserId::new("kim"), entry_id)),
-            Some(&SeriesPreference {
-                state: SeriesWatchState::Watching,
-                set_by: None,
-            })
-        );
-        assert_eq!(
-            view.list_entries.len(),
-            1,
-            "must not synthesize a duplicate entry for an already-linked series"
-        );
-    }
-
-    /// Multiple users referencing the same unlinked series must converge on
-    /// one synthesized entry (not one per user), with `watchers` seeded
-    /// from whoever already resolves `Watching` (not `Maybe`) and `status`
-    /// defaulted to `Active`.
-    #[test]
-    fn legacy_blob_synthesizes_one_shared_entry_with_watchers_seeded() {
-        let series = AniDbSeriesId(11);
-        let mut series_preference = LwwMap::new();
-        map_put(
-            &mut series_preference,
-            A1,
-            ts(1),
-            (UserId::new("kim"), series),
-            SeriesPreference {
-                state: SeriesWatchState::Watching,
-                set_by: None,
-            },
-        );
-        map_put(
-            &mut series_preference,
-            A1,
-            ts(2),
-            (UserId::new("baughn"), series),
-            SeriesPreference {
-                state: SeriesWatchState::Watching,
-                set_by: None,
-            },
-        );
-        map_put(
-            &mut series_preference,
-            A1,
-            ts(3),
-            (UserId::new("nero"), series),
-            SeriesPreference {
-                state: SeriesWatchState::Maybe,
-                set_by: None,
-            },
-        );
-        let legacy = CrdtStateV4 {
-            series_preference,
-            ..Default::default()
-        };
-        let blob = crate::wire::encode(&legacy).unwrap();
-
-        let decoded = CrdtState::decode_snapshot(&blob).expect("legacy V4 blob must decode");
-        let view = decoded.view();
-
-        assert_eq!(view.list_entries.len(), 1, "one entry shared by all three");
-        let (entry_id, entry) = view.list_entries.iter().next().unwrap();
-        assert_eq!(entry.anidb_series_id, Some(series));
-        assert_eq!(entry.status, ListStatus::Active);
-        assert_eq!(
-            entry.watchers,
-            [UserId::new("kim"), UserId::new("baughn")]
-                .into_iter()
-                .collect(),
-            "Maybe (nero) must not be seeded into watchers"
-        );
-        assert_eq!(
-            view.series_preference
-                .get(&(UserId::new("nero"), *entry_id)),
-            Some(&SeriesPreference {
-                state: SeriesWatchState::Maybe,
-                set_by: None,
-            })
-        );
-    }
-
-    /// Protocol v5 stored only the authority's username. Migration preserves
-    /// durable state but resets that transient authority to Server rather than
-    /// fabricating an attributable seek occurrence.
-    #[test]
-    fn protocol_v5_seek_authority_migrates_without_inventing_a_seek() {
-        let mut legacy = CrdtStateProtocol5::default();
+    fn untagged_v6_blob_decodes_via_the_legacy_fallback() {
+        let mut legacy = CrdtStateUntaggedV6::default();
         reg_put(&mut legacy.now_playing, ts(1), Some(hash(1)));
-        reg_put(
-            &mut legacy.seek_authority,
-            ts(2),
-            SeekAuthorityV1::User(UserId::new("kim")),
-        );
-        legacy._protocol_version = 5;
+        map_put(&mut legacy.watched, A1, ts(2), hash(1), true);
+        legacy
+            .acknowledged_absent
+            .apply((hash(2), UserId::new("kim")));
+        legacy._protocol_version = 6;
         let blob = crate::wire::encode(&legacy).unwrap();
+        assert_ne!(
+            blob[0], SNAPSHOT_MAGIC[0],
+            "an untagged blob must never collide with the envelope magic"
+        );
 
         let (decoded, migrated) =
-            CrdtState::decode_snapshot_flagged(&blob).expect("protocol v5 blob must decode");
-        assert!(migrated);
+            CrdtState::decode_snapshot_flagged(&blob).expect("legacy v6 blob must decode");
+        assert!(migrated, "an untagged blob must report the fallback");
         assert_eq!(decoded.view().now_playing, Some(hash(1)));
-        assert_eq!(decoded.view().seek_authority, Some(SeekAuthority::Server));
+        assert_eq!(decoded.view().watched.get(&hash(1)), Some(&true));
+        assert!(
+            decoded
+                .view()
+                .acknowledged_absent
+                .contains(&(hash(2), UserId::new("kim")))
+        );
         assert_eq!(
             decoded.protocol_version,
             crate::net::message::PROTOCOL_VERSION
-        );
-    }
-
-    /// Regression (2026-07-05, production outage): a mid-Phase-19 build —
-    /// after the `ListEntryId` re-key and `local_aliases`/`manual_files`,
-    /// before `anidb_unavailable` — ran on the rendezvous server and wrote
-    /// authoritative snapshots in that layout. The fallback chain had no
-    /// entry for it (current failed on the missing trailing bool, V4 is
-    /// pre-re-key), so the server refused to start. The V5 fallback must
-    /// decode it, defaulting `anidb_unavailable` false and preserving
-    /// everything else — including the already-correct `ListEntryId`
-    /// preference keys and the populated alias/manual-file sets.
-    #[test]
-    fn legacy_blob_mid_phase19_layout_upgrades() {
-        let entry_id = ListEntryId(7);
-        let mut list_entries = LwwMap::new();
-        map_put(
-            &mut list_entries,
-            A1,
-            ts(1),
-            entry_id,
-            SeriesListEntryV5 {
-                name: "Some Obscure Show".into(),
-                nero_name: Some("that one".into()),
-                genre: None,
-                notes: vec!["good".into()],
-                recommender: None,
-                status: ListStatus::Active,
-                status_note: None,
-                source: None,
-                watchers: [UserId::new("kim")].into_iter().collect(),
-                anidb_series_id: None,
-                local_aliases: ["ObscureShow S2".into()].into_iter().collect(),
-                manual_files: [hash(9)].into_iter().collect(),
-            },
-        );
-        let mut series_preference = LwwMap::new();
-        map_put(
-            &mut series_preference,
-            A1,
-            ts(2),
-            (UserId::new("kim"), entry_id),
-            SeriesPreference {
-                state: SeriesWatchState::Watching,
-                set_by: None,
-            },
-        );
-        let legacy = CrdtStateV5 {
-            list_entries,
-            series_preference,
-            _protocol_version: 4,
-            ..Default::default()
-        };
-        let blob = crate::wire::encode(&legacy).unwrap();
-
-        let (decoded, migrated) =
-            CrdtState::decode_snapshot_flagged(&blob).expect("mid-Phase-19 blob must decode");
-        // The migrated flag is load-bearing beyond bookkeeping: the three
-        // newest layouts all carry the trailing protocol_version u32, so
-        // they are the same length-class and only a decode *failure* on
-        // the wrong layout routes a V5 blob to the V5 fallback. If
-        // `decode::<CrdtState>` ever spuriously succeeded on a V5 blob,
-        // the state would be silently corrupt AND `migrated` would be
-        // false — skipping the server's pre-migration database backup.
-        // Asserting `migrated` here pins the disambiguation.
-        assert!(
-            migrated,
-            "a V5 blob must decode via the fallback chain, not as the current layout"
-        );
-        let view = decoded.view();
-        let entry = view.list_entries.get(&entry_id).expect("entry preserved");
-        assert_eq!(entry.name, "Some Obscure Show");
-        assert!(!entry.anidb_unavailable, "new flag defaults false");
-        assert_eq!(
-            entry.local_aliases,
-            ["ObscureShow S2".to_string()].into_iter().collect()
-        );
-        assert_eq!(entry.manual_files, [hash(9)].into_iter().collect());
-        assert_eq!(entry.watchers, [UserId::new("kim")].into_iter().collect());
-        assert_eq!(
-            view.series_preference.get(&(UserId::new("kim"), entry_id)),
-            Some(&SeriesPreference {
-                state: SeriesWatchState::Watching,
-                set_by: None,
-            }),
-            "already-re-keyed preferences pass through untouched"
         );
     }
 
