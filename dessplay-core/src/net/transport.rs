@@ -76,6 +76,20 @@ impl std::fmt::Debug for BiStream {
     }
 }
 
+/// Point-in-time connection statistics, for transports that can
+/// provide them (QUIC; the sim cannot). Supplementary display data
+/// only: health classification must rely on the network actor's own
+/// transport-agnostic measurements, so sim tests stay deterministic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkStats {
+    /// Current path round-trip estimate, milliseconds.
+    pub rtt_millis: u64,
+    /// Congestion events on the path since the connection opened.
+    pub congestion_events: u64,
+    /// Packets declared lost since the connection opened.
+    pub lost_packets: u64,
+}
+
 /// Something the connection delivered.
 #[derive(Debug)]
 pub enum TransportEvent {
@@ -115,6 +129,12 @@ pub trait Transport: Send + Sync + 'static {
 
     /// Receive the next event. Cancel-safe; intended for one reader task.
     fn recv(&self) -> impl Future<Output = Result<TransportEvent, TransportError>> + Send;
+
+    /// Current connection statistics, when the transport tracks them.
+    /// The default (and the sim) answers `None`.
+    fn link_stats(&self) -> Option<LinkStats> {
+        None
+    }
 
     /// Close the connection with a reason the peer can observe.
     fn close(&self, reason: &str) -> impl Future<Output = ()> + Send;

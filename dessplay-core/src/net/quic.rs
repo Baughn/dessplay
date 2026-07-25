@@ -17,7 +17,9 @@ use tokio::sync::{Mutex, mpsc};
 
 use super::framing::{FrameError, read_frame, write_frame};
 use super::tofu::TofuVerifier;
-use super::transport::{BiStream, Connector, Listener, Transport, TransportError, TransportEvent};
+use super::transport::{
+    BiStream, Connector, LinkStats, Listener, Transport, TransportError, TransportEvent,
+};
 
 /// ALPN protocol id.
 pub const ALPN: &[u8] = b"dessplay/1";
@@ -189,6 +191,15 @@ impl Transport for QuicTransport {
                 Err(_) => Ok(TransportEvent::Closed { reason: self.closed_reason() }),
             },
         }
+    }
+
+    fn link_stats(&self) -> Option<LinkStats> {
+        let stats = self.conn.stats();
+        Some(LinkStats {
+            rtt_millis: self.conn.rtt().as_millis() as u64,
+            congestion_events: stats.path.congestion_events,
+            lost_packets: stats.path.lost_packets,
+        })
     }
 
     async fn close(&self, reason: &str) {

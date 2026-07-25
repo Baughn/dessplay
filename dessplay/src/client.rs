@@ -162,6 +162,7 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
                 | NetworkEvent::Rejected { .. }
                 | NetworkEvent::SearchResults { .. }
                 | NetworkEvent::Connecting { .. }
+                | NetworkEvent::LinkHealth(_)
                 | NetworkEvent::Peer { .. } => None,
             };
             if let Some(cmd) = to_sync

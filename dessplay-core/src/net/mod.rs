@@ -21,7 +21,9 @@ pub use transfer::{
     Bitfield, CHUNK_SIZE, CHUNKS_PER_BLOCK, PeerId, PeerMessage, RelayEnvelope, chunk_count,
     chunk_range,
 };
-pub use transport::{BiStream, Connector, Listener, Transport, TransportError, TransportEvent};
+pub use transport::{
+    BiStream, Connector, LinkStats, Listener, Transport, TransportError, TransportEvent,
+};
 
 /// The default rendezvous-server port, used when an address omits one.
 pub const DEFAULT_PORT: u16 = 9876;

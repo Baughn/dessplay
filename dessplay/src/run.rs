@@ -544,7 +544,11 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                 let Some(event) = event else { break };
                 // Drive the seeder's transfer from each event: route
                 // relayed peer messages, then re-plan from fresh state.
-                if let Some(transfer) = seeder_transfer.as_mut() {
+                // LinkHealth is a 1Hz metrics sample that can't change
+                // transfer state — skip the per-event GetView round trip.
+                if let Some(transfer) = seeder_transfer.as_mut()
+                    && !matches!(event, ClientEvent::Network(NetworkEvent::LinkHealth(_)))
+                {
                     if let ClientEvent::Network(NetworkEvent::Peer { from, message }) = &event {
                         transfer.on_peer(from.clone(), message.clone()).await;
                     }

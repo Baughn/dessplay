@@ -16,8 +16,8 @@ use std::time::Duration;
 use dessplay_core::net::framing::{read_frame, write_frame};
 use dessplay_core::net::timesync::TimeSync;
 use dessplay_core::net::{
-    Connector, PROTOCOL_VERSION, PeerId, PeerMessage, RelayEnvelope, Role, ServerControl,
-    Transport, TransportError, TransportEvent, WireMessage,
+    Connector, LinkStats, PROTOCOL_VERSION, PeerId, PeerMessage, RelayEnvelope, Role,
+    ServerControl, Transport, TransportError, TransportEvent, WireMessage,
 };
 use dessplay_core::types::{Epoch, UserId};
 use dessplay_core::wire;
@@ -129,6 +129,56 @@ pub enum NetworkEvent {
         /// Human-readable cause.
         reason: String,
     },
+    /// A once-a-second connection-health sample, emitted while
+    /// authenticated. Feeds the status field's health display
+    /// (design.md, Connection Health Line).
+    LinkHealth(LinkHealthReport),
+}
+
+/// One second's worth of connection health, measured entirely inside
+/// the actor so it is transport-agnostic (deterministic under the sim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkHealthReport {
+    /// Median time-sync probe round-trip, once any probe was answered.
+    pub rtt_millis: Option<u64>,
+    /// Consecutive steady-state probes (30s apart) sent without any
+    /// answer arriving in between. The initial 200ms seeding burst is
+    /// excluded — its probes are legitimately answered late.
+    pub unanswered_probes: u32,
+    /// Milliseconds since the last frame of any kind arrived from the
+    /// server. The server broadcasts a `StateHash` at least every 30s,
+    /// so a healthy link keeps this well under ~35s; a large value on a
+    /// live connection means sync is dead even though QUIC is not.
+    pub server_silence_millis: u64,
+    /// Bytes/sec sent over roughly the last second (control stream,
+    /// datagrams, and relayed transfer traffic).
+    pub tx_bps: u64,
+    /// Bytes/sec received over roughly the last second.
+    pub rx_bps: u64,
+    /// Transport-level statistics when available (QUIC only; `None` on
+    /// the sim). Display supplement — never an input to gating or
+    /// health classification.
+    pub quic: Option<LinkStats>,
+}
+
+/// Cumulative per-connection byte counters, covering the control
+/// stream, datagrams, and the relay stream in both directions. Shared
+/// with the spawned relay reader task, hence atomics; created fresh per
+/// connection so rate deltas reset naturally on reconnect.
+#[derive(Debug, Default)]
+struct NetCounters {
+    tx_bytes: AtomicU64,
+    rx_bytes: AtomicU64,
+}
+
+impl NetCounters {
+    fn add_tx(&self, bytes: usize) {
+        self.tx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    fn add_rx(&self, bytes: usize) {
+        self.rx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
 }
 
 /// Static actor configuration.
@@ -181,6 +231,8 @@ impl NetworkConfig {
 const INITIAL_PROBE_BURST: u32 = 5;
 /// Spacing of the initial burst.
 const BURST_INTERVAL: Duration = Duration::from_millis(200);
+/// Cadence of [`NetworkEvent::LinkHealth`] samples while authenticated.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Run the network actor until shutdown or auth failure.
 pub async fn run<C: Connector>(
@@ -275,7 +327,11 @@ enum ConnectionEnd {
 }
 
 /// Send a control message, encoding it first.
-async fn send_control<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(), TransportError> {
+async fn send_control<T: Transport>(
+    conn: &T,
+    counters: &NetCounters,
+    msg: &ServerControl,
+) -> Result<(), TransportError> {
     let frame = wire::encode(&WireMessage::Control(msg.clone()))
         .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
     // No size for Auth: its frame length leaks the password length.
@@ -288,6 +344,7 @@ async fn send_control<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(),
             "send control"
         );
     }
+    counters.add_tx(frame.len());
     conn.send_control(&frame).await
 }
 
@@ -295,6 +352,7 @@ async fn send_control<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(),
 /// stream when datagrams are unavailable.
 async fn send_datagram_or_control<T: Transport>(
     conn: &T,
+    counters: &NetCounters,
     msg: &ServerControl,
 ) -> Result<(), TransportError> {
     let frame = wire::encode(&WireMessage::Control(msg.clone()))
@@ -304,6 +362,7 @@ async fn send_datagram_or_control<T: Transport>(
         bytes = frame.len(),
         "send datagram"
     );
+    counters.add_tx(frame.len());
     match conn.send_datagram(&frame).await {
         Err(TransportError::DatagramUnsupported | TransportError::DatagramTooLarge { .. }) => {
             conn.send_control(&frame).await
@@ -314,15 +373,21 @@ async fn send_datagram_or_control<T: Transport>(
 
 /// Send reliably, plus eagerly as a datagram when it fits (the size
 /// rule): receivers dedup, so the datagram is pure latency win.
-async fn send_eager<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(), TransportError> {
+async fn send_eager<T: Transport>(
+    conn: &T,
+    counters: &NetCounters,
+    msg: &ServerControl,
+) -> Result<(), TransportError> {
     let frame = wire::encode(&WireMessage::Control(msg.clone()))
         .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
     tracing::trace!(msg = msg.variant_name(), bytes = frame.len(), "send eager");
+    counters.add_tx(frame.len());
     conn.send_control(&frame).await?;
     if conn
         .max_datagram_size()
         .is_some_and(|max| frame.len() <= max)
     {
+        counters.add_tx(frame.len());
         let _ = conn.send_datagram(&frame).await;
     }
     Ok(())
@@ -334,12 +399,14 @@ async fn send_eager<T: Transport>(conn: &T, msg: &ServerControl) -> Result<(), T
 async fn run_relay_reader(
     mut recv: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
     events: mpsc::Sender<NetworkEvent>,
+    counters: Arc<NetCounters>,
 ) {
     loop {
         let frame = match read_frame(&mut recv).await {
             Ok(frame) => frame,
             Err(_) => break,
         };
+        counters.add_rx(frame.len());
         match wire::decode::<RelayEnvelope>(&frame) {
             Ok(RelayEnvelope::Forwarded { from, message }) => match wire::decode(&message) {
                 Ok(message) => {
@@ -366,6 +433,8 @@ async fn run_connection<T: Transport>(
     commands: &mut mpsc::Receiver<NetworkCommand>,
     events: &mpsc::Sender<NetworkEvent>,
 ) -> ConnectionEnd {
+    let counters = Arc::new(NetCounters::default());
+
     // ---- Authenticate.
     let auth = ServerControl::Auth {
         username: config.username.clone(),
@@ -374,7 +443,7 @@ async fn run_connection<T: Transport>(
         epoch: Epoch(config.epoch.load(Ordering::SeqCst)),
         protocol_version: config.protocol_version,
     };
-    if let Err(e) = send_control(conn, &auth).await {
+    if let Err(e) = send_control(conn, &counters, &auth).await {
         return ConnectionEnd::Lost(e.to_string());
     }
     tracing::debug!(user = %config.username.0, role = ?config.role, "auth sent");
@@ -387,6 +456,18 @@ async fn run_connection<T: Transport>(
     // The relay stream's write half; opened after AuthOk (the server
     // drops pre-auth streams). `None` until then / after a relay error.
     let mut relay_send: Option<Box<dyn tokio::io::AsyncWrite + Send + Unpin>> = None;
+
+    // ---- Health bookkeeping (LinkHealth samples). All measured with
+    // local monotonic Instants — never shared-clock timestamps, whose
+    // cross-machine comparison is unsound (types.rs, SharedTimestamp).
+    let mut probe_outstanding = false;
+    let mut probes_since_answer: u32 = 0;
+    let mut last_server_frame = tokio::time::Instant::now();
+    let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
+    health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_health = tokio::time::Instant::now();
+    let mut last_tx: u64 = 0;
+    let mut last_rx: u64 = 0;
 
     loop {
         tokio::select! {
@@ -401,6 +482,8 @@ async fn run_connection<T: Transport>(
                     TransportEvent::IncomingStream(_) => continue, // Phase 9
                     TransportEvent::Closed { reason } => return ConnectionEnd::Lost(reason),
                 };
+                counters.add_rx(payload.len());
+                last_server_frame = tokio::time::Instant::now();
                 let msg: WireMessage = match wire::decode(&payload) {
                     Ok(msg) => msg,
                     Err(e) => {
@@ -439,7 +522,11 @@ async fn run_connection<T: Transport>(
                                     tracing::warn!("announcing relay stream: {e}");
                                 }
                                 relay_send = Some(send);
-                                tokio::spawn(run_relay_reader(recv, events.clone()));
+                                tokio::spawn(run_relay_reader(
+                                    recv,
+                                    events.clone(),
+                                    Arc::clone(&counters),
+                                ));
                                 tracing::debug!("relay stream opened");
                             }
                             Err(e) => tracing::warn!("opening relay stream: {e}"),
@@ -468,6 +555,8 @@ async fn run_connection<T: Transport>(
                     }
                     ServerControl::TimeSyncResponse { client_send, server_recv, server_send } => {
                         let t4 = (config.clock)();
+                        probe_outstanding = false;
+                        probes_since_answer = 0;
                         timesync.add_exchange(client_send, server_recv, server_send, t4);
                         if let Some(offset) = timesync.offset()
                             && last_offset != Some(offset)
@@ -507,10 +596,18 @@ async fn run_connection<T: Transport>(
             }
 
             _ = tokio::time::sleep_until(next_probe), if authenticated => {
+                // A probe still outstanding when the next one fires never
+                // got its answer. Only counted at the steady-state cadence
+                // (30s apart — an answer that slow is genuinely lost); the
+                // 200ms burst probes overlap legitimately.
+                if probe_outstanding && probes_sent > INITIAL_PROBE_BURST {
+                    probes_since_answer += 1;
+                }
                 let probe = ServerControl::TimeSyncRequest { client_send: (config.clock)() };
-                if let Err(e) = send_datagram_or_control(conn, &probe).await {
+                if let Err(e) = send_datagram_or_control(conn, &counters, &probe).await {
                     return ConnectionEnd::Lost(e.to_string());
                 }
+                probe_outstanding = true;
                 probes_sent += 1;
                 let delay = if probes_sent < INITIAL_PROBE_BURST {
                     BURST_INTERVAL
@@ -520,15 +617,34 @@ async fn run_connection<T: Transport>(
                 next_probe = tokio::time::Instant::now() + delay;
             }
 
+            _ = health_tick.tick(), if authenticated => {
+                let now = tokio::time::Instant::now();
+                let elapsed_millis = now.duration_since(last_health).as_millis().max(1) as u64;
+                last_health = now;
+                let tx = counters.tx_bytes.load(Ordering::Relaxed);
+                let rx = counters.rx_bytes.load(Ordering::Relaxed);
+                let report = LinkHealthReport {
+                    rtt_millis: timesync.median_rtt(),
+                    unanswered_probes: probes_since_answer,
+                    server_silence_millis: last_server_frame.elapsed().as_millis() as u64,
+                    tx_bps: (tx - last_tx) * 1000 / elapsed_millis,
+                    rx_bps: (rx - last_rx) * 1000 / elapsed_millis,
+                    quic: conn.link_stats(),
+                };
+                last_tx = tx;
+                last_rx = rx;
+                let _ = events.send(NetworkEvent::LinkHealth(report)).await;
+            }
+
             cmd = commands.recv() => {
                 match cmd {
                     Some(NetworkCommand::SendReliable(msg)) => {
-                        if let Err(e) = send_control(conn, &msg).await {
+                        if let Err(e) = send_control(conn, &counters, &msg).await {
                             return ConnectionEnd::Lost(e.to_string());
                         }
                     }
                     Some(NetworkCommand::SendEager(msg)) => {
-                        if let Err(e) = send_eager(conn, &msg).await {
+                        if let Err(e) = send_eager(conn, &counters, &msg).await {
                             return ConnectionEnd::Lost(e.to_string());
                         }
                     }
@@ -543,6 +659,7 @@ async fn run_connection<T: Transport>(
                                 bytes = frame.len(),
                                 "send datagram-only"
                             );
+                            counters.add_tx(frame.len());
                             let _ = conn.send_datagram(&frame).await;
                         }
                     }
@@ -558,6 +675,7 @@ async fn run_connection<T: Transport>(
                         let Ok(frame) = wire::encode(&envelope) else {
                             continue;
                         };
+                        counters.add_tx(frame.len());
                         // A relay write error almost always means the
                         // whole QUIC connection is dying; drop the relay
                         // half and let the recv() arm drive reconnect
@@ -577,7 +695,7 @@ async fn run_connection<T: Transport>(
                         // connection down (closing first could discard
                         // it). Best-effort throughout — a failure just
                         // means we go through Lost like a crash.
-                        if send_control(conn, &ServerControl::Goodbye).await.is_ok() {
+                        if send_control(conn, &counters, &ServerControl::Goodbye).await.is_ok() {
                             let _ = tokio::time::timeout(Duration::from_millis(500), async {
                                 loop {
                                     match conn.recv().await {
@@ -604,7 +722,8 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     use dessplay_core::net::Listener;
-    use dessplay_core::net::sim::{EndpointId, SimNetwork, SimTransport};
+    use dessplay_core::net::sim::{EndpointId, LinkConfig, SimListener, SimNetwork, SimTransport};
+    use dessplay_core::types::Ed2kHash;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -650,6 +769,195 @@ mod tests {
             .await
             .expect("network actor hung in connect() across a Shutdown")
             .unwrap();
+    }
+
+    /// A clock that follows paused tokio time from a fixed origin, so
+    /// time-sync math sees real (virtual) durations.
+    fn paused_clock() -> Clock {
+        let origin = tokio::time::Instant::now();
+        Arc::new(move || {
+            1_700_000_000_000
+                + tokio::time::Instant::now()
+                    .duration_since(origin)
+                    .as_millis() as u64
+        })
+    }
+
+    fn config_with_clock(clock: Clock) -> NetworkConfig {
+        NetworkConfig::new(
+            UserId::new("kim"),
+            "pw".into(),
+            Role::Interactive,
+            Arc::new(AtomicU64::new(0)),
+            clock,
+        )
+    }
+
+    /// A minimal server: accepts one connection, answers `Auth` with
+    /// `AuthOk`, and — only when `answer_probes` — answers time-sync
+    /// probes. With `answer_probes` false it authenticates and then
+    /// goes silent while keeping the connection open: the sim has no
+    /// idle timeout, so this is exactly the "QUIC alive, sync dead"
+    /// saturated-uplink failure mode.
+    async fn fake_server(listener: SimListener, clock: Clock, answer_probes: bool) {
+        let Ok((conn, addr)) = listener.accept().await else {
+            return;
+        };
+        loop {
+            let payload = match conn.recv().await {
+                Ok(TransportEvent::Control(bytes) | TransportEvent::Datagram(bytes)) => bytes,
+                Ok(TransportEvent::IncomingStream(_)) => continue, // the relay stream
+                Ok(TransportEvent::Closed { .. }) | Err(_) => return,
+            };
+            let Ok(WireMessage::Control(msg)) = wire::decode(&payload) else {
+                continue;
+            };
+            let reply = match msg {
+                ServerControl::Auth { .. } => ServerControl::AuthOk {
+                    observed_addr: addr,
+                },
+                ServerControl::TimeSyncRequest { client_send } if answer_probes => {
+                    let now = (clock)();
+                    ServerControl::TimeSyncResponse {
+                        client_send,
+                        server_recv: now,
+                        server_send: now,
+                    }
+                }
+                _ => continue,
+            };
+            let frame = wire::encode(&WireMessage::Control(reply)).unwrap();
+            let _ = conn.send_control(&frame).await;
+        }
+    }
+
+    /// Spawn the actor against a fake server, run for `duration`, shut
+    /// down, and return every LinkHealth report emitted.
+    async fn collect_health(
+        net: &SimNetwork,
+        answer_probes: bool,
+        duration: Duration,
+        commands_during: impl FnOnce(mpsc::Sender<NetworkCommand>) -> mpsc::Sender<NetworkCommand>,
+    ) -> Vec<LinkHealthReport> {
+        let server = EndpointId::new("server");
+        let listener = net.listener(&server);
+        tokio::spawn(fake_server(listener, paused_clock(), answer_probes));
+
+        let (command_tx, command_rx) = mpsc::channel(8);
+        // Large buffer: the actor emits one report per second and the
+        // test drains only at the end — a full channel would stall the
+        // actor and deadlock paused time.
+        let (event_tx, mut event_rx) = mpsc::channel(4096);
+        let connector = Arc::new(net.connector(&EndpointId::new("kim"), &server));
+        let actor = tokio::spawn(run(
+            connector,
+            config_with_clock(paused_clock()),
+            command_rx,
+            event_tx,
+        ));
+
+        let command_tx = commands_during(command_tx);
+        tokio::time::sleep(duration).await;
+        command_tx.send(NetworkCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), actor)
+            .await
+            .expect("clean shutdown")
+            .unwrap();
+
+        let mut reports = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let NetworkEvent::LinkHealth(report) = event {
+                reports.push(report);
+            }
+        }
+        reports
+    }
+
+    /// On a healthy 150ms-each-way link, the report carries the probe
+    /// RTT (~300ms), a small server-silence age, and nonzero traffic
+    /// during the probe burst.
+    #[tokio::test(start_paused = true)]
+    async fn link_health_reports_rtt_and_traffic() {
+        let net = SimNetwork::new(7);
+        net.set_default_link(LinkConfig {
+            latency: Duration::from_millis(150),
+            ..LinkConfig::default()
+        });
+        let reports = collect_health(&net, true, Duration::from_secs(5), |tx| tx).await;
+
+        let last = reports.last().expect("health reports were emitted");
+        let rtt = last.rtt_millis.expect("probes were answered");
+        assert!(
+            (290..=350).contains(&rtt),
+            "median rtt should be ~300ms, got {rtt}"
+        );
+        assert!(
+            last.server_silence_millis < 10_000,
+            "server was talking; silence was {}ms",
+            last.server_silence_millis
+        );
+        assert_eq!(last.unanswered_probes, 0);
+        assert!(
+            reports.iter().any(|r| r.tx_bps > 0 && r.rx_bps > 0),
+            "the probe burst should register as traffic"
+        );
+    }
+
+    /// The Starlink regression (2026-07-24): a saturated uplink kept
+    /// the QUIC connection alive while sync silently died. A server
+    /// that authenticates and then goes silent must show up as growing
+    /// server silence and consecutive unanswered probes — while the
+    /// connection is still up (the actor never saw a disconnect).
+    #[tokio::test(start_paused = true)]
+    async fn link_health_detects_silent_server_on_live_connection() {
+        let net = SimNetwork::new(11);
+        let reports = collect_health(&net, false, Duration::from_secs(160), |tx| tx).await;
+
+        let last = reports.last().expect("health reports were emitted");
+        assert!(
+            last.server_silence_millis > 150_000,
+            "server has been silent since AuthOk; reported {}ms",
+            last.server_silence_millis
+        );
+        assert!(
+            last.unanswered_probes >= 3,
+            "steady-state probes went unanswered; reported {}",
+            last.unanswered_probes
+        );
+        assert_eq!(last.rtt_millis, None, "no probe was ever answered");
+    }
+
+    /// Relay traffic (the file-transfer plane) counts toward the
+    /// bandwidth numbers: a SendPeer chunk request shows up in tx_bps.
+    #[tokio::test(start_paused = true)]
+    async fn counters_cover_relay_bytes() {
+        let net = SimNetwork::new(13);
+        let reports = collect_health(&net, true, Duration::from_secs(4), |tx| {
+            let tx_clone = tx.clone();
+            tokio::spawn(async move {
+                // Wait past auth + relay-stream open, then push ~80KB
+                // of chunk requests through the relay plane.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let message = PeerMessage::ChunkRequest {
+                    file: Ed2kHash([0x42; 16]),
+                    chunks: (0..20_000).collect(),
+                };
+                let _ = tx_clone
+                    .send(NetworkCommand::SendPeer {
+                        to: UserId::new("nas"),
+                        message: Box::new(message),
+                    })
+                    .await;
+            });
+            tx
+        })
+        .await;
+
+        assert!(
+            reports.iter().any(|r| r.tx_bps > 10_000),
+            "an 80KB relay send should dominate some 1s window; max tx_bps was {:?}",
+            reports.iter().map(|r| r.tx_bps).max()
+        );
     }
 
     /// Sanity for the interrupt-capable connect path: a normal connect
