@@ -246,6 +246,73 @@ fn humanize(d: Duration) -> String {
     plural(secs, "second")
 }
 
+/// How often the AI commentary engine speaks. `Off` disables it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommentaryInterval {
+    /// Never — the default; the engine does not run.
+    #[default]
+    Off,
+    /// Roughly every this often, gated on playback being active.
+    Every(Duration),
+}
+
+impl CommentaryInterval {
+    fn as_string(self) -> String {
+        match self {
+            CommentaryInterval::Off => "off".into(),
+            CommentaryInterval::Every(d) => d.as_secs().to_string(),
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "off" => Ok(CommentaryInterval::Off),
+            secs => secs
+                .parse::<u64>()
+                .map(|secs| CommentaryInterval::Every(Duration::from_secs(secs)))
+                .map_err(|_| StorageError::Corrupt(format!("bad commentary_interval {value:?}"))),
+        }
+    }
+
+    /// Cycle the settings-screen presets: Off -> 2 min -> 5 min ->
+    /// 10 min -> wrap. A non-preset value (set out-of-band) advances to
+    /// the first preset strictly larger than it, rejoining the ladder.
+    pub fn next(self) -> Self {
+        const MIN: u64 = 60;
+        match self {
+            CommentaryInterval::Off => CommentaryInterval::Every(Duration::from_secs(2 * MIN)),
+            CommentaryInterval::Every(d) => {
+                let secs = d.as_secs();
+                if secs < 2 * MIN {
+                    CommentaryInterval::Every(Duration::from_secs(2 * MIN))
+                } else if secs < 5 * MIN {
+                    CommentaryInterval::Every(Duration::from_secs(5 * MIN))
+                } else if secs < 10 * MIN {
+                    CommentaryInterval::Every(Duration::from_secs(10 * MIN))
+                } else {
+                    CommentaryInterval::Off
+                }
+            }
+        }
+    }
+
+    /// Human-readable label for the settings row.
+    pub fn label(self) -> String {
+        match self {
+            CommentaryInterval::Off => "Off".into(),
+            CommentaryInterval::Every(d) => format!("Every {}", humanize(d)),
+        }
+    }
+
+    /// The tick period, when enabled.
+    pub fn duration(self) -> Option<Duration> {
+        match self {
+            CommentaryInterval::Off => None,
+            CommentaryInterval::Every(d) => Some(d),
+        }
+    }
+}
+
 const UPLOAD_LIMIT_ERROR: &str = "enter `unlimited` or a whole byte rate such as `500 KiB/s`";
 
 /// Parse the upload-rate syntax used by the settings screen.
@@ -373,6 +440,12 @@ pub struct Settings {
     pub irc_tls: bool,
     /// IRC channel to join. Default `#dess`.
     pub irc_channel: String,
+    /// Anthropic API token for the AI commentary engine (design.md, AI
+    /// Commentary). Plaintext, like `password` (see the threat model).
+    /// Baughn only — nobody else is expected to set this.
+    pub anthropic_token: Option<String>,
+    /// How often the commentary engine speaks. Off disables it.
+    pub commentary_interval: CommentaryInterval,
 }
 
 impl Default for Settings {
@@ -398,6 +471,8 @@ impl Default for Settings {
             irc_server: "irc.rizon.net".into(),
             irc_tls: true,
             irc_channel: "#dess".into(),
+            anthropic_token: None,
+            commentary_interval: CommentaryInterval::default(),
         }
     }
 }
@@ -514,6 +589,12 @@ impl Settings {
             irc_channel: storage
                 .setting("irc_channel")?
                 .unwrap_or(defaults.irc_channel),
+            anthropic_token: storage.setting("anthropic_token")?,
+            commentary_interval: storage
+                .setting("commentary_interval")?
+                .map(|value| CommentaryInterval::parse(&value))
+                .transpose()?
+                .unwrap_or(defaults.commentary_interval),
         })
     }
 
@@ -585,6 +666,11 @@ impl Settings {
         storage.set_setting("irc_server", Some(&self.irc_server))?;
         storage.set_setting("irc_tls", Some(if self.irc_tls { "true" } else { "false" }))?;
         storage.set_setting("irc_channel", Some(&self.irc_channel))?;
+        storage.set_setting("anthropic_token", self.anthropic_token.as_deref())?;
+        storage.set_setting(
+            "commentary_interval",
+            Some(&self.commentary_interval.as_string()),
+        )?;
         Ok(())
     }
 }
@@ -629,6 +715,8 @@ mod tests {
             irc_server: "irc.example.org".into(),
             irc_tls: false,
             irc_channel: "#watchparty".into(),
+            anthropic_token: Some("sk-ant-test".into()),
+            commentary_interval: CommentaryInterval::Every(Duration::from_secs(300)),
         };
         storage.save_settings(&settings).unwrap();
         let loaded = storage.load_settings().unwrap();
@@ -654,6 +742,34 @@ mod tests {
         assert_eq!(loaded.username, None);
         assert_eq!(loaded.upload_limit, None);
         assert!(loaded.needs_setup());
+    }
+
+    #[test]
+    fn commentary_interval_ladder_cycles_and_round_trips() {
+        let min = |m: u64| CommentaryInterval::Every(Duration::from_secs(m * 60));
+        // Off -> 2 min -> 5 min -> 10 min -> Off.
+        let mut interval = CommentaryInterval::Off;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            interval = interval.next();
+            seen.push(interval);
+        }
+        assert_eq!(seen, vec![min(2), min(5), min(10), CommentaryInterval::Off]);
+        // An out-of-band value rejoins the ladder at the next preset up.
+        assert_eq!(min(3).next(), min(5));
+        // Persisted form survives.
+        for value in [CommentaryInterval::Off, min(2), min(7)] {
+            assert_eq!(
+                CommentaryInterval::parse(&value.as_string()).unwrap(),
+                value
+            );
+        }
+        assert_eq!(CommentaryInterval::Off.duration(), None);
+        assert_eq!(
+            min(2).duration(),
+            Some(Duration::from_secs(120)),
+            "duration feeds the engine's ticker"
+        );
     }
 
     #[test]

@@ -1,18 +1,18 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 439
+assertion_line: 457
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
 │                                                ││                                                │
 │                                                ││                                                │
 │                                                ││                                                │
-│              ┌Settings — IRC bridge───────────────────────────────────────────────┐              │
+│              ┌Settings — AI commentary────────────────────────────────────────────┐              │
 │              │[Account] [Playback] [Files] [IRC] [AI]                             │              │
-│              │IRC bridge              yes                           reconnects IRC│              │
-│              │IRC server              irc.rizon.net                 reconnects IRC│              │
-│              │IRC TLS                 yes                           reconnects IRC│──────────────┘
-│              │IRC channel             #dess                         reconnects IRC│──────────────┐
+│              │Anthropic API token                                      Baughn only│              │
+│              │Comment interval        Off                            needs a token│              │
+│              │                                                                    │──────────────┘
+│              │                                                                    │──────────────┐
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │
@@ -25,7 +25,7 @@ expression: screen
 │              │                                                                    │              │
 │              │                                                                    │              │
 └──────────────│                                                                    │              │
-┌──────────────│IRC is public; bridged chat leaves the encrypted group.             │              │
+┌──────────────│Sends recent subtitles and a player screenshot to Anthropic.        │              │
 │say something…│[Save]                                                              │              │
 └──────────────└────────────────────────────────────────────────────────────────────┘──────────────┘
                                                                                    link: connecting…

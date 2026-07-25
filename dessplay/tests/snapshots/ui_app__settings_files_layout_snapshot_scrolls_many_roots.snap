@@ -8,7 +8,7 @@ expression: screen
 │                                                ││                                                │
 │                                                ││                                                │
 │              ┌Settings — Files & transfers────────────────────────────────────────┐              │
-│              │[Account] [Playback] [Files] [IRC]                                  │              │
+│              │[Account] [Playback] [Files] [IRC] [AI]                             │              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/10│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/11│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/12│──────────────┘

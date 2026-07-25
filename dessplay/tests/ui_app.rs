@@ -440,6 +440,24 @@ fn settings_irc_layout_snapshot() {
 }
 
 #[test]
+fn settings_commentary_layout_snapshot() {
+    let mut ui = ui();
+    ui.handle(key(Key::Function(3)));
+    for _ in 0..4 {
+        ui.handle(key(Key::Right));
+    }
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Settings — AI commentary"), "{screen}");
+    assert!(screen.contains("Anthropic API token"), "{screen}");
+    assert!(screen.contains("Baughn only"), "{screen}");
+    assert!(
+        screen.contains("Sends recent subtitles and a player screenshot to Anthropic."),
+        "{screen}"
+    );
+    insta::assert_snapshot!(screen);
+}
+
+#[test]
 fn settings_save_from_playback_emits_the_complete_draft() {
     let mut ui = ui();
     ui.handle(key(Key::Function(3)));

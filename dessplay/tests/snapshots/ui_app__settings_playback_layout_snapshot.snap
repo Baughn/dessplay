@@ -8,7 +8,7 @@ expression: screen
 │                                                ││                                                │
 │                                                ││                                                │
 │              ┌Settings — Playback & display───────────────────────────────────────┐              │
-│              │[Account] [Playback] [Files] [IRC]                                  │              │
+│              │[Account] [Playback] [Files] [IRC] [AI]                             │              │
 │              │Player                  mpv                        WIP — not applied│              │
 │              │Subtitle display        Off                                         │              │
 │              │Speaker names           no                         subtitles are off│──────────────┘

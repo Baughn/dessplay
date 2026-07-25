@@ -8,7 +8,7 @@ expression: screen
 │                                                ││                                                │
 │                                                ││                                                │
 │              ┌Settings — Account & connection─────────────────────────────────────┐              │
-│              │[Account !] [Playback] [Files !] [IRC]                              │              │
+│              │[Account !] [Playback] [Files !] [IRC] [AI]                         │              │
 │              │Username                                                            │              │
 │              │Server                  dessplay.brage.info              next launch│              │
 │              │Password                                                 next launch│──────────────┘

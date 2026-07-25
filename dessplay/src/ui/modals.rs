@@ -915,17 +915,24 @@ static BROWSER_DIR_KEYMAP: Keymap<FileBrowser, Msg> = Keymap(&[
 
 // ---- Settings ----------------------------------------------------------
 
-/// The four settings tabs, in keyboard-navigation order.
+/// The five settings tabs, in keyboard-navigation order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsCategory {
     Account,
     Playback,
     Files,
     Irc,
+    Commentary,
 }
 
 impl SettingsCategory {
-    const ALL: [Self; 4] = [Self::Account, Self::Playback, Self::Files, Self::Irc];
+    const ALL: [Self; 5] = [
+        Self::Account,
+        Self::Playback,
+        Self::Files,
+        Self::Irc,
+        Self::Commentary,
+    ];
 
     fn index(self) -> usize {
         match self {
@@ -933,6 +940,7 @@ impl SettingsCategory {
             Self::Playback => 1,
             Self::Files => 2,
             Self::Irc => 3,
+            Self::Commentary => 4,
         }
     }
 
@@ -942,6 +950,7 @@ impl SettingsCategory {
             Self::Playback => "Playback",
             Self::Files => "Files",
             Self::Irc => "IRC",
+            Self::Commentary => "AI",
         }
     }
 
@@ -951,6 +960,7 @@ impl SettingsCategory {
             Self::Playback => "Playback & display",
             Self::Files => "Files & transfers",
             Self::Irc => "IRC bridge",
+            Self::Commentary => "AI commentary",
         }
     }
 
@@ -989,6 +999,8 @@ enum SettingId {
     IrcServer,
     IrcTls,
     IrcChannel,
+    AnthropicToken,
+    CommentaryInterval,
 }
 
 /// First-run and later settings editing: a [`Form`] over the working
@@ -996,7 +1008,7 @@ enum SettingId {
 /// keys) is the shared widget; this file only declares the rows.
 pub struct SettingsModal {
     form: Form<SettingsForm>,
-    selections: [Option<SettingId>; 4],
+    selections: [Option<SettingId>; 5],
 }
 
 /// The settings form model: working copies, committed on save.
@@ -1017,7 +1029,7 @@ impl SettingsModal {
                 roots,
                 category: SettingsCategory::Account,
             }),
-            selections: [None, None, None, None],
+            selections: [None, None, None, None, None],
         }
     }
 
@@ -1267,6 +1279,30 @@ impl SettingsForm {
             ),
         ]
     }
+
+    fn commentary_rows(&self) -> Vec<FormRow<SettingId>> {
+        let enabled = self.settings.anthropic_token.is_some();
+        let interval_row = FormRow::choice(
+            SettingId::CommentaryInterval,
+            "Comment interval",
+            self.settings.commentary_interval.label(),
+        );
+        vec![
+            FormRow::secret(
+                SettingId::AnthropicToken,
+                "Anthropic API token",
+                self.settings.anthropic_token.clone().unwrap_or_default(),
+            )
+            .annotated("Baughn only", theme::dim()),
+            if enabled {
+                interval_row
+            } else {
+                interval_row
+                    .styled(theme::dim())
+                    .annotated("needs a token", theme::dim())
+            },
+        ]
+    }
 }
 
 impl FormModel for SettingsForm {
@@ -1283,6 +1319,7 @@ impl FormModel for SettingsForm {
             SettingsCategory::Playback => self.playback_rows(),
             SettingsCategory::Files => self.files_rows(),
             SettingsCategory::Irc => self.irc_rows(),
+            SettingsCategory::Commentary => self.commentary_rows(),
         }
     }
 
@@ -1347,6 +1384,15 @@ impl FormModel for SettingsForm {
             (SettingId::IrcChannel, FormEdit::SetText(value)) => {
                 self.settings.irc_channel = Self::text_required(value, "IRC channel")?;
             }
+            (SettingId::AnthropicToken, FormEdit::SetText(value)) => {
+                // Optional: an empty edit clears the token (and disables
+                // the engine), unlike the required text fields.
+                let value = value.trim().to_string();
+                self.settings.anthropic_token = (!value.is_empty()).then_some(value);
+            }
+            (SettingId::CommentaryInterval, FormEdit::Cycle) => {
+                self.settings.commentary_interval = self.settings.commentary_interval.next();
+            }
             (SettingId::MediaRoot(path), FormEdit::Command(c @ ('j' | 'J' | 'k' | 'K'))) => {
                 let Some(index) = self.roots.iter().position(|root| root == path) else {
                     return Ok(FormEffect::Handled);
@@ -1396,13 +1442,16 @@ impl FormModel for SettingsForm {
     }
 
     fn notes(&self) -> Vec<Line<'static>> {
-        if self.category == SettingsCategory::Irc {
-            vec![Line::styled(
+        match self.category {
+            SettingsCategory::Irc => vec![Line::styled(
                 "IRC is public; bridged chat leaves the encrypted group.",
                 theme::dim().add_modifier(Modifier::ITALIC),
-            )]
-        } else {
-            Vec::new()
+            )],
+            SettingsCategory::Commentary => vec![Line::styled(
+                "Sends recent subtitles and a player screenshot to Anthropic.",
+                theme::dim().add_modifier(Modifier::ITALIC),
+            )],
+            _ => Vec::new(),
         }
     }
 
@@ -3283,6 +3332,64 @@ mod tests {
             .expect("IRC server row");
         assert_eq!(server.style, theme::dim());
         assert!(matches!(server.control, FormControl::Text { .. }));
+    }
+
+    #[test]
+    fn commentary_token_is_optional_and_clears_on_empty_edit() {
+        let mut modal = SettingsModal::new(Settings::default(), vec![]);
+        modal.form.model.category = SettingsCategory::Commentary;
+
+        // The interval is dormant (dim, annotated) until a token exists.
+        let interval = modal
+            .form
+            .model
+            .rows()
+            .into_iter()
+            .find(|row| row.id == SettingId::CommentaryInterval)
+            .expect("interval row");
+        assert_eq!(interval.style, theme::dim());
+
+        modal
+            .form
+            .model
+            .apply(
+                &SettingId::AnthropicToken,
+                FormEdit::SetText("sk-ant-test".into()),
+            )
+            .ok()
+            .unwrap();
+        assert_eq!(
+            modal.form.model.settings.anthropic_token.as_deref(),
+            Some("sk-ant-test")
+        );
+
+        modal
+            .form
+            .model
+            .apply(&SettingId::CommentaryInterval, FormEdit::Cycle)
+            .ok()
+            .unwrap();
+        assert_eq!(
+            modal.form.model.settings.commentary_interval,
+            crate::config::CommentaryInterval::Every(std::time::Duration::from_secs(120))
+        );
+
+        // Unlike the required text fields, blanking the token is a valid
+        // edit: it clears the setting (and disables the engine).
+        modal
+            .form
+            .model
+            .apply(&SettingId::AnthropicToken, FormEdit::SetText("  ".into()))
+            .ok()
+            .unwrap();
+        assert_eq!(modal.form.model.settings.anthropic_token, None);
+        // And an empty token never gates saving — the feature is optional.
+        assert!(
+            !modal
+                .form
+                .model
+                .category_missing(SettingsCategory::Commentary)
+        );
     }
 
     #[test]
