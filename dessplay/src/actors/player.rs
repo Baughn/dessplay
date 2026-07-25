@@ -130,6 +130,10 @@ pub enum PlayerCommand {
     /// Plain text; the actor owns the ASS formatting and re-applies the
     /// overlay across player relaunches.
     SetBlockerOverlay(Option<String>),
+    /// Write a screenshot of the current frame to this path
+    /// (best-effort: dropped silently when no player is running — the
+    /// requester polls for the file and proceeds without it).
+    Screenshot(PathBuf),
     /// Quit the player and exit the actor.
     Shutdown,
 }
@@ -500,6 +504,13 @@ impl<F: PlayerFactory> Actor<F> {
             PlayerCommand::SetBlockerOverlay(text) => {
                 self.blocker_overlay = text;
                 self.render_blocker_overlay().await;
+            }
+            PlayerCommand::Screenshot(path) => {
+                if let Some(player) = &self.player
+                    && let Err(e) = player.screenshot_to_file(&path).await
+                {
+                    tracing::debug!(path = %path.display(), "screenshot failed: {e}");
+                }
             }
             PlayerCommand::Shutdown => {}
         }
@@ -2132,6 +2143,20 @@ mod tests {
                 speaker: None,
                 position_millis: 0,
             }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn screenshot_command_reaches_the_player_with_its_path() {
+        let (commands, _outputs, mut control) = loaded_rig().await;
+        let path = PathBuf::from("/tmp/marquee-test.png");
+        commands
+            .send(PlayerCommand::Screenshot(path.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Screenshot(path)
         );
     }
 

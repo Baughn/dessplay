@@ -1999,6 +1999,17 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.wiring.auto_download = enabled;
     }
 
+    /// Ask the running player for a screenshot written to `path`
+    /// (commentary context). Best-effort and fire-and-forget: returns
+    /// false when no player has been spawned yet, so the caller can skip
+    /// polling for a file that will never appear.
+    pub async fn request_screenshot(&self, path: PathBuf) -> bool {
+        match &self.player {
+            Some(player) => player.send(PlayerCommand::Screenshot(path)).await.is_ok(),
+            None => false,
+        }
+    }
+
     /// Persist a manual mapping (and resolve it Verified at once).
     pub async fn set_manual_mapping(
         &self,

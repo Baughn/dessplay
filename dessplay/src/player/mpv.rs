@@ -261,6 +261,17 @@ impl Player for MpvPlayer {
         }
     }
 
+    async fn screenshot_to_file(&self, path: &Path) -> Result<(), PlayerError> {
+        // "video" = the raw frame, no OSD or subtitles burned in. mpv
+        // infers the image format from the path's extension.
+        self.command(json!([
+            "screenshot-to-file",
+            path.to_string_lossy(),
+            "video"
+        ]))
+        .await
+    }
+
     async fn recv(&self) -> Result<PlayerEvent, PlayerError> {
         self.events
             .lock()

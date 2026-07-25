@@ -132,6 +132,16 @@ pub trait Player: Send + Sync + 'static {
         data: Option<&str>,
     ) -> impl Future<Output = Result<(), PlayerError>> + Send;
 
+    /// Ask the player to write a screenshot of the current frame to
+    /// `path` (no OSD/subtitles burned in). Fire-and-forget: the write
+    /// happens asynchronously in the player, so callers poll for the
+    /// file rather than await a reply. The format follows the path's
+    /// extension (mpv `screenshot-to-file`).
+    fn screenshot_to_file(
+        &self,
+        path: &Path,
+    ) -> impl Future<Output = Result<(), PlayerError>> + Send;
+
     /// Receive the next observation. Cancel-safe; one reader task.
     fn recv(&self) -> impl Future<Output = Result<PlayerEvent, PlayerError>> + Send;
 

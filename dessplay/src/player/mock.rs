@@ -37,6 +37,8 @@ pub enum MockCommand {
     SetSpeed(f64),
     /// `set_osd_overlay(id, data)`; `None` clears the overlay.
     SetOsdOverlay(u64, Option<String>),
+    /// `screenshot_to_file(path)`.
+    Screenshot(PathBuf),
     /// `shutdown()`.
     Shutdown,
 }
@@ -155,6 +157,10 @@ impl Player for MockPlayer {
 
     async fn set_osd_overlay(&self, id: u64, data: Option<&str>) -> Result<(), PlayerError> {
         self.send(MockCommand::SetOsdOverlay(id, data.map(str::to_string)))
+    }
+
+    async fn screenshot_to_file(&self, path: &Path) -> Result<(), PlayerError> {
+        self.send(MockCommand::Screenshot(path.to_path_buf()))
     }
 
     async fn recv(&self) -> Result<PlayerEvent, PlayerError> {
