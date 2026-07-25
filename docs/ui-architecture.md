@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-20
+Last updated: 2026-07-25
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -62,6 +62,7 @@ Application
 +-- SeriesPane (SelectableList, three modes: Recent / All / The List)
 +-- UsersPane (styled list; focusable for the Away action)
 +-- PlaylistPane (SelectableList with actions)
++-- HealthLine (borderless connection-health row + suggestion slot)
 +-- PlayerStatus (progress bar + info)
 +-- KeybindingBar (derived from active focus)
 ```
@@ -315,6 +316,15 @@ snapshot data to component props:
   unfocused scroll target is the now-playing row rather than its stored
   cursor.
 - **PlayerStatus**: snapshot.now_playing + player position -> progress bar
+- **HealthLine**: snapshot.health (`HealthProps` — link state, hysteresis-
+  filtered level, the merged `HealthSample`, and the advisor's suggestion;
+  all run-loop state carried on the snapshot like `link`, not CRDT state)
+  -> the borderless status row under the playlist. The row text and
+  per-field warning tones come from the pure `props::health_fragments`;
+  the suggestion is a right-aligned `table_row` cell that outranks the
+  metrics at narrow widths. Rendered directly by `Ui::draw` (the
+  `render_progress` pattern): passive, no input, outside every recorded
+  pane rect — so mouse hit-testing ignores it with no special casing.
 
 This mapping is a pure function (presence and subtitle data arrive as
 explicit inputs alongside the snapshot), making it testable independently.

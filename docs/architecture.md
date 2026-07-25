@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-07-23
+Last updated: 2026-07-25
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -182,6 +182,19 @@ is relayed through it), connection state, time sync state.
 - `TimeSyncUpdate(offset)` -- clock offset update
 - `PeerMessageReceived(PeerId, PeerMessage)` -- relayed file transfer traffic
 - `ConnectionStateChange(...)` -- connected/disconnected/error
+- `LinkHealth(LinkHealthReport)` -- a 1Hz connection-health sample while
+  authenticated (design.md, Connection Health Line): median time-sync probe
+  RTT, consecutive unanswered probes, age of the last server frame (the
+  server's 30s `StateHash` broadcast makes this a stalled-sync detector),
+  and byte rates from per-connection counters covering the control,
+  datagram, and relay planes. All measured with local monotonic `Instant`s
+  inside the actor, so the sim stays deterministic (`Transport::link_stats`
+  supplies quinn's path stats as display-only supplement; the sim returns
+  `None`). **Not routed through the event stream**: the client router
+  consumes it into a `watch::Receiver<Option<LinkHealthReport>>` on
+  `ClientHandle` (latest value wins; cleared on disconnect) — 1Hz metrics
+  in the event channel could fill it and stall the router, and with it
+  state sync, behind droppable numbers.
 
 ### UI subsystem
 
@@ -308,6 +321,25 @@ and subtitles out, player/matcher/hash completions in between. Extracted
 from `run_interactive` into a struct so it runs (and is tested) without
 a terminal.
 
+It also owns the **connection-health pipeline** (design.md, Connection
+Health Line): a select arm on `ClientHandle.health.changed()` merges each
+`LinkHealthReport` with the torrent engine's live speeds
+(`TorrentEngine::speeds`, sampled on a retained `Arc`), classifies it
+(`props::classify_health`) through an anti-flap hysteresis, and stores the
+result for the UI snapshot's `HealthProps` — cleared on disconnect so
+stale trouble never outlives the connection that measured it.
+
+**The advisor** (`advisor.rs`) is the seam behind the health row's
+suggestion slot. The loop feeds it subtitles (deduped with the shared
+`props::subtitle_collapse`, wherever `UiLines` are forwarded to the UI)
+and health samples (throttled to 5s inside the advisor); providers —
+`AdvisorProvider`, must never block — deliver `SuggestionUpdate`s through
+a channel the loop select-arms into the snapshot. The rule-based provider
+is the only one today; a future LLM commentary provider is an async task
+owning a `Sender` clone, no new plumbing. `SyncEvent::Diverged` (emitted
+by the sync actor's divergence alarm) is consumed here and rides the
+advisor context.
+
 **Liveness rule: nothing in the bridge loop may block or run long.**
 Every await in an arm body must complete promptly — channel sends to
 live actors, oneshot view queries, nothing else. Long work (ed2k
@@ -379,6 +411,11 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
 - `RunEviction { protected, group_watched }` -- eviction pass (startup and
   EOF-advance; never evicts now-playing/queued/protected)
 - `SetMediaRoots` / `SetRetention` -- settings changes
+- `SetTorrentEnabled(bool)` -- the live BitTorrent toggle (design.md,
+  BitTorrent Downloads): disabling removes every engine torrent, drains the
+  fetch state machine with per-file peer-path fallbacks
+  (`TorrentFetches::disable_all`), and cancels pending imports; enabling
+  only sticks when the engine was constructed at startup
 - `SearchNyaa` / `StartNyaaImport` / `CancelNyaaImport` -- playlist-pane
   browse search and local pending imports. Search/metainfo reads and final
   ed2k hashing run off-thread; the actor polls the torrent engine on its normal
@@ -628,6 +665,8 @@ dessplay/                     (client: lib + thin binary)
     player/                   (Player trait; mpv JSON IPC; MockPlayer)
     session.rs                (PlayerWiring policy + SessionShell glue;
                                drives the FileActor)
+    advisor.rs                (the suggestion-slot seam: context
+                               collection, provider trait, rule provider)
     download.rs               (Downloads: chunk scheduling — pipeline,
                                rarest-first, snub, endgame; Phase 9B)
     chunkstore.rs             (on-disk chunk assembly + ed2k block

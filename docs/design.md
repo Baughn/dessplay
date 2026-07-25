@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-23
+Last updated: 2026-07-25
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -76,7 +76,11 @@ working copy atomically. Tabs containing a missing required value carry a
   `infinite`; auto-download defaults on. **Archive subdirectory** defaults
   on: `A` moves a cached file under a sanitized series-name subdirectory; when
   off it moves the file directly into the download root. BitTorrent defaults
-  off and applies at restart. Upload limit accepts human-readable byte rates
+  off; **disabling applies immediately** (active torrents are removed and
+  downloads fall back to the peer relay — the mid-session escape hatch for a
+  saturated uplink, see [BitTorrent Downloads](#bittorrent-downloads)), while
+  enabling requires a restart when the engine was off at startup. Upload limit
+  accepts human-readable byte rates
   such as `500 KiB/s` and `2 MiB/s`, or `unlimited`, and applies at restart.
 - **IRC bridge**: Enabled (default on), server (default `irc.rizon.net`), TLS
   (default on, selecting port 6697 rather than 6667), and channel (default
@@ -85,8 +89,10 @@ working copy atomically. Tabs containing a missing required value carry a
   changed IRC values reconfigures the bridge live.
 
 Rows whose values do not apply immediately carry a dim lifecycle annotation
-(`next restart`, `reconnects IRC`, or the player's WIP warning). Media roots,
-cache retention, and auto-download reconfigure their owning actor live.
+(`next restart`, `reconnects IRC`, the BitTorrent row's asymmetric
+`off: immediate · on: next launch`, or the player's WIP warning). Media
+roots, cache retention, auto-download, and BitTorrent-off reconfigure their
+owning actor live.
 
 Bare `J`/`K` are used for root reordering rather than Ctrl-J/Ctrl-K, which
 collide with control codes (Ctrl-J == LF) in terminals without the enhanced
@@ -1211,7 +1217,7 @@ text ("⏸ paused") while silently failing to connect read as a hang
 |          Chat Window             | (current +       |
 |          (continued)             |  previous in     |
 |   [always-visible input line]    |  muted colors)   |
-|  [=====>       ] 12:34 / 24:00   |                  |
+|  [=====>       ] 12:34 / 24:00   | ▲1.2M ▼340K ...  |
 +----------------------------------+------------------+
 |  Player Status: waiting on baughn (paused)          |
 |  Now Playing: [Frieren] Sousou no Frieren - 01.mkv  |
@@ -1229,7 +1235,11 @@ text ("⏸ paused") while silently failing to connect read as a hang
   [Separate pane mode](#subtitle-display) is on.
 - Right 50%, top: Series (three modes: Recent Series / All Series / The List)
 - Right 50%, middle: Users
-- Right 50%, bottom: Playlist
+- Right 50%, bottom: Playlist, then a dedicated 1-line
+  [Connection Health Line](#connection-health-line) — the mirror of the left
+  column's progress-bar row, which also puts the playlist's bottom border
+  level with the chat input's (they used to sit one row apart, which read as
+  a layout bug)
 
 When any selectable list is taller than its pane or modal, its viewport keeps
 the cursor as close to the vertical center as the list edges permit. Series
@@ -1237,6 +1247,64 @@ and Users retain that cursor-centered context while unfocused; Playlist
 centers on the now-playing entry while another pane is focused. The chat log
 is deliberately separate: it keeps its history/newest-first scrolling policy
 rather than following a selection cursor.
+
+### Connection Health Line
+
+The right column's bottom row is a **borderless, passive status field**
+showing connection quality and sync health at a glance — the affordance
+that was missing when a saturated Starlink uplink let BitTorrent drown
+CRDT sync while the QUIC connection stayed nominally "connected"
+(2026-07-24): the app looked fine and simply stopped syncing.
+
+While connected it renders compact metric fragments, joined with dim
+separators: `▲1.2M ▼340K · rtt 89ms · sync 3s` —
+
+- **▲/▼**: upload/download bytes per second, the QUIC plane (control,
+  datagrams, relayed transfer) **plus** the torrent engine's live
+  speeds, so the culprit of a saturated uplink is visible here even
+  though it never crosses the server connection.
+- **rtt**: the median time-sync probe round trip (the probes are
+  datagrams, so this reflects real path latency — bufferbloat shows up
+  as seconds); before any probe is answered, QUIC's own path estimate.
+- **sync**: seconds since *anything* arrived from the server. The
+  server broadcasts a `StateHash` every 30s unconditionally, so this is
+  a zero-false-positive stalled-sync detector: a large value on a live
+  connection means sync is dead even though QUIC is not.
+- **N probes lost**: shown only when consecutive steady-state probes go
+  unanswered.
+
+The row is **dim by default**; only the *offending* field takes a
+warning color. Classification (thresholds in `ui/props.rs`,
+`classify_health`): **Degraded** (yellow) at rtt ≥ 1.5s, silence past
+one missed StateHash interval (40s), or 2 lost probes; **Stalled**
+(red) past 2.5 missed intervals (75s), or 3 lost probes with 45s+
+silence. The displayed level is hysteresis-filtered — trouble shows
+immediately, calm must hold ~5s (stepping down through intermediate
+levels) — so a single quiet sample never flickers red back to dim.
+While not connected the row shows a short link notice
+(`link: connecting…` / `link: down — retrying`); the bottom status
+bar keeps its existing, fuller `⚡` story.
+
+The right end of the row is the **suggestion slot**, fed by the
+session-layer **advisor**: rule-based advice keyed to the health state
+— "high latency — disable BitTorrent (F3, applies immediately)" when
+the link degrades with an active torrent (and the toggle really does
+apply immediately — see [BitTorrent
+Downloads](#bittorrent-downloads)), "sync stalled — server silent Ns",
+and a divergence notice. Suggestions carry a severity (dim / yellow /
+red), only re-render when they change, and a cleared condition holds
+the slot ~30s against threshold flicker. When both can't fit, the
+suggestion outranks the metrics (it is the actionable part; the metrics
+truncate to a stub). The advisor's provider seam also collects what a
+future **LLM commentary provider** needs — the now-playing series,
+episode, and the last ~50 deduped subtitle lines — delivered through
+the same channel; that provider itself is future work (see [Future
+Plans](#future-plans)).
+
+In [Separate pane](#subtitle-display) subtitle mode the left column's
+progress row sits mid-column, so the health line does not align with it
+there — intended; the health line always stays at the right column's
+bottom. The row is dead to the mouse (it is outside every pane rect).
 
 **Subtitle display (optional):** the local player's subtitles can be
 surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->
@@ -1617,8 +1685,19 @@ NotWatching gates, and converge on the same completion contract. The
 torrent path is gated behind the **BitTorrent downloads** setting
 (`torrent_enabled`, default **off**) — the engine opens ports and joins
 the DHT, so it never starts unless the user opted in; when off, every
-fetch goes straight to the peer relay. Like the player choice and
-upload limit, the setting applies at startup.
+fetch goes straight to the peer relay. The setting's lifecycle is
+**asymmetric**: *enabling* applies at startup (the engine is
+constructed then or never), but *disabling* applies **immediately** —
+saving the setting removes every engine torrent (files deleted,
+registry rows pruned, seeding stopped), hands in-flight fetches to the
+peer relay with their stashed sources, and cancels pending browse
+imports. This is the mid-session escape hatch for a saturated uplink
+(the 2026-07-24 Starlink incident: torrent traffic drowned CRDT sync;
+the health line's suggestion points here). Cached copies of *completed*
+downloads are untouched — they were hardlinked into the hash-addressed
+cache at verification. Known limitation: the librqbit session and its
+DHT socket stay alive until restart — bounded chatter, no payload
+traffic.
 **Seeders run no torrent path at all** — a file nyaa can supply makes
 the seeder redundant; its job is the rare, peer-only files, so it
 downloads only from peers (and only when a peer source exists).
@@ -2304,4 +2383,10 @@ For v1, this is acceptable. Future improvements could include:
 - Direct client-to-client connections (with or without hole punching) as a
   transfer optimization, slotted in beneath the `send(peer, message)`
   interface. Cut from v2: the relay-through-NAS path makes them unnecessary.
+- An **LLM commentary provider** for the health line's suggestion slot:
+  when the link is healthy, feed the now-playing series, episode, and the
+  advisor's last-~50-subtitle ring to an Anthropic model and render its
+  commentary in the slot. The advisor seam (context collection, provider
+  trait, async delivery channel) is already in place — the provider is a
+  spawned task owning a `Sender` clone plus API-key configuration.
 - Web UI using the same `ViewSpec` approach (see [ui-architecture.md](ui-architecture.md)).
