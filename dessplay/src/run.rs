@@ -906,6 +906,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         health: None,
         health_level: crate::ui::props::HealthHysteresis::default(),
         suggestion: None,
+        advisor: crate::advisor::Advisor::with_rules(),
     };
     let end = session.run().await;
 
@@ -1061,6 +1062,9 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     pub health_level: crate::ui::props::HealthHysteresis,
     /// The advisor's current suggestion for the health row.
     pub suggestion: Option<crate::ui::props::SuggestionProps>,
+    /// The advisor seam behind the suggestion slot (rule-based today;
+    /// a future LLM commentary provider plugs in here).
+    pub advisor: crate::advisor::Advisor,
 }
 
 impl<F: crate::player::PlayerFactory> SessionLoop<F> {
@@ -1380,6 +1384,9 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         ClientEvent::Network(NetworkEvent::Peer { from, message }) => {
                             self.shell.on_network_peer(from.clone(), message.clone()).await;
                         }
+                        ClientEvent::Sync(crate::actors::sync::SyncEvent::Diverged) => {
+                            self.advisor.on_diverged();
+                        }
                         _ => {}
                     }
                     // Any event can change what the UI shows -- and what
@@ -1390,6 +1397,22 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                     // download data path, fingerprint pinning) ran in the
                     // match above and are not deferred.
                     ui_dirty = true;
+                }
+                update = self.advisor.suggestions.recv() => {
+                    // The advisor holds its own sender, so None cannot
+                    // occur while it lives; guard anyway.
+                    if let Some(update) = update {
+                        self.suggestion = update.0.map(|s| crate::ui::props::SuggestionProps {
+                            text: s.text,
+                            tone: match s.severity {
+                                crate::advisor::Severity::Info => crate::ui::props::Tone::Muted,
+                                crate::advisor::Severity::Warning => crate::ui::props::Tone::Paused,
+                                crate::advisor::Severity::Critical =>
+                                    crate::ui::props::Tone::Blocked,
+                            },
+                        });
+                        ui_dirty = true;
+                    }
                 }
                 changed = self.handle.health.changed(), if health_alive => {
                     if changed.is_err() {
@@ -1422,6 +1445,19 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 crate::ui::props::classify_health(self.link, Some(&sample));
                             self.health_level.observe(raw);
                             self.health = Some(sample);
+                            let torrent_active = speeds.up_bps + speeds.down_bps > 0
+                                || self
+                                    .torrent_engine
+                                    .as_ref()
+                                    .is_some_and(|engine| !engine.active().is_empty());
+                            self.advisor.on_health(
+                                &last_view,
+                                self.link,
+                                self.health_level.current(),
+                                self.health,
+                                self.settings.torrent_enabled,
+                                torrent_active,
+                            );
                         }
                         None => {
                             // Stale health must not outlive the connection
@@ -1443,7 +1479,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             );
                         }
                         let lines = self.shell.on_state(&snapshot.view, &snapshot.peers).await;
-                        forward_ui_lines(&self.ui, lines);
+                        self.forward_lines(lines);
                         last_view = snapshot.view.clone();
                         let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
                     }
@@ -1488,7 +1524,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 output = self.shell.player_outputs.recv() => {
                     let Some(output) = output else { continue };
                     let lines = self.shell.on_player_output(output, &last_view).await;
-                    forward_ui_lines(&self.ui, lines);
+                    self.forward_lines(lines);
                 }
                 output = self.shell.file_outputs.recv() => {
                     let Some(output) = output else { continue };
@@ -1614,12 +1650,20 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
     async fn refresh_ui(&mut self, last_view: &mut std::sync::Arc<dessplay_core::StateView>) {
         if let Some(snapshot) = self.snapshot().await {
             let lines = self.shell.on_state(&snapshot.view, &snapshot.peers).await;
-            forward_ui_lines(&self.ui, lines);
+            self.forward_lines(lines);
             *last_view = snapshot.view.clone();
             let _ = self
                 .ui
                 .try_send(crate::ui::shell::UiInput::Snapshot(Box::new(snapshot)));
         }
+    }
+
+    /// Forward session-produced lines to the UI, feeding subtitles into
+    /// the advisor's context ring on the way (the future commentary
+    /// provider's "last fifty subtitles").
+    fn forward_lines(&mut self, lines: crate::session::UiLines) {
+        self.advisor.observe_subtitles(&lines.subtitles);
+        forward_ui_lines(&self.ui, lines);
     }
 
     async fn snapshot(&mut self) -> Option<crate::ui::app::UiSnapshot> {

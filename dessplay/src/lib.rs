@@ -11,6 +11,7 @@
 #![deny(clippy::dbg_macro)]
 
 pub mod actors;
+pub mod advisor;
 pub mod chunkstore;
 pub mod client;
 pub mod config;

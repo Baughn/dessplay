@@ -417,39 +417,37 @@ impl Ui {
         let speaker_slot = self
             .speaker_colors
             .observe(speaker.as_deref(), arrival_millis);
-        // Classify the new text against the last entry: does it *extend* it
-        // (same cue, fuller — a reveal or a neighbour appearing) or is it
-        // *contained* in it (same cue, receding — a neighbour ending)? The
-        // length test makes the two mutually exclusive; either end of the
-        // join may carry the change, so both prefix and suffix count.
-        let (extends, contained) = match self.subtitles.back() {
-            Some(last) => (
-                text.len() >= last.text.len()
-                    && (text.starts_with(&last.text) || text.ends_with(&last.text)),
-                text.len() < last.text.len()
-                    && (last.text.starts_with(&text) || last.text.ends_with(&text)),
-            ),
-            None => (false, false),
-        };
-        if let Some(last) = self.subtitles.back_mut().filter(|_| extends) {
-            // Same cue, fuller now: keep the original timestamps, track the
-            // latest text and speaker.
-            last.text = text;
-            last.speaker = speaker;
-            last.speaker_slot = speaker_slot;
-        } else if contained {
-            // Same cue receding (an overlapping neighbour ended); the fuller
-            // text is already logged — drop the redundant re-show.
-        } else {
-            self.subtitles.push_back(SubtitleEntry {
-                video_millis,
-                arrival_millis,
-                text,
-                speaker,
-                speaker_slot,
-            });
-            while self.subtitles.len() > 100 {
-                self.subtitles.pop_front();
+        // Classify the new text against the last entry (the shared
+        // reveal/overlap collapse — `props::subtitle_collapse`, also
+        // used by the advisor's context ring).
+        let collapse =
+            props::subtitle_collapse(self.subtitles.back().map(|last| last.text.as_str()), &text);
+        match collapse {
+            props::SubtitleCollapse::Extends => {
+                if let Some(last) = self.subtitles.back_mut() {
+                    // Same cue, fuller now: keep the original timestamps,
+                    // track the latest text and speaker.
+                    last.text = text;
+                    last.speaker = speaker;
+                    last.speaker_slot = speaker_slot;
+                }
+            }
+            props::SubtitleCollapse::Contained => {
+                // Same cue receding (an overlapping neighbour ended); the
+                // fuller text is already logged — drop the redundant
+                // re-show.
+            }
+            props::SubtitleCollapse::Distinct => {
+                self.subtitles.push_back(SubtitleEntry {
+                    video_millis,
+                    arrival_millis,
+                    text,
+                    speaker,
+                    speaker_slot,
+                });
+                while self.subtitles.len() > 100 {
+                    self.subtitles.pop_front();
+                }
             }
         }
         // In Intermixed mode subtitles live in the chat log, so a new

@@ -728,6 +728,43 @@ pub struct HealthProps {
     pub suggestion: Option<SuggestionProps>,
 }
 
+/// How a new subtitle observation relates to the previously logged
+/// line — the incremental-reveal / overlapping-cue collapse (design.md,
+/// Subtitle Display). mpv re-emits the whole joined cue-set on every
+/// change, so consecutive observations are often the *same* utterance
+/// growing or shrinking; the length test makes the two cases mutually
+/// exclusive, and either end of the join may carry the change, so both
+/// prefix and suffix count. Shared by the UI's display buffer and the
+/// advisor's context ring, so the two logs can never disagree on what
+/// counts as one line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SubtitleCollapse {
+    /// Same cue, fuller now (a reveal, or an overlapping neighbour
+    /// appearing): replace the previous line in place.
+    Extends,
+    /// Same cue receding (an overlapping neighbour ended): the fuller
+    /// text is already logged — drop the redundant re-show. (An exact
+    /// repeat has equal length, so it classifies as `Extends` — an
+    /// in-place no-op replacement; same outcome, one line.)
+    Contained,
+    /// Strictly distinct text: a new line.
+    Distinct,
+}
+
+/// Classify `next` against the previous logged line (`None` = empty log).
+pub fn subtitle_collapse(prev: Option<&str>, next: &str) -> SubtitleCollapse {
+    let Some(last) = prev else {
+        return SubtitleCollapse::Distinct;
+    };
+    if next.len() >= last.len() && (next.starts_with(last) || next.ends_with(last)) {
+        SubtitleCollapse::Extends
+    } else if next.len() < last.len() && (last.starts_with(next) || last.ends_with(next)) {
+        SubtitleCollapse::Contained
+    } else {
+        SubtitleCollapse::Distinct
+    }
+}
+
 /// Compact byte rate for the one-line health row: `0B`, `340K`, `1.2M`
 /// (decimal units, one decimal place from M up). Deliberately terse —
 /// the row shares 50 columns with a suggestion slot at common terminal

@@ -221,6 +221,7 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
         health: None,
         health_level: Default::default(),
         suggestion: None,
+        advisor: Default::default(),
     };
     let loop_task = tokio::spawn(async move { session.run().await });
 
