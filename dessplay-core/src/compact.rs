@@ -31,7 +31,9 @@ use crate::types::{ActorId, SharedTimestamp};
 /// - the lookup-request set empties (clients re-request what still
 ///   matters);
 /// - the acknowledged-absent set empties (per-file, session-scoped — a
-///   stale acknowledgement should never outlive the day).
+///   stale acknowledgement should never outlive the day);
+/// - the marquee register empties (a transient line should never
+///   outlive the day either).
 pub fn rebuild(
     view: &StateView,
     actor: ActorId,

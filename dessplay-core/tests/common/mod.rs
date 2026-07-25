@@ -66,6 +66,7 @@ pub fn arb_script_op() -> impl Strategy<Value = ScriptOp> {
         any::<u8>().prop_map(|file| ScriptOp::RequestLookup { file }),
         (any::<u8>(), any::<u8>())
             .prop_map(|(file, user)| ScriptOp::AcknowledgeAbsent { file, user }),
+        proptest::option::of(any::<u8>()).prop_map(|text| ScriptOp::SetMarquee { text }),
         any::<u8>().prop_map(|text| ScriptOp::Chat { text }),
         (any::<u8>(), any::<u32>())
             .prop_map(|(user, millis)| ScriptOp::SetPosition { user, millis }),

@@ -87,7 +87,8 @@ struct Cli {
     /// seek_authority, playback_intent, series_preference,
     /// manual_override, file_availability, anidb_metadata,
     /// series_relations, file_catalog, list_entries, list_next_ep,
-    /// lookup_requests, chat, playback_position, acknowledged_absent.
+    /// lookup_requests, chat, playback_position, acknowledged_absent,
+    /// marquee.
     /// Omit to dump everything.
     #[arg(long = "section", value_name = "SECTION", requires = "dump")]
     section: Vec<String>,

@@ -49,6 +49,7 @@ pub const SECTIONS: &[&str] = &[
     "chat",
     "playback_position",
     "acknowledged_absent",
+    "marquee",
 ];
 
 /// The sections that live under the `state` object (everything except the
@@ -71,6 +72,7 @@ const STATE_SECTIONS: &[&str] = &[
     "chat",
     "playback_position",
     "acknowledged_absent",
+    "marquee",
 ];
 
 /// Which sections to emit. `all` (the default, no `--section` given)
@@ -281,6 +283,17 @@ fn state_json(view: &StateView, sel: &Selection) -> Result<Value, serde_json::Er
             .map(|(hash, user)| json!({ "hash": hash.to_string(), "user": user.0 }))
             .collect();
         m.insert("acknowledged_absent".into(), Value::Array(rows));
+    }
+    if sel.wants("marquee") {
+        let value = match &view.marquee {
+            Some((ts, msg)) => json!({
+                "timestamp": ts.0,
+                "text": msg.text,
+                "set_by": msg.set_by.as_ref().map(|u| u.0.clone()),
+            }),
+            None => Value::Null,
+        };
+        m.insert("marquee".into(), value);
     }
     Ok(Value::Object(m))
 }

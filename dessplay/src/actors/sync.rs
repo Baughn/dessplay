@@ -24,8 +24,9 @@ use dessplay_core::net::ServerControl;
 use dessplay_core::playlist::NewPlaylistEntry;
 use dessplay_core::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, Ed2kHash, Epoch, FileAvailability, FileCatalogEntry,
-    FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent, PlaybackPosition,
-    SeekAuthority, SeriesListEntry, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    FileHashInfo, ListEntryId, ManualState, MarqueeMessage, NextEpState, PlaybackIntent,
+    PlaybackPosition, SeekAuthority, SeriesListEntry, SeriesRelations, SeriesWatchState,
+    SharedTimestamp, UserId,
 };
 use dessplay_core::{ChatMessage, CrdtOp, CrdtState, StateSnapshot, StateView};
 use tokio::sync::{mpsc, oneshot};
@@ -193,6 +194,12 @@ pub enum Mutation {
         /// The committed-absent user being acknowledged.
         user: UserId,
     },
+    /// Write (or clear) the synced marquee line (design.md, AI
+    /// Commentary — every client scrolls it on update).
+    SetMarquee {
+        /// The line to show; `None` clears the register.
+        message: Option<MarqueeMessage>,
+    },
 }
 
 impl Mutation {
@@ -221,6 +228,7 @@ impl Mutation {
             Mutation::SetPlaybackPosition { .. } => "SetPlaybackPosition",
             Mutation::SetPlaylistDuration { .. } => "SetPlaylistDuration",
             Mutation::AcknowledgeAbsent { .. } => "AcknowledgeAbsent",
+            Mutation::SetMarquee { .. } => "SetMarquee",
         }
     }
 }
@@ -620,6 +628,7 @@ impl SyncActor {
                 self.state.set_playlist_entry(actor, ts, hash, updated)
             }
             Mutation::AcknowledgeAbsent { file, user } => self.state.acknowledge_absent(file, user),
+            Mutation::SetMarquee { message } => self.state.set_marquee(actor, ts, message),
         };
 
         if self.link == Link::Synced {

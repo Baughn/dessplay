@@ -26,8 +26,9 @@ use crate::playlist::NewPlaylistEntry;
 use crate::state::{CrdtOp, CrdtState};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, FileAvailability, FileHashInfo,
-    ListEntryId, ListStatus, ManualState, MetadataSource, NextEpState, PlaybackPosition,
-    SeriesListEntry, SeriesRelation, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    ListEntryId, ListStatus, ManualState, MarqueeMessage, MetadataSource, NextEpState,
+    PlaybackPosition, SeriesListEntry, SeriesRelation, SeriesRelations, SeriesWatchState,
+    SharedTimestamp, UserId,
 };
 
 /// Number of distinct actors scripts draw from.
@@ -192,6 +193,11 @@ pub enum ScriptOp {
         file: u8,
         /// User index.
         user: u8,
+    },
+    /// Write the marquee register.
+    SetMarquee {
+        /// Text seed; `None` writes a clear.
+        text: Option<u8>,
     },
     /// Send a chat message.
     Chat {
@@ -428,6 +434,14 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
         ScriptOp::AcknowledgeAbsent { file: f, user: u } => {
             state.acknowledge_absent(file(*f), user(*u))
         }
+        ScriptOp::SetMarquee { text } => state.set_marquee(
+            a,
+            ts,
+            text.map(|t| MarqueeMessage {
+                text: format!("mq{t}"),
+                set_by: Some(user(actor_index)),
+            }),
+        ),
         ScriptOp::Chat { text } => state.append_chat(ChatMessage {
             timestamp: ts,
             sender: user(actor_index),

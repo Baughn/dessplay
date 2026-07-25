@@ -310,6 +310,19 @@ pub enum ManualState {
     },
 }
 
+/// A transient, synced marquee line, scrolled through the bottom row's
+/// middle slot by every client when it changes. Deliberately generic —
+/// today's writer is the AI commentary engine, but nothing in the type
+/// is commentary-specific. Ephemeral session state: cleared at
+/// compaction.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct MarqueeMessage {
+    /// The line to scroll (single line; writers collapse newlines).
+    pub text: String,
+    /// Who wrote it, when a user did (attribution only).
+    pub set_by: Option<UserId>,
+}
+
 /// A user's ability to play a given file.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub enum FileAvailability {

@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::lww::{Lww, LwwCell, resolve_value};
 use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
-    FileCatalogEntry, FileHashInfo, ListEntryId, ManualState, NextEpState, PlaybackIntent,
-    PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry, SeriesPreference,
-    SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    FileCatalogEntry, FileHashInfo, ListEntryId, ManualState, MarqueeMessage, NextEpState,
+    PlaybackIntent, PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry,
+    SeriesPreference, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
@@ -79,6 +79,9 @@ pub struct CrdtState {
     /// acknowledged user)` pair suppresses that user's committed-absent
     /// block *for that file only*. Grow-only, cleared at compaction.
     pub acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+    /// A transient marquee line every client scrolls on update (today:
+    /// AI commentary — design.md, AI Commentary). Cleared at compaction.
+    pub marquee: LwwCell<Option<MarqueeMessage>>,
     /// The [`PROTOCOL_VERSION`](crate::net::message::PROTOCOL_VERSION) this
     /// struct's shape matches. Storage snapshots carry an explicit version
     /// tag (the [`SNAPSHOT_MAGIC`] envelope — see
@@ -139,6 +142,8 @@ pub enum CrdtOp {
     PlaybackPosition(LwwMapOp<UserId, PlaybackPosition>),
     /// Acknowledged-absent insert (GSet ops are the element itself).
     AcknowledgeAbsent((Ed2kHash, UserId)),
+    /// Marquee register write (`None` clears).
+    Marquee(LwwRegOp<Option<MarqueeMessage>>),
 }
 
 impl CrdtOp {
@@ -173,6 +178,7 @@ impl CrdtOp {
             CrdtOp::NowPlaying(op) => Some(op.timestamp),
             CrdtOp::SeekAuthority(op) => Some(op.timestamp),
             CrdtOp::PlaybackIntent(op) => Some(op.timestamp),
+            CrdtOp::Marquee(op) => Some(op.timestamp),
             CrdtOp::LookupRequest(_) | CrdtOp::Chat(_) | CrdtOp::AcknowledgeAbsent(_) => None,
         }
     }
@@ -198,6 +204,7 @@ impl CrdtOp {
             CrdtOp::Chat(_) => "Chat",
             CrdtOp::PlaybackPosition(_) => "PlaybackPosition",
             CrdtOp::AcknowledgeAbsent(_) => "AcknowledgeAbsent",
+            CrdtOp::Marquee(_) => "Marquee",
         }
     }
 }
@@ -275,6 +282,7 @@ impl From<CrdtStateUntaggedV6> for CrdtState {
             chat: v6.chat,
             playback_position: v6.playback_position,
             acknowledged_absent: v6.acknowledged_absent,
+            marquee: LwwCell::default(),
             protocol_version: crate::net::message::PROTOCOL_VERSION,
         }
     }
@@ -442,6 +450,7 @@ impl CrdtState {
             CrdtOp::Chat(op) => self.chat.apply(op),
             CrdtOp::PlaybackPosition(op) => self.playback_position.apply(op),
             CrdtOp::AcknowledgeAbsent(key) => self.acknowledged_absent.apply(key),
+            CrdtOp::Marquee(op) => self.marquee.apply(op),
         }
     }
 
@@ -465,6 +474,7 @@ impl CrdtState {
         self.chat.merge(other.chat);
         self.playback_position.merge(other.playback_position);
         self.acknowledged_absent.merge(other.acknowledged_absent);
+        self.marquee.merge(other.marquee);
         // Not a CRDT type -- both sides are always the current binary's
         // PROTOCOL_VERSION in practice (the connect-time gate refuses a
         // mismatched peer), so which side wins is moot; `max` is a
@@ -679,6 +689,18 @@ impl CrdtState {
         CrdtOp::AcknowledgeAbsent(key)
     }
 
+    /// Write (or, with `None`, clear) the marquee register. (See
+    /// [`Self::set_now_playing`] on the unused `actor`.)
+    pub fn set_marquee(
+        &mut self,
+        actor: ActorId,
+        ts: SharedTimestamp,
+        message: Option<MarqueeMessage>,
+    ) -> CrdtOp {
+        let _ = actor;
+        CrdtOp::Marquee(reg_put(&mut self.marquee, ts, message))
+    }
+
     /// Append a chat message.
     pub fn append_chat(&mut self, message: ChatMessage) -> CrdtOp {
         let op = self.chat.insert_after(self.chat.last(), message);
@@ -732,6 +754,10 @@ impl CrdtState {
                 .collect(),
             playback_position: map_view(&self.playback_position),
             acknowledged_absent: self.acknowledged_absent.read(),
+            marquee: self
+                .marquee
+                .read()
+                .and_then(|lww| lww.value.clone().map(|m| (lww.timestamp, m))),
         }
     }
 }
@@ -758,6 +784,7 @@ impl CrdtState {
             self.now_playing.timestamp().unwrap_or_default(),
             self.seek_authority.timestamp().unwrap_or_default(),
             self.playback_intent.timestamp().unwrap_or_default(),
+            self.marquee.timestamp().unwrap_or_default(),
             map_max(&self.series_preference),
             map_max(&self.manual_override),
             map_max(&self.file_availability),
@@ -838,6 +865,7 @@ impl CrdtState {
             op @ (CrdtOp::NowPlaying(_)
             | CrdtOp::SeekAuthority(_)
             | CrdtOp::PlaybackIntent(_)
+            | CrdtOp::Marquee(_)
             | CrdtOp::LookupRequest(_)
             | CrdtOp::Chat(_)
             | CrdtOp::AcknowledgeAbsent(_)) => {
@@ -925,6 +953,7 @@ impl CrdtState {
             CrdtOp::NowPlaying(op) => register_changed(&mut self.now_playing, op),
             CrdtOp::SeekAuthority(op) => register_changed(&mut self.seek_authority, op),
             CrdtOp::PlaybackIntent(op) => register_changed(&mut self.playback_intent, op),
+            CrdtOp::Marquee(op) => register_changed(&mut self.marquee, op),
             CrdtOp::LookupRequest(info) => gset_changed(&mut self.lookup_requests, info),
             CrdtOp::AcknowledgeAbsent(key) => gset_changed(&mut self.acknowledged_absent, key),
             CrdtOp::Chat(op) => glist_changed(&mut self.chat, op),
@@ -1006,6 +1035,9 @@ pub struct StateView {
     pub playback_position: BTreeMap<UserId, PlaybackPosition>,
     /// Per-file acknowledgements of committed-but-absent users.
     pub acknowledged_absent: BTreeSet<(Ed2kHash, UserId)>,
+    /// The marquee line with its LWW stamp — the stamp keys the UI's
+    /// scroll animation (a rewrite of the same text still replays).
+    pub marquee: Option<(SharedTimestamp, MarqueeMessage)>,
 }
 
 #[cfg(test)]
@@ -1064,10 +1096,45 @@ mod tests {
                 .acknowledged_absent
                 .contains(&(hash(2), UserId::new("kim")))
         );
+        assert_eq!(decoded.view().marquee, None, "post-v6 fields come up empty");
         assert_eq!(
             decoded.protocol_version,
             crate::net::message::PROTOCOL_VERSION
         );
+    }
+
+    /// A marquee-only state must report its stamp from
+    /// `max_lww_timestamp` — the Lamport floor a restart re-seeds from.
+    /// Missing that arm compiles fine and silently lets a restarted
+    /// client re-issue spent stamps (and lose LWW races it should win).
+    #[test]
+    fn marquee_write_raises_the_lamport_floor() {
+        let mut state = CrdtState::new();
+        let op = state.set_marquee(
+            A1,
+            ts(42),
+            Some(MarqueeMessage {
+                text: "<Amu> Whaaaat?".into(),
+                set_by: Some(UserId::new("baughn")),
+            }),
+        );
+        assert_eq!(state.max_lww_timestamp(), ts(42));
+        assert_eq!(op.lww_timestamp(), Some(ts(42)));
+    }
+
+    #[test]
+    fn marquee_round_trips_through_view_and_clears() {
+        let mut state = CrdtState::new();
+        assert_eq!(state.view().marquee, None);
+        let msg = MarqueeMessage {
+            text: "hi".into(),
+            set_by: None,
+        };
+        state.set_marquee(A1, ts(5), Some(msg.clone()));
+        assert_eq!(state.view().marquee, Some((ts(5), msg)));
+        // A clear is a tombstone write, not an absence: it wins by LWW.
+        state.set_marquee(A2, ts(6), None);
+        assert_eq!(state.view().marquee, None);
     }
 
     #[test]
