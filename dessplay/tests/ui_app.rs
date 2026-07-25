@@ -263,10 +263,14 @@ fn health_row_shows_metrics_and_right_aligned_suggestion() {
         sample: Some(HealthSample {
             rtt_millis: Some(2_000),
             unanswered_probes: 0,
-            server_silence_millis: 3_000,
+            server_silence_millis: 6_000,
             up_bps: 1_200_000,
             down_bps: 340_000,
         }),
+        // Group playback: the 5s "worth showing" bar applies, so the
+        // 6s silence renders as an age rather than "sync ok".
+        playing: true,
+        company: true,
         suggestion: Some(SuggestionProps {
             text: "high latency — disable BitTorrent (F3)".into(),
             tone: Tone::Paused,
@@ -276,7 +280,7 @@ fn health_row_shows_metrics_and_right_aligned_suggestion() {
     let rendered = render(&mut ui, 200, 30);
     assert!(rendered.contains("▲1.2M ▼340K"), "{rendered}");
     assert!(rendered.contains("rtt 2000ms"), "{rendered}");
-    assert!(rendered.contains("sync 3s"), "{rendered}");
+    assert!(rendered.contains("sync 6s"), "{rendered}");
     let row = rendered
         .lines()
         .find(|line| line.contains("disable BitTorrent"))

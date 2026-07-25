@@ -1686,9 +1686,19 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             .map(|entry| entry.hash)
             .collect();
         let watched_hashes = self.storage.watched_hashes().unwrap_or_default();
+        let peers = self.handle.peers.borrow().clone();
+        // Context for the health row's sync display: with company during
+        // playback the wire should be chatty, so the "worth showing" bar
+        // on the silence age tightens (props::health_fragments).
+        let playing = dessplay_core::derive::playback_active(&view, &peers);
+        let company = peers.iter().any(|peer| {
+            peer.username != self.me
+                && peer.role == dessplay_core::net::Role::Interactive
+                && peer.presence == dessplay_core::net::Presence::Present
+        });
         Some(crate::ui::app::UiSnapshot {
             view: std::sync::Arc::new(view),
-            peers: self.handle.peers.borrow().clone(),
+            peers,
             known_offline: self.handle.known_offline.borrow().clone(),
             now: (system_clock())(),
             recency,
@@ -1699,6 +1709,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 link: self.link,
                 level: self.health_level.current(),
                 sample: self.health,
+                playing,
+                company,
                 suggestion: self.suggestion.clone(),
             },
         })

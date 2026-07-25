@@ -628,6 +628,12 @@ const SILENCE_STALLED_MILLIS: u64 = 75_000;
 /// With this many consecutive lost probes, a shorter silence already
 /// counts as stalled — two independent signals agree.
 const SILENCE_WITH_PROBES_STALLED_MILLIS: u64 = 45_000;
+/// During group playback (another interactive peer present), server
+/// silence beyond this shows as an age instead of "sync ok" — peers'
+/// position datagrams normally arrive continuously, so even a few
+/// seconds of quiet is worth an eye. Display only; classification
+/// keeps the heartbeat-anchored thresholds above.
+const SILENCE_SHOW_PLAYBACK_MILLIS: u64 = 5_000;
 /// Consecutive unanswered 30s probes for degraded / stalled.
 const PROBES_DEGRADED: u32 = 2;
 const PROBES_STALLED: u32 = 3;
@@ -724,6 +730,14 @@ pub struct HealthProps {
     /// The latest sample; `None` before the first report (or after a
     /// disconnect cleared it).
     pub sample: Option<HealthSample>,
+    /// Group playback is actually running (the derived state).
+    pub playing: bool,
+    /// Another *interactive* peer is Present. With company the wire is
+    /// chatty (their ops and position datagrams arrive constantly), so
+    /// the sync field's "worth showing" bar tightens; alone, the only
+    /// incoming traffic is two interleaved 30s heartbeats and the age
+    /// legitimately sawtooths toward 30s.
+    pub company: bool,
     /// The advisor's current suggestion, right-aligned.
     pub suggestion: Option<SuggestionProps>,
 }
@@ -818,7 +832,24 @@ pub fn health_fragments(props: &HealthProps) -> Vec<(String, Tone)> {
             } else {
                 Tone::Muted
             };
-            fragments.push((format!("sync {}s", silence / 1000), sync_tone));
+            // A static "sync ok" until the age is worth attention — a
+            // counting number draws the eye, and what counts as normal
+            // depends on how chatty the wire should be: during group
+            // playback peers' position updates arrive constantly, so a
+            // few seconds of silence is already news; alone or idle,
+            // only the 30s heartbeats arrive and the age is shown only
+            // once it would warn anyway.
+            let show_from = if props.playing && props.company {
+                SILENCE_SHOW_PLAYBACK_MILLIS
+            } else {
+                SILENCE_DEGRADED_MILLIS
+            };
+            let sync_text = if silence > show_from {
+                format!("sync {}s", silence / 1000)
+            } else {
+                "sync ok".to_string()
+            };
+            fragments.push((sync_text, sync_tone));
             if sample.unanswered_probes > 0 {
                 let tone = if sample.unanswered_probes >= PROBES_STALLED {
                     Tone::Blocked
@@ -1748,16 +1779,18 @@ mod tests {
 
     #[test]
     fn health_fragments_tell_the_connected_story() {
-        // Healthy: bandwidth, rtt, sync — all dim, no probe fragment.
+        // Healthy: bandwidth, rtt, a static "sync ok" — all dim, no
+        // probe fragment (a counting age would draw the eye for no
+        // reason; alone/idle the age legitimately sawtooths toward 30s).
         let props = HealthProps {
             link: LinkStatus::Connected,
             level: HealthLevel::Ok,
             sample: Some(healthy()),
-            suggestion: None,
+            ..HealthProps::default()
         };
         let fragments = health_fragments(&props);
         let texts: Vec<&str> = fragments.iter().map(|(t, _)| t.as_str()).collect();
-        assert_eq!(texts, ["▲10K ▼100K", "rtt 40ms", "sync 2s"]);
+        assert_eq!(texts, ["▲10K ▼100K", "rtt 40ms", "sync ok"]);
         assert!(fragments.iter().all(|(_, tone)| *tone == Tone::Muted));
 
         // Stalled sync: the sync fragment goes red, the rest stay dim.
@@ -1797,7 +1830,7 @@ mod tests {
                 link,
                 level: HealthLevel::Ok,
                 sample: Some(healthy()),
-                suggestion: None,
+                ..HealthProps::default()
             };
             let fragments = health_fragments(&props);
             assert_eq!(fragments.len(), 1);
@@ -1813,6 +1846,53 @@ mod tests {
         assert_eq!(
             health_fragments(&props),
             vec![("link: measuring…".to_string(), Tone::Muted)]
+        );
+    }
+
+    /// The sync field shows an age only when it is *noteworthy*: during
+    /// group playback (playing + another interactive peer present) the
+    /// bar is 5s, because position datagrams should be arriving
+    /// constantly; alone or idle only the 30s heartbeats arrive, so the
+    /// age appears only once it would warn anyway (40s+). Everything
+    /// below the bar is a static, dim "sync ok".
+    #[test]
+    fn sync_age_shows_only_when_noteworthy() {
+        let with = |silence: u64, playing: bool, company: bool| {
+            let props = HealthProps {
+                link: LinkStatus::Connected,
+                level: HealthLevel::Ok,
+                sample: Some(HealthSample {
+                    server_silence_millis: silence,
+                    ..healthy()
+                }),
+                playing,
+                company,
+                ..HealthProps::default()
+            };
+            health_fragments(&props)
+                .into_iter()
+                .find(|(t, _)| t.starts_with("sync"))
+                .expect("a sync fragment")
+        };
+        // Group playback: 6s of silence is news (but still dim — the
+        // warning thresholds are unchanged); 3s is not.
+        assert_eq!(with(6_000, true, true), ("sync 6s".into(), Tone::Muted));
+        assert_eq!(with(3_000, true, true), ("sync ok".into(), Tone::Muted));
+        // Alone (even during playback) or idle-with-company: the same 6s
+        // is normal heartbeat spacing.
+        assert_eq!(with(6_000, true, false), ("sync ok".into(), Tone::Muted));
+        assert_eq!(with(6_000, false, true), ("sync ok".into(), Tone::Muted));
+        // The 20-ish-second sawtooth of a solo session stays "ok"...
+        assert_eq!(with(25_000, false, false), ("sync ok".into(), Tone::Muted));
+        // ...and past the warning threshold the age appears with its
+        // color, regardless of context.
+        assert_eq!(
+            with(41_000, false, false),
+            ("sync 41s".into(), Tone::Paused)
+        );
+        assert_eq!(
+            with(80_000, false, false),
+            ("sync 80s".into(), Tone::Blocked)
         );
     }
 

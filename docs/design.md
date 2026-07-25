@@ -1269,7 +1269,16 @@ separators: `▲1.2M ▼340K · rtt 89ms · sync 3s` —
 - **sync**: seconds since *anything* arrived from the server. The
   server broadcasts a `StateHash` every 30s unconditionally, so this is
   a zero-false-positive stalled-sync detector: a large value on a live
-  connection means sync is dead even though QUIC is not.
+  connection means sync is dead even though QUIC is not. Displayed as a
+  static **`sync ok`** while the age is unremarkable — a counting
+  number draws the eye, and what counts as remarkable depends on how
+  chatty the wire should be. During group playback (another interactive
+  peer present) peers' position datagrams arrive continuously, so the
+  age is shown from 5s of silence; alone or idle the only incoming
+  traffic is two interleaved 30s heartbeats (the age legitimately
+  sawtooths toward ~30s), so it is shown only past the 40s warning
+  threshold, where it colors anyway. Display only — the health
+  classification below is unaffected.
 - **N probes lost**: shown only when consecutive steady-state probes go
   unanswered.
 
