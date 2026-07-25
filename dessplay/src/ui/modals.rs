@@ -1221,7 +1221,7 @@ impl SettingsForm {
                 "BitTorrent downloads",
                 self.settings.torrent_enabled,
             )
-            .annotated("next launch", theme::dim()),
+            .annotated("off: immediate · on: next launch", theme::dim()),
             FormRow::text(
                 SettingId::UploadLimit,
                 "Upload limit",

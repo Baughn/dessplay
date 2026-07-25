@@ -396,6 +396,24 @@ impl TorrentFetches {
         }
     }
 
+    /// The torrent path was disabled at runtime (design.md, BitTorrent
+    /// Downloads: the live toggle): drain every fetch, removing engine
+    /// torrents (with their files) where one is running, and hand every
+    /// file to the peer path with its stashed context — a Searching
+    /// entry's peer download was never started, so the fallback is what
+    /// keeps it downloading. The map is left empty; a later re-enable
+    /// starts from scratch.
+    pub fn disable_all(&mut self) -> Vec<TorrentFetchAction> {
+        let mut actions = Vec::new();
+        for (file, f) in std::mem::take(&mut self.files) {
+            if matches!(f.phase, Phase::Running { .. } | Phase::Verifying { .. }) {
+                actions.push(TorrentFetchAction::Remove { file });
+            }
+            actions.push(f.fallback(file));
+        }
+        actions
+    }
+
     /// Periodic tick: stall + search-timeout watchdogs.
     pub fn tick(&mut self, now: u64) -> Vec<TorrentFetchAction> {
         let stalled: Vec<(Ed2kHash, bool)> = self
@@ -514,6 +532,47 @@ mod tests {
             }]
         );
         assert!(!t.is_active(&f));
+    }
+
+    /// The live-disable drain: a Running fetch removes its torrent and
+    /// falls back; a Searching fetch (peer path never started) falls
+    /// back without a Remove; everything is forgotten, so a re-enable
+    /// starts clean.
+    #[test]
+    fn disable_all_removes_running_and_falls_back_everything() {
+        let mut t = TorrentFetches::new(config());
+        let searching = hash(1);
+        let running = hash(2);
+        start(&mut t, searching, vec![peer(1)], 0);
+        start(&mut t, running, vec![peer(2)], 0);
+        t.on_searched(running, Some(a_match("aa")), 10);
+
+        let actions = t.disable_all();
+        let removes: Vec<_> = actions
+            .iter()
+            .filter_map(|a| match a {
+                TorrentFetchAction::Remove { file } => Some(*file),
+                _ => None,
+            })
+            .collect();
+        let fallbacks: Vec<_> = actions
+            .iter()
+            .filter_map(|a| match a {
+                TorrentFetchAction::Fallback { file, sources, .. } => Some((*file, sources.len())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(removes, vec![running], "only the running torrent removes");
+        let mut sorted = fallbacks.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![(searching, 1), (running, 1)],
+            "every fetch falls back with its stashed sources"
+        );
+        assert!(!t.is_active(&searching));
+        assert!(!t.is_active(&running));
+        assert!(t.running_files().is_empty());
     }
 
     #[test]

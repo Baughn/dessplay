@@ -1982,6 +1982,16 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         let _ = self.file.send(FileCommand::SetRetention(retention)).await;
     }
 
+    /// Tell the file actor the BitTorrent setting changed (settings
+    /// save). Disabling applies immediately; enabling only takes effect
+    /// when the engine was started (see `FileCommand::SetTorrentEnabled`).
+    pub async fn set_torrent_enabled(&self, enabled: bool) {
+        let _ = self
+            .file
+            .send(FileCommand::SetTorrentEnabled(enabled))
+            .await;
+    }
+
     /// Apply an `auto_download` setting change (settings save). The wiring
     /// is owned directly, so this is a synchronous field update — no actor
     /// round-trip.

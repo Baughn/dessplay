@@ -182,6 +182,13 @@ pub enum FileCommand {
     SetMediaRoots(Vec<PathBuf>),
     /// Retention policy changed (settings save).
     SetRetention(CacheRetention),
+    /// The BitTorrent setting changed (settings save). Disabling applies
+    /// immediately: active torrents are removed (files deleted, registry
+    /// pruned, seeding stops) and in-flight fetches fall back to the
+    /// peer path. Enabling only works when the engine was constructed at
+    /// startup; otherwise it stays a no-op until restart (the session
+    /// posts the notice).
+    SetTorrentEnabled(bool),
     /// Scan the media library now (new/changed files → hashes → index).
     /// Fired internally at startup and on a timer; also exposed for a
     /// manual refresh and for tests.
@@ -573,6 +580,11 @@ struct Actor {
     downloads: Downloads,
     /// Torrent-first fetch policy (searching/running/failed per file).
     fetches: TorrentFetches,
+    /// The live BitTorrent gate: starts as `torrent.is_some()` and
+    /// follows the setting via [`FileCommand::SetTorrentEnabled`].
+    /// Disabling flips this off immediately; enabling only sticks when
+    /// the engine exists (it is constructed at startup or never).
+    torrent_enabled: bool,
     /// The BitTorrent engine (`None` = torrent path disabled).
     torrent: Option<Arc<dyn TorrentEngine>>,
     /// The nyaa search source (`None` = torrent path disabled).
@@ -836,6 +848,7 @@ impl Actor {
             local_files,
             downloads: Downloads::new(config.download),
             fetches: TorrentFetches::new(config.torrent_fetch),
+            torrent_enabled: config.torrent.is_some(),
             torrent: config.torrent,
             nyaa: config.nyaa,
             nyaa_imports: HashMap::new(),
@@ -932,6 +945,7 @@ impl Actor {
                 self.start_library_scan();
             }
             FileCommand::SetRetention(retention) => self.retention = retention,
+            FileCommand::SetTorrentEnabled(enabled) => self.set_torrent_enabled(enabled).await,
             FileCommand::RescanLibrary => self.start_library_scan(),
             FileCommand::StartDownload {
                 file,
@@ -955,8 +969,9 @@ impl Actor {
                 // Torrent-first (design.md, BitTorrent Downloads): the
                 // fetch policy searches nyaa and hands the peer path a
                 // Fallback when the torrent route can't deliver. With no
-                // engine wired, straight to the peer path.
-                if self.torrent.is_some() && self.nyaa.is_some() {
+                // engine wired — or the setting live-disabled — straight
+                // to the peer path.
+                if self.torrent_enabled && self.torrent.is_some() && self.nyaa.is_some() {
                     let actions = self.fetches.on_start_download(
                         file,
                         filename,
@@ -1004,6 +1019,9 @@ impl Actor {
     /// Poll running torrents' engine status (progress, completion,
     /// failure) and run the fetch policy's watchdogs.
     async fn poll_torrents(&mut self) {
+        if !self.torrent_enabled {
+            return;
+        }
         let Some(engine) = self.torrent.clone() else {
             return;
         };
@@ -1047,17 +1065,21 @@ impl Actor {
     }
 
     async fn search_nyaa(&mut self, query: String) {
-        let Some(source) = self.nyaa.clone() else {
-            let _ = self
-                .out
-                .send(FileOutput::NyaaSearchFinished {
-                    query,
-                    result: Err(
-                        "BitTorrent downloads are disabled; enable them and restart.".to_string(),
-                    ),
-                })
-                .await;
-            return;
+        let source = match self.nyaa.clone() {
+            Some(source) if self.torrent_enabled => source,
+            _ => {
+                let _ = self
+                    .out
+                    .send(FileOutput::NyaaSearchFinished {
+                        query,
+                        result: Err(
+                            "BitTorrent downloads are disabled; enable them in Settings."
+                                .to_string(),
+                        ),
+                    })
+                    .await;
+                return;
+            }
         };
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
@@ -1073,19 +1095,23 @@ impl Actor {
         result: NyaaBrowseResult,
         after: Option<Ed2kHash>,
     ) {
-        let Some(engine) = self.torrent.clone() else {
-            let _ = self
-                .out
-                .send(FileOutput::NyaaImportFinished {
-                    id,
-                    filename: result.filename,
-                    after,
-                    result: Err(
-                        "BitTorrent downloads are disabled; enable them and restart.".to_string(),
-                    ),
-                })
-                .await;
-            return;
+        let engine = match self.torrent.clone() {
+            Some(engine) if self.torrent_enabled => engine,
+            _ => {
+                let _ = self
+                    .out
+                    .send(FileOutput::NyaaImportFinished {
+                        id,
+                        filename: result.filename,
+                        after,
+                        result: Err(
+                            "BitTorrent downloads are disabled; enable them in Settings."
+                                .to_string(),
+                        ),
+                    })
+                    .await;
+                return;
+            }
         };
         if self.nyaa_imports.contains_key(&id)
             || self
@@ -1752,6 +1778,49 @@ impl Actor {
     /// Remove `file`'s torrent everywhere: the engine (with its files),
     /// the registry row, and the output dir. Safe to call when no
     /// torrent exists — every step is a no-op then.
+    /// Apply a live BitTorrent-setting change (design.md, BitTorrent
+    /// Downloads: disabling applies immediately). Disable: every
+    /// in-flight fetch falls back to the peer path with its stashed
+    /// sources, every engine torrent (including completed, seeding
+    /// ones — the uplink saturator) is removed with its files and
+    /// registry row, and pending user-selected imports are cancelled.
+    /// The cached copies of *completed* downloads are untouched: they
+    /// were hardlinked/copied into the hash-addressed cache at
+    /// verification. The librqbit session (and its DHT socket) stays
+    /// alive until restart — bounded chatter, no payload traffic.
+    async fn set_torrent_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.torrent_enabled = self.torrent.is_some();
+            tracing::info!(
+                effective = self.torrent_enabled,
+                "BitTorrent enabled{}",
+                if self.torrent.is_some() {
+                    ""
+                } else {
+                    " but no engine was started; restart to apply"
+                }
+            );
+            return;
+        }
+        if !self.torrent_enabled {
+            return;
+        }
+        self.torrent_enabled = false;
+        tracing::info!("BitTorrent disabled; removing torrents and falling back to peers");
+        let actions = self.fetches.disable_all();
+        self.run_torrent_actions(actions).await;
+        if let Some(engine) = self.torrent.clone() {
+            for file in engine.active() {
+                self.drop_torrent(file);
+            }
+        }
+        let pending: Vec<TorrentImportId> = self.nyaa_imports.keys().copied().collect();
+        for id in pending {
+            self.finish_nyaa_import(id, Err("BitTorrent was disabled.".to_string()))
+                .await;
+        }
+    }
+
     fn drop_torrent(&mut self, file: Ed2kHash) {
         if let Some(engine) = &self.torrent {
             engine.remove(file, true);
@@ -6219,6 +6288,134 @@ mod tests {
             }
         }
         assert_eq!(engine.removed(), vec![(file, true)]);
+    }
+
+    /// The live BitTorrent toggle (design.md, BitTorrent Downloads):
+    /// disabling mid-download removes the engine torrent (files deleted)
+    /// and hands the fetch to the peer path with its stashed sources —
+    /// the mid-session escape hatch for a saturated uplink.
+    #[tokio::test]
+    async fn disable_removes_torrents_and_falls_back_to_peers() {
+        let contents = b"an episode the uplink cannot afford".as_slice();
+        let file = ed2k_hash_bytes(contents).root;
+        let (mut rig, engine) = spawn_torrent_rig(
+            vec![],
+            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
+            TorrentFetchConfig::default(),
+            test_clock(),
+        );
+        let peer = PeerId::new("seed");
+        rig.commands
+            .send(start_download_cmd(file, contents.len() as u64, vec![peer]))
+            .await
+            .unwrap();
+        wait_added(&engine, file).await;
+
+        rig.commands
+            .send(FileCommand::SetTorrentEnabled(false))
+            .await
+            .unwrap();
+        // Peer fallback engages with the stashed source.
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::SendPeer { message, .. }
+                    if matches!(*message, PeerMessage::BlockHashRequest { .. }) =>
+                {
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert_eq!(engine.removed(), vec![(file, true)]);
+    }
+
+    /// Disabling BitTorrent cancels pending user-selected imports (they
+    /// cannot finish without the engine) instead of leaving them stuck.
+    #[tokio::test]
+    async fn disable_cancels_pending_nyaa_imports() {
+        let id = TorrentImportId(11);
+        let (mut rig, engine) = spawn_torrent_rig(
+            vec![],
+            Some(String::new()),
+            TorrentFetchConfig::default(),
+            test_clock(),
+        );
+        rig.commands
+            .send(FileCommand::StartNyaaImport {
+                id,
+                result: browse_result("chosen.mkv", 1000),
+                after: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_output(&mut rig).await,
+            FileOutput::NyaaImportProgress { .. }
+        ));
+        rig.commands
+            .send(FileCommand::SetTorrentEnabled(false))
+            .await
+            .unwrap();
+        loop {
+            if let FileOutput::NyaaImportFinished { result, .. } = next_output(&mut rig).await {
+                assert_eq!(result.unwrap_err(), "BitTorrent was disabled.");
+                break;
+            }
+        }
+        assert!(engine.added_import(id).is_none(), "import removed");
+    }
+
+    /// While disabled, StartDownload skips the torrent path entirely and
+    /// goes straight to the peer relay; re-enabling (the engine exists)
+    /// restores torrent-first for later downloads.
+    #[tokio::test]
+    async fn disabled_downloads_use_peers_until_re_enabled() {
+        let contents = b"episode fetched while torrents are off".as_slice();
+        let file = ed2k_hash_bytes(contents).root;
+        let (mut rig, engine) = spawn_torrent_rig(
+            vec![],
+            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
+            TorrentFetchConfig::default(),
+            test_clock(),
+        );
+        rig.commands
+            .send(FileCommand::SetTorrentEnabled(false))
+            .await
+            .unwrap();
+        let peer = PeerId::new("seed");
+        rig.commands
+            .send(start_download_cmd(file, contents.len() as u64, vec![peer]))
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::SendPeer { message, .. }
+                    if matches!(*message, PeerMessage::BlockHashRequest { .. }) =>
+                {
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert!(
+            engine.added(&file).is_none(),
+            "no torrent while disabled: {:?}",
+            engine.added(&file)
+        );
+
+        rig.commands
+            .send(FileCommand::SetTorrentEnabled(true))
+            .await
+            .unwrap();
+        rig.commands
+            .send(start_download_cmd(
+                file,
+                contents.len() as u64,
+                vec![PeerId::new("seed")],
+            ))
+            .await
+            .unwrap();
+        wait_added(&engine, file).await;
     }
 
     /// A local copy landing in a media root mid-fetch makes the torrent

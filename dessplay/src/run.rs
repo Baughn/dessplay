@@ -1273,6 +1273,22 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             }
                             self.shell.set_retention(saved.cache_retention).await;
                             self.shell.set_auto_download(saved.auto_download);
+                            // The BitTorrent toggle applies live in the
+                            // disable direction (design.md: removes active
+                            // torrents, falls back to peer transfer);
+                            // enabling still needs a restart when the
+                            // engine wasn't started at launch.
+                            if saved.torrent_enabled != self.settings.torrent_enabled {
+                                self.shell.set_torrent_enabled(saved.torrent_enabled).await;
+                                if saved.torrent_enabled && self.torrent_engine.is_none() {
+                                    let _ = self.ui.try_send(UiInput::System {
+                                        timestamp: (system_clock())(),
+                                        text: "BitTorrent engine not started — restart dessplay \
+                                               to enable torrent downloads."
+                                            .to_string(),
+                                    });
+                                }
+                            }
                             // Only reconfigure the IRC actor when the
                             // IRC-relevant settings actually changed. An
                             // unrelated save (e.g. an F2 subtitle-mode

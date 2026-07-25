@@ -24,7 +24,7 @@ expression: screen
 │              │Cache retention         7 days                                      │              │
 │              │Auto-download           yes                                         │              │
 │              │Archive subdirectory    yes                                         │              │
-└──────────────│BitTorrent downloads    no                               next launch│              │
+└──────────────│BitTorrent downloads    no          off: immediate · on: next launch│              │
 ┌──────────────│Upload limit            unlimited                        next launch│              │
 │say something…│[Save]                                                              │              │
 └──────────────└────────────────────────────────────────────────────────────────────┘──────────────┘
