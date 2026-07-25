@@ -114,6 +114,7 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
         health_level: Default::default(),
         suggestion: None,
         advisor: Default::default(),
+        commentary: dessplay::commentary::CommentaryEngine::disabled(),
     };
     let task = tokio::spawn(async move { session.run().await });
     LoopRig {

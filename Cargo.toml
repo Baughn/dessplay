@@ -35,6 +35,9 @@ palette = { version = "0.7", default-features = false, features = ["std"] }
 unicode-width = "0.2"
 insta = "1.47"
 rand = "0.9"
+# Encoding the commentary screenshot into an Anthropic image block;
+# already in the tree transitively via librqbit's reqwest.
+base64 = "0.22"
 ed2k = "1.0"
 md4 = "0.10"
 digest = "0.10"

@@ -203,8 +203,9 @@ impl Advisor {
     }
 
     /// Assemble the context — the same now-playing lookups the status
-    /// bar's props use.
-    fn context(
+    /// bar's props use. `pub(crate)` so the commentary engine's tick can
+    /// reuse the assembled series/episode/subtitle context verbatim.
+    pub(crate) fn context(
         &self,
         view: &StateView,
         link: LinkStatus,

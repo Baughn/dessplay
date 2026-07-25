@@ -884,6 +884,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     ));
 
     let connector = Arc::clone(&setup.connector);
+    let commentary = crate::commentary::CommentaryEngine::from_settings(&settings);
     let mut session = SessionLoop {
         handle,
         shell,
@@ -907,6 +908,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         health_level: crate::ui::props::HealthHysteresis::default(),
         suggestion: None,
         advisor: crate::advisor::Advisor::with_rules(),
+        commentary,
     };
     let end = session.run().await;
 
@@ -1065,6 +1067,10 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     /// The advisor seam behind the suggestion slot (rule-based today;
     /// a future LLM commentary provider plugs in here).
     pub advisor: crate::advisor::Advisor,
+    /// The AI commentary engine (design.md, AI Commentary): interval
+    /// ticks, the persistent commentator, and the Anthropic calls whose
+    /// results become marquee writes.
+    pub commentary: crate::commentary::CommentaryEngine,
 }
 
 impl<F: crate::player::PlayerFactory> SessionLoop<F> {
@@ -1299,6 +1305,18 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // cycle) carries the whole `Settings` struct
                             // unchanged apart from one field, and must not
                             // force a needless reconnect.
+                            // Commentary settings apply live: swap the
+                            // model / re-cadence the ticker. An in-flight
+                            // call finishes and is discarded if disabled.
+                            if saved.anthropic_token != self.settings.anthropic_token
+                                || saved.commentary_interval
+                                    != self.settings.commentary_interval
+                            {
+                                self.commentary.reconfigure(
+                                    saved.anthropic_token.as_deref(),
+                                    saved.commentary_interval,
+                                );
+                            }
                             if irc_config_changed(&self.settings, &saved, &self.me) {
                                 let _ = self.irc_tx.try_send(
                                     crate::actors::irc::IrcCommand::Reconfigure(Box::new(
@@ -1412,6 +1430,66 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             },
                         });
                         ui_dirty = true;
+                    }
+                }
+                _ = self.commentary.ticker.tick(), if self.commentary.armed() => {
+                    // Commentary tick: gate, plan, and launch the blocking
+                    // job (design.md, AI Commentary). The gates need the
+                    // latest view; everything here is non-blocking except
+                    // the job itself, which runs under spawn_blocking.
+                    let peers = self.handle.peers.borrow().clone();
+                    let ctx = self.advisor.context(
+                        &last_view,
+                        self.link,
+                        self.health_level.current(),
+                        self.health,
+                        self.settings.torrent_enabled,
+                        false,
+                    );
+                    let holds_file = last_view.now_playing.is_some_and(|file| {
+                        last_view.file_availability.get(&(self.me.clone(), file))
+                            == Some(&dessplay_core::types::FileAvailability::Ready)
+                    });
+                    let gates = crate::commentary::TickGates {
+                        connected: self.link == crate::ui::props::LinkStatus::Connected,
+                        playing: dessplay_core::derive::playback_active(&last_view, &peers),
+                        holds_file,
+                        series: ctx.series_name.clone(),
+                    };
+                    if let Some(plan) = self.commentary.plan_tick(&gates) {
+                        let path = self.commentary.screenshot_path();
+                        // Only poll for a frame a player was actually asked
+                        // to write.
+                        let shot = self
+                            .shell
+                            .request_screenshot(path.clone())
+                            .await
+                            .then_some(path);
+                        self.commentary.spawn_job(plan, &ctx, shot);
+                    }
+                }
+                outcome = self.commentary.results.recv() => {
+                    // The engine holds its own sender, so None cannot occur
+                    // while it lives; guard anyway.
+                    if let Some(outcome) = outcome
+                        && let Some(text) = self.commentary.finish(outcome)
+                    {
+                        // The comment becomes a synced marquee write;
+                        // everyone (this client included) scrolls it off
+                        // the ordinary sync echo.
+                        let mutation = Mutation::SetMarquee {
+                            message: Some(dessplay_core::types::MarqueeMessage {
+                                text,
+                                set_by: Some(self.me.clone()),
+                            }),
+                        };
+                        let _ = self
+                            .handle
+                            .sync
+                            .send(SyncCommand::Mutate(Box::new(mutation)))
+                            .await;
+                        self.refresh_ui(&mut last_view).await;
+                        ui_dirty = false;
                     }
                 }
                 changed = self.handle.health.changed(), if health_alive => {

@@ -14,6 +14,7 @@ pub mod actors;
 pub mod advisor;
 pub mod chunkstore;
 pub mod client;
+pub mod commentary;
 pub mod config;
 pub mod download;
 pub mod dump;
