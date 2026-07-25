@@ -57,6 +57,7 @@ impl UiClient {
             cache_hashes: Default::default(),
             watched_hashes: Default::default(),
             link: dessplay::ui::props::LinkStatus::Connected,
+            health: Default::default(),
         };
         self.ui.apply_snapshot(snapshot);
     }

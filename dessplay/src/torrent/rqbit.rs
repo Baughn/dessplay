@@ -27,7 +27,7 @@ use librqbit::{
     SessionPersistenceConfig,
 };
 
-use super::engine::{TorrentEngine, TorrentImportId, TorrentStatus};
+use super::engine::{TorrentEngine, TorrentImportId, TorrentSpeeds, TorrentStatus};
 use super::nyaa::NyaaMatch;
 
 /// The production engine: a librqbit session plus the ed2k → torrent
@@ -312,6 +312,31 @@ impl TorrentEngine for RqbitEngine {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn speeds(&self) -> TorrentSpeeds {
+        // Sum librqbit's live per-torrent speeds (MiB/s floats) across
+        // everything we track — imports included; their bandwidth is
+        // just as real.
+        let Ok(torrents) = self.torrents.lock() else {
+            return TorrentSpeeds::default();
+        };
+        let mut down_mbps = 0.0;
+        let mut up_mbps = 0.0;
+        for entry in torrents.values() {
+            let Some(handle) = &entry.handle else {
+                continue;
+            };
+            if let Some(live) = handle.stats().live {
+                down_mbps += live.download_speed.mbps;
+                up_mbps += live.upload_speed.mbps;
+            }
+        }
+        const MIB: f64 = 1024.0 * 1024.0;
+        TorrentSpeeds {
+            down_bps: (down_mbps * MIB) as u64,
+            up_bps: (up_mbps * MIB) as u64,
+        }
     }
 
     fn add_import(&self, id: TorrentImportId, chosen: &NyaaMatch, output_dir: PathBuf) {

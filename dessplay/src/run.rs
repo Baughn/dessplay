@@ -849,6 +849,9 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     } else {
         (None, None)
     };
+    // Retained beside the file actor's handle for the 1Hz health
+    // sample's speed read (a sync, lock-only call).
+    let torrent_engine = torrent.clone();
     let shell = crate::session::SessionShell::new(
         me.clone(),
         player_factory,
@@ -903,6 +906,10 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         irc_events,
         irc_alive: true,
         link: crate::ui::props::LinkStatus::default(),
+        torrent_engine,
+        health: None,
+        health_level: crate::ui::props::HealthHysteresis::default(),
+        suggestion: None,
     };
     let end = session.run().await;
 
@@ -1047,6 +1054,17 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     /// Server-link state for the status bar, tracked from the network
     /// actor's Connecting/Connected/Disconnected events.
     pub link: crate::ui::props::LinkStatus,
+    /// The torrent engine, retained for the 1Hz health sample's speed
+    /// read (`None` when torrents are disabled or failed to start).
+    pub torrent_engine: Option<Arc<dyn crate::torrent::engine::TorrentEngine>>,
+    /// Latest merged health sample (QUIC plane + torrent speeds);
+    /// cleared whenever the connection goes away so stale numbers never
+    /// render.
+    pub health: Option<crate::ui::props::HealthSample>,
+    /// Anti-flap filter for the displayed health level.
+    pub health_level: crate::ui::props::HealthHysteresis,
+    /// The advisor's current suggestion for the health row.
+    pub suggestion: Option<crate::ui::props::SuggestionProps>,
 }
 
 impl<F: crate::player::PlayerFactory> SessionLoop<F> {
@@ -1287,6 +1305,32 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         ClientEvent::Network(NetworkEvent::Disconnected { .. }) => {
                             self.link = crate::ui::props::LinkStatus::Down;
+                            // Stale health must not outlive the connection
+                            // it measured.
+                            self.health = None;
+                            self.health_level.reset();
+                        }
+                        ClientEvent::Network(NetworkEvent::LinkHealth(report)) => {
+                            let speeds = self
+                                .torrent_engine
+                                .as_ref()
+                                .map(|engine| engine.speeds())
+                                .unwrap_or_default();
+                            let sample = crate::ui::props::HealthSample {
+                                // Probe RTT once available; the QUIC path
+                                // estimate covers the window before the
+                                // first probe answer.
+                                rtt_millis: report
+                                    .rtt_millis
+                                    .or(report.quic.map(|q| q.rtt_millis)),
+                                unanswered_probes: report.unanswered_probes,
+                                server_silence_millis: report.server_silence_millis,
+                                up_bps: report.tx_bps + speeds.up_bps,
+                                down_bps: report.rx_bps + speeds.down_bps,
+                            };
+                            let raw = crate::ui::props::classify_health(self.link, Some(&sample));
+                            self.health_level.observe(raw);
+                            self.health = Some(sample);
                         }
                         ClientEvent::Network(NetworkEvent::Connected { .. }) => {
                             self.link = crate::ui::props::LinkStatus::Connected;
@@ -1577,6 +1621,12 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             cache_hashes,
             watched_hashes,
             link: self.link,
+            health: crate::ui::props::HealthProps {
+                link: self.link,
+                level: self.health_level.current(),
+                sample: self.health,
+                suggestion: self.suggestion.clone(),
+            },
         })
     }
 }

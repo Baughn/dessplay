@@ -70,6 +70,10 @@ pub struct UiSnapshot {
     /// Server-link state, from the network actor's connect lifecycle.
     /// The status bar shows it whenever it isn't `Connected`.
     pub link: props::LinkStatus,
+    /// Connection/sync health for the borderless status field under the
+    /// playlist (design.md, Connection Health Line). Run-loop state like
+    /// `link`, not CRDT state.
+    pub health: props::HealthProps,
 }
 
 /// Log one outgoing [`UserAction`] at debug. Mutations log their

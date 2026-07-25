@@ -580,6 +580,166 @@ pub fn status_props(
     }
 }
 
+// ---- Health line -----------------------------------------------------
+
+/// One sample of connection/sync health, merged by the session loop
+/// from the network actor's `LinkHealth` report and the torrent
+/// engine's live speeds. Raw numbers only; classification, colors, and
+/// formatting are pure functions over this.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HealthSample {
+    /// Round-trip estimate, milliseconds (time-sync probes, falling
+    /// back to the QUIC path estimate before any probe is answered).
+    pub rtt_millis: Option<u64>,
+    /// Consecutive steady-state time-sync probes without an answer.
+    pub unanswered_probes: u32,
+    /// Milliseconds since anything arrived from the server. The server
+    /// broadcasts a StateHash at least every 30s, so a large value on a
+    /// live connection means sync is stalled.
+    pub server_silence_millis: u64,
+    /// Upload bytes/sec: the QUIC plane plus the torrent engine.
+    pub up_bps: u64,
+    /// Download bytes/sec: the QUIC plane plus the torrent engine.
+    pub down_bps: u64,
+}
+
+/// Health classification for the status field: dim / yellow / red.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum HealthLevel {
+    /// Everything nominal — the row renders dim.
+    #[default]
+    Ok,
+    /// The link is struggling (bufferbloat, lost probes): yellow on the
+    /// offending fields.
+    Degraded,
+    /// Sync is effectively dead even though QUIC is up: red.
+    Stalled,
+}
+
+/// RTT at which the link counts as degraded. Ordinary paths run tens of
+/// milliseconds; a saturated uplink (the Starlink incident) shows
+/// seconds of bufferbloat.
+const RTT_DEGRADED_MILLIS: u64 = 1_500;
+/// Server silence beyond one missed 30s StateHash interval (plus
+/// margin): degraded.
+const SILENCE_DEGRADED_MILLIS: u64 = 40_000;
+/// Server silence beyond 2.5 missed StateHash intervals: sync is dead.
+const SILENCE_STALLED_MILLIS: u64 = 75_000;
+/// With this many consecutive lost probes, a shorter silence already
+/// counts as stalled — two independent signals agree.
+const SILENCE_WITH_PROBES_STALLED_MILLIS: u64 = 45_000;
+/// Consecutive unanswered 30s probes for degraded / stalled.
+const PROBES_DEGRADED: u32 = 2;
+const PROBES_STALLED: u32 = 3;
+
+/// Classify one sample. Only meaningful while `Connected` — any other
+/// link state renders its own text and returns `Ok` here (the status
+/// bar carries the connecting/lost story).
+pub fn classify_health(link: LinkStatus, sample: Option<&HealthSample>) -> HealthLevel {
+    let (LinkStatus::Connected, Some(sample)) = (link, sample) else {
+        return HealthLevel::Ok;
+    };
+    let silence = sample.server_silence_millis;
+    if silence > SILENCE_STALLED_MILLIS
+        || (sample.unanswered_probes >= PROBES_STALLED
+            && silence > SILENCE_WITH_PROBES_STALLED_MILLIS)
+    {
+        return HealthLevel::Stalled;
+    }
+    if sample
+        .rtt_millis
+        .is_some_and(|rtt| rtt >= RTT_DEGRADED_MILLIS)
+        || silence > SILENCE_DEGRADED_MILLIS
+        || sample.unanswered_probes >= PROBES_DEGRADED
+    {
+        return HealthLevel::Degraded;
+    }
+    HealthLevel::Ok
+}
+
+/// Anti-flap for the displayed level: worse levels apply immediately,
+/// better ones only after five consecutive calmer samples (~5s) — a
+/// single quiet second must not flicker a red row back to dim.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HealthHysteresis {
+    current: HealthLevel,
+    calmer_streak: u8,
+    /// Worst raw level seen during the current calmer streak: the
+    /// downgrade lands there, so Stalled steps down through an
+    /// intervening Degraded instead of jumping past it.
+    streak_max: HealthLevel,
+}
+
+/// Consecutive calmer samples required before the display improves.
+const CALM_SAMPLES_TO_DOWNGRADE: u8 = 5;
+
+impl HealthHysteresis {
+    /// Feed one raw sample; returns the level to display.
+    pub fn observe(&mut self, raw: HealthLevel) -> HealthLevel {
+        if raw >= self.current {
+            self.current = raw;
+            self.calmer_streak = 0;
+            self.streak_max = HealthLevel::Ok;
+        } else {
+            self.calmer_streak += 1;
+            self.streak_max = self.streak_max.max(raw);
+            if self.calmer_streak >= CALM_SAMPLES_TO_DOWNGRADE {
+                self.current = self.streak_max;
+                self.calmer_streak = 0;
+                self.streak_max = HealthLevel::Ok;
+            }
+        }
+        self.current
+    }
+
+    /// The currently displayed level.
+    pub fn current(&self) -> HealthLevel {
+        self.current
+    }
+
+    /// Reset (connection went away — stale trouble must not outlive it).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// A suggestion for the health row's right-aligned slot, already
+/// reduced to display terms (the advisor's severity became a tone).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SuggestionProps {
+    /// The suggestion text.
+    pub text: String,
+    /// Display tone (Muted / Paused / Blocked).
+    pub tone: Tone,
+}
+
+/// Everything the health line renders.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct HealthProps {
+    /// Server-link state; anything but `Connected` replaces the metrics
+    /// with a short link notice.
+    pub link: LinkStatus,
+    /// Displayed (hysteresis-filtered) health level.
+    pub level: HealthLevel,
+    /// The latest sample; `None` before the first report (or after a
+    /// disconnect cleared it).
+    pub sample: Option<HealthSample>,
+    /// The advisor's current suggestion, right-aligned.
+    pub suggestion: Option<SuggestionProps>,
+}
+
+/// Human-readable byte rate: `0 B/s`, `340 KB/s`, `1.2 MB/s`. Decimal
+/// units, one decimal place from MB/s up — status-line compact.
+pub fn fmt_rate(bps: u64) -> String {
+    if bps < 1_000 {
+        format!("{bps} B/s")
+    } else if bps < 1_000_000 {
+        format!("{} KB/s", bps / 1_000)
+    } else {
+        format!("{:.1} MB/s", bps as f64 / 1_000_000.0)
+    }
+}
+
 // ---- Series pane -----------------------------------------------------
 
 /// Sort order for the All Series mode.
@@ -1345,6 +1505,161 @@ mod tests {
 
     fn ts(t: u64) -> SharedTimestamp {
         SharedTimestamp(t)
+    }
+
+    // ---- Health classification ---------------------------------------
+
+    /// A nominal sample; tests override single fields.
+    fn healthy() -> HealthSample {
+        HealthSample {
+            rtt_millis: Some(40),
+            unanswered_probes: 0,
+            server_silence_millis: 2_000,
+            up_bps: 10_000,
+            down_bps: 100_000,
+        }
+    }
+
+    #[test]
+    fn health_classification_thresholds() {
+        use HealthLevel::*;
+        let cases: &[(HealthSample, HealthLevel)] = &[
+            (healthy(), Ok),
+            // RTT boundary: 1499 fine, 1500 degraded.
+            (
+                HealthSample {
+                    rtt_millis: Some(1_499),
+                    ..healthy()
+                },
+                Ok,
+            ),
+            (
+                HealthSample {
+                    rtt_millis: Some(1_500),
+                    ..healthy()
+                },
+                Degraded,
+            ),
+            // Unknown RTT alone is not trouble (pre-first-probe).
+            (
+                HealthSample {
+                    rtt_millis: None,
+                    ..healthy()
+                },
+                Ok,
+            ),
+            // Silence ladder: one missed StateHash within margin is Ok,
+            // beyond 40s degraded, beyond 75s stalled.
+            (
+                HealthSample {
+                    server_silence_millis: 39_000,
+                    ..healthy()
+                },
+                Ok,
+            ),
+            (
+                HealthSample {
+                    server_silence_millis: 41_000,
+                    ..healthy()
+                },
+                Degraded,
+            ),
+            (
+                HealthSample {
+                    server_silence_millis: 76_000,
+                    ..healthy()
+                },
+                Stalled,
+            ),
+            // Lost probes: 2 degrade; 3 with 45s+ silence stall (the
+            // Starlink signature); 3 with low silence only degrade.
+            (
+                HealthSample {
+                    unanswered_probes: 2,
+                    ..healthy()
+                },
+                Degraded,
+            ),
+            (
+                HealthSample {
+                    unanswered_probes: 3,
+                    server_silence_millis: 46_000,
+                    ..healthy()
+                },
+                Stalled,
+            ),
+            (
+                HealthSample {
+                    unanswered_probes: 3,
+                    server_silence_millis: 10_000,
+                    ..healthy()
+                },
+                Degraded,
+            ),
+        ];
+        for (sample, expected) in cases {
+            assert_eq!(
+                classify_health(LinkStatus::Connected, Some(sample)),
+                *expected,
+                "sample {sample:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn health_is_ok_while_not_connected() {
+        // The row shows the link notice instead; a stale terrible sample
+        // must not color it.
+        let sample = HealthSample {
+            server_silence_millis: 500_000,
+            unanswered_probes: 9,
+            ..healthy()
+        };
+        for link in [LinkStatus::Down, LinkStatus::Connecting { attempt: 3 }] {
+            assert_eq!(classify_health(link, Some(&sample)), HealthLevel::Ok);
+        }
+        assert_eq!(
+            classify_health(LinkStatus::Connected, None),
+            HealthLevel::Ok
+        );
+    }
+
+    #[test]
+    fn health_hysteresis_upgrades_fast_downgrades_slow() {
+        use HealthLevel::*;
+        let mut h = HealthHysteresis::default();
+        assert_eq!(h.observe(Ok), Ok);
+        // Trouble shows immediately.
+        assert_eq!(h.observe(Stalled), Stalled);
+        // Four calm samples do not clear it...
+        for _ in 0..4 {
+            assert_eq!(h.observe(Ok), Stalled);
+        }
+        // ...the fifth does.
+        assert_eq!(h.observe(Ok), Ok);
+        // A Degraded sample inside the calm window: the downgrade lands
+        // on Degraded (the worst of the window), not straight on Ok —
+        // then a further calm window clears it fully.
+        assert_eq!(h.observe(Stalled), Stalled);
+        for _ in 0..3 {
+            assert_eq!(h.observe(Ok), Stalled);
+        }
+        assert_eq!(h.observe(Degraded), Stalled);
+        assert_eq!(h.observe(Ok), Degraded);
+        for _ in 0..4 {
+            assert_eq!(h.observe(Ok), Degraded);
+        }
+        assert_eq!(h.observe(Ok), Ok);
+    }
+
+    #[test]
+    fn rates_format_compactly() {
+        assert_eq!(fmt_rate(0), "0 B/s");
+        assert_eq!(fmt_rate(999), "999 B/s");
+        assert_eq!(fmt_rate(1_000), "1 KB/s");
+        assert_eq!(fmt_rate(340_000), "340 KB/s");
+        assert_eq!(fmt_rate(1_200_000), "1.2 MB/s");
+        assert_eq!(fmt_rate(250_000_000), "250.0 MB/s");
     }
 
     /// Link a List entry to `series` so preference writes/gating resolve

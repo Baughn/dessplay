@@ -152,6 +152,7 @@ fn snapshot(view: StateView, peers: Vec<PeerInfo>) -> UiSnapshot {
         cache_hashes: Default::default(),
         watched_hashes: Default::default(),
         link: dessplay::ui::props::LinkStatus::Connected,
+        health: Default::default(),
     }
 }
 
@@ -182,6 +183,7 @@ fn snapshot_with_cache(view: StateView, peers: Vec<PeerInfo>, cache: &[Ed2kHash]
         cache_hashes: cache.iter().copied().collect(),
         watched_hashes: Default::default(),
         link: dessplay::ui::props::LinkStatus::Connected,
+        health: Default::default(),
     }
 }
 

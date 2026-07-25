@@ -36,6 +36,16 @@ pub struct TorrentStatus {
     pub payload: Option<PathBuf>,
 }
 
+/// Aggregate live transfer speeds across every torrent in the engine,
+/// for the status field's bandwidth display.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TorrentSpeeds {
+    /// Download, bytes/sec.
+    pub down_bps: u64,
+    /// Upload (seeding), bytes/sec.
+    pub up_bps: u64,
+}
+
 /// What the file actor needs from a torrent implementation.
 pub trait TorrentEngine: Send + Sync + 'static {
     /// Start downloading `chosen` into `output_dir` (created on demand).
@@ -57,6 +67,12 @@ pub trait TorrentEngine: Send + Sync + 'static {
     /// Re-key a completed import so normal cache eviction and restart
     /// reconciliation own its seeding lifecycle.
     fn promote_import(&self, id: TorrentImportId, file: Ed2kHash);
+    /// Aggregate live up/down speeds across every torrent, for the
+    /// status field's bandwidth display. Default: no measurable
+    /// traffic.
+    fn speeds(&self) -> TorrentSpeeds {
+        TorrentSpeeds::default()
+    }
     /// Startup-only: reconcile the implementation's own persisted session
     /// against the app registry. `keep` maps a registered torrent's info
     /// hash (lowercase hex) to its file; a session-restored torrent whose
@@ -91,6 +107,8 @@ struct FakeInner {
     restored: HashMap<String, PathBuf>,
     /// Info hashes `reconcile_session` deleted from the fake session.
     session_deleted: Vec<String>,
+    /// Scripted aggregate speeds ([`TorrentEngine::speeds`]).
+    speeds: TorrentSpeeds,
 }
 
 impl FakeTorrentEngine {
@@ -146,6 +164,13 @@ impl FakeTorrentEngine {
             .lock()
             .map(|inner| inner.session_deleted.clone())
             .unwrap_or_default()
+    }
+
+    /// Script the aggregate speeds [`TorrentEngine::speeds`] reports.
+    pub fn set_speeds(&self, speeds: TorrentSpeeds) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.speeds = speeds;
+        }
     }
 }
 
@@ -214,6 +239,13 @@ impl TorrentEngine for FakeTorrentEngine {
                 inner.status.insert(file, status);
             }
         }
+    }
+
+    fn speeds(&self) -> TorrentSpeeds {
+        self.inner
+            .lock()
+            .map(|inner| inner.speeds)
+            .unwrap_or_default()
     }
 
     fn reconcile_session(&self, keep: &HashMap<String, Ed2kHash>) -> Vec<PathBuf> {
