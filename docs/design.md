@@ -1217,7 +1217,7 @@ text ("⏸ paused") while silently failing to connect read as a hang
 |          Chat Window             | (current +       |
 |          (continued)             |  previous in     |
 |   [always-visible input line]    |  muted colors)   |
-|  [=====>       ] 12:34 / 24:00   | ▲1.2M ▼340K ...  |
+| [==>  ] 12:34/24:00  commentary   ▲1.2M ▼340K sync ok|
 +----------------------------------+------------------+
 |  Player Status: waiting on baughn (paused)          |
 |  Now Playing: [Frieren] Sousou no Frieren - 01.mkv  |
@@ -1228,18 +1228,21 @@ text ("⏸ paused") while silently failing to connect read as a hang
 
 **Proportions:**
 - Bottom: Player status (3 lines) then keybinding bar (1 line)
-- Left 50%: Chat (with input line at bottom), then a dedicated
-  progress-bar + time line (design.md #6) -- kept off the bottom status
-  bar so the variable-width "waiting on ..." blocker text never shoves it
-  sideways. Sits between the chat input and the subtitle pane when
-  [Separate pane mode](#subtitle-display) is on.
+- Above that, the main area's last row is one **terminal-wide bottom
+  line**: the progress bar + time at the left (design.md #6 -- its own
+  row, kept off the bottom status bar so the variable-width
+  "waiting on ..." blocker text never shoves it sideways; the same
+  placement in every subtitle mode), the
+  [Connection Health Line](#connection-health-line)'s metrics
+  **right-aligned** at the terminal edge, and the middle space carrying
+  the suggestion slot (someday, marquee AI commentary), centered with a
+  couple of spaces of margin. Reserving the row before the column split
+  puts the playlist's bottom border level with the chat input's (they
+  used to sit one row apart, which read as a layout bug).
+- Left 50%: Chat (with input line at bottom)
 - Right 50%, top: Series (three modes: Recent Series / All Series / The List)
 - Right 50%, middle: Users
-- Right 50%, bottom: Playlist, then a dedicated 1-line
-  [Connection Health Line](#connection-health-line) — the mirror of the left
-  column's progress-bar row, which also puts the playlist's bottom border
-  level with the chat input's (they used to sit one row apart, which read as
-  a layout bug)
+- Right 50%, bottom: Playlist
 
 When any selectable list is taller than its pane or modal, its viewport keeps
 the cursor as close to the vertical center as the list edges permit. Series
@@ -1250,14 +1253,16 @@ rather than following a selection cursor.
 
 ### Connection Health Line
 
-The right column's bottom row is a **borderless, passive status field**
-showing connection quality and sync health at a glance — the affordance
-that was missing when a saturated Starlink uplink let BitTorrent drown
-CRDT sync while the QUIC connection stayed nominally "connected"
-(2026-07-24): the app looked fine and simply stopped syncing.
+The **right-aligned end of the terminal-wide bottom line** is a
+borderless, passive status field showing connection quality and sync
+health at a glance — the affordance that was missing when a saturated
+Starlink uplink let BitTorrent drown CRDT sync while the QUIC
+connection stayed nominally "connected" (2026-07-24): the app looked
+fine and simply stopped syncing. (The same line's left end is the
+progress bar; the middle is the suggestion slot below.)
 
 While connected it renders compact metric fragments, joined with dim
-separators: `▲1.2M ▼340K · rtt 89ms · sync 3s` —
+separators: `▲1.2M ▼340K · rtt 89ms · sync ok` —
 
 - **▲/▼**: upload/download bytes per second, the QUIC plane (control,
   datagrams, relayed transfer) **plus** the torrent engine's live
@@ -1294,26 +1299,27 @@ While not connected the row shows a short link notice
 (`link: connecting…` / `link: down — retrying`); the bottom status
 bar keeps its existing, fuller `⚡` story.
 
-The right end of the row is the **suggestion slot**, fed by the
-session-layer **advisor**: rule-based advice keyed to the health state
-— "high latency — disable BitTorrent (F3, applies immediately)" when
-the link degrades with an active torrent (and the toggle really does
-apply immediately — see [BitTorrent
-Downloads](#bittorrent-downloads)), "sync stalled — server silent Ns",
-and a divergence notice. Suggestions carry a severity (dim / yellow /
-red), only re-render when they change, and a cleared condition holds
-the slot ~30s against threshold flicker. When both can't fit, the
-suggestion outranks the metrics (it is the actionable part; the metrics
-truncate to a stub). The advisor's provider seam also collects what a
-future **LLM commentary provider** needs — the now-playing series,
-episode, and the last ~50 deduped subtitle lines — delivered through
-the same channel; that provider itself is future work (see [Future
-Plans](#future-plans)).
+The middle of the row — between the progress bar and the metrics,
+centered with at least two spaces of margin toward each neighbour — is
+the **suggestion slot**, fed by the session-layer **advisor**:
+rule-based advice keyed to the health state — "high latency — disable
+BitTorrent (F3, applies immediately)" when the link degrades with an
+active torrent (and the toggle really does apply immediately — see
+[BitTorrent Downloads](#bittorrent-downloads)), "sync stalled — server
+silent Ns", and a divergence notice. Suggestions carry a severity
+(dim / yellow / red), only re-render when they change, and a cleared
+condition holds the slot ~30s against threshold flicker. When the row
+is tight the health metrics keep their full width (they are the row's
+reason to exist), the progress bar truncates next, and the suggestion
+takes whatever middle space remains — dropped entirely rather than
+rendering a lone ellipsis. The slot is also where future
+**marquee-style LLM commentary** will render: the advisor's provider
+seam already collects what that provider needs — the now-playing
+series, episode, and the last ~50 deduped subtitle lines — delivered
+through the same channel; the provider itself is future work (see
+[Future Plans](#future-plans)).
 
-In [Separate pane](#subtitle-display) subtitle mode the left column's
-progress row sits mid-column, so the health line does not align with it
-there — intended; the health line always stays at the right column's
-bottom. The row is dead to the mouse (it is outside every pane rect).
+The row is dead to the mouse (it is outside every pane rect).
 
 **Subtitle display (optional):** the local player's subtitles can be
 surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->

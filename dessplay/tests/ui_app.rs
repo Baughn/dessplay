@@ -94,18 +94,18 @@ fn pane_rects(width: u16, height: u16) -> (Rect, Rect, Rect, Rect) {
         Constraint::Length(1),
     ])
     .areas(Rect::new(0, 0, width, height));
+    // The main area's last row is the terminal-wide bottom line
+    // (progress · suggestion · health); the panes split what's above.
+    let [panes, _bottom] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(main);
     let [left, right] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
-    // The right column's last row is the borderless health line; only
-    // the rows above it hold the three panes.
-    let [right_panes, _health] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(right);
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(panes);
     let [series, users, playlist] = Layout::vertical([
         Constraint::Percentage(34),
         Constraint::Percentage(33),
         Constraint::Percentage(33),
     ])
-    .areas(right_panes);
+    .areas(right);
     (left, series, users, playlist)
 }
 
@@ -219,17 +219,17 @@ fn layout_snapshot_empty_state() {
 }
 
 /// The playlist's bottom border sits level with the chat input's, and
-/// the freed row below carries the borderless health line (design.md,
-/// Connection Health Line) — the one-row border asymmetry was the
-/// visible bug that motivated the row.
+/// the terminal-wide row below carries the bottom line — progress bar
+/// left, health metrics right-aligned (design.md, Connection Health
+/// Line). The one-row border asymmetry was the visible bug that
+/// motivated the row.
 #[test]
 fn health_row_aligns_playlist_border_with_chat_input() {
     let (left, _series, _users, playlist) = pane_rects(100, 30);
-    // ChatPane reserves a 3-row input box at its bottom, and the left
-    // column's last row is the progress line — so the input's bottom
-    // border is two rows above the column's end. The playlist's bottom
-    // border must land on that same row.
-    let chat_input_bottom = left.y + left.height - 2;
+    // The chat pane fills the whole left column, so its input's bottom
+    // border is the column's last row; the playlist's bottom border
+    // must land on that same row.
+    let chat_input_bottom = left.y + left.height - 1;
     let playlist_bottom = playlist.y + playlist.height - 1;
     assert_eq!(playlist_bottom, chat_input_bottom);
 
@@ -240,16 +240,20 @@ fn health_row_aligns_playlist_border_with_chat_input() {
     let border_row: Vec<char> = lines[playlist_bottom as usize].chars().collect();
     assert_eq!(border_row[0], '└', "chat input bottom border");
     assert_eq!(border_row[50], '└', "playlist bottom border, same row");
-    // The row below holds the health line on the right (nothing is
-    // measured yet in this snapshot).
-    assert!(
-        lines[playlist_bottom as usize + 1].contains("link: measuring…"),
-        "{rendered}"
+    // The row below holds the bottom line, health right-aligned at the
+    // terminal edge (nothing is measured yet in this snapshot).
+    let bottom = lines[playlist_bottom as usize + 1];
+    assert!(bottom.contains("link: measuring…"), "{rendered}");
+    assert_eq!(
+        bottom.chars().nth(99),
+        Some('…'),
+        "health hugs the terminal's right edge: {bottom:?}"
     );
 }
 
-/// The health row renders the merged metrics, and the suggestion slot
-/// sits right-aligned at the row's end.
+/// The bottom line composes: health metrics right-aligned at the
+/// terminal edge, the suggestion centered in the middle space with at
+/// least two spaces of margin toward each neighbour.
 #[test]
 fn health_row_shows_metrics_and_right_aligned_suggestion() {
     use dessplay::ui::props::{
@@ -285,14 +289,24 @@ fn health_row_shows_metrics_and_right_aligned_suggestion() {
         .lines()
         .find(|line| line.contains("disable BitTorrent"))
         .expect("suggestion rendered");
-    // Right-aligned: the suggestion's last character sits in the
-    // terminal's last column.
+    // Health hugs the terminal's right edge ("sync 6s" is its last
+    // fragment); the suggestion sits in the middle with ≥2 spaces of
+    // margin on both sides.
     let chars: Vec<char> = row.chars().collect();
-    assert_eq!(chars[199], ')', "suggestion hugs the right edge: {row:?}");
+    assert_eq!(chars[199], 's', "health hugs the right edge: {row:?}");
+    assert!(row.ends_with("sync 6s"), "{row:?}");
+    assert!(
+        row.contains("  high latency — disable BitTorrent (F3)  "),
+        "suggestion has margin on both sides: {row:?}"
+    );
+    let start = row.find("high latency").expect("suggestion start");
+    assert!(
+        start > 40 && start < 120,
+        "suggestion is roughly centered, not glued to an edge: start={start}"
+    );
 
-    // On a 100-column terminal the right half can't hold both: the
-    // suggestion (the actionable part) stays whole and the metrics
-    // truncate to a stub.
+    // A 100-column terminal still fits everything here (no progress bar
+    // in this snapshot); health stays right-aligned, suggestion whole.
     let narrow = render(&mut ui, 100, 30);
     assert!(narrow.contains("disable BitTorrent (F3)"), "{narrow}");
     assert!(narrow.contains("▲1.2M"), "{narrow}");

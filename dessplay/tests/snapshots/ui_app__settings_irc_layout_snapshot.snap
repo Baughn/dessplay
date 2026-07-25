@@ -1,6 +1,6 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 421
+assertion_line: 439
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -28,7 +28,7 @@ expression: screen
 ┌──────────────│IRC is public; bridged chat leaves the encrypted group.             │              │
 │say something…│[Save]                                                              │              │
 └──────────────└────────────────────────────────────────────────────────────────────┘──────────────┘
-                                                  link: connecting…
+                                                                                   link: connecting…
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ⚡  connecting to server…
 Nothing playing

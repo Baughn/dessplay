@@ -23,7 +23,7 @@ use super::props::{
 use super::theme;
 use super::widgets::{
     Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, RenderedList, TextField,
-    render_list, table_row,
+    render_list, table_row, truncate_display,
 };
 
 /// A key the pane responds to, for the keybinding bar.
@@ -1644,14 +1644,14 @@ impl StatusBar {
         );
     }
 
-    /// The progress-bar + elapsed/total time, on its own line (design.md
-    /// #6) so the variable-width "waiting on ..." state text on the main
-    /// status line never shoves it sideways. Rendered directly by
-    /// [`super::app::Ui::draw`] (not through the `Component`/`view()`
-    /// path) since it shares `self.props` with [`Self::render`] but lives
-    /// in a different area — the left column, not the bottom status bar.
-    pub(crate) fn render_progress(&self, frame: &mut Frame, area: Rect) {
-        let progress = match (self.props.position_millis, self.props.duration_millis) {
+    /// The progress-bar + elapsed/total time text for the bottom line
+    /// (design.md #6): its own row, so the variable-width "waiting
+    /// on ..." state text on the main status line never shoves it
+    /// sideways. It shares `self.props` with [`Self::render`] but is
+    /// drawn by [`HealthLine`] (the left end of the terminal-wide
+    /// bottom line), so this returns text instead of rendering.
+    pub(crate) fn progress_text(&self) -> String {
+        match (self.props.position_millis, self.props.duration_millis) {
             (Some(pos), Some(dur)) if dur > 0 => {
                 let width = 30usize;
                 let filled = ((pos as f64 / dur as f64) * width as f64) as usize;
@@ -1664,8 +1664,7 @@ impl StatusBar {
                 )
             }
             _ => String::new(),
-        };
-        frame.render_widget(Paragraph::new(Line::from(progress)), area);
+        }
     }
 }
 
@@ -1679,12 +1678,14 @@ impl AppComponent<Msg, NoUserEvent> for StatusBar {
 
 // ---- Health line -------------------------------------------------------
 
-/// The borderless connection-health line on the right column's bottom
-/// row (design.md, Connection Health Line): metrics on the left, the
-/// advisor's suggestion right-aligned. Dim when healthy; only the
-/// offending field turns yellow/red. Rendered directly by
-/// [`super::app::Ui::draw`] like the progress line — passive, captures
-/// no input, and is not part of the focus ring or mouse hit-testing.
+/// The terminal-wide, borderless bottom line of the main area
+/// (design.md #6 + Connection Health Line): the progress bar + time at
+/// the left, connection-health metrics right-aligned, and the middle
+/// space carrying the advisor's suggestion (and, someday, marquee
+/// commentary), centered with at least two spaces of margin each side.
+/// Dim when healthy; only the offending field turns yellow/red.
+/// Rendered directly by [`super::app::Ui::draw`] — passive, captures no
+/// input, and is not part of the focus ring or mouse hit-testing.
 #[derive(Default)]
 pub struct HealthLine {
     props: HealthProps,
@@ -1696,41 +1697,46 @@ impl HealthLine {
         self.props = props;
     }
 
-    pub(crate) fn render(&self, frame: &mut Frame, area: Rect) {
+    pub(crate) fn render(&self, frame: &mut Frame, area: Rect, progress: &str) {
         use unicode_width::UnicodeWidthStr;
-
-        let mut flex = Vec::new();
-        for (text, tone) in super::props::health_fragments(&self.props) {
-            if !flex.is_empty() {
-                flex.push(Span::styled(" · ", theme::dim()));
-            }
-            flex.push(Span::styled(text, theme::tone_style(tone)));
-        }
-
         let width = area.width as usize;
-        let cells = match &self.props.suggestion {
-            Some(suggestion) => {
-                // The suggestion outranks the metrics: when both can't
-                // fit, the metrics truncate (table_row keeps them a
-                // minimum stub) — a "disable BitTorrent" prompt is the
-                // actionable part, rtt digits are glanceable anyway.
-                // Only on a row too narrow for any useful text is the
-                // slot dropped rather than showing a lone ellipsis.
-                let cell_width = suggestion.text.width().min(width.saturating_sub(9));
-                if cell_width < 4 {
-                    Vec::new()
-                } else {
-                    vec![Cell::new(
-                        suggestion.text.clone(),
-                        theme::tone_style(suggestion.tone),
-                        cell_width,
-                        Align::Right,
-                    )]
-                }
+
+        // Right end: the health fragments, dim separators between.
+        let mut health = Vec::new();
+        for (text, tone) in super::props::health_fragments(&self.props) {
+            if !health.is_empty() {
+                health.push(Span::styled(" · ", theme::dim()));
             }
-            None => Vec::new(),
-        };
-        frame.render_widget(Paragraph::new(table_row(width, flex, cells)), area);
+            health.push(Span::styled(text, theme::tone_style(tone)));
+        }
+        let health_width: usize = health.iter().map(|span| span.content.width()).sum();
+
+        // Left end: the progress bar, truncated only if the terminal is
+        // too narrow to hold both (the health metrics win — they are
+        // the row's reason to exist).
+        let progress_max = width.saturating_sub(health_width + 2);
+        let (progress, progress_width) = truncate_display(progress, progress_max);
+
+        // Middle: the suggestion / commentary slot, centered in the
+        // leftover space with ≥2 spaces of margin toward each
+        // neighbour; dropped entirely (rather than a lone ellipsis)
+        // when the space is too tight for useful text.
+        let free = width.saturating_sub(progress_width + health_width);
+        let mut spans = vec![Span::raw(progress)];
+        let middle = self.props.suggestion.as_ref().filter(|_| free >= 4 + 4);
+        match middle {
+            Some(suggestion) => {
+                let (text, text_width) = truncate_display(&suggestion.text, free - 4);
+                let pad = free - text_width;
+                let left_pad = pad / 2;
+                spans.push(Span::raw(" ".repeat(left_pad)));
+                spans.push(Span::styled(text, theme::tone_style(suggestion.tone)));
+                spans.push(Span::raw(" ".repeat(pad - left_pad)));
+            }
+            None => spans.push(Span::raw(" ".repeat(free))),
+        }
+        spans.extend(health);
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 }
 

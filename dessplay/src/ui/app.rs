@@ -1772,22 +1772,25 @@ impl Ui {
             Constraint::Length(1),
         ])
         .areas(frame.area());
+        // The main area's last row is one terminal-wide, borderless
+        // bottom line: progress bar + time on the left (design.md #6 —
+        // its own row, never sharing with the status bar's
+        // variable-width blocker text), connection-health metrics
+        // right-aligned, and the middle space reserved for the
+        // suggestion / future marquee commentary (design.md, Connection
+        // Health Line). Reserving it before the column split also puts
+        // the playlist's bottom border level with the chat input's.
+        let [panes_area, bottom_area] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(main);
         let [left, right] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .areas(main);
-        // The right column reserves its last row for the borderless
-        // health line, mirroring the left column's progress row — which
-        // also puts the playlist's bottom border level with the chat
-        // input's (they used to be one row apart, design.md, Connection
-        // Health Line).
-        let [right_panes, health_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(right);
+                .areas(panes_area);
         let [series_area, users_area, playlist_area] = Layout::vertical([
             Constraint::Percentage(34),
             Constraint::Percentage(33),
             Constraint::Percentage(33),
         ])
-        .areas(right_panes);
+        .areas(right);
         // Remember where the panes landed for mouse hit-testing.
         self.panes = PaneRects {
             chat: left,
@@ -1797,18 +1800,10 @@ impl Ui {
         };
 
         if self.subtitle_mode == SubtitleMode::SeparatePane {
-            // Progress bar + time get their own line (design.md #6) between
-            // the chat input and the subtitle pane, so the status bar's
-            // variable-width "waiting on ..." text never shoves them
-            // sideways.
-            let [chat_area, progress_area, subs_area] = Layout::vertical([
-                Constraint::Percentage(70),
-                Constraint::Length(1),
-                Constraint::Percentage(30),
-            ])
-            .areas(left);
+            let [chat_area, subs_area] =
+                Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
+                    .areas(left);
             self.chat.view(frame, chat_area);
-            self.status.render_progress(frame, progress_area);
             // The newest lines that fit, newest first (top) — the input box
             // sits just below, so the freshest line is closest to the eye.
             // Each line: a dim in-video timestamp, then text colored by its
@@ -1868,19 +1863,15 @@ impl Ui {
                 subs_area,
             );
         } else {
-            // Off and Intermixed both use the full-width chat pane
-            // (Intermixed shows subtitles inside the chat log), with the
-            // progress line at the bottom of the column — the position the
-            // subtitle pane would occupy if enabled.
-            let [chat_area, progress_area] =
-                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(left);
-            self.chat.view(frame, chat_area);
-            self.status.render_progress(frame, progress_area);
+            // Off and Intermixed both use the full-height chat pane
+            // (Intermixed shows subtitles inside the chat log).
+            self.chat.view(frame, left);
         }
         self.series.view(frame, series_area);
         self.users.view(frame, users_area);
         self.playlist.view(frame, playlist_area);
-        self.health.render(frame, health_area);
+        let progress = self.status.progress_text();
+        self.health.render(frame, bottom_area, &progress);
         self.status.view(frame, status_area);
         self.keybar.view(frame, keybar_area);
         if let Some(modal) = self.modals.last_mut() {

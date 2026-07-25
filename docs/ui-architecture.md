@@ -62,7 +62,8 @@ Application
 +-- SeriesPane (SelectableList, three modes: Recent / All / The List)
 +-- UsersPane (styled list; focusable for the Away action)
 +-- PlaylistPane (SelectableList with actions)
-+-- HealthLine (borderless connection-health row + suggestion slot)
++-- HealthLine (terminal-wide bottom line: progress bar left,
+|               suggestion/commentary middle, health metrics right)
 +-- PlayerStatus (progress bar + info)
 +-- KeybindingBar (derived from active focus)
 ```
@@ -317,14 +318,19 @@ snapshot data to component props:
   cursor.
 - **PlayerStatus**: snapshot.now_playing + player position -> progress bar
 - **HealthLine**: snapshot.health (`HealthProps` — link state, hysteresis-
-  filtered level, the merged `HealthSample`, and the advisor's suggestion;
-  all run-loop state carried on the snapshot like `link`, not CRDT state)
-  -> the borderless status row under the playlist. The row text and
-  per-field warning tones come from the pure `props::health_fragments`;
-  the suggestion is a right-aligned `table_row` cell that outranks the
-  metrics at narrow widths. Rendered directly by `Ui::draw` (the
-  `render_progress` pattern): passive, no input, outside every recorded
-  pane rect — so mouse hit-testing ignores it with no special casing.
+  filtered level, the merged `HealthSample`, playing/company context for
+  the sync display, and the advisor's suggestion; all run-loop state
+  carried on the snapshot like `link`, not CRDT state) -> the
+  terminal-wide, borderless bottom line of the main area: the progress
+  bar text (from `StatusBar::progress_text`, shared props with the
+  status bar) at the left, health metrics right-aligned at the terminal
+  edge, and the suggestion / future marquee commentary centered in the
+  middle with ≥2 spaces of margin. Metric text and per-field warning
+  tones come from the pure `props::health_fragments`. When the row is
+  tight: health keeps its width, progress truncates, the suggestion
+  takes the leftover (or is dropped). Rendered directly by `Ui::draw`:
+  passive, no input, outside every recorded pane rect — so mouse
+  hit-testing ignores it with no special casing.
 
 This mapping is a pure function (presence and subtitle data arrive as
 explicit inputs alongside the snapshot), making it testable independently.
