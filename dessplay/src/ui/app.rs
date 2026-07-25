@@ -24,7 +24,7 @@ use tuirealm::ratatui::layout::{Constraint, Layout, Position, Rect};
 use tuirealm::ratatui::widgets::{Block, Borders};
 
 use super::components::{
-    ChatPane, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
+    ChatPane, HealthLine, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
 };
 use super::modals::{
     AniDbSearchModal, BrowserLibrary, EpisodeBrowser, FileBrowser, ListEditModal, NyaaActiveImport,
@@ -247,6 +247,8 @@ pub struct Ui {
     users: UsersPane,
     playlist: PlaylistPane,
     status: StatusBar,
+    /// The borderless connection-health row under the playlist.
+    health: HealthLine,
     keybar: KeyBar,
     modals: Vec<Modal>,
     focus: Focus,
@@ -326,6 +328,7 @@ impl Ui {
             users: UsersPane::default(),
             playlist: PlaylistPane::default(),
             status: StatusBar::default(),
+            health: HealthLine::default(),
             keybar: KeyBar::default(),
             modals: Vec::new(),
             focus: Focus::Chat,
@@ -710,6 +713,7 @@ impl Ui {
             &self.me,
             snapshot.link,
         ));
+        self.health.set_props(snapshot.health.clone());
         self.snapshot = snapshot;
         self.refresh_series();
     }
@@ -1773,12 +1777,19 @@ impl Ui {
         let [left, right] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(main);
+        // The right column reserves its last row for the borderless
+        // health line, mirroring the left column's progress row — which
+        // also puts the playlist's bottom border level with the chat
+        // input's (they used to be one row apart, design.md, Connection
+        // Health Line).
+        let [right_panes, health_area] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(right);
         let [series_area, users_area, playlist_area] = Layout::vertical([
             Constraint::Percentage(34),
             Constraint::Percentage(33),
             Constraint::Percentage(33),
         ])
-        .areas(right);
+        .areas(right_panes);
         // Remember where the panes landed for mouse hit-testing.
         self.panes = PaneRects {
             chat: left,
@@ -1871,6 +1882,7 @@ impl Ui {
         self.series.view(frame, series_area);
         self.users.view(frame, users_area);
         self.playlist.view(frame, playlist_area);
+        self.health.render(frame, health_area);
         self.status.view(frame, status_area);
         self.keybar.view(frame, keybar_area);
         if let Some(modal) = self.modals.last_mut() {

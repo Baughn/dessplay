@@ -633,7 +633,10 @@ async fn run_connection<T: Transport>(
                 };
                 last_tx = tx;
                 last_rx = rx;
-                let _ = events.send(NetworkEvent::LinkHealth(report)).await;
+                // Lossy by design: a health sample is superseded in a
+                // second, and a full event channel must never stall the
+                // actor's recv/send arms behind droppable metrics.
+                let _ = events.try_send(NetworkEvent::LinkHealth(report));
             }
 
             cmd = commands.recv() => {

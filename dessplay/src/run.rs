@@ -544,11 +544,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                 let Some(event) = event else { break };
                 // Drive the seeder's transfer from each event: route
                 // relayed peer messages, then re-plan from fresh state.
-                // LinkHealth is a 1Hz metrics sample that can't change
-                // transfer state — skip the per-event GetView round trip.
-                if let Some(transfer) = seeder_transfer.as_mut()
-                    && !matches!(event, ClientEvent::Network(NetworkEvent::LinkHealth(_)))
-                {
+                if let Some(transfer) = seeder_transfer.as_mut() {
                     if let ClientEvent::Network(NetworkEvent::Peer { from, message }) = &event {
                         transfer.on_peer(from.clone(), message.clone()).await;
                     }
@@ -1080,6 +1076,9 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         let mut first_connected = true;
         let mut first_peer_list = true;
         let mut first_snapshot = true;
+        // Guards the health-watch arm so a closed channel (network actor
+        // gone) cannot busy-loop the select.
+        let mut health_alive = true;
         // The expensive UI snapshot (a full `StateView` clone + two SQLite
         // queries + a full pane rebuild on the UI thread) used to fire on
         // *every* event -- including the 100ms player position tick and
@@ -1305,32 +1304,6 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         ClientEvent::Network(NetworkEvent::Disconnected { .. }) => {
                             self.link = crate::ui::props::LinkStatus::Down;
-                            // Stale health must not outlive the connection
-                            // it measured.
-                            self.health = None;
-                            self.health_level.reset();
-                        }
-                        ClientEvent::Network(NetworkEvent::LinkHealth(report)) => {
-                            let speeds = self
-                                .torrent_engine
-                                .as_ref()
-                                .map(|engine| engine.speeds())
-                                .unwrap_or_default();
-                            let sample = crate::ui::props::HealthSample {
-                                // Probe RTT once available; the QUIC path
-                                // estimate covers the window before the
-                                // first probe answer.
-                                rtt_millis: report
-                                    .rtt_millis
-                                    .or(report.quic.map(|q| q.rtt_millis)),
-                                unanswered_probes: report.unanswered_probes,
-                                server_silence_millis: report.server_silence_millis,
-                                up_bps: report.tx_bps + speeds.up_bps,
-                                down_bps: report.rx_bps + speeds.down_bps,
-                            };
-                            let raw = crate::ui::props::classify_health(self.link, Some(&sample));
-                            self.health_level.observe(raw);
-                            self.health = Some(sample);
                         }
                         ClientEvent::Network(NetworkEvent::Connected { .. }) => {
                             self.link = crate::ui::props::LinkStatus::Connected;
@@ -1400,6 +1373,47 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                     // side effects (clock offset, peer messages incl. the
                     // download data path, fingerprint pinning) ran in the
                     // match above and are not deferred.
+                    ui_dirty = true;
+                }
+                changed = self.handle.health.changed(), if health_alive => {
+                    if changed.is_err() {
+                        health_alive = false;
+                        continue;
+                    }
+                    // A fresh 1Hz health sample (or a disconnect clearing
+                    // it) — merge in the torrent engine's speeds, classify,
+                    // and let the coalescing tick repaint.
+                    match *self.handle.health.borrow_and_update() {
+                        Some(report) => {
+                            let speeds = self
+                                .torrent_engine
+                                .as_ref()
+                                .map(|engine| engine.speeds())
+                                .unwrap_or_default();
+                            let sample = crate::ui::props::HealthSample {
+                                // Probe RTT once available; the QUIC path
+                                // estimate covers the window before the
+                                // first probe answer.
+                                rtt_millis: report
+                                    .rtt_millis
+                                    .or(report.quic.map(|q| q.rtt_millis)),
+                                unanswered_probes: report.unanswered_probes,
+                                server_silence_millis: report.server_silence_millis,
+                                up_bps: report.tx_bps + speeds.up_bps,
+                                down_bps: report.rx_bps + speeds.down_bps,
+                            };
+                            let raw =
+                                crate::ui::props::classify_health(self.link, Some(&sample));
+                            self.health_level.observe(raw);
+                            self.health = Some(sample);
+                        }
+                        None => {
+                            // Stale health must not outlive the connection
+                            // that measured it.
+                            self.health = None;
+                            self.health_level.reset();
+                        }
+                    }
                     ui_dirty = true;
                 }
                 _ = ui_tick.tick(), if ui_dirty => {

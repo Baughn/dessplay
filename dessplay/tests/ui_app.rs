@@ -96,12 +96,16 @@ fn pane_rects(width: u16, height: u16) -> (Rect, Rect, Rect, Rect) {
     .areas(Rect::new(0, 0, width, height));
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
+    // The right column's last row is the borderless health line; only
+    // the rows above it hold the three panes.
+    let [right_panes, _health] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(right);
     let [series, users, playlist] = Layout::vertical([
         Constraint::Percentage(34),
         Constraint::Percentage(33),
         Constraint::Percentage(33),
     ])
-    .areas(right);
+    .areas(right_panes);
     (left, series, users, playlist)
 }
 
@@ -152,7 +156,10 @@ fn snapshot(view: StateView, peers: Vec<PeerInfo>) -> UiSnapshot {
         cache_hashes: Default::default(),
         watched_hashes: Default::default(),
         link: dessplay::ui::props::LinkStatus::Connected,
-        health: Default::default(),
+        health: dessplay::ui::props::HealthProps {
+            link: dessplay::ui::props::LinkStatus::Connected,
+            ..Default::default()
+        },
     }
 }
 
@@ -209,6 +216,102 @@ fn layout_snapshot_empty_state() {
     let mut ui = ui();
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
     insta::assert_snapshot!(render(&mut ui, 100, 30));
+}
+
+/// The playlist's bottom border sits level with the chat input's, and
+/// the freed row below carries the borderless health line (design.md,
+/// Connection Health Line) — the one-row border asymmetry was the
+/// visible bug that motivated the row.
+#[test]
+fn health_row_aligns_playlist_border_with_chat_input() {
+    let (left, _series, _users, playlist) = pane_rects(100, 30);
+    // ChatPane reserves a 3-row input box at its bottom, and the left
+    // column's last row is the progress line — so the input's bottom
+    // border is two rows above the column's end. The playlist's bottom
+    // border must land on that same row.
+    let chat_input_bottom = left.y + left.height - 2;
+    let playlist_bottom = playlist.y + playlist.height - 1;
+    assert_eq!(playlist_bottom, chat_input_bottom);
+
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    let rendered = render(&mut ui, 100, 30);
+    let lines: Vec<&str> = rendered.lines().collect();
+    let border_row: Vec<char> = lines[playlist_bottom as usize].chars().collect();
+    assert_eq!(border_row[0], '└', "chat input bottom border");
+    assert_eq!(border_row[50], '└', "playlist bottom border, same row");
+    // The row below holds the health line on the right (nothing is
+    // measured yet in this snapshot).
+    assert!(
+        lines[playlist_bottom as usize + 1].contains("link: measuring…"),
+        "{rendered}"
+    );
+}
+
+/// The health row renders the merged metrics, and the suggestion slot
+/// sits right-aligned at the row's end.
+#[test]
+fn health_row_shows_metrics_and_right_aligned_suggestion() {
+    use dessplay::ui::props::{
+        HealthLevel, HealthProps, HealthSample, LinkStatus, SuggestionProps, Tone,
+    };
+    let mut ui = ui();
+    let mut snap = snapshot(StateView::default(), vec![peer("kim")]);
+    snap.health = HealthProps {
+        link: LinkStatus::Connected,
+        level: HealthLevel::Degraded,
+        sample: Some(HealthSample {
+            rtt_millis: Some(2_000),
+            unanswered_probes: 0,
+            server_silence_millis: 3_000,
+            up_bps: 1_200_000,
+            down_bps: 340_000,
+        }),
+        suggestion: Some(SuggestionProps {
+            text: "high latency — disable BitTorrent (F3)".into(),
+            tone: Tone::Paused,
+        }),
+    };
+    ui.apply_snapshot(snap);
+    let rendered = render(&mut ui, 200, 30);
+    assert!(rendered.contains("▲1.2M ▼340K"), "{rendered}");
+    assert!(rendered.contains("rtt 2000ms"), "{rendered}");
+    assert!(rendered.contains("sync 3s"), "{rendered}");
+    let row = rendered
+        .lines()
+        .find(|line| line.contains("disable BitTorrent"))
+        .expect("suggestion rendered");
+    // Right-aligned: the suggestion's last character sits in the
+    // terminal's last column.
+    let chars: Vec<char> = row.chars().collect();
+    assert_eq!(chars[199], ')', "suggestion hugs the right edge: {row:?}");
+
+    // On a 100-column terminal the right half can't hold both: the
+    // suggestion (the actionable part) stays whole and the metrics
+    // truncate to a stub.
+    let narrow = render(&mut ui, 100, 30);
+    assert!(narrow.contains("disable BitTorrent (F3)"), "{narrow}");
+    assert!(narrow.contains("▲1.2M"), "{narrow}");
+}
+
+/// The health row is dead to the mouse: a click there focuses nothing
+/// and selects nothing (it is outside every recorded pane rect).
+#[test]
+fn click_on_health_row_changes_nothing() {
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    render(&mut ui, 100, 30);
+    let (_, _, _, playlist) = pane_rects(100, 30);
+    let health_row = playlist.y + playlist.height;
+
+    // Chat is focused (the default); a click on the health row must not
+    // move focus to the playlist above it.
+    assert!(ui.handle(click(playlist.x + 5, health_row)).is_empty());
+    let bar = render(&mut ui, 100, 30);
+    assert!(
+        bar.contains("Send") && !bar.contains("Remove"),
+        "focus stayed on chat: {bar}"
+    );
 }
 
 /// Regression (2026-07-06): a dead handshake used to be invisible — the

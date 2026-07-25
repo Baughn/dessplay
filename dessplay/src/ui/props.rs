@@ -728,15 +728,72 @@ pub struct HealthProps {
     pub suggestion: Option<SuggestionProps>,
 }
 
-/// Human-readable byte rate: `0 B/s`, `340 KB/s`, `1.2 MB/s`. Decimal
-/// units, one decimal place from MB/s up — status-line compact.
+/// Compact byte rate for the one-line health row: `0B`, `340K`, `1.2M`
+/// (decimal units, one decimal place from M up). Deliberately terse —
+/// the row shares 50 columns with a suggestion slot at common terminal
+/// widths.
 pub fn fmt_rate(bps: u64) -> String {
     if bps < 1_000 {
-        format!("{bps} B/s")
+        format!("{bps}B")
     } else if bps < 1_000_000 {
-        format!("{} KB/s", bps / 1_000)
+        format!("{}K", bps / 1_000)
     } else {
-        format!("{:.1} MB/s", bps as f64 / 1_000_000.0)
+        format!("{:.1}M", bps as f64 / 1_000_000.0)
+    }
+}
+
+/// The health row's left-hand metric fragments, in display order, as
+/// (text, tone) pairs — the component joins them with dim `·`
+/// separators. Pure, and the per-field warning tones live here with the
+/// thresholds they mirror, so the row's story is testable without a
+/// terminal. Only the *offending* field warns; the rest stay dim.
+pub fn health_fragments(props: &HealthProps) -> Vec<(String, Tone)> {
+    match props.link {
+        // The status bar carries the full "⚡ connecting (attempt N)"
+        // story; the health row just avoids showing stale metrics.
+        LinkStatus::Connecting { .. } => vec![("link: connecting…".into(), Tone::Paused)],
+        LinkStatus::Down => vec![("link: down — retrying".into(), Tone::Paused)],
+        LinkStatus::Connected => {
+            let Some(sample) = &props.sample else {
+                return vec![("link: measuring…".into(), Tone::Muted)];
+            };
+            let mut fragments = vec![(
+                format!(
+                    "▲{} ▼{}",
+                    fmt_rate(sample.up_bps),
+                    fmt_rate(sample.down_bps)
+                ),
+                Tone::Muted,
+            )];
+            if let Some(rtt) = sample.rtt_millis {
+                let tone = if rtt >= RTT_DEGRADED_MILLIS {
+                    Tone::Paused
+                } else {
+                    Tone::Muted
+                };
+                fragments.push((format!("rtt {rtt}ms"), tone));
+            }
+            let silence = sample.server_silence_millis;
+            let sync_tone = if silence > SILENCE_STALLED_MILLIS {
+                Tone::Blocked
+            } else if silence > SILENCE_DEGRADED_MILLIS {
+                Tone::Paused
+            } else {
+                Tone::Muted
+            };
+            fragments.push((format!("sync {}s", silence / 1000), sync_tone));
+            if sample.unanswered_probes > 0 {
+                let tone = if sample.unanswered_probes >= PROBES_STALLED {
+                    Tone::Blocked
+                } else if sample.unanswered_probes >= PROBES_DEGRADED {
+                    Tone::Paused
+                } else {
+                    Tone::Muted
+                };
+                fragments.push((format!("{} probes lost", sample.unanswered_probes), tone));
+            }
+            fragments
+        }
     }
 }
 
@@ -1653,13 +1710,83 @@ mod tests {
     }
 
     #[test]
+    fn health_fragments_tell_the_connected_story() {
+        // Healthy: bandwidth, rtt, sync — all dim, no probe fragment.
+        let props = HealthProps {
+            link: LinkStatus::Connected,
+            level: HealthLevel::Ok,
+            sample: Some(healthy()),
+            suggestion: None,
+        };
+        let fragments = health_fragments(&props);
+        let texts: Vec<&str> = fragments.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(texts, ["▲10K ▼100K", "rtt 40ms", "sync 2s"]);
+        assert!(fragments.iter().all(|(_, tone)| *tone == Tone::Muted));
+
+        // Stalled sync: the sync fragment goes red, the rest stay dim.
+        let props = HealthProps {
+            sample: Some(HealthSample {
+                server_silence_millis: 80_000,
+                unanswered_probes: 3,
+                ..healthy()
+            }),
+            ..props
+        };
+        let fragments = health_fragments(&props);
+        assert!(
+            fragments
+                .iter()
+                .any(|(t, tone)| t == "sync 80s" && *tone == Tone::Blocked)
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(t, tone)| t == "3 probes lost" && *tone == Tone::Blocked)
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(t, tone)| t.starts_with("▲") && *tone == Tone::Muted)
+        );
+    }
+
+    #[test]
+    fn health_fragments_show_link_state_when_not_connected() {
+        for (link, expected) in [
+            (LinkStatus::Connecting { attempt: 2 }, "link: connecting…"),
+            (LinkStatus::Down, "link: down — retrying"),
+        ] {
+            let props = HealthProps {
+                link,
+                level: HealthLevel::Ok,
+                sample: Some(healthy()),
+                suggestion: None,
+            };
+            let fragments = health_fragments(&props);
+            assert_eq!(fragments.len(), 1);
+            assert_eq!(fragments[0].0, expected);
+            assert_eq!(fragments[0].1, Tone::Paused);
+        }
+        // Connected but nothing measured yet.
+        let props = HealthProps::default();
+        let props = HealthProps {
+            link: LinkStatus::Connected,
+            ..props
+        };
+        assert_eq!(
+            health_fragments(&props),
+            vec![("link: measuring…".to_string(), Tone::Muted)]
+        );
+    }
+
+    #[test]
     fn rates_format_compactly() {
-        assert_eq!(fmt_rate(0), "0 B/s");
-        assert_eq!(fmt_rate(999), "999 B/s");
-        assert_eq!(fmt_rate(1_000), "1 KB/s");
-        assert_eq!(fmt_rate(340_000), "340 KB/s");
-        assert_eq!(fmt_rate(1_200_000), "1.2 MB/s");
-        assert_eq!(fmt_rate(250_000_000), "250.0 MB/s");
+        assert_eq!(fmt_rate(0), "0B");
+        assert_eq!(fmt_rate(999), "999B");
+        assert_eq!(fmt_rate(1_000), "1K");
+        assert_eq!(fmt_rate(340_000), "340K");
+        assert_eq!(fmt_rate(1_200_000), "1.2M");
+        assert_eq!(fmt_rate(250_000_000), "250.0M");
     }
 
     /// Link a List entry to `series` so preference writes/gating resolve

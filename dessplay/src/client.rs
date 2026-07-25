@@ -44,6 +44,13 @@ pub struct ClientHandle {
     /// Known usernames not currently in `peers` (design.md #15). Borrow,
     /// don't consume, same as `peers`.
     pub known_offline: watch::Receiver<Vec<KnownUser>>,
+    /// The latest connection-health sample: `None` before the first
+    /// report and after a disconnect. A watch, not an event — the 1Hz
+    /// samples are latest-value metrics and must never compete with
+    /// reliable events for channel capacity (a slow consumer would
+    /// otherwise stall the router, and with it state sync, behind
+    /// droppable numbers).
+    pub health: watch::Receiver<Option<network::LinkHealthReport>>,
 }
 
 /// Configuration for a headless sync client.
@@ -86,6 +93,7 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
     let (event_tx, event_rx) = mpsc::channel(256);
     let (peers_tx, peers_rx) = watch::channel(Vec::new());
     let (known_offline_tx, known_offline_rx) = watch::channel(Vec::new());
+    let (health_tx, health_rx) = watch::channel(None);
 
     let mut sync_config = SyncConfig::new(
         config.username.clone(),
@@ -131,6 +139,17 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
         // time, close enough for a 7-day horizon.
         let mut clock_offset: i64 = 0;
         while let Some(event) = net_event_rx.recv().await {
+            // Health samples land in the watch and go no further — see
+            // the `health` field's doc for why they are not events.
+            if let NetworkEvent::LinkHealth(report) = &event {
+                let _ = health_tx.send(Some(*report));
+                continue;
+            }
+            if matches!(event, NetworkEvent::Disconnected { .. }) {
+                // Stale health must not outlive the connection that
+                // measured it.
+                let _ = health_tx.send(None);
+            }
             if let NetworkEvent::ClockSync { offset_millis } = &event {
                 clock_offset = *offset_millis;
             }
@@ -198,5 +217,6 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
         events: event_rx,
         peers: peers_rx,
         known_offline: known_offline_rx,
+        health: health_rx,
     }
 }

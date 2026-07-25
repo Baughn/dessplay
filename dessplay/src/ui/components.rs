@@ -17,7 +17,8 @@ use tuirealm::state::State;
 
 use super::msg::Msg;
 use super::props::{
-    ChatLine, FranchiseRow, ListGroup, PlaylistProps, SeriesSort, StatusProps, Tone, UsersProps,
+    ChatLine, FranchiseRow, HealthProps, ListGroup, PlaylistProps, SeriesSort, StatusProps, Tone,
+    UsersProps,
 };
 use super::theme;
 use super::widgets::{
@@ -1673,6 +1674,63 @@ passive_component!(StatusBar);
 impl AppComponent<Msg, NoUserEvent> for StatusBar {
     fn on(&mut self, _ev: &Event<NoUserEvent>) -> Option<Msg> {
         None
+    }
+}
+
+// ---- Health line -------------------------------------------------------
+
+/// The borderless connection-health line on the right column's bottom
+/// row (design.md, Connection Health Line): metrics on the left, the
+/// advisor's suggestion right-aligned. Dim when healthy; only the
+/// offending field turns yellow/red. Rendered directly by
+/// [`super::app::Ui::draw`] like the progress line — passive, captures
+/// no input, and is not part of the focus ring or mouse hit-testing.
+#[derive(Default)]
+pub struct HealthLine {
+    props: HealthProps,
+}
+
+impl HealthLine {
+    /// Replace props.
+    pub fn set_props(&mut self, props: HealthProps) {
+        self.props = props;
+    }
+
+    pub(crate) fn render(&self, frame: &mut Frame, area: Rect) {
+        use unicode_width::UnicodeWidthStr;
+
+        let mut flex = Vec::new();
+        for (text, tone) in super::props::health_fragments(&self.props) {
+            if !flex.is_empty() {
+                flex.push(Span::styled(" · ", theme::dim()));
+            }
+            flex.push(Span::styled(text, theme::tone_style(tone)));
+        }
+
+        let width = area.width as usize;
+        let cells = match &self.props.suggestion {
+            Some(suggestion) => {
+                // The suggestion outranks the metrics: when both can't
+                // fit, the metrics truncate (table_row keeps them a
+                // minimum stub) — a "disable BitTorrent" prompt is the
+                // actionable part, rtt digits are glanceable anyway.
+                // Only on a row too narrow for any useful text is the
+                // slot dropped rather than showing a lone ellipsis.
+                let cell_width = suggestion.text.width().min(width.saturating_sub(9));
+                if cell_width < 4 {
+                    Vec::new()
+                } else {
+                    vec![Cell::new(
+                        suggestion.text.clone(),
+                        theme::tone_style(suggestion.tone),
+                        cell_width,
+                        Align::Right,
+                    )]
+                }
+            }
+            None => Vec::new(),
+        };
+        frame.render_widget(Paragraph::new(table_row(width, flex, cells)), area);
     }
 }
 
