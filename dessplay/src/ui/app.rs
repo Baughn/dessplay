@@ -12,7 +12,7 @@ use dessplay_core::franchise::{self, FranchiseKey};
 use dessplay_core::net::PeerInfo;
 use dessplay_core::types::{
     Ed2kHash, ListEntryId, ManualState, NextEpState, PlaybackIntent, SeriesListEntry,
-    SeriesWatchState, UserId, encode_action,
+    SeriesWatchState, SharedTimestamp, UserId, encode_action,
 };
 use tuirealm::component::AppComponent;
 use tuirealm::event::{
@@ -239,6 +239,27 @@ struct SubtitleEntry {
     speaker_slot: Option<usize>,
 }
 
+/// One marquee pass in progress. The offset derives from wall millis
+/// (jitter-proof); `done` latches once the text has fully exited the
+/// last-measured slot, and the pass never replays for the same key.
+struct MarqueeAnim {
+    /// The LWW stamp of the message being scrolled — the identity that
+    /// decides "new pass" vs "same pass".
+    key: SharedTimestamp,
+    text: String,
+    /// Display width of `text`, cells (fixed; computed once).
+    text_width: usize,
+    /// Wall millis when this pass started.
+    started_at_millis: u64,
+    /// The last computed cell offset (draws render this).
+    offset: usize,
+    /// The middle slot's width from the last draw; 0 until measured.
+    /// The done-check waits for a real measurement rather than guess.
+    slot_width: usize,
+    /// The pass has fully exited; the slot reverts to the suggestion.
+    done: bool,
+}
+
 /// The whole TUI.
 pub struct Ui {
     me: UserId,
@@ -263,6 +284,11 @@ pub struct Ui {
     subtitles: std::collections::VecDeque<SubtitleEntry>,
     /// Named speakers active within the last five wall-clock minutes.
     speaker_colors: SpeakerColors,
+    /// The scrolling state of the synced marquee line, keyed by its LWW
+    /// stamp: one full off-screen-right to off-screen-left pass per
+    /// update, never restarted for the same key (design.md, AI
+    /// Commentary).
+    marquee: Option<MarqueeAnim>,
     /// In-flight playlist-add hashes: (filename, done, total). Drawn as
     /// a progress overlay while non-empty (the no-silent-work rule).
     hashing: Vec<(String, u64, u64)>,
@@ -337,6 +363,7 @@ impl Ui {
             color_depth: ColorDepth::Limited,
             subtitles: std::collections::VecDeque::new(),
             speaker_colors: SpeakerColors::default(),
+            marquee: None,
             hashing: Vec::new(),
             nyaa_imports: BTreeMap::new(),
             next_nyaa_import_id: 1,
@@ -365,10 +392,47 @@ impl Ui {
         self.color_depth = color_depth;
     }
 
-    /// Advance local subtitle-speaker leases independently of subtitle or
-    /// session traffic. Returns whether a redraw can change overflow policy.
+    /// Advance local subtitle-speaker leases and the marquee animation
+    /// independently of session traffic. Returns whether a redraw could
+    /// change what's on screen.
     pub(crate) fn advance_clock(&mut self, now_millis: u64) -> bool {
-        self.speaker_colors.advance(now_millis)
+        let speakers = self.speaker_colors.advance(now_millis);
+        let marquee = self.advance_marquee(now_millis);
+        speakers || marquee
+    }
+
+    /// How soon the shell should tick again: fast while a marquee pass
+    /// is animating (smooth scroll), the lazy 1s otherwise. The idle
+    /// discipline is preserved either way — a tick only repaints when
+    /// [`Self::advance_clock`] reports a change.
+    pub(crate) fn next_tick_hint(&self) -> std::time::Duration {
+        match &self.marquee {
+            Some(anim) if !anim.done => std::time::Duration::from_millis(100),
+            _ => std::time::Duration::from_secs(1),
+        }
+    }
+
+    /// Recompute the marquee offset from wall time; returns whether it
+    /// moved. Done latches when the text has fully exited the slot — but
+    /// only against a *measured* slot width (a pass that has never been
+    /// drawn keeps animating conservatively; the first draw measures).
+    fn advance_marquee(&mut self, now_millis: u64) -> bool {
+        let Some(anim) = &mut self.marquee else {
+            return false;
+        };
+        if anim.done {
+            return false;
+        }
+        let elapsed = now_millis.saturating_sub(anim.started_at_millis);
+        let offset = (elapsed * props::MARQUEE_CELLS_PER_SEC / 1000) as usize;
+        if offset == anim.offset {
+            return false;
+        }
+        anim.offset = offset;
+        if anim.slot_width > 0 && offset >= anim.slot_width + anim.text_width {
+            anim.done = true;
+        }
+        true
     }
 
     /// Append a subtitle line to the rolling log (empty lines are
@@ -712,6 +776,29 @@ impl Ui {
             snapshot.link,
         ));
         self.health.set_props(snapshot.health.clone());
+        // Marquee lifecycle: a new LWW stamp starts a fresh pass (even
+        // for identical text — a rewrite replays); the same stamp never
+        // restarts, including after `done`; a cleared register drops the
+        // animation. Snapshots arrive frequently during playback, so
+        // they advance the offset too.
+        match &snapshot.view.marquee {
+            Some((stamp, message)) => {
+                if self.marquee.as_ref().map(|anim| anim.key) != Some(*stamp) {
+                    use unicode_width::UnicodeWidthStr;
+                    self.marquee = Some(MarqueeAnim {
+                        key: *stamp,
+                        text_width: message.text.width(),
+                        text: message.text.clone(),
+                        started_at_millis: snapshot.now,
+                        offset: 0,
+                        slot_width: 0,
+                        done: false,
+                    });
+                }
+            }
+            None => self.marquee = None,
+        }
+        self.advance_marquee(snapshot.now);
         self.snapshot = snapshot;
         self.refresh_series();
     }
@@ -1871,7 +1958,19 @@ impl Ui {
         self.users.view(frame, users_area);
         self.playlist.view(frame, playlist_area);
         let progress = self.status.progress_text();
-        self.health.render(frame, bottom_area, &progress);
+        let marquee_frame = self
+            .marquee
+            .as_ref()
+            .filter(|anim| !anim.done)
+            .map(|anim| (anim.text.as_str(), anim.offset));
+        let slot_width = self
+            .health
+            .render(frame, bottom_area, &progress, marquee_frame);
+        if let Some(anim) = &mut self.marquee {
+            // Measure the slot every draw (even while a warning owns
+            // it), so the done-check tracks the real width.
+            anim.slot_width = slot_width;
+        }
         self.status.view(frame, status_area);
         self.keybar.view(frame, keybar_area);
         if let Some(modal) = self.modals.last_mut() {
@@ -2429,6 +2528,115 @@ mod tests {
         assert_eq!(ui.subtitles.len(), 100);
         // Oldest dropped: the front is line 50.
         assert_eq!(ui.subtitles.front().unwrap().text, "line 50");
+    }
+
+    // ---- Marquee (design.md, AI Commentary) ----------------------------
+
+    fn marquee_snapshot(text: &str, stamp: u64, now: u64) -> UiSnapshot {
+        let view = StateView {
+            marquee: Some((
+                SharedTimestamp(stamp),
+                dessplay_core::types::MarqueeMessage {
+                    text: text.into(),
+                    set_by: None,
+                },
+            )),
+            ..StateView::default()
+        };
+        UiSnapshot {
+            view: std::sync::Arc::new(view),
+            now,
+            ..UiSnapshot::default()
+        }
+    }
+
+    fn bottom_row(buffer: &tuirealm::ratatui::buffer::Buffer) -> String {
+        // 100x30 test terminal: status bar 3 + keybar 1 leave rows 0..=25
+        // for the main area; the terminal-wide bottom line is row 25.
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, 25)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn marquee_scrolls_in_from_off_screen_and_runs_once_per_stamp() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 7, 1_000));
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_millis(100),
+            "an animating marquee wants the fast tick"
+        );
+        // Offset 0: entirely off-screen right — the entry delay is the
+        // "glance down" affordance.
+        let buffer = render_test_buffer(&mut ui);
+        assert!(!bottom_row(&buffer).contains("Whaaaat?"), "not yet visible");
+
+        // 1s in (15 cells): fully entered, hugging the right of the slot.
+        assert!(ui.advance_clock(2_000), "movement wants a repaint");
+        let row = bottom_row(&render_test_buffer(&mut ui));
+        assert!(row.contains("<Amu> Whaaaat?"), "entered: {row}");
+        let early = row.find("<Amu>").unwrap();
+
+        // Another second: strictly further left.
+        assert!(ui.advance_clock(3_000));
+        let row = bottom_row(&render_test_buffer(&mut ui));
+        let later = row.find("<Amu>").unwrap();
+        assert!(later < early, "scrolls right-to-left ({early} -> {later})");
+
+        // Long after: fully exited, done latches, tick relaxes, and the
+        // same stamp never replays — even across fresh snapshots.
+        assert!(ui.advance_clock(60_000));
+        let row = bottom_row(&render_test_buffer(&mut ui));
+        assert!(!row.contains("Whaaaat?"), "exited: {row}");
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_secs(1));
+        assert!(!ui.advance_clock(61_000), "a done pass never repaints");
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 7, 62_000));
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_secs(1),
+            "same stamp: no replay"
+        );
+
+        // A new stamp — even with identical text — replays from the top.
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 8, 62_000));
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
+
+        // A cleared register drops the animation outright.
+        ui.apply_snapshot(UiSnapshot::default());
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn health_warning_owns_the_slot_over_a_live_marquee() {
+        use crate::ui::props::{SuggestionProps, Tone};
+
+        let mut ui = ui_with_view(StateView::default());
+        let mut snapshot = marquee_snapshot("<Amu> Whaaaat?", 7, 1_000);
+        snapshot.health.suggestion = Some(SuggestionProps {
+            text: "high latency — disable BitTorrent (F3, applies immediately)".into(),
+            tone: Tone::Paused,
+        });
+        ui.apply_snapshot(snapshot);
+        ui.advance_clock(3_000); // marquee would be mid-slot by now
+        let row = bottom_row(&render_test_buffer(&mut ui));
+        assert!(
+            row.contains("high latency"),
+            "the warning owns the slot: {row}"
+        );
+        assert!(!row.contains("Whaaaat?"), "marquee yields to warnings");
+
+        // An Info suggestion yields to the marquee instead.
+        let mut snapshot = marquee_snapshot("<Amu> Whaaaat?", 7, 1_000);
+        snapshot.health.suggestion = Some(SuggestionProps {
+            text: "state diverged — resyncing".into(),
+            tone: Tone::Muted,
+        });
+        let mut ui = ui_with_view(StateView::default());
+        ui.apply_snapshot(snapshot);
+        ui.advance_clock(3_000);
+        let row = bottom_row(&render_test_buffer(&mut ui));
+        assert!(row.contains("Whaaaat?"), "marquee over an Info note: {row}");
     }
 
     fn render_test_buffer(ui: &mut Ui) -> tuirealm::ratatui::buffer::Buffer {

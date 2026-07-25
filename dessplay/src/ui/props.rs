@@ -793,6 +793,71 @@ pub fn fmt_rate(bps: u64) -> String {
     }
 }
 
+/// Marquee scroll rate, display cells per second. Wall-millis-derived
+/// (offset = elapsed × rate), so tick jitter never changes trajectory.
+pub const MARQUEE_CELLS_PER_SEC: u64 = 15;
+
+/// The visible window of a marquee line at a given scroll offset.
+///
+/// The line enters entirely off-screen right (offset 0 shows nothing —
+/// the whole point: motion draws the eye *before* the sentence starts
+/// leaving) and exits entirely off-screen left (nothing again at
+/// `free + text_width`). Returns the visible substring and its left
+/// padding within the `free`-cell slot, or `None` when no cell of the
+/// text is on screen. Display-cell aware: wide (CJK) chars count two
+/// cells, and one straddling the left cut is dropped, leaving its
+/// half-cell as padding.
+pub fn marquee_window(text: &str, free: usize, offset: usize) -> Option<(String, usize)> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if free == 0 {
+        return None;
+    }
+    let text_width = text.width();
+    if offset == 0 || offset >= free + text_width {
+        return None;
+    }
+    let left_edge = free as isize - offset as isize;
+    if left_edge >= 0 {
+        // Entering / fully visible: pad, then the prefix that fits.
+        let pad = left_edge as usize;
+        let avail = free - pad;
+        let mut out = String::new();
+        let mut used = 0;
+        for ch in text.chars() {
+            let w = ch.width().unwrap_or(0);
+            if used + w > avail {
+                break;
+            }
+            out.push(ch);
+            used += w;
+        }
+        Some((out, pad))
+    } else {
+        // Exiting: skip the cells already gone past the left edge.
+        let skip = (-left_edge) as usize;
+        let mut skipped = 0;
+        let mut out = String::new();
+        let mut used = 0;
+        for ch in text.chars() {
+            let w = ch.width().unwrap_or(0);
+            if skipped < skip {
+                skipped += w;
+                continue;
+            }
+            if used + w > free {
+                break;
+            }
+            out.push(ch);
+            used += w;
+        }
+        let pad = skipped.saturating_sub(skip);
+        if out.is_empty() {
+            return None;
+        }
+        Some((out, pad))
+    }
+}
+
 /// The health row's left-hand metric fragments, in display order, as
 /// (text, tone) pairs — the component joins them with dim `·`
 /// separators. Pure, and the per-field warning tones live here with the
@@ -1855,6 +1920,32 @@ mod tests {
     /// constantly; alone or idle only the 30s heartbeats arrive, so the
     /// age appears only once it would warn anyway (40s+). Everything
     /// below the bar is a static, dim "sync ok".
+    #[test]
+    fn marquee_window_enters_crosses_and_exits() {
+        let w = |offset| marquee_window("hello", 10, offset);
+        assert_eq!(w(0), None, "offset 0 is fully off-screen right");
+        assert_eq!(w(1), Some(("h".into(), 9)));
+        assert_eq!(w(5), Some(("hello".into(), 5)));
+        assert_eq!(w(10), Some(("hello".into(), 0)), "flush left");
+        assert_eq!(w(12), Some(("llo".into(), 0)), "exiting");
+        assert_eq!(w(14), Some(("o".into(), 0)), "last cell");
+        assert_eq!(w(15), None, "fully exited at free + width");
+        assert_eq!(marquee_window("hello", 0, 3), None, "no slot, no text");
+    }
+
+    #[test]
+    fn marquee_window_is_display_cell_aware() {
+        // "日本" is 4 display cells wide.
+        assert_eq!(marquee_window("日本", 6, 2), Some(("日".into(), 4)));
+        // A wide char that does not fit the entering window yet renders
+        // nothing (blank cells), not a half char.
+        assert_eq!(marquee_window("日本", 6, 1), Some(("".into(), 5)));
+        // Exiting with the cut straddling a wide char: the straddled
+        // char drops and its residual cell becomes padding.
+        assert_eq!(marquee_window("日本", 6, 7), Some(("本".into(), 1)));
+        assert_eq!(marquee_window("日本", 6, 10), None);
+    }
+
     #[test]
     fn sync_age_shows_only_when_noteworthy() {
         let with = |silence: u64, playing: bool, company: bool| {

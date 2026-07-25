@@ -206,7 +206,10 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     // every cell.
     let _ = adapter.raw_mut().draw(|frame| ui.draw(frame));
     loop {
-        let input = match inputs.recv_timeout(std::time::Duration::from_secs(1)) {
+        // Adaptive cadence: ~100ms while a marquee pass animates, the
+        // lazy 1s otherwise. Idle cost is unchanged — the timeout arm
+        // only repaints when advance_clock reports a visible change.
+        let input = match inputs.recv_timeout(ui.next_tick_hint()) {
             Ok(input) => input,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let now_millis = std::time::SystemTime::now()

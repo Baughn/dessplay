@@ -1697,7 +1697,20 @@ impl HealthLine {
         self.props = props;
     }
 
-    pub(crate) fn render(&self, frame: &mut Frame, area: Rect, progress: &str) {
+    /// Render the row. `marquee` is the live scroll frame — the text
+    /// and its current cell offset — when one is animating; the slot
+    /// precedence is **warning/critical suggestion > marquee > info
+    /// suggestion > blank** (a health warning is the row's job; the
+    /// commentary yields to it). Returns the middle slot's width in
+    /// cells, so the caller can measure when the marquee has fully
+    /// exited.
+    pub(crate) fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        progress: &str,
+        marquee: Option<(&str, usize)>,
+    ) -> usize {
         use unicode_width::UnicodeWidthStr;
         let width = area.width as usize;
 
@@ -1723,9 +1736,29 @@ impl HealthLine {
         // when the space is too tight for useful text.
         let free = width.saturating_sub(progress_width + health_width);
         let mut spans = vec![Span::raw(progress)];
-        let middle = self.props.suggestion.as_ref().filter(|_| free >= 4 + 4);
-        match middle {
-            Some(suggestion) => {
+        let suggestion = self.props.suggestion.as_ref().filter(|_| free >= 4 + 4);
+        // A warning (or worse) owns the slot; the marquee scrolls only
+        // over an empty or merely-informational slot. The ≥2-space
+        // margins live inside the marquee window (its `free - 4`).
+        let warning = suggestion.filter(|s| s.tone != super::props::Tone::Muted);
+        let marquee_frame = warning
+            .is_none()
+            .then(|| {
+                marquee
+                    .filter(|_| free >= 4 + 4)
+                    .and_then(|(text, offset)| super::props::marquee_window(text, free - 4, offset))
+            })
+            .flatten();
+        match (warning.or(suggestion), marquee_frame) {
+            (_, Some((text, window_pad))) => {
+                let text_width = text.width();
+                spans.push(Span::raw(" ".repeat(2 + window_pad)));
+                spans.push(Span::raw(text.clone()));
+                spans.push(Span::raw(
+                    " ".repeat(free.saturating_sub(2 + window_pad + text_width)),
+                ));
+            }
+            (Some(suggestion), None) => {
                 let (text, text_width) = truncate_display(&suggestion.text, free - 4);
                 let pad = free - text_width;
                 let left_pad = pad / 2;
@@ -1733,10 +1766,11 @@ impl HealthLine {
                 spans.push(Span::styled(text, theme::tone_style(suggestion.tone)));
                 spans.push(Span::raw(" ".repeat(pad - left_pad)));
             }
-            None => spans.push(Span::raw(" ".repeat(free))),
+            (None, None) => spans.push(Span::raw(" ".repeat(free))),
         }
         spans.extend(health);
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        free.saturating_sub(4)
     }
 }
 
