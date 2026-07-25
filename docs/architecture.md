@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-07-25
+Last updated: 2026-07-26
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -335,10 +335,25 @@ suggestion slot. The loop feeds it subtitles (deduped with the shared
 and health samples (throttled to 5s inside the advisor); providers —
 `AdvisorProvider`, must never block — deliver `SuggestionUpdate`s through
 a channel the loop select-arms into the snapshot. The rule-based provider
-is the only one today; a future LLM commentary provider is an async task
-owning a `Sender` clone, no new plumbing. `SyncEvent::Diverged` (emitted
-by the sync actor's divergence alarm) is consumed here and rides the
-advisor context.
+is the only one today. `SyncEvent::Diverged` (emitted by the sync actor's
+divergence alarm) is consumed here and rides the advisor context.
+
+**The commentary engine** (`commentary.rs`; design.md, AI Commentary) is
+a sibling of the advisor rather than one of its providers — its output
+is a *synced mutation*, not a local suggestion. The loop select-arms its
+interval ticker (armed only when a token + interval are configured): a
+tick gathers gates (connected, `derive::playback_active`, the client's
+own `FileAvailability::Ready` for now-playing, a known series), reuses
+the advisor's assembled context (series/episode/subtitle ring, now 100
+lines), lets the engine plan (pick vs. reuse the persistent commentator;
+seeded-RNG 5% re-roll), requests a player screenshot through the
+`SessionShell`, and spawns the blocking Anthropic calls under
+`spawn_blocking` — the liveness rule holds, the loop never waits on
+HTTP. A second arm receives the finished job and issues
+`Mutation::SetMarquee`; the author's own UI sees it through the ordinary
+local-apply → snapshot path, identically to every peer. Settings saves
+reconfigure the engine live (model swap / ticker re-cadence); an
+in-flight call that outlives a disable is discarded on arrival.
 
 **Liveness rule: nothing in the bridge loop may block or run long.**
 Every await in an arm body must complete promptly — channel sends to
@@ -667,6 +682,8 @@ dessplay/                     (client: lib + thin binary)
                                drives the FileActor)
     advisor.rs                (the suggestion-slot seam: context
                                collection, provider trait, rule provider)
+    commentary.rs             (AI commentary engine: commentator state,
+                               Anthropic model seam, marquee writes)
     download.rs               (Downloads: chunk scheduling — pipeline,
                                rarest-first, snub, endgame; Phase 9B)
     chunkstore.rs             (on-disk chunk assembly + ed2k block

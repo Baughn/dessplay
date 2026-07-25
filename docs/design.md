@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-25
+Last updated: 2026-07-26
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -40,7 +40,7 @@ This section describes the full workflow from a user's perspective.
 
 ### Settings Screen
 
-The settings screen is divided into four tabs, selected with Left/Right;
+The settings screen is divided into five tabs, selected with Left/Right;
 Up/Down moves between controls in the active tab. Capital `S`, the visible
 `[Save]` row, or Ctrl-S where the terminal delivers it saves the complete
 working copy atomically. Tabs containing a missing required value carry a
@@ -87,12 +87,19 @@ working copy atomically. Tabs containing a missing required value carry a
   `#dess`). The subordinate values stay editable while disabled. A dim hint
   warns that IRC is **public**: bridged chat leaves the encrypted group. Saving
   changed IRC values reconfigures the bridge live.
+- **AI commentary**: an Anthropic API token (optional, annotated
+  **"Baughn only"** — nobody else is expected to set one; clearing it
+  disables the feature) and a ladder-cycling comment interval (Off /
+  2 min / 5 min / 10 min, default Off; dormant until a token exists).
+  Both apply live. The tab's note says plainly that recent subtitles and
+  a player screenshot are sent to Anthropic. See
+  [AI Commentary](#ai-commentary-the-marquee).
 
 Rows whose values do not apply immediately carry a dim lifecycle annotation
 (`next restart`, `reconnects IRC`, the BitTorrent row's asymmetric
 `off: immediate · on: next launch`, or the player's WIP warning). Media
-roots, cache retention, auto-download, and BitTorrent-off reconfigure their
-owning actor live.
+roots, cache retention, auto-download, BitTorrent-off, and the AI
+commentary settings reconfigure their owning actor live.
 
 Bare `J`/`K` are used for root reordering rather than Ctrl-J/Ctrl-K, which
 collide with control codes (Ctrl-J == LF) in terminals without the enhanced
@@ -1312,14 +1319,55 @@ condition holds the slot ~30s against threshold flicker. When the row
 is tight the health metrics keep their full width (they are the row's
 reason to exist), the progress bar truncates next, and the suggestion
 takes whatever middle space remains — dropped entirely rather than
-rendering a lone ellipsis. The slot is also where future
-**marquee-style LLM commentary** will render: the advisor's provider
-seam already collects what that provider needs — the now-playing
-series, episode, and the last ~50 deduped subtitle lines — delivered
-through the same channel; the provider itself is future work (see
-[Future Plans](#future-plans)).
+rendering a lone ellipsis. The slot is also where the
+[AI commentary marquee](#ai-commentary-the-marquee) scrolls; slot
+precedence is **warning/critical suggestion > live marquee > info
+suggestion > blank** — a health warning is the row's job, so the
+commentary yields to it.
 
 The row is dead to the mouse (it is outside every pane rect).
+
+### AI Commentary (the marquee)
+
+Just for fun, and explicitly a **single-user gimmick** (the settings tab
+says "Baughn only"): on the configured interval — and only while
+connected, playing, and holding the now-playing file — the client with
+an Anthropic token asks **claude-opus-5** (low thinking effort,
+hardcoded) to react to the episode *in character*, and the reply scrolls
+across the bottom line's middle slot on **every** client.
+
+- **The commentator.** The voice is a persistent character from the
+  show's cast: a first, spoiler-bounded call asks for "major characters
+  who have appeared up to and including this episode only", and the code
+  picks one at random. The pick persists across ticks (and across API
+  failures), is **re-rolled with 5% probability per tick** — a quietly
+  changing persona is funnier than a fresh voice every time — and resets
+  on a series change.
+- **The comment.** Each tick sends the series, episode, the last ~100
+  deduped subtitle lines (the advisor's ring), and an mpv screenshot
+  when one can be captured in time (`screenshot-to-file`, raw frame, no
+  OSD/subs; best-effort — its absence never blocks the tick). The prompt
+  pins the spoiler bound ("you know nothing beyond this episode") and
+  the output shape: one IRC-style line, `<Amu> Whaaaat?`. Replies are
+  normalized (newlines flattened, missing `<Name>` prefix repaired,
+  hard-capped ~220 chars).
+- **Distribution.** The line is written to the synced, deliberately
+  generic **marquee register** (`LwwCell<Option<MarqueeMessage>>`,
+  cleared at compaction like other ephemeral session state); every
+  client — the author included, via the ordinary sync echo — plays the
+  same marquee. One update = **one pass**: the text enters entirely
+  off-screen right (the entry delay gives people time to notice motion
+  and glance down before the sentence starts leaving), scrolls left at
+  ~15 cells/s, exits entirely off-screen left, and the slot reverts to
+  the advisor suggestion. A pass is keyed by the register's LWW stamp —
+  a rewrite replays even with identical text; the same stamp never
+  restarts. While a pass animates the UI thread ticks at ~100ms instead
+  of its lazy 1s (idle cost unchanged — a tick only repaints when
+  something moved).
+- **Failure policy.** Every failure — HTTP error, refusal, empty cast,
+  malformed reply — is a log line and a skipped tick; never a chat line,
+  never user-visible noise. An in-flight call never stacks with the next
+  tick, and disabling mid-flight discards the late result.
 
 **Subtitle display (optional):** the local player's subtitles can be
 surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->
@@ -1477,6 +1525,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Lookup requests | `GSet<FileHashInfo>` | Clients insert (playlist + library scan); cleared on compaction |
 | Chat | `GList<ChatMessage>` | Grow-only ordered list; trimmed on compaction (server archives full history) |
 | Playback position | `Map<UserId, LwwCell<PlaybackPosition>>` | Per user, high frequency, datagram-only transport |
+| Marquee | `LwwCell<Option<MarqueeMessage>>` | Written by the commentary-running client; every client scrolls it on update; cleared at compaction |
 
 All registers are `LwwCell<V>` — DessPlay's own max-merge LWW register
 (`crdts::MVReg` proved non-convergent inside `Map`; see sync-state.md).
@@ -2280,7 +2329,8 @@ crash should not be replayed into the next session.
 **Settings** (username, server, password, media roots, player choice, cache
 retention, archive subdirectory policy, upload limit, subtitle mode, subtitle speaker names, subtitle
 speaker colors, the limited-terminal speaker-color overflow policy, auto-download, BitTorrent
-downloads, and IRC bridge settings -- enabled, server, TLS, channel) live in
+downloads, IRC bridge settings -- enabled, server, TLS, channel -- and the
+AI commentary settings -- Anthropic token, comment interval) live in
 the same SQLite database
 and are edited through the settings screen. The password is stored in plaintext
 — consistent with the threat model below. Command-line flags and environment
@@ -2294,23 +2344,26 @@ Versioned via `PRAGMA user_version`; migrations are append-only. All
 tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 (storage never reads the clock — keeps tests deterministic).
 
-The postcard `crdt_state` blob has **no internal version tag**, so a
-field added to `CrdtState` (e.g. `acknowledged_absent`) is decoded with a
-small forward-compat fallback: try the current layout, and on failure
-decode the previous layout (`CrdtStateV1`) and upgrade it (new fields
-default-initialized). This matters most for the *server*, which is
-authoritative and cannot re-sync its lost state from anyone; an
+The stored `crdt_state` blob carries a **tagged envelope**: a 4-byte
+magic (first byte 0xFF, which no untagged postcard state can start with)
+plus the protocol version, ahead of the postcard body — so a blob names
+its own layout instead of being identified by trial decode. Exactly one
+**untagged** legacy layout (protocol v6, pre-envelope) is still decoded
+and migrated forward; a tagged blob with any *other* version is refused
+outright rather than guessed at (a deliberate migration adds an explicit
+decode arm instead). This matters most for the *server*, which is
+authoritative and cannot re-sync its lost state from anyone (it backs up
+the whole database before first persisting a migrated blob); an
 interactive client can fall back to dropping an unreadable blob and
-re-syncing from the server. New struct fields are appended (never
-inserted) so the previous layout is a strict prefix.
+re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 
 **Client** (`$XDG_DATA_HOME/dessplay/dessplay.db`):
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, auto_download, archive_subdirectory, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, auto_download, archive_subdirectory, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel, anthropic_token, commentary_interval) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
-| `crdt_state` | Latest snapshot per room (epoch + postcard blob); single `'default'` room in v1 |
+| `crdt_state` | Latest snapshot per room (epoch + version-tagged postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned; row-less hash-named files >1 week old swept) |
 | `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size), plus nullable owning media root; skips re-hashing unchanged files and doubles as the library index |
@@ -2325,7 +2378,7 @@ inserted) so the previous layout is a strict prefix.
 
 | Table | Contents |
 |-------|----------|
-| `crdt_state` | The authoritative snapshot (epoch + postcard blob) |
+| `crdt_state` | The authoritative snapshot (epoch + version-tagged postcard blob) |
 | `chat_archive` | Full chat history, archived before compaction trims the replicated GList; unique on (timestamp, sender, text), mirroring GList dedup |
 | `anidb_queue` | FILE validation queue: hash, size, filename, mtime (anchors the re-validation ladder on the file's real age), `series_hint` (title-like containing-directory name; the AniDB-miss fallback series name, so episodes group by folder), attempt bookkeeping, `next_attempt` scheduling (`i64::MAX` = settled tombstone) |
 | `anime_queue` | ANIME (relations-walk) queue: aid, attempt bookkeeping; the graph fills in over hours and must survive restarts |
@@ -2398,10 +2451,9 @@ For v1, this is acceptable. Future improvements could include:
 - Direct client-to-client connections (with or without hole punching) as a
   transfer optimization, slotted in beneath the `send(peer, message)`
   interface. Cut from v2: the relay-through-NAS path makes them unnecessary.
-- An **LLM commentary provider** for the health line's suggestion slot:
-  when the link is healthy, feed the now-playing series, episode, and the
-  advisor's last-~50-subtitle ring to an Anthropic model and render its
-  commentary in the slot. The advisor seam (context collection, provider
-  trait, async delivery channel) is already in place — the provider is a
-  spawned task owning a `Sender` clone plus API-key configuration.
+- LLM commentary in the health line's slot **landed** as the
+  [AI Commentary marquee](#ai-commentary-the-marquee) (in-character
+  commentator, synced marquee register). Possible refinements: keying
+  the commentator per-user, and marquee sources beyond commentary (the
+  register is deliberately generic).
 - Web UI using the same `ViewSpec` approach (see [ui-architecture.md](ui-architecture.md)).

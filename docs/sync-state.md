@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-07-10
+Last updated: 2026-07-26
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -12,7 +12,8 @@ central coordinator.
 2. [Replicated Data Types](#replicated-data-types)
 3. [Transport](#transport)
 4. [Compaction](#compaction)
-5. [Failure Modes](#failure-modes)
+5. [Snapshot Storage](#snapshot-storage)
+6. [Failure Modes](#failure-modes)
 
 ---
 
@@ -196,6 +197,7 @@ and the wire protocol uniform.
 | List next-ep | `Map<ListEntryId, LwwCell<NextEpState>, ActorId>` | Any peer; server auto-advance |
 | Lookup requests | `GSet<FileHashInfo>` | Any peer inserts; cleared on compaction |
 | Chat | `GList<ChatMessage>` | Any peer appends; trimmed on compaction |
+| Marquee | `LwwCell<Option<MarqueeMessage>>` | The commentary-running client (design.md, AI Commentary); cleared on compaction |
 | Playback position | `Map<UserId, LwwCell<PlaybackPosition>, ActorId>` | Each user writes own |
 
 ### Playlist
@@ -384,16 +386,17 @@ Lamport-monotonic stamp discipline.
 **The `SeriesPreference` wrapper (Phase 16) is a value-*shape* change**,
 unlike the `Maybe`-variant addition above: the map's value type gained a
 field (`set_by`), not just a new enum discriminant. Snapshot decode
-migrates old on-disk blobs via `CrdtState::decode_snapshot`'s versioned
-fallback chain (`CrdtStateV3` -- identical to today's layout but with the
-bare `SeriesWatchState` value): each old entry is resolved to its
+migrated old on-disk blobs via what was then a versioned trial-decode
+fallback chain (`CrdtStateV3` -- identical to that day's layout but with
+the bare `SeriesWatchState` value): each old entry was resolved to its
 `(timestamp, value)` winner and rewritten as `SeriesPreference { state,
 set_by: None }` under a reserved migration-only `ActorId`, preserving the
-timestamp (so a later real write from any actor still LWW-compares
+timestamp (so a later real write from any actor still LWW-compared
 correctly) without needing the old entries' original per-actor dot
 structure -- safe because `ActorId`s are session-scoped (Phase 4), so no
 live session's dot clock depends on a restart-time migration reproducing
-it.
+it. (The chain itself has since been retired -- see
+[Snapshot Storage](#snapshot-storage).)
 
 **Re-keying `AniDbSeriesId` -> `ListEntryId` (Series Identity work) is a
 key-*type* change**, not a value-shape change, so it needs the same
@@ -417,12 +420,13 @@ middle of the Phase 19 window — re-keyed and with
 `anidb_unavailable` — was deployed to the rendezvous server (2026-07-04)
 and wrote authoritative snapshots in that never-numbered shape; the next
 day's binary then refused to start, since no fallback matched it. The
-chain now carries that layout as `CrdtStateV5` (upgrade: default the
-missing flag false; everything else passes through). The general lesson:
-the server persists whatever layout it *runs*, so any layout that ever
-reaches tsugumi needs a fallback entry — either deploy only at
-phase-complete commits, or add the intermediate to the chain as part of
-the deploy.
+trial-decode chain then carried that layout as `CrdtStateV5`. The
+general lesson stands under today's tagged envelope too: the server
+persists whatever layout it *runs*, so any layout that ever reaches
+tsugumi must remain decodable — the envelope makes the failure loud and
+attributable (a version-mismatch error naming both versions) instead of
+a silent misdecode, and a deliberate migration adds an explicit decode
+arm for the old version (see [Snapshot Storage](#snapshot-storage)).
 
 ### Acknowledged Absent
 
@@ -641,9 +645,10 @@ truly lost -- the replicated state just stays bounded.
   transition. The tag is a **clock-free** identity check -- comparing a
   peer's sample timestamp against the now-playing write time would be
   unsound, since `SharedTimestamp`s are only reliably ordered *within* one
-  machine, not across the loosely-NTP-synced fleet. Appending this field is a
-  forward-compatible snapshot change: pre-`file` blobs decode via the
-  `CrdtStateV2` fallback, which drops their (ephemeral) positions.
+  machine, not across the loosely-NTP-synced fleet. (When this field was
+  appended, pre-`file` blobs decoded via the then-current trial-decode
+  fallback, which dropped their ephemeral positions; that chain has since
+  been retired -- see [Snapshot Storage](#snapshot-storage).)
 
 Updated at high frequency: every 100ms during playback, every 1s when paused.
 These updates are **not persisted to SQLite on every update**. The server
@@ -764,8 +769,8 @@ debt taken on by session-scoped ActorIds). Around it, the server:
 1. Takes its current resolved view (one lock).
 2. Rebuilds: playlist tombstones are purged and `Identifier` positions
    reassigned small and flat; watched flags for files no longer on the
-   playlist are dropped; the lookup and acknowledged-absent GSets empty;
-   chat keeps its
+   playlist are dropped; the lookup and acknowledged-absent GSets and
+   the marquee register empty; chat keeps its
    trailing `chat_keep` messages (default 100); playback positions come
    along already coalesced (the view holds one per user); The List is
    untouched — permanent state. Stamps come from the server's Lamport
@@ -782,6 +787,64 @@ debt taken on by session-scoped ActorIds). Around it, the server:
 2. If epoch matches: server sends full CvRDT state, client merges
 3. If epoch is stale: server sends the compacted snapshot + new epoch.
    Client replaces its local state entirely.
+
+---
+
+## Snapshot Storage
+
+### The Tagged Envelope
+
+The SQLite `crdt_state` blob (client and server) is written as
+`SNAPSHOT_MAGIC ++ PROTOCOL_VERSION (u32 LE) ++ postcard(CrdtState)` --
+`CrdtState::encode_snapshot`. The magic's first byte is 0xFF, which no
+untagged postcard state can begin with (the first field is the playlist
+map's vclock length varint; 0xFF there would claim an absurd
+continuation-varint size), so the envelope is an unambiguous
+discriminator. A blob therefore **names its own layout**; decode never
+guesses.
+
+**Wire messages are unaffected.** `StateSnapshot`/`StateMerge` embed the
+raw postcard `CrdtState` -- cross-version wire compatibility is owned
+entirely by the `Auth` handshake's `PROTOCOL_VERSION` gate, which
+refuses mismatched peers before any state crosses. The envelope exists
+for storage because *blobs outlive deployments*; connections don't.
+
+### Decoding and Migration
+
+`CrdtState::decode_snapshot[_flagged]`:
+
+- **Tagged, current version**: decode the body as the current layout.
+- **Tagged, any other version**: hard error naming both versions -- the
+  refuse-to-start posture. A deliberate migration adds an explicit
+  decode arm (a frozen copy of the old layout + upgrade) for that
+  version; nothing is ever guessed from bytes.
+- **Untagged**: the one legacy layout, `CrdtStateUntaggedV6` -- the
+  pre-envelope protocol-v6 shape every deployed database held when the
+  envelope landed (2026-07-25). It decodes flagged (`migrated = true`),
+  and the server backs up its whole database before first persisting
+  the migrated result, exactly as before.
+
+Any future `CrdtState` shape change is therefore: bump
+`PROTOCOL_VERSION` (snapshots cross the wire untagged, so the group and
+server upgrade together -- established practice), and the storage side
+comes along for free since the envelope stamps the new version. Keeping
+the old *tagged* version decodable is a choice made per change, not an
+obligation the format imposes.
+
+### History: the trial-decode chain
+
+Before the envelope, blobs were untagged and identified by **trial
+decode** through a chain of frozen layout structs
+(`CrdtStateV1..V5`/`Protocol5`), grown by one entry per shape change --
+including the `SeriesPreference` re-key migration and the
+mid-development `V5` layout that reached production (see the Series
+Preference section's migration notes). The chain worked, but each entry
+was permanent code, discrimination relied on byte-length guards (the
+trailing `protocol_version` field exists for exactly that), and a wrong
+trial decode would have been silent. The envelope replaced the whole
+chain with the single untagged-v6 fallback; the historical migrations
+above are kept as documentation of *how* value-shape and key-type
+migrations are done when one is needed again.
 
 ---
 

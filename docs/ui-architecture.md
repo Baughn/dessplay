@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-25
+Last updated: 2026-07-26
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -324,13 +324,32 @@ snapshot data to component props:
   terminal-wide, borderless bottom line of the main area: the progress
   bar text (from `StatusBar::progress_text`, shared props with the
   status bar) at the left, health metrics right-aligned at the terminal
-  edge, and the suggestion / future marquee commentary centered in the
-  middle with ≥2 spaces of margin. Metric text and per-field warning
-  tones come from the pure `props::health_fragments`. When the row is
-  tight: health keeps its width, progress truncates, the suggestion
-  takes the leftover (or is dropped). Rendered directly by `Ui::draw`:
-  passive, no input, outside every recorded pane rect — so mouse
-  hit-testing ignores it with no special casing.
+  edge, and the suggestion / marquee slot centered in the middle with
+  ≥2 spaces of margin. Metric text and per-field warning tones come
+  from the pure `props::health_fragments`. When the row is tight:
+  health keeps its width, progress truncates, the suggestion takes the
+  leftover (or is dropped). Rendered directly by `Ui::draw`: passive,
+  no input, outside every recorded pane rect — so mouse hit-testing
+  ignores it with no special casing.
+
+  **The marquee** (design.md, AI Commentary) animates in this slot. The
+  `Ui` holds a `MarqueeAnim` keyed by the synced register's LWW stamp
+  (`StateView.marquee`): a new stamp starts one pass — enter fully
+  off-screen right, scroll left, exit fully off-screen left — the same
+  stamp never restarts, and a cleared register drops it. The offset
+  derives from **wall millis** (`elapsed × props::MARQUEE_CELLS_PER_SEC`),
+  so tick jitter never changes the trajectory, and windowing is the
+  pure, display-cell-aware `props::marquee_window` (CJK chars clip
+  whole). Slot precedence inside `HealthLine::render`: warning/critical
+  suggestion > live marquee > info suggestion > blank. The render
+  returns the measured slot width so the done-check uses real geometry
+  (a never-drawn pass keeps animating conservatively). The UI thread's
+  timeout tick adapts via `Ui::next_tick_hint` — ~100ms while a pass
+  animates, the lazy 1s otherwise — and the idle-redraw discipline
+  holds: a tick repaints only when `advance_clock` (which also advances
+  the speaker-color window) reports a change. Tests drive
+  `advance_clock` with synthetic millis; the UI thread is not on tokio
+  time.
 
 This mapping is a pure function (presence and subtitle data arrive as
 explicit inputs alongside the snapshot), making it testable independently.
