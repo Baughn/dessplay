@@ -4,8 +4,11 @@
 //! dot, and only while connected, playing, and holding the now-playing
 //! file — the engine asks an Anthropic model to react to the episode
 //! **in character**: a persistent "commentator" chosen from the show's
-//! cast (re-rolled with 5% probability per tick, reset on a series
-//! change). Each commentator is a real **chat thread**: the character
+//! cast, re-rolled with 5% probability per tick and **never** reset on
+//! a series change — the voice follows the group to the next show
+//! (Hinamori Amu commenting on Grave of the Fireflies is a feature)
+//! until the dice or a restart retire it. Each commentator is a real
+//! **chat thread**: the character
 //! card lives in the system prompt, and every tick appends a user turn
 //! carrying only the dialogue that arrived *since the last comment*
 //! (never resent — the advisor ring's per-line sequence numbers are the
@@ -477,17 +480,19 @@ impl CommentaryModel for AnthropicModel {
 
 // ---- The engine ----------------------------------------------------------
 
-/// The persistent voice: kept across ticks (and API failures), reset
-/// when the series changes, re-rolled with [`REROLL`] probability.
+/// The persistent voice: kept across ticks (and API failures, and even
+/// series changes), re-rolled with [`REROLL`] probability.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Commentator {
     name: String,
+    /// The character's *home* series — the show they were picked from,
+    /// which stays fixed even when the group moves on to another one.
     series: String,
 }
 
 /// A commentator's conversation: the voice plus every exchange so far.
-/// Lives exactly as long as the voice does — a re-roll or series change
-/// starts a fresh one.
+/// Lives exactly as long as the voice does — only a re-roll starts a
+/// fresh one; episode and series changes stay in-thread.
 #[derive(Clone, Debug)]
 struct Thread {
     commentator: Commentator,
@@ -546,6 +551,10 @@ pub struct JobOutcome {
     commentator: Commentator,
     /// The job started a fresh thread (picked its voice).
     fresh: bool,
+    /// The now-playing series the comment was made during — not
+    /// necessarily the commentator's home series (a kept voice outlives
+    /// a series change). Keys the episode-comment seed.
+    series: String,
     episode: Option<String>,
     /// The turn as sent, echoed back so the engine can append it to the
     /// thread only once it actually succeeded.
@@ -740,18 +749,11 @@ impl CommentaryEngine {
             );
             return None;
         }
-        let series = gates.series.as_deref()?;
-        // A series change retires the old voice — and its thread and
-        // comment seed — before the roll below.
-        if self
-            .thread
-            .as_ref()
-            .is_some_and(|t| t.commentator.series != series)
-        {
-            self.thread = None;
-            self.episode_comments.clear();
-            self.episode_key = None;
-        }
+        // A series change does NOT retire the voice: the commentator
+        // follows the group to the next show (deliberate — see the
+        // module docs) until the re-roll dice or a restart replaces
+        // them. The episode-key machinery headers the new series and
+        // resets the comment seed on its own.
         let pick_commentator = self.thread.is_none() || self.rng.random_bool(REROLL);
         Some(TickPlan { pick_commentator })
     }
@@ -868,7 +870,7 @@ impl CommentaryEngine {
                     series = %outcome.commentator.series,
                     "commentary: {}", outcome.text
                 );
-                let key = (outcome.commentator.series.clone(), outcome.episode.clone());
+                let key = (outcome.series.clone(), outcome.episode.clone());
                 if self.episode_key.as_ref() != Some(&key) {
                     self.episode_comments.clear();
                     self.episode_key = Some(key);
@@ -936,8 +938,12 @@ fn run_job(
             }
         }
     };
+    // The card names the commentator's *home* series, not the
+    // now-playing one — a kept voice may have outlived its show, and
+    // the card must stay byte-stable for the thread's lifetime anyway
+    // (the caching invariant).
     let raw = model.write_comment(&CommentRequest {
-        system: system_prompt(&commentator.name, &spec.series),
+        system: system_prompt(&commentator.name, &commentator.series),
         history: spec.history,
         user_text: spec.user_text.clone(),
         screenshot: screenshot_bytes.clone(),
@@ -947,6 +953,7 @@ fn run_job(
     Ok(JobOutcome {
         commentator,
         fresh,
+        series: spec.series,
         episode: spec.episode,
         user_text: spec.user_text,
         screenshot: screenshot_bytes,
@@ -1399,28 +1406,79 @@ mod tests {
         );
     }
 
-    /// A series change retires the voice: the next tick picks fresh.
+    /// A series change does NOT retire the voice: the commentator (and
+    /// their thread) follows the group to the next show — only the 5%
+    /// dice or a restart replaces them. The turn headers the new series
+    /// exactly like an episode change, and the character card stays
+    /// pinned to the commentator's home series.
     #[tokio::test]
-    async fn series_change_resets_the_commentator() {
-        let fake = FakeModel::new(&["Amu"], "<Amu> hi");
+    async fn series_change_keeps_the_commentator() {
+        let fake = FakeModel::scripted(&["Amu"], &[Ok("On First."), Ok("On Second.")]);
         let mut engine = engine(fake.clone(), NO_REROLL_SEED);
         let plan = engine.plan_tick(&gates("First")).unwrap();
         engine.spawn_job(plan, &ctx("First"), None);
         take(&mut engine).await.unwrap();
-        assert!(engine.commentator().is_some());
+        let picked = engine.commentator().cloned().expect("voice retained");
 
         let plan = engine.plan_tick(&gates("Second")).expect("eligible");
-        assert!(plan.pick_commentator, "new series — new voice");
-        // And the old series' comments never seed the new thread.
+        assert!(
+            !plan.pick_commentator,
+            "a series change must not retire the voice"
+        );
         let mut second = ctx("Second");
         second.subtitles.push((3, "Fresh line.".into()));
         engine.spawn_job(plan, &second, None);
         take(&mut engine).await.unwrap();
+        assert_eq!(
+            engine.commentator().cloned().unwrap(),
+            picked,
+            "same voice across the series boundary"
+        );
+
+        {
+            let requests = fake.comment_requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(
+                requests[1].history.len(),
+                1,
+                "same thread across the series boundary"
+            );
+            assert!(
+                requests[1].user_text.contains("Now playing: \"Second\""),
+                "the series change is announced mid-thread: {}",
+                requests[1].user_text
+            );
+            assert_eq!(
+                requests[0].system, requests[1].system,
+                "the character card is stable across the series change"
+            );
+            assert!(
+                requests[1].system.contains("\"First\""),
+                "the card pins the commentator to their home series: {}",
+                requests[1].system
+            );
+        }
+
+        // A fresh voice picked mid-Second seeds from Second's comments
+        // only — the old series' comments never cross over.
+        engine.spawn_job(
+            TickPlan {
+                pick_commentator: true,
+            },
+            &second,
+            None,
+        );
+        take(&mut engine).await.unwrap();
         let requests = fake.comment_requests.lock().unwrap();
         assert!(
-            !requests[1].user_text.contains("Comments so far"),
+            requests[2].user_text.contains("On Second."),
+            "seeded with the current episode's comments: {}",
+            requests[2].user_text
+        );
+        assert!(
+            !requests[2].user_text.contains("On First."),
             "no cross-series seeding: {}",
-            requests[1].user_text
+            requests[2].user_text
         );
     }
 

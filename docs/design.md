@@ -1347,9 +1347,14 @@ middle slot on **every** client.
   show's cast: a first, spoiler-bounded call asks for "major characters
   who have appeared up to and including this episode only", and the code
   picks one at random. The pick persists across ticks (and across API
-  failures), is **re-rolled with 5% probability per tick** — a quietly
-  changing persona is funnier than a fresh voice every time — and resets
-  on a series change.
+  failures) and is **re-rolled with 5% probability per tick** — a quietly
+  changing persona is funnier than a fresh voice every time. It is
+  deliberately **not** reset on a series change: the voice follows the
+  group to the next show — Hinamori Amu commenting on Grave of the
+  Fireflies is an accepted (welcomed) outcome — until the dice or a
+  client restart retire it. The character card stays pinned to the
+  commentator's *home* series, so a carried-over voice knows it is
+  watching someone else's show.
 - **The thread.** Each commentator is a real multi-turn conversation,
   not a stateless call: the character card and rules (the spoiler bound
   — "you know nothing beyond the episode currently being watched" — and
@@ -1362,8 +1367,8 @@ middle slot on **every** client.
   (`screenshot-to-file`, raw frame, no OSD/subs; best-effort — its
   absence never blocks the tick). The model's replies ride along as
   assistant turns, so the commentator remembers what it already said.
-  An episode change stays in-thread: the next turn opens with a
-  "Now playing" header. A commentator change (re-roll or series change)
+  An episode — or series — change stays in-thread: the next turn opens
+  with a "Now playing" header. A commentator change (the 5% re-roll)
   cuts the thread; the fresh commentator's first turn is seeded with
   the **text** of the current episode's earlier comments — never the
   images or subtitles behind them — so the voice changes without the
