@@ -89,6 +89,14 @@ rlimit = "0.10"
 [profile.dev.package."*"]
 debug = false
 
+# The nix (rust-overlay) nightly's bundled rust-objcopy has a broken
+# libLLVM.dylib rpath on macOS, so the release default (strip =
+# "debuginfo") warns on every build. Skipping the strip keeps symbols
+# for samply profiling anyway; on macOS debug info lives in the object
+# files, so the size cost is small.
+[profile.release]
+strip = false
+
 # Debug-build MD4 hashes at ~70 MiB/s — a 1.4GB episode takes 20s and
 # feels broken (release: >1.2 GiB/s). Always optimize the hash inner
 # loops; debug info elsewhere is unaffected.
