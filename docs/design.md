@@ -1389,9 +1389,12 @@ middle slot on **every** client.
   ~15 cells/s, exits entirely off-screen left, and the slot reverts to
   the advisor suggestion. A pass is keyed by the register's LWW stamp —
   a rewrite replays even with identical text; the same stamp never
-  restarts. While a pass animates the UI thread ticks at ~100ms instead
-  of its lazy 1s (idle cost unchanged — a tick only repaints when
-  something moved).
+  restarts. A stamp from **before this session's first snapshot** never
+  plays at all: the register persists in synced state until compaction,
+  so a freshly started client would otherwise replay last night's final
+  comment on launch — it is adopted as already-played instead. While a
+  pass animates the UI thread ticks at ~100ms instead of its lazy 1s
+  (idle cost unchanged — a tick only repaints when something moved).
 - **Failure policy.** Every failure — HTTP error, refusal, empty cast,
   malformed reply — is a log line and a skipped tick; never a chat line,
   never user-visible noise. An in-flight call never stacks with the next

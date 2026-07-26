@@ -289,6 +289,11 @@ pub struct Ui {
     /// update, never restarted for the same key (design.md, AI
     /// Commentary).
     marquee: Option<MarqueeAnim>,
+    /// Shared-clock millis of the first applied snapshot — this
+    /// session's birth. A marquee stamped before it is a previous
+    /// session's leftover (the register persists in synced state until
+    /// compaction) and is adopted already-done instead of played.
+    startup_shared_millis: Option<u64>,
     /// In-flight playlist-add hashes: (filename, done, total). Drawn as
     /// a progress overlay while non-empty (the no-silent-work rule).
     hashing: Vec<(String, u64, u64)>,
@@ -364,6 +369,7 @@ impl Ui {
             subtitles: std::collections::VecDeque::new(),
             speaker_colors: SpeakerColors::default(),
             marquee: None,
+            startup_shared_millis: None,
             hashing: Vec::new(),
             nyaa_imports: BTreeMap::new(),
             next_nyaa_import_id: 1,
@@ -780,7 +786,10 @@ impl Ui {
         // for identical text — a rewrite replays); the same stamp never
         // restarts, including after `done`; a cleared register drops the
         // animation. Snapshots arrive frequently during playback, so
-        // they advance the offset too.
+        // they advance the offset too. A stamp from before this
+        // session's first snapshot is a previous session's leftover and
+        // is adopted with `done` latched, so it never plays.
+        let startup = *self.startup_shared_millis.get_or_insert(snapshot.now);
         match &snapshot.view.marquee {
             Some((stamp, message)) => {
                 if self.marquee.as_ref().map(|anim| anim.key) != Some(*stamp) {
@@ -792,7 +801,7 @@ impl Ui {
                         started_at_millis: snapshot.now,
                         offset: 0,
                         slot_width: 0,
-                        done: false,
+                        done: stamp.as_millis() < startup,
                     });
                 }
             }
@@ -2562,7 +2571,7 @@ mod tests {
     #[test]
     fn marquee_scrolls_in_from_off_screen_and_runs_once_per_stamp() {
         let mut ui = ui_with_view(StateView::default());
-        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 7, 1_000));
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 1_000, 1_000));
         assert_eq!(
             ui.next_tick_hint(),
             std::time::Duration::from_millis(100),
@@ -2592,7 +2601,7 @@ mod tests {
         assert!(!row.contains("Whaaaat?"), "exited: {row}");
         assert_eq!(ui.next_tick_hint(), std::time::Duration::from_secs(1));
         assert!(!ui.advance_clock(61_000), "a done pass never repaints");
-        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 7, 62_000));
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 1_000, 62_000));
         assert_eq!(
             ui.next_tick_hint(),
             std::time::Duration::from_secs(1),
@@ -2600,7 +2609,7 @@ mod tests {
         );
 
         // A new stamp — even with identical text — replays from the top.
-        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 8, 62_000));
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 62_000, 62_000));
         assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
 
         // A cleared register drops the animation outright.
@@ -2609,11 +2618,34 @@ mod tests {
     }
 
     #[test]
+    fn marquee_stamped_before_startup_never_plays() {
+        // The marquee register survives in synced state across sessions
+        // (cleared only at compaction), so the first snapshot after
+        // startup can carry last night's comment. A stamp from before
+        // this session's first snapshot must not replay; a fresh write
+        // still does.
+        let mut ui = ui_with_view(StateView::default());
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 500, 3_600_000));
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_secs(1),
+            "a pre-startup stamp never animates"
+        );
+        assert!(!ui.advance_clock(3_601_000), "nothing to animate");
+        let row = bottom_row(&render_test_buffer(&mut ui));
+        assert!(!row.contains("Whaaaat?"), "stale comment stays off: {row}");
+
+        // A fresh write this session plays normally.
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 3_602_000, 3_602_000));
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
+    }
+
+    #[test]
     fn health_warning_owns_the_slot_over_a_live_marquee() {
         use crate::ui::props::{SuggestionProps, Tone};
 
         let mut ui = ui_with_view(StateView::default());
-        let mut snapshot = marquee_snapshot("<Amu> Whaaaat?", 7, 1_000);
+        let mut snapshot = marquee_snapshot("<Amu> Whaaaat?", 1_000, 1_000);
         snapshot.health.suggestion = Some(SuggestionProps {
             text: "high latency — disable BitTorrent (F3, applies immediately)".into(),
             tone: Tone::Paused,
@@ -2628,7 +2660,7 @@ mod tests {
         assert!(!row.contains("Whaaaat?"), "marquee yields to warnings");
 
         // An Info suggestion yields to the marquee instead.
-        let mut snapshot = marquee_snapshot("<Amu> Whaaaat?", 7, 1_000);
+        let mut snapshot = marquee_snapshot("<Amu> Whaaaat?", 1_000, 1_000);
         snapshot.health.suggestion = Some(SuggestionProps {
             text: "state diverged — resyncing".into(),
             tone: Tone::Muted,
