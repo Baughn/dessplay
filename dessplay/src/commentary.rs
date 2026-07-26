@@ -51,6 +51,13 @@ const MAX_COMMENT_CHARS: usize = 220;
 /// How long to wait for mpv to finish writing the screenshot.
 const SCREENSHOT_POLLS: u32 = 20;
 const SCREENSHOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Ceiling on screenshot bytes attached to a request. The API rejects
+/// any image whose *base64* exceeds 10MiB (observed 2026-07-26: mpv
+/// writes 16-bit PNGs for 10-bit video, ~8MB raw → 11MB base64 → HTTP
+/// 400 on every busy frame); 7.5MB raw stays under the cap after the
+/// 4/3 expansion. JPEG frames never come near this — the guard covers
+/// format surprises.
+const MAX_SCREENSHOT_BYTES: u64 = 7_500_000;
 
 /// Why a commentary attempt produced nothing. All variants are logged
 /// and skipped; none are user-visible.
@@ -99,8 +106,9 @@ pub struct CommentRequest {
     pub episode: Option<String>,
     /// The last ≤100 deduped subtitle lines, oldest first.
     pub subtitles: Vec<String>,
-    /// The current video frame, when mpv delivered one in time.
-    pub screenshot_png: Option<Vec<u8>>,
+    /// The current video frame (JPEG bytes), when mpv delivered one in
+    /// time.
+    pub screenshot: Option<Vec<u8>>,
 }
 
 /// The model seam. Blocking — implementations are always called under
@@ -179,7 +187,7 @@ fn comment_prompt(req: &CommentRequest) -> String {
         prompt.push_str(line);
         prompt.push('\n');
     }
-    if req.screenshot_png.is_some() {
+    if req.screenshot.is_some() {
         prompt.push_str("\nThe attached image is the current video frame.\n");
     }
     prompt.push_str(&format!(
@@ -211,6 +219,19 @@ fn normalize_comment(name: &str, raw: &str) -> String {
     line
 }
 
+/// Pull the human-readable message out of an Anthropic error body
+/// (`{"type":"error","error":{"message":…}}`), falling back to a
+/// truncated raw snippet — a 4xx must always say *why*, not just that
+/// it happened.
+fn api_error_detail(body: &[u8]) -> String {
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body)
+        && let Some(msg) = v["error"]["message"].as_str()
+    {
+        return msg.to_string();
+    }
+    String::from_utf8_lossy(body).chars().take(200).collect()
+}
+
 // ---- The Anthropic implementation ---------------------------------------
 
 /// The real model client. Deliberately no `Debug` impl — it holds the
@@ -227,6 +248,11 @@ impl AnthropicModel {
             agent: ureq::Agent::from(
                 ureq::config::Config::builder()
                     .timeout_global(Some(HTTP_TIMEOUT))
+                    // A 4xx must reach us as a response, not an error:
+                    // the body names the offending field, and ureq's
+                    // status-as-error discards it (a bare "http status:
+                    // 400" was undiagnosable, 2026-07-26).
+                    .http_status_as_error(false)
                     .build(),
             ),
             token,
@@ -251,12 +277,20 @@ impl AnthropicModel {
             .header("content-type", "application/json")
             .send(&bytes[..])
             .map_err(|e| CommentaryError::Http(e.to_string()))?;
+        let status = response.status();
         let reply = response
             .into_body()
             .with_config()
             .limit(4 * 1024 * 1024)
             .read_to_vec()
             .map_err(|e| CommentaryError::Http(format!("reading response: {e}")))?;
+        if !status.is_success() {
+            return Err(CommentaryError::Http(format!(
+                "status {}: {}",
+                status.as_u16(),
+                api_error_detail(&reply)
+            )));
+        }
         let reply: serde_json::Value = serde_json::from_slice(&reply)
             .map_err(|e| CommentaryError::Api(format!("parsing response: {e}")))?;
         if reply["stop_reason"].as_str() == Some("refusal") {
@@ -287,13 +321,13 @@ impl CommentaryModel for AnthropicModel {
 
     fn write_comment(&self, req: &CommentRequest) -> Result<String, CommentaryError> {
         let mut content = Vec::new();
-        if let Some(png) = &req.screenshot_png {
+        if let Some(frame) = &req.screenshot {
             content.push(serde_json::json!({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "image/png",
-                    "data": base64::engine::general_purpose::STANDARD.encode(png),
+                    "media_type": "image/jpeg",
+                    "data": base64::engine::general_purpose::STANDARD.encode(frame),
                 },
             }));
         }
@@ -405,8 +439,11 @@ impl CommentaryEngine {
             in_flight: false,
             results_tx,
             results,
+            // .jpg drives mpv's format inference: a PNG of a 10-bit
+            // source is 16-bit and ~8MB — past the API's image cap —
+            // where a JPEG frame is a few hundred KB.
             screenshot_path: std::env::temp_dir()
-                .join(format!("dessplay-commentary-{}.png", std::process::id())),
+                .join(format!("dessplay-commentary-{}.jpg", std::process::id())),
         }
     }
 
@@ -538,7 +575,7 @@ fn run_job(
     subtitles: Vec<String>,
     screenshot: Option<&Path>,
 ) -> Result<JobOutcome, CommentaryError> {
-    let screenshot_png = screenshot.and_then(poll_screenshot);
+    let screenshot_bytes = screenshot.and_then(poll_screenshot);
     let commentator = match keep {
         Some(commentator) => commentator,
         None => {
@@ -568,7 +605,7 @@ fn run_job(
         series,
         episode,
         subtitles,
-        screenshot_png,
+        screenshot: screenshot_bytes,
     })?;
     let text = normalize_comment(&commentator.name, &raw);
     Ok(JobOutcome { commentator, text })
@@ -576,7 +613,9 @@ fn run_job(
 
 /// Wait for mpv to finish writing the screenshot: the file must exist,
 /// be non-empty, and hold the same size across two polls. A miss is
-/// `None` — the comment goes out without the frame.
+/// `None` — the comment goes out without the frame. A frame over
+/// [`MAX_SCREENSHOT_BYTES`] is likewise dropped: the API rejects it
+/// outright, and losing the image beats losing the whole comment.
 fn poll_screenshot(path: &Path) -> Option<Vec<u8>> {
     let mut last_len = None;
     for _ in 0..SCREENSHOT_POLLS {
@@ -584,9 +623,13 @@ fn poll_screenshot(path: &Path) -> Option<Vec<u8>> {
         if let Ok(meta) = std::fs::metadata(path) {
             let len = meta.len();
             if len > 0 && last_len == Some(len) {
-                let png = std::fs::read(path).ok();
+                let frame = std::fs::read(path).ok();
                 let _ = std::fs::remove_file(path);
-                return png;
+                if len > MAX_SCREENSHOT_BYTES {
+                    tracing::debug!(bytes = len, "screenshot too large for the API; dropped");
+                    return None;
+                }
+                return frame;
             }
             last_len = Some(len);
         }
@@ -872,8 +915,8 @@ mod tests {
     #[tokio::test]
     async fn screenshot_attaches_when_present_and_skips_when_absent() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("frame.png");
-        std::fs::write(&path, b"png bytes").unwrap();
+        let path = dir.path().join("frame.jpg");
+        std::fs::write(&path, b"jpeg bytes").unwrap();
 
         let fake = FakeModel::new(&["Amu"], "<Amu> hi");
         let mut engine = engine(fake.clone(), 1);
@@ -881,18 +924,55 @@ mod tests {
         engine.spawn_job(plan, &ctx("s"), Some(path.clone()));
         take(&mut engine).await.unwrap();
         assert_eq!(
-            fake.comment_requests.lock().unwrap()[0].screenshot_png,
-            Some(b"png bytes".to_vec())
+            fake.comment_requests.lock().unwrap()[0].screenshot,
+            Some(b"jpeg bytes".to_vec())
         );
         assert!(!path.exists(), "consumed screenshot is cleaned up");
 
         let plan = engine.plan_tick(&gates("s")).unwrap();
         engine.spawn_job(plan, &ctx("s"), None);
         take(&mut engine).await.unwrap();
+        assert_eq!(fake.comment_requests.lock().unwrap()[1].screenshot, None);
+    }
+
+    /// 2026-07-26 regression: a 10-bit source made mpv write an ~8MB
+    /// 16-bit PNG whose base64 blew the API's 10MiB per-image cap
+    /// (HTTP 400, every busy frame). The frame must be requested as
+    /// JPEG — format follows the path extension — which keeps a 1080p
+    /// frame in the hundreds of kilobytes.
+    #[tokio::test]
+    async fn screenshot_path_requests_a_jpeg_frame() {
+        let engine = engine(FakeModel::new(&["Amu"], "hi"), 1);
         assert_eq!(
-            fake.comment_requests.lock().unwrap()[1].screenshot_png,
-            None
+            engine
+                .screenshot_path()
+                .extension()
+                .and_then(|e| e.to_str()),
+            Some("jpg"),
+            "PNG frames from 10-bit video exceed the API image cap"
         );
+    }
+
+    /// Belt and braces for the same regression: a frame that is still
+    /// too large is dropped (the comment goes out without it) instead
+    /// of being sent to certain rejection.
+    #[test]
+    fn oversized_screenshot_is_dropped_not_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frame.jpg");
+        std::fs::write(&path, vec![0u8; MAX_SCREENSHOT_BYTES as usize + 1]).unwrap();
+        assert_eq!(poll_screenshot(&path), None);
+        assert!(!path.exists(), "the oversized frame is still cleaned up");
+    }
+
+    /// An Anthropic 4xx body names the offending field; the logged
+    /// error must carry that message, not a bare "http status: 400"
+    /// (which is what made the original failure undiagnosable).
+    #[test]
+    fn api_error_details_are_extracted_from_the_body() {
+        let body = br#"{"type":"error","error":{"type":"invalid_request_error","message":"image exceeds 10 MB maximum"}}"#;
+        assert_eq!(api_error_detail(body), "image exceeds 10 MB maximum");
+        assert_eq!(api_error_detail(b"not json at all"), "not json at all");
     }
 
     /// Reconfiguring off mid-flight discards the late result; a token
