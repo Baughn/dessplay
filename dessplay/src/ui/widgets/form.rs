@@ -791,6 +791,25 @@ mod tests {
     }
 
     #[test]
+    fn bracketed_paste_lands_in_the_active_editor() {
+        // Regression (2026-07-26): pasting into a settings text field
+        // (cmd-v = bracketed paste) was silently dropped; only typed
+        // keystrokes reached the editor.
+        let mut form = form();
+        assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
+        assert!(matches!(
+            form.on(&Event::Paste("hunter2\n".into())),
+            FormEvent::Handled
+        ));
+        assert_eq!(
+            form.editor.as_ref().map(|e| e.input.text()),
+            Some("hunter2".into())
+        );
+        assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
+        assert_eq!(form.model.text, "hunter2");
+    }
+
+    #[test]
     fn every_successful_save_path_emits() {
         let capital_s = Event::Keyboard(KeyEvent {
             code: Key::Char('S'),

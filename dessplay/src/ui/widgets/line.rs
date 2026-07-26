@@ -213,19 +213,34 @@ impl LineBuffer {
         }
     }
 
-    /// Feed one key event through the standard editing vocabulary.
+    /// Insert pasted text at the cursor, as if typed — except that
+    /// typing can never produce a control character, so those are
+    /// dropped. A copied value's trailing newline would otherwise land
+    /// invisibly in the field (fatal for a masked token).
+    pub fn insert_paste(&mut self, text: &str) {
+        for c in text.chars().filter(|c| !c.is_control()) {
+            self.insert(c);
+        }
+    }
+
+    /// Feed one input event through the standard editing vocabulary.
     /// Returns whether the event was consumed. Callers keep their own
     /// semantics for Enter/Esc/Up/Down (submit, cancel, history, list
     /// navigation) by matching those *before* delegating here.
     ///
     /// The vocabulary (see [`super::keys`] for the terminal policy):
-    /// typed characters; Backspace/Delete; Left/Right; Home/End and
+    /// typed characters; bracketed paste (via [`Self::insert_paste`]);
+    /// Backspace/Delete; Left/Right; Home/End and
     /// Ctrl-A/Ctrl-E; word motion via Ctrl/Alt-arrows and Alt-b/Alt-f
     /// (ghostty emits readline bytes for Option-arrow); word kill via
     /// Ctrl-W (Ctrl-only — Alt-W is a typed character on macOS) and
     /// Ctrl/Alt-Backspace; character transpose via Ctrl-T (Ctrl-only,
     /// same macOS reasoning).
     pub fn edit(&mut self, ev: &Event<NoUserEvent>) -> bool {
+        if let Event::Paste(text) = ev {
+            self.insert_paste(text);
+            return true;
+        }
         if let Some(c) = typed(ev) {
             self.insert(c);
             return true;
@@ -587,6 +602,19 @@ mod tests {
         assert!(!b.edit(&key(Key::Enter)));
         assert!(!b.edit(&key(Key::Esc)));
         assert!(!b.edit(&key(Key::Up)));
+    }
+
+    #[test]
+    fn paste_inserts_at_the_cursor_and_drops_control_chars() {
+        // Regression (2026-07-26): cmd-v in a settings field did nothing —
+        // `Event::Paste` fell through `edit` unconsumed. A pasted token
+        // also commonly carries a trailing newline, which a one-line field
+        // must not swallow into the value.
+        let mut b = buf("ab");
+        b.move_left();
+        assert!(b.edit(&Event::Paste("sk-ant-xyz\n".into())));
+        assert_eq!(b.text(), "ask-ant-xyzb");
+        assert_eq!(b.cursor(), 11);
     }
 
     #[test]

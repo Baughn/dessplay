@@ -1006,8 +1006,9 @@ impl Ui {
         // pasted while the Playlist pane is focused becomes a playlist
         // add, exactly like picking it in the file browser; any other
         // paste (wrong pane, not a real file, multi-line) lands in the
-        // chat input as plain text, as if typed. Silent (falls through
-        // unchanged) while a modal is open — no new capability there yet.
+        // chat input as plain text, as if typed. While a modal is open
+        // the event falls through to the modal, whose active text editor
+        // accepts it (LineBuffer::edit handles Event::Paste).
         if let Event::Paste(text) = &ev
             && self.modals.is_empty()
         {

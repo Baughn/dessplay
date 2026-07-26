@@ -233,6 +233,10 @@ paste, bracketed) a single path to a file that exists adds it — same as
 picking it in the browser, anchored after the currently selected entry.
 Any other paste (wrong pane, multiple lines, not a real path) is treated
 as ordinary text and lands in the chat input instead, exactly as if typed.
+While a modal is open, a paste goes to its active text editor (e.g. the
+settings screen's token field) as if typed — except control characters
+are dropped, so a copied value's trailing newline never lands invisibly
+in a field.
 
 **Reordering:**
 1. Focus the **Playlist** pane
