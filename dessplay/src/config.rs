@@ -230,8 +230,11 @@ impl CacheRetention {
     }
 }
 
-/// Render a retention window for display: whole days, else whole hours,
-/// else minutes, else seconds (whichever divides cleanly first).
+/// Render a duration for display: whole days, else whole hours, else
+/// minutes, else seconds (whichever divides cleanly first). Sub-hour
+/// values that don't divide into minutes read as a minute+second
+/// compound ("4 minutes 30 seconds", the commentary preset) rather
+/// than a raw second count.
 fn humanize(d: Duration) -> String {
     let secs = d.as_secs();
     let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
@@ -242,6 +245,13 @@ fn humanize(d: Duration) -> String {
         if secs.is_multiple_of(size) {
             return plural(secs / size, unit);
         }
+    }
+    if secs > 60 && secs < 60 * 60 {
+        return format!(
+            "{} {}",
+            plural(secs / 60, "minute"),
+            plural(secs % 60, "second")
+        );
     }
     plural(secs, "second")
 }
@@ -274,9 +284,12 @@ impl CommentaryInterval {
         }
     }
 
-    /// Cycle the settings-screen presets: Off -> 2 min -> 5 min ->
+    /// Cycle the settings-screen presets: Off -> 2 min -> 4 min 30 s ->
     /// 10 min -> wrap. A non-preset value (set out-of-band) advances to
     /// the first preset strictly larger than it, rejoining the ladder.
+    /// The middle preset is 4:30 rather than 5:00 so that, jitter
+    /// included, each request still lands inside the Anthropic prompt
+    /// cache's 5-minute ephemeral TTL (see the commentary engine).
     pub fn next(self) -> Self {
         const MIN: u64 = 60;
         match self {
@@ -285,8 +298,8 @@ impl CommentaryInterval {
                 let secs = d.as_secs();
                 if secs < 2 * MIN {
                     CommentaryInterval::Every(Duration::from_secs(2 * MIN))
-                } else if secs < 5 * MIN {
-                    CommentaryInterval::Every(Duration::from_secs(5 * MIN))
+                } else if secs < 4 * MIN + 30 {
+                    CommentaryInterval::Every(Duration::from_secs(4 * MIN + 30))
                 } else if secs < 10 * MIN {
                     CommentaryInterval::Every(Duration::from_secs(10 * MIN))
                 } else {
@@ -746,19 +759,26 @@ mod tests {
 
     #[test]
     fn commentary_interval_ladder_cycles_and_round_trips() {
-        let min = |m: u64| CommentaryInterval::Every(Duration::from_secs(m * 60));
-        // Off -> 2 min -> 5 min -> 10 min -> Off.
+        let every = |secs: u64| CommentaryInterval::Every(Duration::from_secs(secs));
+        // Off -> 2 min -> 4 min 30 s -> 10 min -> Off. The middle
+        // preset is 4:30, not 5:00, so a jittered request still lands
+        // inside the prompt cache's 5-minute ephemeral TTL.
         let mut interval = CommentaryInterval::Off;
         let mut seen = Vec::new();
         for _ in 0..4 {
             interval = interval.next();
             seen.push(interval);
         }
-        assert_eq!(seen, vec![min(2), min(5), min(10), CommentaryInterval::Off]);
-        // An out-of-band value rejoins the ladder at the next preset up.
-        assert_eq!(min(3).next(), min(5));
+        assert_eq!(
+            seen,
+            vec![every(120), every(270), every(600), CommentaryInterval::Off]
+        );
+        // An out-of-band value rejoins the ladder at the next preset up
+        // (a stored pre-4:30 "5 min" advances to 10 min).
+        assert_eq!(every(3 * 60).next(), every(270));
+        assert_eq!(every(300).next(), every(600));
         // Persisted form survives.
-        for value in [CommentaryInterval::Off, min(2), min(7)] {
+        for value in [CommentaryInterval::Off, every(120), every(7 * 60)] {
             assert_eq!(
                 CommentaryInterval::parse(&value.as_string()).unwrap(),
                 value
@@ -766,10 +786,11 @@ mod tests {
         }
         assert_eq!(CommentaryInterval::Off.duration(), None);
         assert_eq!(
-            min(2).duration(),
+            every(120).duration(),
             Some(Duration::from_secs(120)),
             "duration feeds the engine's ticker"
         );
+        assert_eq!(every(270).label(), "Every 4 minutes 30 seconds");
     }
 
     #[test]

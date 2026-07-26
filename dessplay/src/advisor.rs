@@ -61,9 +61,13 @@ pub struct AdvisorContext {
     pub episode: Option<String>,
     /// Now-playing filename.
     pub filename: Option<String>,
-    /// The last ≤50 subtitle lines, deduped with the same
+    /// The last ≤100 subtitle lines, deduped with the same
     /// reveal/overlap collapse as the UI's subtitle log, oldest first.
-    pub subtitles: Vec<String>,
+    /// Each line carries the monotonic sequence number of its last
+    /// mutation (push or in-place growth) — the commentary engine's
+    /// non-overlap cursor keys on it, so consecutive comments never
+    /// resend dialogue the model has already seen.
+    pub subtitles: Vec<(u64, String)>,
     /// Server-link state.
     pub link: LinkStatus,
     /// Displayed (hysteresis-filtered) health level.
@@ -94,8 +98,9 @@ pub trait AdvisorProvider: Send {
 /// and the rules don't need that resolution.
 const ADVISE_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Subtitle-context ring size (design.md: "last fifty subtitles or so").
-const SUBTITLE_RING: usize = 50;
+/// Subtitle-context ring size (design.md: "the last ~100 deduped
+/// subtitle lines").
+const SUBTITLE_RING: usize = 100;
 
 /// Owns the providers, the suggestion channel, and the subtitle ring.
 /// Lives on the [`crate::run::SessionLoop`]; the loop select-arms the
@@ -105,7 +110,11 @@ pub struct Advisor {
     tx: mpsc::Sender<SuggestionUpdate>,
     /// Drained by the session loop's select arm.
     pub suggestions: mpsc::Receiver<SuggestionUpdate>,
-    subtitles: VecDeque<String>,
+    subtitles: VecDeque<(u64, String)>,
+    /// Monotonic counter behind the ring's per-line sequence numbers;
+    /// bumped on every push *and* every in-place growth, so a line that
+    /// grew after being consumed reads as new again.
+    subtitle_seq: u64,
     last_advise: Option<tokio::time::Instant>,
     diverged: bool,
 }
@@ -126,6 +135,7 @@ impl Advisor {
             tx,
             suggestions,
             subtitles: VecDeque::new(),
+            subtitle_seq: 0,
             last_advise: None,
             diverged: false,
         }
@@ -146,15 +156,23 @@ impl Advisor {
             if text.is_empty() {
                 continue;
             }
-            match props::subtitle_collapse(self.subtitles.back().map(String::as_str), &text) {
+            match props::subtitle_collapse(
+                self.subtitles.back().map(|(_, line)| line.as_str()),
+                &text,
+            ) {
                 props::SubtitleCollapse::Extends => {
                     if let Some(last) = self.subtitles.back_mut() {
-                        *last = text;
+                        // A grown line is new material: re-stamp it so a
+                        // cursor that consumed the shorter form picks up
+                        // the full one.
+                        self.subtitle_seq += 1;
+                        *last = (self.subtitle_seq, text);
                     }
                 }
                 props::SubtitleCollapse::Contained => {}
                 props::SubtitleCollapse::Distinct => {
-                    self.subtitles.push_back(text);
+                    self.subtitle_seq += 1;
+                    self.subtitles.push_back((self.subtitle_seq, text));
                     while self.subtitles.len() > SUBTITLE_RING {
                         self.subtitles.pop_front();
                     }
@@ -421,7 +439,7 @@ mod tests {
     }
 
     /// The advisor throttles advise passes, dedupes the subtitle ring
-    /// with the shared collapse, and caps it at 50 lines.
+    /// with the shared collapse, and caps it at [`SUBTITLE_RING`] lines.
     #[tokio::test(start_paused = true)]
     async fn advisor_ring_dedupes_and_caps() {
         let mut advisor = Advisor::default();
@@ -439,15 +457,36 @@ mod tests {
             line("For glory."),
         ]);
         assert_eq!(advisor.subtitles.len(), 1);
-        assert_eq!(advisor.subtitles[0], "Coming! For glory.");
+        assert_eq!(advisor.subtitles[0].1, "Coming! For glory.");
         // Multi-line cues arrive newline-separated; newlines become
         // spaces (the "you demons" rule).
         advisor.observe_subtitles(&[line("you\ndemons")]);
-        assert_eq!(advisor.subtitles.back().unwrap(), "you demons");
-        for i in 0..100 {
+        assert_eq!(advisor.subtitles.back().unwrap().1, "you demons");
+        for i in 0..120 {
             advisor.observe_subtitles(&[line(&format!("distinct line {i}"))]);
         }
         assert_eq!(advisor.subtitles.len(), SUBTITLE_RING);
+    }
+
+    /// Every line carries a monotonic sequence number, and an in-place
+    /// growth re-stamps its line: a consumer that has already read the
+    /// short form of a reveal must see the full one as new.
+    #[tokio::test(start_paused = true)]
+    async fn subtitle_lines_are_sequence_stamped_and_growth_restamps() {
+        let mut advisor = Advisor::default();
+        let line = |text: &str| SubtitleLine {
+            text: text.into(),
+            speaker: None,
+            video_millis: 0,
+            arrival_millis: 0,
+        };
+        advisor.observe_subtitles(&[line("First."), line("Com")]);
+        assert_eq!(advisor.subtitles[0], (1, "First.".into()));
+        assert_eq!(advisor.subtitles[1], (2, "Com".into()));
+        // Growth re-stamps; the shrink-back changes nothing.
+        advisor.observe_subtitles(&[line("Coming!"), line("Com")]);
+        assert_eq!(advisor.subtitles[1], (3, "Coming!".into()));
+        assert_eq!(advisor.subtitles.len(), 2);
     }
 
     /// A provider that spawns a task owning a Sender clone (the future

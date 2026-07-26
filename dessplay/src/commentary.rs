@@ -1,30 +1,46 @@
 //! The AI commentary engine (design.md, AI Commentary). Just for fun.
 //!
-//! On a settings-driven interval — and only while connected, playing,
-//! and holding the now-playing file — the engine asks an Anthropic
-//! model to react to the episode **in character**: a persistent
-//! "commentator" chosen from the show's cast (re-rolled with 5%
-//! probability per tick, reset on a series change), given the series,
-//! episode, recent subtitles, and an mpv screenshot when one can be
-//! taken. The reply (`<Amu> Whaaaat?`) is written to the synced
+//! On a settings-driven interval — jittered ±15s so it isn't on the
+//! dot, and only while connected, playing, and holding the now-playing
+//! file — the engine asks an Anthropic model to react to the episode
+//! **in character**: a persistent "commentator" chosen from the show's
+//! cast (re-rolled with 5% probability per tick, reset on a series
+//! change). Each commentator is a real **chat thread**: the character
+//! card lives in the system prompt, and every tick appends a user turn
+//! carrying only the dialogue that arrived *since the last comment*
+//! (never resent — the advisor ring's per-line sequence numbers are the
+//! cursor) plus the current video frame, so the model remembers what it
+//! already said. A fresh commentator starts a fresh thread, seeded with
+//! the *text* of this episode's earlier comments — not the images or
+//! subtitles — so the voice changes but the conversation doesn't reset
+//! to zero. The 5% re-roll is also the size limit: threads die young.
+//!
+//! Requests opt into Anthropic's ephemeral prompt cache whenever the
+//! interval (jitter included) fits inside the cache's 5-minute TTL —
+//! which is why the settings ladder offers 4:30 rather than 5:00 — so
+//! the growing thread re-bills at cache-read rates instead of full
+//! price. The reply (`<Amu> Whaaaat?`) is written to the synced
 //! [`marquee register`](dessplay_core::state::CrdtState::marquee), so
 //! every client scrolls it — including this one, via the ordinary sync
 //! echo, which keeps all replicas showing identical text.
 //!
 //! The feature narrates itself at **info**: whether it is enabled (at
 //! startup and on every settings change, with the reason when it is
-//! not), each outgoing request, the commentator it picked, and the
-//! comment that came back. A gimmick that only speaks once every few
-//! minutes is otherwise indistinguishable from a broken token; skipped
-//! ticks (paused, no file, gated) log their reason at debug.
+//! not), each outgoing request, the commentator it picked, each call's
+//! token usage (cached and fresh), and the comment that came back. A
+//! gimmick that only speaks once every few minutes is otherwise
+//! indistinguishable from a broken token; skipped ticks (paused, no
+//! file, gated) log their reason at debug.
 //!
 //! Nothing here blocks the bridge loop: the HTTP calls run under
 //! [`tokio::task::spawn_blocking`], results come back through a
 //! channel, and an in-flight guard keeps slow calls from stacking.
 //! Every failure (HTTP, refusal, empty cast, malformed reply) is a
 //! `tracing::warn!` and a skipped tick — never a chat line, never a
-//! marquee write. The screenshot is best-effort on top of best-effort:
-//! its absence is not a failure.
+//! marquee write. A failed tick also leaves the subtitle cursor and
+//! thread untouched, so the next attempt resends what the model never
+//! saw. The screenshot is best-effort on top of best-effort: its
+//! absence is not a failure.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,8 +64,16 @@ const MAX_TOKENS: u32 = 2048;
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Vision calls are slow; the nyaa agent's 30s would spuriously abort.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
-/// Chance per tick of re-rolling the commentator once one exists.
+/// Chance per tick of re-rolling the commentator once one exists. Also
+/// the thread-length governor: expected thread ≈ 20 turns.
 const REROLL: f64 = 0.05;
+/// Half-width of the per-comment cadence jitter.
+const JITTER: Duration = Duration::from_secs(15);
+/// Anthropic's default ephemeral prompt-cache TTL. Intervals short
+/// enough that the next (jittered) request still lands inside it opt
+/// into `cache_control`; longer ones skip the write surcharge for a
+/// cache that would be cold anyway.
+const CACHE_TTL: Duration = Duration::from_secs(300);
 /// Subtitle tail handed to the character-list call (context, not script).
 const CHARACTER_SUBTITLES: usize = 20;
 /// Hard cap on the marquee line, chars (the slot scrolls, but an essay
@@ -102,20 +126,35 @@ pub struct CharacterRequest {
     pub recent_subtitles: Vec<String>,
 }
 
-/// Inputs to the comment call.
+/// One completed exchange in a commentator's thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadTurn {
+    /// The user-side text (header, seeded comments, new dialogue).
+    pub user_text: String,
+    /// The frame attached to that turn, if any.
+    pub screenshot: Option<Vec<u8>>,
+    /// The model's raw reply, echoed back verbatim as the assistant
+    /// turn (the API's multi-turn contract).
+    pub assistant: String,
+}
+
+/// Inputs to one comment call: the whole conversation so far plus the
+/// new user turn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommentRequest {
-    /// The in-character voice.
-    pub commentator: String,
-    /// Series title.
-    pub series: String,
-    /// Episode label, when metadata knows it.
-    pub episode: Option<String>,
-    /// The last ≤100 deduped subtitle lines, oldest first.
-    pub subtitles: Vec<String>,
+    /// The stable per-thread system prompt (character card + rules).
+    pub system: String,
+    /// Prior turns of this commentator's thread, oldest first. Empty on
+    /// a fresh thread.
+    pub history: Vec<ThreadTurn>,
+    /// This turn's user text.
+    pub user_text: String,
     /// The current video frame (JPEG bytes), when mpv delivered one in
     /// time.
     pub screenshot: Option<Vec<u8>>,
+    /// Attach a `cache_control` breakpoint (the interval is short
+    /// enough for the ephemeral cache to survive to the next tick).
+    pub cache: bool,
 }
 
 /// The model seam. Blocking — implementations are always called under
@@ -123,7 +162,7 @@ pub struct CommentRequest {
 pub trait CommentaryModel: Send + Sync {
     /// Major characters through the current episode, spoiler-bounded.
     fn list_characters(&self, req: &CharacterRequest) -> Result<Vec<String>, CommentaryError>;
-    /// A 1–3 sentence in-character reaction.
+    /// A 1–3 sentence in-character reaction, given the thread so far.
     fn write_comment(&self, req: &CommentRequest) -> Result<String, CommentaryError>;
 }
 
@@ -178,32 +217,66 @@ fn parse_characters(reply: &str) -> Vec<String> {
         .collect()
 }
 
-/// The comment prompt: in character, spoiler-bounded, IRC-style output.
-fn comment_prompt(req: &CommentRequest) -> String {
-    let mut prompt = format!(
-        "You are {name}, a character from \"{series}\". You are watching \
-         {episode} of your own show together with friends at a watch \
-         party. Hard rule: you know nothing beyond this episode — no \
-         future events, no meta-knowledge, no winking at the audience.\n\n\
-         The most recent subtitle lines, oldest first:\n",
-        name = req.commentator,
-        series = req.series,
-        episode = episode_label(req.episode.as_deref()),
-    );
-    for line in &req.subtitles {
-        prompt.push_str(line);
-        prompt.push('\n');
+/// The per-thread system prompt: the character card, the spoiler bound,
+/// and the output format. Stable for the thread's lifetime — the
+/// episode changes ride the user turns as headers, so the cached prefix
+/// never moves.
+fn system_prompt(name: &str, series: &str) -> String {
+    format!(
+        "You are {name}, a character from \"{series}\". You are (initially) watching \
+         your own show together with friends at a watch party, reacting in \
+         an IRC channel as the episodes play. Hard rule: you know nothing \
+         beyond the episode currently being watched — no future events, no \
+         meta-knowledge, no winking at the audience.\n\n\
+         Each message brings the newest subtitle lines since your last \
+         comment, and usually the current video frame as an image. React in \
+         character to what is happening right now: 1-3 short sentences, IRC \
+         style. Always output exactly one line in the form `<{name}> your \
+         comment` and nothing else, in English."
+    )
+}
+
+/// Pieces of one user turn, assembled by the engine on the loop thread.
+struct TurnInput<'a> {
+    /// `Some` on a thread's first turn and on an episode change: the
+    /// model is told what is now playing.
+    header: Option<(&'a str, Option<&'a str>)>,
+    /// Seeded on a fresh thread mid-episode: what earlier commentators
+    /// already said (text only — their subtitles and frames stay
+    /// behind).
+    previous_comments: &'a [String],
+    /// Only the dialogue that arrived since the last successful
+    /// comment.
+    subtitles: &'a [String],
+}
+
+/// Render one user turn's text block.
+fn turn_text(input: &TurnInput<'_>) -> String {
+    let mut text = String::new();
+    if let Some((series, episode)) = input.header {
+        text.push_str(&format!(
+            "Now playing: \"{series}\", {}.\n\n",
+            episode_label(episode)
+        ));
     }
-    if req.screenshot.is_some() {
-        prompt.push_str("\nThe attached image is the current video frame.\n");
+    if !input.previous_comments.is_empty() {
+        text.push_str("Comments so far this episode, from earlier commentators:\n");
+        for comment in input.previous_comments {
+            text.push_str(comment);
+            text.push('\n');
+        }
+        text.push('\n');
     }
-    prompt.push_str(&format!(
-        "\nReact in character to what is happening right now: 1-3 short \
-         sentences, IRC style. Output exactly one line in the form \
-         `<{name}> your comment` and nothing else.",
-        name = req.commentator,
-    ));
-    prompt
+    if input.subtitles.is_empty() {
+        text.push_str("(No new dialogue since your last comment.)");
+    } else {
+        text.push_str("New dialogue, oldest first:\n");
+        for line in input.subtitles {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    text
 }
 
 /// Normalize a comment reply into a single marquee-safe line: newlines
@@ -239,6 +312,71 @@ fn api_error_detail(body: &[u8]) -> String {
     String::from_utf8_lossy(body).chars().take(200).collect()
 }
 
+// ---- Request bodies (pure; the shapes are unit-tested) ------------------
+
+/// One user message's content blocks: the frame (if any), then the
+/// text. `cache` puts the ephemeral breakpoint on the text block —
+/// only ever set on the *final* message, the standard incremental
+/// multi-turn caching pattern (the marker moves forward each tick; the
+/// prior prefix stays readable).
+fn user_content(text: &str, screenshot: Option<&[u8]>, cache: bool) -> serde_json::Value {
+    let mut blocks = Vec::new();
+    if let Some(frame) = screenshot {
+        blocks.push(serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": base64::engine::general_purpose::STANDARD.encode(frame),
+            },
+        }));
+    }
+    let mut text_block = serde_json::json!({ "type": "text", "text": text });
+    if cache {
+        text_block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+    }
+    blocks.push(text_block);
+    serde_json::Value::Array(blocks)
+}
+
+/// The full Messages body for a comment call: system prompt, the
+/// thread's history verbatim (append-only, so the rendered prefix is
+/// byte-stable across ticks — the caching invariant), and the new turn.
+fn build_comment_body(req: &CommentRequest) -> serde_json::Value {
+    let mut messages = Vec::new();
+    for turn in &req.history {
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": user_content(&turn.user_text, turn.screenshot.as_deref(), false),
+        }));
+        messages.push(serde_json::json!({
+            "role": "assistant",
+            "content": turn.assistant,
+        }));
+    }
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": user_content(&req.user_text, req.screenshot.as_deref(), req.cache),
+    }));
+    serde_json::json!({
+        "model": MODEL,
+        "max_tokens": MAX_TOKENS,
+        "output_config": { "effort": EFFORT },
+        "system": [{ "type": "text", "text": req.system }],
+        "messages": messages,
+    })
+}
+
+/// The (single-turn, uncached) body for the character-list call.
+fn build_character_body(req: &CharacterRequest) -> serde_json::Value {
+    serde_json::json!({
+        "model": MODEL,
+        "max_tokens": MAX_TOKENS,
+        "output_config": { "effort": EFFORT },
+        "messages": [{ "role": "user", "content": character_prompt(req) }],
+    })
+}
+
 // ---- The Anthropic implementation ---------------------------------------
 
 /// The real model client. Deliberately no `Debug` impl — it holds the
@@ -266,15 +404,10 @@ impl AnthropicModel {
         }
     }
 
-    /// One Messages call; returns the first text block.
-    fn call(&self, content: serde_json::Value) -> Result<String, CommentaryError> {
-        let body = serde_json::json!({
-            "model": MODEL,
-            "max_tokens": MAX_TOKENS,
-            "output_config": { "effort": EFFORT },
-            "messages": [{ "role": "user", "content": content }],
-        });
-        let bytes = serde_json::to_vec(&body)
+    /// One Messages call; returns the first text block. `what` labels
+    /// the token-usage log line ("cast" / "comment").
+    fn call(&self, body: &serde_json::Value, what: &str) -> Result<String, CommentaryError> {
+        let bytes = serde_json::to_vec(body)
             .map_err(|e| CommentaryError::Api(format!("encoding request: {e}")))?;
         let response = self
             .agent
@@ -300,6 +433,17 @@ impl AnthropicModel {
         }
         let reply: serde_json::Value = serde_json::from_slice(&reply)
             .map_err(|e| CommentaryError::Api(format!("parsing response: {e}")))?;
+        // Token accounting at info: the caching setup is invisible
+        // otherwise, and "is the cache hitting?" is one grep away.
+        let usage = &reply["usage"];
+        tracing::info!(
+            call = what,
+            input_tokens = usage["input_tokens"].as_u64().unwrap_or(0),
+            output_tokens = usage["output_tokens"].as_u64().unwrap_or(0),
+            cache_read_tokens = usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+            cache_write_tokens = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+            "commentary: token usage"
+        );
         if reply["stop_reason"].as_str() == Some("refusal") {
             return Err(CommentaryError::Refused);
         }
@@ -318,7 +462,7 @@ impl AnthropicModel {
 
 impl CommentaryModel for AnthropicModel {
     fn list_characters(&self, req: &CharacterRequest) -> Result<Vec<String>, CommentaryError> {
-        let reply = self.call(serde_json::Value::String(character_prompt(req)))?;
+        let reply = self.call(&build_character_body(req), "cast")?;
         let names = parse_characters(&reply);
         if names.is_empty() {
             return Err(CommentaryError::NoCharacters);
@@ -327,22 +471,7 @@ impl CommentaryModel for AnthropicModel {
     }
 
     fn write_comment(&self, req: &CommentRequest) -> Result<String, CommentaryError> {
-        let mut content = Vec::new();
-        if let Some(frame) = &req.screenshot {
-            content.push(serde_json::json!({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": base64::engine::general_purpose::STANDARD.encode(frame),
-                },
-            }));
-        }
-        content.push(serde_json::json!({
-            "type": "text",
-            "text": comment_prompt(req),
-        }));
-        self.call(serde_json::Value::Array(content))
+        self.call(&build_comment_body(req), "comment")
     }
 }
 
@@ -354,6 +483,15 @@ impl CommentaryModel for AnthropicModel {
 struct Commentator {
     name: String,
     series: String,
+}
+
+/// A commentator's conversation: the voice plus every exchange so far.
+/// Lives exactly as long as the voice does — a re-roll or series change
+/// starts a fresh one.
+#[derive(Clone, Debug)]
+struct Thread {
+    commentator: Commentator,
+    turns: Vec<ThreadTurn>,
 }
 
 /// What the bridge loop knows at tick time; the engine turns it into a
@@ -376,29 +514,69 @@ pub struct TickGates {
 /// The decision for one tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TickPlan {
-    /// Ask for the cast and pick a fresh commentator first.
+    /// Ask for the cast and pick a fresh commentator (a fresh thread)
+    /// first.
     pub pick_commentator: bool,
+}
+
+/// Everything the blocking job needs, gathered on the loop thread.
+struct JobSpec {
+    /// The voice to keep, or `None` to pick one (a fresh thread).
+    keep: Option<Commentator>,
+    /// Pre-drawn randomness for the cast pick.
+    pick_index: u64,
+    series: String,
+    episode: Option<String>,
+    /// Ring tail for the character-list call (context, not the turn).
+    cast_subtitles: Vec<String>,
+    /// The already-rendered user turn.
+    user_text: String,
+    /// Prior turns; empty on a fresh thread.
+    history: Vec<ThreadTurn>,
+    cache: bool,
+    /// Subtitle cursor value this turn covers; committed on success.
+    seq: u64,
 }
 
 /// A finished job's payload. Opaque outside this module — the run loop
 /// receives it from [`CommentaryEngine::results`] and hands it straight
 /// to [`CommentaryEngine::finish`].
 pub struct JobOutcome {
-    /// The voice that spoke (persisted for the next tick).
+    /// The voice that spoke.
     commentator: Commentator,
+    /// The job started a fresh thread (picked its voice).
+    fresh: bool,
+    episode: Option<String>,
+    /// The turn as sent, echoed back so the engine can append it to the
+    /// thread only once it actually succeeded.
+    user_text: String,
+    screenshot: Option<Vec<u8>>,
+    /// The raw reply (stored verbatim as the assistant turn).
+    raw: String,
     /// The normalized marquee line.
     text: String,
+    /// Subtitle cursor to commit.
+    seq: u64,
 }
 
-/// Owns the cadence, the commentator, the RNG, and the in-flight job.
+/// Owns the cadence, the thread, the RNG, and the in-flight job.
 /// Lives on the [`crate::run::SessionLoop`]; the loop select-arms
 /// [`Self::ticker`] and [`Self::results`].
 pub struct CommentaryEngine {
     model: Option<Arc<dyn CommentaryModel>>,
     interval: Option<Duration>,
-    /// Ticks at the configured interval; only armed when enabled.
+    /// Ticks at the configured interval (re-jittered ±[`JITTER`] per
+    /// tick); only armed when enabled.
     pub ticker: tokio::time::Interval,
-    commentator: Option<Commentator>,
+    thread: Option<Thread>,
+    /// Normalized comments for the currently playing episode, any
+    /// voice — the seed for a fresh thread's first turn.
+    episode_comments: Vec<String>,
+    /// `(series, episode)` of the last successful comment; a change
+    /// resets [`Self::episode_comments`] and headers the next turn.
+    episode_key: Option<(String, Option<String>)>,
+    /// Subtitle cursor: highest ring sequence number already delivered.
+    sent_seq: u64,
     rng: StdRng,
     in_flight: bool,
     results_tx: mpsc::Sender<Result<JobOutcome, CommentaryError>>,
@@ -457,7 +635,10 @@ impl CommentaryEngine {
             model,
             interval,
             ticker: Self::make_ticker(interval),
-            commentator: None,
+            thread: None,
+            episode_comments: Vec::new(),
+            episode_key: None,
+            sent_seq: 0,
             rng,
             in_flight: false,
             results_tx,
@@ -488,14 +669,17 @@ impl CommentaryEngine {
 
     /// Apply a settings change live: swap the model on a token change,
     /// re-cadence on an interval change. Clearing the token drops the
-    /// commentator too (a fresh token starts fresh); an in-flight call
+    /// thread too (a fresh token starts fresh); an in-flight call
     /// finishes and its result is discarded if the engine is off by then.
     pub fn reconfigure(&mut self, token: Option<&str>, interval: CommentaryInterval) {
         self.model = token.map(|token| {
             Arc::new(AnthropicModel::new(token.to_string())) as Arc<dyn CommentaryModel>
         });
         if self.model.is_none() {
-            self.commentator = None;
+            self.thread = None;
+            self.episode_comments.clear();
+            self.episode_key = None;
+            self.sent_seq = 0;
         }
         self.interval = interval.duration();
         self.ticker = Self::make_ticker(self.interval);
@@ -507,11 +691,38 @@ impl CommentaryEngine {
         self.screenshot_path.clone()
     }
 
+    /// The current voice, if any (tests peek at it).
+    #[cfg(test)]
+    fn commentator(&self) -> Option<&Commentator> {
+        self.thread.as_ref().map(|t| &t.commentator)
+    }
+
+    /// Whether requests should carry the prompt-cache breakpoint: only
+    /// when the next tick (worst-case jitter included) still lands
+    /// inside the ephemeral cache's TTL.
+    fn cache_worthwhile(&self) -> bool {
+        self.interval.is_some_and(|i| i + JITTER < CACHE_TTL)
+    }
+
+    /// Re-arm the ticker with fresh per-comment jitter: the next fire
+    /// lands `interval ± JITTER` from now, so comments drift off the
+    /// dot instead of landing metronomically.
+    fn rejitter(&mut self) {
+        let Some(interval) = self.interval else {
+            return;
+        };
+        let jitter = Duration::from_secs(self.rng.random_range(0..=2 * JITTER.as_secs()));
+        self.ticker
+            .reset_after((interval + jitter).saturating_sub(JITTER));
+    }
+
     /// Decide what (if anything) this tick does. `None` = skip quietly.
     pub fn plan_tick(&mut self, gates: &TickGates) -> Option<TickPlan> {
         if !self.armed() {
             return None;
         }
+        // Every fired tick re-jitters the next, comment or not.
+        self.rejitter();
         if self.in_flight {
             tracing::debug!("commentary tick skipped: a call is still in flight");
             return None;
@@ -530,15 +741,18 @@ impl CommentaryEngine {
             return None;
         }
         let series = gates.series.as_deref()?;
-        // A series change retires the old voice before the roll below.
+        // A series change retires the old voice — and its thread and
+        // comment seed — before the roll below.
         if self
-            .commentator
+            .thread
             .as_ref()
-            .is_some_and(|c| c.series != series)
+            .is_some_and(|t| t.commentator.series != series)
         {
-            self.commentator = None;
+            self.thread = None;
+            self.episode_comments.clear();
+            self.episode_key = None;
         }
-        let pick_commentator = self.commentator.is_none() || self.rng.random_bool(REROLL);
+        let pick_commentator = self.thread.is_none() || self.rng.random_bool(REROLL);
         Some(TickPlan { pick_commentator })
     }
 
@@ -554,55 +768,132 @@ impl CommentaryEngine {
         };
         self.in_flight = true;
         let keep = (!plan.pick_commentator)
-            .then(|| self.commentator.clone())
+            .then(|| self.thread.as_ref().map(|t| t.commentator.clone()))
             .flatten();
+        let fresh = keep.is_none();
         // Drawn on the loop thread so the RNG (and its seed-determinism
         // in tests) never crosses into the blocking task.
         let pick_index: u64 = self.rng.random();
         let episode = ctx.episode.clone();
-        let subtitles = ctx.subtitles.clone();
+        let same_episode = self.episode_key.as_ref() == Some(&(series.clone(), episode.clone()));
+        // Only dialogue the model hasn't seen; the cursor commits when
+        // the job succeeds, so a failed attempt resends.
+        let new_subtitles: Vec<String> = ctx
+            .subtitles
+            .iter()
+            .filter(|(seq, _)| *seq > self.sent_seq)
+            .map(|(_, line)| line.clone())
+            .collect();
+        let seq = ctx
+            .subtitles
+            .iter()
+            .map(|(seq, _)| *seq)
+            .max()
+            .unwrap_or(0)
+            .max(self.sent_seq);
+        // A fresh thread mid-episode inherits what was already said —
+        // the words only, never the frames or dialogue behind them.
+        let previous_comments = if fresh && same_episode {
+            self.episode_comments.clone()
+        } else {
+            Vec::new()
+        };
+        let user_text = turn_text(&TurnInput {
+            header: (fresh || !same_episode).then_some((series.as_str(), episode.as_deref())),
+            previous_comments: &previous_comments,
+            subtitles: &new_subtitles,
+        });
+        let history = if fresh {
+            Vec::new()
+        } else {
+            self.thread
+                .as_ref()
+                .map(|t| t.turns.clone())
+                .unwrap_or_default()
+        };
+        let spec = JobSpec {
+            keep,
+            pick_index,
+            series: series.clone(),
+            episode: episode.clone(),
+            cast_subtitles: ctx
+                .subtitles
+                .iter()
+                .rev()
+                .take(CHARACTER_SUBTITLES)
+                .rev()
+                .map(|(_, line)| line.clone())
+                .collect(),
+            user_text,
+            history,
+            cache: self.cache_worthwhile(),
+            seq,
+        };
         let tx = self.results_tx.clone();
         tracing::info!(
             series = %series,
             episode = episode.as_deref().unwrap_or("?"),
-            commentator = keep.as_ref().map_or("(picking one)", |c| c.name.as_str()),
-            subtitles = subtitles.len(),
+            commentator = spec.keep.as_ref().map_or("(picking one)", |c| c.name.as_str()),
+            new_subtitles = new_subtitles.len(),
+            thread_turns = spec.history.len(),
             screenshot = screenshot.is_some(),
+            cache = spec.cache,
             "commentary: requesting a comment"
         );
         tokio::task::spawn_blocking(move || {
-            let outcome = run_job(
-                model.as_ref(),
-                keep,
-                pick_index,
-                series,
-                episode,
-                subtitles,
-                screenshot.as_deref(),
-            );
+            let outcome = run_job(model.as_ref(), spec, screenshot.as_deref());
             let _ = tx.blocking_send(outcome);
         });
     }
 
     /// Consume one finished job (from [`Self::results`]). Returns the
-    /// marquee text on success; failures are logged and skipped. Always
-    /// clears the in-flight guard.
+    /// marquee text on success; failures are logged and skipped —
+    /// leaving the thread and subtitle cursor untouched, so the next
+    /// attempt covers the same ground. Always clears the in-flight
+    /// guard.
     pub fn finish(&mut self, outcome: Result<JobOutcome, CommentaryError>) -> Option<String> {
         self.in_flight = false;
         match outcome {
-            Ok(JobOutcome { commentator, text }) => {
+            Ok(outcome) => {
                 if !self.armed() {
                     // Disabled while the call was in flight: discard.
-                    tracing::info!("commentary: disabled mid-call — discarding {text}");
+                    tracing::info!(
+                        "commentary: disabled mid-call — discarding {}",
+                        outcome.text
+                    );
                     return None;
                 }
                 tracing::info!(
-                    commentator = %commentator.name,
-                    series = %commentator.series,
-                    "commentary: {text}"
+                    commentator = %outcome.commentator.name,
+                    series = %outcome.commentator.series,
+                    "commentary: {}", outcome.text
                 );
-                self.commentator = Some(commentator);
-                Some(text)
+                let key = (outcome.commentator.series.clone(), outcome.episode.clone());
+                if self.episode_key.as_ref() != Some(&key) {
+                    self.episode_comments.clear();
+                    self.episode_key = Some(key);
+                }
+                if outcome.fresh
+                    || self
+                        .thread
+                        .as_ref()
+                        .is_none_or(|t| t.commentator != outcome.commentator)
+                {
+                    self.thread = Some(Thread {
+                        commentator: outcome.commentator,
+                        turns: Vec::new(),
+                    });
+                }
+                if let Some(thread) = self.thread.as_mut() {
+                    thread.turns.push(ThreadTurn {
+                        user_text: outcome.user_text,
+                        screenshot: outcome.screenshot,
+                        assistant: outcome.raw,
+                    });
+                }
+                self.episode_comments.push(outcome.text.clone());
+                self.sent_seq = self.sent_seq.max(outcome.seq);
+                Some(outcome.text)
             }
             Err(e) => {
                 tracing::warn!("commentary attempt skipped: {e}");
@@ -616,53 +907,53 @@ impl CommentaryEngine {
 /// for the comment. Runs entirely on a blocking thread.
 fn run_job(
     model: &dyn CommentaryModel,
-    keep: Option<Commentator>,
-    pick_index: u64,
-    series: String,
-    episode: Option<String>,
-    subtitles: Vec<String>,
+    spec: JobSpec,
     screenshot: Option<&Path>,
 ) -> Result<JobOutcome, CommentaryError> {
     let screenshot_bytes = screenshot.and_then(poll_screenshot);
-    let commentator = match keep {
+    let fresh = spec.keep.is_none();
+    let commentator = match spec.keep {
         Some(commentator) => commentator,
         None => {
             let names = model.list_characters(&CharacterRequest {
-                series: series.clone(),
-                episode: episode.clone(),
-                recent_subtitles: subtitles
-                    .iter()
-                    .rev()
-                    .take(CHARACTER_SUBTITLES)
-                    .rev()
-                    .cloned()
-                    .collect(),
+                series: spec.series.clone(),
+                episode: spec.episode.clone(),
+                recent_subtitles: spec.cast_subtitles,
             })?;
             if names.is_empty() {
                 return Err(CommentaryError::NoCharacters);
             }
-            let name = names[(pick_index % names.len() as u64) as usize].clone();
+            let name = names[(spec.pick_index % names.len() as u64) as usize].clone();
             tracing::info!(
                 commentator = %name,
                 cast = names.len(),
-                series = %series,
+                series = %spec.series,
                 "commentary: picked a commentator"
             );
             Commentator {
                 name,
-                series: series.clone(),
+                series: spec.series.clone(),
             }
         }
     };
     let raw = model.write_comment(&CommentRequest {
-        commentator: commentator.name.clone(),
-        series,
-        episode,
-        subtitles,
-        screenshot: screenshot_bytes,
+        system: system_prompt(&commentator.name, &spec.series),
+        history: spec.history,
+        user_text: spec.user_text.clone(),
+        screenshot: screenshot_bytes.clone(),
+        cache: spec.cache,
     })?;
     let text = normalize_comment(&commentator.name, &raw);
-    Ok(JobOutcome { commentator, text })
+    Ok(JobOutcome {
+        commentator,
+        fresh,
+        episode: spec.episode,
+        user_text: spec.user_text,
+        screenshot: screenshot_bytes,
+        raw,
+        text,
+        seq: spec.seq,
+    })
 }
 
 /// Wait for mpv to finish writing the screenshot: the file must exist,
@@ -696,35 +987,36 @@ fn poll_screenshot(path: &Path) -> Option<Vec<u8>> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     use super::*;
 
-    /// A scripted model that records every request.
+    /// A scripted model that records every request. Comment replies are
+    /// consumed front-to-back; the last one repeats.
     struct FakeModel {
         characters: Vec<String>,
-        comment: Result<&'static str, ()>,
+        replies: Mutex<VecDeque<Result<&'static str, ()>>>,
         character_requests: Mutex<Vec<CharacterRequest>>,
         comment_requests: Mutex<Vec<CommentRequest>>,
     }
 
     impl FakeModel {
-        fn new(characters: &[&str], comment: &'static str) -> Arc<Self> {
+        fn scripted(characters: &[&str], replies: &[Result<&'static str, ()>]) -> Arc<Self> {
             Arc::new(Self {
                 characters: characters.iter().map(|s| s.to_string()).collect(),
-                comment: Ok(comment),
+                replies: Mutex::new(replies.iter().copied().collect()),
                 character_requests: Mutex::new(Vec::new()),
                 comment_requests: Mutex::new(Vec::new()),
             })
         }
 
+        fn new(characters: &[&str], comment: &'static str) -> Arc<Self> {
+            Self::scripted(characters, &[Ok(comment)])
+        }
+
         fn failing() -> Arc<Self> {
-            Arc::new(Self {
-                characters: vec!["Amu".into()],
-                comment: Err(()),
-                character_requests: Mutex::new(Vec::new()),
-                comment_requests: Mutex::new(Vec::new()),
-            })
+            Self::scripted(&["Amu"], &[Err(())])
         }
     }
 
@@ -739,7 +1031,13 @@ mod tests {
 
         fn write_comment(&self, req: &CommentRequest) -> Result<String, CommentaryError> {
             self.comment_requests.lock().unwrap().push(req.clone());
-            self.comment
+            let mut replies = self.replies.lock().unwrap();
+            let reply = if replies.len() > 1 {
+                replies.pop_front().unwrap()
+            } else {
+                *replies.front().expect("script has at least one reply")
+            };
+            reply
                 .map(str::to_string)
                 .map_err(|()| CommentaryError::Http("scripted failure".into()))
         }
@@ -758,7 +1056,7 @@ mod tests {
         AdvisorContext {
             series_name: Some(series.into()),
             episode: Some("03".into()),
-            subtitles: vec!["Coming!".into(), "For glory.".into()],
+            subtitles: vec![(1, "Coming!".into()), (2, "For glory.".into())],
             ..AdvisorContext::default()
         }
     }
@@ -781,20 +1079,25 @@ mod tests {
         )
     }
 
+    /// A seed whose second `plan_tick` does not re-roll — found by
+    /// trying seeds, asserted where used so a rand upgrade that shifts
+    /// the stream fails loudly instead of silently testing nothing.
+    const NO_REROLL_SEED: u64 = 1;
+
     /// The whole first-tick flow: pick a commentator from the cast,
     /// comment, remember the voice; the next tick (non-reroll seed)
-    /// reuses it without a second cast call.
+    /// reuses it without a second cast call — and continues the same
+    /// thread, carrying the first exchange as history.
     #[tokio::test]
     async fn first_tick_picks_then_reuses_the_commentator() {
         let fake = FakeModel::new(&["Amu", "Ikuto", "Tadase"], "Whaaaat?");
-        // Seed 1: the post-pick rolls stay under 95%, so no re-roll.
-        let mut engine = engine(fake.clone(), 1);
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
 
         let plan = engine.plan_tick(&gates("Shugo Chara!")).expect("eligible");
         assert!(plan.pick_commentator, "no commentator yet — must pick");
         engine.spawn_job(plan, &ctx("Shugo Chara!"), None);
         let text = take(&mut engine).await.unwrap();
-        let picked = engine.commentator.clone().expect("voice retained");
+        let picked = engine.commentator().cloned().expect("voice retained");
         assert!(
             ["Amu", "Ikuto", "Tadase"].contains(&picked.name.as_str()),
             "picked from the cast: {picked:?}"
@@ -802,12 +1105,274 @@ mod tests {
         assert_eq!(text, format!("<{}> Whaaaat?", picked.name));
 
         let plan = engine.plan_tick(&gates("Shugo Chara!")).expect("eligible");
-        assert!(!plan.pick_commentator, "seed 1 does not re-roll");
+        assert!(!plan.pick_commentator, "NO_REROLL_SEED does not re-roll");
         engine.spawn_job(plan, &ctx("Shugo Chara!"), None);
         take(&mut engine).await.unwrap();
         assert_eq!(fake.character_requests.lock().unwrap().len(), 1);
-        assert_eq!(fake.comment_requests.lock().unwrap().len(), 2);
-        assert_eq!(engine.commentator.clone().unwrap(), picked);
+        let requests = fake.comment_requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        // The second call continues the thread: one prior turn, echoed
+        // verbatim (user text and raw assistant reply).
+        assert!(requests[0].history.is_empty());
+        assert_eq!(requests[1].history.len(), 1);
+        assert_eq!(requests[1].history[0].user_text, requests[0].user_text);
+        assert_eq!(requests[1].history[0].assistant, "Whaaaat?");
+        assert_eq!(
+            requests[0].system, requests[1].system,
+            "the system prompt is stable across the thread (the caching invariant)"
+        );
+        drop(requests);
+        assert_eq!(engine.commentator().cloned().unwrap(), picked);
+    }
+
+    /// Consecutive comments never resend dialogue: the second turn
+    /// carries only lines stamped after the first turn's cursor, and a
+    /// quiet stretch says so instead of repeating the ring.
+    #[tokio::test]
+    async fn subtitle_windows_do_not_overlap() {
+        let fake = FakeModel::new(&["Amu"], "<Amu> hi");
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
+
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ctx("s"), None);
+        take(&mut engine).await.unwrap();
+
+        // The ring grew by two lines (and kept the old ones).
+        let mut grown = ctx("s");
+        grown.subtitles.extend([
+            (3, "Line three.".to_string()),
+            (4, "Line four.".to_string()),
+        ]);
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &grown, None);
+        take(&mut engine).await.unwrap();
+
+        // No new lines at all: the turn says so.
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &grown, None);
+        take(&mut engine).await.unwrap();
+
+        let requests = fake.comment_requests.lock().unwrap();
+        assert!(requests[0].user_text.contains("Coming!"));
+        assert!(requests[0].user_text.contains("For glory."));
+        assert!(requests[1].user_text.contains("Line three."));
+        assert!(requests[1].user_text.contains("Line four."));
+        assert!(
+            !requests[1].user_text.contains("Coming!"),
+            "already-sent dialogue must not repeat: {}",
+            requests[1].user_text
+        );
+        assert!(requests[2].user_text.contains("No new dialogue"));
+    }
+
+    /// A failed call leaves the cursor (and thread) untouched: the next
+    /// attempt resends the dialogue the model never saw.
+    #[tokio::test]
+    async fn failed_tick_does_not_advance_the_subtitle_cursor() {
+        let fake = FakeModel::scripted(&["Amu"], &[Err(()), Ok("<Amu> hi")]);
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
+
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ctx("s"), None);
+        assert_eq!(take(&mut engine).await, None, "scripted failure");
+
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ctx("s"), None);
+        take(&mut engine).await.unwrap();
+
+        let requests = fake.comment_requests.lock().unwrap();
+        assert!(
+            requests[1].user_text.contains("Coming!"),
+            "unseen dialogue is resent after a failure"
+        );
+        assert!(
+            requests[1].history.is_empty(),
+            "the failed exchange never entered the thread"
+        );
+    }
+
+    /// A fresh commentator starts a fresh thread: no history, but the
+    /// first turn is seeded with the episode's earlier comments (text
+    /// only) and re-headers what is playing.
+    #[tokio::test]
+    async fn fresh_commentator_is_seeded_with_episode_comments_only() {
+        let fake = FakeModel::scripted(&["Amu", "Ikuto"], &[Ok("First take!"), Ok("Second.")]);
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
+
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ctx("s"), None);
+        let first = take(&mut engine).await.unwrap();
+
+        // Force a re-roll (the 5% dice, taken deliberately).
+        engine.spawn_job(
+            TickPlan {
+                pick_commentator: true,
+            },
+            &ctx("s"),
+            None,
+        );
+        take(&mut engine).await.unwrap();
+
+        assert_eq!(
+            fake.character_requests.lock().unwrap().len(),
+            2,
+            "a fresh voice re-asks for the cast"
+        );
+        let requests = fake.comment_requests.lock().unwrap();
+        assert!(requests[1].history.is_empty(), "fresh thread");
+        assert!(
+            requests[1].user_text.contains(&first),
+            "seeded with the episode's comments: {}",
+            requests[1].user_text
+        );
+        assert!(
+            requests[1].user_text.contains("Now playing"),
+            "a fresh thread re-headers the episode"
+        );
+        assert!(
+            !requests[1].user_text.contains("Coming!"),
+            "already-consumed dialogue is not replayed to the new voice"
+        );
+    }
+
+    /// An episode change headers the next turn and resets the comment
+    /// seed: a commentator picked during episode 4 hears episode 4's
+    /// comments, not episode 3's.
+    #[tokio::test]
+    async fn episode_change_headers_the_turn_and_resets_the_seed() {
+        let fake = FakeModel::scripted(
+            &["Amu"],
+            &[Ok("From ep three."), Ok("From ep four."), Ok("Later.")],
+        );
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
+
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ctx("s"), None);
+        take(&mut engine).await.unwrap();
+
+        let mut ep4 = ctx("s");
+        ep4.episode = Some("04".into());
+        ep4.subtitles.push((3, "New ep line.".into()));
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ep4, None);
+        take(&mut engine).await.unwrap();
+
+        // Fresh voice mid-episode-4: seeded with ep 4's comment only.
+        engine.spawn_job(
+            TickPlan {
+                pick_commentator: true,
+            },
+            &ep4,
+            None,
+        );
+        take(&mut engine).await.unwrap();
+
+        let requests = fake.comment_requests.lock().unwrap();
+        assert!(
+            requests[1].user_text.contains("episode 04"),
+            "the episode change is announced mid-thread: {}",
+            requests[1].user_text
+        );
+        assert_eq!(
+            requests[1].history.len(),
+            1,
+            "same voice, same thread across the episode boundary"
+        );
+        assert!(requests[2].user_text.contains("From ep four."));
+        assert!(
+            !requests[2].user_text.contains("From ep three."),
+            "the seed is scoped to the current episode: {}",
+            requests[2].user_text
+        );
+    }
+
+    /// The cache flag follows the interval: on when a jittered tick
+    /// still lands inside the 5-minute TTL (2:00, 4:30), off past it
+    /// (10:00).
+    #[tokio::test]
+    async fn cache_flag_follows_the_interval() {
+        for (secs, expected) in [(120, true), (270, true), (600, false)] {
+            let fake = FakeModel::new(&["Amu"], "<Amu> hi");
+            let mut engine = CommentaryEngine::new(
+                Some(fake.clone()),
+                CommentaryInterval::Every(Duration::from_secs(secs)),
+                StdRng::seed_from_u64(NO_REROLL_SEED),
+            );
+            let plan = engine.plan_tick(&gates("s")).unwrap();
+            engine.spawn_job(plan, &ctx("s"), None);
+            take(&mut engine).await.unwrap();
+            assert_eq!(
+                fake.comment_requests.lock().unwrap()[0].cache,
+                expected,
+                "interval {secs}s"
+            );
+        }
+    }
+
+    /// The rendered request body: history echoed as alternating
+    /// user/assistant turns (images in place, never re-marked), the
+    /// system prompt as a block, and — when caching — exactly one
+    /// ephemeral breakpoint, on the final text block.
+    #[test]
+    fn comment_body_shapes_history_and_cache_breakpoint() {
+        let req = CommentRequest {
+            system: "card".into(),
+            history: vec![ThreadTurn {
+                user_text: "turn one".into(),
+                screenshot: Some(b"frame".to_vec()),
+                assistant: "<Amu> old".into(),
+            }],
+            user_text: "turn two".into(),
+            screenshot: None,
+            cache: true,
+        };
+        let body = build_comment_body(&req);
+        assert_eq!(body["system"][0]["text"], "card");
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"][0]["type"], "image");
+        assert_eq!(messages[0]["content"][1]["text"], "turn one");
+        assert!(
+            messages[0]["content"][1].get("cache_control").is_none(),
+            "history blocks carry no breakpoint"
+        );
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"], "<Amu> old");
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(
+            messages[2]["content"][0]["cache_control"]["type"], "ephemeral",
+            "the breakpoint rides the final block"
+        );
+
+        let uncached = build_comment_body(&CommentRequest {
+            cache: false,
+            ..req
+        });
+        assert!(
+            !serde_json::to_string(&uncached)
+                .unwrap()
+                .contains("cache_control"),
+            "long intervals skip the cache-write surcharge entirely"
+        );
+    }
+
+    /// The jittered cadence stays within ±JITTER of the interval and
+    /// actually varies to both sides.
+    #[test]
+    fn jitter_stays_within_bounds_and_varies() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let interval = Duration::from_secs(120);
+        let mut early = false;
+        let mut late = false;
+        for _ in 0..1000 {
+            let jitter = Duration::from_secs(rng.random_range(0..=2 * JITTER.as_secs()));
+            let next = (interval + jitter).saturating_sub(JITTER);
+            assert!(next >= interval - JITTER && next <= interval + JITTER);
+            early |= next < interval;
+            late |= next > interval;
+        }
+        assert!(early && late, "the dice must move both ways");
     }
 
     /// Some seed re-rolls within a bounded number of ticks — the 5%
@@ -838,14 +1403,25 @@ mod tests {
     #[tokio::test]
     async fn series_change_resets_the_commentator() {
         let fake = FakeModel::new(&["Amu"], "<Amu> hi");
-        let mut engine = engine(fake, 1);
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
         let plan = engine.plan_tick(&gates("First")).unwrap();
         engine.spawn_job(plan, &ctx("First"), None);
         take(&mut engine).await.unwrap();
-        assert!(engine.commentator.is_some());
+        assert!(engine.commentator().is_some());
 
         let plan = engine.plan_tick(&gates("Second")).expect("eligible");
         assert!(plan.pick_commentator, "new series — new voice");
+        // And the old series' comments never seed the new thread.
+        let mut second = ctx("Second");
+        second.subtitles.push((3, "Fresh line.".into()));
+        engine.spawn_job(plan, &second, None);
+        take(&mut engine).await.unwrap();
+        let requests = fake.comment_requests.lock().unwrap();
+        assert!(
+            !requests[1].user_text.contains("Comments so far"),
+            "no cross-series seeding: {}",
+            requests[1].user_text
+        );
     }
 
     /// Every gate suppresses the tick on its own.
@@ -906,11 +1482,11 @@ mod tests {
     }
 
     /// The prompts carry their load-bearing phrases: the spoiler bound,
-    /// the subtitle tail, and the output-format instruction.
+    /// the subtitle context, and the output-format instruction.
     #[tokio::test]
     async fn prompts_are_spoiler_bounded_and_formatted() {
         let fake = FakeModel::new(&["Amu"], "<Amu> hi");
-        let mut engine = engine(fake.clone(), 1);
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
         let plan = engine.plan_tick(&gates("Shugo Chara!")).unwrap();
         engine.spawn_job(plan, &ctx("Shugo Chara!"), None);
         take(&mut engine).await.unwrap();
@@ -923,14 +1499,15 @@ mod tests {
         assert!(char_prompt.contains("one character name per line"));
 
         let comment_req = fake.comment_requests.lock().unwrap()[0].clone();
-        let prompt = comment_prompt(&comment_req);
-        assert!(prompt.contains("you know nothing beyond this episode"));
-        assert!(prompt.contains("Coming!"));
-        assert!(prompt.contains(&format!("<{}> your comment", comment_req.commentator)));
         assert!(
-            !prompt.contains("attached image"),
-            "no screenshot — no image sentence"
+            comment_req
+                .system
+                .contains("you know nothing beyond the episode currently being watched")
         );
+        assert!(comment_req.system.contains("<Amu> your comment"));
+        assert!(comment_req.user_text.contains("Now playing"));
+        assert!(comment_req.user_text.contains("episode 03"));
+        assert!(comment_req.user_text.contains("Coming!"));
     }
 
     /// Failures skip quietly (no text) but keep the engine alive and
@@ -950,7 +1527,7 @@ mod tests {
         // An empty cast is also a quiet skip.
         let empty = Arc::new(FakeModel {
             characters: Vec::new(),
-            comment: Ok("<x> y"),
+            replies: Mutex::new([Ok("<x> y")].into_iter().collect()),
             character_requests: Mutex::new(Vec::new()),
             comment_requests: Mutex::new(Vec::new()),
         });
@@ -964,8 +1541,9 @@ mod tests {
         assert_eq!(take(&mut second).await, None);
     }
 
-    /// A screenshot file that exists and holds still is attached; no
-    /// path means no attachment (and no polling delay).
+    /// A screenshot file that exists and holds still is attached — and
+    /// remembered in the thread, so the next request's history carries
+    /// it; no path means no attachment (and no polling delay).
     #[tokio::test]
     async fn screenshot_attaches_when_present_and_skips_when_absent() {
         let dir = tempfile::tempdir().unwrap();
@@ -973,7 +1551,7 @@ mod tests {
         std::fs::write(&path, b"jpeg bytes").unwrap();
 
         let fake = FakeModel::new(&["Amu"], "<Amu> hi");
-        let mut engine = engine(fake.clone(), 1);
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
         let plan = engine.plan_tick(&gates("s")).unwrap();
         engine.spawn_job(plan, &ctx("s"), Some(path.clone()));
         take(&mut engine).await.unwrap();
@@ -986,7 +1564,13 @@ mod tests {
         let plan = engine.plan_tick(&gates("s")).unwrap();
         engine.spawn_job(plan, &ctx("s"), None);
         take(&mut engine).await.unwrap();
-        assert_eq!(fake.comment_requests.lock().unwrap()[1].screenshot, None);
+        let requests = fake.comment_requests.lock().unwrap();
+        assert_eq!(requests[1].screenshot, None);
+        assert_eq!(
+            requests[1].history[0].screenshot,
+            Some(b"jpeg bytes".to_vec()),
+            "the thread keeps its frames"
+        );
     }
 
     /// 2026-07-26 regression: a 10-bit source made mpv write an ~8MB
@@ -1040,7 +1624,7 @@ mod tests {
         engine.reconfigure(None, CommentaryInterval::Off);
         assert_eq!(take(&mut engine).await, None, "late result discarded");
         assert!(
-            engine.commentator.is_none(),
+            engine.commentator().is_none(),
             "token cleared drops the voice"
         );
         assert!(!engine.armed());

@@ -90,9 +90,11 @@ working copy atomically. Tabs containing a missing required value carry a
 - **AI commentary**: an Anthropic API token (optional, annotated
   **"Baughn only"** — nobody else is expected to set one; clearing it
   disables the feature) and a ladder-cycling comment interval (Off /
-  2 min / 5 min / 10 min, default Off; dormant until a token exists).
-  Both apply live. The tab's note says plainly that recent subtitles and
-  a player screenshot are sent to Anthropic. See
+  2 min / 4 min 30 s / 10 min, default Off; dormant until a token
+  exists). The middle preset is 4:30 rather than 5:00 so a jittered
+  request still lands inside the Anthropic prompt cache's 5-minute
+  ephemeral TTL. Both apply live. The tab's note says plainly that
+  recent subtitles and a player screenshot are sent to Anthropic. See
   [AI Commentary](#ai-commentary-the-marquee).
 
 Rows whose values do not apply immediately carry a dim lifecycle annotation
@@ -1334,11 +1336,12 @@ The row is dead to the mouse (it is outside every pane rect).
 ### AI Commentary (the marquee)
 
 Just for fun, and explicitly a **single-user gimmick** (the settings tab
-says "Baughn only"): on the configured interval — and only while
-connected, playing, and holding the now-playing file — the client with
-an Anthropic token asks **claude-opus-5** (low thinking effort,
-hardcoded) to react to the episode *in character*, and the reply scrolls
-across the bottom line's middle slot on **every** client.
+says "Baughn only"): on the configured interval — jittered ±15 s per
+comment so it isn't metronomic, and only while connected, playing, and
+holding the now-playing file — the client with an Anthropic token asks
+**claude-opus-5** (low thinking effort, hardcoded) to react to the
+episode *in character*, and the reply scrolls across the bottom line's
+middle slot on **every** client.
 
 - **The commentator.** The voice is a persistent character from the
   show's cast: a first, spoiler-bounded call asks for "major characters
@@ -1347,14 +1350,35 @@ across the bottom line's middle slot on **every** client.
   failures), is **re-rolled with 5% probability per tick** — a quietly
   changing persona is funnier than a fresh voice every time — and resets
   on a series change.
-- **The comment.** Each tick sends the series, episode, the last ~100
-  deduped subtitle lines (the advisor's ring), and an mpv screenshot
-  when one can be captured in time (`screenshot-to-file`, raw frame, no
-  OSD/subs; best-effort — its absence never blocks the tick). The prompt
-  pins the spoiler bound ("you know nothing beyond this episode") and
-  the output shape: one IRC-style line, `<Amu> Whaaaat?`. Replies are
-  normalized (newlines flattened, missing `<Name>` prefix repaired,
-  hard-capped ~220 chars).
+- **The thread.** Each commentator is a real multi-turn conversation,
+  not a stateless call: the character card and rules (the spoiler bound
+  — "you know nothing beyond the episode currently being watched" — and
+  the output shape, one IRC-style line `<Amu> Whaaaat?`) live in the
+  system prompt, and every tick appends a user turn carrying only the
+  subtitle lines that arrived **since the last comment** (the advisor
+  ring's per-line sequence numbers are the cursor — consecutive turns
+  never overlap, and a failed call doesn't advance the cursor) plus an
+  mpv screenshot when one can be captured in time
+  (`screenshot-to-file`, raw frame, no OSD/subs; best-effort — its
+  absence never blocks the tick). The model's replies ride along as
+  assistant turns, so the commentator remembers what it already said.
+  An episode change stays in-thread: the next turn opens with a
+  "Now playing" header. A commentator change (re-roll or series change)
+  cuts the thread; the fresh commentator's first turn is seeded with
+  the **text** of the current episode's earlier comments — never the
+  images or subtitles behind them — so the voice changes without the
+  conversation restarting from nothing. The 5% re-roll doubles as the
+  size limit: threads die young, no compaction needed.
+- **Caching.** When the interval (jitter included) fits inside the
+  Anthropic prompt cache's 5-minute ephemeral TTL — the 2 min and
+  4 min 30 s presets; the 4:30 preset exists precisely to duck under
+  the TTL — each request marks the final text block with an ephemeral
+  `cache_control` breakpoint, so the append-only thread re-bills at
+  cache-read rates instead of full price. At 10 min the cache would be
+  cold anyway and the write surcharge is skipped. Per-call token usage
+  (input, output, cache read/write) is logged at info.
+- Replies are normalized (newlines flattened, missing `<Name>` prefix
+  repaired, hard-capped ~220 chars).
 - **Distribution.** The line is written to the synced, deliberately
   generic **marquee register** (`LwwCell<Option<MarqueeMessage>>`,
   cleared at compaction like other ephemeral session state); every
@@ -1374,10 +1398,12 @@ across the bottom line's middle slot on **every** client.
   tick, and disabling mid-flight discards the late result. The feature
   narrates itself in the log at **info** — whether it is enabled (at
   startup and on every settings change, with the reason when it is not),
-  each outgoing request, the commentator it picked, and the comment that
-  came back — since a gimmick that speaks once every few minutes is
-  otherwise indistinguishable from a broken token. Skipped ticks (paused,
-  file not held, still in flight) log their reason at debug.
+  each outgoing request, the commentator it picked, each call's token
+  usage (input, output, cache read/write — "is the cache hitting?" is
+  one grep away), and the comment that came back — since a gimmick that
+  speaks once every few minutes is otherwise indistinguishable from a
+  broken token. Skipped ticks (paused, file not held, still in flight)
+  log their reason at debug.
 
 **Subtitle display (optional):** the local player's subtitles can be
 surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->
