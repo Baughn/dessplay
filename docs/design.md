@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1362,7 +1362,11 @@ middle slot on **every** client.
   system prompt, and every tick appends a user turn carrying only the
   subtitle lines that arrived **since the last comment** (the advisor
   ring's per-line sequence numbers are the cursor — consecutive turns
-  never overlap, and a failed call doesn't advance the cursor) plus an
+  never overlap, and a failed call doesn't advance the cursor),
+  **speaker-attributed** — a cue with an ASS Name field goes out as
+  `Name: line`, the same field the separate subtitle pane colors by,
+  since a model that can't watch the video needs the dialogue
+  attributed (a nameless cue stays bare) — plus an
   mpv screenshot when one can be captured in time
   (`screenshot-to-file`, raw frame, no OSD/subs; best-effort — its
   absence never blocks the tick). The model's replies ride along as

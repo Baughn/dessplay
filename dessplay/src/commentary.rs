@@ -779,17 +779,19 @@ impl CommentaryEngine {
         let episode = ctx.episode.clone();
         let same_episode = self.episode_key.as_ref() == Some(&(series.clone(), episode.clone()));
         // Only dialogue the model hasn't seen; the cursor commits when
-        // the job succeeds, so a failed attempt resends.
+        // the job succeeds, so a failed attempt resends. Rendered
+        // speaker-attributed (`Name: line`) — the model can't see the
+        // video, so attribution is all it gets.
         let new_subtitles: Vec<String> = ctx
             .subtitles
             .iter()
-            .filter(|(seq, _)| *seq > self.sent_seq)
-            .map(|(_, line)| line.clone())
+            .filter(|line| line.seq > self.sent_seq)
+            .map(|line| line.attributed())
             .collect();
         let seq = ctx
             .subtitles
             .iter()
-            .map(|(seq, _)| *seq)
+            .map(|line| line.seq)
             .max()
             .unwrap_or(0)
             .max(self.sent_seq);
@@ -824,7 +826,7 @@ impl CommentaryEngine {
                 .rev()
                 .take(CHARACTER_SUBTITLES)
                 .rev()
-                .map(|(_, line)| line.clone())
+                .map(|line| line.attributed())
                 .collect(),
             user_text,
             history,
@@ -1059,11 +1061,22 @@ mod tests {
         }
     }
 
+    fn ring(seq: u64, speaker: Option<&str>, text: &str) -> crate::advisor::RingLine {
+        crate::advisor::RingLine {
+            seq,
+            speaker: speaker.map(str::to_string),
+            text: text.into(),
+        }
+    }
+
     fn ctx(series: &str) -> AdvisorContext {
         AdvisorContext {
             series_name: Some(series.into()),
             episode: Some("03".into()),
-            subtitles: vec![(1, "Coming!".into()), (2, "For glory.".into())],
+            subtitles: vec![
+                ring(1, Some("Stark"), "Coming!"),
+                ring(2, None, "For glory."),
+            ],
             ..AdvisorContext::default()
         }
     }
@@ -1146,10 +1159,9 @@ mod tests {
 
         // The ring grew by two lines (and kept the old ones).
         let mut grown = ctx("s");
-        grown.subtitles.extend([
-            (3, "Line three.".to_string()),
-            (4, "Line four.".to_string()),
-        ]);
+        grown
+            .subtitles
+            .extend([ring(3, None, "Line three."), ring(4, None, "Line four.")]);
         let plan = engine.plan_tick(&gates("s")).unwrap();
         engine.spawn_job(plan, &grown, None);
         take(&mut engine).await.unwrap();
@@ -1259,7 +1271,7 @@ mod tests {
 
         let mut ep4 = ctx("s");
         ep4.episode = Some("04".into());
-        ep4.subtitles.push((3, "New ep line.".into()));
+        ep4.subtitles.push(ring(3, None, "New ep line."));
         let plan = engine.plan_tick(&gates("s")).unwrap();
         engine.spawn_job(plan, &ep4, None);
         take(&mut engine).await.unwrap();
@@ -1426,7 +1438,7 @@ mod tests {
             "a series change must not retire the voice"
         );
         let mut second = ctx("Second");
-        second.subtitles.push((3, "Fresh line.".into()));
+        second.subtitles.push(ring(3, None, "Fresh line."));
         engine.spawn_job(plan, &second, None);
         take(&mut engine).await.unwrap();
         assert_eq!(
@@ -1555,6 +1567,10 @@ mod tests {
         assert!(char_prompt.contains("episode 03"));
         assert!(char_prompt.contains("For glory."));
         assert!(char_prompt.contains("one character name per line"));
+        assert!(
+            char_prompt.contains("Stark: Coming!"),
+            "dialogue with a known ASS speaker goes out attributed: {char_prompt}"
+        );
 
         let comment_req = fake.comment_requests.lock().unwrap()[0].clone();
         assert!(
@@ -1565,7 +1581,16 @@ mod tests {
         assert!(comment_req.system.contains("<Amu> your comment"));
         assert!(comment_req.user_text.contains("Now playing"));
         assert!(comment_req.user_text.contains("episode 03"));
-        assert!(comment_req.user_text.contains("Coming!"));
+        assert!(
+            comment_req.user_text.contains("Stark: Coming!"),
+            "the comment turn's dialogue is speaker-attributed: {}",
+            comment_req.user_text
+        );
+        assert!(
+            comment_req.user_text.contains("\nFor glory."),
+            "a cue with no ASS speaker stays bare: {}",
+            comment_req.user_text
+        );
     }
 
     /// Failures skip quietly (no text) but keep the engine alive and

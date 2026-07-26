@@ -51,6 +51,38 @@ pub struct Suggestion {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SuggestionUpdate(pub Option<Suggestion>);
 
+/// One deduped line in the subtitle context ring. The speaker (the ASS
+/// Name field, when the cue carried one) is kept separately from the
+/// text so the reveal/overlap collapse still classifies against mpv's
+/// raw re-emissions; consumers that want attribution render it via
+/// [`RingLine::attributed`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RingLine {
+    /// Monotonic sequence number of the line's last mutation (push or
+    /// in-place growth) — the commentary engine's non-overlap cursor
+    /// keys on it, so consecutive comments never resend dialogue the
+    /// model has already seen.
+    pub seq: u64,
+    /// The ASS speaker/actor, if the cue carried one. Tracks the latest
+    /// speaker across in-place growth, like the UI's subtitle log.
+    pub speaker: Option<String>,
+    /// The collapsed subtitle text (newlines already flattened).
+    pub text: String,
+}
+
+impl RingLine {
+    /// The line as prompt text: `Name: text` when the cue named a
+    /// speaker — the commentary model can't see the video, so dialogue
+    /// goes out properly attributed (same `Name: ` form as the subtitle
+    /// pane's speaker-name prefix).
+    pub fn attributed(&self) -> String {
+        match &self.speaker {
+            Some(name) => format!("{name}: {}", self.text),
+            None => self.text.clone(),
+        }
+    }
+}
+
 /// Everything a provider may reason over. Built by the session loop
 /// from its own state — no storage or network access needed.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -63,11 +95,9 @@ pub struct AdvisorContext {
     pub filename: Option<String>,
     /// The last ≤100 subtitle lines, deduped with the same
     /// reveal/overlap collapse as the UI's subtitle log, oldest first.
-    /// Each line carries the monotonic sequence number of its last
-    /// mutation (push or in-place growth) — the commentary engine's
-    /// non-overlap cursor keys on it, so consecutive comments never
-    /// resend dialogue the model has already seen.
-    pub subtitles: Vec<(u64, String)>,
+    /// Each carries its sequence stamp and the ASS speaker when known —
+    /// see [`RingLine`].
+    pub subtitles: Vec<RingLine>,
     /// Server-link state.
     pub link: LinkStatus,
     /// Displayed (hysteresis-filtered) health level.
@@ -110,7 +140,7 @@ pub struct Advisor {
     tx: mpsc::Sender<SuggestionUpdate>,
     /// Drained by the session loop's select arm.
     pub suggestions: mpsc::Receiver<SuggestionUpdate>,
-    subtitles: VecDeque<(u64, String)>,
+    subtitles: VecDeque<RingLine>,
     /// Monotonic counter behind the ring's per-line sequence numbers;
     /// bumped on every push *and* every in-place growth, so a line that
     /// grew after being consumed reads as new again.
@@ -157,22 +187,31 @@ impl Advisor {
                 continue;
             }
             match props::subtitle_collapse(
-                self.subtitles.back().map(|(_, line)| line.as_str()),
+                self.subtitles.back().map(|line| line.text.as_str()),
                 &text,
             ) {
                 props::SubtitleCollapse::Extends => {
                     if let Some(last) = self.subtitles.back_mut() {
                         // A grown line is new material: re-stamp it so a
                         // cursor that consumed the shorter form picks up
-                        // the full one.
+                        // the full one. Track the latest speaker, like
+                        // the UI's subtitle log.
                         self.subtitle_seq += 1;
-                        *last = (self.subtitle_seq, text);
+                        *last = RingLine {
+                            seq: self.subtitle_seq,
+                            speaker: line.speaker.clone(),
+                            text,
+                        };
                     }
                 }
                 props::SubtitleCollapse::Contained => {}
                 props::SubtitleCollapse::Distinct => {
                     self.subtitle_seq += 1;
-                    self.subtitles.push_back((self.subtitle_seq, text));
+                    self.subtitles.push_back(RingLine {
+                        seq: self.subtitle_seq,
+                        speaker: line.speaker.clone(),
+                        text,
+                    });
                     while self.subtitles.len() > SUBTITLE_RING {
                         self.subtitles.pop_front();
                     }
@@ -457,11 +496,11 @@ mod tests {
             line("For glory."),
         ]);
         assert_eq!(advisor.subtitles.len(), 1);
-        assert_eq!(advisor.subtitles[0].1, "Coming! For glory.");
+        assert_eq!(advisor.subtitles[0].text, "Coming! For glory.");
         // Multi-line cues arrive newline-separated; newlines become
         // spaces (the "you demons" rule).
         advisor.observe_subtitles(&[line("you\ndemons")]);
-        assert_eq!(advisor.subtitles.back().unwrap().1, "you demons");
+        assert_eq!(advisor.subtitles.back().unwrap().text, "you demons");
         for i in 0..120 {
             advisor.observe_subtitles(&[line(&format!("distinct line {i}"))]);
         }
@@ -481,11 +520,43 @@ mod tests {
             arrival_millis: 0,
         };
         advisor.observe_subtitles(&[line("First."), line("Com")]);
-        assert_eq!(advisor.subtitles[0], (1, "First.".into()));
-        assert_eq!(advisor.subtitles[1], (2, "Com".into()));
+        assert_eq!(
+            (advisor.subtitles[0].seq, &*advisor.subtitles[0].text),
+            (1, "First.")
+        );
+        assert_eq!(
+            (advisor.subtitles[1].seq, &*advisor.subtitles[1].text),
+            (2, "Com")
+        );
         // Growth re-stamps; the shrink-back changes nothing.
         advisor.observe_subtitles(&[line("Coming!"), line("Com")]);
-        assert_eq!(advisor.subtitles[1], (3, "Coming!".into()));
+        assert_eq!(
+            (advisor.subtitles[1].seq, &*advisor.subtitles[1].text),
+            (3, "Coming!")
+        );
+        assert_eq!(advisor.subtitles.len(), 2);
+    }
+
+    /// The ring keeps each cue's ASS speaker, tracks the latest speaker
+    /// across an in-place growth (like the UI's subtitle log), and
+    /// renders attribution as `Name: text` — the commentary model can't
+    /// see the video, so its dialogue must arrive attributed.
+    #[tokio::test(start_paused = true)]
+    async fn ring_carries_the_speaker_for_attribution() {
+        let mut advisor = Advisor::default();
+        let line = |speaker: Option<&str>, text: &str| SubtitleLine {
+            text: text.into(),
+            speaker: speaker.map(str::to_string),
+            video_millis: 0,
+            arrival_millis: 0,
+        };
+        advisor.observe_subtitles(&[line(Some("Amu"), "Whaaaat?"), line(None, "(gasps)")]);
+        assert_eq!(advisor.subtitles[0].attributed(), "Amu: Whaaaat?");
+        assert_eq!(advisor.subtitles[1].attributed(), "(gasps)");
+        // An overlap join grows the line in place; the joined cue's
+        // speaker wins, matching the UI log's latest-speaker rule.
+        advisor.observe_subtitles(&[line(Some("Ikuto"), "(gasps) Yo.")]);
+        assert_eq!(advisor.subtitles[1].attributed(), "Ikuto: (gasps) Yo.");
         assert_eq!(advisor.subtitles.len(), 2);
     }
 
