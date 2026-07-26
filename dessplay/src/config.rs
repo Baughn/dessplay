@@ -284,12 +284,13 @@ impl CommentaryInterval {
         }
     }
 
-    /// Cycle the settings-screen presets: Off -> 2 min -> 4 min 30 s ->
+    /// Cycle the settings-screen presets: Off -> 2 min -> 4 min ->
     /// 10 min -> wrap. A non-preset value (set out-of-band) advances to
     /// the first preset strictly larger than it, rejoining the ladder.
-    /// The middle preset is 4:30 rather than 5:00 so that, jitter
-    /// included, each request still lands inside the Anthropic prompt
-    /// cache's 5-minute ephemeral TTL (see the commentary engine).
+    /// The middle preset is 4:00 rather than 5:00 so that, jitter and
+    /// request latency included, each request reliably lands inside the
+    /// Anthropic prompt cache's 5-minute ephemeral TTL (see the
+    /// commentary engine).
     pub fn next(self) -> Self {
         const MIN: u64 = 60;
         match self {
@@ -298,8 +299,8 @@ impl CommentaryInterval {
                 let secs = d.as_secs();
                 if secs < 2 * MIN {
                     CommentaryInterval::Every(Duration::from_secs(2 * MIN))
-                } else if secs < 4 * MIN + 30 {
-                    CommentaryInterval::Every(Duration::from_secs(4 * MIN + 30))
+                } else if secs < 4 * MIN {
+                    CommentaryInterval::Every(Duration::from_secs(4 * MIN))
                 } else if secs < 10 * MIN {
                     CommentaryInterval::Every(Duration::from_secs(10 * MIN))
                 } else {
@@ -760,9 +761,9 @@ mod tests {
     #[test]
     fn commentary_interval_ladder_cycles_and_round_trips() {
         let every = |secs: u64| CommentaryInterval::Every(Duration::from_secs(secs));
-        // Off -> 2 min -> 4 min 30 s -> 10 min -> Off. The middle
-        // preset is 4:30, not 5:00, so a jittered request still lands
-        // inside the prompt cache's 5-minute ephemeral TTL.
+        // Off -> 2 min -> 4 min -> 10 min -> Off. The middle preset is
+        // 4:00, not 5:00, so a jittered request reliably lands inside
+        // the prompt cache's 5-minute ephemeral TTL.
         let mut interval = CommentaryInterval::Off;
         let mut seen = Vec::new();
         for _ in 0..4 {
@@ -771,11 +772,12 @@ mod tests {
         }
         assert_eq!(
             seen,
-            vec![every(120), every(270), every(600), CommentaryInterval::Off]
+            vec![every(120), every(240), every(600), CommentaryInterval::Off]
         );
         // An out-of-band value rejoins the ladder at the next preset up
-        // (a stored pre-4:30 "5 min" advances to 10 min).
-        assert_eq!(every(3 * 60).next(), every(270));
+        // (a stored pre-4:00 "4 min 30 s" or "5 min" advances to 10 min).
+        assert_eq!(every(3 * 60).next(), every(240));
+        assert_eq!(every(270).next(), every(600));
         assert_eq!(every(300).next(), every(600));
         // Persisted form survives.
         for value in [CommentaryInterval::Off, every(120), every(7 * 60)] {
@@ -790,7 +792,7 @@ mod tests {
             Some(Duration::from_secs(120)),
             "duration feeds the engine's ticker"
         );
-        assert_eq!(every(270).label(), "Every 4 minutes 30 seconds");
+        assert_eq!(every(240).label(), "Every 4 minutes");
     }
 
     #[test]

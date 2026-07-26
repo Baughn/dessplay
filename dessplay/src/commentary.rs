@@ -20,7 +20,7 @@
 //!
 //! Requests opt into Anthropic's ephemeral prompt cache whenever the
 //! interval (jitter included) fits inside the cache's 5-minute TTL —
-//! which is why the settings ladder offers 4:30 rather than 5:00 — so
+//! which is why the settings ladder offers 4:00 rather than 5:00 — so
 //! the growing thread re-bills at cache-read rates instead of full
 //! price. The reply (`<Amu> Whaaaat?`) is written to the synced
 //! [`marquee register`](dessplay_core::state::CrdtState::marquee), so
@@ -1306,11 +1306,11 @@ mod tests {
     }
 
     /// The cache flag follows the interval: on when a jittered tick
-    /// still lands inside the 5-minute TTL (2:00, 4:30), off past it
+    /// still lands inside the 5-minute TTL (2:00, 4:00), off past it
     /// (10:00).
     #[tokio::test]
     async fn cache_flag_follows_the_interval() {
-        for (secs, expected) in [(120, true), (270, true), (600, false)] {
+        for (secs, expected) in [(120, true), (240, true), (600, false)] {
             let fake = FakeModel::new(&["Amu"], "<Amu> hi");
             let mut engine = CommentaryEngine::new(
                 Some(fake.clone()),

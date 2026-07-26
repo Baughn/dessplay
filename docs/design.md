@@ -90,9 +90,9 @@ working copy atomically. Tabs containing a missing required value carry a
 - **AI commentary**: an Anthropic API token (optional, annotated
   **"Baughn only"** — nobody else is expected to set one; clearing it
   disables the feature) and a ladder-cycling comment interval (Off /
-  2 min / 4 min 30 s / 10 min, default Off; dormant until a token
-  exists). The middle preset is 4:30 rather than 5:00 so a jittered
-  request still lands inside the Anthropic prompt cache's 5-minute
+  2 min / 4 min / 10 min, default Off; dormant until a token
+  exists). The middle preset is 4:00 rather than 5:00 so a jittered
+  request reliably lands inside the Anthropic prompt cache's 5-minute
   ephemeral TTL. Both apply live. The tab's note says plainly that
   recent subtitles and a player screenshot are sent to Anthropic. See
   [AI Commentary](#ai-commentary-the-marquee).
@@ -1380,7 +1380,7 @@ middle slot on **every** client.
   size limit: threads die young, no compaction needed.
 - **Caching.** When the interval (jitter included) fits inside the
   Anthropic prompt cache's 5-minute ephemeral TTL — the 2 min and
-  4 min 30 s presets; the 4:30 preset exists precisely to duck under
+  4 min presets; the 4 min preset exists precisely to duck under
   the TTL — each request marks the final text block with an ephemeral
   `cache_control` breakpoint, so the append-only thread re-bills at
   cache-read rates instead of full price. At 10 min the cache would be
