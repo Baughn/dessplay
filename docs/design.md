@@ -1371,7 +1371,13 @@ across the bottom line's middle slot on **every** client.
 - **Failure policy.** Every failure — HTTP error, refusal, empty cast,
   malformed reply — is a log line and a skipped tick; never a chat line,
   never user-visible noise. An in-flight call never stacks with the next
-  tick, and disabling mid-flight discards the late result.
+  tick, and disabling mid-flight discards the late result. The feature
+  narrates itself in the log at **info** — whether it is enabled (at
+  startup and on every settings change, with the reason when it is not),
+  each outgoing request, the commentator it picked, and the comment that
+  came back — since a gimmick that speaks once every few minutes is
+  otherwise indistinguishable from a broken token. Skipped ticks (paused,
+  file not held, still in flight) log their reason at debug.
 
 **Subtitle display (optional):** the local player's subtitles can be
 surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->

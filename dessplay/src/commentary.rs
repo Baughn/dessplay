@@ -11,6 +11,13 @@
 //! every client scrolls it — including this one, via the ordinary sync
 //! echo, which keeps all replicas showing identical text.
 //!
+//! The feature narrates itself at **info**: whether it is enabled (at
+//! startup and on every settings change, with the reason when it is
+//! not), each outgoing request, the commentator it picked, and the
+//! comment that came back. A gimmick that only speaks once every few
+//! minutes is otherwise indistinguishable from a broken token; skipped
+//! ticks (paused, no file, gated) log their reason at debug.
+//!
 //! Nothing here blocks the bridge loop: the HTTP calls run under
 //! [`tokio::task::spawn_blocking`], results come back through a
 //! channel, and an in-flight guard keeps slow calls from stacking.
@@ -406,14 +413,30 @@ pub struct CommentaryEngine {
 impl CommentaryEngine {
     /// An engine from the saved settings, seeded from entropy.
     pub fn from_settings(settings: &crate::config::Settings) -> Self {
-        Self::new(
+        let engine = Self::new(
             settings
                 .anthropic_token
                 .clone()
                 .map(|token| Arc::new(AnthropicModel::new(token)) as Arc<dyn CommentaryModel>),
             settings.commentary_interval,
             StdRng::from_os_rng(),
-        )
+        );
+        engine.log_state("configured");
+        engine
+    }
+
+    /// Say, at info, whether commentary will run at all and why — the
+    /// feature is otherwise silent until a comment lands a whole
+    /// interval later, which reads exactly like a broken token.
+    fn log_state(&self, when: &str) {
+        match (self.model.is_some(), self.interval) {
+            (true, Some(interval)) => tracing::info!(
+                interval_secs = interval.as_secs(),
+                "AI commentary {when}: enabled"
+            ),
+            (false, _) => tracing::info!("AI commentary {when}: disabled (no Anthropic token)"),
+            (true, None) => tracing::info!("AI commentary {when}: disabled (interval off)"),
+        }
     }
 
     /// A disabled engine (seeders, tests that don't exercise it).
@@ -476,6 +499,7 @@ impl CommentaryEngine {
         }
         self.interval = interval.duration();
         self.ticker = Self::make_ticker(self.interval);
+        self.log_state("reconfigured");
     }
 
     /// Where the player should write the screenshot for the next job.
@@ -485,10 +509,24 @@ impl CommentaryEngine {
 
     /// Decide what (if anything) this tick does. `None` = skip quietly.
     pub fn plan_tick(&mut self, gates: &TickGates) -> Option<TickPlan> {
-        if !self.armed() || self.in_flight {
+        if !self.armed() {
             return None;
         }
-        if !gates.connected || !gates.playing || !gates.holds_file {
+        if self.in_flight {
+            tracing::debug!("commentary tick skipped: a call is still in flight");
+            return None;
+        }
+        // Named so "why is nothing showing up?" is one RUST_LOG away; a
+        // gated tick is the common case (paused, not holding the file),
+        // so it stays at debug rather than info.
+        if !gates.connected || !gates.playing || !gates.holds_file || gates.series.is_none() {
+            tracing::debug!(
+                connected = gates.connected,
+                playing = gates.playing,
+                holds_file = gates.holds_file,
+                have_series = gates.series.is_some(),
+                "commentary tick skipped: gated"
+            );
             return None;
         }
         let series = gates.series.as_deref()?;
@@ -524,6 +562,14 @@ impl CommentaryEngine {
         let episode = ctx.episode.clone();
         let subtitles = ctx.subtitles.clone();
         let tx = self.results_tx.clone();
+        tracing::info!(
+            series = %series,
+            episode = episode.as_deref().unwrap_or("?"),
+            commentator = keep.as_ref().map_or("(picking one)", |c| c.name.as_str()),
+            subtitles = subtitles.len(),
+            screenshot = screenshot.is_some(),
+            "commentary: requesting a comment"
+        );
         tokio::task::spawn_blocking(move || {
             let outcome = run_job(
                 model.as_ref(),
@@ -547,10 +593,12 @@ impl CommentaryEngine {
             Ok(JobOutcome { commentator, text }) => {
                 if !self.armed() {
                     // Disabled while the call was in flight: discard.
+                    tracing::info!("commentary: disabled mid-call — discarding {text}");
                     return None;
                 }
                 tracing::info!(
                     commentator = %commentator.name,
+                    series = %commentator.series,
                     "commentary: {text}"
                 );
                 self.commentator = Some(commentator);
@@ -594,6 +642,12 @@ fn run_job(
                 return Err(CommentaryError::NoCharacters);
             }
             let name = names[(pick_index % names.len() as u64) as usize].clone();
+            tracing::info!(
+                commentator = %name,
+                cast = names.len(),
+                series = %series,
+                "commentary: picked a commentator"
+            );
             Commentator {
                 name,
                 series: series.clone(),
@@ -990,6 +1044,77 @@ mod tests {
             "token cleared drops the voice"
         );
         assert!(!engine.armed());
+    }
+
+    /// The gimmick must narrate itself at info: enabled-or-why-not, the
+    /// outgoing request, and — the point of the exercise — the comment
+    /// that came back. Without these a silent interval is
+    /// indistinguishable from a dead token.
+    #[test]
+    fn a_tick_is_logged_at_info_including_the_generated_comment() {
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct LogWriter(StdArc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let captured = StdArc::new(Mutex::new(Vec::new()));
+        let writer = LogWriter(StdArc::clone(&captured));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+
+        // The blocking job runs off-thread (a thread-local subscriber
+        // does not reach it), so drive the flow on this thread: the
+        // engine's own logs are what we assert.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                let fake = FakeModel::new(&["Amu"], "Whaaaat?");
+                let mut engine = engine(fake, 1);
+                async fn tick(engine: &mut CommentaryEngine) -> Option<String> {
+                    engine.log_state("configured");
+                    let plan = engine.plan_tick(&gates("Shugo Chara!")).unwrap();
+                    engine.spawn_job(plan, &ctx("Shugo Chara!"), None);
+                    take(engine).await
+                }
+
+                // tracing caches each callsite's interest the first time
+                // it is hit, and a sibling test hitting these lines first
+                // (on a thread with no subscriber) caches "never" for the
+                // whole process. Warm the callsites, then rebuild the
+                // cache under *this* thread's subscriber, so the
+                // assertions below do not depend on test ordering.
+                tick(&mut engine).await;
+                tracing::callsite::rebuild_interest_cache();
+                captured.lock().unwrap().clear();
+
+                assert_eq!(tick(&mut engine).await.unwrap(), "<Amu> Whaaaat?");
+            });
+        });
+
+        let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("AI commentary configured: enabled"), "{logs}");
+        assert!(logs.contains("interval_secs=120"), "{logs}");
+        assert!(logs.contains("commentary: requesting a comment"), "{logs}");
+        assert!(logs.contains("series=Shugo Chara!"), "{logs}");
+        assert!(logs.contains("commentary: <Amu> Whaaaat?"), "{logs}");
     }
 
     #[test]
