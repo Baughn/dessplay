@@ -27,7 +27,12 @@ Last updated: 2026-07-17
 - **Spec-driven**: Write tests from the specification, not the implementation.
   If the spec is unclear, clarify it before writing the test.
 - **Regression tests first**: When fixing a bug, write a test that reproduces
-  it *before* writing the fix.
+  it *before* writing the fix. Exception: when the fix makes the bug class
+  unrepresentable (in the types, or structurally), the test is optional —
+  never skew a design to keep a bug representable for testing's sake;
+  provably correct beats tested correct. A regression test still fits when
+  it models the real triggering conditions through the honest interface
+  without bending the design.
 - **High-risk areas get extra coverage**: Echo suppression, CRDT convergence,
   Lww tiebreaking, playlist Identifier ordering, reconnection/epoch handling,
   seek authority transitions, presence transitions (lost/departed pause

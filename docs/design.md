@@ -583,7 +583,11 @@ never hides it and it survives player relaunches.
    excludes absent users, users on a different file, and users watching a
    placeholder (file missing / still downloading / not watching) -- their
    position is stale or for another file and must never elect a bogus leader
-   or be followed as authority. *Without the leader fallback the player ran
+   or be followed as authority. (The tag itself is trustworthy at its source
+   because the player actor attributes positions to a file only after mpv's
+   own path echo confirms that file is loaded -- see
+   [Events from Player](#events-from-player) -- so a slow load can no longer
+   publish the previous file's position under the new file's identity.) *Without the leader fallback the player ran
    open-loop under Server authority: any initial offset (e.g. a player that
    started late, or a brief decode stall) sat uncorrected for the whole
    episode, since no `SyncTo` was ever issued.*
@@ -2260,6 +2264,26 @@ a misattributed echo self-heals on the next derived-state round trip. The
 `path` observation uses the same model: an observed path equal to the one
 we last commanded (including the placeholder PNG) is our echo and is
 swallowed; any other is the user's.
+
+**File attribution is evidence-based.** `loadfile` is asynchronous:
+after a load is commanded, mpv stays on — and keeps reporting positions,
+seeks, even the EOF of — the *previous* file until the new one actually
+opens, and on a slow machine (cold NAS, heavy mpv scripts) that window
+is long. mpv's events carry no file identity, so the actor pairs each
+file-attributed observation (position, seek, EOF, duration) with the
+file it *commanded* — which already names the new file during that
+window. The observed `path` property closes it: mpv's IPC event stream
+is ordered, so the actor accepts file-attributed observations only while
+the last observed path equals the commanded one; observations in the gap
+belong to the old file and are dropped. This is what makes the
+`PlaybackPosition` file tag (Playback Rules, drift correction)
+trustworthy at its source — without it, a trailing late-in-the-old-episode
+position was broadcast under the new file's identity, and forward-only
+leader election latched the group onto it (2026-07-27). The one
+exception is the load-*failure* report: a file that fails to open may
+never produce a path observation at all, so gating it would suppress the
+report entirely; a stale one merely re-resolves the file (wrong but
+self-healing, the safe direction).
 
 ### Subtitle Display
 
