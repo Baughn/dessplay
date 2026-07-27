@@ -20,7 +20,7 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// its stability is what lets a mismatched future client still be
 /// decoded and answered with a readable [`ServerControl::ProtocolMismatch`]
 /// instead of a silent decode failure.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as
@@ -126,6 +126,13 @@ pub enum ServerControl {
     AuthOk {
         /// The client's address as the server saw it. Informational.
         observed_addr: SocketAddr,
+        /// One-time token binding the **transfer connection** to this
+        /// session: the client presents it in [`Self::TransferAuth`] on
+        /// the second, DSCP-tagged QUIC connection it dials next (to the
+        /// control port + 1). Regenerated on every successful `Auth`, so
+        /// a stale token from a superseded connection is refused.
+        /// Appended field (bump policy): protocol v8.
+        transfer_token: u64,
     },
     /// Auth rejected; the server closes the connection after sending.
     AuthFailed,
@@ -223,6 +230,23 @@ pub enum ServerControl {
         /// The new value.
         watched: bool,
     },
+
+    // ---- Transfer connection binding (protocol v8)
+    /// Client -> server: the first (and only expected) control frame on
+    /// the **transfer connection** — the second QUIC connection, dialed
+    /// to the control port + 1 with the bulk DSCP tag. Binds it to the
+    /// session `AuthOk` authenticated: the server validates `token`
+    /// against the one it issued to `username`'s live control
+    /// connection. All relay (file-transfer) streams ride the transfer
+    /// connection; presence remains keyed to the control connection
+    /// alone, so a dead transfer link degrades transfers, never
+    /// liveness. Appended last (bump policy).
+    TransferAuth {
+        /// Who this transfer connection belongs to.
+        username: UserId,
+        /// The token from this session's [`Self::AuthOk`].
+        token: u64,
+    },
 }
 
 /// One AniDB name-search result.
@@ -259,6 +283,7 @@ impl ServerControl {
             ServerControl::AniDbSearchResults { .. } => "AniDbSearchResults",
             ServerControl::ProtocolMismatch { .. } => "ProtocolMismatch",
             ServerControl::MarkWatched { .. } => "MarkWatched",
+            ServerControl::TransferAuth { .. } => "TransferAuth",
         }
     }
 }

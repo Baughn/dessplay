@@ -149,19 +149,43 @@ fn run(cli: Cli) -> Result<(), String> {
             );
         }
     };
-    // quinn binds sockets through the active async runtime.
-    let listener = {
+    // quinn binds sockets through the active async runtime. Two
+    // listeners since protocol v8: control (DSCP AF41) and, one port
+    // up, transfer (AF21) — the same cert covers both. Remember to open
+    // the transfer port in the firewall alongside the control port.
+    let transfer_listen = {
+        let mut addr = cli.listen;
+        addr.set_port(addr.port() + dessplay_core::net::quic::TRANSFER_PORT_OFFSET);
+        addr
+    };
+    let (listener, transfer_listener) = {
         let _guard = runtime.enter();
-        QuicListener::bind(cli.listen, cert, key).map_err(|e| format!("binding QUIC: {e}"))?
+        let control = QuicListener::bind_tagged(
+            cli.listen,
+            cert.clone(),
+            key.clone_key(),
+            Some(dessplay_core::net::quic::DSCP_CONTROL),
+        )
+        .map_err(|e| format!("binding QUIC: {e}"))?;
+        let transfer = QuicListener::bind_tagged(
+            transfer_listen,
+            cert,
+            key,
+            Some(dessplay_core::net::quic::DSCP_TRANSFER),
+        )
+        .map_err(|e| format!("binding transfer QUIC: {e}"))?;
+        (control, transfer)
     };
     tracing::info!(
-        "listening on {} (db {}, compaction {:?})",
+        "listening on {} (transfer {}, db {}, compaction {:?})",
         cli.listen,
+        transfer_listen,
         db_path.display(),
         config.compaction,
     );
     runtime.block_on(server::run(
         listener,
+        transfer_listener,
         config,
         server::system_clock(),
         Some(storage),

@@ -82,7 +82,15 @@ pub struct SyncConfigExtras {
 }
 
 /// Spawn the headless client: network actor + sync actor + router.
-pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> ClientHandle {
+///
+/// `transfer_connector` dials the transfer connection (see the network
+/// actor's docs) — in production the control address at port + 1 with
+/// the bulk DSCP tag, in tests a second sim connector.
+pub fn spawn_client<C: Connector>(
+    connector: Arc<C>,
+    transfer_connector: Arc<C>,
+    config: ClientConfig,
+) -> ClientHandle {
     let epoch = Arc::new(AtomicU64::new(0));
     let actor = ActorId::session(&config.username.0, config.session_nonce);
 
@@ -118,6 +126,7 @@ pub fn spawn_client<C: Connector>(connector: Arc<C>, config: ClientConfig) -> Cl
 
     tokio::spawn(network::run(
         connector,
+        transfer_connector,
         network_config,
         net_rx,
         net_event_tx,

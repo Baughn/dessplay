@@ -45,8 +45,10 @@ fn setup(seed: u64) -> (SimNetwork, EndpointId) {
     let net = SimNetwork::new(seed);
     let server_id = EndpointId::new("server");
     let listener = net.listener(&server_id);
+    let transfer_listener = net.listener(&EndpointId::new("server-transfer"));
     tokio::spawn(server::run(
         listener,
+        transfer_listener,
         ServerConfig::new(PASSWORD),
         sim_clock(),
         None,

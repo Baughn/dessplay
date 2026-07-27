@@ -1,8 +1,13 @@
-//! The network actor: owns the connection to the rendezvous server.
+//! The network actor: owns the connections to the rendezvous server.
 //!
-//! Phase 3 scope: connect, authenticate, keep the clock synced, surface
-//! peer-list updates, reconnect with a fixed backoff. State sync
-//! traffic (ops, snapshots, merges) is surfaced as events from Phase 4.
+//! Two QUIC connections since protocol v8 (the DSCP split — see
+//! docs/proposals/2026-07-28-transfer-flow-control.md): the **control**
+//! connection carries auth, state sync, peer lists, time sync, and
+//! datagrams; the **transfer** connection carries the relay (file
+//! transfer) stream. They are separate so each can ride a differently
+//! DSCP-tagged socket. Presence is keyed to the control connection
+//! alone: the transfer link redials on its own backoff and its death
+//! degrades transfers, never liveness.
 //!
 //! The actor is generic over [`Connector`], so the simulation harness
 //! runs it over `SimConnector` and production over `QuicConnector`. The
@@ -40,8 +45,9 @@ pub enum NetworkCommand {
     /// the gap).
     SendDatagramOnly(Box<ServerControl>),
     /// Send a file-transfer message to a peer, relayed through the
-    /// server on the dedicated relay stream. Dropped if the relay
-    /// stream isn't up yet (pre-auth) — transfer logic retries.
+    /// server on the relay stream of the dedicated **transfer
+    /// connection**. Dropped if the transfer link isn't up yet
+    /// (pre-auth, or redialing) — transfer logic retries.
     SendPeer {
         /// The destination peer.
         to: PeerId,
@@ -235,8 +241,13 @@ const BURST_INTERVAL: Duration = Duration::from_millis(200);
 const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Run the network actor until shutdown or auth failure.
+///
+/// `transfer_connector` dials the transfer connection (control port + 1
+/// in production, with the bulk DSCP tag); it is dialed after each
+/// successful auth, bound to the session by the `AuthOk` token.
 pub async fn run<C: Connector>(
     connector: Arc<C>,
+    transfer_connector: Arc<C>,
     config: NetworkConfig,
     mut commands: mpsc::Receiver<NetworkCommand>,
     events: mpsc::Sender<NetworkEvent>,
@@ -279,7 +290,9 @@ pub async fn run<C: Connector>(
                     elapsed_ms = attempt_started.elapsed().as_millis() as u64,
                     "transport connected"
                 );
-                match run_connection(&conn, &config, &mut commands, &events).await {
+                match run_connection(&conn, &transfer_connector, &config, &mut commands, &events)
+                    .await
+                {
                     ConnectionEnd::Shutdown => {
                         conn.close("shutting down").await;
                         return;
@@ -393,6 +406,111 @@ async fn send_eager<T: Transport>(
     Ok(())
 }
 
+/// Aborts a spawned task when dropped — ties the transfer link's
+/// lifetime to the control connection that authorized it.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The control side's handle to the transfer link: outbound peer
+/// messages go into `tx`; dropping the handle kills the task.
+struct TransferLink {
+    tx: mpsc::Sender<(PeerId, Box<PeerMessage>)>,
+    _task: AbortOnDrop,
+}
+
+/// Own the transfer connection: dial, bind with `TransferAuth`, open
+/// the relay stream, then pump outbound envelopes and surface inbound
+/// `Forwarded` messages until the link dies — and redial. The loop is
+/// deliberately self-healing and silent: a dead transfer link degrades
+/// transfers (which retry at their own layer), never presence, so the
+/// only observers are the log and the health line's byte counters.
+async fn run_transfer_link<C: Connector>(
+    connector: Arc<C>,
+    username: UserId,
+    token: u64,
+    backoff: Duration,
+    mut outbound: mpsc::Receiver<(PeerId, Box<PeerMessage>)>,
+    events: mpsc::Sender<NetworkEvent>,
+    counters: Arc<NetCounters>,
+) {
+    loop {
+        let conn = match connector.connect().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::debug!("transfer link dial failed: {e}");
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+        };
+        let link = async {
+            let auth = ServerControl::TransferAuth {
+                username: username.clone(),
+                token,
+            };
+            send_control(&conn, &counters, &auth).await?;
+            let stream = conn.open_stream().await?;
+            let dessplay_core::net::BiStream { mut send, recv } = stream;
+            // Announce the stream immediately: QUIC reveals a bi-stream
+            // to the peer only on first write, so without this a peer
+            // that only receives never registers its relay stream on
+            // the server and its inbound messages are dropped.
+            let frame = wire::encode(&RelayEnvelope::Hello)
+                .map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
+            write_frame(&mut send, &frame)
+                .await
+                .map_err(TransportError::from)?;
+            Ok::<_, TransportError>((send, recv))
+        };
+        let (mut send, recv) = match link.await {
+            Ok(halves) => halves,
+            Err(e) => {
+                tracing::debug!("transfer link setup failed: {e}");
+                conn.close("transfer link setup failed").await;
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+        };
+        tracing::debug!("transfer link up");
+        // The reader runs apart from the writer (read_frame is not
+        // cancel-safe, so it must not race in a select); its exit is
+        // the link-death signal.
+        let mut reader = tokio::spawn(run_relay_reader(
+            recv,
+            events.clone(),
+            Arc::clone(&counters),
+        ));
+        loop {
+            tokio::select! {
+                out = outbound.recv() => {
+                    let Some((to, message)) = out else {
+                        // Actor gone: we die with it.
+                        reader.abort();
+                        conn.close("shutting down").await;
+                        return;
+                    };
+                    let Ok(inner) = wire::encode(&*message) else { continue };
+                    let envelope = RelayEnvelope::Forward { to, message: inner };
+                    let Ok(frame) = wire::encode(&envelope) else { continue };
+                    counters.add_tx(frame.len());
+                    if let Err(e) = write_frame(&mut send, &frame).await {
+                        tracing::debug!("transfer link write failed: {e}");
+                        break;
+                    }
+                }
+                _ = &mut reader => break,
+            }
+        }
+        reader.abort();
+        conn.close("transfer link reset").await;
+        tokio::time::sleep(backoff).await;
+    }
+}
+
 /// Read the relay stream, surfacing each `Forwarded` peer message as a
 /// [`NetworkEvent::Peer`]. Exits when the stream closes (connection
 /// gone); a fresh connection opens a new relay stream and reader.
@@ -427,8 +545,9 @@ async fn run_relay_reader(
     tracing::trace!("relay reader exiting");
 }
 
-async fn run_connection<T: Transport>(
+async fn run_connection<T: Transport, C: Connector>(
     conn: &T,
+    transfer_connector: &Arc<C>,
     config: &NetworkConfig,
     commands: &mut mpsc::Receiver<NetworkCommand>,
     events: &mpsc::Sender<NetworkEvent>,
@@ -453,9 +572,10 @@ async fn run_connection<T: Transport>(
     let mut last_offset: Option<i64> = None;
     let mut authenticated = false;
     let mut next_probe = tokio::time::Instant::now(); // first probe right after AuthOk
-    // The relay stream's write half; opened after AuthOk (the server
-    // drops pre-auth streams). `None` until then / after a relay error.
-    let mut relay_send: Option<Box<dyn tokio::io::AsyncWrite + Send + Unpin>> = None;
+    // The transfer link, spawned on AuthOk with that auth's token. Its
+    // task dies with this connection (AbortOnDrop): a reconnect gets a
+    // fresh token and a fresh link.
+    let mut transfer: Option<TransferLink> = None;
 
     // ---- Health bookkeeping (LinkHealth samples). All measured with
     // local monotonic Instants — never shared-clock timestamps, whose
@@ -499,38 +619,28 @@ async fn run_connection<T: Transport>(
                     "recv"
                 );
                 match msg {
-                    ServerControl::AuthOk { observed_addr } => {
+                    ServerControl::AuthOk { observed_addr, transfer_token } => {
                         authenticated = true;
                         tracing::debug!(%observed_addr, "auth accepted");
                         let _ = events.send(NetworkEvent::Connected { observed_addr }).await;
-                        // Open the dedicated relay stream for file
-                        // transfer (the server accepts streams only
-                        // post-auth). A failure here just leaves relay
-                        // unavailable until the next connection.
-                        match conn.open_stream().await {
-                            Ok(stream) => {
-                                let dessplay_core::net::BiStream { mut send, recv } = stream;
-                                // Announce the stream immediately: QUIC
-                                // reveals a bi-stream to the peer only on
-                                // first write, so without this a peer
-                                // that only receives never registers its
-                                // relay stream and its messages are
-                                // dropped server-side.
-                                if let Ok(frame) = wire::encode(&RelayEnvelope::Hello)
-                                    && let Err(e) = write_frame(&mut send, &frame).await
-                                {
-                                    tracing::warn!("announcing relay stream: {e}");
-                                }
-                                relay_send = Some(send);
-                                tokio::spawn(run_relay_reader(
-                                    recv,
-                                    events.clone(),
-                                    Arc::clone(&counters),
-                                ));
-                                tracing::debug!("relay stream opened");
-                            }
-                            Err(e) => tracing::warn!("opening relay stream: {e}"),
-                        }
+                        // Bring up the transfer connection with this
+                        // auth's token. The link redials itself; a
+                        // failure only degrades transfers (which retry),
+                        // never this connection.
+                        let (tx, rx) = mpsc::channel(64);
+                        let task = tokio::spawn(run_transfer_link(
+                            Arc::clone(transfer_connector),
+                            config.username.clone(),
+                            transfer_token,
+                            config.reconnect_backoff,
+                            rx,
+                            events.clone(),
+                            Arc::clone(&counters),
+                        ));
+                        transfer = Some(TransferLink {
+                            tx,
+                            _task: AbortOnDrop(task),
+                        });
                     }
                     ServerControl::AuthFailed => {
                         return ConnectionEnd::Rejected("the server rejected the password".into());
@@ -667,27 +777,16 @@ async fn run_connection<T: Transport>(
                         }
                     }
                     Some(NetworkCommand::SendPeer { to, message }) => {
-                        let Some(send) = relay_send.as_mut() else {
-                            tracing::debug!("relay stream not up; dropping SendPeer");
+                        // Hand off to the transfer link. try_send, not
+                        // send: a backlogged link must never stall the
+                        // control loop, and a dropped peer message is
+                        // recoverable by design (transfer logic retries).
+                        let Some(link) = transfer.as_ref() else {
+                            tracing::debug!("transfer link not up; dropping SendPeer");
                             continue;
                         };
-                        let Ok(inner) = wire::encode(&*message) else {
-                            continue;
-                        };
-                        let envelope = RelayEnvelope::Forward { to, message: inner };
-                        let Ok(frame) = wire::encode(&envelope) else {
-                            continue;
-                        };
-                        counters.add_tx(frame.len());
-                        // A relay write error almost always means the
-                        // whole QUIC connection is dying; drop the relay
-                        // half and let the recv() arm drive reconnect
-                        // (which reopens the stream) rather than tearing
-                        // down here on what might be a transient stream
-                        // fault.
-                        if let Err(e) = write_frame(send, &frame).await {
-                            tracing::debug!("relay write failed: {e}");
-                            relay_send = None;
+                        if let Err(e) = link.tx.try_send((to, message)) {
+                            tracing::debug!("transfer link backlogged; dropping SendPeer: {e}");
                         }
                     }
                     Some(NetworkCommand::Shutdown) | None => {
@@ -762,6 +861,7 @@ mod tests {
         let (event_tx, _event_rx) = mpsc::channel(8);
         let actor = tokio::spawn(run(
             Arc::new(NeverConnector),
+            Arc::new(NeverConnector),
             config(),
             command_rx,
             event_tx,
@@ -818,6 +918,7 @@ mod tests {
             let reply = match msg {
                 ServerControl::Auth { .. } => ServerControl::AuthOk {
                     observed_addr: addr,
+                    transfer_token: 42,
                 },
                 ServerControl::TimeSyncRequest { client_send } if answer_probes => {
                     let now = (clock)();
@@ -834,6 +935,35 @@ mod tests {
         }
     }
 
+    /// A minimal transfer-side server: accepts any number of transfer
+    /// connections, ignores their `TransferAuth`, and drains whatever
+    /// relay streams they open — enough for the transfer link to come
+    /// up and its writes to land in the byte counters.
+    async fn fake_transfer_server(listener: SimListener) {
+        loop {
+            let Ok((conn, _addr)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                loop {
+                    match conn.recv().await {
+                        Ok(TransportEvent::IncomingStream(stream)) => {
+                            let dessplay_core::net::BiStream { mut recv, .. } = stream;
+                            tokio::spawn(async move {
+                                while dessplay_core::net::framing::read_frame(&mut recv)
+                                    .await
+                                    .is_ok()
+                                {}
+                            });
+                        }
+                        Ok(TransportEvent::Closed { .. }) | Err(_) => return,
+                        Ok(_) => continue, // TransferAuth, datagrams
+                    }
+                }
+            });
+        }
+    }
+
     /// Spawn the actor against a fake server, run for `duration`, shut
     /// down, and return every LinkHealth report emitted.
     async fn collect_health(
@@ -845,6 +975,8 @@ mod tests {
         let server = EndpointId::new("server");
         let listener = net.listener(&server);
         tokio::spawn(fake_server(listener, paused_clock(), answer_probes));
+        let transfer = EndpointId::new("server-transfer");
+        tokio::spawn(fake_transfer_server(net.listener(&transfer)));
 
         let (command_tx, command_rx) = mpsc::channel(8);
         // Large buffer: the actor emits one report per second and the
@@ -852,8 +984,10 @@ mod tests {
         // actor and deadlock paused time.
         let (event_tx, mut event_rx) = mpsc::channel(4096);
         let connector = Arc::new(net.connector(&EndpointId::new("kim"), &server));
+        let transfer_connector = Arc::new(net.connector(&EndpointId::new("kim"), &transfer));
         let actor = tokio::spawn(run(
             connector,
+            transfer_connector,
             config_with_clock(paused_clock()),
             command_rx,
             event_tx,
@@ -980,7 +1114,15 @@ mod tests {
         let (command_tx, command_rx) = mpsc::channel(8);
         let (event_tx, _event_rx) = mpsc::channel(8);
         let connector = Arc::new(net.connector(&EndpointId::new("kim"), &server));
-        let actor = tokio::spawn(run(connector, config(), command_rx, event_tx));
+        let transfer_connector =
+            Arc::new(net.connector(&EndpointId::new("kim"), &EndpointId::new("server-transfer")));
+        let actor = tokio::spawn(run(
+            connector,
+            transfer_connector,
+            config(),
+            command_rx,
+            event_tx,
+        ));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         command_tx.send(NetworkCommand::Shutdown).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), actor)

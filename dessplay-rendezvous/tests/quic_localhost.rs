@@ -1,8 +1,10 @@
 //! Real-QUIC integration: actual quinn endpoints over localhost UDP,
 //! real TLS with TOFU, real time. Small in number by design — logic
 //! lives in the simulated tests; this proves the production transport
-//! stack works end to end.
+//! stack works end to end, including the two-connection control /
+//! transfer split (protocol v8).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,47 +36,92 @@ async fn expect_event<T>(
     }
 }
 
-#[tokio::test]
-async fn two_clients_connect_over_real_quic() {
-    let cert_dir = tempfile::tempdir().unwrap();
-    let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
-    let expected_fp = fingerprint(cert.as_ref()).to_vec();
+/// The real server on localhost: control and transfer listeners on
+/// ephemeral ports (tests dial the actual transfer address instead of
+/// relying on the production port+1 convention), one cert for both.
+struct TestServer {
+    server_addr: SocketAddr,
+    transfer_addr: SocketAddr,
+    fingerprint: Vec<u8>,
+}
 
-    let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
+fn start_server(cert_dir: &std::path::Path) -> TestServer {
+    let (cert, key) = load_or_generate_cert(cert_dir).unwrap();
+    let fp = fingerprint(cert.as_ref()).to_vec();
+    let listener = QuicListener::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        cert.clone(),
+        key.clone_key(),
+    )
+    .unwrap();
+    let transfer_listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
     let server_addr = listener.local_addr().unwrap();
+    let transfer_addr = transfer_listener.local_addr().unwrap();
     tokio::spawn(server::run(
         listener,
+        transfer_listener,
         ServerConfig::new(PASSWORD),
         system_clock(),
         None,
     ));
+    TestServer {
+        server_addr,
+        transfer_addr,
+        fingerprint: fp,
+    }
+}
+
+fn system_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Spawn the real network actor against `server`, returning its command
+/// channel, event stream, and control connector (for TOFU assertions).
+fn spawn_actor(
+    name: &str,
+    password: &str,
+    server: &TestServer,
+) -> (
+    mpsc::Sender<NetworkCommand>,
+    mpsc::Receiver<NetworkEvent>,
+    Arc<QuicConnector>,
+) {
+    let connector =
+        Arc::new(QuicConnector::new(vec![server.server_addr], "dessplay", None).unwrap());
+    let transfer_connector =
+        Arc::new(QuicConnector::new(vec![server.transfer_addr], "dessplay", None).unwrap());
+    let (cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
+    let (event_tx, event_rx) = mpsc::channel(64);
+    tokio::spawn(network::run(
+        Arc::clone(&connector),
+        transfer_connector,
+        NetworkConfig::new(
+            UserId::new(name),
+            password.into(),
+            Role::Interactive,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(system_millis),
+        ),
+        cmd_rx,
+        event_tx,
+    ));
+    (cmd_tx, event_rx, connector)
+}
+
+#[tokio::test]
+async fn two_clients_connect_over_real_quic() {
+    let cert_dir = tempfile::tempdir().unwrap();
+    let server = start_server(cert_dir.path());
 
     let mut clients = Vec::new();
     let mut connectors = Vec::new();
     for name in ["kim", "baughn"] {
-        // First use: no pin.
-        let connector = Arc::new(QuicConnector::new(vec![server_addr], "dessplay", None).unwrap());
-        connectors.push(Arc::clone(&connector));
-        let (_cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
-        let (event_tx, event_rx) = mpsc::channel(64);
-        tokio::spawn(network::run(
-            connector,
-            NetworkConfig::new(
-                UserId::new(name),
-                PASSWORD.into(),
-                Role::Interactive,
-                Arc::new(AtomicU64::new(0)),
-                Arc::new(|| {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0)
-                }),
-            ),
-            cmd_rx,
-            event_tx,
-        ));
-        clients.push((event_rx, _cmd_tx));
+        let (cmd_tx, event_rx, connector) = spawn_actor(name, PASSWORD, &server);
+        connectors.push(connector);
+        clients.push((event_rx, cmd_tx));
     }
 
     // Accumulate events into per-client state and wait for the goal
@@ -103,7 +150,7 @@ async fn two_clients_connect_over_real_quic() {
     for connector in &connectors {
         assert_eq!(
             connector.observed_fingerprint().as_deref(),
-            Some(expected_fp.as_slice())
+            Some(server.fingerprint.as_slice())
         );
     }
 }
@@ -116,31 +163,9 @@ async fn two_clients_connect_over_real_quic() {
 #[tokio::test]
 async fn wrong_password_fails_cleanly_over_real_quic() {
     let cert_dir = tempfile::tempdir().unwrap();
-    let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
-    let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
-    let server_addr = listener.local_addr().unwrap();
-    tokio::spawn(server::run(
-        listener,
-        ServerConfig::new(PASSWORD),
-        system_clock(),
-        None,
-    ));
+    let server = start_server(cert_dir.path());
 
-    let connector = Arc::new(QuicConnector::new(vec![server_addr], "dessplay", None).unwrap());
-    let (_cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
-    let (event_tx, mut events) = mpsc::channel(64);
-    tokio::spawn(network::run(
-        connector,
-        NetworkConfig::new(
-            UserId::new("kim"),
-            "WRONG".into(),
-            Role::Interactive,
-            Arc::new(AtomicU64::new(0)),
-            Arc::new(|| 0),
-        ),
-        cmd_rx,
-        event_tx,
-    ));
+    let (_cmd_tx, mut events, _connector) = spawn_actor("kim", "WRONG", &server);
 
     // The first terminal-ish event must be Rejected; a Disconnected
     // means the rejection got eaten by the close and the client would
@@ -163,48 +188,18 @@ async fn wrong_password_fails_cleanly_over_real_quic() {
 /// transport establishes streams eagerly, so this only bites on real
 /// QUIC. (Symptom in the field: a seeder's downloads stalled because the
 /// uploader, which only serves, never registered its relay stream.)
+/// Since protocol v8 this also proves the whole transfer-connection
+/// handshake — dial, TransferAuth token binding, relay stream on the
+/// second connection — over the production stack.
 #[tokio::test]
 async fn a_relayed_message_reaches_a_receive_only_peer_over_real_quic() {
     use dessplay_core::net::{Bitfield, PeerId, PeerMessage};
 
     let cert_dir = tempfile::tempdir().unwrap();
-    let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
-    let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
-    let server_addr = listener.local_addr().unwrap();
-    tokio::spawn(server::run(
-        listener,
-        ServerConfig::new(PASSWORD),
-        system_clock(),
-        None,
-    ));
+    let server = start_server(cert_dir.path());
 
-    let clock = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
-    };
-    let mut ends = Vec::new();
-    for name in ["sender", "receiver"] {
-        let connector = Arc::new(QuicConnector::new(vec![server_addr], "dessplay", None).unwrap());
-        let (cmd_tx, cmd_rx) = mpsc::channel::<NetworkCommand>(8);
-        let (event_tx, event_rx) = mpsc::channel(64);
-        tokio::spawn(network::run(
-            connector,
-            NetworkConfig::new(
-                UserId::new(name),
-                PASSWORD.into(),
-                Role::Interactive,
-                Arc::new(AtomicU64::new(0)),
-                Arc::new(clock),
-            ),
-            cmd_rx,
-            event_tx,
-        ));
-        ends.push((cmd_tx, event_rx));
-    }
-    let (receiver_cmd, mut receiver_events) = ends.pop().unwrap();
-    let (sender_cmd, mut sender_events) = ends.pop().unwrap();
+    let (sender_cmd, mut sender_events, _c1) = spawn_actor("sender", PASSWORD, &server);
+    let (receiver_cmd, mut receiver_events, _c2) = spawn_actor("receiver", PASSWORD, &server);
     // Keep the receiver's command channel alive so it stays connected
     // (dropping it is read as Shutdown); it simply never *sends*.
     let _receiver_cmd = receiver_cmd;
@@ -259,18 +254,10 @@ async fn a_relayed_message_reaches_a_receive_only_peer_over_real_quic() {
 #[tokio::test]
 async fn wrong_pinned_fingerprint_refuses_to_connect() {
     let cert_dir = tempfile::tempdir().unwrap();
-    let (cert, key) = load_or_generate_cert(cert_dir.path()).unwrap();
-    let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap(), cert, key).unwrap();
-    let server_addr = listener.local_addr().unwrap();
-    tokio::spawn(server::run(
-        listener,
-        ServerConfig::new(PASSWORD),
-        system_clock(),
-        None,
-    ));
+    let server = start_server(cert_dir.path());
 
     let connector =
-        QuicConnector::new(vec![server_addr], "dessplay", Some(vec![0xAA; 32])).unwrap();
+        QuicConnector::new(vec![server.server_addr], "dessplay", Some(vec![0xAA; 32])).unwrap();
     let result = connector.connect().await;
     assert!(result.is_err(), "connected despite a fingerprint mismatch");
     assert!(connector.observed_fingerprint().is_none());

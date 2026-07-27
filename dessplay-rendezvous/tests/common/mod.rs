@@ -44,6 +44,9 @@ pub fn sim_clock(skew_millis: i64) -> Arc<dyn Fn() -> u64 + Send + Sync> {
 pub struct Harness {
     pub net: SimNetwork,
     pub server_id: EndpointId,
+    /// The transfer listener's endpoint (the sim's stand-in for the
+    /// control-port+1 convention).
+    pub transfer_id: EndpointId,
 }
 
 impl Harness {
@@ -66,9 +69,21 @@ impl Harness {
     ) -> Self {
         let net = SimNetwork::new(seed);
         let server_id = EndpointId::new("server");
+        let transfer_id = EndpointId::new("server-transfer");
         let listener = net.listener(&server_id);
-        tokio::spawn(server::run(listener, config, sim_clock(0), storage));
-        Self { net, server_id }
+        let transfer_listener = net.listener(&transfer_id);
+        tokio::spawn(server::run(
+            listener,
+            transfer_listener,
+            config,
+            sim_clock(0),
+            storage,
+        ));
+        Self {
+            net,
+            server_id,
+            transfer_id,
+        }
     }
 
     /// Spawn a full headless client.
@@ -83,8 +98,13 @@ impl Harness {
 
     fn client_with_role(&self, name: &str, nonce: u128, role: Role) -> ClientHandle {
         let connector = Arc::new(self.net.connector(&EndpointId::new(name), &self.server_id));
+        let transfer_connector = Arc::new(
+            self.net
+                .connector(&EndpointId::new(name), &self.transfer_id),
+        );
         spawn_client(
             connector,
+            transfer_connector,
             ClientConfig {
                 username: UserId::new(name),
                 password: PASSWORD.into(),

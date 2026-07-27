@@ -146,8 +146,20 @@ struct PeerEntry<T> {
     conn_id: u64,
     /// The live connection; `None` once Lost or Departed.
     conn: Option<Arc<T>>,
+    /// The token this session's `AuthOk` issued; the transfer
+    /// connection must present it in `TransferAuth` to bind.
+    transfer_token: u64,
+    /// The bound transfer connection, if the client has dialed one.
+    /// Dies with the control connection (the token dies with the
+    /// session); its own death only clears itself — presence is keyed
+    /// to the control connection alone.
+    transfer_conn: Option<Arc<T>>,
+    /// Id of the bound transfer connection (its accept loop's own
+    /// counter domain, distinct from `conn_id`'s).
+    transfer_conn_id: Option<u64>,
     /// Write half of the peer's relay stream (file transfer), if it has
-    /// opened one. Cleared with `conn` on disconnect.
+    /// opened one on its transfer connection. Cleared with the transfer
+    /// connection.
     relay_tx: Option<RelayTx>,
     info: PeerInfo,
     /// Shared-clock millis when the connection died (drives the
@@ -476,6 +488,7 @@ fn initial_snapshot(storage: Option<&ServerStorage>) -> Result<StateSnapshot, St
 /// load failure must never be silently treated as a fresh start.
 pub async fn run<L: Listener>(
     listener: L,
+    transfer_listener: L,
     config: ServerConfig,
     clock: Clock,
     storage: Option<ServerStorage>,
@@ -579,6 +592,34 @@ where
                 }
             });
         }
+    }
+
+    // Transfer connections: the second, bulk-DSCP QUIC connection each
+    // client dials after AuthOk (control port + 1). Bound to a session
+    // by TransferAuth's token; carries relay streams and nothing else.
+    {
+        let config = Arc::clone(&config);
+        let shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            let mut next_transfer_id: u64 = 0;
+            loop {
+                let (conn, remote) = match transfer_listener.accept().await {
+                    Ok(accepted) => accepted,
+                    Err(e) => {
+                        tracing::info!("transfer listener stopped: {e}");
+                        return;
+                    }
+                };
+                let transfer_id = next_transfer_id;
+                next_transfer_id += 1;
+                let config = Arc::clone(&config);
+                let shared = Arc::clone(&shared);
+                tokio::spawn(async move {
+                    serve_transfer_connection(Arc::new(conn), transfer_id, remote, config, shared)
+                        .await;
+                });
+            }
+        });
     }
 
     loop {
@@ -873,28 +914,36 @@ async fn serve_connection<T: Transport>(
     // ---- Register, superseding any existing entry for this user (a
     // reconnecting client — possibly one whose old connection hasn't
     // died yet, possibly one currently Lost or Departed).
-    let superseded: Option<Arc<T>> = lock(&shared.registry)
-        .peers
-        .insert(
-            username.clone(),
-            PeerEntry {
-                conn_id,
-                conn: Some(Arc::clone(&conn)),
-                relay_tx: None,
-                info: PeerInfo {
-                    username: username.clone(),
-                    role,
-                    presence: Presence::Present,
-                    addresses: vec![remote],
-                    connected_since: clock(),
-                },
-                lost_at: None,
+    let transfer_token: u64 = rand::random();
+    let superseded = lock(&shared.registry).peers.insert(
+        username.clone(),
+        PeerEntry {
+            conn_id,
+            conn: Some(Arc::clone(&conn)),
+            transfer_token,
+            transfer_conn: None,
+            transfer_conn_id: None,
+            relay_tx: None,
+            info: PeerInfo {
+                username: username.clone(),
+                role,
+                presence: Presence::Present,
+                addresses: vec![remote],
+                connected_since: clock(),
             },
-        )
-        .and_then(|old| old.conn);
+            lost_at: None,
+        },
+    );
     if let Some(old) = superseded {
         tracing::debug!(user = %username.0, "superseding the user's old connection");
-        old.close("superseded by a new connection").await;
+        if let Some(conn) = old.conn {
+            conn.close("superseded by a new connection").await;
+        }
+        // The old session's transfer connection dies with it — its
+        // token is no longer valid, and the new session binds its own.
+        if let Some(transfer) = old.transfer_conn {
+            transfer.close("superseded by a new connection").await;
+        }
     }
     // Seeders are never listed as users (design.md, Client Roles) and are
     // excluded from every presence-derived line -- including known_offline,
@@ -907,6 +956,7 @@ async fn serve_connection<T: Transport>(
         &*conn,
         &ServerControl::AuthOk {
             observed_addr: remote,
+            transfer_token,
         },
     )
     .await;
@@ -936,10 +986,14 @@ async fn serve_connection<T: Transport>(
 
     // A newer connection may have superseded us while we were closing;
     // in that case the registry entry is no longer ours to touch.
-    let still_ours = {
+    let (still_ours, dead_transfer) = {
         let mut registry = lock(&shared.registry);
         match registry.peers.get_mut(&username) {
             Some(entry) if entry.conn_id == conn_id => {
+                // The transfer connection dies with the session that
+                // authorized it (closed outside the lock, below).
+                let dead_transfer = entry.transfer_conn.take();
+                entry.transfer_conn_id = None;
                 match end {
                     // A clean quit is an *immediate departure*, not a
                     // registry removal: the peer stays listed as Departed
@@ -961,11 +1015,14 @@ async fn serve_connection<T: Transport>(
                         entry.lost_at = Some(clock());
                     }
                 }
-                true
+                (true, dead_transfer)
             }
-            _ => false,
+            _ => (false, None),
         }
     };
+    if let Some(transfer) = dead_transfer {
+        transfer.close("session ended").await;
+    }
     if !still_ours {
         return;
     }
@@ -990,6 +1047,112 @@ async fn serve_connection<T: Transport>(
                 shared.force_pause().await;
             }
         }
+    }
+}
+
+/// Serve one **transfer connection**: await its `TransferAuth`, bind it
+/// to the session whose token it presents, then accept relay streams
+/// until it dies. Its death clears only itself — presence is keyed to
+/// the control connection, so a flaky transfer path degrades transfers,
+/// never liveness.
+async fn serve_transfer_connection<T: Transport>(
+    conn: Arc<T>,
+    transfer_id: u64,
+    remote: SocketAddr,
+    config: Arc<ServerConfig>,
+    shared: Arc<Shared<T>>,
+) {
+    // ---- Await TransferAuth (bounded, like Auth).
+    let auth = tokio::time::timeout(config.auth_timeout, async {
+        loop {
+            match conn.recv().await {
+                Ok(TransportEvent::Control(bytes)) => {
+                    match wire::decode::<WireMessage>(&bytes) {
+                        Ok(WireMessage::Control(ServerControl::TransferAuth {
+                            username,
+                            token,
+                        })) => return Some((username, token)),
+                        _ => return None, // protocol violation
+                    }
+                }
+                Ok(TransportEvent::Closed { .. }) | Err(_) => return None,
+                Ok(_) => continue, // ignore datagrams/streams pre-bind
+            }
+        }
+    })
+    .await;
+    let Ok(Some((username, token))) = auth else {
+        tracing::debug!(%remote, "transfer connection closed before binding");
+        conn.close("transfer authentication required").await;
+        return;
+    };
+
+    // ---- Validate against the live session and bind. The token is the
+    // whole credential: it proves this dialer heard our AuthOk over the
+    // authenticated control connection.
+    let superseded = {
+        let mut registry = lock(&shared.registry);
+        match registry.peers.get_mut(&username) {
+            Some(entry) if entry.conn.is_some() && entry.transfer_token == token => {
+                let old = entry.transfer_conn.replace(Arc::clone(&conn));
+                entry.transfer_conn_id = Some(transfer_id);
+                // A fresh transfer connection invalidates the old one's
+                // relay stream registration.
+                entry.relay_tx = None;
+                Ok(old)
+            }
+            Some(_) => Err("stale or invalid transfer token"),
+            None => Err("no such session"),
+        }
+    };
+    let superseded = match superseded {
+        Ok(old) => old,
+        Err(reason) => {
+            tracing::warn!(user = %username.0, %remote, "transfer bind refused: {reason}");
+            conn.close(reason).await;
+            return;
+        }
+    };
+    if let Some(old) = superseded {
+        old.close("superseded by a new transfer connection").await;
+    }
+    tracing::debug!(user = %username.0, %remote, "transfer connection bound");
+
+    // ---- Accept relay streams until the connection ends.
+    loop {
+        match conn.recv().await {
+            Ok(TransportEvent::IncomingStream(stream)) => {
+                // The peer's relay stream (file transfer). Register the
+                // write half so other peers can forward to it, and read
+                // its Forward envelopes in a task.
+                let BiStream { send, recv } = stream;
+                let relay_tx: RelayTx = Arc::new(tokio::sync::Mutex::new(send));
+                {
+                    let mut registry = lock(&shared.registry);
+                    if let Some(entry) = registry.peers.get_mut(&username)
+                        && entry.transfer_conn_id == Some(transfer_id)
+                    {
+                        entry.relay_tx = Some(Arc::clone(&relay_tx));
+                    }
+                }
+                tracing::debug!(user = %username.0, "relay stream opened");
+                tokio::spawn(relay_reader(recv, username.clone(), Arc::clone(&shared)));
+            }
+            Ok(TransportEvent::Closed { .. }) | Err(_) => break,
+            Ok(_) => continue, // stray control frames / datagrams
+        }
+    }
+
+    // Clear our registration — only if a newer transfer connection
+    // hasn't already replaced it. Presence is deliberately untouched.
+    let mut registry = lock(&shared.registry);
+    if let Some(entry) = registry.peers.get_mut(&username)
+        && entry.transfer_conn_id == Some(transfer_id)
+    {
+        entry.transfer_conn = None;
+        entry.transfer_conn_id = None;
+        entry.relay_tx = None;
+        tracing::debug!(user = %username.0, "transfer connection ended");
     }
 }
 
@@ -1040,22 +1203,11 @@ async fn serve_authed<T: Transport>(
         let (payload, via_datagram) = match event {
             TransportEvent::Control(bytes) => (bytes, false),
             TransportEvent::Datagram(bytes) => (bytes, true),
-            TransportEvent::IncomingStream(stream) => {
-                // The peer's relay stream (file transfer). Register the
-                // write half so other peers can forward to it, and read
-                // its Forward envelopes in a task.
-                let BiStream { send, recv } = stream;
-                let relay_tx: RelayTx = Arc::new(tokio::sync::Mutex::new(send));
-                {
-                    let mut registry = lock(&shared.registry);
-                    if let Some(entry) = registry.peers.get_mut(username)
-                        && entry.conn_id == conn_id
-                    {
-                        entry.relay_tx = Some(Arc::clone(&relay_tx));
-                    }
-                }
-                tracing::debug!(user = %username.0, "relay stream opened");
-                tokio::spawn(relay_reader(recv, username.clone(), Arc::clone(shared)));
+            TransportEvent::IncomingStream(_) => {
+                // Relay streams belong on the transfer connection since
+                // protocol v8; a stream here is a protocol violation
+                // (and unreachable for a version-matched client).
+                tracing::warn!(user = %username.0, "stream on the control connection; ignoring");
                 continue;
             }
             TransportEvent::Closed { reason } => return AuthedEnd::Lost(reason),

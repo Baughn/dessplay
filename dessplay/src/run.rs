@@ -289,6 +289,9 @@ fn resolve_runtime_identity(
 /// handle. Shared by the headless run and the importer.
 pub(crate) struct ClientSetup {
     pub connector: Arc<QuicConnector>,
+    /// Dials the transfer connection: same host, control port + 1,
+    /// bulk DSCP tag (network-design: the two-connection DSCP split).
+    pub transfer_connector: Arc<QuicConnector>,
     pub username: String,
     pub password: String,
     /// Settings/TOFU handle (interactive only — seeders persist
@@ -385,26 +388,63 @@ pub(crate) async fn prepare(args: &HeadlessArgs) -> Result<ClientSetup, String> 
         tracing::warn!("no pinned fingerprint for {server_addr_str}; trusting on first use");
     }
     let phase = std::time::Instant::now();
+    // The transfer connection lives at the control port + 1 by
+    // convention (the server always binds both), on its own socket so
+    // it can carry the bulk DSCP tag while control carries the
+    // interactive one. Same addresses, same server name, same TOFU pin
+    // (one cert covers both listeners).
+    let transfer_addrs: Vec<SocketAddr> = addrs
+        .iter()
+        .map(|a| {
+            let mut a = *a;
+            a.set_port(a.port() + dessplay_core::net::quic::TRANSFER_PORT_OFFSET);
+            a
+        })
+        .collect();
+    let transfer_addr_str = bump_port(&server_addr_str)?;
     let connector = Arc::new(
-        QuicConnector::new(addrs, server_name, pinned)
+        QuicConnector::new(addrs, server_name.clone(), pinned.clone())
             .map_err(|e| format!("building QUIC endpoint: {e}"))?
+            .with_dscp(dessplay_core::net::quic::DSCP_CONTROL)
             // Startup resolution goes stale if the server's records
             // change mid-session; failed reconnect passes re-resolve.
             .with_reresolve(server_addr_str.clone()),
     );
+    let transfer_connector = Arc::new(
+        QuicConnector::new(transfer_addrs, server_name, pinned)
+            .map_err(|e| format!("building transfer QUIC endpoint: {e}"))?
+            .with_dscp(dessplay_core::net::quic::DSCP_TRANSFER)
+            .with_reresolve(transfer_addr_str),
+    );
     tracing::info!(
         elapsed_ms = phase.elapsed().as_millis() as u64,
-        "QUIC endpoint built"
+        "QUIC endpoints built"
     );
 
     Ok(ClientSetup {
         connector,
+        transfer_connector,
         username,
         password,
         storage,
         server_addr_str,
         first_use,
     })
+}
+
+/// `host:port` with the port bumped by the transfer offset — the
+/// transfer connector's re-resolve string.
+fn bump_port(addr_str: &str) -> Result<String, String> {
+    let (host, port) = addr_str
+        .rsplit_once(':')
+        .ok_or_else(|| format!("no port in {addr_str}"))?;
+    let port: u16 = port
+        .parse()
+        .map_err(|e| format!("bad port in {addr_str}: {e}"))?;
+    Ok(format!(
+        "{host}:{}",
+        port + dessplay_core::net::quic::TRANSFER_PORT_OFFSET
+    ))
 }
 
 /// Load the persisted CRDT snapshot, tolerating a codec failure. The
@@ -468,6 +508,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     };
     let ClientSetup {
         connector,
+        transfer_connector,
         username,
         password,
         storage,
@@ -476,6 +517,7 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
     } = setup;
     let mut handle = spawn_client(
         Arc::clone(&connector),
+        Arc::clone(&transfer_connector),
         ClientConfig {
             username: UserId::new(&username),
             password,
@@ -795,6 +837,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     let initial = load_state_tolerant(&sync_storage)?;
     let handle = spawn_client(
         Arc::clone(&setup.connector),
+        Arc::clone(&setup.transfer_connector),
         ClientConfig {
             // Same identity the UI and session use (`me`), so our own
             // writes are keyed under the name our PeerList row carries.
@@ -1861,6 +1904,7 @@ pub async fn run_import(
     let setup = prepare(&args).await?;
     let handle = spawn_client(
         Arc::clone(&setup.connector),
+        Arc::clone(&setup.transfer_connector),
         ClientConfig {
             username: UserId::new(&setup.username),
             password: setup.password,

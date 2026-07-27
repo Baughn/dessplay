@@ -8,6 +8,8 @@ dessplay-core = { path = "../dessplay-core" }
 color-eyre = { workspace = true }
 clap = { workspace = true }
 rusqlite = { workspace = true }
+# Transfer-connection binding tokens (AuthOk / TransferAuth).
+rand = { workspace = true }
 tokio = { workspace = true }
 dirs = { workspace = true }
 tracing = { workspace = true }

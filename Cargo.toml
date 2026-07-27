@@ -14,6 +14,9 @@ postcard = { version = "1", features = ["alloc"] }
 crdts = "7.3"
 tokio = { version = "1", features = ["full"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+# DSCP tagging: quinn exposes no per-transmit DSCP (ECN only), so sockets
+# are built and tagged by us before handing them to the endpoint.
+socket2 = { version = "0.6", features = ["all"] }
 # tls12 is enabled for the IRC bridge: QUIC always negotiates TLS 1.3, but
 # a public IRC server we don't control may only offer 1.2. Harmless for QUIC.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

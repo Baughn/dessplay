@@ -63,6 +63,8 @@ fn spawn_client_versioned(
     protocol_version: u32,
 ) -> TestClient {
     let connector = Arc::new(net.connector(&EndpointId::new(name), server_id));
+    let transfer_connector =
+        Arc::new(net.connector(&EndpointId::new(name), &EndpointId::new("server-transfer")));
     let (command_tx, command_rx) = mpsc::channel(8);
     let (event_tx, event_rx) = mpsc::channel(64);
     let config = NetworkConfig {
@@ -77,7 +79,13 @@ fn spawn_client_versioned(
             sim_clock(clock_skew),
         )
     };
-    tokio::spawn(network::run(connector, config, command_rx, event_tx));
+    tokio::spawn(network::run(
+        connector,
+        transfer_connector,
+        config,
+        command_rx,
+        event_tx,
+    ));
     TestClient {
         events: event_rx,
         commands: command_tx,
@@ -107,8 +115,10 @@ fn setup() -> (SimNetwork, EndpointId) {
     let net = SimNetwork::new(0xD355);
     let server_id = EndpointId::new("server");
     let listener = net.listener(&server_id);
+    let transfer_listener = net.listener(&EndpointId::new("server-transfer"));
     tokio::spawn(server::run(
         listener,
+        transfer_listener,
         ServerConfig::new(PASSWORD),
         sim_clock(0),
         None,
@@ -309,10 +319,15 @@ async fn duplicate_username_supersedes_old_connection() {
     // Same username, fresh "device". The sim needs a distinct endpoint
     // id, so connect from another endpoint name but auth as kim.
     let connector = Arc::new(net.connector(&EndpointId::new("kim-laptop"), &server_id));
+    let transfer_connector = Arc::new(net.connector(
+        &EndpointId::new("kim-laptop"),
+        &EndpointId::new("server-transfer"),
+    ));
     let (_cmd_tx, cmd_rx) = mpsc::channel(8);
     let (event_tx, event_rx) = mpsc::channel(64);
     tokio::spawn(network::run(
         connector,
+        transfer_connector,
         NetworkConfig::new(
             UserId::new("kim"),
             PASSWORD.into(),

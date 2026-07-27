@@ -51,8 +51,29 @@ pub const CONTROL_STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 /// connector moves on to the next.
 pub const PER_ADDRESS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// DSCP for the **control** connection (state sync, chat, position and
+/// time-probe datagrams): AF41, "interactive multimedia". DSCP is a
+/// per-packet IP-header field, but quinn exposes only per-transmit ECN,
+/// so tagging is per-socket — which is why control and transfer are two
+/// QUIC connections rather than two streams. The tag matters at the
+/// sender's own router/uplink egress queue (the queue that actually
+/// hurts); whether the wider internet bleaches it is irrelevant.
+pub const DSCP_CONTROL: u8 = 34;
+
+/// DSCP for the **transfer** connection (relayed bulk file data): AF21.
+/// Above untagged torrent traffic (librqbit exposes no TOS hook, so
+/// "torrents lowest" is achieved by raising dessplay), below control.
+pub const DSCP_TRANSFER: u8 = 18;
+
+/// The transfer connection's port offset from the control port. A
+/// convention, not a negotiation: the client only knows `host:port`,
+/// and the server always binds its transfer listener alongside.
+pub const TRANSFER_PORT_OFFSET: u16 = 1;
+
 /// Per-stream flow control window. Sized for pushing video chunks over
 /// a ~250Mbit, tens-of-ms path with headroom, not for request/response.
+/// These stay generous under BBR: receive windows are memory bounds,
+/// not queue-builders — the 2026-07-28 bufferbloat was Cubic's doing.
 pub const STREAM_RECEIVE_WINDOW: u64 = 16 * 1024 * 1024;
 
 /// Connection-level flow control window (multiple transfer streams).
@@ -86,6 +107,53 @@ fn shared_transport_config() -> quinn::TransportConfig {
 
 fn setup<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> TransportError + '_ {
     move |e| TransportError::Setup(format!("{what}: {e}"))
+}
+
+/// Build a UDP socket bound to `bind`, DSCP-tagged when `dscp` is set.
+/// Tagging is **best-effort**: a refused setsockopt (platform policy,
+/// e.g. Windows without a QoS policy) logs and continues untagged — a
+/// missing tag degrades queuing priority, never connectivity.
+fn bind_socket(bind: SocketAddr, dscp: Option<u8>) -> Result<std::net::UdpSocket, TransportError> {
+    let domain = if bind.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
+        .map_err(setup("creating socket"))?;
+    if let Some(dscp) = dscp {
+        // The TOS/traffic-class byte holds DSCP in its upper six bits;
+        // the lower two are ECN, which quinn sets per-packet via cmsg
+        // and which a socket-level default must leave zero.
+        let tos = u32::from(dscp) << 2;
+        let tagged = if bind.is_ipv4() {
+            socket.set_tos_v4(tos)
+        } else {
+            socket.set_tclass_v6(tos)
+        };
+        if let Err(e) = tagged {
+            tracing::debug!(dscp, %bind, "DSCP tagging unavailable: {e}");
+        }
+    }
+    socket.bind(&bind.into()).map_err(setup("binding socket"))?;
+    Ok(socket.into())
+}
+
+/// Build a quinn endpoint over a (possibly DSCP-tagged) socket we bind
+/// ourselves. `server_config: None` yields a client endpoint.
+fn tagged_endpoint(
+    bind: SocketAddr,
+    dscp: Option<u8>,
+    server_config: Option<quinn::ServerConfig>,
+) -> Result<quinn::Endpoint, TransportError> {
+    let socket = bind_socket(bind, dscp)?;
+    quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        server_config,
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )
+    .map_err(setup("creating endpoint"))
 }
 
 /// An established QUIC connection (either side).
@@ -246,6 +314,9 @@ pub struct QuicConnector {
     /// Handshake budget per address. [`PER_ADDRESS_HANDSHAKE_TIMEOUT`]
     /// in production; tests shorten it.
     per_address_timeout: Duration,
+    /// DSCP for this connector's sockets ([`DSCP_CONTROL`] /
+    /// [`DSCP_TRANSFER`] in production); `None` = untagged.
+    dscp: Option<u8>,
     observed: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
 }
 
@@ -309,8 +380,16 @@ impl QuicConnector {
             server_name: server_name.into(),
             reresolve: None,
             per_address_timeout: PER_ADDRESS_HANDSHAKE_TIMEOUT,
+            dscp: None,
             observed,
         })
+    }
+
+    /// Tag this connector's sockets with a DSCP codepoint (best-effort;
+    /// see [`DSCP_CONTROL`] for why tagging is per-connector).
+    pub fn with_dscp(mut self, dscp: u8) -> Self {
+        self.dscp = Some(dscp);
+        self
     }
 
     /// Enable DNS re-resolution: when a full [`Connector::connect`] pass
@@ -356,7 +435,7 @@ impl QuicConnector {
         } else {
             (Ipv6Addr::UNSPECIFIED, 0).into()
         };
-        let mut endpoint = quinn::Endpoint::client(bind).map_err(setup("binding endpoint"))?;
+        let mut endpoint = tagged_endpoint(bind, self.dscp, None)?;
         endpoint.set_default_client_config(self.client_config.clone());
         endpoints.push(endpoint.clone());
         Ok(endpoint)
@@ -480,6 +559,18 @@ impl QuicListener {
         cert: CertificateDer<'static>,
         key: PrivateKeyDer<'static>,
     ) -> Result<Self, TransportError> {
+        Self::bind_tagged(addr, cert, key, None)
+    }
+
+    /// [`Self::bind`] with a DSCP tag on the listening socket, so the
+    /// server->client direction of each connection class is classifiable
+    /// too (the tag is per-socket; see [`DSCP_CONTROL`]).
+    pub fn bind_tagged(
+        addr: SocketAddr,
+        cert: CertificateDer<'static>,
+        key: PrivateKeyDer<'static>,
+        dscp: Option<u8>,
+    ) -> Result<Self, TransportError> {
         let mut crypto = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
@@ -494,8 +585,7 @@ impl QuicListener {
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto));
         server_config.transport_config(Arc::new(shared_transport_config()));
 
-        let endpoint =
-            quinn::Endpoint::server(server_config, addr).map_err(setup("binding endpoint"))?;
+        let endpoint = tagged_endpoint(addr, dscp, Some(server_config))?;
         let (acceptor, ready) = spawn_acceptor(endpoint.clone());
         Ok(Self {
             endpoint,
@@ -778,6 +868,30 @@ mod tests {
                     .any(|a| a.port() == server_addr.port()),
             "the stored address set must be the re-resolved one, got {:?}",
             connector.current_addrs()
+        );
+    }
+
+    /// DSCP smoke test: a tagged socket reads the TOS byte back via
+    /// getsockopt (macOS and Linux; the behavioral half — the router
+    /// actually queuing by class — is necessarily manual). The DSCP sits
+    /// in the upper six bits; the ECN bits stay zero for quinn to manage
+    /// per-packet.
+    #[test]
+    fn dscp_tag_is_applied_to_the_socket() {
+        let sock = bind_socket("127.0.0.1:0".parse().unwrap(), Some(DSCP_TRANSFER)).unwrap();
+        let sock = socket2::Socket::from(sock);
+        assert_eq!(
+            sock.tos_v4().unwrap(),
+            u32::from(DSCP_TRANSFER) << 2,
+            "IPv4 TOS byte should carry the DSCP in its upper six bits"
+        );
+
+        let sock = bind_socket("[::1]:0".parse().unwrap(), Some(DSCP_CONTROL)).unwrap();
+        let sock = socket2::Socket::from(sock);
+        assert_eq!(
+            sock.tclass_v6().unwrap(),
+            u32::from(DSCP_CONTROL) << 2,
+            "IPv6 traffic class should carry the DSCP in its upper six bits"
         );
     }
 
