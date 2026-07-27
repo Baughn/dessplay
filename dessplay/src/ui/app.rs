@@ -35,7 +35,7 @@ use super::props;
 use super::speaker_colors::SpeakerColors;
 use super::theme::ColorDepth;
 use crate::actors::sync::Mutation;
-use crate::config::{Settings, SubtitleMode, SubtitleSpeakerOverflow};
+use crate::config::{MarqueeMode, Settings, SubtitleMode, SubtitleSpeakerOverflow};
 use crate::player::SpeakerName;
 
 /// Everything the UI renders from, refreshed on every state/peer
@@ -531,11 +531,17 @@ impl Ui {
     /// Append a local system chat line (e.g. an archive result) and
     /// refresh the chat pane. Not synced — local to this client.
     pub fn push_system(&mut self, timestamp: u64, text: String) {
+        self.log_system_line(timestamp, text);
+        self.refresh_chat();
+    }
+
+    /// Append to the system log without rebuilding the chat pane — for
+    /// callers that rebuild it themselves right after (apply_snapshot).
+    fn log_system_line(&mut self, timestamp: u64, text: String) {
         self.system_log.push(props::system_line(timestamp, text));
         while self.system_log.len() > 100 {
             self.system_log.remove(0);
         }
-        self.refresh_chat();
     }
 
     /// Append a local chat line from an external IRC user and refresh the
@@ -761,6 +767,42 @@ impl Ui {
     /// Replace the snapshot and recompute every pane's props.
     pub fn apply_snapshot(&mut self, snapshot: UiSnapshot) {
         self.speaker_colors.advance(snapshot.now);
+        // Marquee lifecycle: a new LWW stamp starts a fresh pass (even
+        // for identical text — a rewrite replays); the same stamp never
+        // restarts, including after `done`; a cleared register drops the
+        // animation. Snapshots arrive frequently during playback, so
+        // they advance the offset too. A stamp from before this
+        // session's first snapshot is a previous session's leftover and
+        // is adopted with `done` latched, so it never plays. The
+        // marquee-mode setting chooses the presentation: Chat folds the
+        // update into the chat log instead of scrolling (which is why
+        // this runs before the chat merge below), Off shows nothing —
+        // both still adopt the stamp, so flipping back to Marquee never
+        // replays an old message.
+        let startup = *self.startup_shared_millis.get_or_insert(snapshot.now);
+        match &snapshot.view.marquee {
+            Some((stamp, message)) => {
+                if self.marquee.as_ref().map(|anim| anim.key) != Some(*stamp) {
+                    use unicode_width::UnicodeWidthStr;
+                    let stale = stamp.as_millis() < startup;
+                    let mode = self.settings.marquee_mode;
+                    self.marquee = Some(MarqueeAnim {
+                        key: *stamp,
+                        text_width: message.text.width(),
+                        text: message.text.clone(),
+                        started_at_millis: snapshot.now,
+                        offset: 0,
+                        slot_width: 0,
+                        done: stale || mode != MarqueeMode::Marquee,
+                    });
+                    if !stale && mode == MarqueeMode::Chat {
+                        self.log_system_line(stamp.as_millis(), message.text.clone());
+                    }
+                }
+            }
+            None => self.marquee = None,
+        }
+        self.advance_marquee(snapshot.now);
         let chat = self.merged_chat(&snapshot.view);
         self.chat.set_lines(chat);
         self.chat
@@ -783,32 +825,6 @@ impl Ui {
             snapshot.link,
         ));
         self.health.set_props(snapshot.health.clone());
-        // Marquee lifecycle: a new LWW stamp starts a fresh pass (even
-        // for identical text — a rewrite replays); the same stamp never
-        // restarts, including after `done`; a cleared register drops the
-        // animation. Snapshots arrive frequently during playback, so
-        // they advance the offset too. A stamp from before this
-        // session's first snapshot is a previous session's leftover and
-        // is adopted with `done` latched, so it never plays.
-        let startup = *self.startup_shared_millis.get_or_insert(snapshot.now);
-        match &snapshot.view.marquee {
-            Some((stamp, message)) => {
-                if self.marquee.as_ref().map(|anim| anim.key) != Some(*stamp) {
-                    use unicode_width::UnicodeWidthStr;
-                    self.marquee = Some(MarqueeAnim {
-                        key: *stamp,
-                        text_width: message.text.width(),
-                        text: message.text.clone(),
-                        started_at_millis: snapshot.now,
-                        offset: 0,
-                        slot_width: 0,
-                        done: stamp.as_millis() < startup,
-                    });
-                }
-            }
-            None => self.marquee = None,
-        }
-        self.advance_marquee(snapshot.now);
         self.snapshot = snapshot;
         self.refresh_series();
     }
@@ -1528,6 +1544,14 @@ impl Ui {
                 self.settings = (*settings).clone();
                 self.subtitle_mode = settings.subtitle_mode;
                 self.media_roots = roots.clone();
+                // A marquee pass mid-scroll stops when the display moves
+                // off the bottom line; the stamp stays adopted, so it
+                // never replays if the setting flips back.
+                if self.settings.marquee_mode != MarqueeMode::Marquee
+                    && let Some(anim) = &mut self.marquee
+                {
+                    anim.done = true;
+                }
                 // The mode may have flipped Intermixed membership.
                 self.refresh_chat();
                 // First-run setup may have changed who we are — adopt the
@@ -2639,6 +2663,91 @@ mod tests {
         // A fresh write this session plays normally.
         ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 3_602_000, 3_602_000));
         assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn marquee_chat_mode_logs_one_chat_line_instead_of_scrolling() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.settings.marquee_mode = MarqueeMode::Chat;
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 1_000, 1_000));
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_secs(1),
+            "chat mode never animates"
+        );
+        assert!(!ui.advance_clock(2_000), "nothing to animate");
+        let buffer = render_test_buffer(&mut ui);
+        assert!(!bottom_row(&buffer).contains("Whaaaat?"), "no scroll pass");
+        let all: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(
+            all.contains("<Amu> Whaaaat?"),
+            "the line is in the chat log"
+        );
+
+        // The same stamp re-arriving (snapshots are frequent) does not
+        // duplicate the line; a fresh stamp logs again.
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 1_000, 2_000));
+        assert_eq!(ui.system_log.len(), 1, "same stamp logs once");
+        ui.apply_snapshot(marquee_snapshot("<Amu> Weeeell.", 3_000, 3_000));
+        assert_eq!(ui.system_log.len(), 2, "a new stamp logs a new line");
+    }
+
+    #[test]
+    fn marquee_chat_mode_skips_pre_startup_leftovers() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.settings.marquee_mode = MarqueeMode::Chat;
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 500, 3_600_000));
+        assert!(
+            ui.system_log.is_empty(),
+            "last night's comment is not replayed into chat"
+        );
+    }
+
+    #[test]
+    fn marquee_off_mode_shows_nothing_and_never_replays() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.settings.marquee_mode = MarqueeMode::Off;
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 1_000, 1_000));
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_secs(1));
+        assert!(ui.system_log.is_empty(), "no chat line either");
+        let buffer = render_test_buffer(&mut ui);
+        assert!(!bottom_row(&buffer).contains("Whaaaat?"));
+
+        // Flipping back to Marquee does not replay the adopted stamp —
+        // only a fresh write plays.
+        ui.settings.marquee_mode = MarqueeMode::Marquee;
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 1_000, 2_000));
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_secs(1),
+            "adopted stamp stays done"
+        );
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 3_000, 3_000));
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn saving_a_non_marquee_mode_stops_a_pass_mid_scroll() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 1_000, 1_000));
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
+        let mut settings = ui.settings.clone();
+        settings.marquee_mode = MarqueeMode::Off;
+        let roots = ui.media_roots.clone();
+        ui.update(Msg::SettingsSaved(Box::new(settings), roots));
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_secs(1),
+            "the pass stops at once"
+        );
+        let row = bottom_row(&render_test_buffer(&mut ui));
+        assert!(!row.contains("Whaaaat?"), "slot reverts: {row}");
     }
 
     #[test]

@@ -1,6 +1,5 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 396
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -14,7 +13,7 @@ expression: screen
 │              │Speaker names           no                         subtitles are off│──────────────┘
 │              │Speaker colors          yes                       separate pane only│──────────────┐
 │              │Color overflow          Reuse colors    limited-color terminals only│              │
-│              │                                                                    │              │
+│              │Commentary marquee      Marquee                                     │              │
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │

@@ -988,6 +988,7 @@ enum SettingId {
     SubtitleSpeakerNames,
     SubtitleSpeakerColors,
     SubtitleSpeakerOverflow,
+    MarqueeMode,
     MediaRoot(PathBuf),
     AddMediaRoot,
     CacheRetention,
@@ -1190,6 +1191,11 @@ impl SettingsForm {
             } else {
                 overflow_row.styled(theme::dim())
             },
+            FormRow::choice(
+                SettingId::MarqueeMode,
+                "Commentary marquee",
+                self.settings.marquee_mode.label(),
+            ),
         ]
     }
 
@@ -1352,6 +1358,9 @@ impl FormModel for SettingsForm {
             (SettingId::SubtitleSpeakerOverflow, FormEdit::Cycle) => {
                 self.settings.subtitle_speaker_overflow =
                     self.settings.subtitle_speaker_overflow.next();
+            }
+            (SettingId::MarqueeMode, FormEdit::Cycle) => {
+                self.settings.marquee_mode = self.settings.marquee_mode.next();
             }
             (SettingId::AddMediaRoot, FormEdit::Activate) => {
                 return Ok(FormEffect::Out(Msg::OpenDirPicker));

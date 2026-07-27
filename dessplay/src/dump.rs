@@ -172,6 +172,7 @@ fn settings_json(s: &Settings) -> Value {
         "subtitle_speaker_names": s.subtitle_speaker_names,
         "subtitle_speaker_colors": s.subtitle_speaker_colors,
         "subtitle_speaker_overflow": format!("{:?}", s.subtitle_speaker_overflow),
+        "marquee_mode": format!("{:?}", s.marquee_mode),
         "series_sort": format!("{:?}", s.series_sort),
         "auto_download": s.auto_download,
         "archive_subdirectory": s.archive_subdirectory,

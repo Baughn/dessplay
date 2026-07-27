@@ -106,6 +106,61 @@ impl SubtitleMode {
     }
 }
 
+/// How the synced marquee line (AI commentary today; the register is
+/// deliberately generic) is displayed locally. The register itself is
+/// always synced — this only chooses this client's presentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MarqueeMode {
+    /// Scroll one pass across the bottom line's middle slot (the
+    /// original behavior).
+    #[default]
+    Marquee,
+    /// Fold each update into the chat log as a dim local line instead
+    /// of scrolling.
+    Chat,
+    /// Don't show marquee updates at all.
+    Off,
+}
+
+impl MarqueeMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            MarqueeMode::Marquee => "marquee",
+            MarqueeMode::Chat => "chat",
+            MarqueeMode::Off => "off",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "marquee" => Ok(MarqueeMode::Marquee),
+            "chat" => Ok(MarqueeMode::Chat),
+            "off" => Ok(MarqueeMode::Off),
+            other => Err(StorageError::Corrupt(format!(
+                "unknown marquee_mode {other:?}"
+            ))),
+        }
+    }
+
+    /// Cycle Marquee -> Chat -> Off -> Marquee on the settings screen.
+    pub fn next(self) -> Self {
+        match self {
+            MarqueeMode::Marquee => MarqueeMode::Chat,
+            MarqueeMode::Chat => MarqueeMode::Off,
+            MarqueeMode::Off => MarqueeMode::Marquee,
+        }
+    }
+
+    /// Human-readable settings-screen label.
+    pub fn label(self) -> &'static str {
+        match self {
+            MarqueeMode::Marquee => "Marquee",
+            MarqueeMode::Chat => "In chat",
+            MarqueeMode::Off => "Off",
+        }
+    }
+}
+
 /// What to do when a limited-color terminal has more recently active
 /// subtitle speakers than the fixed palette can distinguish.
 ///
@@ -421,6 +476,9 @@ pub struct Settings {
     /// smaller than the set of recently active speakers. Defaulting to color
     /// reuse preserves the behavior from before this setting existed.
     pub subtitle_speaker_overflow: SubtitleSpeakerOverflow,
+    /// How the synced marquee line is displayed locally: scrolled on the
+    /// bottom line (default), folded into the chat log, or hidden.
+    pub marquee_mode: MarqueeMode,
     /// Sort order for the All Series browser mode (toggled with `s`).
     /// Local-only display preference; persisted across sessions.
     pub series_sort: SeriesSort,
@@ -476,6 +534,7 @@ impl Default for Settings {
             subtitle_speaker_names: false,
             subtitle_speaker_colors: true,
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::default(),
+            marquee_mode: MarqueeMode::default(),
             series_sort: SeriesSort::default(),
             file_browser_sort: BrowserSort::default(),
             auto_download: true,
@@ -560,6 +619,11 @@ impl Settings {
                 .map(|value| SubtitleSpeakerOverflow::parse(&value))
                 .transpose()?
                 .unwrap_or(defaults.subtitle_speaker_overflow),
+            marquee_mode: storage
+                .setting("marquee_mode")?
+                .map(|value| MarqueeMode::parse(&value))
+                .transpose()?
+                .unwrap_or(defaults.marquee_mode),
             series_sort: match storage.setting("series_sort")? {
                 Some(value) => SeriesSort::parse(&value).ok_or_else(|| {
                     StorageError::Corrupt(format!("unknown series_sort {value:?}"))
@@ -651,6 +715,7 @@ impl Settings {
             "subtitle_speaker_overflow",
             Some(self.subtitle_speaker_overflow.as_str()),
         )?;
+        storage.set_setting("marquee_mode", Some(self.marquee_mode.as_str()))?;
         storage.set_setting("series_sort", Some(self.series_sort.as_str()))?;
         storage.set_setting("file_browser_sort", Some(self.file_browser_sort.as_str()))?;
         storage.set_setting(
@@ -720,6 +785,7 @@ mod tests {
             subtitle_speaker_names: true,
             subtitle_speaker_colors: false,
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::DisableColors,
+            marquee_mode: MarqueeMode::Chat,
             series_sort: SeriesSort::Year,
             file_browser_sort: BrowserSort::Newest,
             auto_download: false,
@@ -965,6 +1031,23 @@ mod tests {
         assert_eq!(
             SubtitleSpeakerOverflow::DisableColors.next(),
             SubtitleSpeakerOverflow::ReuseColors
+        );
+    }
+
+    #[test]
+    fn marquee_mode_representations_and_cycle() {
+        for mode in [MarqueeMode::Marquee, MarqueeMode::Chat, MarqueeMode::Off] {
+            assert_eq!(MarqueeMode::parse(mode.as_str()).unwrap(), mode);
+        }
+        assert!(MarqueeMode::parse("sideways").is_err());
+        assert_eq!(MarqueeMode::Marquee.next(), MarqueeMode::Chat);
+        assert_eq!(MarqueeMode::Chat.next(), MarqueeMode::Off);
+        assert_eq!(MarqueeMode::Off.next(), MarqueeMode::Marquee);
+        // A missing key keeps the original scrolling behavior.
+        let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().marquee_mode,
+            MarqueeMode::Marquee
         );
     }
 

@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -336,7 +336,13 @@ snapshot data to component props:
   `Ui` holds a `MarqueeAnim` keyed by the synced register's LWW stamp
   (`StateView.marquee`): a new stamp starts one pass — enter fully
   off-screen right, scroll left, exit fully off-screen left — the same
-  stamp never restarts, and a cleared register drops it. The offset
+  stamp never restarts, and a cleared register drops it. The
+  `marquee_mode` setting reroutes the presentation: **In chat** adopts
+  each new stamp already-`done` and pushes the text into the local
+  system log instead (same dedup-by-stamp, same pre-startup-staleness
+  guard); **Off** adopts it silently. Saving a non-Marquee mode latches
+  a mid-scroll pass `done`, and the adopted key means flipping back
+  never replays an old message. The offset
   derives from **wall millis** (`elapsed × props::MARQUEE_CELLS_PER_SEC`),
   so tick jitter never changes the trajectory, and windowing is the
   pure, display-cell-aware `props::marquee_window` (CJK chars clip

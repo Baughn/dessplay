@@ -52,7 +52,8 @@ working copy atomically. Tabs containing a missing required value carry a
   Paused; when on they join Ready. Server and password changes apply on the
   next launch.
 - **Playback & display**: Player, subtitle mode, subtitle speaker names,
-  subtitle speaker colors, and the limited-terminal color-overflow policy.
+  subtitle speaker colors, the limited-terminal color-overflow policy, and
+  the commentary-marquee display mode.
   Player cycles between mpv and VLC and is persisted, but is explicitly
   marked **WIP -- not applied**: the client still starts mpv regardless of
   this placeholder value. Subtitle mode is off / intermixed / separate pane
@@ -65,6 +66,11 @@ working copy atomically. Tabs containing a missing required value carry a
   colors** (the default) preserves the previous deterministic name hashing
   into the fixed palette, while **Disable colors** renders every speaker
   uniformly dim until the active count returns to ten or fewer.
+  **Commentary marquee** chooses how this client shows the synced
+  [marquee](#ai-commentary-the-marquee) line: **Marquee** (the default;
+  one scrolling pass on the bottom line), **In chat** (each update
+  becomes a dim local chat line instead), or **Off**. Local display
+  preference, applied live; the register itself is always synced.
 - **Files & transfers**: Ordered media roots, cache retention, auto-download,
   archive subdirectory policy, BitTorrent downloads, and upload limit. At
   least one media root is required;
@@ -1396,7 +1402,13 @@ middle slot on **every** client.
   generic **marquee register** (`LwwCell<Option<MarqueeMessage>>`,
   cleared at compaction like other ephemeral session state); every
   client — the author included, via the ordinary sync echo — plays the
-  same marquee. One update = **one pass**: the text enters entirely
+  same marquee. How it is *shown* is a local choice: the
+  **commentary-marquee** setting (Playback & display tab) can instead
+  fold each update into the chat log as a dim local line (still one
+  line per LWW stamp, and a pre-startup stamp is still never
+  replayed), or hide updates entirely — either way the stamp is
+  adopted, so switching back to the marquee never replays an old
+  message. One update = **one pass**: the text enters entirely
   off-screen right (the entry delay gives people time to notice motion
   and glance down before the sentence starts leaving), scrolls left at
   ~15 cells/s, exits entirely off-screen left, and the slot reverts to
@@ -2400,7 +2412,8 @@ crash should not be replayed into the next session.
 
 **Settings** (username, server, password, media roots, player choice, cache
 retention, archive subdirectory policy, upload limit, subtitle mode, subtitle speaker names, subtitle
-speaker colors, the limited-terminal speaker-color overflow policy, auto-download, BitTorrent
+speaker colors, the limited-terminal speaker-color overflow policy, the
+commentary-marquee display mode, auto-download, BitTorrent
 downloads, IRC bridge settings -- enabled, server, TLS, channel -- and the
 AI commentary settings -- Anthropic token, comment interval) live in
 the same SQLite database
@@ -2433,7 +2446,7 @@ re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, auto_download, archive_subdirectory, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel, anthropic_token, commentary_interval) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, marquee_mode, auto_download, archive_subdirectory, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel, anthropic_token, commentary_interval) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `crdt_state` | Latest snapshot per room (epoch + version-tagged postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
