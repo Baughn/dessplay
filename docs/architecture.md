@@ -287,6 +287,18 @@ around `loadfile`, and the pause mpv performs itself when `keep-open`
 hits end of file (which arrives *before* `eof-reached` and is held
 briefly for attribution).
 
+**File attribution:** evidence-based, not belief-based. `loadfile` is
+asynchronous, so after a `Load` command the player keeps emitting the
+*previous* file's observations until the new file actually opens; the
+commanded file (which tags positions, seeks, EOF, and duration reports)
+already names the new one during that window. The actor therefore tracks
+the last *observed* `path` — mpv's own report, ordered with every other
+event — and accepts file-attributed observations only while it equals
+the commanded path; observations in the gap are dropped as the old
+file's (design.md, Events from Player). The load-failure report is the
+deliberate exception: a file that never opens may never get a path
+observation, and suppressing the report is the worse failure direction.
+
 ### Session policy (`session.rs`)
 
 Not an actor: the synchronous decision core between synced state and

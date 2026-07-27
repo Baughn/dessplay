@@ -33,9 +33,17 @@ Use `jj commit`, not `jj describe`. Don't bother to check the diff; I don't mix 
 
 This is important:
 - Feel free to add more logging and/or ask the user for assistance.
-- Always add a regression test *prior* to fixing the bug. Prefer
+- Default to adding a regression test *prior* to fixing the bug. Prefer
   to do this via property or fuzz tests; a property test that happens
   to catch the bug is superior to a unit test that only catches this particular bug.
+- Better than either: a fix that makes the bug class **unrepresentable**
+  (in the types, or structurally). When you have one, a regression test is
+  optional — use your judgment. Never skew a design to keep the bug
+  representable just so a test can catch it; provably correct beats tested
+  correct. A regression test still earns its place when it models the real
+  triggering conditions through the honest interface (e.g. a slow player,
+  reordered messages) without bending the design — then write it first and
+  confirm it fails, as usual.
 - Most crucially: Bugs are often an indication that there are architectural issues.
   Every bug is an opportunity to improve the architecture, or clear up a design doc detail,
   refactor some code, write a fuzz test, or in general reduce the chance you'll need to
@@ -67,6 +75,8 @@ Test comprehensively, especially on high-risk areas (echo suppression, network c
   If the spec is unclear, clarify it before writing the test.
 - **Regression tests first**: When fixing a bug, write a test that reproduces
   it *before* writing the fix. The tests MUST be executed and confirmed to fail.
+  Exception: a fix that makes the bug class unrepresentable may skip the test —
+  see the Bug fixing section for the judgment call.
 - **High-risk areas get extra coverage**: Echo suppression, CRDT convergence,
   playlist conflict resolution, reconnection/epoch handling.
 

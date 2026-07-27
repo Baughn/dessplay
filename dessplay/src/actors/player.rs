@@ -25,6 +25,16 @@
 //!   become the authority).
 //! - **Position cadence.** Emits [`PlayerOutput::PositionTick`] every
 //!   100ms while playing, every 1s while paused.
+//! - **Evidence-based file attribution.** `loadfile` is asynchronous:
+//!   after a `Load` command the player stays on (and keeps reporting
+//!   positions, seeks, even the EOF of) the *previous* file until the
+//!   new one actually opens — a long window on a slow machine.
+//!   File-attributed observations are accepted only while the *observed*
+//!   `path` property, which arrives in order with every other event,
+//!   confirms the player holds the commanded file; in the gap they
+//!   belong to the old file and are dropped. Without this, a trailing
+//!   old-file position was broadcast under the new file's identity and
+//!   the group latched onto it (2026-07-27).
 //! - **Crash supervision.** A dead player is relaunched and restored
 //!   (same file, last position, desired pause state). A second death
 //!   within [`CRASH_FATAL_WINDOW`] additionally emits
@@ -225,6 +235,12 @@ struct Actor<F: PlayerFactory> {
     /// relaunch — the title must be re-applied so a relaunched player still
     /// shows the real filename for hash-named cache files).
     current: Option<(Ed2kHash, PathBuf, Option<String>)>,
+    /// The path the player itself most recently *reported* loaded (the
+    /// observed `path` property) — evidence, where `current` is belief
+    /// (what we last commanded). The two diverge from a `Load` command
+    /// until the player's path echo arrives, and while the user has
+    /// loaded their own file; see [`Actor::player_on_current_file`].
+    observed_path: Option<PathBuf>,
     /// The group's desired playback state.
     desired_playing: bool,
     /// Pause state we believe the player is in (last command or
@@ -284,6 +300,7 @@ pub async fn run<F: PlayerFactory>(
         offset_millis: 0,
         player: None,
         current: None,
+        observed_path: None,
         desired_playing: false,
         believed_pause: None,
         speed: 1.0,
@@ -417,6 +434,25 @@ impl<F: PlayerFactory> Actor<F> {
     fn reanchor_estimate(&mut self) {
         if let Some(now) = self.estimate_now() {
             self.note_position(now);
+        }
+    }
+
+    /// True iff the player has confirmed — via the observed `path`
+    /// property, which arrives in order with every other event — that
+    /// the file it has loaded is the one we last commanded. `loadfile`
+    /// is asynchronous, so between a `Load` command and the player's
+    /// path echo the player is still on the *previous* file: every
+    /// file-attributed observation in that gap (position, seek, EOF,
+    /// duration) describes the old file, while `current` — which tags
+    /// them — already names the new one. Attributing across the gap
+    /// broadcast a late old-episode position under the new file's
+    /// identity, and forward-only leader election latched the group
+    /// onto it (2026-07-27; long loads made the gap wide). Also false
+    /// while the user's own file (drag-and-drop) is up.
+    fn player_on_current_file(&self) -> bool {
+        match (&self.observed_path, &self.current) {
+            (Some(observed), Some((_, commanded, _))) => observed == commanded,
+            _ => false,
         }
     }
 
@@ -666,25 +702,43 @@ impl<F: PlayerFactory> Actor<F> {
                 self.handle_pause_observation(paused).await;
             }
             PlayerEvent::Seeked { position_millis } => {
-                self.eof_reported = false;
-                let from_millis = self
-                    .pending_user_seek
-                    .map(|(from, _, _)| from)
-                    .or_else(|| self.estimate_now())
-                    .unwrap_or(position_millis);
-                self.note_position(position_millis);
-                if self.pending_seek_echoes > 0 {
-                    self.pending_seek_echoes -= 1;
+                // A seek observed before the player confirms our latest
+                // `Load` landed on the *previous* file (a trailing echo,
+                // or the reply to a position query issued on it) — it
+                // must neither anchor the estimate nor debounce into a
+                // `UserSeeked`, which would seize seek authority for the
+                // new file at the old file's position.
+                if !self.player_on_current_file() {
+                    tracing::debug!(position_millis, "seek for a file no longer loaded; dropped");
                 } else {
-                    tracing::debug!(position_millis, "user seek (debouncing)");
-                    self.pending_user_seek = Some((from_millis, position_millis, Instant::now()));
+                    self.eof_reported = false;
+                    let from_millis = self
+                        .pending_user_seek
+                        .map(|(from, _, _)| from)
+                        .or_else(|| self.estimate_now())
+                        .unwrap_or(position_millis);
+                    self.note_position(position_millis);
+                    if self.pending_seek_echoes > 0 {
+                        self.pending_seek_echoes -= 1;
+                    } else {
+                        tracing::debug!(position_millis, "user seek (debouncing)");
+                        self.pending_user_seek =
+                            Some((from_millis, position_millis, Instant::now()));
+                    }
                 }
             }
             PlayerEvent::Position { position_millis } => {
-                self.note_position(position_millis);
+                // Only positions the player has confirmed are for
+                // `current` may anchor the estimate; a trailing old-file
+                // sample after a `Load` must not poison it.
+                if self.player_on_current_file() {
+                    self.note_position(position_millis);
+                }
             }
             PlayerEvent::DurationKnown { duration_millis } => {
-                if let Some((file, _, _)) = &self.current {
+                if self.player_on_current_file()
+                    && let Some((file, _, _)) = &self.current
+                {
                     let _ = self
                         .outputs
                         .send(PlayerOutput::DurationKnown {
@@ -708,12 +762,16 @@ impl<F: PlayerFactory> Actor<F> {
                 self.apply_desired_pause().await;
             }
             PlayerEvent::PathChanged { path } => {
+                let observed = PathBuf::from(path);
+                // Evidence first: this is the confirmation
+                // `player_on_current_file` waits for after a `Load` —
+                // from here on, observations are attributed to `current`.
+                self.observed_path = Some(observed.clone());
                 // Swallow the echo of our own load (a real file or the
                 // placeholder); any other path is one the user loaded
                 // directly (drag-and-drop). The session decides whether to
                 // adopt it — `self.current.path` is exactly what we last
                 // commanded, so a string-equal path is our own.
-                let observed = PathBuf::from(path);
                 let ours = self
                     .current
                     .as_ref()
@@ -744,7 +802,12 @@ impl<F: PlayerFactory> Actor<F> {
                     .await;
             }
             PlayerEvent::Eof => {
+                // The old file reaching its end just as the next episode's
+                // `Load` is commanded must not report EOF *of the new file*
+                // (the server would instantly advance past it and mark it
+                // watched) — hence the same evidence gate as positions.
                 if !self.eof_reported
+                    && self.player_on_current_file()
                     && let Some((file, _, _)) = &self.current
                 {
                     self.eof_reported = true;
@@ -759,6 +822,14 @@ impl<F: PlayerFactory> Actor<F> {
                 // session forgets the local copy, flips the file to Missing,
                 // and re-resolves; without this the group unpaused on a file
                 // mpv never loaded, showing only the forced media title.
+                //
+                // Deliberately NOT gated on `player_on_current_file`: a file
+                // that fails to *open* may never produce a path observation
+                // at all, and dropping the report would leave the session
+                // believing a load that never happened — the very bug this
+                // event exists to fix. A stale old-load error misattributed
+                // to `current` merely makes it re-resolve: wrong but
+                // self-healing, the safe failure direction.
                 if let Some((file, _, _)) = &self.current {
                     tracing::warn!("player failed to open the loaded file");
                     let _ = self
@@ -813,6 +884,13 @@ impl<F: PlayerFactory> Actor<F> {
     }
 
     async fn maybe_emit_position(&mut self) {
+        // Ticks speak about `current`; never emit while the player hasn't
+        // confirmed it holds that file (mid-load, or a user-loaded file is
+        // up) — the estimate could otherwise extrapolate a stale anchor
+        // under the wrong file's identity.
+        if !self.player_on_current_file() {
+            return;
+        }
         let Some(position_millis) = self.estimate_now() else {
             return;
         };
@@ -844,7 +922,9 @@ impl<F: PlayerFactory> Actor<F> {
     /// when the actor should exit (spawn-mode relaunch impossible).
     async fn handle_player_death(&mut self, clean: bool) -> bool {
         // The player is gone either way: drop it and the echo bookkeeping.
+        // No player, no evidence — a relaunched one re-announces its path.
         self.player = None;
+        self.observed_path = None;
         self.pending_pause_echoes.clear();
         self.pending_seek_echoes = 0;
         self.pending_user_seek = None;
@@ -1078,6 +1158,14 @@ mod tests {
             expect_command(&mut control).await,
             MockCommand::Load("/media/ep1.mkv".into(), None)
         );
+        // mpv's real order: the path echo confirms the load, then
+        // file-loaded — attribution waits for the former.
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep1.mkv".into(),
+            })
+            .unwrap();
         control.events.send(PlayerEvent::Loaded).unwrap();
         control
             .events
@@ -1101,6 +1189,7 @@ mod tests {
             offset_millis: 0,
             player: None,
             current: None,
+            observed_path: None,
             desired_playing: false,
             believed_pause: None,
             speed: 1.0,
@@ -1388,6 +1477,10 @@ mod tests {
             let reported = anchor + reported_delta;
             let frozen = rt.block_on(async move {
                 let (mut actor, _outputs) = test_actor();
+                // A file is loaded and confirmed (Position events are only
+                // attributed once the player's path echo lands).
+                actor.current = Some((FILE, "/media/ep1.mkv".into(), None));
+                actor.observed_path = Some("/media/ep1.mkv".into());
                 // Playing, last time-pos sample at `anchor`.
                 actor.believed_pause = Some(false);
                 actor.note_position(anchor);
@@ -1473,6 +1566,12 @@ mod tests {
             expect_command(&mut control).await,
             MockCommand::Load("/media/ep2.mkv".into(), None)
         );
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep2.mkv".into(),
+            })
+            .unwrap();
         control.events.send(PlayerEvent::Loaded).unwrap();
         control
             .events
@@ -1497,6 +1596,101 @@ mod tests {
                 to_millis: 55_000,
             }],
             "the user's seek on the new file was swallowed as a stale echo"
+        );
+    }
+
+    /// Regression (2026-07-27): `loadfile` is asynchronous, and on a slow
+    /// machine (cold NAS, heavy mpv scripts) the player keeps emitting the
+    /// *previous* file's observations — positions, seeks, even its EOF —
+    /// long after the next episode's `Load` was commanded. Those trailing
+    /// observations were attributed to the newly commanded file (the tag
+    /// came from what we *commanded*, not from what the player *reported*),
+    /// so a late-in-the-old-episode position was broadcast under the new
+    /// file's identity: same-file leader election (which only moves the
+    /// group forward) latched everyone onto it, and 85% of the new file's
+    /// duration was falsely recorded watched. Attribution must wait for
+    /// the player's own path echo.
+    #[tokio::test(start_paused = true)]
+    async fn slow_load_keeps_old_file_observations_off_the_new_file() {
+        let (commands, mut outputs, control) = loaded_rig().await;
+        // The old episode has played out to the 20-minute mark.
+        control
+            .events
+            .send(PlayerEvent::Position {
+                position_millis: 1_200_000,
+            })
+            .unwrap();
+        settle().await;
+        while outputs.try_recv().is_ok() {}
+
+        // The next episode is commanded, but the slow player has not
+        // switched yet (no path echo) — and keeps reporting the old file.
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE2,
+                path: "/media/ep2.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        settle().await;
+        control
+            .events
+            .send(PlayerEvent::Position {
+                position_millis: 1_200_400,
+            })
+            .unwrap();
+        control
+            .events
+            .send(PlayerEvent::Seeked {
+                position_millis: 1_200_500,
+            })
+            .unwrap();
+        control.events.send(PlayerEvent::Eof).unwrap();
+        // Cross the paused position cadence and the seek debounce: any
+        // misattributed output would surface in this window.
+        tokio::time::sleep(SEEK_DEBOUNCE + Duration::from_secs(2)).await;
+        let mut leaked = Vec::new();
+        while let Ok(o) = outputs.try_recv() {
+            leaked.push(o);
+        }
+        assert_eq!(
+            leaked,
+            vec![],
+            "old-file observations were attributed to the new file"
+        );
+
+        // The slow load finally completes: mpv announces the new path,
+        // then file-loaded, then the new file's first real position.
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep2.mkv".into(),
+            })
+            .unwrap();
+        control.events.send(PlayerEvent::Loaded).unwrap();
+        control
+            .events
+            .send(PlayerEvent::Position { position_millis: 0 })
+            .unwrap();
+        settle().await;
+        let tick = loop {
+            let out = tokio::time::timeout(BUDGET, outputs.recv())
+                .await
+                .expect("no position tick after the load completed")
+                .expect("actor exited");
+            if let PlayerOutput::PositionTick {
+                file,
+                position_millis,
+            } = out
+            {
+                break (file, position_millis);
+            }
+        };
+        assert_eq!(
+            tick,
+            (FILE2, 0),
+            "the new file's first tick must be its own position"
         );
     }
 
@@ -1801,6 +1995,11 @@ mod tests {
             .await
             .unwrap();
         expect_command(&mut c1).await;
+        c1.events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep1.mkv".into(),
+            })
+            .unwrap();
         c1.events.send(PlayerEvent::Loaded).unwrap();
         c1.events
             .send(PlayerEvent::Position {
