@@ -178,30 +178,30 @@ mod tests {
     }
 
     /// Property (deterministic grid): the unknown-file ladder is governed
-    /// by `now - min(first_seen, mtime)`, and any file whose effective age
-    /// reaches 90 days stops being re-validated regardless of which of the
-    /// two timestamps is the older.
+    /// by `now - min(first_seen, mtime)` — the older timestamp's age —
+    /// checked against the design's ladder table restated as an
+    /// independent oracle (which never calls `effective_anchor` or
+    /// `next_attempt`, so the two derivations can genuinely disagree).
     #[test]
     fn ladder_is_governed_by_the_older_timestamp() {
         let now = 1_000 * DAY;
         for fs_age in [0, DAY, 8 * DAY, 40 * DAY, 89 * DAY, 90 * DAY, 200 * DAY] {
             for mt_age in [0, DAY, 8 * DAY, 40 * DAY, 89 * DAY, 90 * DAY, 200 * DAY] {
-                let first_seen = now - fs_age;
-                let mtime = Some(now - mt_age);
-                let anchor = effective_anchor(first_seen, mtime);
-                // The anchor is the older (smaller) timestamp.
-                assert_eq!(anchor, first_seen.min(now - mt_age));
+                let anchor = effective_anchor(now - fs_age, Some(now - mt_age));
                 let got = next_attempt(now, anchor, false, Outcome::NoData);
-                // Result matches the single-anchor ladder for that age.
-                let expected = next_attempt(now, anchor, false, Outcome::NoData);
-                assert_eq!(got, expected);
-                // The older the file (by either metric), the more it backs
-                // off: an effective age >= 90 days is never re-validated.
-                if fs_age.max(mt_age) >= 90 * DAY {
-                    assert_eq!(got, None, "fs_age={fs_age} mt_age={mt_age}");
+                let age = fs_age.max(mt_age);
+                let expected = if age < DAY {
+                    Some(now + 30 * MINUTE)
+                } else if age < WEEK {
+                    Some(now + 2 * HOUR)
+                } else if age < 30 * DAY {
+                    Some(now + 12 * HOUR)
+                } else if age < 90 * DAY {
+                    Some(now + 3 * DAY)
                 } else {
-                    assert!(got.is_some(), "fs_age={fs_age} mt_age={mt_age}");
-                }
+                    None
+                };
+                assert_eq!(got, expected, "fs_age={fs_age} mt_age={mt_age}");
             }
         }
     }

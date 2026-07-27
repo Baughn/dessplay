@@ -1377,19 +1377,36 @@ mod tests {
     }
 
     /// The jittered cadence stays within ±JITTER of the interval and
-    /// actually varies to both sides.
-    #[test]
-    fn jitter_stays_within_bounds_and_varies() {
-        let mut rng = StdRng::seed_from_u64(42);
+    /// actually varies to both sides — measured on the real path: every
+    /// fired tick runs `plan_tick` (as the run loop does), and the
+    /// *observed* time until the ticker's next fire is the assertion,
+    /// so a regression in `rejitter` or in plan_tick's re-arm shows up
+    /// here rather than in a copy of the formula.
+    #[tokio::test(start_paused = true)]
+    async fn jitter_stays_within_bounds_and_varies() {
+        let mut engine = engine(FakeModel::new(&["Amu"], "<Amu> hi"), 42);
+        // Gated (not playing): plan_tick re-jitters but never spawns a
+        // job, so the cadence is observable without model plumbing.
+        let mut gated = gates("Frieren");
+        gated.playing = false;
         let interval = Duration::from_secs(120);
+        // The startup fire is deliberately un-jittered; the first
+        // plan_tick arms the jittered cadence under test.
+        engine.ticker.tick().await;
+        assert!(engine.plan_tick(&gated).is_none());
         let mut early = false;
         let mut late = false;
-        for _ in 0..1000 {
-            let jitter = Duration::from_secs(rng.random_range(0..=2 * JITTER.as_secs()));
-            let next = (interval + jitter).saturating_sub(JITTER);
-            assert!(next >= interval - JITTER && next <= interval + JITTER);
-            early |= next < interval;
-            late |= next > interval;
+        for _ in 0..50 {
+            let before = tokio::time::Instant::now();
+            engine.ticker.tick().await;
+            let elapsed = before.elapsed();
+            assert!(
+                elapsed >= interval - JITTER && elapsed <= interval + JITTER,
+                "observed fire at {elapsed:?}, outside {interval:?} ± {JITTER:?}"
+            );
+            early |= elapsed < interval;
+            late |= elapsed > interval;
+            assert!(engine.plan_tick(&gated).is_none());
         }
         assert!(early && late, "the dice must move both ways");
     }
