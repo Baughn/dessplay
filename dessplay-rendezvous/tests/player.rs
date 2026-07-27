@@ -124,11 +124,8 @@ async fn seek_follows_the_authority() {
         },
     )
     .await;
-    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
-        .await;
-    baughn
-        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
-        .await;
+    kim.expect_load(BUDGET).await;
+    baughn.expect_load(BUDGET).await;
     // Both players report their loaded position: Kim's is the explicit
     // seek's `from`, while Baughn's lets drift correction act.
     kim.user(PlayerEvent::Position { position_millis: 0 });
@@ -219,11 +216,8 @@ async fn eof_advances_and_everyone_loads_the_next_file() {
         },
     )
     .await;
-    kim.expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
-        .await;
-    baughn
-        .expect_player_command(BUDGET, |cmd| matches!(cmd, MockCommand::Load(..)))
-        .await;
+    kim.expect_load(BUDGET).await;
+    baughn.expect_load(BUDGET).await;
     kim.user(PlayerEvent::PauseChanged(false));
     eventually(&[&kim, &baughn], BUDGET, |snaps| {
         snaps.iter().all(|s| s.playing())
