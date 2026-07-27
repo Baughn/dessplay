@@ -13,6 +13,7 @@ use dessplay_core::types::{
 };
 use dessplay_core::{StateView, franchise};
 
+use crate::player::SpeakerName;
 use crate::storage::SeriesKey;
 
 /// Semantic display tone; the theme maps these to colors.
@@ -435,8 +436,10 @@ pub use crate::timeutil::biblical_date;
 
 /// Format the body shared by both subtitle text modes, optionally prefixing
 /// the ASS speaker name. Unnamed cues remain byte-for-byte unchanged.
-pub fn subtitle_text(text: &str, speaker: Option<&str>, show_speaker: bool) -> String {
-    match speaker.filter(|name| show_speaker && !name.is_empty()) {
+/// [`SpeakerName`] is non-empty by construction, so `Some` always prefixes
+/// when names are shown.
+pub fn subtitle_text(text: &str, speaker: Option<&SpeakerName>, show_speaker: bool) -> String {
+    match speaker.filter(|_| show_speaker) {
         Some(speaker) => format!("{speaker}: {text}"),
         None => text.to_owned(),
     }
@@ -450,7 +453,7 @@ pub fn subtitle_line(
     video_millis: u64,
     arrival_millis: u64,
     text: String,
-    speaker: Option<&str>,
+    speaker: Option<&SpeakerName>,
     show_speaker: bool,
 ) -> ChatLine {
     ChatLine {
@@ -2048,13 +2051,15 @@ mod tests {
 
     #[test]
     fn subtitle_text_prefixes_only_named_opted_in_cues() {
+        // `SpeakerName` is non-empty by construction, so there is no
+        // empty-speaker case to test — that state is unrepresentable.
+        let frieren = SpeakerName::new("Frieren");
         assert_eq!(
-            subtitle_text("Hello", Some("Frieren"), true),
+            subtitle_text("Hello", frieren.as_ref(), true),
             "Frieren: Hello"
         );
-        assert_eq!(subtitle_text("Hello", Some("Frieren"), false), "Hello");
+        assert_eq!(subtitle_text("Hello", frieren.as_ref(), false), "Hello");
         assert_eq!(subtitle_text("Hello", None, true), "Hello");
-        assert_eq!(subtitle_text("Hello", Some(""), true), "Hello");
     }
 
     fn hash(i: u8) -> Ed2kHash {

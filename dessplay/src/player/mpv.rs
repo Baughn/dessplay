@@ -43,7 +43,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
-use super::{Player, PlayerError, PlayerEvent, PlayerFactory};
+use super::{Player, PlayerError, PlayerEvent, PlayerFactory, SpeakerName};
 
 /// How long to wait for mpv to create its IPC socket.
 const SOCKET_WAIT: Duration = Duration::from_secs(10);
@@ -606,9 +606,9 @@ pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Ve
 /// simultaneous events arrive newline-separated; we join their texts and
 /// take the first non-empty speaker. A line that is not a well-formed
 /// `Dialogue:` event is treated as plain text with no speaker.
-pub fn parse_ass_full(raw: &str) -> (String, Option<String>) {
+pub fn parse_ass_full(raw: &str) -> (String, Option<SpeakerName>) {
     let mut texts: Vec<String> = Vec::new();
-    let mut speaker: Option<String> = None;
+    let mut speaker: Option<SpeakerName> = None;
     for line in raw.split('\n') {
         let line = line.trim_end_matches('\r');
         if line.is_empty() {
@@ -631,8 +631,8 @@ pub fn parse_ass_full(raw: &str) -> (String, Option<String>) {
         if !stripped.is_empty() {
             texts.push(stripped);
         }
-        if speaker.is_none() && !name.is_empty() {
-            speaker = Some(name.to_string());
+        if speaker.is_none() {
+            speaker = SpeakerName::new(name);
         }
     }
     (texts.join(" "), speaker)
@@ -1085,7 +1085,7 @@ mod tests {
             vec![PlayerEvent::SubtitleLine {
                 // Comma inside Text is preserved; override tags stripped.
                 text: "Hello, there".into(),
-                speaker: Some("Frieren".into())
+                speaker: SpeakerName::new("Frieren")
             }]
         );
     }
@@ -1095,7 +1095,7 @@ mod tests {
         // Normal line with a speaker.
         assert_eq!(
             parse_ass_full("Dialogue: 0,0:00:00.00,0:00:01.00,Default,Stark,0,0,0,,Hi"),
-            ("Hi".into(), Some("Stark".into()))
+            ("Hi".into(), SpeakerName::new("Stark"))
         );
         // Empty Name -> no speaker; override tags and \N break stripped.
         assert_eq!(
@@ -1109,7 +1109,7 @@ mod tests {
             parse_ass_full(
                 "Dialogue: 0,0,0,Default,,0,0,0,,one\nDialogue: 0,0,0,Default,Fern,0,0,0,,two"
             ),
-            ("one two".into(), Some("Fern".into()))
+            ("one two".into(), SpeakerName::new("Fern"))
         );
         // Not a Dialogue line: plain text, no speaker.
         assert_eq!(parse_ass_full("just text"), ("just text".into(), None));

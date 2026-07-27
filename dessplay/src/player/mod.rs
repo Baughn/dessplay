@@ -37,6 +37,37 @@ impl std::fmt::Display for PlayerError {
 
 impl std::error::Error for PlayerError {}
 
+/// A non-empty ASS speaker/actor name.
+///
+/// The only constructor rejects the empty string, so `Option<SpeakerName>`
+/// has exactly one way to say "no speaker": `None`. Downstream consumers
+/// (the `Name: ` prefix, color-slot allocation, commentary attribution)
+/// can trust `Some` without re-checking emptiness — the invariant is
+/// established once, where the ASS Name field is parsed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpeakerName(String);
+
+impl SpeakerName {
+    /// Wrap a parsed Name field; `None` when it is empty.
+    pub fn new(name: impl Into<String>) -> Option<Self> {
+        let name = name.into();
+        (!name.is_empty()).then_some(Self(name))
+    }
+}
+
+impl std::ops::Deref for SpeakerName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SpeakerName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Something the player observed. Raw and unfiltered: echoes of our own
 /// commands are included, and the actor sorts them out.
 #[derive(Clone, Debug, PartialEq)]
@@ -85,7 +116,7 @@ pub enum PlayerEvent {
         /// The subtitle text, ASS override tags already stripped.
         text: String,
         /// The speaker/actor, if the cue carried one.
-        speaker: Option<String>,
+        speaker: Option<SpeakerName>,
     },
     /// Playback reached end of file. The file stays loaded (mpv runs
     /// with `keep-open`); the server owns what happens next.

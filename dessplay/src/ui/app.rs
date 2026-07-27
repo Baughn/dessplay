@@ -36,6 +36,7 @@ use super::speaker_colors::SpeakerColors;
 use super::theme::ColorDepth;
 use crate::actors::sync::Mutation;
 use crate::config::{Settings, SubtitleMode, SubtitleSpeakerOverflow};
+use crate::player::SpeakerName;
 
 /// Everything the UI renders from, refreshed on every state/peer
 /// change.
@@ -232,7 +233,7 @@ struct SubtitleEntry {
     text: String,
     /// The ASS speaker/actor, if the cue carried one. Used for optional name
     /// display in both text modes and for coloring in separate-pane mode.
-    speaker: Option<String>,
+    speaker: Option<SpeakerName>,
     /// Stable color slot assigned while this speaker was active. Kept on
     /// the entry so a sparse, older visible line does not change color when
     /// the rolling activity tracker later recycles its slot.
@@ -474,7 +475,7 @@ impl Ui {
         video_millis: u64,
         arrival_millis: u64,
         text: String,
-        speaker: Option<String>,
+        speaker: Option<SpeakerName>,
     ) {
         let text = text.replace('\r', "").replace('\n', " ");
         if text.is_empty() {
@@ -486,7 +487,7 @@ impl Ui {
         // toward the five-minute active set.
         let speaker_slot = self
             .speaker_colors
-            .observe(speaker.as_deref(), arrival_millis);
+            .observe(speaker.as_ref(), arrival_millis);
         // Classify the new text against the last entry (the shared
         // reveal/overlap collapse — `props::subtitle_collapse`, also
         // used by the advisor's context ring).
@@ -583,7 +584,7 @@ impl Ui {
                     s.video_millis,
                     s.arrival_millis,
                     s.text.clone(),
-                    s.speaker.as_deref(),
+                    s.speaker.as_ref(),
                     self.settings.subtitle_speaker_names,
                 )
             }));
@@ -1925,7 +1926,7 @@ impl Ui {
                 .map(|entry| {
                     let text = props::subtitle_text(
                         &entry.text,
-                        entry.speaker.as_deref(),
+                        entry.speaker.as_ref(),
                         self.settings.subtitle_speaker_names,
                     );
                     let text_style = if !speaker_colors_enabled {
@@ -2422,9 +2423,9 @@ mod tests {
         let mut ui = intermixed_ui();
         // Each cue is a longer prefix of the next; the first cue's
         // timestamps win.
-        ui.push_subtitle(1000, 10, "H".into(), Some("Frieren".into()));
-        ui.push_subtitle(1100, 11, "He".into(), Some("Frieren".into()));
-        ui.push_subtitle(1200, 12, "Hello".into(), Some("Frieren".into()));
+        ui.push_subtitle(1000, 10, "H".into(), SpeakerName::new("Frieren"));
+        ui.push_subtitle(1100, 11, "He".into(), SpeakerName::new("Frieren"));
+        ui.push_subtitle(1200, 12, "Hello".into(), SpeakerName::new("Frieren"));
         assert_eq!(ui.subtitles.len(), 1);
         let entry = ui.subtitles.back().unwrap();
         assert_eq!(entry.text, "Hello");
@@ -2437,8 +2438,8 @@ mod tests {
     #[test]
     fn collapsed_subtitle_updates_still_track_every_named_speaker() {
         let mut ui = intermixed_ui();
-        ui.push_subtitle(1_000, 10, "H".into(), Some("First".into()));
-        ui.push_subtitle(1_100, 11, "He".into(), Some("Second".into()));
+        ui.push_subtitle(1_000, 10, "H".into(), SpeakerName::new("First"));
+        ui.push_subtitle(1_100, 11, "He".into(), SpeakerName::new("Second"));
 
         assert_eq!(ui.subtitles.len(), 1, "the reveal still collapses");
         assert_eq!(ui.speaker_colors.len(), 2);
@@ -2798,7 +2799,7 @@ mod tests {
                 index as u64,
                 index as u64,
                 format!("{label} utterance"),
-                Some(format!("speaker-{index}")),
+                SpeakerName::new(format!("speaker-{index}")),
             );
         }
 
@@ -2840,7 +2841,7 @@ mod tests {
                 index as u64,
                 base + index as u64,
                 format!("{index} original"),
-                Some(format!("speaker-{index}")),
+                SpeakerName::new(format!("speaker-{index}")),
             );
         }
         let boundary = base + crate::ui::theme::SPEAKER_WINDOW_MILLIS;
@@ -2848,7 +2849,7 @@ mod tests {
             20_000,
             boundary,
             "Z boundary".into(),
-            Some("boundary".into()),
+            SpeakerName::new("boundary"),
         );
 
         let overflow = render_test_buffer(&mut ui);
@@ -2884,7 +2885,7 @@ mod tests {
                 index as u64,
                 index as u64,
                 format!("R{index} reuse"),
-                Some(format!("speaker-{index}")),
+                SpeakerName::new(format!("speaker-{index}")),
             );
         }
 
@@ -2913,7 +2914,7 @@ mod tests {
         // Three distinct cues, oldest first; the third names a speaker.
         ui.push_subtitle(1000, 10, "oldest".into(), None);
         ui.push_subtitle(2000, 20, "middle".into(), None);
-        ui.push_subtitle(3000, 30, "newest".into(), Some("Frieren".into()));
+        ui.push_subtitle(3000, 30, "newest".into(), SpeakerName::new("Frieren"));
 
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let buffer = terminal
@@ -2971,7 +2972,7 @@ mod tests {
         let mut ui = ui_with_view(StateView::default());
         ui.subtitle_mode = SubtitleMode::SeparatePane;
         ui.settings.subtitle_speaker_colors = false;
-        ui.push_subtitle(1000, 10, "newest".into(), Some("Frieren".into()));
+        ui.push_subtitle(1000, 10, "newest".into(), SpeakerName::new("Frieren"));
 
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let buffer = terminal
@@ -3044,7 +3045,7 @@ mod tests {
     fn speaker_names_apply_live_to_both_subtitle_text_modes() {
         let mut ui = ui_with_view(StateView::default());
         ui.subtitle_mode = SubtitleMode::Intermixed;
-        ui.push_subtitle(65_000, 200, "Hello".into(), Some("Frieren".into()));
+        ui.push_subtitle(65_000, 200, "Hello".into(), SpeakerName::new("Frieren"));
 
         let line = ui
             .merged_chat(&ui.snapshot.view)

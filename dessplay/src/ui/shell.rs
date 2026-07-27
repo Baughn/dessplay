@@ -25,7 +25,7 @@ pub enum UiInput {
         text: String,
         /// The ASS speaker/actor, if any (used for optional name display and
         /// to color the line in separate-pane mode).
-        speaker: Option<String>,
+        speaker: Option<crate::player::SpeakerName>,
         /// In-video position when the cue appeared (milliseconds).
         video_millis: u64,
         /// Wall-clock arrival on the shared clock (milliseconds).

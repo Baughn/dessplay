@@ -38,6 +38,7 @@ use crate::actors::file::{
 };
 use crate::actors::player::{DRIFT_HARD_SEEK_MILLIS, PlayerCommand, PlayerOutput};
 use crate::actors::sync::Mutation;
+use crate::player::SpeakerName;
 
 /// A subtitle line bound for the UI. `video_millis` is the in-video
 /// position (the displayed MM:SS timestamp); `arrival_millis` is the
@@ -49,7 +50,7 @@ pub struct SubtitleLine {
     pub text: String,
     /// The ASS speaker/actor, if the cue carried one (used for optional name
     /// display and to color the line in separate-pane mode).
-    pub speaker: Option<String>,
+    pub speaker: Option<SpeakerName>,
     /// In-video position when the cue appeared (milliseconds).
     pub video_millis: u64,
     /// Wall-clock arrival on the shared clock (milliseconds).
@@ -112,7 +113,7 @@ pub enum Directive {
         text: String,
         /// The ASS speaker/actor, if any (used for optional name display and
         /// to color the line).
-        speaker: Option<String>,
+        speaker: Option<SpeakerName>,
         /// In-video position when the cue appeared (milliseconds).
         video_millis: u64,
     },

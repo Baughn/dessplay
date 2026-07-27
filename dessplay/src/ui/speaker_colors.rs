@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::theme::SPEAKER_WINDOW_MILLIS;
 
+use crate::player::SpeakerName;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ActiveSpeaker {
     last_seen: u64,
@@ -25,9 +27,9 @@ impl SpeakerColors {
     /// Observe a cue and return its stable color slot, when it names a
     /// speaker. The cue arrival clock is explicit so tests remain fully
     /// deterministic. Backward clock corrections never rewind the window.
-    pub fn observe(&mut self, speaker: Option<&str>, arrival_millis: u64) -> Option<usize> {
+    pub fn observe(&mut self, speaker: Option<&SpeakerName>, arrival_millis: u64) -> Option<usize> {
         self.advance(arrival_millis);
-        let speaker = speaker.filter(|name| !name.is_empty())?;
+        let speaker: &str = speaker?;
         if let Some(active) = self.active.get_mut(speaker) {
             active.last_seen = self.now;
             return Some(active.slot);
@@ -74,22 +76,37 @@ mod tests {
     #[test]
     fn slots_are_stable_and_distinct_while_active() {
         let mut colors = SpeakerColors::default();
-        assert_eq!(colors.observe(Some("Frieren"), 10), Some(0));
-        assert_eq!(colors.observe(Some("Fern"), 20), Some(1));
-        assert_eq!(colors.observe(Some("Frieren"), 30), Some(0));
+        assert_eq!(
+            colors.observe(SpeakerName::new("Frieren").as_ref(), 10),
+            Some(0)
+        );
+        assert_eq!(
+            colors.observe(SpeakerName::new("Fern").as_ref(), 20),
+            Some(1)
+        );
+        assert_eq!(
+            colors.observe(SpeakerName::new("Frieren").as_ref(), 30),
+            Some(0)
+        );
         assert_eq!(colors.len(), 2);
     }
 
     #[test]
     fn five_minute_boundary_is_inclusive_then_slot_is_reused() {
         let mut colors = SpeakerColors::default();
-        assert_eq!(colors.observe(Some("old"), 1_000), Some(0));
+        assert_eq!(
+            colors.observe(SpeakerName::new("old").as_ref(), 1_000),
+            Some(0)
+        );
         colors.advance(1_000 + SPEAKER_WINDOW_MILLIS);
         assert_eq!(colors.len(), 1, "exactly five minutes is still active");
         colors.advance(1_001 + SPEAKER_WINDOW_MILLIS);
         assert_eq!(colors.len(), 0);
         assert_eq!(
-            colors.observe(Some("new"), 1_002 + SPEAKER_WINDOW_MILLIS),
+            colors.observe(
+                SpeakerName::new("new").as_ref(),
+                1_002 + SPEAKER_WINDOW_MILLIS
+            ),
             Some(0)
         );
     }
@@ -97,8 +114,11 @@ mod tests {
     #[test]
     fn repeat_refreshes_the_lease() {
         let mut colors = SpeakerColors::default();
-        colors.observe(Some("Frieren"), 0);
-        colors.observe(Some("Frieren"), SPEAKER_WINDOW_MILLIS - 1);
+        colors.observe(SpeakerName::new("Frieren").as_ref(), 0);
+        colors.observe(
+            SpeakerName::new("Frieren").as_ref(),
+            SPEAKER_WINDOW_MILLIS - 1,
+        );
         colors.advance(SPEAKER_WINDOW_MILLIS + 1);
         assert_eq!(colors.len(), 1);
         colors.advance(2 * SPEAKER_WINDOW_MILLIS);
@@ -108,7 +128,7 @@ mod tests {
     #[test]
     fn unnamed_cues_advance_time_without_consuming_a_slot() {
         let mut colors = SpeakerColors::default();
-        colors.observe(Some("old"), 0);
+        colors.observe(SpeakerName::new("old").as_ref(), 0);
         assert_eq!(colors.observe(None, SPEAKER_WINDOW_MILLIS + 1), None);
         assert_eq!(colors.len(), 0);
     }
@@ -116,7 +136,7 @@ mod tests {
     #[test]
     fn backwards_arrival_does_not_rewind_or_resurrect() {
         let mut colors = SpeakerColors::default();
-        colors.observe(Some("old"), 0);
+        colors.observe(SpeakerName::new("old").as_ref(), 0);
         colors.advance(SPEAKER_WINDOW_MILLIS + 1);
         assert_eq!(colors.len(), 0);
         colors.observe(None, 1);
@@ -124,7 +144,7 @@ mod tests {
 
         // A genuinely new cue with a corrected-backward timestamp is an
         // observation *now*, not an already-expired lease.
-        assert_eq!(colors.observe(Some("new"), 1), Some(0));
+        assert_eq!(colors.observe(SpeakerName::new("new").as_ref(), 1), Some(0));
         assert_eq!(colors.len(), 1);
     }
 }
