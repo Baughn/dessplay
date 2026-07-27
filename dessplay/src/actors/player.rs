@@ -186,7 +186,7 @@ pub enum PlayerOutput {
         text: String,
         /// The ASS `Name`/actor field, if the cue carried one (never
         /// displayed — used only to color the line).
-        speaker: Option<String>,
+        speaker: Option<crate::player::SpeakerName>,
         /// In-video position when the cue appeared (milliseconds); the
         /// displayed timestamp. `0` before the first position sample.
         position_millis: u64,
@@ -1073,6 +1073,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::player::SpeakerName;
     use crate::player::mock::{MockCommand, MockControl, MockFactory, MockPlayer};
 
     const FILE: Ed2kHash = Ed2kHash([7; 16]);
@@ -2307,7 +2308,7 @@ mod tests {
             .events
             .send(PlayerEvent::SubtitleLine {
                 text: "こんにちは".into(),
-                speaker: Some("Frieren".into()),
+                speaker: SpeakerName::new("Frieren"),
             })
             .unwrap();
         // The in-video position is attached from the actor's estimate;
@@ -2317,7 +2318,7 @@ mod tests {
             expect_output(&mut outputs).await,
             PlayerOutput::SubtitleLine {
                 text: "こんにちは".into(),
-                speaker: Some("Frieren".into()),
+                speaker: SpeakerName::new("Frieren"),
                 position_millis: 10_000,
             }
         );

@@ -1064,7 +1064,7 @@ mod tests {
     fn ring(seq: u64, speaker: Option<&str>, text: &str) -> crate::advisor::RingLine {
         crate::advisor::RingLine {
             seq,
-            speaker: speaker.map(str::to_string),
+            speaker: speaker.and_then(crate::player::SpeakerName::new),
             text: text.into(),
         }
     }

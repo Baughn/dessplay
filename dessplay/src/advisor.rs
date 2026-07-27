@@ -20,6 +20,7 @@ use std::time::Duration;
 use dessplay_core::StateView;
 use tokio::sync::mpsc;
 
+use crate::player::SpeakerName;
 use crate::session::SubtitleLine;
 use crate::ui::props::{self, HealthLevel, HealthSample, LinkStatus};
 
@@ -65,7 +66,7 @@ pub struct RingLine {
     pub seq: u64,
     /// The ASS speaker/actor, if the cue carried one. Tracks the latest
     /// speaker across in-place growth, like the UI's subtitle log.
-    pub speaker: Option<String>,
+    pub speaker: Option<SpeakerName>,
     /// The collapsed subtitle text (newlines already flattened).
     pub text: String,
 }
@@ -546,7 +547,7 @@ mod tests {
         let mut advisor = Advisor::default();
         let line = |speaker: Option<&str>, text: &str| SubtitleLine {
             text: text.into(),
-            speaker: speaker.map(str::to_string),
+            speaker: speaker.and_then(SpeakerName::new),
             video_millis: 0,
             arrival_millis: 0,
         };
