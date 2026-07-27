@@ -1,8 +1,10 @@
 //! QUIC implementations of the transport traits, via quinn.
 //!
-//! Both sides share one `TransportConfig`: 10s keep-alives, 30s idle
-//! timeout (the Lost threshold), flow-control windows sized for bulk
-//! file transfer rather than request/response, and datagrams enabled.
+//! Both sides share one `TransportConfig`: BBR congestion control (the
+//! anti-bufferbloat choice — see `shared_transport_config`), 10s
+//! keep-alives, 30s idle timeout (the Lost threshold), flow-control
+//! windows sized for bulk file transfer rather than request/response,
+//! and datagrams enabled.
 //! The control stream is the first bidirectional stream, opened by the
 //! client immediately after the handshake and prioritized above
 //! transfer streams.
@@ -58,6 +60,15 @@ pub const CONNECTION_RECEIVE_WINDOW: u64 = 64 * 1024 * 1024;
 
 fn shared_transport_config() -> quinn::TransportConfig {
     let mut config = quinn::TransportConfig::default();
+    // BBR, not the default loss-based Cubic: the bottleneck is a home
+    // uplink with deep, AQM-less buffers (Starlink-class), where Cubic
+    // fills the queue until loss — approximately never — and the
+    // standing queue becomes the path RTT for *everything* on it
+    // (2026-07-28: ~25s probe RTT while serving over the relay). BBR
+    // paces to the estimated bottleneck bandwidth and bounds in-flight
+    // to ~a couple of BDPs. quinn marks it experimental; the proven
+    // alternative is the proven cause.
+    config.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     config.keep_alive_interval(Some(KEEP_ALIVE));
     if let Ok(timeout) = quinn::IdleTimeout::try_from(IDLE_TIMEOUT) {
         config.max_idle_timeout(Some(timeout));
