@@ -153,7 +153,12 @@ pub fn users_props(
                 let state = derive::user_state(view, &peer.username);
                 let avail = availability(view, &peer.username);
                 let downloading = match avail {
-                    Some(FileAvailability::Downloading { progress_bps }) => Some(progress_bps),
+                    Some(FileAvailability::Downloading { progress_bps }) => {
+                        Some((progress_bps, false))
+                    }
+                    Some(FileAvailability::DownloadingPlayable { progress_bps }) => {
+                        Some((progress_bps, true))
+                    }
                     _ => None,
                 };
                 // An in-progress download is *always* shown (design.md
@@ -167,15 +172,18 @@ pub fn users_props(
                 // per-series distinction lives in the playlist watch tag,
                 // not here): both gate on their file state while present.
                 let (label, tone) = match (downloading, &state) {
-                    (Some(bps), DerivedUserState::Ready | DerivedUserState::Maybe) => {
+                    (Some((bps, playable)), DerivedUserState::Ready | DerivedUserState::Maybe) => {
                         let label = format!("downloading {}%", bps / 100);
-                        if bps >= 2_000 {
+                        // Green once the downloader says it can play from
+                        // here (the synced playable verdict — the same
+                        // signal gating uses), blue while still fetching.
+                        if playable {
                             (label, Tone::Good)
                         } else {
                             (label, Tone::Transfer)
                         }
                     }
-                    (Some(bps), _) => (format!("downloading {}%", bps / 100), Tone::Blocked),
+                    (Some((bps, _)), _) => (format!("downloading {}%", bps / 100), Tone::Blocked),
                     (None, DerivedUserState::Paused) => ("paused".to_string(), Tone::Paused),
                     (None, DerivedUserState::Away { set_by }) => {
                         (format!("away, set by {set_by}"), Tone::Idle)
@@ -257,6 +265,11 @@ pub struct PlaylistRow {
     /// The local copy lives only in the download cache, not a media root
     /// (drives the dim "temporary" marker and gates the archive action).
     pub temporary: bool,
+    /// Our own in-flight download of this entry, as progress basis
+    /// points — downloads mostly happen in the background (prefetch), so
+    /// the playlist is where their progress is visible without selecting
+    /// the file. `None` once complete (Ready) or when not downloading.
+    pub download: Option<u16>,
     /// The local user's effective watch state for this entry's series,
     /// always shown as a right-aligned tag. Maybe is the default.
     pub watch: SeriesWatchState,
@@ -283,8 +296,18 @@ pub fn playlist_props(
     let mut props = PlaylistProps::default();
     for (index, entry) in view.playlist.iter().enumerate() {
         let is_now = view.now_playing == Some(entry.hash);
-        let missing = view.file_availability.get(&(me.clone(), entry.hash))
-            == Some(&FileAvailability::Missing);
+        let avail = view
+            .file_availability
+            .get(&(me.clone(), entry.hash))
+            .copied();
+        let missing = avail == Some(FileAvailability::Missing);
+        let download = match avail {
+            Some(
+                FileAvailability::Downloading { progress_bps }
+                | FileAvailability::DownloadingPlayable { progress_bps },
+            ) => Some(progress_bps),
+            _ => None,
+        };
         let watched = view.watched.get(&entry.hash) == Some(&true);
         let temporary = cache_hashes.contains(&entry.hash) && !missing;
         let tone = if missing {
@@ -305,6 +328,7 @@ pub fn playlist_props(
             tone,
             is_now,
             temporary,
+            download,
             watch: derive::series_watch_for_file(view, me, entry.hash),
         });
     }
@@ -2122,11 +2146,21 @@ mod tests {
             hash(1),
             FileAvailability::Missing,
         );
+        state.set_file_availability(
+            A,
+            ts(6),
+            UserId::new("buffered"),
+            hash(1),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 3_500,
+            },
+        );
         let peers = [
             peer("kim", Role::Interactive, Presence::Present),
             peer("paused", Role::Interactive, Presence::Present),
             peer("afk", Role::Interactive, Presence::Present),
             peer("downloader", Role::Interactive, Presence::Present),
+            peer("buffered", Role::Interactive, Presence::Present),
             peer("lacking", Role::Interactive, Presence::Present),
             peer("ghost", Role::Interactive, Presence::Lost),
             peer("gone", Role::Interactive, Presence::Departed),
@@ -2148,6 +2182,10 @@ mod tests {
         assert_eq!(by_name["afk"].tone, Tone::Idle);
         assert_eq!(by_name["downloader"].label, "downloading 15%");
         assert_eq!(by_name["downloader"].tone, Tone::Transfer);
+        // A playable downloader reads green: the holder's own synced
+        // verdict (the same signal gating uses), not a raw percentage.
+        assert_eq!(by_name["buffered"].label, "downloading 35%");
+        assert_eq!(by_name["buffered"].tone, Tone::Good);
         assert_eq!(by_name["lacking"].tone, Tone::Blocked);
         assert_eq!(by_name["ghost"].label, "lost");
         assert_eq!(
@@ -2382,6 +2420,49 @@ mod tests {
         assert_eq!(
             props.rows.iter().map(|r| r.tone).collect::<Vec<_>>(),
             vec![Tone::Muted, Tone::Good, Tone::Blocked]
+        );
+    }
+
+    #[test]
+    fn playlist_rows_show_own_download_progress() {
+        // Background downloads (prefetch included) surface their
+        // percentage on the playlist row — playable or not — and only
+        // *our* downloads count; a peer's never marks our playlist.
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+        state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
+        state.push_playlist_entry(A, ts(3), entry(3, "ep3.mkv"));
+        state.set_file_availability(
+            A,
+            ts(4),
+            UserId::new("kim"),
+            hash(1),
+            FileAvailability::Downloading {
+                progress_bps: 1_500,
+            },
+        );
+        state.set_file_availability(
+            A,
+            ts(5),
+            UserId::new("kim"),
+            hash(2),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 4_200,
+            },
+        );
+        state.set_file_availability(
+            A,
+            ts(6),
+            UserId::new("baughn"),
+            hash(3),
+            FileAvailability::Downloading {
+                progress_bps: 9_000,
+            },
+        );
+        let props = playlist_props(&state.view(), &UserId::new("kim"), &BTreeSet::new());
+        assert_eq!(
+            props.rows.iter().map(|r| r.download).collect::<Vec<_>>(),
+            vec![Some(1_500), Some(4_200), None]
         );
     }
 

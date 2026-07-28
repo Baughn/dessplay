@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-07-26
+Last updated: 2026-07-28
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -470,10 +470,23 @@ NotWatching -- it does not block.
 
 `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>, ActorId>`.
 
-`FileAvailability` is `Ready | Missing | Downloading { progress_bps: u16 }`
-(basis points 0–10000, avoids float Eq/Ord issues). Each user
-writes their own availability for each file. This determines the file state
-column in the UI and whether the user blocks playback.
+`FileAvailability` is `Ready | Missing | Downloading { progress_bps: u16 }
+| DownloadingPlayable { progress_bps: u16 }` (basis points 0–10000, avoids
+float Eq/Ord issues). Each user writes their own availability for each
+file. This determines the file state column in the UI and whether the user
+blocks playback.
+
+The downloading split carries the holder's own **playable verdict**: the
+downloading client — the only party holding both the chunk bitmap and its
+player position — advertises `DownloadingPlayable` when every chunk in the
+20% window ahead of its playback position is verified, and `Downloading`
+otherwise. Gating then needs no arithmetic: `Downloading` blocks,
+`DownloadingPlayable` doesn't (design.md, File State). The
+`DownloadingPlayable` variant is **appended** after `Downloading` and the
+variants are never reordered: postcard encodes the variant index, so
+appending is what keeps pre-v10 snapshot bodies decodable by the current
+type. A torrent download only ever writes `Downloading` (pieces arrive out
+of order — complete-only playability).
 
 ### Lookup Requests
 
@@ -815,15 +828,18 @@ for storage because *blobs outlive deployments*; connections don't.
 
 - **Tagged, current version**: decode the body as the current layout.
 - **Tagged, layout-compatible older version**
-  (`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`, today v7 and v8): decode as
+  (`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`, today v7–v9): decode as
   the current layout, flagged (`migrated = true`). This is the explicit
-  arm for protocol bumps that changed only *wire* messages: v7 → v9
-  (the DSCP connection split and per-transfer streams, 2026-07-28)
-  never touched a replicated value type, so the postcard body is
-  byte-identical. Every entry in the list is a per-change assertion
-  ("I checked the diff; the body did not move"), not a default — a
-  bump that *does* reshape state must not be added there, and gets a
-  frozen-layout decode arm instead. Caught in the field the same day:
+  arm for protocol bumps whose old bodies the current type still
+  decodes: v7 → v9 (the DSCP connection split and per-transfer streams,
+  2026-07-28) changed only *wire* messages, and v9 → v10 only
+  **appended** the `FileAvailability::DownloadingPlayable` enum variant
+  (postcard encodes variant indices, so a v9 body — which can only
+  contain the older variants — decodes unchanged). Every entry in the
+  list is a per-change assertion ("I checked the diff; the current type
+  decodes the old body"), not a default — a bump that *does* reshape
+  existing state must not be added there, and gets a frozen-layout
+  decode arm instead. Caught in the field the same day:
   the server refused to start on its own v7-tagged authoritative
   snapshot after the bump, exactly as designed, and this arm is the
   deliberate migration the policy demands.

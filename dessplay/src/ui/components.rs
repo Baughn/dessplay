@@ -963,6 +963,9 @@ impl PlaylistPane {
             dessplay_core::types::SeriesWatchState::NotWatching => "not watching",
         };
         let show_temp = self.props.rows.iter().any(|row| row.temporary);
+        // Our own background downloads surface here: a percentage column,
+        // reserved only while something is actually downloading.
+        let show_download = self.props.rows.iter().any(|row| row.download.is_some());
         let watch_width = self
             .props
             .rows
@@ -979,6 +982,18 @@ impl PlaylistPane {
                 let style = theme::tone_style(row.tone);
                 let flex = vec![Span::styled(format!("{marker}{}", row.title), style)];
                 let mut cells = Vec::new();
+                if show_download {
+                    let text = row
+                        .download
+                        .map(|bps| format!("{}%", bps / 100))
+                        .unwrap_or_default();
+                    cells.push(Cell::new(
+                        text,
+                        theme::tone_style(Tone::Transfer),
+                        4,
+                        Align::Right,
+                    ));
+                }
                 if show_temp {
                     let text = if row.temporary { "temp" } else { "" };
                     cells.push(Cell::new(text, theme::dim(), 4, Align::Left));
@@ -2088,6 +2103,7 @@ mod playlist_pane_tests {
             tone: Tone::Normal,
             is_now: false,
             temporary: false,
+            download: None,
             watch: dessplay_core::types::SeriesWatchState::Maybe,
         }
     }

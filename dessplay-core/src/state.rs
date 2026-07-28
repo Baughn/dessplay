@@ -351,9 +351,13 @@ impl CrdtState {
     /// migration decision (the refuse-to-guess policy's explicit decode
     /// arm): v7 → v9 changed only wire messages — the DSCP transfer-
     /// connection split (v8) and per-transfer data streams (v9) — never
-    /// a replicated value type or `CrdtState` itself. Every entry here
-    /// asserts "I checked the diff; the postcard body did not move."
-    const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 2] = [7, 8];
+    /// a replicated value type or `CrdtState` itself, and v10 only
+    /// **appended** the `FileAvailability::DownloadingPlayable` variant
+    /// (postcard encodes the variant index, so every v9 body — which can
+    /// only contain the older variants — still decodes with the current
+    /// type). Every entry here asserts "I checked the diff; the current
+    /// type decodes the old postcard body unchanged."
+    const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 3] = [7, 8, 9];
 
     /// [`decode_snapshot`](Self::decode_snapshot), also reporting whether
     /// a **migration** was used (`true` = the blob was written by an

@@ -120,18 +120,21 @@ pub fn user_state(view: &StateView, user: &UserId) -> DerivedUserState {
 ///
 /// An *unreported* availability permits: until the file actor (Phase 9)
 /// writes `Missing` promptly on a failed match, blocking on absence-of-
-/// data would deadlock every session. `Downloading` permits at >= 20%;
-/// the design's "download speed exceeds bitrate" half of the rule is
-/// only knowable by the downloading client and arrives with the
-/// transfer machinery in Phase 9.
+/// data would deadlock every session. The downloading split is decided
+/// at the source: the downloading client advertises `Downloading`
+/// (a chunk is missing within the 20% window ahead of its playback
+/// position — blocks) or `DownloadingPlayable` (the window is verified —
+/// permits), because only it holds the chunk bitmap and its own player
+/// position. The design's "download speed exceeds bitrate" half of the
+/// rule remains deferred (design.md, Future Plans).
 fn file_block_reason(view: &StateView, user: &UserId) -> Option<BlockReason> {
     let file = view.now_playing?;
     match view.file_availability.get(&(user.clone(), file)) {
-        None | Some(FileAvailability::Ready) => None,
+        None
+        | Some(FileAvailability::Ready)
+        | Some(FileAvailability::DownloadingPlayable { .. }) => None,
         Some(FileAvailability::Missing) => Some(BlockReason::FileMissing),
-        Some(FileAvailability::Downloading { progress_bps }) => {
-            (*progress_bps < 2_000).then_some(BlockReason::Downloading)
-        }
+        Some(FileAvailability::Downloading { .. }) => Some(BlockReason::Downloading),
     }
 }
 
@@ -575,16 +578,18 @@ mod tests {
                 Some(FileAvailability::Missing),
                 Some(BlockReason::FileMissing),
             ),
+            // The downloading split is the *holder's* judgment (only it
+            // knows its chunk bitmap and player position): Downloading
+            // always blocks, DownloadingPlayable never does — regardless
+            // of the display-only progress figure.
             (
                 Some(FileAvailability::Downloading {
-                    progress_bps: 1_999,
+                    progress_bps: 9_900,
                 }),
                 Some(BlockReason::Downloading),
             ),
             (
-                Some(FileAvailability::Downloading {
-                    progress_bps: 2_000,
-                }),
+                Some(FileAvailability::DownloadingPlayable { progress_bps: 500 }),
                 None,
             ),
         ];

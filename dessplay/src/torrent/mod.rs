@@ -61,14 +61,6 @@ impl Default for TorrentFetchConfig {
     }
 }
 
-/// Progress reported for an incomplete torrent is capped just below the
-/// 20% threshold `derive::file_block_reason` unpauses at: torrent pieces
-/// arrive out of order, so a partial torrent file is *never* playable —
-/// the UI honestly shows "downloading N%" up to 19%, then flips straight
-/// to Ready once the payload is complete and ed2k-verified (design.md,
-/// BitTorrent Downloads: complete-only playability).
-pub const PROGRESS_CAP_BPS: u16 = 1_999;
-
 /// What the policy wants the actor to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TorrentFetchAction {
@@ -109,11 +101,16 @@ pub enum TorrentFetchAction {
         /// Playback chunk anchor.
         play_chunk: u32,
     },
-    /// Download progress changed (already capped at [`PROGRESS_CAP_BPS`]).
+    /// Download progress changed. Honest and uncapped: torrent pieces
+    /// arrive out of order, so a partial torrent is *never* playable —
+    /// the file actor writes it as the non-playable `Downloading`
+    /// availability at any percentage, and the entry flips straight to
+    /// Ready once the payload completes and ed2k-verifies (design.md,
+    /// BitTorrent Downloads: complete-only playability).
     Progress {
         /// The file.
         file: Ed2kHash,
-        /// Downloaded fraction, basis points, capped.
+        /// Downloaded fraction, basis points.
         progress_bps: u16,
     },
 }
@@ -318,7 +315,7 @@ impl TorrentFetches {
             .saturating_mul(10_000)
             .checked_div(size_bytes)
             .unwrap_or(0)
-            .min(u64::from(PROGRESS_CAP_BPS)) as u16;
+            .min(10_000) as u16;
         if *last_emitted_bps == Some(bps) {
             return vec![];
         }
@@ -593,20 +590,22 @@ mod tests {
     }
 
     #[test]
-    fn match_adds_torrent_and_progress_is_capped() {
+    fn match_adds_torrent_and_progress_is_honest() {
         let mut t = TorrentFetches::new(config());
         let f = hash(1);
         start(&mut t, f, vec![], 0);
         let actions = t.on_searched(f, Some(a_match("aa")), 10);
         assert!(matches!(&actions[..], [TorrentFetchAction::Add { .. }]));
         assert_eq!(t.running_info_hash(&f), Some("aa"));
-        // 50% downloaded reports the cap, not 5_000.
+        // 50% downloaded reports 50% — playability is carried by the
+        // availability *variant* (always non-playable for a torrent),
+        // not by capping the display figure.
         let actions = t.on_progress(f, 500_000, 20);
         assert_eq!(
             actions,
             vec![TorrentFetchAction::Progress {
                 file: f,
-                progress_bps: PROGRESS_CAP_BPS,
+                progress_bps: 5_000,
             }]
         );
         // Unchanged progress is not re-emitted.

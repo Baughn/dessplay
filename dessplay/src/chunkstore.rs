@@ -265,7 +265,31 @@ impl ChunkStore {
             .filter(|&i| !self.written.get(i) && !self.verified[block_of_chunk(i) as usize])
             .collect()
     }
+
+    /// True iff playback anchored at `play_chunk` can proceed: every
+    /// chunk within the 20% window ahead of the anchor
+    /// ([`PLAYABLE_WINDOW_FRAC`], the same window the request scheduler
+    /// fills first) belongs to a verified block. Chunks *behind* the
+    /// anchor are ignored — playback has passed them (or a seek skipped
+    /// them), and the 20% buffer exists to absorb variable bitrate, not
+    /// to re-demand history. The window clamps at the file end, so the
+    /// tail of a file is playable once everything from the anchor to EOF
+    /// is verified. Drives the `Downloading` vs `DownloadingPlayable`
+    /// availability split (design.md, File State).
+    pub fn playable_from(&self, play_chunk: u32) -> bool {
+        let window = self.chunks / PLAYABLE_WINDOW_FRAC + 1;
+        let start = play_chunk.min(self.chunks);
+        let end = play_chunk.saturating_add(window).min(self.chunks);
+        (start..end).all(|i| self.verified[block_of_chunk(i) as usize])
+    }
 }
+
+/// Sequential/playable window ahead of the playback anchor, as a fraction
+/// of total chunks: 1/5 = the design's 20% buffer. Shared by
+/// [`ChunkStore::playable_from`] and the download scheduler's
+/// request-ordering window so "what we fetch first" and "what unblocks
+/// playback" can never drift apart.
+pub const PLAYABLE_WINDOW_FRAC: u32 = 5;
 
 #[cfg(test)]
 mod tests {
@@ -437,5 +461,61 @@ mod tests {
         // Block 0's chunks are NOT re-needed.
         let needed = resumed.needed_chunks();
         assert!(!needed.contains(&0));
+    }
+
+    /// Write and verify only the given blocks of `bytes` into a fresh
+    /// store (the rest stays absent).
+    fn fill_blocks(path: &Path, bytes: &[u8], blocks: &[u32]) -> ChunkStore {
+        let size = bytes.len() as u64;
+        let full = ed2k_hash_bytes(bytes);
+        let mut store = ChunkStore::create(path, size).unwrap();
+        for &b in blocks {
+            for i in chunks_in_block(b, store.chunk_count()) {
+                let r = chunk_range(i, size);
+                store
+                    .write_chunk(i, &bytes[r.start as usize..r.end as usize])
+                    .unwrap();
+            }
+        }
+        store.verify(&full.blocks).unwrap();
+        store
+    }
+
+    #[test]
+    fn playable_window_gates_on_gaps_ahead_only() {
+        let dir = tempfile::tempdir().unwrap();
+        // 7 blocks; blocks 0–1 and 3–6 verified, block 2 is the gap.
+        let bytes = data(6 * ED2K_BLOCK_SIZE as usize + 5000);
+        let path = dir.path().join("dl.bin");
+        let store = fill_blocks(&path, &bytes, &[0, 1, 3, 4, 5, 6]);
+        let chunks = store.chunk_count();
+        let window = chunks / PLAYABLE_WINDOW_FRAC + 1;
+        // The scenario needs the 20% window to span more than one block
+        // but fewer than two, so the assertions below exercise both
+        // "window fits before the gap" and "window hits the gap".
+        assert!(window > CPB && window < 2 * CPB, "window = {window}");
+
+        // From the start the window covers blocks 0–1 only: playable.
+        assert!(store.playable_from(0));
+        // Anchored at block 1 the window reaches into unverified block 2.
+        assert!(!store.playable_from(CPB));
+        // Anchored at block 3, the gap at block 2 is *behind*: playable
+        // (a seek past a gap must not gate on history).
+        assert!(store.playable_from(3 * CPB));
+        // Near the end the window clamps at EOF: everything from the
+        // anchor to the last byte is verified, so the tail is playable.
+        assert!(store.playable_from(chunks - 3));
+        // Anchor past the end degenerates to an empty window.
+        assert!(store.playable_from(chunks + 10));
+    }
+
+    #[test]
+    fn written_but_unverified_chunks_are_not_playable() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = data(2 * ED2K_BLOCK_SIZE as usize + 5000);
+        let path = dir.path().join("dl.bin");
+        // Bytes on disk but never verified: playback must not trust them.
+        let store = fill(&path, &bytes);
+        assert!(!store.playable_from(0));
     }
 }

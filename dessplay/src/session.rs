@@ -260,6 +260,13 @@ pub struct PlayerWiring {
     /// is anomalous — `report_drift` warns once when this crosses
     /// [`DRIFT_PERSIST_SNAPSHOTS`]. Reset on convergence or unload.
     drift_high_snapshots: u32,
+    /// Our player's last file-attributed position sample, feeding the
+    /// download scheduler's playback anchor (`StartDownload.play_chunk`)
+    /// so the sequential window — and the playable check — track where
+    /// we actually are in the file. Tagged with the file so a stale
+    /// sample from a previous load anchors a different file at 0 rather
+    /// than somewhere bogus.
+    last_position: Option<(Ed2kHash, u64)>,
 }
 
 /// Fraction of a file's duration that counts as "watched" (design.md,
@@ -489,8 +496,16 @@ fn same_file_positions(
         .into_iter()
         .filter(|(_, presence)| *presence == dessplay_core::net::Presence::Present)
         .filter(|(user, _)| {
-            view.file_availability.get(&(user.clone(), now_playing))
-                == Some(&FileAvailability::Ready)
+            // Ready holders, plus downloaders whose window ahead is
+            // verified: a `DownloadingPlayable` peer is playing the real
+            // file (their partial is loaded), so their file-tagged
+            // position is as trustworthy as a Ready holder's — and when
+            // the whole group is downloading a fresh episode, they are
+            // the only leaders there are.
+            matches!(
+                view.file_availability.get(&(user.clone(), now_playing)),
+                Some(FileAvailability::Ready) | Some(FileAvailability::DownloadingPlayable { .. })
+            )
         })
         .filter_map(|(user, _)| view.playback_position.get(&user).map(|p| (user, *p)))
         .filter(|(_, p)| p.file == now_playing)
@@ -594,6 +609,7 @@ impl PlayerWiring {
             narrator: None,
             auto_download: true,
             drift_high_snapshots: 0,
+            last_position: None,
         }
     }
 
@@ -975,12 +991,38 @@ impl PlayerWiring {
                 size_bytes,
                 filename,
                 sources,
-                // Sequential from the start; seek-aware windowing is
-                // future work (downloads still prioritise early chunks).
-                play_chunk: 0,
+                play_chunk: self.play_anchor_chunk(view, file, size_bytes),
             });
         }
         out
+    }
+
+    /// The chunk our playback is at within `file`, anchoring the download
+    /// scheduler's sequential window and the playable check. Only our own
+    /// player's file-attributed position counts; a file we aren't playing
+    /// (a prefetch, or now-playing before the partial load) anchors at 0.
+    /// Time maps to bytes proportionally — deliberately approximate, the
+    /// 20% window exists to absorb variable bitrate (design.md, File
+    /// State).
+    fn play_anchor_chunk(&self, view: &StateView, file: Ed2kHash, size_bytes: u64) -> u32 {
+        let Some((position_file, position_millis)) = self.last_position else {
+            return 0;
+        };
+        if position_file != file || size_bytes == 0 {
+            return 0;
+        }
+        let duration = view
+            .playlist
+            .iter()
+            .find(|e| e.hash == file)
+            .and_then(|e| e.state.duration_millis)
+            .filter(|&d| d > 0);
+        let Some(duration) = duration else {
+            return 0;
+        };
+        let frac = (position_millis as f64 / duration as f64).clamp(0.0, 1.0);
+        let byte = (frac * size_bytes as f64) as u64;
+        (byte / dessplay_core::net::CHUNK_SIZE) as u32
     }
 
     /// Build a cache-eviction pass from the synced view. Protected =
@@ -1605,6 +1647,41 @@ impl PlayerWiring {
         out
     }
 
+    /// An in-flight peer download of `file` became playable (the 20%
+    /// window ahead of our playback anchor is verified): load the partial
+    /// file into the player if it is the now-playing file and nothing is
+    /// loaded for it yet. This is what actually starts playback for a
+    /// downloading user when the group unpauses at 20% — without it the
+    /// gate opened while this player still showed the placeholder,
+    /// leaving them behind. The partial assembles in place at its final
+    /// cache path, so the later completion needs no reload; `loaded` is
+    /// set, so positions publish and EOF reports exactly as for a
+    /// verified copy (every byte behind the window is ed2k-verified).
+    /// Idempotent: re-emitted playable edges for a loaded file are no-ops.
+    pub fn on_download_playable(
+        &mut self,
+        file: Ed2kHash,
+        path: PathBuf,
+        view: &StateView,
+        peers: &[PeerInfo],
+    ) -> Vec<Directive> {
+        if view.now_playing != Some(file) || self.loaded == Some(file) {
+            return vec![];
+        }
+        tracing::info!(%file, "download playable; loading the partial file");
+        self.loaded = Some(file);
+        vec![
+            Directive::Player(PlayerCommand::Load {
+                file,
+                path,
+                title: playlist_title(view, file),
+            }),
+            Directive::Player(PlayerCommand::SetPlaying(derive::playback_active(
+                view, peers,
+            ))),
+        ]
+    }
+
     /// Decide whether a file the user loaded directly into the player
     /// (drag-and-drop) should be adopted to clear a Missing now-playing
     /// file. We adopt only when we do **not** already hold the real video
@@ -1712,6 +1789,7 @@ impl PlayerWiring {
                 if !self.speaks_for_now_playing(view, file) {
                     vec![]
                 } else {
+                    self.last_position = Some((file, position_millis));
                     let mut out = vec![Directive::Mutate(Mutation::SetPlaybackPosition {
                         position_millis,
                         file,
@@ -2385,10 +2463,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             }
             FileOutput::PlaceholderReady { file, path } => {
                 // Show the placeholder only if it's still the
-                // now-playing file. This is a direct Load that does not
+                // now-playing file — and we don't already hold the real
+                // video for it (a partial download can become playable
+                // and load while the placeholder renders; it must not be
+                // painted over). This is a direct Load that does not
                 // touch the wiring's `loaded` state, so the real video
                 // still loads if the file later becomes available.
-                if view.now_playing == Some(file) {
+                if view.now_playing == Some(file) && !self.wiring.holds_now_playing(view) {
                     let title = playlist_title(view, file);
                     self.execute(vec![Directive::Player(PlayerCommand::Load {
                         file,
@@ -2426,6 +2507,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 // A finished download is now a verified local copy:
                 // resolve it (loads now-playing if we were waiting).
                 let directives = self.wiring.note_local_file(file, path);
+                self.execute(directives).await;
+                FileEffect::None
+            }
+            FileOutput::DownloadPlayable { file, path } => {
+                // Enough of the file is verified to play from here: load
+                // the partial into the player if it's what we're waiting on.
+                let directives = self.wiring.on_download_playable(file, path, view, peers);
                 self.execute(directives).await;
                 FileEffect::None
             }
@@ -3630,6 +3718,165 @@ mod tests {
                 .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
             "verified now-playing must load"
         );
+    }
+
+    #[test]
+    fn playable_download_loads_the_partial_and_speaks_for_the_group() {
+        // Regression (design.md, File State): the group's gate opened once
+        // everyone reached 20%, but the downloading client never loaded
+        // the partial file — its player sat on the placeholder while the
+        // group played on without it.
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+
+        let out =
+            wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        let load = player_cmds(&out).into_iter().find_map(|cmd| match cmd {
+            PlayerCommand::Load { file, path, title } => Some((*file, path.clone(), title.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            load,
+            Some((
+                hash(1),
+                PathBuf::from("/cache/files/aa"),
+                Some("ep1.mkv".to_string())
+            )),
+            "a playable now-playing download must load the partial file"
+        );
+
+        // Re-emitted playable edges (the file actor re-offers ~1/s) are
+        // no-ops once loaded.
+        assert!(
+            wiring
+                .on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")])
+                .is_empty()
+        );
+
+        // Holding the playing partial counts as holding the real video:
+        // position ticks publish (every byte behind the window is
+        // ed2k-verified, so the sample is as trustworthy as a Ready
+        // holder's — and it feeds our own download anchor).
+        let out = wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 5_000,
+            },
+            &view,
+        );
+        assert!(
+            out.iter()
+                .any(|d| matches!(d, Directive::Mutate(Mutation::SetPlaybackPosition { .. }))),
+            "a partial-file player must publish positions: {out:?}"
+        );
+    }
+
+    #[test]
+    fn playable_download_for_a_non_now_playing_file_does_not_load() {
+        // A prefetch becoming playable must not clobber the player.
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        let out =
+            wiring.on_download_playable(hash(2), "/cache/files/bb".into(), &view, &[peer("kim")]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn download_anchor_follows_our_playback_position() {
+        let chunk = dessplay_core::net::CHUNK_SIZE;
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(
+            A,
+            ts(1),
+            NewPlaylistEntry {
+                hash: hash(1),
+                added_by: UserId::new("baughn"),
+                filename: "ep1.mkv".into(),
+                size_bytes: 1000 * chunk,
+                duration_millis: Some(1_000_000),
+            },
+        );
+        state.set_now_playing(A, ts(2), Some(hash(1)));
+        state.set_playback_intent(A, ts(3), dessplay_core::types::PlaybackIntent::Playing);
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+
+        let anchor = |directives: &[Directive]| {
+            directives.iter().find_map(|d| match d {
+                Directive::StartDownload {
+                    file, play_chunk, ..
+                } if *file == hash(1) => Some(*play_chunk),
+                _ => None,
+            })
+        };
+        // No position yet: anchored at the start.
+        assert_eq!(anchor(&wiring.on_state(&view, &[peer("kim")])), Some(0));
+
+        // The partial loads and playback reaches 50%: the anchor lands
+        // on the proportional chunk, so the sequential window (and the
+        // playable check) track where we actually are.
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 500_000,
+            },
+            &view,
+        );
+        assert_eq!(anchor(&wiring.on_state(&view, &[peer("kim")])), Some(500));
+    }
+
+    #[test]
+    fn downloading_playable_peer_is_a_valid_position_source() {
+        // A DownloadingPlayable peer is playing the real file, so their
+        // file-tagged position elects/validates like a Ready holder's —
+        // when the whole group is downloading a fresh episode they are
+        // the only leaders there are. A plain Downloading peer stays
+        // ineligible.
+        let mut state = playing_state();
+        let baughn = UserId::new("baughn");
+        state.set_file_availability(
+            A,
+            ts(5),
+            baughn.clone(),
+            hash(1),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 4_000,
+            },
+        );
+        state.set_playback_position(
+            A,
+            ts(6),
+            baughn.clone(),
+            dessplay_core::types::PlaybackPosition {
+                position_millis: 60_000,
+                timestamp: ts(6),
+                file: hash(1),
+            },
+        );
+        let peers = [peer("kim"), peer("baughn")];
+        let positions = same_file_positions(&state.view(), &peers);
+        assert_eq!(
+            positions.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>(),
+            vec![baughn.clone()]
+        );
+
+        // Downgraded to a plain (unplayable) Downloading: no longer a
+        // valid source.
+        state.set_file_availability(
+            A,
+            ts(7),
+            baughn,
+            hash(1),
+            FileAvailability::Downloading {
+                progress_bps: 4_000,
+            },
+        );
+        assert!(same_file_positions(&state.view(), &peers).is_empty());
     }
 
     #[test]

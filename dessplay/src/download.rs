@@ -111,13 +111,18 @@ pub enum DownloadAction {
         /// The message.
         message: PeerMessage,
     },
-    /// The download's verified progress changed (basis points). Throttled
-    /// into a `Downloading { progress_bps }` availability write upstream.
+    /// The download's verified progress or playability changed. Becomes a
+    /// `Downloading` / `DownloadingPlayable` availability write upstream
+    /// (progress-only changes throttled; a `playable` flip written at
+    /// once — it gates the whole group).
     Progress {
         /// The file.
         file: Ed2kHash,
         /// Verified fraction, basis points.
         progress_bps: u16,
+        /// Whether the 20% window ahead of the playback anchor is fully
+        /// verified ([`ChunkStore::playable_from`]).
+        playable: bool,
     },
     /// The file finished and verified at `path`.
     Complete {
@@ -226,6 +231,10 @@ struct Download {
     play_chunk: u32,
     stats: TransferStats,
     last_progress_bps: u16,
+    /// Last reported [`ChunkStore::playable_from`] verdict, so a flip is
+    /// reported even when the progress figure did not move (an anchor
+    /// change alone can flip it).
+    last_playable: bool,
 }
 
 /// The download manager: zero or more active downloads.
@@ -234,8 +243,10 @@ pub struct Downloads {
     files: HashMap<Ed2kHash, Download>,
 }
 
-/// Sequential window ahead of playback, as a fraction of total chunks.
-const SEQUENTIAL_WINDOW_FRAC: u32 = 5; // 1/5 = 20%
+/// Sequential window ahead of playback: the chunk store's playable
+/// window (1/5 = 20%), shared so the scheduler always fetches exactly
+/// the range whose absence gates playback.
+const SEQUENTIAL_WINDOW_FRAC: u32 = crate::chunkstore::PLAYABLE_WINDOW_FRAC;
 
 impl Downloads {
     /// A manager with the given tunables.
@@ -294,6 +305,7 @@ impl Downloads {
                     play_chunk,
                     stats: TransferStats::default(),
                     last_progress_bps: 0,
+                    last_playable: false,
                 },
             );
         }
@@ -690,13 +702,18 @@ impl Downloads {
             return actions;
         }
 
-        // Progress write on change.
+        // Progress write on change — of the verified fraction *or* of
+        // playability (the anchor from `set_sources` moves between
+        // verify passes, so either can change alone).
         let bps = d.store.progress_bps();
-        if bps != d.last_progress_bps {
+        let playable = d.store.playable_from(d.play_chunk);
+        if bps != d.last_progress_bps || playable != d.last_playable {
             d.last_progress_bps = bps;
+            d.last_playable = playable;
             actions.push(DownloadAction::Progress {
                 file,
                 progress_bps: bps,
+                playable,
             });
         }
 
@@ -1249,6 +1266,121 @@ mod tests {
         // The first batch is the window starting at the play chunk, in
         // order.
         assert_eq!(reqs[0].1, vec![50, 51, 52, 53]);
+    }
+
+    /// The playable verdict rides `Progress`: it flips on once the 20%
+    /// window ahead of the anchor is verified, and an anchor move alone
+    /// (playback advancing / a seek, via `set_sources`) re-reports it —
+    /// in both directions — with no new data.
+    #[test]
+    fn playable_flips_are_reported_with_progress() {
+        let cpb = dessplay_core::net::CHUNKS_PER_BLOCK as u32;
+        let config = DownloadConfig {
+            pipeline_depth: 64,
+            max_sources: 1,
+            ..DownloadConfig::default()
+        };
+        // 7 blocks: the 20% window (chunks/5 + 1 ≈ 1.4 blocks) needs
+        // blocks 0 *and* 1 verified before chunk 0 is playable.
+        let mut r = rig(6 * ED2K_BLOCK_SIZE as usize + 5000, config);
+        let seed = peer("seed");
+        let mut actions = r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![seed.clone()],
+            0,
+            1000,
+        );
+        // Serve block hashes + bitfield, then only blocks 0–1's chunks.
+        let mut progress: Vec<(u16, bool)> = Vec::new();
+        let mut t = 1000;
+        for _ in 0..10_000 {
+            let mut next = Vec::new();
+            for action in &actions {
+                match action {
+                    DownloadAction::Progress {
+                        progress_bps,
+                        playable,
+                        ..
+                    } => progress.push((*progress_bps, *playable)),
+                    DownloadAction::Send { to, message } => match message {
+                        PeerMessage::BlockHashRequest { file } => {
+                            let file = *file;
+                            t += 1;
+                            next.extend(r.downloads.on_peer_message(
+                                to.clone(),
+                                PeerMessage::BlockHashes {
+                                    file,
+                                    hashes: r.hash.blocks.clone(),
+                                },
+                                t,
+                            ));
+                            let bf = r.full_bitfield();
+                            t += 1;
+                            next.extend(r.downloads.on_peer_message(
+                                to.clone(),
+                                PeerMessage::FileAvailability { file, bitfield: bf },
+                                t,
+                            ));
+                        }
+                        PeerMessage::ChunkRequest { file, chunks } => {
+                            let file = *file;
+                            for &c in chunks.iter().filter(|&&c| c < 2 * cpb) {
+                                let data = r.chunk(c);
+                                t += 1;
+                                next.extend(r.downloads.on_peer_message(
+                                    to.clone(),
+                                    PeerMessage::ChunkData {
+                                        file,
+                                        index: c,
+                                        data,
+                                    },
+                                    t,
+                                ));
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            actions = next;
+        }
+        // One report per verified block: block 0 alone is not playable
+        // (the window reaches into block 1), blocks 0+1 are.
+        assert_eq!(
+            progress.iter().map(|p| p.1).collect::<Vec<_>>(),
+            vec![false, true],
+            "progress reports: {progress:?}"
+        );
+
+        // The anchor moving into the unverified region flips playable
+        // off — same data, new position.
+        let acts = r
+            .downloads
+            .set_sources(r.file, vec![seed.clone()], 5 * cpb, t);
+        assert!(
+            acts.iter().any(|a| matches!(
+                a,
+                DownloadAction::Progress {
+                    playable: false,
+                    ..
+                }
+            )),
+            "anchor into the gap must report unplayable: {acts:?}"
+        );
+        // And back to the verified prefix: playable again.
+        let acts = r.downloads.set_sources(r.file, vec![seed], 0, t + 1);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, DownloadAction::Progress { playable: true, .. })),
+            "anchor back must report playable: {acts:?}"
+        );
     }
 
     #[test]

@@ -397,6 +397,18 @@ pub enum FileOutput {
         /// The complete file in the cache.
         path: PathBuf,
     },
+    /// An in-flight peer download became playable: every chunk in the
+    /// 20% window ahead of the playback anchor is verified. The session
+    /// loads the partial file into the player (it assembles in place at
+    /// the final cache path, so playback continues seamlessly into
+    /// completion). Emitted on each false→true edge; the session's load
+    /// is idempotent.
+    DownloadPlayable {
+        /// The file.
+        file: Ed2kHash,
+        /// The partial file in the cache (its final path).
+        path: PathBuf,
+    },
 }
 
 /// Everything the actor needs at spawn.
@@ -649,6 +661,10 @@ struct Actor {
     /// Last shared-clock millis we wrote a `Downloading` progress
     /// update, per file (≤1/s throttle).
     last_progress_at: HashMap<Ed2kHash, u64>,
+    /// Last playable verdict written per file, so a flip bypasses the
+    /// progress throttle (it gates the group) and the false→true edge
+    /// hands the session the partial file to load.
+    last_playable_written: HashMap<Ed2kHash, bool>,
     /// Library-scan files still awaiting a hash (FIFO, one at a time).
     scan_worklist: std::collections::VecDeque<ScanItem>,
     /// Whether a scan-hash is currently running (caps scan hashing at one
@@ -960,6 +976,7 @@ impl Actor {
             serve_tasks: HashMap::new(),
             upload: Arc::new(UploadPacer::new(config.upload_limit)),
             last_progress_at: HashMap::new(),
+            last_playable_written: HashMap::new(),
             scan_pending_commits: Vec::new(),
             scan_worklist: std::collections::VecDeque::new(),
             scan_hashing: false,
@@ -1071,6 +1088,25 @@ impl Actor {
                 if self.local_files.contains_key(&file) {
                     tracing::debug!(%file, "ignoring StartDownload for a file we already hold");
                     return;
+                }
+                // An already-playable active download re-offers its
+                // partial on every refresh: the playable *edge* may have
+                // fired while the file wasn't now-playing yet (a
+                // prefetch), and the session only loads the partial for
+                // the current now-playing file. Re-emitting at the
+                // session's own refresh cadence (~1/s) makes the load
+                // catch up when now-playing advances onto the file; the
+                // session's handler is idempotent.
+                if self.downloads.is_active(&file)
+                    && self.last_playable_written.get(&file) == Some(&true)
+                {
+                    let _ = self
+                        .out
+                        .send(FileOutput::DownloadPlayable {
+                            file,
+                            path: self.download_path(file),
+                        })
+                        .await;
                 }
                 // Torrent-first (design.md, BitTorrent Downloads): the
                 // fetch policy searches nyaa and hands the peer path a
@@ -1588,18 +1624,44 @@ impl Actor {
                         }
                     }
                 }
-                DownloadAction::Progress { file, progress_bps } => {
+                DownloadAction::Progress {
+                    file,
+                    progress_bps,
+                    playable,
+                } => {
                     // Throttle progress writes to at most once a second
                     // (a fast download crosses a block — a progress
-                    // step — several times a second).
+                    // step — several times a second). A *playable* flip
+                    // bypasses the throttle: it gates the whole group,
+                    // so it must reach the synced state at once.
                     let now = (self.clock)();
-                    if now.saturating_sub(*self.last_progress_at.get(&file).unwrap_or(&0)) >= 1000 {
+                    let flipped = self.last_playable_written.get(&file) != Some(&playable);
+                    let due =
+                        now.saturating_sub(*self.last_progress_at.get(&file).unwrap_or(&0)) >= 1000;
+                    if flipped || due {
                         self.last_progress_at.insert(file, now);
+                        self.last_playable_written.insert(file, playable);
+                        let availability = if playable {
+                            FileAvailability::DownloadingPlayable { progress_bps }
+                        } else {
+                            FileAvailability::Downloading { progress_bps }
+                        };
                         let _ = self
                             .out
-                            .send(FileOutput::Availability {
+                            .send(FileOutput::Availability { file, availability })
+                            .await;
+                    }
+                    // Newly playable: hand the session the partial file so
+                    // it can load it into the player (design.md, File
+                    // State — a Downloading file *plays* once the window
+                    // ahead is verified, instead of leaving this user
+                    // behind on a placeholder when the group unpauses).
+                    if flipped && playable {
+                        let _ = self
+                            .out
+                            .send(FileOutput::DownloadPlayable {
                                 file,
-                                availability: FileAvailability::Downloading { progress_bps },
+                                path: self.download_path(file),
                             })
                             .await;
                     }
@@ -1612,6 +1674,8 @@ impl Actor {
                 DownloadAction::Abandon { file, reason } => {
                     tracing::warn!(%file, "download abandoned: {reason}");
                     self.drop_download_streams(file);
+                    self.last_progress_at.remove(&file);
+                    self.last_playable_written.remove(&file);
                     let _ = self
                         .out
                         .send(FileOutput::Availability {
@@ -1638,6 +1702,7 @@ impl Actor {
         self.local_files.insert(file, path.clone());
         self.drop_download_streams(file);
         self.last_progress_at.remove(&file);
+        self.last_playable_written.remove(&file);
         if let Ok(metadata) = std::fs::metadata(&path) {
             let size = metadata.len();
             let now = (self.clock)() as i64;
@@ -1694,6 +1759,7 @@ impl Actor {
         self.run_download_actions(actions).await;
         self.drop_download_streams(file);
         self.last_progress_at.remove(&file);
+        self.last_playable_written.remove(&file);
         let partial = self.download_path(file);
         if let Err(e) = std::fs::remove_file(&partial)
             && e.kind() != std::io::ErrorKind::NotFound
@@ -1799,6 +1865,11 @@ impl Actor {
                     }
                 }
                 TorrentFetchAction::Progress { file, progress_bps } => {
+                    // Always the non-playable variant: torrent pieces
+                    // arrive out of order, so a partial torrent is never
+                    // playable at any percentage (complete-only
+                    // playability; it flips straight to Ready after
+                    // ed2k verification).
                     let _ = self
                         .out
                         .send(FileOutput::Availability {

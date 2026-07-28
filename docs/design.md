@@ -385,14 +385,28 @@ It can have one of three values:
 - **Ready**: The hash matches, the file is loaded, and it can be unpaused as desired.
 - **Missing**: The file doesn't exist, or the hash is mismatched, and none of the
   step 4 options from file matching have been performed.
-- **Downloading**: The user's client is actively retrieving the file from other
-  clients. Unpausing is conditional: their download speed must be higher than the
-  file's computed bitrate, *and* at least 20% of the file must be downloaded.
-  Only the **20%** half is enforced today; the download-speed-vs-bitrate half
-  is **deferred** — no synced throughput signal exists to evaluate it, see
-  [Future Plans](#future-plans). Impact is a self-only edge (a user who
-  unpauses at exactly 20% with throughput below the bitrate may stall their
-  own playback; it never gates the group).
+- **Downloading**: The user's client is actively retrieving the file from
+  peers. Playback gates on the holder's **playable verdict**: the
+  downloading client — the only party holding both the chunk bitmap and its
+  own player position — checks whether any chunk is missing within the
+  **20% window ahead of its current playback position** (position 0 before
+  the file loads) and advertises the result as its availability variant
+  (`Downloading` blocks; `DownloadingPlayable` doesn't), so every client
+  derives the same gate with no arithmetic. The window is deliberately
+  approximate — time maps to bytes proportionally; the 20% buffer exists
+  precisely to absorb variable bitrate. When the window ahead of the start
+  fills in, the client **loads the partial file into the player** (the
+  download assembles in place at its final cache path, so completion needs
+  no reload) and watches with the group; if playback catches up to a gap —
+  or a seek lands past the downloaded region — the verdict flips back, the
+  user gates, and the group pauses until the window refills. The playback
+  position also re-anchors the download's sequential fetch window, so the
+  scheduler always fetches exactly the range whose absence would gate. A
+  torrent-path download is never playable while incomplete (see
+  [BitTorrent Downloads](#bittorrent-downloads)). The
+  download-speed-vs-bitrate half of the original rule remains **deferred**
+  — no synced throughput signal exists to evaluate it, see
+  [Future Plans](#future-plans).
 
 ### Ready States (UI Display)
 
@@ -406,7 +420,7 @@ Their ready state is decided by a combination of the above; this only exists in 
 | Away | Gray | Away & Any (shows who set it) |
 | Not watching | Gray | Not watching & Any |
 | Committed, away | Red | Watching (committed) & **absent** (Lost/Departed) -- blocks; acknowledge to play past |
-| Downloading | Green | Ready & Downloading [complete enough to play] |
+| Downloading | Green | Ready & Downloading [playable from its position] |
 | Downloading | Blue | Ready & Downloading [still fetching] |
 | Downloading | Red | Paused / Away / Not watching & Downloading |
 
@@ -450,8 +464,13 @@ never hides it and it survives player relaunches.
   Ready not yet synced when the decision fires -- can still set Not
   Watching once; the Downloading display masks it and Ctrl-R clears it.)
 - **Missing file (known series)**: File State -> Missing (blocks playback)
-- **Missing file (downloading enabled)**: File State -> Downloading; placeholder is
-  updated with download progress
+- **Missing file (downloading enabled)**: File State -> Downloading; the
+  placeholder shows while the first 20% window verifies, then the partial
+  file loads into the player and plays with the group (see
+  [File State](#file-state)). Every playlist entry the client is
+  downloading also shows its percentage in the Playlist pane — downloads
+  mostly happen in the background (prefetch), so progress must be visible
+  without selecting the file
 - **Manual pause** (in player): Manual override -> Paused
 - **Attempt unpause** (in player): Manual override -> None; unpauses if all users permit
 - **Mark ready / unready** (`Ctrl-R`, global): toggles your own readiness
@@ -544,8 +563,10 @@ never hides it and it survives player relaunches.
 
    The position reference is the **seek authority's** position when a *user*
    holds authority -- **but only when that user is a valid same-file source**
-   (present and advertising `FileAvailability::Ready` for the now-playing
-   file). A user can hold seek authority without being on the real video --
+   (present and advertising the now-playing file `Ready` — or
+   `DownloadingPlayable`, a downloader playing the verified window; their
+   partial is the real video, and when the whole group is downloading a
+   fresh episode they are the only valid sources there are). A user can hold seek authority without being on the real video --
    e.g. a not-watching client whose player shows a placeholder, which still
    reports a position -- and following it would freeze the whole group on
    its bogus position. So an invalid user authority is treated exactly like
@@ -569,9 +590,9 @@ never hides it and it survives player relaunches.
 
    Eligibility -- for both the leader election and validating a user
    authority -- is restricted to peers whose position is **for this file**.
-   Two gates, both required: the peer advertises `FileAvailability::Ready`
-   for now-playing, **and** their `PlaybackPosition` carries a `file` tag
-   equal to now-playing. The file tag is the load-bearing one: `Ready` alone
+   Two gates, both required: the peer advertises now-playing as
+   `FileAvailability::Ready` (or `DownloadingPlayable`), **and** their
+   `PlaybackPosition` carries a `file` tag equal to now-playing. The file tag is the load-bearing one: `Ready` alone
    is *not* sufficient because it is set on **prefetch** (a peer advertises
    Ready for next week's episode long before it plays it), so right after a
    now-playing transition a peer can be Ready for the new file while its
@@ -1844,10 +1865,12 @@ when a copy arrives through yet another channel.
 
 **Complete-only playability.** Torrent pieces arrive out of order, so a
 partially-downloaded torrent is never playable. Torrent progress is
-reported but capped just below the 20% unpause threshold: the UI
-honestly shows "downloading N%" up to 19%, then flips straight to Ready
-once verified. (Sequential streaming to restore true play-at-20% is
-future work — see [Future Plans](#future-plans).)
+reported honestly at any percentage; playability travels in the
+availability *variant* (a torrent always advertises the non-playable
+`Downloading`), so the torrenting user keeps gating until the payload
+completes, ed2k-verifies, and flips straight to Ready. (Sequential
+streaming to restore true play-from-here is future work — see
+[Future Plans](#future-plans).)
 
 **Seeding.** Completed torrents keep seeding — good citizenship on
 public trackers — until the cached file is **evicted** (retention or a
@@ -2479,9 +2502,9 @@ For v1, this is acceptable. Future improvements could include:
 - Automating The List's "this week's episode is out" flag (possibly via AniDB
   episode air dates).
 - Enforcing the **download-speed-vs-bitrate** half of the Downloading unpause
-  rule (see [File State](#file-state)). Needs a synced eligibility signal on
-  `FileAvailability::Downloading` (the downloader's measured speed vs the
-  file's bitrate); only the 20% threshold is enforced today.
+  rule (see [File State](#file-state)). Needs a synced throughput signal
+  (the downloader's measured speed vs the file's bitrate); only the
+  position-anchored 20%-window rule is enforced today.
 - Sequential (streaming) torrent downloads with incremental ed2k
   verification, so a torrented file inherits the real play-at-20% rule
   instead of [complete-only playability](#bittorrent-downloads)

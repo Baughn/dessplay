@@ -330,8 +330,21 @@ pub enum FileAvailability {
     Ready,
     /// File absent or hash mismatched; blocks playback.
     Missing,
-    /// Actively downloading from peers.
+    /// Actively downloading, and **not** playable from the holder's
+    /// current playback position: some chunk is missing within the 20%
+    /// window ahead of it (design.md, File State). Gates playback. The
+    /// window is evaluated by the downloading client — only it holds the
+    /// chunk bitmap and its own player position.
     Downloading {
+        /// Progress in basis points (0–10000); integer to keep `Eq`/`Ord`.
+        progress_bps: u16,
+    },
+    /// Actively downloading, and playable: every chunk within the 20%
+    /// window ahead of the holder's playback position is verified, so
+    /// this user does not gate playback. Appended after `Downloading`
+    /// (never reordered): postcard encodes the variant index, so
+    /// appending keeps every pre-v10 snapshot and wire body decodable.
+    DownloadingPlayable {
         /// Progress in basis points (0–10000); integer to keep `Eq`/`Ord`.
         progress_bps: u16,
     },
