@@ -49,10 +49,6 @@ struct Cli {
     #[arg(long)]
     db: Option<std::path::PathBuf>,
 
-    /// Outstanding chunk requests per source for downloads (default 48).
-    #[arg(long)]
-    pipeline_depth: Option<u32>,
-
     /// Media library to search/serve (repeatable). Overrides the stored
     /// media roots for this run (not persisted); for a seeder, the only
     /// way to set them. The download cache is always served too.
@@ -185,7 +181,6 @@ fn main() -> color_eyre::Result<()> {
         password: cli.password,
         fingerprint: cli.fingerprint,
         db_path: cli.db,
-        pipeline_depth: cli.pipeline_depth,
         media_roots: cli.media_root,
         cache_dir: cli.cache_dir,
         attach_mpv: cli.attach_mpv,
@@ -227,26 +222,15 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// The `--pipeline-depth` help must state the real production default
-    /// (48, set in `run::download_config`), not the stale 16. Regression
-    /// for the help/code drift in the 2026-06-26 review.
+    /// `--pipeline-depth` was removed with protocol v9 (the request
+    /// window is a fixed latency-hider, not a throttle — per-transfer
+    /// streams pace themselves); the help must not resurrect it.
     #[test]
-    fn pipeline_depth_help_states_the_production_default() {
-        // Normalize line-wrapping so the assertion doesn't depend on the
-        // terminal width clap renders at.
-        let help: String = Cli::command()
-            .render_long_help()
-            .to_string()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+    fn pipeline_depth_flag_is_gone() {
+        let help = Cli::command().render_long_help().to_string();
         assert!(
-            help.contains("default 48"),
-            "--pipeline-depth help should state the production default 48:\n{help}"
-        );
-        assert!(
-            !help.contains("default 16"),
-            "--pipeline-depth help still states the stale default 16:\n{help}"
+            !help.contains("pipeline-depth"),
+            "--pipeline-depth should no longer exist:\n{help}"
         );
     }
 }

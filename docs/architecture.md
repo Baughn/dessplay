@@ -458,15 +458,20 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
   local-only UI/session events; only successful completion produces the
   ordinary shared playlist mutation.
 
-Phase 9B added the transfer side: `StartDownload` / `PeerMessage`
-commands and `SendPeer` / `Availability` / `DownloadComplete` outputs.
-The scheduling brain is `download.rs` (`Downloads` — pipeline, rarest-
-first + sequential window, source snub, endgame; synchronous and
-unit-testable); on-disk assembly + ed2k block verification is
-`chunkstore.rs`. The actor also **serves**: a serve queue drained within
-an upload-rate token bucket, answering `ChunkRequest`/`BlockHashRequest`
-from `local_files` (verified resolutions, manual mappings, completed
-downloads). The session (`PlayerWiring::plan_download`) drives downloads
+Phase 9B added the transfer side: `StartDownload` / `PeerMessage` /
+`TransferStream` commands and `SendPeer` / `OpenTransfer` /
+`Availability` / `DownloadComplete` outputs. The scheduling brain is
+`download.rs` (`Downloads` — request window, rarest-first + sequential
+window, source snub, endgame; synchronous and unit-testable); on-disk
+assembly + ed2k block verification is `chunkstore.rs`. Chunk traffic
+rides per-transfer data streams (network-design.md, protocol v9): the
+actor opens one per (source, file) for its downloads, and **serves**
+each incoming stream with a dedicated task — reading
+`ChunkRequest`/`Cancel` into a per-transfer queue and streaming
+`ChunkData` back under a shared upload-rate token bucket, paced by the
+stream write itself, so one slow downloader backpressures only its own
+task. `BlockHashRequest` and availability stay on the relay stream via
+`SendPeer`. The session (`PlayerWiring::plan_download`) drives downloads
 for the now-playing file plus a prefetch window — emitted even with no
 peer source, since the torrent path needs none. Seeder auto-fetch
 (headless, fetch everything) is the remaining 9B piece.
@@ -696,8 +701,9 @@ dessplay/                     (client: lib + thin binary)
                                collection, provider trait, rule provider)
     commentary.rs             (AI commentary engine: commentator state,
                                Anthropic model seam, marquee writes)
-    download.rs               (Downloads: chunk scheduling — pipeline,
-                               rarest-first, snub, endgame; Phase 9B)
+    download.rs               (Downloads: chunk scheduling — request
+                               window, rarest-first, snub, endgame;
+                               Phase 9B)
     chunkstore.rs             (on-disk chunk assembly + ed2k block
                                verification + resume; Phase 9B)
     placeholder.rs            (not-watching PNG; image + ab_glyph + the

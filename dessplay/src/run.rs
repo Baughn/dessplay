@@ -39,10 +39,6 @@ pub struct HeadlessArgs {
     pub fingerprint: Option<String>,
     /// Settings/state database override. Honored in every mode.
     pub db_path: Option<PathBuf>,
-    /// Outstanding chunk requests per source for downloads (default 48).
-    /// A flag so transfer behaviour can be tuned in testing; applies to
-    /// interactive clients and seeders alike.
-    pub pipeline_depth: Option<u32>,
     /// Media roots to search/serve. Overrides the stored roots for this
     /// run when non-empty (a seeder has none stored, so it always uses
     /// these). The cache dir is always added as a root automatically.
@@ -174,13 +170,19 @@ struct RuntimeMediaRoots {
     persistable: Vec<PathBuf>,
 }
 
-/// The peer-download tuning shared by every mode that downloads: the
-/// `--pipeline-depth` flag, or the default of 48. Interactive clients
-/// and seeders both build their [`crate::download::DownloadConfig`] from
-/// this, so the flag means the same thing everywhere.
-fn download_config(args: &HeadlessArgs) -> crate::download::DownloadConfig {
+/// The peer-download tuning shared by every mode that downloads.
+///
+/// The request window is **not a throttle** since protocol v9: chunk
+/// data flows on per-transfer streams paced by BBR and end-to-end
+/// stream backpressure, so the window only needs to be deep enough that
+/// the uploader never idles waiting for the next request (≥ the
+/// bandwidth-delay product: 64 × 250 KiB = 16 MB covers 250 Mbit at
+/// ~500 ms of relay round trip). Excess queues as indices at the
+/// uploader, not as bytes in the network — that's the point. The old
+/// `--pipeline-depth` flag is gone with the old role.
+fn download_config(_args: &HeadlessArgs) -> crate::download::DownloadConfig {
     crate::download::DownloadConfig {
-        pipeline_depth: args.pipeline_depth.unwrap_or(48),
+        pipeline_depth: 64,
         ..Default::default()
     }
 }
@@ -584,6 +586,22 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
             }
             event = handle.events.recv() => {
                 let Some(event) = event else { break };
+                // Data streams are owned, not cloneable: intercept them
+                // before the shared handling below.
+                let event = match event {
+                    ClientEvent::Network(NetworkEvent::TransferStream {
+                        peer,
+                        file,
+                        outbound,
+                        stream,
+                    }) => {
+                        if let Some(transfer) = seeder_transfer.as_mut() {
+                            transfer.on_transfer_stream(peer, file, outbound, stream).await;
+                        }
+                        continue;
+                    }
+                    event => event,
+                };
                 // Drive the seeder's transfer from each event: route
                 // relayed peer messages, then re-plan from fresh state.
                 if let Some(transfer) = seeder_transfer.as_mut() {
@@ -1375,6 +1393,23 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 }
                 event = self.handle.events.recv() => {
                     let Some(event) = event else { return SessionEnd::Quit };
+                    // Data streams are owned, not cloneable: intercept
+                    // them before the by-reference match below.
+                    let event = match event {
+                        ClientEvent::Network(NetworkEvent::TransferStream {
+                            peer,
+                            file,
+                            outbound,
+                            stream,
+                        }) => {
+                            self.shell
+                                .on_transfer_stream(peer, file, outbound, stream)
+                                .await;
+                            ui_dirty = true;
+                            continue;
+                        }
+                        event => event,
+                    };
                     match &event {
                         ClientEvent::Network(NetworkEvent::Rejected { message }) => {
                             return SessionEnd::Rejected(message.clone());
@@ -2292,14 +2327,11 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_depth_flag_overrides_default() {
-        let args = HeadlessArgs {
-            pipeline_depth: Some(64),
-            ..Default::default()
-        };
-        assert_eq!(download_config(&args).pipeline_depth, 64);
-        // Unset: the default download queue size.
-        assert_eq!(download_config(&HeadlessArgs::default()).pipeline_depth, 48);
+    fn request_window_is_fixed_and_latency_sized() {
+        // Protocol v9: the window hides relay latency, it does not
+        // throttle — stream backpressure does. 64 × 250 KiB per source
+        // covers the plausible bandwidth-delay product with margin.
+        assert_eq!(download_config(&HeadlessArgs::default()).pipeline_depth, 64);
     }
 
     #[test]

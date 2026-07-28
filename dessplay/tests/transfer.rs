@@ -78,20 +78,78 @@ fn spawn_actor(name: &str, media_files: &[(&str, &[u8])]) -> Actor {
 struct Outcome {
     /// Where the leecher assembled the file.
     completed_path: Option<PathBuf>,
-    /// Total ChunkData bytes relayed (useful + wasted).
+    /// Total data-stream bytes pumped uploader -> downloader (framed
+    /// ChunkData; useful + wasted, like the server's pump would carry).
     chunk_bytes: u64,
 }
 
-/// Pump the actors' relay messages between each other until the named
-/// leecher reports the file complete (or a timeout). Counts ChunkData
-/// bytes for the efficiency metric.
+/// A connected pair of in-process streams (what the sim transport does
+/// for its `BiStream`s).
+fn bistream_pair() -> (dessplay_core::net::BiStream, dessplay_core::net::BiStream) {
+    let (a, b) = tokio::io::duplex(256 * 1024);
+    let (a_read, a_write) = tokio::io::split(a);
+    let (b_read, b_write) = tokio::io::split(b);
+    (
+        dessplay_core::net::BiStream {
+            send: Box::new(a_write),
+            recv: Box::new(a_read),
+        },
+        dessplay_core::net::BiStream {
+            send: Box::new(b_write),
+            recv: Box::new(b_read),
+        },
+    )
+}
+
+/// Model the server's per-transfer byte pump: two stream pairs joined by
+/// bounded copy tasks (so backpressure propagates end to end, exactly
+/// like the real pump), counting the uploader->downloader bytes.
+fn pumped_stream_pair(
+    counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> (dessplay_core::net::BiStream, dessplay_core::net::BiStream) {
+    let (down_local, down_far) = bistream_pair();
+    let (up_local, up_far) = bistream_pair();
+    let dessplay_core::net::BiStream {
+        send: mut up_send,
+        recv: mut up_recv,
+    } = up_far;
+    let dessplay_core::net::BiStream {
+        send: mut down_send,
+        recv: mut down_recv,
+    } = down_far;
+    // Requests: downloader -> uploader.
+    tokio::spawn(async move {
+        let _ = tokio::io::copy(&mut down_recv, &mut up_send).await;
+    });
+    // Data: uploader -> downloader, counted.
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            match up_recv.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    counter.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+                    if down_send.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (down_local, up_local)
+}
+
+/// Pump the actors' relay messages between each other — and stand in for
+/// the server's data-stream pump on `OpenTransfer` — until the named
+/// leecher reports the file complete (or a timeout).
 async fn pump_until_complete(actors: &mut [Actor], leecher: &str, budget: Duration) -> Outcome {
     let senders: HashMap<String, mpsc::Sender<FileCommand>> = actors
         .iter()
         .map(|a| (a.name.clone(), a.commands.clone()))
         .collect();
     let deadline = tokio::time::Instant::now() + budget;
-    let mut chunk_bytes = 0u64;
+    let chunk_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut completed_path = None;
 
     while tokio::time::Instant::now() < deadline {
@@ -108,9 +166,6 @@ async fn pump_until_complete(actors: &mut [Actor], leecher: &str, budget: Durati
             idle = false;
             match event {
                 FileOutput::SendPeer { to, message } => {
-                    if let PeerMessage::ChunkData { data, .. } = &*message {
-                        chunk_bytes += data.len() as u64;
-                    }
                     if let Some(target) = senders.get(&to.to_string()) {
                         let _ = target
                             .send(FileCommand::PeerMessage {
@@ -119,6 +174,31 @@ async fn pump_until_complete(actors: &mut [Actor], leecher: &str, budget: Durati
                             })
                             .await;
                     }
+                }
+                FileOutput::OpenTransfer { to, file } => {
+                    // The server's role: join the two ends with a byte
+                    // pump. The downloader gets its stream back
+                    // (outbound), the uploader an incoming serve stream.
+                    let Some(target) = senders.get(&to.to_string()) else {
+                        continue; // absent peer: stream just never opens
+                    };
+                    let (down, up) = pumped_stream_pair(std::sync::Arc::clone(&chunk_bytes));
+                    let _ = senders[&from]
+                        .send(FileCommand::TransferStream {
+                            peer: to.clone(),
+                            file,
+                            outbound: true,
+                            stream: down,
+                        })
+                        .await;
+                    let _ = target
+                        .send(FileCommand::TransferStream {
+                            peer: PeerId::new(&from),
+                            file,
+                            outbound: false,
+                            stream: up,
+                        })
+                        .await;
                 }
                 FileOutput::DownloadComplete { path, .. } if from == leecher => {
                     completed_path = Some(path);
@@ -138,7 +218,7 @@ async fn pump_until_complete(actors: &mut [Actor], leecher: &str, budget: Durati
     }
     Outcome {
         completed_path,
-        chunk_bytes,
+        chunk_bytes: chunk_bytes.load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 
@@ -386,4 +466,89 @@ async fn two_seed_transfer_completes_and_stays_efficient() {
         wasted <= endgame_tail,
         "waste {wasted} exceeds the endgame tail {endgame_tail} — bulk mode is duplicating chunks"
     );
+}
+
+/// The head-of-line fix (protocol v9): a downloader that requests
+/// everything and then never reads must not stall serving to anyone
+/// else. Pre-v9 all recipients shared one relay stream and one
+/// actor-loop serve queue, so exactly this — one saturated or stalled
+/// peer — starved every other transfer. Now each serve runs on its own
+/// stream/task and blocks only itself.
+#[tokio::test]
+async fn a_stalled_downloader_does_not_starve_another() {
+    use dessplay_core::net::framing::write_frame;
+
+    let bytes = data(ED2K_BLOCK_SIZE as usize + 77_000); // 2 blocks
+    let hash = ed2k_hash_bytes(&bytes);
+    let filename = "night.mkv";
+
+    let mut seeder = spawn_actor("seed", &[(filename, &bytes)]);
+    let leecher = spawn_actor("leech", &[]);
+    make_seeder_ready(&mut seeder, filename, hash.root).await;
+
+    // The stalled peer: hand the seeder a serve stream directly, request
+    // every chunk on it, and never read a byte of the reply. The serve
+    // task fills the stream buffer and blocks — alone.
+    let (mut far, near) = {
+        let (far, near) = {
+            let (a, b) = tokio::io::duplex(64 * 1024);
+            let (a_read, a_write) = tokio::io::split(a);
+            let (b_read, b_write) = tokio::io::split(b);
+            (
+                dessplay_core::net::BiStream {
+                    send: Box::new(a_write) as Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+                    recv: Box::new(a_read) as Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+                },
+                dessplay_core::net::BiStream {
+                    send: Box::new(b_write) as Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+                    recv: Box::new(b_read) as Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+                },
+            )
+        };
+        (far, near)
+    };
+    seeder
+        .commands
+        .send(FileCommand::TransferStream {
+            peer: PeerId::new("slow"),
+            file: hash.root,
+            outbound: false,
+            stream: near,
+        })
+        .await
+        .unwrap();
+    let all_chunks: Vec<u32> = (0..dessplay_core::net::chunk_count(hash.size_bytes)).collect();
+    let request = dessplay_core::wire::encode(&PeerMessage::ChunkRequest {
+        file: hash.root,
+        chunks: all_chunks,
+    })
+    .unwrap();
+    write_frame(&mut far.send, &request).await.unwrap();
+    // Keep `far` alive (dropping it would close the stream and free the
+    // serve task) but never read: the definition of a stalled peer.
+
+    // Meanwhile a healthy leecher downloads the same file.
+    leecher
+        .commands
+        .send(FileCommand::StartDownload {
+            file: hash.root,
+            size_bytes: hash.size_bytes,
+            filename: "episode.mkv".into(),
+            sources: vec![PeerId::new("seed")],
+            play_chunk: 0,
+        })
+        .await
+        .unwrap();
+
+    let mut actors = vec![seeder, leecher];
+    let outcome = pump_until_complete(&mut actors, "leech", Duration::from_secs(30)).await;
+    let path = outcome
+        .completed_path
+        .expect("the healthy leecher must complete despite the stalled peer");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "assembled file matches"
+    );
+    drop(far);
 }

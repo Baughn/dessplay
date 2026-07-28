@@ -256,11 +256,26 @@ impl std::fmt::Debug for PeerMessage {
     }
 }
 
-/// The relay wrapper. Carried as length-prefixed frames on a dedicated
-/// QUIC stream (separate from the control stream, so bulk transfer
-/// never head-of-line-blocks state sync — QUIC isolates streams). The
-/// `message` bytes are a postcard-encoded [`PeerMessage`], opaque to the
-/// server.
+/// The relay wrapper: the first frame of **every** stream a client or
+/// the server opens on the transfer connection, which classifies the
+/// stream, plus the peer-message envelopes that follow on the
+/// long-lived relay stream.
+///
+/// Two stream kinds share the transfer connection (protocol v8/v9):
+///
+/// - The **relay stream** (one per peer, long-lived): opens with
+///   [`RelayEnvelope::Hello`] and carries [`RelayEnvelope::Forward`] /
+///   [`RelayEnvelope::Forwarded`] envelopes — the small peer messages
+///   (availability, block hashes, `CannotServe`).
+/// - **Data streams** (one per active (source, file) transfer): opened
+///   by the *downloader* with [`RelayEnvelope::OpenTransfer`]; the
+///   server opens a matching stream toward the uploader headed by
+///   [`RelayEnvelope::TransferFrom`] and then becomes a pure byte pump
+///   between the two, so QUIC stream backpressure runs end to end.
+///   After the header frame the stream carries bare length-prefixed
+///   [`PeerMessage`] frames — `ChunkRequest`/`Cancel` toward the
+///   uploader, `ChunkData` back — with no envelope (the stream itself
+///   is the address).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelayEnvelope {
     /// Client -> server: the first frame a client writes on its relay
@@ -283,6 +298,25 @@ pub enum RelayEnvelope {
         from: PeerId,
         /// Postcard-encoded [`PeerMessage`].
         message: Vec<u8>,
+    },
+    /// Downloader -> server: the header frame of a fresh **data
+    /// stream** — pump the rest of this stream's bytes to `to`, both
+    /// directions, for the duration of the transfer of `file`.
+    OpenTransfer {
+        /// The uploader.
+        to: PeerId,
+        /// The file being transferred (lets the uploader route the
+        /// stream to a serve task without decoding anything else).
+        file: Ed2kHash,
+    },
+    /// Server -> uploader: the header frame of the matching data stream
+    /// the server opens toward the transfer target. Everything after it
+    /// is pumped verbatim from (and to) `from`.
+    TransferFrom {
+        /// The downloader at the pump's other end.
+        from: PeerId,
+        /// The file being transferred.
+        file: Ed2kHash,
     },
 }
 

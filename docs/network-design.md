@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-07-10
+Last updated: 2026-07-28
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -37,10 +37,13 @@ transfer. For the replicated data types built on top of this layer, see
       +--------+ +--------+ +--------+
 ```
 
-**Hub-and-spoke for everything:** Every client maintains a single QUIC
-connection to the rendezvous server. All CRDT state sync flows through the
-server, and **all file transfer is relayed through the server** -- there are
-no client-to-client connections in v2.
+**Hub-and-spoke for everything:** Every client maintains two QUIC
+connections to the rendezvous server — a **control** connection (state
+sync, presence, datagrams) and a **transfer** connection (bulk file
+data), split so each can carry its own DSCP tag (see
+[Connection Types](#connection-types)). All CRDT state sync flows through
+the server, and **all file transfer is relayed through the server** --
+there are no client-to-client connections in v2.
 
 This is a deliberate simplification. The server runs on a home connection
 with an unmetered 250Mbit uplink and sits on the same machine as the primary
@@ -61,12 +64,42 @@ seeder is an ordinary client; anyone can run another one.
 
 ### Connection Types
 
-| Connection | Initiator | Purpose |
-|------------|-----------|---------|
-| Client -> Server | Client | Auth, state sync, time sync, peer discovery, file transfer (relayed) |
+| Connection | Initiator | Port | DSCP | Purpose |
+|------------|-----------|------|------|---------|
+| **Control** | Client | configured | AF41 (34) | Auth, state sync, time sync, peer discovery, presence, datagrams |
+| **Transfer** | Client | control + 1 | AF21 (18) | Relayed file transfer: the peer-message relay stream and per-transfer data streams |
 
 There are no client-to-client connections. Both IPv4 and IPv6 are supported
 (the server is dual-stack); `PeerInfo.addresses` carries both families.
+
+**Why two connections (protocol v8):** DSCP is a per-packet IP-header
+field, but quinn exposes only per-transmit ECN — tagging is per-socket
+via `IP_TOS`/`IPV6_TCLASS`, so differentiating traffic classes means
+separate endpoints, and streams within one connection cannot be tagged
+apart. (The deeper reason streams *couldn't* carry distinct DSCP even
+with kernel support: a QUIC connection has one congestion controller and
+one loss detector, and packets sampling two different router queues
+would poison both.) The tag matters at the sender's own router/uplink
+egress — the queue that actually hurts — so ISP bleaching en route is
+irrelevant. Torrents (librqbit's own sockets) stay untagged at CS0;
+"torrents lowest" is achieved by raising dessplay. Both sides tag: the
+server binds each listener's socket with the matching codepoint, so the
+downlink direction is classifiable too. Windows silently ignores the
+setsockopt; tagging is best-effort everywhere.
+
+**Binding.** `Auth`/`AuthOk` happen on the control connection; `AuthOk`
+carries a per-session `transfer_token`. The client then dials the
+transfer connection (same host, port + 1 by convention — the server
+always binds both, one cert covers them) and presents
+`TransferAuth { username, token }` as its first control frame. A
+reconnect regenerates the token, so a stale transfer connection cannot
+bind to a superseded session.
+
+**Presence is keyed to the control connection alone.** The transfer
+link redials itself on a backoff; its death degrades transfers (which
+retry at their own layer) and never marks a user Lost. The server
+closes a session's transfer connection when its control connection
+ends.
 
 **Dialing.** The client resolves *all* of the server's A/AAAA addresses and
 tries them in family-interleaved order (the resolver's preferred family
@@ -90,7 +123,7 @@ requiring a process restart (2026-07-19 audit).
 
 ### Channel Usage (Client <-> Server)
 
-Each client-server QUIC connection uses three kinds of channels:
+The **control connection** uses two kinds of channels:
 
 1. **Control stream** -- a single long-lived bidirectional stream, opened
    immediately after connection. Carries authentication, state sync operations,
@@ -108,17 +141,34 @@ Each client-server QUIC connection uses three kinds of channels:
    the control stream only. Long chat messages and large playlist ops simply
    skip the eager-push optimization.
 
-3. **Relay stream** -- one long-lived bidirectional stream opened by each
-   client after authentication, separate from control traffic. Every relayed
-   file-transfer envelope for that peer shares it. Reconnection uses full
-   CvRDT merge rather than a gap-fill stream; there are no other application
-   streams in the current protocol.
+The **transfer connection** carries two kinds of streams, each
+classified by its first frame (a `RelayEnvelope` header):
 
-**Stream priority:** the control stream is prioritized above transfer
-streams (quinn `set_priority`), so a bulk download never starves state sync.
-QUIC connection-level flow control windows must be sized for bulk transfer
-(the quinn defaults are tuned for request/response traffic, not for pushing
-video files); this is a config item on both client and server endpoints.
+3. **Relay stream** (`Hello`) -- one long-lived bidirectional stream
+   opened by each client after `TransferAuth`. Carries the *small*
+   relayed peer messages (availability bitfields, block hashes,
+   `CannotServe`) as `Forward`/`Forwarded` envelopes. Bulk data never
+   rides it.
+
+4. **Data streams** (`OpenTransfer { to, file }`) -- one per active
+   (source, file) transfer, opened by the **downloader**; the server
+   opens a matching stream toward the uploader (headed
+   `TransferFrom { from, file }`) and pumps bytes verbatim between the
+   two. After the header the stream carries bare `PeerMessage` frames:
+   `ChunkRequest`/`Cancel` toward the uploader, `ChunkData` back. See
+   [Flow Control](#flow-control).
+
+Reconnection uses full CvRDT merge rather than a gap-fill stream; there
+are no other application streams in the current protocol.
+
+**Congestion control is BBR** on every connection, both sides — the
+default loss-based Cubic filled deep, AQM-less home-router buffers
+(Starlink-class) until the standing queue *was* the path RTT (~25s
+probe RTT while seeding, 2026-07-28). Flow-control windows stay sized
+for bulk transfer (16 MiB/stream, 64 MiB/connection): they are
+receive-side memory bounds, not queue-builders — the queue was Cubic's
+doing. The control stream is still prioritized above other streams
+(quinn `set_priority`) within its own connection.
 
 ### TLS and Identity
 
@@ -190,7 +240,14 @@ enum ServerControl {
     /// frame is flushed before teardown.
     Goodbye,
     // Server -> Client
-    AuthOk { observed_addr: SocketAddr },
+    AuthOk {
+        observed_addr: SocketAddr,
+        /// Binds the transfer connection to this session (v8): the
+        /// client presents it in TransferAuth on the second, bulk-DSCP
+        /// connection. Regenerated per Auth, so a superseded session's
+        /// token is refused.
+        transfer_token: u64,
+    },
     AuthFailed,
     PeerList {
         peers: Vec<PeerInfo>,
@@ -241,6 +298,13 @@ enum ServerControl {
     /// auto-advance. Appended here after `ProtocolMismatch` because the
     /// bump policy forbids reordering existing wire variants.
     MarkWatched { file: Ed2kHash, watched: bool },
+
+    /// Client -> server: first (and only expected) control frame on the
+    /// **transfer connection**, binding it to the session whose AuthOk
+    /// issued `token` (v8). Presence stays keyed to the control
+    /// connection; a dead transfer link degrades transfers, never
+    /// liveness.
+    TransferAuth { username: UserId, token: u64 },
 }
 
 enum Role { Interactive, Seeder }
@@ -567,15 +631,19 @@ This maximizes the rate at which rare chunks propagate. With 1 seeder and 3
 leechers, the seeder sends different chunks to each leecher; those leechers
 can then serve each other.
 
-### Scheduling: pipeline, snub, endgame
+### Scheduling: request window, snub, endgame
 
 Informed by BitTorrent — and notably, there is **no per-chunk timeout**:
 
-- **Pipeline depth** outstanding chunk requests *per source* (the
-  `--pipeline-depth` flag, default 16), across up to **4 concurrent
-  sources**. The depth is the queue: the N+1th chunk isn't requested
-  until one completes, so no request queue piles up behind the in-flight
-  set.
+- **Request window** of 64 outstanding chunk requests *per source*,
+  across up to **4 concurrent sources**. Since protocol v9 the window
+  is a **latency-hider, not a throttle**: chunk data flows on a
+  dedicated per-transfer stream paced by BBR and end-to-end stream
+  backpressure, so the window only needs to keep the uploader's queue
+  non-empty across the relay round trip (64 × 250 KiB = 16 MB covers
+  the plausible bandwidth-delay product with margin). Excess requests
+  queue as *indices* at the uploader — not as bytes in network buffers.
+  The old `--pipeline-depth` flag is gone with the old role.
 - **Snub, not timeout.** A source that sends *nothing* for 30s is dropped
   and its outstanding chunks are `Cancel`led and requeued to other
   sources. A chunk in transit is never re-requested — only a silent
@@ -592,54 +660,80 @@ Informed by BitTorrent — and notably, there is **no per-chunk timeout**:
 
 ### Upload Prioritization
 
-Serving is a FIFO queue drained within the [upload limit](#upload-limiting);
-`Cancel` removes queued chunks. (Rarest-aware upload prioritization across
-competing requesters is future work — for the 5-friends-and-a-seeder scale,
-the seeder's uplink is the bottleneck and FIFO suffices.)
+Each incoming data stream gets its own **serve task**: it reads
+`ChunkRequest`/`Cancel` frames into a per-transfer queue (request order
+is serve order — the downloader front-loads its sequential window) and
+streams `ChunkData` back as fast as the stream accepts. The tasks share
+the [upload limit](#upload-limiting)'s token bucket, so the cap covers
+their sum, but each blocks only on its own stream — one slow or stalled
+downloader backpressures itself and nobody else (the pre-v9 shared serve
+queue starved every recipient behind one saturated peer; regression:
+`transfer::a_stalled_downloader_does_not_starve_another`).
 
-### Transfer Stream
+### Relay and Data Streams
 
-Each peer opens **one dedicated relay `BiStream`** to the server on
-connect (a QUIC stream separate from the control stream). All of that
-peer's transfer envelopes ride it:
+Each peer opens **one relay stream** to the server on connect for the
+small peer messages, and the downloader opens **one data stream per
+active (source, file) transfer**; the server pumps each data stream
+byte-for-byte to its target (see [Relay Mechanics](#relay-mechanics)):
 
 ```
-Downloader                  Server                    Uploader
-  |--- Forward{to: U,        |                          |
-  |      ChunkRequest} ----->|--- Forwarded{from: D,    |
-  |                          |      ChunkRequest} ----->| (U's relay stream)
-  |<-- Forwarded{from: U,    |<-- Forward{to: D,        |
-  |      ChunkData} ---------|      ChunkData} ---------|
+Downloader                  Server                     Uploader
+  |--- relay stream -------->|--- relay stream ------->|   (Hello; availability,
+  |    Forward{BlockHashReq} |    Forwarded{...}       |    block hashes, CannotServe)
+  |                          |                         |
+  |=== data stream =========>|=== data stream ========>|   (OpenTransfer / TransferFrom
+  |    ChunkRequest, Cancel  |        byte pump        |    header, then bare PeerMessage
+  |<== ChunkData ============|<========================|    frames; one per transfer)
 ```
 
-On open, a client writes a `RelayEnvelope::Hello` first. QUIC reveals a
-bidirectional stream to the peer only when bytes are first written, so a
-peer that only ever *receives* on its relay stream (an idle source/seeder
-waiting to serve) would otherwise never have its stream `accept_bi`'d by
-the server, and every message addressed to it would be dropped. `Hello`
-forces registration; the server reads and ignores it. (The simulated
-transport establishes streams eagerly, so this real-QUIC-only failure was
-caught in the field, not in tests — there is now a real-QUIC regression
-test, `quic_localhost::a_relayed_message_reaches_a_receive_only_peer`.)
+On open, a client writes a `RelayEnvelope::Hello` first on the relay
+stream. QUIC reveals a bidirectional stream to the peer only when bytes
+are first written, so a peer that only ever *receives* on its relay
+stream (an idle source/seeder waiting to serve) would otherwise never
+have its stream `accept_bi`'d by the server, and every message addressed
+to it would be dropped. `Hello` forces registration; the server reads and
+ignores it. Data streams carry their own classifying header
+(`OpenTransfer` from the downloader; `TransferFrom` on the pumped side),
+so the first frame of *any* stream on the transfer connection names what
+the stream is. (The simulated transport establishes streams eagerly, so
+the lazy-reveal failure was caught in the field, not in tests — there is
+a real-QUIC regression test,
+`quic_localhost::a_relayed_message_reaches_a_receive_only_peer`.)
 
-**Why a separate QUIC stream, not the control stream:** QUIC multiplexes
-streams with independent per-stream flow control, so bulk transfer on the
-relay stream never head-of-line-blocks state sync on the control stream
-(unlike TCP). The server doesn't correlate per-transfer streams — one
-relay stream per peer suffices, since send and recv on a `BiStream` are
-independent directions, so inbound `ChunkData` never blocks outbound
-`ChunkRequest`s. `ChunkData` carries up to 250 KiB. The extra server hop
-roughly doubles request latency, which the pipeline depth absorbs.
+**Why per-transfer streams (protocol v9):** QUIC multiplexes streams
+with independent per-stream flow control. Giving each transfer its own
+stream makes that flow control the transfer's pacing — end to end,
+through the server's bounded byte pump — and isolates transfers from
+each other: a slow downloader stalls its own stream, never a sibling's
+(the old single shared relay stream head-of-line-blocked every recipient
+behind the slowest). `ChunkData` carries up to 250 KiB. The extra server
+hop roughly doubles request latency, which the request window absorbs.
 
 ### Flow Control
 
-- **Pipeline depth** (`--pipeline-depth`, default 16) chunk requests per
-  source, across up to **4 concurrent sources** (so up to 64 in flight)
-- The transfer stream's QUIC flow-control window is sized ≥ the
-  bandwidth-delay product, so the app-level pipeline depth is the limiter,
-  not QUIC backpressure
-- The relay stream is a distinct QUIC stream from control, so QUIC handles
-  backpressure per-stream without starving control traffic
+Transfers pace themselves the way TCP does — no application-level
+throttle:
+
+- **BBR** (not loss-based Cubic) on every connection bounds in-flight
+  data to ~the bandwidth-delay product instead of filling bottleneck
+  buffers until loss; the 2026-07-28 bufferbloat incident (~25s probe
+  RTT while seeding over a deep-buffered uplink) is the regression this
+  guards against.
+- **End-to-end stream backpressure**: the uploader's serve task blocks
+  on its stream write; the server's pump copies with bounded buffers;
+  the downloader's read pace closes the loop. A stalled receiver stops
+  its sender within a buffer's worth of data.
+- The **request window** (64 chunks/source, up to 4 sources) only hides
+  relay latency — excess queues as indices at the uploader (see
+  [Scheduling](#scheduling-request-window-snub-endgame)).
+- QUIC flow-control windows (16 MiB/stream, 64 MiB/connection) are
+  receive-side memory bounds sized to never be the binding constraint
+  under BBR.
+- The relay and data streams live on the transfer connection, so bulk
+  transfer never competes with state sync on the control connection at
+  the QUIC layer — and the two connections carry different DSCP tags
+  (see [Connection Types](#connection-types)).
 
 ### Integration with Playback
 
@@ -662,7 +756,7 @@ via the explicit archive action. See design.md,
 
 ## Relay Mechanics
 
-All peer messages travel through the server as an application-layer proxy.
+All peer traffic travels through the server as an application-layer proxy.
 
 ### Architecture
 
@@ -671,9 +765,18 @@ Peer A <-- QUIC --> Server <-- QUIC --> Peer B
                     (application-layer proxy)
 ```
 
-- Messages from A addressed to B are forwarded on B's connection
-- The server does not cache, store, or inspect file data
-- The server drops envelopes addressed to non-Present peers
+- Relay-stream messages from A addressed to B are forwarded on B's
+  relay stream (`Forward` -> `Forwarded`)
+- A data stream A opens with `OpenTransfer { to: B, file }` gets a
+  matching stream opened on B's transfer connection (headed
+  `TransferFrom { from: A, file }`); the server then **pumps bytes
+  verbatim, both directions,** until either side closes. The pump's
+  bounded copy buffers are what let QUIC stream backpressure propagate
+  downloader <-> uploader end to end.
+- The server does not cache, store, or inspect file data (it never
+  decodes past a stream's header frame)
+- The server drops envelopes — and data streams — addressed to peers
+  with no bound transfer connection
 
 **Bandwidth:** the server shares the NAS's unmetered 250Mbit uplink and
 5Gbit downlink, and the primary seeder talks to it over loopback -- so the
@@ -687,16 +790,25 @@ budget for episode-sized files.
 
 ```rust
 enum RelayEnvelope {
-    /// Forward enclosed message to the specified peer
+    /// First frame of a relay stream (forces lazy-QUIC registration)
+    Hello,
+    /// Relay stream: forward enclosed message to the specified peer
     Forward { to: PeerId, message: Vec<u8> },
-    /// A message forwarded from another peer
+    /// Relay stream: a message forwarded from another peer
     Forwarded { from: PeerId, message: Vec<u8> },
+    /// Data-stream header (downloader -> server): pump this stream to `to`
+    OpenTransfer { to: PeerId, file: Ed2kHash },
+    /// Data-stream header (server -> uploader): the pump's other end
+    TransferFrom { from: PeerId, file: Ed2kHash },
 }
 ```
 
-File transfer messages are wrapped in relay envelopes when sent through the
-server. The inner `message` bytes are decoded by the recipient as a
-`PeerMessage`.
+The first frame of every stream on the transfer connection is a
+`RelayEnvelope`, which classifies the stream. On the relay stream,
+small peer messages are wrapped in `Forward`/`Forwarded` envelopes (the
+inner bytes decode as a `PeerMessage`); on a data stream, everything
+after the header is a bare length-prefixed `PeerMessage` frame — the
+stream itself is the address.
 
 ### Transparency
 
@@ -724,8 +836,11 @@ this interface without touching transfer logic.
 
 ### Transfer Resumption
 
-Transfers have no connection of their own to re-establish. After a server
-reconnect, the downloader re-exchanges availability bitfields with its
+Transfer *state* has no connection of its own to re-establish: data
+streams die with the transfer connection (which redials itself on a
+backoff, with the fresh session's token after a control reconnect), and
+the next chunk request toward a source simply opens a fresh one. After a
+reconnect the downloader re-exchanges availability bitfields with its
 sources and re-requests outstanding chunks; blocks already on disk are
 revalidated against the ed2k block hashes, so nothing is re-fetched
 unnecessarily.

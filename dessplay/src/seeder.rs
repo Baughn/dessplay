@@ -137,6 +137,12 @@ impl SeederTransfer {
                     .send(NetworkCommand::SendPeer { to, message })
                     .await;
             }
+            FileOutput::OpenTransfer { to, file } => {
+                let _ = self
+                    .network
+                    .send(NetworkCommand::OpenTransferStream { to, file })
+                    .await;
+            }
             FileOutput::Availability { file, availability } => {
                 self.set_availability(file, availability).await;
             }
@@ -178,6 +184,26 @@ impl SeederTransfer {
         let _ = self
             .file
             .send(FileCommand::PeerMessage { from, message })
+            .await;
+    }
+
+    /// A per-transfer data stream is live: hand it to the file actor
+    /// (a seeder both serves and downloads over these).
+    pub async fn on_transfer_stream(
+        &self,
+        peer: PeerId,
+        file: Ed2kHash,
+        outbound: bool,
+        stream: dessplay_core::net::BiStream,
+    ) {
+        let _ = self
+            .file
+            .send(FileCommand::TransferStream {
+                peer,
+                file,
+                outbound,
+                stream,
+            })
             .await;
     }
 

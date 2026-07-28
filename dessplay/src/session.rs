@@ -2255,6 +2255,26 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             .await;
     }
 
+    /// A per-transfer data stream is live (either direction): hand it to
+    /// the file actor, which owns it from here.
+    pub async fn on_transfer_stream(
+        &self,
+        peer: dessplay_core::net::PeerId,
+        file: dessplay_core::types::Ed2kHash,
+        outbound: bool,
+        stream: dessplay_core::net::BiStream,
+    ) {
+        let _ = self
+            .file
+            .send(FileCommand::TransferStream {
+                peer,
+                file,
+                outbound,
+                stream,
+            })
+            .await;
+    }
+
     async fn spawn_player(&mut self) {
         let Some(factory) = self.factory.take() else {
             return; // already spawned and gone (fatal launch failure)
@@ -2383,6 +2403,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 let _ = self
                     .network
                     .send(crate::actors::network::NetworkCommand::SendPeer { to, message })
+                    .await;
+                FileEffect::None
+            }
+            FileOutput::OpenTransfer { to, file } => {
+                let _ = self
+                    .network
+                    .send(crate::actors::network::NetworkCommand::OpenTransferStream { to, file })
                     .await;
                 FileEffect::None
             }

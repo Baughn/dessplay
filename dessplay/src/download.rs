@@ -8,7 +8,11 @@
 //! Design (informed by BitTorrent; see the network-design discussion):
 //!
 //! - **Pipeline depth** outstanding chunk requests *per source*, across
-//!   up to `max_sources` peers.
+//!   up to `max_sources` peers. Since protocol v9 this window is a
+//!   latency-hider, not a throttle: requests and data ride a dedicated
+//!   per-transfer stream paced by BBR + end-to-end stream backpressure,
+//!   so the window only needs to keep the uploader's queue non-empty
+//!   across the relay round trip.
 //! - **Chunk order**: a sequential window of ~20% of the file ahead of
 //!   the playback position first (so playback can start), then
 //!   **rarest-first** (fewest sources have it) for the rest.
@@ -35,10 +39,11 @@ use crate::chunkstore::ChunkStore;
 /// Tunables for the download scheduler.
 #[derive(Clone, Copy, Debug)]
 pub struct DownloadConfig {
-    /// Outstanding chunk requests per source, set from the
-    /// `--pipeline-depth` flag. The production default (supplied by
-    /// `run::download_config`) is 48; this struct's `Default` is 16 and
-    /// is only used by tests.
+    /// Outstanding chunk requests per source — the latency-hiding
+    /// request window, **not** a throughput throttle (per-transfer
+    /// streams pace themselves; see the module docs). The production
+    /// value (supplied by `run::download_config`) is 64; this struct's
+    /// `Default` is 16 and is only used by tests.
     pub pipeline_depth: u32,
     /// Concurrent source peers per download.
     pub max_sources: u32,

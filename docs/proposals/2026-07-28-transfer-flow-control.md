@@ -1,10 +1,16 @@
 # Proposal: Transfer Flow Control Overhaul (BBR, per-transfer streams, DSCP)
 
-Status: **agreed, not yet implemented** (2026-07-28)
+Status: **implemented** (2026-07-28, same day — protocol v8/v9). The
+design is folded into network-design.md (Connection Types, Channel
+Usage, File Transfer, Flow Control, Relay Mechanics); this document is
+kept as the rationale record.
 
-When implemented, fold the design into network-design.md (Connection
-Types, Channel Usage, File Transfer, Flow Control, Relay Mechanics) and
-mark this proposal implemented.
+One deliberate deviation from §3 below: the in-stream request frames
+stayed `ChunkRequest { chunks }` (chunk lists) rather than a new
+range shape — same wire cost at postcard-varint sizes, and it reuses
+the verified scheduler (snub, endgame, rarest-first) unchanged. The
+"range" concept survives as the request *window* (64 chunks/source), a
+latency-hider rather than a throttle.
 
 ## Problem
 

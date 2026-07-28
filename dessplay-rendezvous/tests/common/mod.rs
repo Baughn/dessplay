@@ -162,6 +162,21 @@ impl Harness {
                 tokio::select! {
                     event = handle.events.recv() => {
                         let Some(event) = event else { break };
+                        // Data streams are owned, not cloneable:
+                        // intercept them before the by-reference checks,
+                        // exactly as run_interactive does.
+                        let event = match event {
+                            ClientEvent::Network(NetworkEvent::TransferStream {
+                                peer,
+                                file,
+                                outbound,
+                                stream,
+                            }) => {
+                                shell.on_transfer_stream(peer, file, outbound, stream).await;
+                                continue;
+                            }
+                            event => event,
+                        };
                         if let ClientEvent::Network(NetworkEvent::ClockSync { offset_millis }) =
                             &event
                         {
@@ -238,6 +253,18 @@ impl Harness {
                 tokio::select! {
                     event = handle.events.recv() => {
                         let Some(event) = event else { break };
+                        let event = match event {
+                            ClientEvent::Network(NetworkEvent::TransferStream {
+                                peer,
+                                file,
+                                outbound,
+                                stream,
+                            }) => {
+                                transfer.on_transfer_stream(peer, file, outbound, stream).await;
+                                continue;
+                            }
+                            event => event,
+                        };
                         if let ClientEvent::Network(NetworkEvent::Peer { from, message }) = &event {
                             transfer.on_peer(from.clone(), message.clone()).await;
                         }

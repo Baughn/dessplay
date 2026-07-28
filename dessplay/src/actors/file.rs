@@ -21,8 +21,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dessplay_core::hash::{Ed2kFileHash, ed2k_hash_reader};
-use dessplay_core::net::{PeerId, PeerMessage, chunk_range};
+use dessplay_core::net::framing::{read_frame, write_frame};
+use dessplay_core::net::{BiStream, PeerId, PeerMessage, chunk_range};
 use dessplay_core::types::{AniDbSeriesId, Ed2kHash, FileAvailability};
+use dessplay_core::wire;
 use tokio::sync::mpsc;
 
 use crate::actors::network::Clock;
@@ -216,6 +218,22 @@ pub enum FileCommand {
         /// The message.
         message: Box<dessplay_core::net::PeerMessage>,
     },
+    /// A per-transfer data stream is live (see the network actor's
+    /// `TransferStream` event). `outbound` = we opened it (a download
+    /// we drive); otherwise a peer wants `file` from us (a serve
+    /// request, answered by a dedicated serve task so one slow
+    /// downloader never stalls another — the pre-v9 shared relay
+    /// stream did exactly that).
+    TransferStream {
+        /// The peer at the other end.
+        peer: dessplay_core::net::PeerId,
+        /// The file the stream transfers.
+        file: Ed2kHash,
+        /// Whether we opened it (download) or they did (serve).
+        outbound: bool,
+        /// The live stream.
+        stream: BiStream,
+    },
     /// A local copy vanished under us mid-session (the player failed to
     /// load it). Drop it from the servable set, prune its cache/hash
     /// bookkeeping, and flip availability to Missing so it re-resolves —
@@ -344,14 +362,25 @@ pub enum FileOutput {
     },
 
     // ---- File transfer (Phase 9B).
-    /// Relay a file-transfer message to a peer (chunk request/data,
-    /// block hashes, availability, cancel). The bridge loop turns this
-    /// into a `NetworkCommand::SendPeer`.
+    /// Relay a small file-transfer message to a peer (availability,
+    /// block hashes, `CannotServe`). The bridge loop turns this into a
+    /// `NetworkCommand::SendPeer`. Bulk chunk traffic never rides this
+    /// path — it lives on per-transfer data streams.
     SendPeer {
         /// Destination peer.
         to: dessplay_core::net::PeerId,
         /// The message.
         message: Box<dessplay_core::net::PeerMessage>,
+    },
+    /// Ask the network layer for a data stream to `to` for `file` (we
+    /// are downloading from them). The bridge loop turns this into a
+    /// `NetworkCommand::OpenTransferStream`; the stream comes back as
+    /// [`FileCommand::TransferStream`] with `outbound: true`.
+    OpenTransfer {
+        /// The uploader.
+        to: dessplay_core::net::PeerId,
+        /// The file.
+        file: Ed2kHash,
     },
     /// Our availability for a file changed (download progress / Ready).
     /// The bridge loop writes it to the synced `FileAvailability`.
@@ -514,10 +543,15 @@ pub async fn run(
     out: mpsc::Sender<FileOutput>,
 ) {
     let (done_tx, mut done_rx) = mpsc::channel::<Done>(64);
+    // Data-stream traffic (chunk arrivals, stream/serve lifecycle).
+    // Bounded: a fast stream reader blocks here while the actor writes
+    // chunks to disk, which is exactly the backpressure that keeps a
+    // reader from outrunning storage.
+    let (stream_tx, mut stream_rx) = mpsc::channel::<StreamEvent>(64);
     // Captured before `config` moves into the actor.
     let scan_interval = config.scan_interval;
     let scan_enabled = scan_interval.is_some();
-    let mut actor = match Actor::new(config, out, done_tx) {
+    let mut actor = match Actor::new(config, out, done_tx, stream_tx) {
         Ok(actor) => actor,
         Err(e) => {
             tracing::error!("file actor failed to initialize: {e}");
@@ -527,7 +561,7 @@ pub async fn run(
     // Registered torrents rejoin the engine (or are dropped for files
     // evicted while the app was closed) before any commands land.
     actor.reconcile_torrents();
-    // Drives snub detection, pipeline refill, and serve-queue draining.
+    // Drives snub detection and pipeline refill.
     let mut tick = tokio::time::interval(DOWNLOAD_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Media-library scan: the first tick fires immediately (startup scan),
@@ -546,6 +580,12 @@ pub async fn run(
                 // drop it — i.e. never before the loop breaks.
                 let Some(done) = done else { break };
                 actor.on_done(done).await;
+            }
+            ev = stream_rx.recv() => {
+                // Same lifetime argument as done_rx: the actor holds a
+                // stream_tx clone.
+                let Some(ev) = ev else { break };
+                actor.on_stream_event(ev).await;
             }
             _ = tick.tick() => {
                 actor.on_tick().await;
@@ -591,10 +631,21 @@ struct Actor {
     nyaa: Option<Arc<dyn NyaaSource>>,
     /// User-selected torrents that do not have an ed2k identity yet.
     nyaa_imports: HashMap<TorrentImportId, PendingNyaaImport>,
-    /// Pending chunks to serve to peers: (requester, file, chunk).
-    serve_queue: std::collections::VecDeque<(PeerId, Ed2kHash, u32)>,
-    /// Upload pacing for serving chunks (`None` = unlimited).
-    upload: UploadLimiter,
+    /// Live download data streams we opened: (source, file) → write
+    /// half (chunk requests / cancels) plus its reader task.
+    download_streams: HashMap<(PeerId, Ed2kHash), DownloadStream>,
+    /// Messages queued for a data stream we've asked for but not yet
+    /// received; the first queued message triggers the `OpenTransfer`.
+    /// Cleared when the stream arrives (flushed) or the download ends.
+    pending_streams: HashMap<(PeerId, Ed2kHash), Vec<PeerMessage>>,
+    /// Serve tasks, one per incoming data stream: (requester, file).
+    /// Each owns its stream and paces itself against `upload`, so a
+    /// slow downloader backpressures only its own stream. Dropping a
+    /// guard aborts the task.
+    serve_tasks: HashMap<(PeerId, Ed2kHash), TaskGuard>,
+    /// Upload pacing for serving chunks (`None` = unlimited); shared
+    /// across serve tasks so the cap covers their sum.
+    upload: Arc<UploadPacer>,
     /// Last shared-clock millis we wrote a `Downloading` progress
     /// update, per file (≤1/s throttle).
     last_progress_at: HashMap<Ed2kHash, u64>,
@@ -640,6 +691,57 @@ struct Actor {
     scan_pending_commits: Vec<(PathBuf, i64, Ed2kFileHash)>,
     out: mpsc::Sender<FileOutput>,
     done_tx: mpsc::Sender<Done>,
+    /// Feeds stream traffic (chunk arrivals, lifecycle) back into the
+    /// actor loop from stream reader / serve tasks.
+    stream_tx: mpsc::Sender<StreamEvent>,
+}
+
+/// Aborts a spawned task when dropped — ties stream reader and serve
+/// tasks to their registry entries.
+struct TaskGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// A live download data stream: the write half (requests/cancels flow
+/// down it) and the reader task feeding its chunks into the actor.
+struct DownloadStream {
+    send: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+    _reader: TaskGuard,
+}
+
+/// Traffic from stream reader and serve tasks back into the actor loop.
+enum StreamEvent {
+    /// A chunk arrived on a download stream.
+    Data {
+        /// The source peer.
+        from: PeerId,
+        /// The file.
+        file: Ed2kHash,
+        /// Chunk index.
+        index: u32,
+        /// The chunk's bytes.
+        data: Vec<u8>,
+    },
+    /// A download stream closed (uploader gone, link reset). The next
+    /// send toward that source reopens one.
+    DownloadClosed {
+        /// The source peer.
+        from: PeerId,
+        /// The file.
+        file: Ed2kHash,
+    },
+    /// A serve task exited (downloader closed the stream, or the file
+    /// vanished under it).
+    ServeEnded {
+        /// The requester.
+        to: PeerId,
+        /// The file.
+        file: Ed2kHash,
+    },
 }
 
 struct PendingNyaaImport {
@@ -723,6 +825,7 @@ impl Actor {
         config: FileConfig,
         out: mpsc::Sender<FileOutput>,
         done_tx: mpsc::Sender<Done>,
+        stream_tx: mpsc::Sender<StreamEvent>,
     ) -> Result<Self, crate::storage::StorageError> {
         let mut config = config;
         let started = std::time::Instant::now();
@@ -852,8 +955,10 @@ impl Actor {
             torrent: config.torrent,
             nyaa: config.nyaa,
             nyaa_imports: HashMap::new(),
-            serve_queue: std::collections::VecDeque::new(),
-            upload: UploadLimiter::new(config.upload_limit),
+            download_streams: HashMap::new(),
+            pending_streams: HashMap::new(),
+            serve_tasks: HashMap::new(),
+            upload: Arc::new(UploadPacer::new(config.upload_limit)),
             last_progress_at: HashMap::new(),
             scan_pending_commits: Vec::new(),
             scan_worklist: std::collections::VecDeque::new(),
@@ -871,6 +976,7 @@ impl Actor {
             scan_defer_logged: false,
             out,
             done_tx,
+            stream_tx,
         })
     }
 
@@ -999,18 +1105,29 @@ impl Actor {
             FileCommand::PeerMessage { from, message } => {
                 self.on_peer_message(from, *message).await;
             }
+            FileCommand::TransferStream {
+                peer,
+                file,
+                outbound,
+                stream,
+            } => {
+                if outbound {
+                    self.on_download_stream(peer, file, stream).await;
+                } else {
+                    self.on_serve_stream(peer, file, stream);
+                }
+            }
             FileCommand::ForgetLocalFile { file } => self.lost_local_file(file).await,
         }
     }
 
     /// Periodic maintenance: snub/refill the downloads, poll running
-    /// torrents, drain the serve queue within the upload budget.
+    /// torrents.
     async fn on_tick(&mut self) {
         let actions = self.downloads.tick((self.clock)());
         self.run_download_actions(actions).await;
         self.poll_torrents().await;
         self.poll_nyaa_imports().await;
-        self.drain_serve_queue().await;
         self.poll_rechecks().await;
         // Resume deferred scan hashing once transfers go quiet (#21).
         self.pump_library_scan();
@@ -1401,22 +1518,19 @@ impl Actor {
         });
     }
 
-    /// Route an incoming peer message: serve-side requests are answered
-    /// from our local copies; the rest feed the download scheduler.
+    /// Route an incoming peer message from the relay stream: block-hash
+    /// solicitations are answered from our local copies; availability,
+    /// hashes, and `CannotServe` feed the download scheduler. Chunk
+    /// traffic never arrives here since protocol v9 — it lives on
+    /// per-transfer data streams.
     async fn on_peer_message(&mut self, from: PeerId, message: PeerMessage) {
         // Any peer traffic — requests we serve, chunks we receive — is
         // transfer activity that defers scan hashing (#21).
         self.note_transfer_activity();
         match message {
             PeerMessage::BlockHashRequest { file } => self.serve_block_hashes(from, file).await,
-            PeerMessage::ChunkRequest { file, chunks } => {
-                self.enqueue_serve(from, file, chunks);
-                self.drain_serve_queue().await;
-            }
-            PeerMessage::Cancel { file, chunks } => {
-                let cancelled: HashSet<u32> = chunks.into_iter().collect();
-                self.serve_queue
-                    .retain(|job| !(job.0 == from && job.1 == file && cancelled.contains(&job.2)));
+            PeerMessage::ChunkRequest { .. } | PeerMessage::Cancel { .. } => {
+                tracing::debug!(%from, "chunk control on the relay stream; ignoring (pre-v9?)");
             }
             download_msg => {
                 let actions = self
@@ -1456,13 +1570,23 @@ impl Actor {
                         }
                         _ => {}
                     }
-                    let _ = self
-                        .out
-                        .send(FileOutput::SendPeer {
-                            to,
-                            message: Box::new(message),
-                        })
-                        .await;
+                    // Chunk control rides the per-transfer data stream;
+                    // everything else the relay stream.
+                    match message {
+                        PeerMessage::ChunkRequest { file, .. }
+                        | PeerMessage::Cancel { file, .. } => {
+                            self.send_on_stream(to, file, message).await;
+                        }
+                        other => {
+                            let _ = self
+                                .out
+                                .send(FileOutput::SendPeer {
+                                    to,
+                                    message: Box::new(other),
+                                })
+                                .await;
+                        }
+                    }
                 }
                 DownloadAction::Progress { file, progress_bps } => {
                     // Throttle progress writes to at most once a second
@@ -1487,6 +1611,7 @@ impl Actor {
                 } => self.on_download_complete(file, path, block_hashes).await,
                 DownloadAction::Abandon { file, reason } => {
                     tracing::warn!(%file, "download abandoned: {reason}");
+                    self.drop_download_streams(file);
                     let _ = self
                         .out
                         .send(FileOutput::Availability {
@@ -1511,6 +1636,7 @@ impl Actor {
         tracing::info!(%file, path = %path.display(), "download complete");
         self.wanted.remove(&file);
         self.local_files.insert(file, path.clone());
+        self.drop_download_streams(file);
         self.last_progress_at.remove(&file);
         if let Ok(metadata) = std::fs::metadata(&path) {
             let size = metadata.len();
@@ -1566,6 +1692,7 @@ impl Actor {
         }
         let actions = self.downloads.cancel(&file);
         self.run_download_actions(actions).await;
+        self.drop_download_streams(file);
         self.last_progress_at.remove(&file);
         let partial = self.download_path(file);
         if let Err(e) = std::fs::remove_file(&partial)
@@ -2047,6 +2174,10 @@ impl Actor {
     /// entry re-resolves (and re-downloads if enabled). The disk is the
     /// truth; the DB follows it.
     async fn lost_local_file(&mut self, file: Ed2kHash) {
+        // Anyone we were serving it to loses their stream (the guard's
+        // Drop aborts the task; the downloader sees the close and moves
+        // to another source).
+        self.serve_tasks.retain(|(_, f), _| *f != file);
         if let Some(path) = self.local_files.remove(&file) {
             tracing::warn!(path = %path.display(), %file, "local copy vanished; dropping");
             if let Err(e) = self.storage.remove_cache_entry(file) {
@@ -2070,71 +2201,138 @@ impl Actor {
             .await;
     }
 
-    /// Queue a peer's chunk requests for serving (deduping re-requests).
-    fn enqueue_serve(&mut self, to: PeerId, file: Ed2kHash, chunks: Vec<u32>) {
-        if !self.local_files.contains_key(&file) {
-            // We advertised Ready but no longer hold it -- same silent
-            // "advertised but can't serve" failure as serve_block_hashes,
-            // for chunks rather than block hashes.
-            tracing::debug!(%file, %to, count = chunks.len(),
-                "asked for chunks we don't hold; ignoring");
+    // ---- Per-transfer data streams (protocol v9).
+    //
+    // Chunk traffic lives on one QUIC stream per (peer, file), pumped
+    // byte-for-byte through the server, so pacing is BBR + stream
+    // backpressure end to end and one slow downloader never stalls
+    // another (the pre-v9 shared relay stream and actor-loop serve
+    // queue both did).
+
+    /// Send a chunk-control message toward a source, on its data stream
+    /// — opening one first if needed (messages queue until it arrives).
+    async fn send_on_stream(&mut self, to: PeerId, file: Ed2kHash, message: PeerMessage) {
+        let key = (to.clone(), file);
+        if let Some(stream) = self.download_streams.get_mut(&key) {
+            let Ok(frame) = wire::encode(&message) else {
+                return;
+            };
+            // Control frames are tiny; QUIC/pump buffers absorb them,
+            // so this await never meaningfully blocks the actor.
+            if let Err(e) = write_frame(&mut stream.send, &frame).await {
+                tracing::debug!(%to, %file, "data stream write failed: {e}");
+                self.download_streams.remove(&key);
+                self.queue_for_stream(to, file, message).await;
+            }
             return;
         }
-        let requested = chunks.len();
-        for chunk in chunks {
-            let job = (to.clone(), file, chunk);
-            if !self.serve_queue.contains(&job) {
-                self.serve_queue.push_back(job);
-            }
-        }
-        tracing::debug!(%file, %to, requested, queued = self.serve_queue.len(),
-            "queued chunks to serve");
+        self.queue_for_stream(to, file, message).await;
     }
 
-    /// Send queued chunks within the upload budget. Reads are small
-    /// (250 KiB) and done inline; the budget paces how many go per tick.
-    async fn drain_serve_queue(&mut self) {
-        let now = (self.clock)();
-        while let Some((to, file, chunk)) = self.serve_queue.front().cloned() {
-            let Some(path) = self.local_files.get(&file).cloned() else {
-                self.serve_queue.pop_front();
-                continue;
-            };
-            if !path.exists() {
-                // Deleted under us: stop serving it and re-resolve.
-                self.serve_queue.retain(|job| job.1 != file);
-                self.lost_local_file(file).await;
-                continue;
-            }
-            let range = chunk_range(chunk, self.file_size(&path));
-            let len = range.end - range.start;
-            if !self.upload.try_take(len, now) {
-                break; // out of budget this tick
-            }
-            self.serve_queue.pop_front();
-            match read_range(&path, range) {
-                Ok(data) => {
-                    let _ = self
-                        .out
-                        .send(FileOutput::SendPeer {
-                            to,
-                            message: Box::new(PeerMessage::ChunkData {
-                                file,
-                                index: chunk,
-                                data,
-                            }),
-                        })
-                        .await;
-                }
-                Err(e) => tracing::debug!(%file, chunk, "serving chunk failed: {e}"),
+    /// Queue a message for a not-yet-open data stream; the first queued
+    /// message asks the network layer to open one.
+    async fn queue_for_stream(&mut self, to: PeerId, file: Ed2kHash, message: PeerMessage) {
+        let queue = self.pending_streams.entry((to.clone(), file)).or_default();
+        let fresh = queue.is_empty();
+        queue.push(message);
+        if fresh {
+            let _ = self.out.send(FileOutput::OpenTransfer { to, file }).await;
+        }
+    }
+
+    /// A data stream we asked for is live: spawn its reader and flush
+    /// whatever queued while it was being opened.
+    async fn on_download_stream(&mut self, peer: PeerId, file: Ed2kHash, stream: BiStream) {
+        if !self.downloads.is_active(&file) {
+            // The download ended while the stream was in flight; drop it
+            // (closing tells the uploader).
+            self.pending_streams.remove(&(peer, file));
+            return;
+        }
+        let BiStream { send, recv } = stream;
+        let reader = tokio::spawn(read_download_stream(
+            recv,
+            peer.clone(),
+            file,
+            self.stream_tx.clone(),
+        ));
+        self.download_streams.insert(
+            (peer.clone(), file),
+            DownloadStream {
+                send,
+                _reader: TaskGuard(reader),
+            },
+        );
+        if let Some(queue) = self.pending_streams.remove(&(peer.clone(), file)) {
+            for message in queue {
+                self.send_on_stream(peer.clone(), file, message).await;
             }
         }
     }
 
-    /// Size of a local file (0 if unstattable — the chunk-range math
-    /// then yields an empty range and the read is skipped).
-    fn file_size(&self, path: &Path) -> u64 {
-        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    /// A peer opened a data stream toward us: they want `file`. Spawn a
+    /// dedicated serve task — it owns the stream, paces itself against
+    /// the shared upload budget, and backpressures only itself.
+    fn on_serve_stream(&mut self, peer: PeerId, file: Ed2kHash, stream: BiStream) {
+        self.note_transfer_activity();
+        let Some(path) = self.local_files.get(&file).cloned() else {
+            // We advertised Ready but no longer hold it — same silent
+            // "advertised but can't serve" failure as serve_block_hashes;
+            // dropping the stream is the signal.
+            tracing::debug!(%peer, %file, "serve stream for a file we don't hold; dropping");
+            return;
+        };
+        tracing::debug!(%peer, %file, "serve stream opened");
+        let task = tokio::spawn(serve_transfer(
+            stream,
+            peer.clone(),
+            file,
+            path,
+            Arc::clone(&self.upload),
+            Arc::clone(&self.clock),
+            self.stream_tx.clone(),
+        ));
+        // A fresh stream for the same transfer replaces (aborts) any
+        // stale predecessor.
+        self.serve_tasks.insert((peer, file), TaskGuard(task));
+    }
+
+    /// Traffic and lifecycle from stream reader / serve tasks.
+    async fn on_stream_event(&mut self, ev: StreamEvent) {
+        match ev {
+            StreamEvent::Data {
+                from,
+                file,
+                index,
+                data,
+            } => {
+                self.note_transfer_activity();
+                let actions = self.downloads.on_peer_message(
+                    from,
+                    PeerMessage::ChunkData { file, index, data },
+                    (self.clock)(),
+                );
+                self.run_download_actions(actions).await;
+            }
+            StreamEvent::DownloadClosed { from, file } => {
+                tracing::debug!(%from, %file, "download stream closed");
+                self.download_streams.remove(&(from, file));
+                // The next send toward this source reopens one; a dead
+                // source is the snub logic's business.
+            }
+            StreamEvent::ServeEnded { to, file } => {
+                tracing::debug!(%to, %file, "serve stream ended");
+                self.serve_tasks.remove(&(to, file));
+            }
+        }
+    }
+
+    /// Drop every data stream and queued send for `file` — the download
+    /// is over (complete, cancelled, or abandoned). Closing the streams
+    /// is what tells the uploaders.
+    fn drop_download_streams(&mut self, file: Ed2kHash) {
+        self.download_streams.retain(|(_, f), _| *f != file);
+        self.pending_streams.retain(|(_, f), _| *f != file);
     }
 
     async fn on_done(&mut self, done: Done) {
@@ -3000,9 +3198,184 @@ fn sanitize_component(name: &str) -> String {
     }
 }
 
-/// How often the actor runs snub/refill maintenance and drains the
-/// serve queue (a safety net; data arrival drives refill directly).
+/// How often the actor runs snub/refill maintenance (a safety net; data
+/// arrival drives refill directly).
 const DOWNLOAD_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Read a download data stream: each `ChunkData` frame feeds the actor
+/// (the bounded stream-event channel is the disk-write backpressure);
+/// any error or close reports `DownloadClosed` and exits.
+async fn read_download_stream(
+    mut recv: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+    from: PeerId,
+    file: Ed2kHash,
+    tx: mpsc::Sender<StreamEvent>,
+) {
+    loop {
+        let frame = match read_frame(&mut recv).await {
+            Ok(frame) => frame,
+            Err(_) => break,
+        };
+        match wire::decode::<PeerMessage>(&frame) {
+            Ok(PeerMessage::ChunkData {
+                file: f,
+                index,
+                data,
+            }) if f == file => {
+                let event = StreamEvent::Data {
+                    from: from.clone(),
+                    file,
+                    index,
+                    data,
+                };
+                if tx.send(event).await.is_err() {
+                    return; // actor gone
+                }
+            }
+            Ok(other) => {
+                tracing::debug!(%from, %file, message = ?other, "unexpected data-stream frame");
+            }
+            Err(e) => {
+                tracing::warn!(%from, %file, "undecodable data-stream frame: {e}");
+                break;
+            }
+        }
+    }
+    let _ = tx.send(StreamEvent::DownloadClosed { from, file }).await;
+}
+
+/// Serve one transfer: read `ChunkRequest`/`Cancel` frames off the
+/// stream into a queue, and stream `ChunkData` back as fast as the
+/// stream accepts — the write await *is* the flow control (BBR and the
+/// downloader's read pace bound it end to end), plus the shared upload
+/// budget. Request order is serve order (the downloader front-loads its
+/// sequential window). Exits when the stream closes or the file
+/// vanishes; either way the closed stream is the downloader's signal.
+async fn serve_transfer(
+    stream: BiStream,
+    to: PeerId,
+    file: Ed2kHash,
+    path: PathBuf,
+    upload: Arc<UploadPacer>,
+    clock: Clock,
+    tx: mpsc::Sender<StreamEvent>,
+) {
+    let BiStream { mut send, recv } = stream;
+    // Control frames read apart from the writer (read_frame is not
+    // cancel-safe); unbounded is fine — requests are tiny and bounded
+    // by the downloader's request window.
+    let (ctl_tx, mut ctl) = mpsc::unbounded_channel::<PeerMessage>();
+    let _reader = TaskGuard(tokio::spawn(async move {
+        let mut recv = recv;
+        while let Ok(frame) = read_frame(&mut recv).await {
+            match wire::decode::<PeerMessage>(&frame) {
+                Ok(msg) => {
+                    if ctl_tx.send(msg).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("undecodable serve-stream frame: {e}");
+                    return;
+                }
+            }
+        }
+    }));
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    let mut queued: HashSet<u32> = HashSet::new();
+    let mut served: u64 = 0;
+    let apply = |queue: &mut std::collections::VecDeque<u32>,
+                 queued: &mut HashSet<u32>,
+                 msg: PeerMessage| {
+        match msg {
+            PeerMessage::ChunkRequest { file: f, chunks } if f == file => {
+                for chunk in chunks {
+                    if queued.insert(chunk) {
+                        queue.push_back(chunk);
+                    }
+                }
+            }
+            PeerMessage::Cancel { file: f, chunks } if f == file => {
+                let cancelled: HashSet<u32> = chunks.into_iter().collect();
+                queue.retain(|c| !cancelled.contains(c));
+                queued.retain(|c| !cancelled.contains(c));
+            }
+            other => tracing::debug!(message = ?other, "unexpected serve-stream message"),
+        }
+    };
+    'serve: loop {
+        // Idle: wait for work (or the close, which drops ctl_tx).
+        if queue.is_empty() {
+            match ctl.recv().await {
+                Some(msg) => apply(&mut queue, &mut queued, msg),
+                None => break 'serve,
+            }
+        }
+        // Absorb whatever else arrived (late cancels especially) before
+        // committing to the next read+write.
+        while let Ok(msg) = ctl.try_recv() {
+            apply(&mut queue, &mut queued, msg);
+        }
+        let Some(index) = queue.pop_front() else {
+            continue;
+        };
+        queued.remove(&index);
+        let range = chunk_range(index, size);
+        if range.is_empty() {
+            continue;
+        }
+        upload.take(range.end - range.start, &clock).await;
+        let data = match read_range(&path, range) {
+            Ok(data) => data,
+            Err(e) => {
+                // Gone or truncated under us; the closed stream tells
+                // the downloader, the actor's scan/guards re-resolve.
+                tracing::debug!(%file, index, "serving chunk failed: {e}");
+                break 'serve;
+            }
+        };
+        served += data.len() as u64;
+        let message = PeerMessage::ChunkData { file, index, data };
+        let Ok(frame) = wire::encode(&message) else {
+            break 'serve;
+        };
+        if write_frame(&mut send, &frame).await.is_err() {
+            break 'serve;
+        }
+    }
+    tracing::debug!(%to, %file, served_bytes = served, "serve task exiting");
+    let _ = tx.send(StreamEvent::ServeEnded { to, file }).await;
+}
+
+/// The shared, task-safe face of [`UploadLimiter`]: serve tasks call
+/// [`UploadPacer::take`], which waits out the budget instead of
+/// returning `false`. A `std` mutex — held only for the arithmetic.
+struct UploadPacer {
+    inner: std::sync::Mutex<UploadLimiter>,
+}
+
+impl UploadPacer {
+    fn new(limit: Option<u64>) -> Self {
+        UploadPacer {
+            inner: std::sync::Mutex::new(UploadLimiter::new(limit)),
+        }
+    }
+
+    /// Wait until `bytes` fits the shared budget, then spend it.
+    async fn take(&self, bytes: u64, clock: &Clock) {
+        loop {
+            let granted = match self.inner.lock() {
+                Ok(mut limiter) => limiter.try_take(bytes, clock()),
+                Err(_) => true, // poisoned: fail open, never wedge serving
+            };
+            if granted {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+}
 
 /// A token-bucket upload pacer (bytes). Unlimited when no cap is set —
 /// the seeder default. A burst of up to one second is allowed.
@@ -3853,6 +4226,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().unwrap();
         let (out_tx, _out_rx) = mpsc::channel(1024);
         let (done_tx, _done_rx) = mpsc::channel(1024);
+        let (stream_tx, _stream_rx) = mpsc::channel(64);
         let mut actor = Actor::new(
             FileConfig {
                 storage,
@@ -3870,6 +4244,7 @@ mod tests {
             },
             out_tx,
             done_tx,
+            stream_tx,
         )
         .unwrap();
 
@@ -6623,6 +6998,7 @@ mod tests {
         let engine = Arc::new(FakeTorrentEngine::default());
         let (out_tx, mut out_rx) = mpsc::channel(1024);
         let (done_tx, _done_rx) = mpsc::channel(1024);
+        let (stream_tx, _stream_rx) = mpsc::channel(64);
         let mut actor = Actor::new(
             FileConfig {
                 storage,
@@ -6640,6 +7016,7 @@ mod tests {
             },
             out_tx,
             done_tx,
+            stream_tx,
         )
         .unwrap();
 

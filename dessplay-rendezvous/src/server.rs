@@ -1118,25 +1118,22 @@ async fn serve_transfer_connection<T: Transport>(
     }
     tracing::debug!(user = %username.0, %remote, "transfer connection bound");
 
-    // ---- Accept relay streams until the connection ends.
+    // ---- Accept streams until the connection ends. Each incoming
+    // stream classifies itself by its first frame: `Hello` makes it the
+    // peer's long-lived relay stream (small peer messages); an
+    // `OpenTransfer` header makes it a per-transfer data stream, which
+    // the server pumps byte-for-byte to the target (see `pump_transfer`)
+    // so QUIC stream backpressure runs downloader <-> uploader end to
+    // end.
     loop {
         match conn.recv().await {
             Ok(TransportEvent::IncomingStream(stream)) => {
-                // The peer's relay stream (file transfer). Register the
-                // write half so other peers can forward to it, and read
-                // its Forward envelopes in a task.
-                let BiStream { send, recv } = stream;
-                let relay_tx: RelayTx = Arc::new(tokio::sync::Mutex::new(send));
-                {
-                    let mut registry = lock(&shared.registry);
-                    if let Some(entry) = registry.peers.get_mut(&username)
-                        && entry.transfer_conn_id == Some(transfer_id)
-                    {
-                        entry.relay_tx = Some(Arc::clone(&relay_tx));
-                    }
-                }
-                tracing::debug!(user = %username.0, "relay stream opened");
-                tokio::spawn(relay_reader(recv, username.clone(), Arc::clone(&shared)));
+                tokio::spawn(classify_stream(
+                    stream,
+                    username.clone(),
+                    transfer_id,
+                    Arc::clone(&shared),
+                ));
             }
             Ok(TransportEvent::Closed { .. }) | Err(_) => break,
             Ok(_) => continue, // stray control frames / datagrams
@@ -1156,6 +1153,120 @@ async fn serve_transfer_connection<T: Transport>(
     }
 }
 
+/// How long a fresh incoming stream may sit silent before its first
+/// (classifying) frame; unclassified streams are dropped.
+const STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Read a fresh incoming stream's first frame and become what it says:
+/// the peer's relay stream (`Hello` — register the write half, then read
+/// `Forward` envelopes for the connection's lifetime) or a data-stream
+/// pump (`OpenTransfer` — see [`pump_transfer`]).
+async fn classify_stream<T: Transport>(
+    stream: BiStream,
+    from: UserId,
+    transfer_id: u64,
+    shared: Arc<Shared<T>>,
+) {
+    let BiStream { send, mut recv } = stream;
+    let header = tokio::time::timeout(STREAM_HEADER_TIMEOUT, read_frame(&mut recv)).await;
+    let Ok(Ok(frame)) = header else {
+        tracing::debug!(%from, "stream closed or silent before classifying; dropping");
+        return;
+    };
+    match wire::decode::<RelayEnvelope>(&frame) {
+        Ok(RelayEnvelope::Hello) => {
+            // The peer's relay stream: register the write half so other
+            // peers can forward to it, then read its envelopes here.
+            let relay_tx: RelayTx = Arc::new(tokio::sync::Mutex::new(send));
+            {
+                let mut registry = lock(&shared.registry);
+                if let Some(entry) = registry.peers.get_mut(&from)
+                    && entry.transfer_conn_id == Some(transfer_id)
+                {
+                    entry.relay_tx = Some(Arc::clone(&relay_tx));
+                }
+            }
+            tracing::debug!(user = %from.0, "relay stream opened");
+            relay_reader(recv, from, shared).await;
+        }
+        Ok(RelayEnvelope::OpenTransfer { to, file }) => {
+            pump_transfer(send, recv, from, to, file, shared).await;
+        }
+        Ok(other) => {
+            tracing::warn!(%from, header = ?other, "stream opened with a non-header envelope");
+        }
+        Err(e) => tracing::warn!(%from, "undecodable stream header: {e}"),
+    }
+}
+
+/// Pump a data stream between downloader and uploader: open the matching
+/// stream on the target's transfer connection, announce it with a
+/// `TransferFrom` header, then copy bytes both ways until either side
+/// closes. The pump never decodes past the header — per-transfer
+/// scheduling lives in the peers — and its bounded copy buffers are what
+/// let QUIC's per-stream flow control propagate end to end: a slow
+/// downloader stalls this pump, which stalls the uploader's stream, and
+/// nobody's queue grows.
+async fn pump_transfer<T: Transport>(
+    down_send: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+    down_recv: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+    from: UserId,
+    to: UserId,
+    file: dessplay_core::types::Ed2kHash,
+    shared: Arc<Shared<T>>,
+) {
+    let target = {
+        let registry = lock(&shared.registry);
+        registry
+            .peers
+            .get(&to)
+            .and_then(|p| p.transfer_conn.clone())
+    };
+    let Some(target) = target else {
+        tracing::debug!(%from, %to, "transfer target has no transfer connection; dropping");
+        return; // both halves drop; the downloader sees the close
+    };
+    let up = match target.open_stream().await {
+        Ok(stream) => stream,
+        Err(e) => {
+            tracing::debug!(%from, %to, "opening pump stream to target: {e}");
+            return;
+        }
+    };
+    let BiStream {
+        send: mut up_send,
+        recv: mut up_recv,
+    } = up;
+    let header = RelayEnvelope::TransferFrom {
+        from: from.clone(),
+        file,
+    };
+    let Ok(frame) = wire::encode(&header) else {
+        return;
+    };
+    if let Err(e) = write_frame(&mut up_send, &frame).await {
+        tracing::debug!(%from, %to, "announcing pump stream: {e}");
+        return;
+    }
+    tracing::debug!(%from, %to, %file, "transfer pump up");
+    // Copy both directions; when either ends, the whole pump ends (a
+    // half-closed transfer stream has no meaning — the downloader owns
+    // the stream's lifetime).
+    let mut down_recv = down_recv;
+    let mut down_send = down_send;
+    let a_to_b = async {
+        let _ = tokio::io::copy(&mut down_recv, &mut up_send).await;
+    };
+    let b_to_a = async {
+        let _ = tokio::io::copy(&mut up_recv, &mut down_send).await;
+    };
+    tokio::select! {
+        _ = a_to_b => {}
+        _ = b_to_a => {}
+    }
+    tracing::debug!(%from, %to, %file, "transfer pump down");
+}
+
 /// Read a peer's relay stream, forwarding each `Forward` envelope to its
 /// target. Exits when the stream closes (connection gone). Lives as a
 /// task for the connection's lifetime; clients only send `Forward`, so
@@ -1171,14 +1282,13 @@ async fn relay_reader<T: Transport>(
             Err(_) => break,
         };
         match wire::decode::<RelayEnvelope>(&frame) {
-            // The stream registered on accept_bi before this reader even
-            // started; Hello exists only to trigger that, so ignore it.
+            // Hello only classifies the stream; a repeat is harmless.
             Ok(RelayEnvelope::Hello) => {}
             Ok(RelayEnvelope::Forward { to, message }) => {
                 shared.forward(&from, &to, message).await;
             }
-            Ok(RelayEnvelope::Forwarded { .. }) => {
-                tracing::warn!(%from, "client sent a Forwarded envelope; ignoring");
+            Ok(other) => {
+                tracing::warn!(%from, envelope = ?other, "unexpected relay envelope; ignoring");
             }
             Err(e) => tracing::warn!(%from, "undecodable relay envelope: {e}"),
         }

@@ -191,7 +191,8 @@ pub fn spawn_client<C: Connector>(
                 | NetworkEvent::SearchResults { .. }
                 | NetworkEvent::Connecting { .. }
                 | NetworkEvent::LinkHealth(_)
-                | NetworkEvent::Peer { .. } => None,
+                | NetworkEvent::Peer { .. }
+                | NetworkEvent::TransferStream { .. } => None,
             };
             if let Some(cmd) = to_sync
                 && router_sync.send(cmd).await.is_err()

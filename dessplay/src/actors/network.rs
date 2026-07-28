@@ -54,6 +54,17 @@ pub enum NetworkCommand {
         /// The message.
         message: Box<PeerMessage>,
     },
+    /// Open a per-transfer **data stream** to `to` for `file` (the
+    /// downloader side of a transfer). The server pumps it byte-for-byte
+    /// to the target; the opened stream comes back as
+    /// [`NetworkEvent::TransferStream`] with `outbound: true`. Dropped
+    /// if the transfer link isn't up — transfer logic retries.
+    OpenTransferStream {
+        /// The uploader.
+        to: PeerId,
+        /// The file to transfer.
+        file: dessplay_core::types::Ed2kHash,
+    },
     /// Close the connection and exit the actor.
     Shutdown,
 }
@@ -67,6 +78,7 @@ impl NetworkCommand {
             NetworkCommand::SendEager(msg) => msg.variant_name(),
             NetworkCommand::SendDatagramOnly(msg) => msg.variant_name(),
             NetworkCommand::SendPeer { .. } => "SendPeer",
+            NetworkCommand::OpenTransferStream { .. } => "OpenTransferStream",
             NetworkCommand::Shutdown => "Shutdown",
         }
     }
@@ -129,6 +141,21 @@ pub enum NetworkEvent {
         from: PeerId,
         /// The message.
         message: Box<PeerMessage>,
+    },
+    /// A per-transfer data stream is live: either the one we asked for
+    /// ([`NetworkCommand::OpenTransferStream`], `outbound: true`) or one
+    /// a peer opened toward us to download `file` (`outbound: false` —
+    /// a serve request). The stream carries bare length-prefixed
+    /// `PeerMessage` frames; the file actor owns it from here.
+    TransferStream {
+        /// The peer at the other end of the pump.
+        peer: PeerId,
+        /// The file this stream transfers.
+        file: dessplay_core::types::Ed2kHash,
+        /// Whether we opened it (our download) or they did (our serve).
+        outbound: bool,
+        /// The live stream.
+        stream: dessplay_core::net::BiStream,
     },
     /// Connection lost; the actor will retry.
     Disconnected {
@@ -416,10 +443,18 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// The control side's handle to the transfer link: outbound peer
-/// messages go into `tx`; dropping the handle kills the task.
+/// Work handed to the transfer link by the control loop.
+enum TransferOp {
+    /// Write a `Forward` envelope on the relay stream.
+    Send(PeerId, Box<PeerMessage>),
+    /// Open a data stream to a peer for a file (downloader side).
+    OpenStream(PeerId, dessplay_core::types::Ed2kHash),
+}
+
+/// The control side's handle to the transfer link: outbound work goes
+/// into `tx`; dropping the handle kills the task.
 struct TransferLink {
-    tx: mpsc::Sender<(PeerId, Box<PeerMessage>)>,
+    tx: mpsc::Sender<TransferOp>,
     _task: AbortOnDrop,
 }
 
@@ -434,7 +469,7 @@ async fn run_transfer_link<C: Connector>(
     username: UserId,
     token: u64,
     backoff: Duration,
-    mut outbound: mpsc::Receiver<(PeerId, Box<PeerMessage>)>,
+    mut outbound: mpsc::Receiver<TransferOp>,
     events: mpsc::Sender<NetworkEvent>,
     counters: Arc<NetCounters>,
 ) {
@@ -447,12 +482,13 @@ async fn run_transfer_link<C: Connector>(
                 continue;
             }
         };
+        let conn = Arc::new(conn);
         let link = async {
             let auth = ServerControl::TransferAuth {
                 username: username.clone(),
                 token,
             };
-            send_control(&conn, &counters, &auth).await?;
+            send_control(&*conn, &counters, &auth).await?;
             let stream = conn.open_stream().await?;
             let dessplay_core::net::BiStream { mut send, recv } = stream;
             // Announce the stream immediately: QUIC reveals a bi-stream
@@ -476,38 +512,135 @@ async fn run_transfer_link<C: Connector>(
             }
         };
         tracing::debug!("transfer link up");
-        // The reader runs apart from the writer (read_frame is not
-        // cancel-safe, so it must not race in a select); its exit is
-        // the link-death signal.
+        // The relay-stream reader runs apart from the writer (read_frame
+        // is not cancel-safe, so it must not race in a select); its exit
+        // is one link-death signal, `conn.recv()` errors the other.
         let mut reader = tokio::spawn(run_relay_reader(
             recv,
             events.clone(),
             Arc::clone(&counters),
         ));
-        loop {
+        let dead = loop {
             tokio::select! {
                 out = outbound.recv() => {
-                    let Some((to, message)) = out else {
+                    let Some(op) = out else {
                         // Actor gone: we die with it.
                         reader.abort();
                         conn.close("shutting down").await;
                         return;
                     };
-                    let Ok(inner) = wire::encode(&*message) else { continue };
-                    let envelope = RelayEnvelope::Forward { to, message: inner };
-                    let Ok(frame) = wire::encode(&envelope) else { continue };
-                    counters.add_tx(frame.len());
-                    if let Err(e) = write_frame(&mut send, &frame).await {
-                        tracing::debug!("transfer link write failed: {e}");
-                        break;
+                    match op {
+                        TransferOp::Send(to, message) => {
+                            let Ok(inner) = wire::encode(&*message) else { continue };
+                            let envelope = RelayEnvelope::Forward { to, message: inner };
+                            let Ok(frame) = wire::encode(&envelope) else { continue };
+                            counters.add_tx(frame.len());
+                            if let Err(e) = write_frame(&mut send, &frame).await {
+                                tracing::debug!("transfer link write failed: {e}");
+                                break false;
+                            }
+                        }
+                        TransferOp::OpenStream(to, file) => {
+                            // Open the data stream and hand it off in a
+                            // task — the header write can block on flow
+                            // control and must not stall the link loop.
+                            match conn.open_stream().await {
+                                Ok(stream) => {
+                                    tokio::spawn(announce_data_stream(
+                                        stream,
+                                        to,
+                                        file,
+                                        events.clone(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::debug!("opening data stream: {e}");
+                                    break false;
+                                }
+                            }
+                        }
                     }
                 }
-                _ = &mut reader => break,
+                // The server opens pump streams toward us when a peer
+                // downloads from us; recv() also observes link death.
+                event = conn.recv() => match event {
+                    Ok(TransportEvent::IncomingStream(stream)) => {
+                        tokio::spawn(classify_incoming_stream(stream, events.clone()));
+                    }
+                    Ok(TransportEvent::Closed { .. }) | Err(_) => break true,
+                    Ok(_) => {} // stray control frames / datagrams
+                },
+                _ = &mut reader => break true,
             }
+        };
+        if !dead {
+            reader.abort();
         }
-        reader.abort();
         conn.close("transfer link reset").await;
         tokio::time::sleep(backoff).await;
+    }
+}
+
+/// Write a fresh data stream's `OpenTransfer` header, then surface it as
+/// an outbound [`NetworkEvent::TransferStream`]. Failures just drop the
+/// stream — the transfer layer retries on its own cadence.
+async fn announce_data_stream(
+    stream: dessplay_core::net::BiStream,
+    to: PeerId,
+    file: dessplay_core::types::Ed2kHash,
+    events: mpsc::Sender<NetworkEvent>,
+) {
+    let dessplay_core::net::BiStream { mut send, recv } = stream;
+    let header = RelayEnvelope::OpenTransfer {
+        to: to.clone(),
+        file,
+    };
+    let Ok(frame) = wire::encode(&header) else {
+        return;
+    };
+    if let Err(e) = write_frame(&mut send, &frame).await {
+        tracing::debug!(%to, %file, "announcing data stream: {e}");
+        return;
+    }
+    let _ = events
+        .send(NetworkEvent::TransferStream {
+            peer: to,
+            file,
+            outbound: true,
+            stream: dessplay_core::net::BiStream { send, recv },
+        })
+        .await;
+}
+
+/// Read an incoming (server-pumped) stream's header and surface it as an
+/// inbound [`NetworkEvent::TransferStream`] — a peer wants to download
+/// `file` from us. Anything else is dropped.
+async fn classify_incoming_stream(
+    stream: dessplay_core::net::BiStream,
+    events: mpsc::Sender<NetworkEvent>,
+) {
+    let dessplay_core::net::BiStream { send, mut recv } = stream;
+    let header =
+        tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(&mut recv)).await;
+    let Ok(Ok(frame)) = header else {
+        tracing::debug!("incoming stream closed or silent before classifying; dropping");
+        return;
+    };
+    match wire::decode::<RelayEnvelope>(&frame) {
+        Ok(RelayEnvelope::TransferFrom { from, file }) => {
+            let _ = events
+                .send(NetworkEvent::TransferStream {
+                    peer: from,
+                    file,
+                    outbound: false,
+                    stream: dessplay_core::net::BiStream { send, recv },
+                })
+                .await;
+        }
+        Ok(other) => {
+            tracing::warn!(header = ?other, "incoming stream with a non-header envelope");
+        }
+        Err(e) => tracing::warn!("undecodable incoming stream header: {e}"),
     }
 }
 
@@ -537,8 +670,11 @@ async fn run_relay_reader(
                 }
                 Err(e) => tracing::warn!("undecodable peer message: {e}"),
             },
-            // The server only ever sends Forwarded; ignore the rest.
-            Ok(RelayEnvelope::Forward { .. } | RelayEnvelope::Hello) => {}
+            // The server only ever sends Forwarded on the relay stream
+            // (data-stream headers arrive on their own streams).
+            Ok(other) => {
+                tracing::debug!(envelope = ?other, "unexpected relay envelope; ignoring");
+            }
             Err(e) => tracing::warn!("undecodable relay envelope: {e}"),
         }
     }
@@ -785,8 +921,17 @@ async fn run_connection<T: Transport, C: Connector>(
                             tracing::debug!("transfer link not up; dropping SendPeer");
                             continue;
                         };
-                        if let Err(e) = link.tx.try_send((to, message)) {
+                        if let Err(e) = link.tx.try_send(TransferOp::Send(to, message)) {
                             tracing::debug!("transfer link backlogged; dropping SendPeer: {e}");
+                        }
+                    }
+                    Some(NetworkCommand::OpenTransferStream { to, file }) => {
+                        let Some(link) = transfer.as_ref() else {
+                            tracing::debug!("transfer link not up; dropping OpenTransferStream");
+                            continue;
+                        };
+                        if let Err(e) = link.tx.try_send(TransferOp::OpenStream(to, file)) {
+                            tracing::debug!("transfer link backlogged; dropping open: {e}");
                         }
                     }
                     Some(NetworkCommand::Shutdown) | None => {

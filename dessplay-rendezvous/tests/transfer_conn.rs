@@ -194,6 +194,125 @@ async fn transfer_connection_death_degrades_transfers_not_presence() {
     .await;
 }
 
+/// The server's per-transfer byte pump (protocol v9): a data stream
+/// opened with an `OpenTransfer` header reaches the target as a fresh
+/// stream headed `TransferFrom`, and bytes then flow both ways,
+/// verbatim, through the pump. Exercised over full client stacks
+/// elsewhere; this pins the server mechanics with raw peers.
+#[tokio::test(start_paused = true)]
+async fn a_data_stream_is_pumped_between_peers() {
+    use dessplay_core::net::framing::{read_frame, write_frame};
+    use dessplay_core::net::{BiStream, RelayEnvelope};
+
+    let harness = Harness::new(914);
+    // Two raw sessions: auth on the control connection, then bind a
+    // transfer connection with the issued token — by hand, so the test
+    // sees the pump's exact frames.
+    let bind = |name: &'static str| {
+        let harness = &harness;
+        async move {
+            let control = harness
+                .net
+                .connector(&EndpointId::new(name), &harness.server_id)
+                .connect()
+                .await
+                .unwrap();
+            let auth = WireMessage::Control(ServerControl::Auth {
+                username: UserId::new(name),
+                password: PASSWORD.into(),
+                role: Role::Interactive,
+                epoch: Epoch(0),
+                protocol_version: dessplay_core::net::PROTOCOL_VERSION,
+            });
+            control
+                .send_control(&wire::encode(&auth).unwrap())
+                .await
+                .unwrap();
+            let token = loop {
+                match control.recv().await.unwrap() {
+                    TransportEvent::Control(bytes) => {
+                        if let Ok(WireMessage::Control(ServerControl::AuthOk {
+                            transfer_token,
+                            ..
+                        })) = wire::decode(&bytes)
+                        {
+                            break transfer_token;
+                        }
+                    }
+                    TransportEvent::Closed { reason } => panic!("closed before AuthOk: {reason}"),
+                    _ => continue,
+                }
+            };
+            let transfer = harness
+                .net
+                .connector(&EndpointId::new(name), &harness.transfer_id)
+                .connect()
+                .await
+                .unwrap();
+            let bind = WireMessage::Control(ServerControl::TransferAuth {
+                username: UserId::new(name),
+                token,
+            });
+            transfer
+                .send_control(&wire::encode(&bind).unwrap())
+                .await
+                .unwrap();
+            (control, transfer)
+        }
+    };
+    let (_kim_control, kim_transfer) = bind("kim").await;
+    let (_baughn_control, baughn_transfer) = bind("baughn").await;
+    // Let the TransferAuth frames land before opening streams.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let file = Ed2kHash([3; 16]);
+    // kim (downloader) opens a data stream to baughn.
+    let BiStream {
+        send: mut kim_send,
+        recv: mut kim_recv,
+    } = kim_transfer.open_stream().await.unwrap();
+    let header = RelayEnvelope::OpenTransfer {
+        to: UserId::new("baughn"),
+        file,
+    };
+    write_frame(&mut kim_send, &wire::encode(&header).unwrap())
+        .await
+        .unwrap();
+    write_frame(&mut kim_send, b"request-bytes").await.unwrap();
+
+    // baughn receives the pumped stream, headed TransferFrom.
+    let deadline = tokio::time::Instant::now() + BUDGET;
+    let BiStream {
+        send: mut baughn_send,
+        recv: mut baughn_recv,
+    } = loop {
+        match tokio::time::timeout_at(deadline, baughn_transfer.recv())
+            .await
+            .expect("pumped stream never arrived")
+            .unwrap()
+        {
+            TransportEvent::IncomingStream(stream) => break stream,
+            TransportEvent::Closed { reason } => panic!("transfer conn closed: {reason}"),
+            _ => continue,
+        }
+    };
+    let header_frame = read_frame(&mut baughn_recv).await.unwrap();
+    assert_eq!(
+        wire::decode::<RelayEnvelope>(&header_frame).unwrap(),
+        RelayEnvelope::TransferFrom {
+            from: UserId::new("kim"),
+            file,
+        }
+    );
+    // Downstream bytes arrived verbatim; upstream flows too.
+    assert_eq!(
+        read_frame(&mut baughn_recv).await.unwrap(),
+        b"request-bytes"
+    );
+    write_frame(&mut baughn_send, b"data-bytes").await.unwrap();
+    assert_eq!(read_frame(&mut kim_recv).await.unwrap(), b"data-bytes");
+}
+
 /// A reconnecting control connection invalidates the old session's
 /// token: the transfer link that came with the *old* session cannot
 /// serve the new one, but the new session's own link binds fine (the
