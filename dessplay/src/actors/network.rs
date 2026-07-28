@@ -195,13 +195,93 @@ pub struct LinkHealthReport {
 }
 
 /// Cumulative per-connection byte counters, covering the control
-/// stream, datagrams, and the relay stream in both directions. Shared
-/// with the spawned relay reader task, hence atomics; created fresh per
-/// connection so rate deltas reset naturally on reconnect.
+/// stream, datagrams, the relay stream, and every per-transfer data
+/// stream in both directions (data streams are handed to the file
+/// actor wrapped in [`CountedRead`]/[`CountedWrite`], so bulk chunk
+/// traffic lands here even though this actor never sees the bytes —
+/// the 2026-07-28 regression was a 100 Mb/s download showing ▲/▼ 0).
+/// Shared with the spawned reader/stream tasks, hence atomics; created
+/// fresh per connection so rate deltas reset naturally on reconnect.
 #[derive(Debug, Default)]
 struct NetCounters {
     tx_bytes: AtomicU64,
     rx_bytes: AtomicU64,
+}
+
+/// A write half that adds every written byte to the connection's tx
+/// counter on its way through.
+struct CountedWrite {
+    inner: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+    counters: Arc<NetCounters>,
+}
+
+impl tokio::io::AsyncWrite for CountedWrite {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(written)) = &poll {
+            self.counters.add_tx(*written);
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// A read half that adds every delivered byte to the connection's rx
+/// counter on its way through.
+struct CountedRead {
+    inner: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+    counters: Arc<NetCounters>,
+}
+
+impl tokio::io::AsyncRead for CountedRead {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &poll {
+            self.counters.add_rx(buf.filled().len() - before);
+        }
+        poll
+    }
+}
+
+/// Wrap both halves of a data stream in byte counters before handing it
+/// out of the network layer.
+fn counted_stream(
+    stream: dessplay_core::net::BiStream,
+    counters: &Arc<NetCounters>,
+) -> dessplay_core::net::BiStream {
+    let dessplay_core::net::BiStream { send, recv } = stream;
+    dessplay_core::net::BiStream {
+        send: Box::new(CountedWrite {
+            inner: send,
+            counters: Arc::clone(counters),
+        }),
+        recv: Box::new(CountedRead {
+            inner: recv,
+            counters: Arc::clone(counters),
+        }),
+    }
 }
 
 impl NetCounters {
@@ -547,7 +627,7 @@ async fn run_transfer_link<C: Connector>(
                             match conn.open_stream().await {
                                 Ok(stream) => {
                                     tokio::spawn(announce_data_stream(
-                                        stream,
+                                        counted_stream(stream, &counters),
                                         to,
                                         file,
                                         events.clone(),
@@ -565,7 +645,10 @@ async fn run_transfer_link<C: Connector>(
                 // downloads from us; recv() also observes link death.
                 event = conn.recv() => match event {
                     Ok(TransportEvent::IncomingStream(stream)) => {
-                        tokio::spawn(classify_incoming_stream(stream, events.clone()));
+                        tokio::spawn(classify_incoming_stream(
+                            counted_stream(stream, &counters),
+                            events.clone(),
+                        ));
                     }
                     Ok(TransportEvent::Closed { .. }) | Err(_) => break true,
                     Ok(_) => {} // stray control frames / datagrams
@@ -1081,9 +1164,10 @@ mod tests {
     }
 
     /// A minimal transfer-side server: accepts any number of transfer
-    /// connections, ignores their `TransferAuth`, and drains whatever
-    /// relay streams they open — enough for the transfer link to come
-    /// up and its writes to land in the byte counters.
+    /// connections, ignores their `TransferAuth`, drains relay streams
+    /// (`Hello` first frame), and **echoes** every frame of any other
+    /// stream — a data stream's bytes come straight back, so tests can
+    /// drive both counter directions without a real peer.
     async fn fake_transfer_server(listener: SimListener) {
         loop {
             let Ok((conn, _addr)) = listener.accept().await else {
@@ -1093,12 +1177,30 @@ mod tests {
                 loop {
                     match conn.recv().await {
                         Ok(TransportEvent::IncomingStream(stream)) => {
-                            let dessplay_core::net::BiStream { mut recv, .. } = stream;
+                            let dessplay_core::net::BiStream { mut send, mut recv } = stream;
                             tokio::spawn(async move {
-                                while dessplay_core::net::framing::read_frame(&mut recv)
-                                    .await
-                                    .is_ok()
-                                {}
+                                let mut first = true;
+                                let mut echo = false;
+                                while let Ok(frame) =
+                                    dessplay_core::net::framing::read_frame(&mut recv).await
+                                {
+                                    if first {
+                                        first = false;
+                                        echo = !matches!(
+                                            wire::decode::<RelayEnvelope>(&frame),
+                                            Ok(RelayEnvelope::Hello)
+                                        );
+                                    }
+                                    if echo
+                                        && dessplay_core::net::framing::write_frame(
+                                            &mut send, &frame,
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
                             });
                         }
                         Ok(TransportEvent::Closed { .. }) | Err(_) => return,
@@ -1240,6 +1342,83 @@ mod tests {
             "an 80KB relay send should dominate some 1s window; max tx_bps was {:?}",
             reports.iter().map(|r| r.tx_bps).max()
         );
+    }
+
+    /// Regression (2026-07-28): a ~100 Mb/s download showed ▲/▼ 0 in the
+    /// health line — per-transfer data streams are owned by the file
+    /// actor, so their bytes bypassed the network actor's counters until
+    /// the halves were wrapped in counting adapters at hand-off. Pump
+    /// bytes through a data stream in both directions and require them
+    /// in a LinkHealth sample's rates.
+    #[tokio::test(start_paused = true)]
+    async fn counters_cover_data_stream_bytes() {
+        use dessplay_core::net::framing::{read_frame, write_frame};
+
+        let net = SimNetwork::new(17);
+        let server = EndpointId::new("server");
+        tokio::spawn(fake_server(net.listener(&server), paused_clock(), true));
+        let transfer = EndpointId::new("server-transfer");
+        tokio::spawn(fake_transfer_server(net.listener(&transfer)));
+
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(4096);
+        let connector = Arc::new(net.connector(&EndpointId::new("kim"), &server));
+        let transfer_connector = Arc::new(net.connector(&EndpointId::new("kim"), &transfer));
+        let _actor = tokio::spawn(run(
+            connector,
+            transfer_connector,
+            config_with_clock(paused_clock()),
+            command_rx,
+            event_tx,
+        ));
+
+        // Once connected, ask for a data stream; the fake server echoes
+        // its frames, so writing through it drives both directions.
+        let mut stream = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match event_rx.recv().await.expect("actor alive") {
+                    NetworkEvent::Connected { .. } => {
+                        command_tx
+                            .send(NetworkCommand::OpenTransferStream {
+                                to: UserId::new("nas"),
+                                file: Ed2kHash([1; 16]),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    NetworkEvent::TransferStream {
+                        outbound: true,
+                        stream,
+                        ..
+                    } => break stream,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("data stream never arrived");
+
+        // What the file actor would do: write a bulk frame, read replies.
+        let payload = vec![0xAB; 64 * 1024];
+        write_frame(&mut stream.send, &payload).await.unwrap();
+        let _header_echo = read_frame(&mut stream.recv).await.unwrap();
+        let echoed = read_frame(&mut stream.recv).await.unwrap();
+        assert_eq!(echoed, payload, "the fake server echoes data frames");
+
+        // The next health sample must carry both directions' bytes.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let NetworkEvent::LinkHealth(report) =
+                    event_rx.recv().await.expect("actor alive")
+                    && report.tx_bps > 10_000
+                    && report.rx_bps > 10_000
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("data-stream bytes never showed up in the health rates");
     }
 
     /// Sanity for the interrupt-capable connect path: a normal connect
