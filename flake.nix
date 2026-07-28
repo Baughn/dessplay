@@ -45,7 +45,17 @@
         };
 
         # Build *only* the dependencies. Cached until Cargo.lock changes.
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        #
+        # extraDummyScript: crane stubs out every path crate in the
+        # deps-only phase, but vendor/quinn-udp is a [patch.crates-io]
+        # target that registry quinn compiles against — an empty stub
+        # breaks the quinn build. Keep the real sources.
+        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+          extraDummyScript = ''
+            rm -rf $out/vendor/quinn-udp
+            cp -r ${src}/vendor/quinn-udp $out/vendor/quinn-udp
+          '';
+        });
 
         # Build the workspace, reusing the pre-built dependency artifacts.
         dessplay = craneLib.buildPackage (commonArgs // {

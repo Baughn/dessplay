@@ -92,7 +92,7 @@ fn recv_tos(sock: &UdpSocket) -> u8 {
 
 /// Send one quinn-udp datagram from a DSCP-tagged socket to `dst`.
 fn send_tagged(sender: &UdpSocket, dst: SocketAddr) {
-    let state = UdpSocketState::new((&*sender).into()).expect("UdpSocketState");
+    let state = UdpSocketState::new(sender.into()).expect("UdpSocketState");
     let transmit = Transmit {
         destination: dst,
         ecn: Some(ECN),
@@ -103,7 +103,7 @@ fn send_tagged(sender: &UdpSocket, dst: SocketAddr) {
     // The state sets the socket nonblocking; loopback won't backpressure
     // a 4-byte datagram, but retry WouldBlock a few times to be safe.
     for _ in 0..10 {
-        match state.try_send((&*sender).into(), &transmit) {
+        match state.try_send(sender.into(), &transmit) {
             Ok(()) => return,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(10));
