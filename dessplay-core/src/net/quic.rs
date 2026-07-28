@@ -58,6 +58,13 @@ pub const PER_ADDRESS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// QUIC connections rather than two streams. The tag matters at the
 /// sender's own router/uplink egress queue (the queue that actually
 /// hurts); whether the wider internet bleaches it is irrelevant.
+///
+/// The socket tag only reaches the wire because of the vendored
+/// quinn-udp fork (`[patch.crates-io]`, vendor/quinn-udp): stock
+/// quinn-udp's per-packet ECN cmsg overrides the socket-level TOS byte
+/// and would zero the DSCP on every datagram. See
+/// docs/network-design.md ("The quinn-udp fork") and the wire-level
+/// regression test in tests/dscp_wire.rs.
 pub const DSCP_CONTROL: u8 = 34;
 
 /// DSCP for the **transfer** connection (relayed bulk file data): AF21.

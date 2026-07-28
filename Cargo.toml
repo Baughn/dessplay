@@ -1,7 +1,19 @@
 [workspace]
 resolver = "3"
 members = ["dessplay-core", "dessplay", "dessplay-rendezvous"]
-exclude = ["dessplay-core/fuzz", "dessplay/fuzz"]
+# vendor/quinn-udp is a patched dependency, not a workspace crate — kept
+# out so workspace-wide fmt/clippy/test leave upstream's code style alone.
+exclude = ["dessplay-core/fuzz", "dessplay/fuzz", "vendor/quinn-udp"]
+
+# quinn-udp attaches a per-packet IP_TOS/IPV6_TCLASS cmsg carrying only
+# the ECN bits, which overrides — and so zeroes — the socket-level DSCP
+# set in net/quic.rs::bind_socket. Upstream declined to add DSCP support
+# (quinn-rs/quinn#1749), so this fork captures the socket's TOS byte at
+# UdpSocketState creation and ORs it into the cmsg. Regression test:
+# dessplay-core/tests/dscp_wire.rs. Patch sites marked "DESSPLAY PATCH"
+# in vendor/quinn-udp/src/unix.rs.
+[patch.crates-io]
+quinn-udp = { path = "vendor/quinn-udp" }
 
 [workspace.package]
 version = "0.1.0"

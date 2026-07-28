@@ -33,3 +33,7 @@ rand = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 dessplay-core = { path = ".", features = ["test-support"] }
+# Wire-level DSCP regression test (tests/dscp_wire.rs): drives quinn's
+# UDP layer directly and reads the TOS byte back with raw recvmsg.
+quinn-udp = "0.5"
+libc = "0.2"

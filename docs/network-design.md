@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -86,6 +86,23 @@ irrelevant. Torrents (librqbit's own sockets) stay untagged at CS0;
 server binds each listener's socket with the matching codepoint, so the
 downlink direction is classifiable too. Windows silently ignores the
 setsockopt; tagging is best-effort everywhere.
+
+**The quinn-udp fork (vendor/quinn-udp).** Socket-level tagging alone
+does not survive stock quinn: quinn-udp attaches a per-packet
+`IP_TOS`/`IPV6_TCLASS` control message to every datagram whose value is
+derived solely from the transmit's ECN codepoint, and a per-packet cmsg
+overrides the socket option — so the wire TOS byte came out as bare ECN
+(DSCP 0) on Linux and macOS, both families. Upstream declined to add
+DSCP support (quinn-rs/quinn#1749), so the workspace pins a vendored
+fork via `[patch.crates-io]`: `UdpSocketState::new` captures the
+socket's TOS byte (ECN bits masked off) with one `getsockopt`, and
+`prepare_msg` ORs it into the cmsg value. Since `bind_socket` tags the
+socket before handing it to `quinn::Endpoint::new`, the captured base is
+always the intended codepoint. Patch sites are marked `DESSPLAY PATCH`
+in `vendor/quinn-udp/src/unix.rs`; the wire-level regression test is
+`dessplay-core/tests/dscp_wire.rs` (send through quinn-udp on a tagged
+socket, read the TOS byte back with raw `recvmsg`). When bumping quinn,
+re-vendor and re-apply — the test fails if the patch is lost.
 
 **Binding.** `Auth`/`AuthOk` happen on the control connection; `AuthOk`
 carries a per-session `transfer_token`. The client then dials the
