@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -225,7 +225,7 @@ sync state with each other. See [network-design.md](network-design.md).
    opened. Failed/cancelled imports remain local notices and never create a
    provisional shared entry.
 
-**Sort order (#8):** `Tab` toggles the add/map browser between
+**Sort order:** `Tab` toggles the add/map browser between
 alphabetical (the default) and newest-mtime-first, both in a plain
 directory listing and in search results — so files that just landed float
 to the top. Newest mtime comes from the **library index** when the file
@@ -236,7 +236,7 @@ browser's own edit-distance-to-target ranking is what "alphabetical" means
 for it -- `Tab` still switches it to newest-mtime-first. The choice is
 persisted, like the All Series sort.
 
-**Or paste it in (#33):** with the Playlist pane focused, pasting (terminal
+**Or paste it in:** with the Playlist pane focused, pasting (terminal
 paste, bracketed) a single path to a file that exists adds it — same as
 picking it in the browser, anchored after the currently selected entry.
 Any other paste (wrong pane, multiple lines, not a real path) is treated
@@ -266,20 +266,19 @@ When someone adds a file, everyone needs to find their local copy:
      this file
    - **Unknown series** (no watch history for that series): you are set to
      **Not Watching** — a generated placeholder PNG is loaded into your player
-     showing the current state. *Implementation note (Phase 9A):* the
-     automatic Not-Watching set requires an AniDB **series id** to key the
-     synced preference on; a missing file whose series has no id (AniDB
-     didn't know it, only a filename-derived series name exists) keeps
-     blocking, and the manual not-watching action (4b) is the escape
-     hatch. The "known series" detection itself uses the series id when
-     present and the series name otherwise.
+     showing the current state. *Limitation:* the automatic Not-Watching set
+     requires an AniDB **series id** to key the synced preference on; a
+     missing file whose series has no id keeps blocking, and the manual
+     not-watching action (4b) is the escape hatch. The "known series"
+     detection itself uses the series id when present and the series name
+     otherwise.
 4a. You can manually map to a different file:
    - Select the red entry, press `M` to open browser
    - Browser opens to the directory most recently used for files from that
      series (the main loop supplies it from `series_map_dirs` when the
      browser is requested; unknown series open at the media roots)
    - Files are sorted by edit distance to the target filename by default;
-     `Tab` switches to newest-mtime-first (design.md #8)
+     `Tab` switches to newest-mtime-first
 4b. You can manually set yourself to "not watching" on a file that's Missing
    (e.g. a known series but you don't have this episode yet). This clears the
    "missing from known series" block
@@ -288,7 +287,7 @@ When someone adds a file, everyone needs to find their local copy:
     the retention policy; they are never automatically placed in a media root.
     An explicit **archive** action moves a cached file into the download root,
     aka. the topmost media root. By default it uses
-    [Series name]/[Season #]/[Original filename]; the Files setting can instead
+    [Series name]/[Original filename]; the Files setting can instead
     place [Original filename] directly in the root. See
     [Download Cache](#download-cache-and-retention).
 
@@ -389,14 +388,11 @@ It can have one of three values:
 - **Downloading**: The user's client is actively retrieving the file from other
   clients. Unpausing is conditional: their download speed must be higher than the
   file's computed bitrate, *and* at least 20% of the file must be downloaded.
-  *Implementation status (2026-06-28):* only the **20%** half is enforced today
-  (`derive::file_block_reason` blocks below 20%). The download-speed-vs-bitrate
-  half is **deferred** — `FileAvailability::Downloading { progress_bps }` carries
-  only progress, no measured throughput, so the speed clause cannot be evaluated
-  from synced state; honoring it would require a synced eligibility signal. See
-  [Future Plans](#future-plans). Impact is a self-only edge (a user who unpauses
-  at exactly 20% with throughput below the bitrate may stall their own playback;
-  it never gates the group).
+  Only the **20%** half is enforced today; the download-speed-vs-bitrate half
+  is **deferred** — no synced throughput signal exists to evaluate it, see
+  [Future Plans](#future-plans). Impact is a self-only edge (a user who
+  unpauses at exactly 20% with throughput below the bitrate may stall their
+  own playback; it never gates the group).
 
 ### Ready States (UI Display)
 
@@ -542,24 +538,19 @@ never hides it and it survives player relaunches.
 
    The engage (150ms) and release (25ms) thresholds are deliberately far
    apart, and mid-correction speed updates are quantized and rate-limited
-   (~1/s). What is audible is not the slew but the speed *transitions*:
-   measured against real mpv (2026-07-22), a sustained pitch-corrected 2%
-   slew is spectrally identical to baseline, while each transition is a
-   broadband click. The original bang-bang controller (fixed ±2%, engage
-   and release both at 100ms) parked each client at the edge of its own
-   deadband and re-fired on every sample wobble -- hundreds of ~200ms ±2%
-   blips per hour, plainly audible as stutter.
+   (~1/s): a sustained pitch-corrected 2% slew is inaudible, but each speed
+   *transition* is a broadband click, so corrections must be few and long
+   rather than frequent and brief.
 
    The position reference is the **seek authority's** position when a *user*
    holds authority -- **but only when that user is a valid same-file source**
    (present and advertising `FileAvailability::Ready` for the now-playing
    file). A user can hold seek authority without being on the real video --
    e.g. a not-watching client whose player shows a placeholder, which still
-   reports a position. Following such an authority blindly froze the whole
-   group on its bogus position (everyone hard-seeking back every couple of
-   seconds). So an invalid user authority is treated exactly like Server
-   authority below; it is never followed. (Symmetrically, a client that does
-   not hold the real now-playing video never *takes* seek authority or
+   reports a position -- and following it would freeze the whole group on
+   its bogus position. So an invalid user authority is treated exactly like
+   Server authority below; it is never followed. (Symmetrically, a client
+   that does not hold the real now-playing video never *takes* seek authority or
    publishes a position from its placeholder in the first place -- see the
    `holds_now_playing` gate in [Player Integration](#player-integration).)
 
@@ -571,7 +562,10 @@ never hides it and it survives player relaunches.
    now-playing file loaded** (advertises `FileAvailability::Ready` for it):
    the "leader". Following the leader makes laggards catch up *forward* (no
    group rewind); the leader, and anyone tied with or ahead of it, follows no
-   one, so the group converges on the front.
+   one, so the group converges on the front. Without this fallback the player
+   would run open-loop under Server authority: any initial offset (a
+   late-starting player, a brief decode stall) would sit uncorrected for the
+   whole episode.
 
    Eligibility -- for both the leader election and validating a user
    authority -- is restricted to peers whose position is **for this file**.
@@ -581,22 +575,16 @@ never hides it and it survives player relaunches.
    is *not* sufficient because it is set on **prefetch** (a peer advertises
    Ready for next week's episode long before it plays it), so right after a
    now-playing transition a peer can be Ready for the new file while its
-   position register still holds the *previous* file's sample. Following that
-   stale value latched the whole group forward onto it (leader election only
-   moves forward, so nobody pulled back to 0:00) -- the new file came up at
-   the previous file's position instead of T=0, on both EOF-advance and
-   manual selection. The tag is a clock-free identity check; it deliberately
-   excludes absent users, users on a different file, and users watching a
-   placeholder (file missing / still downloading / not watching) -- their
-   position is stale or for another file and must never elect a bogus leader
-   or be followed as authority. (The tag itself is trustworthy at its source
-   because the player actor attributes positions to a file only after mpv's
-   own path echo confirms that file is loaded -- see
-   [Events from Player](#events-from-player) -- so a slow load can no longer
-   publish the previous file's position under the new file's identity.) *Without the leader fallback the player ran
-   open-loop under Server authority: any initial offset (e.g. a player that
-   started late, or a brief decode stall) sat uncorrected for the whole
-   episode, since no `SyncTo` was ever issued.*
+   position register still holds the *previous* file's sample -- and
+   forward-only leader election would latch the group onto that stale value
+   instead of starting the new file at T=0. The tag is a clock-free identity
+   check; it deliberately excludes absent users, users on a different file,
+   and users watching a placeholder (file missing / still downloading / not
+   watching) -- their position is stale or for another file and must never
+   elect a bogus leader or be followed as authority. (The tag itself is
+   trustworthy at its source because the player actor attributes positions
+   to a file only after mpv's own path echo confirms that file is loaded --
+   see [Events from Player](#events-from-player).)
 6. Seeks are debounced (1500ms) -- only broadcast after the user stops scrubbing
 7. **EOF** advances the synced now-playing pointer to the next playlist entry.
    The server initiates this (it is the authoritative entity for "file ended"):
@@ -623,23 +611,19 @@ never hides it and it survives player relaunches.
 
 ### Before Playback Starts
 
-Before unpausing is allowed, DessPlay verifies file contents match:
-
-1. Compute ed2k hash of the local file
-2. Compare hashes across all Ready users
-3. If mismatch: unpause is blocked, File State is set to Missing
-
-This prevents sync issues from different encodes/versions.
+Before unpausing is allowed, DessPlay verifies file contents match: the
+local file's ed2k hash is compared across all Ready users, and a mismatch
+blocks unpause (File State -> Missing). This prevents sync issues from
+different encodes/versions. See [Content Hash](#content-hash).
 
 ### Chat
 
 - Type in the chat input (always visible at bottom of chat pane)
 - Press Enter to send
 - Messages appear in the chat pane AND as OSD in the video player — a
-  rolling overlay (top-left) holding the recent messages: each line stays
-  a minimum of 8 seconds and expires individually, so a burst never
-  erases an unread line (mpv `osd-overlay`, not the single-slot timed
-  `show-text`, which each new message would clobber). Your **own**
+  rolling overlay (top-left, mpv `osd-overlay`) holding the recent
+  messages: each line stays a minimum of 8 seconds and expires
+  individually, so a burst never erases an unread line. Your **own**
   messages are not echoed to your OSD
 - **Username tab-completion**: pressing `Tab` completes the word at the end
   of the input when it is a non-empty, case-insensitive prefix of an online
@@ -788,7 +772,7 @@ mechanism that already posts command feedback and archive results).
 | **New file** (EOF advance) | now-playing change + prior file's watched flag set | "Up next: [Frieren] - 02.mkv" | Local (ditto) |
 | **Joined** | `PeerList`: a peer becomes Present | "Nero joined" | Local |
 | **Connection lost** | `PeerList`: a peer becomes Lost | "Nero's connection dropped -- everyone paused" | Local |
-| **Left** | `PeerList`: a peer becomes Departed (a timeout *or* a graceful `Goodbye`, which now departs in place) | "Nero left" | Local |
+| **Left** | `PeerList`: a peer becomes Departed (a timeout *or* a graceful `Goodbye`) | "Nero left" | Local |
 | **Back** | `PeerList`: Lost -> Present | "Nero is back" | Local |
 | **Paused** | manual-override map: None -> Paused | "Baughn paused" — or "Baughn is not ready" when nothing was actually playing (pause/unpause words are reserved for real video stops/starts) | Local |
 | **Resumed** | manual-override cleared (Paused -> None) | "Baughn unpaused" — or "Baughn is ready" when others still block (playback then starts on the last blocker's clear, which narrates the "unpaused") | Local |
@@ -945,17 +929,17 @@ Additional rules:
 - Departed users' CRDT state (manual override, file availability) persists
   but is ignored by gating until they return.
 
-**Known but offline (#15).** The above stages only cover peers the server's
+**Known but offline.** The above stages only cover peers the server's
 in-memory registry has seen *this process lifetime* -- a user who hasn't
 connected since the last server restart (or hasn't launched yet today) is
 invisible to it. The server also persists a small `known_users` table
 (username, last-seen millis), updated on every connect and disconnect, and
 pushes it alongside `PeerList` as `known_offline: Vec<KnownUser>` (everyone
 known who isn't currently Present, within a 30-day window). The Users pane
-renders this as a single dim + italic list -- replacing the old plain
-"offline" line -- showing "Kim (last seen 3d ago)" for both a user who left
+renders this as a single dim + italic list, showing "Kim (last seen 3d
+ago)" for both a user who left
 minutes ago and one who hasn't shown up today, unified because both are
-equally valid `n` / `/skip <name>` targets (the point of #15: rule on
+equally valid `n` / `/skip <name>` targets (the point: rule on
 someone's commitment without waiting for them to reconnect). A committed
 (Watching) absent user is excluded from this list and shown instead as the
 red "committed, away" blocker row, exactly as before.
@@ -963,8 +947,7 @@ red "committed, away" blocker row, exactly as before.
 **Known-offline users gate too (for a week).** Playback gating quantifies
 over peer entries, and the server's registry spans only its own process
 lifetime -- so a server restart would silently waive every absent user's
-commitment (2026-07-18: an unpause played past a committed, offline Nero).
-Clients therefore merge `known_offline` into the peer list before any
+commitment. Clients therefore merge `known_offline` into the peer list before any
 derivation (`derive::merge_known_offline`): each known-offline user seen
 within the last **seven days** is synthesized as a Departed interactive
 entry, so a committed user blocks -- and reads as the red "committed,
@@ -1060,9 +1043,8 @@ across absence):
   does not reliably keep every episode of an untracked show in one
   dedicated directory. Two files of the same show, one hinted from
   `Anime/ShowName/` and one sitting loose elsewhere, derive different
-  names today (`session.rs` builds the local series key straight from
-  `AniDbMetadata.series_name`) -- silently splitting one show into two
-  "series" for the one question that most needs a single stable answer.
+  names -- silently splitting one show into two "series" for the one
+  question that most needs a single stable answer.
 
 So List entries carry their own identity data, used only for unlinked
 entries (a linked entry's AniDB series id is authoritative and skips all of
@@ -1213,8 +1195,8 @@ downloading from peers, archiving) must show visible progress in the
 UI while it runs — a user who sees nothing happen assumes nothing is
 happening, and retries. Playlist-add hashing shows a centered progress
 overlay (one bar per in-flight file); it is visually modal but captures
-no input, so chat keeps working underneath. Phase 9's transfers reuse
-the same pattern.
+no input, so chat keeps working underneath. Transfers reuse the same
+pattern.
 
 The **server link** is part of this: whenever the client is not
 connected, the status bar's play-state slot shows the link instead —
@@ -1222,8 +1204,7 @@ connected, the status bar's play-state slot shows the link instead —
 can take the full per-address timeout ladder; see
 [network-design.md](network-design.md#connection-types), Dialing) and
 "⚡ connection lost — retrying…" after a mid-session drop. Stale gating
-text ("⏸ paused") while silently failing to connect read as a hang
-(2026-07-06).
+text ("⏸ paused") while silently failing to connect reads as a hang.
 
 ```
 +----------------------------------+------------------+
@@ -1252,16 +1233,14 @@ text ("⏸ paused") while silently failing to connect read as a hang
 **Proportions:**
 - Bottom: Player status (3 lines) then keybinding bar (1 line)
 - Above that, the main area's last row is one **terminal-wide bottom
-  line**: the progress bar + time at the left (design.md #6 -- its own
-  row, kept off the bottom status bar so the variable-width
-  "waiting on ..." blocker text never shoves it sideways; the same
-  placement in every subtitle mode), the
+  line**: the progress bar + time at the left (its own row, kept off the
+  bottom status bar so the variable-width "waiting on ..." blocker text
+  never shoves it sideways; the same placement in every subtitle mode), the
   [Connection Health Line](#connection-health-line)'s metrics
   **right-aligned** at the terminal edge, and the middle space carrying
-  the suggestion slot (someday, marquee AI commentary), centered with a
-  couple of spaces of margin. Reserving the row before the column split
-  puts the playlist's bottom border level with the chat input's (they
-  used to sit one row apart, which read as a layout bug).
+  the suggestion slot, centered with a couple of spaces of margin.
+  Reserving the row before the column split keeps the playlist's bottom
+  border level with the chat input's.
 - Left 50%: Chat (with input line at bottom)
 - Right 50%, top: Series (three modes: Recent Series / All Series / The List)
 - Right 50%, middle: Users
@@ -1278,10 +1257,9 @@ rather than following a selection cursor.
 
 The **right-aligned end of the terminal-wide bottom line** is a
 borderless, passive status field showing connection quality and sync
-health at a glance — the affordance that was missing when a saturated
-Starlink uplink let BitTorrent drown CRDT sync while the QUIC
-connection stayed nominally "connected" (2026-07-24): the app looked
-fine and simply stopped syncing. (The same line's left end is the
+health at a glance — a saturated uplink can let BitTorrent drown CRDT
+sync while the QUIC connection stays nominally "connected", and this
+row is what makes that visible. (The same line's left end is the
 progress bar; the middle is the suggestion slot below.)
 
 While connected it renders compact metric fragments, joined with dim
@@ -1577,7 +1555,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Now Playing | `LwwCell<Option<Ed2kHash>>` | Standalone register; server writes on EOF |
 | Seek Authority | `LwwCell<SeekAuthority>` (`Server \| User(UserSeek { user, file, event_at, from_millis, to_millis })`) | Standalone register; last seeker is position authority, with the explicit user action that granted it |
 | Playback intent | `LwwCell<PlaybackIntent>` (`Playing \| Paused`) | Standalone register; users write on play/pause, server forces Paused on lost/graceful-quit/EOF-advance (not on the timeout-ladder Departed promotion -- already paused at Lost) |
-| Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>>` | Compound key, keyed on the List entry (not AniDB id -- see [Series Identity](#series-identity)); `SeriesPreference { state: Watching \| NotWatching \| Maybe, set_by: Option<UserId> }`, absent entry = Maybe; any user may write (design.md #7/#13) |
+| Series preference | `Map<(UserId, ListEntryId), LwwCell<SeriesPreference>>` | Compound key, keyed on the List entry (not AniDB id -- see [Series Identity](#series-identity)); `SeriesPreference { state: Watching \| NotWatching \| Maybe, set_by: Option<UserId> }`, absent entry = Maybe; any user may write |
 | Manual override | `Map<UserId, LwwCell<Option<ManualState>>>` | Per user; Away writable by anyone |
 | Acknowledged absent | `GSet<(Ed2kHash, UserId)>` | Per-file one-shot: play past a committed-absent user; cleared on compaction |
 | File availability | `Map<(UserId, Ed2kHash), LwwCell<FileAvailability>>` | Compound key |
@@ -1598,22 +1576,14 @@ use `ActorId` as the actor type. See [sync-state.md](sync-state.md) for
 the full `Lww<V>` design.
 
 Whether the video actually plays is **derived**: it plays iff playback
-intent is Playing and no interactive user blocks. A NotWatching or Away
-user never blocks; a **Maybe** user blocks only while present and not
-ready-to-play; a **committed** (Watching) user blocks whenever not
-ready-to-play, *including while absent*, until they return or the group
-acknowledges past them for the current file. The intent register exists
-because gating alone cannot express "stays paused after the blocker
-departs" -- see [Playback Rules](#playback-rules).
+intent is Playing and no interactive user blocks -- see
+[Playback Rules](#playback-rules) for who blocks and why the intent
+register exists.
 
 ### Chat Protocol
 
-Chat messages include:
-- Sender username
-- Message text
-- Timestamp
-
-Reliability: Chat is a `crdts::GList` (grow-only list). New messages are
+Chat is a `crdts::GList` (grow-only list) of (sender, text, timestamp)
+messages. New messages are
 sent through the server; the CRDT handles ordering and deduplication.
 The [system messages](#system-messages) are local-only and derived
 per-client, *not* in this GList; the one exception is the player-crash
@@ -1643,8 +1613,7 @@ Stored in local SQLite database, editable via settings screen.
 Clients keep a **library index** of every file under their media roots, so the
 franchise browser can show the group's collective collection and add any of it
 -- not just files already in the playlist. The index reuses the `hash_cache`
-table (path -> ed2k root + per-block hashes, keyed by `(mtime, size)`); it is
-no longer filled only on demand.
+table (path -> ed2k root + per-block hashes, keyed by `(mtime, size)`).
 
 - **At startup** the client walks every media root, `stat`s each file, and
   hashes anything new or changed (a path missing from `hash_cache`, or whose
@@ -1652,7 +1621,7 @@ no longer filled only on demand.
 - **Periodically** the client re-walks the roots and re-hashes only changed
   files. Interactive clients rescan about once a minute; a seeder, whose store
   is large and stable, rescans once a day.
-- **Hashing yields to transfers (#21).** Scan hashing is bulk disk work
+- **Hashing yields to transfers.** Scan hashing is bulk disk work
   with no deadline, while transfers are latency-sensitive (a source that
   serves nothing for 30s is snubbed) — so while transfer traffic (serving
   or downloading) is active, scan hashing defers, resuming ~10s after the
@@ -1763,10 +1732,10 @@ file under the download root (the topmost media root). The default **Archive
 subdirectory** setting produces `[Series name]/[Original filename]`; when
 disabled, the destination is `[Original filename]` directly under the root.
 This is the deliberate "keep this in the library" decision; retention is the
-default "it was just for the watch party" path. The originally designed
-`Season #` level is collapsed because AniDB models each season as its own
-anime (a franchise member), so a single series name is already one season's
-folder. Both the series-name and filename components are sanitized.
+default "it was just for the watch party" path. There is no `Season #`
+level: AniDB models each season as its own anime (a franchise member), so a
+single series name is already one season's folder. Both the series-name and
+filename components are sanitized.
 
 Cache-only files (those with a download-cache row, i.e. not yet in a media
 root) are flagged in the playlist pane with a dim **`temp`** marker in its
@@ -1779,12 +1748,12 @@ also post a local-only system line to the chat pane ("Archived …" / "Archive
 failed (…): …"); these notices are local, not synced.
 
 **A local copy trumps the download.** A file being fetched from peers can
-land locally through another channel mid-transfer (a bittorrent download
-racing the prefetch — 2026-07-03). The library walk (stat-only, so it runs
-even while transfers defer scan *hashing*, #21) spots a new file bearing
+land locally through another channel mid-transfer (e.g. a bittorrent
+download racing the prefetch). The library walk (stat-only, so it runs
+even while transfers defer scan *hashing*) spots a new file bearing
 the name of an unmet playlist entry and resolves it immediately — resolve
 hashes outside the scan deferral, and a copy still being written lands in
-the mismatch re-check (#26), verifying seconds after the write finishes.
+the mismatch re-check, verifying seconds after the write finishes.
 A verified copy cancels the peer download (sources are told to drop our
 in-flight chunk requests; the partial cache file is deleted) and the entry
 resolves Ready at the local path. The scan also adopts by **hash**: a
@@ -1820,8 +1789,8 @@ saving the setting removes every engine torrent (files deleted,
 registry rows pruned, seeding stopped), hands in-flight fetches to the
 peer relay with their stashed sources, and cancels pending browse
 imports. This is the mid-session escape hatch for a saturated uplink
-(the 2026-07-24 Starlink incident: torrent traffic drowned CRDT sync;
-the health line's suggestion points here). Cached copies of *completed*
+(torrent traffic can drown CRDT sync; the health line's suggestion
+points here). Cached copies of *completed*
 downloads are untouched — they were hardlinked into the hash-addressed
 cache at verification. Known limitation: the librqbit session and its
 DHT socket stay alive until restart — bounded chatter, no payload
@@ -1838,8 +1807,7 @@ extension optional), it has at least one seeder, and the entry's
 `size_bytes` falls within the *display-rounding bounds* of nyaa's
 human-formatted size (±3% slack) — nyaa shows one decimal, so "1.3 GiB"
 covers 1.25–1.35 GiB, a wider band than any small percentage at that
-scale (a plain ±3%-of-midpoint check rejected a real 1.348 GiB release
-displayed as "1.3 GiB", 2026-07-09); ties break to the most seeders.
+scale; ties break to the most seeders.
 Searches for the same file are spaced at least 15 minutes apart (the
 session re-emits `StartDownload` every snapshot; a no-match must not
 re-hit nyaa each time) — so an episode queued before it hits nyaa is
@@ -1892,15 +1860,13 @@ was closed are cleaned up. A torrent mid-download at shutdown is
 dropped — in-flight downloads don't survive restarts, matching the peer
 path — and re-searched on the next `StartDownload`. The drop is
 enforced against the engine's **own persisted session**, not just the
-app's registry: fastresume restores every torrent of the previous run,
-so startup reconciliation enumerates the restored session and deletes
-(with files) any torrent no registry row claims — mid-download
-leftovers, and abandoned browse imports (whose registry row is only
-written on completion) — and sweeps abandoned `import-*` payload
-directories, sparing one a surviving promoted import still seeds from.
-Without this the librqbit session was a second source of truth: a
-"dropped" torrent silently resumed, untracked, on every startup
-(2026-07-19).
+app's registry — otherwise fastresume would silently resume a "dropped"
+torrent, untracked, on every startup: startup reconciliation enumerates
+the restored session and deletes (with files) any torrent no registry
+row claims — mid-download leftovers, and abandoned browse imports (whose
+registry row is only written on completion) — and sweeps abandoned
+`import-*` payload directories, sparing one a surviving promoted import
+still seeds from.
 
 The engine is librqbit, embedded (one session per process, rooted at
 `<cache>/torrents/`, DHT enabled). A session that fails to start
@@ -2110,7 +2076,7 @@ Before playback can unpause:
 
 If hash mismatch: File State is set to Missing, cannot participate until resolved.
 
-**Mismatch re-check (#26).** A name-matched file that fails the hash is
+**Mismatch re-check.** A name-matched file that fails the hash is
 usually a copy or external download still being written into a media
 root — the hash ran mid-write. The file actor watches such files: it
 polls the path's `(mtime, size)` about once a second (a cheap `stat`),
@@ -2163,9 +2129,8 @@ window while others are watching.
 ### Supported Players
 
 - **mpv**: Primary, via IPC socket (JSON protocol), scripted for behavioural changes
-- **VLC**: Via embedded Lua TCP script. Whether VLC support lands in dessplay
-  v2 is an open scope decision (revisited in Phase 10); mpv is the primary
-  target throughout.
+- **VLC**: Via embedded Lua TCP script. Whether VLC support lands is an
+  open scope decision; mpv is the primary target throughout.
 
 Player choice is per-user configuration.
 
@@ -2234,7 +2199,7 @@ for it to come back. Interactive-only; seeders have no player.
   the "Waiting for …" blocker summary (top-right). Overlays stay until
   rewritten or cleared and are re-applied after a player relaunch;
   independent slots mean chat and the blocker line never clobber each
-  other (the old timed `show-text` was a single slot and did)
+  other
 
 ### Events from Player
 
@@ -2242,13 +2207,10 @@ for it to come back. Interactive-only; seeders have no player.
 - Pause/unpause events (distinguished: user-initiated vs programmatic).
   An observed pause is followed by a `get_property time-pos` query, and
   the reply re-anchors the client's position estimate on the frame mpv
-  actually stopped at. Without it the estimate — wall-clock extrapolation
-  from the last `time-pos` sample — counts the pause observation's
-  in-flight window (the 250ms EOF-disambiguation hold, plus IPC latency)
-  as phantom playback, and a paused mpv emits no further `time-pos`
-  changes to correct it, so the overshoot stays frozen in for the whole
-  pause (2026-07-20: paused at 12.095s, reported 12.392s for the whole
-  pause).
+  actually stopped at — otherwise the wall-clock-extrapolated estimate
+  counts the observation's in-flight window as phantom playback, and a
+  paused mpv emits no further `time-pos` changes to correct the
+  overshoot.
 - Seek events (distinguished: user-initiated vs programmatic)
 - Subtitle text changes (observed `sub-text/ass-full` property; feeds the
   subtitle log, with the ASS speaker field for per-speaker coloring)
@@ -2263,9 +2225,7 @@ for it to come back. Interactive-only; seeders have no player.
   command error: mpv reports it later as an `end-file` with `reason: error`.
   It flips the file to Missing and re-resolves (the
   [player-load-failure guard](#download-cache-and-retention)) — the path we
-  held may be stale (the file moved between media roots). Without observing
-  this event, dessplay would believe a load that mpv silently dropped and
-  unpause on a file it never opened, showing only the forced media title.
+  held may be stale (the file moved between media roots).
 - Exit (clean or crash)
 
 The user/programmatic distinction is made on **our** side — mpv does not
@@ -2289,9 +2249,7 @@ is ordered, so the actor accepts file-attributed observations only while
 the last observed path equals the commanded one; observations in the gap
 belong to the old file and are dropped. This is what makes the
 `PlaybackPosition` file tag (Playback Rules, drift correction)
-trustworthy at its source — without it, a trailing late-in-the-old-episode
-position was broadcast under the new file's identity, and forward-only
-leader election latched the group onto it (2026-07-27). The one
+trustworthy at its source. The one
 exception is the load-*failure* report: a file that fails to open may
 never produce a path observation at all, so gating it would suppress the
 report entirely; a stale one merely re-resolves the file (wrong but
@@ -2375,11 +2333,9 @@ shrinking rather than a new line. Two cases:
 The log collapses any such prefix/suffix relationship between the previous
 line and the new text into one entry: a growth replaces it in place
 (keeping the original cue's timestamp and tracking the latest speaker); a
-shrink-back is dropped as a redundant re-show. Without the shrink case a
-brief interjection overlapping a stable line produced a duplicate when it
-cleared (SL2_Episode-141 at ~03:19: "…glory." re-appeared once the
-overlapping "Coming!" ended). An exact repeat is the degenerate case and
-collapses too. A multi-line cue arrives newline-separated; since the log
+shrink-back is dropped as a redundant re-show (without this, a brief
+interjection overlapping a stable line duplicates when it clears). An
+exact repeat is the degenerate case and collapses too. A multi-line cue arrives newline-separated; since the log
 renders one line per cue, newlines become spaces (so a two-line cue reads
 "you demons", not "youdemons"). Known limitation: an unrelated later cue
 that happens to be a prefix or suffix of its predecessor will be collapsed
@@ -2471,7 +2427,7 @@ re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 | `anime_queue` | ANIME (relations-walk) queue: aid, attempt bookkeeping; the graph fills in over hours and must survive restarts |
 | `anidb_titles` | The anime-titles dump (aid, kind, lang, title); backs local name search |
 | `kv` | Bookkeeping (e.g. the titles dump's last fetch time) |
-| `known_users` | Every username ever seen, with a last-seen timestamp (design.md #15); updated on connect/disconnect, survives restarts unlike the in-memory peer registry |
+| `known_users` | Every username ever seen, with a last-seen timestamp; updated on connect/disconnect, survives restarts unlike the in-memory peer registry |
 
 ---
 
@@ -2518,10 +2474,8 @@ For v1, this is acceptable. Future improvements could include:
 
 ## Future Plans
 
-- Subtitles fused into the chat log, interleaved by timestamp, **landed**
-  as the Intermixed subtitle mode (see [Subtitle Display](#subtitle-display)).
-  A future refinement could interleave by the in-video timestamp rather
-  than wall-clock arrival.
+- Intermixed subtitles: interleave by the in-video timestamp rather than
+  wall-clock arrival (see [Subtitle Display](#subtitle-display)).
 - Automating The List's "this week's episode is out" flag (possibly via AniDB
   episode air dates).
 - Enforcing the **download-speed-vs-bitrate** half of the Downloading unpause
@@ -2538,9 +2492,7 @@ For v1, this is acceptable. Future improvements could include:
 - Direct client-to-client connections (with or without hole punching) as a
   transfer optimization, slotted in beneath the `send(peer, message)`
   interface. Cut from v2: the relay-through-NAS path makes them unnecessary.
-- LLM commentary in the health line's slot **landed** as the
-  [AI Commentary marquee](#ai-commentary-the-marquee) (in-character
-  commentator, synced marquee register). Possible refinements: keying
+- [AI Commentary marquee](#ai-commentary-the-marquee) refinements: keying
   the commentator per-user, and marquee sources beyond commentary (the
   register is deliberately generic).
 - Web UI using the same `ViewSpec` approach (see [ui-architecture.md](ui-architecture.md)).
