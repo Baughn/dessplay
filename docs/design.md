@@ -2434,9 +2434,11 @@ magic (first byte 0xFF, which no untagged postcard state can start with)
 plus the protocol version, ahead of the postcard body — so a blob names
 its own layout instead of being identified by trial decode. Exactly one
 **untagged** legacy layout (protocol v6, pre-envelope) is still decoded
-and migrated forward; a tagged blob with any *other* version is refused
-outright rather than guessed at (a deliberate migration adds an explicit
-decode arm instead). This matters most for the *server*, which is
+and migrated forward, and tagged versions whose state layout is
+byte-identical to the current one (a wire-only protocol bump; today v7
+and v8) decode via an explicit compatible-list arm; a tagged blob with
+any *other* version is refused outright rather than guessed at (a
+deliberate migration adds an explicit decode arm instead). This matters most for the *server*, which is
 authoritative and cannot re-sync its lost state from anyone (it backs up
 the whole database before first persisting a migrated blob); an
 interactive client can fall back to dropping an unreadable blob and

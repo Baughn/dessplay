@@ -814,6 +814,19 @@ for storage because *blobs outlive deployments*; connections don't.
 `CrdtState::decode_snapshot[_flagged]`:
 
 - **Tagged, current version**: decode the body as the current layout.
+- **Tagged, layout-compatible older version**
+  (`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`, today v7 and v8): decode as
+  the current layout, flagged (`migrated = true`). This is the explicit
+  arm for protocol bumps that changed only *wire* messages: v7 → v9
+  (the DSCP connection split and per-transfer streams, 2026-07-28)
+  never touched a replicated value type, so the postcard body is
+  byte-identical. Every entry in the list is a per-change assertion
+  ("I checked the diff; the body did not move"), not a default — a
+  bump that *does* reshape state must not be added there, and gets a
+  frozen-layout decode arm instead. Caught in the field the same day:
+  the server refused to start on its own v7-tagged authoritative
+  snapshot after the bump, exactly as designed, and this arm is the
+  deliberate migration the policy demands.
 - **Tagged, any other version**: hard error naming both versions -- the
   refuse-to-start posture. A deliberate migration adds an explicit
   decode arm (a frozen copy of the old layout + upgrade) for that

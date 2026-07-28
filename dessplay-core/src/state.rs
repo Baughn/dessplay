@@ -346,12 +346,22 @@ impl CrdtState {
         Ok(Self::decode_snapshot_flagged(blob)?.0)
     }
 
+    /// Older tagged versions whose persisted [`CrdtState`] layout is
+    /// **identical** to the current one, accepted as a deliberate
+    /// migration decision (the refuse-to-guess policy's explicit decode
+    /// arm): v7 → v9 changed only wire messages — the DSCP transfer-
+    /// connection split (v8) and per-transfer data streams (v9) — never
+    /// a replicated value type or `CrdtState` itself. Every entry here
+    /// asserts "I checked the diff; the postcard body did not move."
+    const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 2] = [7, 8];
+
     /// [`decode_snapshot`](Self::decode_snapshot), also reporting whether
-    /// the **legacy fallback** was used (`true` = the blob was written by
-    /// an older build and migrated forward). A caller that will persist
-    /// the migrated result over the original — the rendezvous server —
-    /// uses the flag to back up the old database first, so a subtly-wrong
-    /// migration is recoverable.
+    /// a **migration** was used (`true` = the blob was written by an
+    /// older build: the untagged v6 fallback, or a layout-compatible
+    /// older tag). A caller that will persist the migrated result over
+    /// the original — the rendezvous server — uses the flag to back up
+    /// the old database first, so a subtly-wrong migration is
+    /// recoverable.
     pub fn decode_snapshot_flagged(
         blob: &[u8],
     ) -> Result<(CrdtState, bool), crate::wire::WireError> {
@@ -360,16 +370,26 @@ impl CrdtState {
                 return Err(crate::wire::WireError::DeserializeUnexpectedEnd);
             };
             let version = u32::from_le_bytes(*version_bytes);
-            if version != crate::net::message::PROTOCOL_VERSION {
-                tracing::error!(
+            if version == crate::net::message::PROTOCOL_VERSION {
+                return Ok((crate::wire::decode::<CrdtState>(body)?, false));
+            }
+            if Self::LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS.contains(&version) {
+                tracing::info!(
                     stored = version,
                     current = crate::net::message::PROTOCOL_VERSION,
-                    "snapshot blob is tagged with a different protocol version; \
-                     refusing to guess at its layout"
+                    "snapshot from a layout-compatible older protocol; migrating"
                 );
-                return Err(crate::wire::WireError::DeserializeBadEncoding);
+                let mut state = crate::wire::decode::<CrdtState>(body)?;
+                state.protocol_version = crate::net::message::PROTOCOL_VERSION;
+                return Ok((state, true));
             }
-            return Ok((crate::wire::decode::<CrdtState>(body)?, false));
+            tracing::error!(
+                stored = version,
+                current = crate::net::message::PROTOCOL_VERSION,
+                "snapshot blob is tagged with a different protocol version; \
+                 refusing to guess at its layout"
+            );
+            return Err(crate::wire::WireError::DeserializeBadEncoding);
         }
         crate::wire::decode::<CrdtStateUntaggedV6>(blob)
             .map(|legacy| (CrdtState::from(legacy), true))
@@ -1101,6 +1121,53 @@ mod tests {
             decoded.protocol_version,
             crate::net::message::PROTOCOL_VERSION
         );
+    }
+
+    /// Regression (2026-07-28, the tsugumi deploy): the server refused
+    /// to start on its own authoritative snapshot after the v7 → v9
+    /// protocol bump, because the bump changed only *wire* messages —
+    /// the persisted `CrdtState` layout is identical — but no explicit
+    /// decode arm said so. A layout-compatible older tag must decode,
+    /// flagged as a migration (so the server backs up the database
+    /// before persisting the re-tagged blob); a tag outside the
+    /// compatible set must still be refused, not guessed at.
+    #[test]
+    fn layout_compatible_tagged_versions_migrate_and_others_refuse() {
+        let mut state = CrdtState::new();
+        reg_put(&mut state.now_playing, ts(1), Some(hash(1)));
+        map_put(&mut state.watched, A1, ts(2), hash(1), true);
+        let blob = state.encode_snapshot().unwrap();
+        let retag = |version: u32| {
+            let mut blob = blob.clone();
+            blob[SNAPSHOT_MAGIC.len()..SNAPSHOT_MAGIC.len() + 4]
+                .copy_from_slice(&version.to_le_bytes());
+            blob
+        };
+
+        for old in CrdtState::LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS {
+            let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&retag(old))
+                .unwrap_or_else(|e| panic!("v{old}-tagged blob must decode: {e}"));
+            assert!(migrated, "a v{old} tag must report the migration");
+            assert_eq!(decoded.view().now_playing, Some(hash(1)));
+            assert_eq!(decoded.view().watched.get(&hash(1)), Some(&true));
+            assert_eq!(
+                decoded.protocol_version,
+                crate::net::message::PROTOCOL_VERSION,
+                "the migrated state re-tags itself"
+            );
+        }
+
+        // The current tag is not a migration.
+        let (_, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap();
+        assert!(!migrated);
+
+        // Anything outside the compatible set stays refused.
+        for unknown in [3, 6, crate::net::message::PROTOCOL_VERSION + 1] {
+            assert!(
+                CrdtState::decode_snapshot_flagged(&retag(unknown)).is_err(),
+                "a v{unknown}-tagged blob must be refused, not guessed at"
+            );
+        }
     }
 
     /// A marquee-only state must report its stamp from
