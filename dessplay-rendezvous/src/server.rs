@@ -1062,7 +1062,13 @@ async fn serve_transfer_connection<T: Transport>(
     config: Arc<ServerConfig>,
     shared: Arc<Shared<T>>,
 ) {
-    // ---- Await TransferAuth (bounded, like Auth).
+    // ---- Await TransferAuth (bounded, like Auth). The client opens
+    // its relay stream right after sending TransferAuth — there is no
+    // bind ack to wait for — so a stream can arrive here first. Such
+    // early streams are kept and classified after binding: dropping one
+    // resets the client's freshly-announced relay stream, which tears
+    // down its whole transfer link and leaves it redialing on backoff.
+    let mut early_streams: Vec<BiStream> = Vec::new();
     let auth = tokio::time::timeout(config.auth_timeout, async {
         loop {
             match conn.recv().await {
@@ -1075,8 +1081,9 @@ async fn serve_transfer_connection<T: Transport>(
                         _ => return None, // protocol violation
                     }
                 }
+                Ok(TransportEvent::IncomingStream(stream)) => early_streams.push(stream),
                 Ok(TransportEvent::Closed { .. }) | Err(_) => return None,
-                Ok(_) => continue, // ignore datagrams/streams pre-bind
+                Ok(_) => continue, // ignore datagrams pre-bind
             }
         }
     })
@@ -1117,6 +1124,17 @@ async fn serve_transfer_connection<T: Transport>(
         old.close("superseded by a new transfer connection").await;
     }
     tracing::debug!(user = %username.0, %remote, "transfer connection bound");
+
+    // Streams that raced ahead of the TransferAuth frame classify now,
+    // exactly as if they had arrived after the bind.
+    for stream in early_streams {
+        tokio::spawn(classify_stream(
+            stream,
+            username.clone(),
+            transfer_id,
+            Arc::clone(&shared),
+        ));
+    }
 
     // ---- Accept streams until the connection ends. Each incoming
     // stream classifies itself by its first frame: `Hello` makes it the

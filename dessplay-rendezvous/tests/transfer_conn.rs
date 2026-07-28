@@ -313,6 +313,123 @@ async fn a_data_stream_is_pumped_between_peers() {
     assert_eq!(read_frame(&mut kim_recv).await.unwrap(), b"data-bytes");
 }
 
+/// A client sends `TransferAuth` and opens its relay stream back to
+/// back — there is no bind ack to wait for — so the stream can reach
+/// the server before the binding is processed. An early stream must be
+/// kept and classified after binding, not dropped: dropping it resets
+/// the client's freshly-announced relay stream, which tears down the
+/// whole transfer link and leaves it redialing on backoff forever.
+/// Here the losing order is made deterministic: the stream is opened
+/// and announced *before* `TransferAuth` is even sent.
+#[tokio::test(start_paused = true)]
+async fn a_relay_stream_arriving_before_transfer_auth_is_kept() {
+    use dessplay_core::net::framing::{read_frame, write_frame};
+    use dessplay_core::net::{BiStream, RelayEnvelope};
+
+    let harness = Harness::new(915);
+    // kim is a full client stack — the sender.
+    let kim = harness.client("kim", 1);
+    await_peer(&kim, "kim").await;
+
+    // baughn is a raw session: auth on the control connection for a
+    // token...
+    let control = harness
+        .net
+        .connector(&EndpointId::new("baughn"), &harness.server_id)
+        .connect()
+        .await
+        .unwrap();
+    let auth = WireMessage::Control(ServerControl::Auth {
+        username: UserId::new("baughn"),
+        password: PASSWORD.into(),
+        role: Role::Interactive,
+        epoch: Epoch(0),
+        protocol_version: dessplay_core::net::PROTOCOL_VERSION,
+    });
+    control
+        .send_control(&wire::encode(&auth).unwrap())
+        .await
+        .unwrap();
+    let token = loop {
+        match control.recv().await.unwrap() {
+            TransportEvent::Control(bytes) => {
+                if let Ok(WireMessage::Control(ServerControl::AuthOk { transfer_token, .. })) =
+                    wire::decode(&bytes)
+                {
+                    break transfer_token;
+                }
+            }
+            TransportEvent::Closed { reason } => panic!("closed before AuthOk: {reason}"),
+            _ => continue,
+        }
+    };
+
+    // ...then a transfer connection whose relay stream is opened and
+    // announced before TransferAuth is sent.
+    let transfer = harness
+        .net
+        .connector(&EndpointId::new("baughn"), &harness.transfer_id)
+        .connect()
+        .await
+        .unwrap();
+    let BiStream {
+        send: mut relay_send,
+        recv: mut relay_recv,
+    } = transfer.open_stream().await.unwrap();
+    write_frame(
+        &mut relay_send,
+        &wire::encode(&RelayEnvelope::Hello).unwrap(),
+    )
+    .await
+    .unwrap();
+    let bind = WireMessage::Control(ServerControl::TransferAuth {
+        username: UserId::new("baughn"),
+        token,
+    });
+    transfer
+        .send_control(&wire::encode(&bind).unwrap())
+        .await
+        .unwrap();
+
+    // kim relays to baughn until it lands on the early stream (kim's
+    // own relay stream needs a beat to register, so sends repeat in the
+    // background; read_frame is not cancel-safe, so the read itself is
+    // a single timeout-bounded call).
+    let message = PeerMessage::BlockHashRequest {
+        file: Ed2kHash([7; 16]),
+    };
+    let sender_net = kim.network.clone();
+    let repeat = {
+        let message = message.clone();
+        tokio::spawn(async move {
+            loop {
+                let _ = sender_net
+                    .send(NetworkCommand::SendPeer {
+                        to: UserId::new("baughn"),
+                        message: Box::new(message.clone()),
+                    })
+                    .await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+    };
+    let frame = tokio::time::timeout(BUDGET, read_frame(&mut relay_recv))
+        .await
+        .expect("early relay stream was dropped: relayed message never arrived")
+        .unwrap();
+    repeat.abort();
+    match wire::decode::<RelayEnvelope>(&frame).unwrap() {
+        RelayEnvelope::Forwarded {
+            from,
+            message: inner,
+        } => {
+            assert_eq!(from, UserId::new("kim"));
+            assert_eq!(wire::decode::<PeerMessage>(&inner).unwrap(), message);
+        }
+        other => panic!("unexpected relay frame: {other:?}"),
+    }
+}
+
 /// A reconnecting control connection invalidates the old session's
 /// token: the transfer link that came with the *old* session cannot
 /// serve the new one, but the new session's own link binds fine (the
