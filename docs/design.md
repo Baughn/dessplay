@@ -1348,7 +1348,7 @@ Just for fun, and explicitly a **single-user gimmick** (the settings tab
 says "Baughn only"): on the configured interval — jittered ±15 s per
 comment so it isn't metronomic, and only while connected, playing, and
 holding the now-playing file — the client with an Anthropic token asks
-**claude-opus-5** (low thinking effort, hardcoded) to react to the
+**claude-opus-4-6** (low thinking effort, hardcoded) to react to the
 episode *in character*, and the reply scrolls across the bottom line's
 middle slot on **every** client.
 

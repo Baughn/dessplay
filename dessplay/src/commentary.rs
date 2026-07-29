@@ -59,11 +59,11 @@ use crate::config::CommentaryInterval;
 
 /// The model every call uses. Hardcoded on purpose: this is a
 /// single-user gimmick, not a configuration surface.
-const MODEL: &str = "claude-opus-5";
+const MODEL: &str = "claude-opus-4-6";
 /// Thinking effort for both calls — the task is short and low-stakes.
 const EFFORT: &str = "low";
 /// Caps thinking *plus* text on this model, so it must not be lowballed.
-const MAX_TOKENS: u32 = 2048;
+const MAX_TOKENS: u32 = 3000;
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Vision calls are slow; the nyaa agent's 30s would spuriously abort.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -235,7 +235,7 @@ fn system_prompt(name: &str, series: &str) -> String {
          comment, and usually the current video frame as an image. React in \
          character to what is happening right now: 1-3 short sentences, IRC \
          style. Always output exactly one line in the form `<{name}> your \
-         comment` and nothing else, in English."
+         comment` and nothing else, in English. 2-3 sentences max."
     )
 }
 
@@ -364,6 +364,7 @@ fn build_comment_body(req: &CommentRequest) -> serde_json::Value {
     serde_json::json!({
         "model": MODEL,
         "max_tokens": MAX_TOKENS,
+        "thinking": {"type": "enabled", "budget_tokens": MAX_TOKENS - 768},
         "output_config": { "effort": EFFORT },
         "system": [{ "type": "text", "text": req.system }],
         "messages": messages,
