@@ -68,7 +68,6 @@
           openssl
 
           rustToolchain
-          cargo-watch
           cargo-edit
           cargo-insta
           cargo-outdated
