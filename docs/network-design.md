@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-07-29
+Last updated: 2026-08-09
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -533,14 +533,12 @@ uses CvRDT merge (idempotent, commutative, associative).
 
 ## File Transfer
 
-**The relay transfer below is the fallback, not the first choice.**
-Fetching is torrent-first: a missing file is searched on nyaa.si and
-downloaded via an embedded BitTorrent engine when a matching public
-torrent exists, which is the common case for current-season releases —
-see design.md, [BitTorrent Downloads]. The relay path engages when the
-torrent route can't deliver (no match, dead swarm, verify mismatch), and
-remains the only route for genuinely rare files that exist nowhere but a
-group member's disk. Everything below describes that relay path.
+**The relay transfer below is the only automatic fetch path.** A
+missing playlist file is always fetched from peers through the server;
+the embedded BitTorrent engine exists solely for the Playlist pane's
+explicit Nyaa browse import — see design.md,
+[BitTorrent Downloads] — and never fetches playlist entries.
+Everything below describes the relay path.
 
 All file transfer flows through the server as relayed peer messages: the
 downloader exchanges messages with the *logical* peer (seeder, or whoever

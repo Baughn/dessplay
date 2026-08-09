@@ -155,8 +155,6 @@ pub enum Directive {
         file: Ed2kHash,
         /// File size, for chunk geometry.
         size_bytes: u64,
-        /// Release filename (the nyaa search query for the torrent path).
-        filename: String,
         /// Present peers advertising the file (Ready).
         sources: Vec<dessplay_core::net::PeerId>,
         /// Playback chunk anchor for the sequential window.
@@ -935,23 +933,23 @@ impl PlayerWiring {
         // NotWatching — no point fetching a show we've opted out of
         // (design.md, Pre-fetching). Watching / Maybe / no-metadata still
         // download. (A NotWatching file already local still loads.)
-        let window: Vec<(Ed2kHash, u64, String)> = self
+        let window: Vec<(Ed2kHash, u64)> = self
             .prefetch_window(view)
             .iter()
             .filter(|e| {
                 derive::series_watch_for_file(view, &self.me, e.hash)
                     != dessplay_core::types::SeriesWatchState::NotWatching
             })
-            .map(|e| (e.hash, e.state.size_bytes, e.state.filename.clone()))
+            .map(|e| (e.hash, e.state.size_bytes))
             .collect();
-        let window_set: HashSet<Ed2kHash> = window.iter().map(|(h, _, _)| *h).collect();
+        let window_set: HashSet<Ed2kHash> = window.iter().map(|(h, _)| *h).collect();
         // Forget files that have fallen out of the window, so a later
         // re-entry logs its decision afresh.
         self.prefetching.retain(|f| window_set.contains(f));
         self.awaiting_source.retain(|f| window_set.contains(f));
 
         let mut out = Vec::new();
-        for (file, size_bytes, filename) in window {
+        for (file, size_bytes) in window {
             // Have it, or not resolved yet: skip. The watched flag does
             // *not* gate this — a windowed entry is one we intend to
             // watch, redownload included (design.md, Pre-fetching).
@@ -966,15 +964,16 @@ impl PlayerWiring {
             let sources = self.download_sources(view, peers, file);
             if sources.is_empty() {
                 // A windowed file no present peer can serve — still
-                // emitted (the torrent path needs no peer source; the
-                // peer path just waits), but tracked as the diagnostic
-                // signal for "why isn't this prefetching from peers?".
+                // emitted (the peer path treats an empty source set as
+                // the ordinary awaiting-source state and picks up a
+                // source from a later refresh), but tracked as the
+                // diagnostic signal for "why isn't this prefetching?".
                 // Logged once per stall; clears once a source appears.
                 self.prefetching.remove(&file);
                 if self.awaiting_source.insert(file) {
                     tracing::info!(
                         %file,
-                        "prefetch: no present peer has this file Ready; trying a torrent"
+                        "prefetch: no present peer has this file Ready; awaiting a source"
                     );
                 }
             } else {
@@ -989,7 +988,6 @@ impl PlayerWiring {
             out.push(Directive::StartDownload {
                 file,
                 size_bytes,
-                filename,
                 sources,
                 play_chunk: self.play_anchor_chunk(view, file, size_bytes),
             });
@@ -2268,7 +2266,6 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 Directive::StartDownload {
                     file,
                     size_bytes,
-                    filename,
                     sources,
                     play_chunk,
                 } => {
@@ -2277,7 +2274,6 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         .send(FileCommand::StartDownload {
                             file,
                             size_bytes,
-                            filename,
                             sources,
                             play_chunk,
                         })
@@ -5261,12 +5257,11 @@ mod tests {
     }
 
     #[test]
-    fn windowed_missing_file_without_a_source_still_emits_for_the_torrent_path() {
-        // Torrent-first downloads (design.md, BitTorrent Downloads): a
-        // windowed missing file is emitted even when no present peer
-        // advertises it — the torrent path needs no peer source; the
-        // peer path inside the file actor simply waits for one. Sources
-        // fill in the moment a peer appears.
+    fn windowed_missing_file_without_a_source_still_emits() {
+        // A windowed missing file is emitted even when no present peer
+        // advertises it — the peer path inside the file actor treats an
+        // empty source set as the ordinary awaiting-source state.
+        // Sources fill in the moment a peer appears.
         let mut state = CrdtState::new();
         state.push_playlist_entry(A, ts(1), entry(1, "now.mkv")); // now-playing
         state.push_playlist_entry(A, ts(2), entry(2, "ahead.mkv")); // in window

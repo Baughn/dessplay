@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-07-17
+Last updated: 2026-08-09
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -1432,6 +1432,26 @@ disabled archives use `<download root>/<sanitized filename>`.
 Coverage pins the missing-key default and persistence round trip, typed Files
 row toggle/save behavior, action propagation of the default, and both archive
 destination layouts at the file-actor boundary.
+
+---
+
+## Phase 27: Browse-Only BitTorrent
+
+**Status: complete (2026-08-09).**
+
+The automatic torrent-first fetch path was removed: the matured peer
+relay is the only automatic fetch route, and BitTorrent survives solely
+as Phase 20's explicit Nyaa browse import. Deleted with it: the
+`TorrentFetches` policy core (search/stall/cooldown/ban state machine),
+the exact-filename nyaa match (`pick_match`), the `torrents` registry
+table (dropped by migration v6), librqbit session persistence, and
+startup torrent reconciliation. Imports now seed only for the session
+that downloaded them — sessions typically clear 1:1, and resuming last
+week's seeds at launch was judged unexpected behavior for a video
+player — so startup simply sweeps `<cache>/torrents/`, sparing only a
+directory hosting a registered cache file. `StartDownload` lost its
+`filename` field (it existed for the nyaa query). For rare files, the
+expectation is a manual search plus a dedicated BT client.
 
 ---
 

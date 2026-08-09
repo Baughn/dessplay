@@ -485,8 +485,8 @@ otherwise. Gating then needs no arithmetic: `Downloading` blocks,
 `DownloadingPlayable` variant is **appended** after `Downloading` and the
 variants are never reordered: postcard encodes the variant index, so
 appending is what keeps pre-v10 snapshot bodies decodable by the current
-type. A torrent download only ever writes `Downloading` (pieces arrive out
-of order — complete-only playability).
+type. (A Nyaa browse import never writes either variant — it is not a
+playlist entry until its payload completes and verifies.)
 
 ### Lookup Requests
 

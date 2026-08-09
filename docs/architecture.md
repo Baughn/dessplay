@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-07-26
+Last updated: 2026-08-09
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -439,10 +439,9 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
   EOF-advance; never evicts now-playing/queued/protected)
 - `SetMediaRoots` / `SetRetention` -- settings changes
 - `SetTorrentEnabled(bool)` -- the live BitTorrent toggle (design.md,
-  BitTorrent Downloads): disabling removes every engine torrent, drains the
-  fetch state machine with per-file peer-path fallbacks
-  (`TorrentFetches::disable_all`), and cancels pending imports; enabling
-  only sticks when the engine was constructed at startup
+  BitTorrent Downloads): disabling removes every seeding torrent (files
+  deleted) and cancels pending imports; enabling only sticks when the
+  engine was constructed at startup
 - `SearchNyaa` / `StartNyaaImport` / `CancelNyaaImport` -- playlist-pane
   browse search and local pending imports. Search/metainfo reads and final
   ed2k hashing run off-thread; the actor polls the torrent engine on its normal
@@ -473,46 +472,43 @@ stream write itself, so one slow downloader backpressures only its own
 task. `BlockHashRequest` and availability stay on the relay stream via
 `SendPeer`. The session (`PlayerWiring::plan_download`) drives downloads
 for the now-playing file plus a prefetch window — emitted even with no
-peer source, since the torrent path needs none. Seeder auto-fetch
-(headless, fetch everything) is the remaining 9B piece.
+peer source (the actor treats an empty source set as the ordinary
+awaiting-source state and picks sources up from a later refresh).
+Seeder auto-fetch (headless, fetch everything) is the remaining 9B
+piece.
 
-**Torrent-first downloads** (design.md, BitTorrent Downloads) layer on
-top of `StartDownload` (which carries the release filename for the nyaa
-query). **Interactive clients only**: `run.rs` wires the engine + nyaa
-source for them and leaves both `None` for seeders — a file nyaa can
-supply makes the seeder redundant, so the seeder downloads only from
-peers and skips `StartDownload` entirely when no peer source exists.
-Three seams, all inside the file actor:
+**The Nyaa browse import** (design.md, BitTorrent Downloads) is the one
+torrent feature: an explicit, user-driven search-and-download,
+completely separate from `StartDownload` (missing playlist files are
+fetched from peers only). **Interactive clients only**: `run.rs` wires
+the engine + nyaa source for them and leaves both `None` for seeders —
+a file nyaa can supply makes the seeder redundant, so the seeder
+downloads only from peers and skips `StartDownload` entirely when no
+peer source exists. Two seams, both inside the file actor:
 
-- `torrent/nyaa.rs` — the search: a blocking `NyaaSource` trait
+- `torrent/nyaa.rs` — the browse search: a blocking `NyaaSource` trait
   (`HttpNyaaSource` in production, canned RSS in tests) plus pure
-  `parse_rss`/`pick_match`, run on the blocking pool with completions
-  returning as `Done::NyaaSearched`.
-- `torrent/mod.rs` — `TorrentFetches`, the fetch policy core (same
-  pattern as `Downloads`: synchronous, clock-driven, returns
-  `TorrentFetchAction`s). Per-file `Searching → Running → Verifying →
-  Failed` state machine owning the stall/search watchdogs, the
-  15-minute search cooldown, the banned-infohash memory, and the
-  `Fallback` handoff (with the stashed sources) to the peer path.
+  `parse_rss` and torrent-metainfo inspection
+  (`browse_single_file_results`), run on the blocking pool.
 - `torrent/engine.rs` — the `TorrentEngine` trait the actor drives
-  (`add`/`remove` fire-and-forget, sync `status` polled on the existing
-  download tick); `FakeTorrentEngine` for actor tests, and
-  `torrent/rqbit.rs` (librqbit session, persistence + fastresume) in
-  production. `FileConfig` carries both handles as `Option`s — `None`
-  disables the torrent path entirely.
+  (adds/removes fire-and-forget, sync `import_status` polled on the
+  existing download tick); `FakeTorrentEngine` for actor tests, and
+  `torrent/rqbit.rs` (librqbit session, **no persistence** — torrents
+  die with the process) in production. `FileConfig` carries both
+  handles as `Option`s — `None` disables the torrent path entirely.
 
-The engine seam also has a temporary `TorrentImportId` namespace for
-user-selected torrents whose ed2k hash cannot exist before download. Promotion
-re-keys the live engine handle to `Ed2kHash`; no provisional identity enters
-the CRDT or wire protocol.
-
-A finished payload is ed2k-hashed off-thread (`Done::TorrentHashed`); a
-root match hardlinks it to the hash-addressed cache path and converges
-into `on_download_complete`, so everything downstream (serving, archive,
-eviction) is identical to a peer download. Eviction, `ForgetLocalFile`,
-and the local-copy-adoption sites also drop the file's torrent (seeding
-ends when the cached file goes); startup reconciliation re-adds
-registered torrents for still-cached files and cleans up the rest.
+A pending import is keyed by a temporary `TorrentImportId` (its ed2k
+hash cannot exist before download); no provisional identity enters the
+CRDT or wire protocol. The finished payload is ed2k-hashed off-thread
+(`Done::NyaaImportHashed`), hardlinked to the hash-addressed cache
+path, promoted in the engine to its discovered `Ed2kHash`, and
+converges into `on_download_complete`, so everything downstream
+(serving, archive, eviction) is identical to a peer download. Eviction,
+`ForgetLocalFile`, and the live-disable path drop a promoted import's
+torrent (seeding ends when the cached file goes — and always at
+shutdown, since nothing is persisted); at startup the actor sweeps
+`<cache>/torrents/` wholesale, sparing only a directory that still
+hosts a registered cache file.
 
 ### IrcActor
 

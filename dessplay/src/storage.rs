@@ -231,6 +231,12 @@ const MIGRATIONS: &[&str] = &[
         removed_at  INTEGER
     ) STRICT;
     ",
+    // v6 (browse-only torrents): torrents no longer persist across
+    // restarts — an import seeds only for the session that downloaded
+    // it — so the v4 registry has nothing left to record.
+    "
+    DROP TABLE torrents;
+    ",
 ];
 
 /// Apply any unapplied migrations. Exposed shape (a slice parameter) so
@@ -305,20 +311,6 @@ pub struct CacheEntry {
     pub size_bytes: u64,
     /// Unix millis of last access; drives retention-based eviction.
     pub last_access: i64,
-}
-
-/// One torrents-table row: the ed2k↔infohash mapping for a torrent the
-/// engine holds (torrent-first downloads).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TorrentRow {
-    /// The playlist file the torrent fetches/seeds.
-    pub hash: Ed2kHash,
-    /// BitTorrent info hash, lowercase hex.
-    pub info_hash: String,
-    /// Release title (logs / magnet display name).
-    pub name: String,
-    /// Unix millis when the torrent was added.
-    pub added_at: i64,
 }
 
 /// One hash-cache row: a path's full ed2k hash, valid while the file's
@@ -713,56 +705,6 @@ impl Storage {
             });
         }
         Ok(entries)
-    }
-
-    // ---- Torrent registry (torrent-first downloads).
-
-    /// Record (or refresh) the torrent fetching/seeding `hash`.
-    pub fn upsert_torrent(&self, row: &TorrentRow) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO torrents (hash, info_hash, name, added_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (hash) DO UPDATE
-             SET info_hash = excluded.info_hash, name = excluded.name,
-                 added_at = excluded.added_at",
-            params![row.hash.0.as_slice(), row.info_hash, row.name, row.added_at],
-        )?;
-        Ok(())
-    }
-
-    /// Forget the torrent for `hash` (after removing it from the engine).
-    pub fn remove_torrent(&self, hash: Ed2kHash) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM torrents WHERE hash = ?1",
-            params![hash.0.as_slice()],
-        )?;
-        Ok(())
-    }
-
-    /// All registered torrents.
-    pub fn torrents(&self) -> Result<Vec<TorrentRow>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT hash, info_hash, name, added_at FROM torrents ORDER BY added_at")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })?;
-        let mut torrents = Vec::new();
-        for row in rows {
-            let (blob, info_hash, name, added_at) = row?;
-            torrents.push(TorrentRow {
-                hash: hash_from_blob(blob)?,
-                info_hash,
-                name,
-                added_at,
-            });
-        }
-        Ok(torrents)
     }
 
     // ---- Hash cache.

@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-07-17
+Last updated: 2026-08-09
 
 ## Table of Contents
 
@@ -116,32 +116,29 @@ Production: `MpvPlayer`. Tests: `MockPlayer`.
 
 ### Torrent Traits
 
-The torrent-first download path (design.md, BitTorrent Downloads) sits
-behind two traits so the whole flow is testable without a network:
+The Nyaa browse import (design.md, BitTorrent Downloads) sits behind
+two traits so the whole flow is testable without a network:
 
-- `NyaaSource` (blocking `search(filename) -> RSS`): `HttpNyaaSource` in
-  production; tests hand back fixture/canned RSS. The parse/match logic
-  (`parse_rss`, `pick_match`) is pure and unit-tested against a
-  committed real-shape fixture (entity-escaped titles, `nyaa:` fields).
-  The same seam provides category search and `.torrent` bytes for the manual
-  browser; pure tests pin the 20-entry cap, feed ordering, single-file
-  metainfo filter, and unsafe-name rejection.
-- `TorrentEngine` (`add`/`remove`/sync `status` poll): `RqbitEngine`
-  (librqbit) in production; `FakeTorrentEngine` lets actor tests script
-  progress, completion, and failure. The fetch *policy* (`TorrentFetches`
-  — watchdogs, cooldowns, fallback) is a synchronous clock-driven core
-  unit-tested like `Downloads`.
+- `NyaaSource` (blocking `search_anime(query) -> RSS` +
+  `fetch_torrent(url) -> bytes`): `HttpNyaaSource` in production; tests
+  hand back fixture/canned RSS and metainfo. The parse logic
+  (`parse_rss`) is pure and unit-tested against a committed real-shape
+  fixture (entity-escaped titles, `nyaa:` fields); pure browse tests pin
+  the 20-entry cap, feed ordering, single-file metainfo filter, and
+  unsafe-name rejection.
+- `TorrentEngine` (import add/remove fire-and-forget, sync
+  `import_status` poll, promotion to the discovered hash): `RqbitEngine`
+  (librqbit, no persistence) in production; `FakeTorrentEngine` lets
+  actor tests script progress, completion, and failure.
 
-Actor-level tests cover the ladder end-to-end with the fakes: no-match →
-peer fallback, stall → fallback, completion → ed2k verify → Ready,
-mismatch → ban + fallback, local-copy adoption cancelling the torrent,
-eviction removing it, and startup reconciliation. One `#[ignore]`d smoke
-test starts a real librqbit session.
-
-Manual-import actor tests additionally cover selection -> progress -> ed2k
-hash -> cache/promotion -> playlist completion and cancellation cleanup.
-Whole-app UI tests cover the disabled-setting notice, `n` routing, the
-progress overlay, reopening active imports, and `d` cancellation.
+Actor-level tests cover the import end-to-end with the fakes: selection
+-> progress -> ed2k hash -> cache/promotion -> playlist completion,
+cancellation cleanup, the disabled-setting refusal, the live-disable
+sweep (seeding torrents removed, pending imports cancelled), eviction
+ending seeding, and the startup sweep of the torrents dir. One
+`#[ignore]`d smoke test starts a real librqbit session. Whole-app UI
+tests cover the disabled-setting notice, `n` routing, the progress
+overlay, reopening active imports, and `d` cancellation.
 
 ---
 

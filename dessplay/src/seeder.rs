@@ -106,7 +106,6 @@ impl SeederTransfer {
                     .send(FileCommand::StartDownload {
                         file,
                         size_bytes: entry.state.size_bytes,
-                        filename: entry.state.filename.clone(),
                         sources,
                         play_chunk: 0,
                     })
@@ -273,11 +272,11 @@ pub fn seeder_file_config(
         // A seeder's store is large and stable: scan daily, not minutely.
         scan_interval: Some(std::time::Duration::from_secs(24 * 60 * 60)),
         scan_transfer_quiet: SCAN_TRANSFER_QUIET_DEFAULT,
-        // No torrent path on a seeder: any file nyaa can supply makes
+        // No torrent path on a seeder: the Nyaa browse import is an
+        // interactive-only feature, and a file nyaa can supply makes
         // the seeder redundant — its job is the rare, peer-only files.
         torrent: None,
         nyaa: None,
-        torrent_fetch: crate::torrent::TorrentFetchConfig::default(),
     }
 }
 

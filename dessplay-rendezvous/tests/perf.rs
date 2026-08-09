@@ -152,7 +152,6 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
             scan_transfer_quiet: dessplay::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
             torrent: None,
             nyaa: None,
-            torrent_fetch: dessplay::torrent::TorrentFetchConfig::default(),
         },
         true, // auto_download
         handle.sync.clone(),

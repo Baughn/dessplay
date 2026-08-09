@@ -187,13 +187,14 @@ fn download_config(_args: &HeadlessArgs) -> crate::download::DownloadConfig {
     }
 }
 
-/// The torrent-first download wiring for interactive clients: a librqbit
+/// The Nyaa browse-import wiring for interactive clients: a librqbit
 /// session at `<cache>/torrents/` plus the live nyaa search. Seeders
-/// deliberately get none of this — a file nyaa can supply makes the
-/// seeder redundant; its job is the rare, peer-only files. A session
-/// that fails to start (port trouble, unwritable cache) disables the
-/// torrent path with a warning — the peer transfer still works — rather
-/// than failing startup.
+/// deliberately get none of this — the browse import is an interactive
+/// feature, and a file nyaa can supply makes the seeder redundant; its
+/// job is the rare, peer-only files. A session that fails to start
+/// (port trouble, unwritable cache) disables the torrent path with a
+/// warning — the peer transfer still works — rather than failing
+/// startup.
 async fn torrent_wiring(
     cache_dir: &std::path::Path,
     upload_limit: Option<u64>,
@@ -926,7 +927,6 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             scan_transfer_quiet: crate::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
             torrent,
             nyaa,
-            torrent_fetch: crate::torrent::TorrentFetchConfig::default(),
         },
         settings.auto_download,
         handle.sync.clone(),

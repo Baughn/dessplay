@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-07-28
+Last updated: 2026-08-09
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -82,8 +82,8 @@ working copy atomically. Tabs containing a missing required value carry a
   `infinite`; auto-download defaults on. **Archive subdirectory** defaults
   on: `A` moves a cached file under a sanitized series-name subdirectory; when
   off it moves the file directly into the download root. BitTorrent defaults
-  off; **disabling applies immediately** (active torrents are removed and
-  downloads fall back to the peer relay — the mid-session escape hatch for a
+  off; **disabling applies immediately** (seeding torrents are removed and
+  pending imports cancelled — the mid-session escape hatch for a
   saturated uplink, see [BitTorrent Downloads](#bittorrent-downloads)), while
   enabling requires a restart when the engine was off at startup. Upload limit
   accepts human-readable byte rates
@@ -401,9 +401,7 @@ It can have one of three values:
   or a seek lands past the downloaded region — the verdict flips back, the
   user gates, and the group pauses until the window refills. The playback
   position also re-anchors the download's sequential fetch window, so the
-  scheduler always fetches exactly the range whose absence would gate. A
-  torrent-path download is never playable while incomplete (see
-  [BitTorrent Downloads](#bittorrent-downloads)). The
+  scheduler always fetches exactly the range whose absence would gate. The
   download-speed-vs-bitrate half of the original rule remains **deferred**
   — no synced throughput signal exists to evaluate it, see
   [Future Plans](#future-plans).
@@ -1793,103 +1791,65 @@ already local still loads (you can mute), it is just never fetched.
 
 ### BitTorrent Downloads
 
-The peer transfer above is the right tool for *rare* files — ones only a
-group member holds — but most of what the group watches is a
-current-season release sitting on nyaa.si with hundreds of seeders. So
-fetching is **torrent-first** on **interactive clients**: they try a
-public torrent before falling back to the relay path. Both routes sit
-behind the same `StartDownload`, honor the same `auto_download` /
-NotWatching gates, and converge on the same completion contract. The
-torrent path is gated behind the **BitTorrent downloads** setting
+BitTorrent exists in DessPlay for exactly one thing: the Playlist
+pane's explicit **browse search** (`n`) — a user types a query, picks a
+release by hand, and it downloads in the background. Missing playlist
+files are **never** fetched via torrent: the peer relay is the only
+automatic fetch path. (An earlier torrent-first automatic path was
+removed in 2026-08 once the peer transfer matured — for rare files a
+manual search plus a full BT client covers the gap.) DessPlay is not
+primarily a torrent client, and the design keeps its torrent footprint
+deliberately session-scoped: nothing torrent-related survives a
+restart.
+
+The feature is gated behind the **BitTorrent downloads** setting
 (`torrent_enabled`, default **off**) — the engine opens ports and joins
-the DHT, so it never starts unless the user opted in; when off, every
-fetch goes straight to the peer relay. The setting's lifecycle is
-**asymmetric**: *enabling* applies at startup (the engine is
-constructed then or never), but *disabling* applies **immediately** —
-saving the setting removes every engine torrent (files deleted,
-registry rows pruned, seeding stopped), hands in-flight fetches to the
-peer relay with their stashed sources, and cancels pending browse
-imports. This is the mid-session escape hatch for a saturated uplink
-(torrent traffic can drown CRDT sync; the health line's suggestion
-points here). Cached copies of *completed*
-downloads are untouched — they were hardlinked into the hash-addressed
+the DHT, so it never starts unless the user opted in. The setting's
+lifecycle is **asymmetric**: *enabling* applies at startup (the engine
+is constructed then or never), but *disabling* applies **immediately** —
+saving the setting removes every seeding torrent (payload files
+deleted) and cancels pending imports. This is the mid-session escape
+hatch for a saturated uplink (torrent traffic can drown CRDT sync; the
+health line's suggestion points here). Cached copies of *completed*
+imports are untouched — they were hardlinked into the hash-addressed
 cache at verification. Known limitation: the librqbit session and its
 DHT socket stay alive until restart — bounded chatter, no payload
-traffic.
-**Seeders run no torrent path at all** — a file nyaa can supply makes
-the seeder redundant; its job is the rare, peer-only files, so it
-downloads only from peers (and only when a peer source exists).
+traffic. **Seeders run no torrent path at all** — the browse import is
+an interactive feature, and a file nyaa can supply makes the seeder
+redundant; its job is the rare, peer-only files.
 
-**Search.** The playlist entry's exact filename is queried against
-nyaa.si's RSS search (release names embed a CRC tag, so an exact-title
-hit is near-certainly the right payload). A result is accepted iff its
-title equals the filename (whitespace-normalized, case-insensitive,
-extension optional), it has at least one seeder, and the entry's
-`size_bytes` falls within the *display-rounding bounds* of nyaa's
-human-formatted size (±3% slack) — nyaa shows one decimal, so "1.3 GiB"
-covers 1.25–1.35 GiB, a wider band than any small percentage at that
-scale; ties break to the most seeders.
-Searches for the same file are spaced at least 15 minutes apart (the
-session re-emits `StartDownload` every snapshot; a no-match must not
-re-hit nyaa each time) — so an episode queued before it hits nyaa is
-found on a later retry.
+**Search.** The browse search queries nyaa.si's Anime category,
+inspects at most the first 20 RSS entries in feed order, and fetches
+their torrent metainfo before display so multi-file batches are
+excluded rather than failing after selection. Only torrents with at
+least one seeder and exactly one safe payload file are listed, with
+filename, exact size, release title, and seeder count.
 
-The Playlist pane also provides an explicit **browse search** (`n`) for files
-that are not yet known to the collective catalog. It queries the Anime
-category, inspects at most the first 20 RSS entries in feed order, and fetches
-their torrent metainfo before display so multi-file batches are excluded rather
-than failing after selection. The selected torrent has no ed2k identity yet,
-so it remains a local pending import while it downloads. After completion its
-single payload is ed2k-hashed, promoted into the ordinary hash-addressed cache
-and seeding registry, and only then added to the shared playlist. Pending
-imports are not restored after restart, matching other in-flight downloads.
+**Import lifecycle.** The selected torrent has no ed2k identity yet, so
+it remains a **local pending import** while it downloads into its own
+`<cache>/torrents/import-N/` directory — it is not a playlist entry,
+does not advertise availability, and never gates anyone. After
+completion its single payload is ed2k-hashed, hardlinked into the
+ordinary hash-addressed cache (`<cache>/<ed2k>`, block hashes cached
+for serving), and only then added to the shared playlist — from which
+point it behaves exactly like a completed peer download. A failed or
+cancelled import stays a local notice and never creates a provisional
+shared entry.
 
-**Fallback ladder.** The relay path engages (with whatever peer sources
-exist — possibly none, which is the ordinary awaiting-source state)
-whenever the torrent route can't deliver: no acceptable search result, a
-search error, a torrent with no byte progress for 90s (covers dead
-swarms and magnet-metadata hangs), an engine failure, or a completed
-payload that fails ed2k verification. Each failure also starts the
-15-minute cooldown before the next nyaa attempt.
-
-**Verification and completion.** The torrent payload downloads to
-`<cache>/torrents/<ed2k>/`. On completion it is ed2k-hashed; a root
-match hardlinks it to the hash-addressed cache path (`<cache>/<ed2k>`)
-and the file completes exactly like a peer download (cache entry, block
-hashes cached for serving, Ready). A mismatch (a mislabeled release
-despite the name/size match) deletes the torrent, **bans that info hash**
-for the file (never picked again this session), and falls back. A peer
-download racing the torrent is cancelled at this point — the general
-"local copy trumps the download" rule above also cancels a *torrent*
-when a copy arrives through yet another channel.
-
-**Complete-only playability.** Torrent pieces arrive out of order, so a
-partially-downloaded torrent is never playable. Torrent progress is
-reported honestly at any percentage; playability travels in the
-availability *variant* (a torrent always advertises the non-playable
-`Downloading`), so the torrenting user keeps gating until the payload
-completes, ed2k-verifies, and flips straight to Ready. (Sequential
-streaming to restore true play-from-here is future work — see
-[Future Plans](#future-plans).)
-
-**Seeding.** Completed torrents keep seeding — good citizenship on
-public trackers — until the cached file is **evicted** (retention or a
-lost local copy), which removes the torrent and its payload; upload is
-capped by the existing `upload_limit` setting. A `torrents` table maps
-each ed2k hash to its torrent; at startup, registered torrents whose
-files are still cached rejoin the engine (librqbit session persistence +
-fastresume makes this instant), and rows for files evicted while the app
-was closed are cleaned up. A torrent mid-download at shutdown is
-dropped — in-flight downloads don't survive restarts, matching the peer
-path — and re-searched on the next `StartDownload`. The drop is
-enforced against the engine's **own persisted session**, not just the
-app's registry — otherwise fastresume would silently resume a "dropped"
-torrent, untracked, on every startup: startup reconciliation enumerates
-the restored session and deletes (with files) any torrent no registry
-row claims — mid-download leftovers, and abandoned browse imports (whose
-registry row is only written on completion) — and sweeps abandoned
-`import-*` payload directories, sparing one a surviving promoted import
-still seeds from.
+**Session-only seeding.** A completed import keeps seeding from its
+import directory — a session typically lasts long enough to clear 1:1
+on a release worth importing — until the app closes, the cached file is
+evicted (retention or a lost local copy), or the setting is disabled;
+upload is capped by the existing `upload_limit` setting. Seeding
+deliberately does **not** resume on the next launch: "the video player
+is seeding last week's torrents" is unexpected behavior for something
+that isn't primarily a torrent client. Accordingly the engine runs
+with no persistence, nothing about a torrent is recorded in SQLite,
+and at startup the file actor sweeps everything under
+`<cache>/torrents/` — abandoned import payloads and any prior
+version's leftovers — sparing only a directory that still hosts a
+registered cache file (the rare failed-hardlink fallback, where the
+cached copy lives in the import dir itself).
 
 The engine is librqbit, embedded (one session per process, rooted at
 `<cache>/torrents/`, DHT enabled). A session that fails to start
@@ -2435,7 +2395,6 @@ re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 | `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size), plus nullable owning media root; skips re-hashing unchanged files and doubles as the library index |
 | `library_roots` | Durable root lifecycle (`vanished_at`, `removed_at`); hides disconnected roots indefinitely and expires removed-root index rows after seven days |
 | `manual_mappings` | Playlist hash → user-picked local path |
-| `torrents` | ed2k hash → BitTorrent info hash for torrents in the engine (torrent-first downloads); reconciled at startup against the cache |
 | `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |
 | `tofu_fingerprints` | Pinned server cert fingerprints; write-once (replacing requires explicit forget) |
 
@@ -2505,13 +2464,6 @@ For v1, this is acceptable. Future improvements could include:
   rule (see [File State](#file-state)). Needs a synced throughput signal
   (the downloader's measured speed vs the file's bitrate); only the
   position-anchored 20%-window rule is enforced today.
-- Sequential (streaming) torrent downloads with incremental ed2k
-  verification, so a torrented file inherits the real play-at-20% rule
-  instead of [complete-only playability](#bittorrent-downloads)
-  (librqbit's `FileStream` reprioritizes pieces sequentially).
-- Refining the missing-unknown-series "obtainable" check to also count a
-  likely nyaa hit — today only a present peer advertising the file Ready
-  suppresses the automatic NotWatching (see [File Matching](#file-matching)).
 - Direct client-to-client connections (with or without hole punching) as a
   transfer optimization, slotted in beneath the `send(peer, message)`
   interface. Cut from v2: the relay-through-NAS path makes them unnecessary.

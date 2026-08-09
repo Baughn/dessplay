@@ -33,7 +33,7 @@ image = { workspace = true }
 ab_glyph = { workspace = true }
 strsim = { workspace = true }
 chrono = { workspace = true }
-# Torrent-first downloads: nyaa.si RSS search (blocking GET on the
+# Nyaa browse import: nyaa.si RSS search (blocking GET on the
 # blocking pool, same pattern as the server's titles-dump fetch).
 ureq = { workspace = true }
 quick-xml = { workspace = true }

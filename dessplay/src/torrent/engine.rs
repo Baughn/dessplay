@@ -1,13 +1,21 @@
 //! The torrent-engine seam: what the file actor needs from a BitTorrent
-//! implementation, small enough to fake in tests. The production
-//! implementation (librqbit) lives in [`super::rqbit`]; construction
-//! sites pass `None` to disable the torrent path entirely (tests, or a
-//! build without the engine).
+//! implementation for the explicit Nyaa browse import, small enough to
+//! fake in tests. The production implementation (librqbit) lives in
+//! [`super::rqbit`]; construction sites pass `None` to disable the
+//! torrent path entirely (tests, seeders, or the setting off).
 //!
-//! The interface is deliberately poll-based: `add`/`remove` are
-//! fire-and-forget, and the actor reads [`TorrentEngine::status`] on its
-//! existing tick — no callback channel to plumb, and the fake is a plain
-//! mutable map.
+//! The interface is deliberately poll-based: adds and removes are
+//! fire-and-forget, and the actor reads [`TorrentEngine::import_status`]
+//! on its existing tick — no callback channel to plumb, and the fake is
+//! a plain mutable map.
+//!
+//! A torrent starts life as an *import* keyed by [`TorrentImportId`]
+//! (its ed2k identity is unknown until the payload is hashed) and is
+//! re-keyed to its file via [`TorrentEngine::promote_import`] on
+//! completion, so eviction and the live-disable path can remove it by
+//! the same hash everything else uses. Nothing survives the process:
+//! the engine keeps no persistent session (design.md, BitTorrent
+//! Downloads — imports seed only for the session that downloaded them).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,8 +39,8 @@ pub struct TorrentStatus {
     /// The engine gave up on this torrent (tracker/metadata/IO error).
     pub error: bool,
     /// Where the payload file is, once metadata is known. For a
-    /// multi-file torrent (unexpected for an exact-filename match) the
-    /// engine reports the largest file.
+    /// multi-file torrent (unexpected — browse only offers single-file
+    /// payloads) the engine reports the largest file.
     pub payload: Option<PathBuf>,
 }
 
@@ -48,46 +56,33 @@ pub struct TorrentSpeeds {
 
 /// What the file actor needs from a torrent implementation.
 pub trait TorrentEngine: Send + Sync + 'static {
-    /// Start downloading `chosen` into `output_dir` (created on demand).
-    /// Idempotent: re-adding an already-known file is a no-op.
-    fn add(&self, file: Ed2kHash, chosen: &NyaaMatch, output_dir: PathBuf);
-    /// Remove the torrent for `file`, deleting its files when asked.
-    /// A no-op for an unknown file.
-    fn remove(&self, file: Ed2kHash, delete_files: bool);
-    /// The torrent's current state, `None` if unknown to the engine.
-    fn status(&self, file: &Ed2kHash) -> Option<TorrentStatus>;
-    /// Every file the engine has a torrent for (startup reconciliation).
-    fn active(&self) -> Vec<Ed2kHash>;
     /// Start a user-selected torrent whose ed2k identity is not known yet.
+    /// Idempotent: re-adding a known import is a no-op.
     fn add_import(&self, id: TorrentImportId, chosen: &NyaaMatch, output_dir: PathBuf);
-    /// Remove a pending user-selected torrent.
+    /// Remove a pending user-selected torrent, deleting its files when
+    /// asked. A no-op for an unknown import.
     fn remove_import(&self, id: TorrentImportId, delete_files: bool);
     /// Poll a pending user-selected torrent.
     fn import_status(&self, id: TorrentImportId) -> Option<TorrentStatus>;
-    /// Re-key a completed import so normal cache eviction and restart
-    /// reconciliation own its seeding lifecycle.
+    /// Re-key a completed import to its file so eviction and the
+    /// live-disable path own its seeding lifecycle.
     fn promote_import(&self, id: TorrentImportId, file: Ed2kHash);
+    /// Remove the torrent for `file` (a promoted import), deleting its
+    /// files when asked. A no-op for an unknown file.
+    fn remove(&self, file: Ed2kHash, delete_files: bool);
+    /// Every file the engine has a promoted torrent for (the
+    /// live-disable sweep).
+    fn active(&self) -> Vec<Ed2kHash>;
     /// Aggregate live up/down speeds across every torrent, for the
     /// status field's bandwidth display. Default: no measurable
     /// traffic.
     fn speeds(&self) -> TorrentSpeeds {
         TorrentSpeeds::default()
     }
-    /// Startup-only: reconcile the implementation's own persisted session
-    /// against the app registry. `keep` maps a registered torrent's info
-    /// hash (lowercase hex) to its file; a session-restored torrent whose
-    /// info hash is not in `keep` is deleted along with its files —
-    /// in-flight downloads (abandoned imports, mid-download leftovers)
-    /// don't survive restarts (design.md, BitTorrent Downloads). Kept
-    /// torrents are adopted under their file key so later `remove`/`status`
-    /// calls see them. Returns the output directories kept torrents still
-    /// use, so the caller can sweep abandoned per-import directories
-    /// without racing a live one.
-    fn reconcile_session(&self, keep: &HashMap<String, Ed2kHash>) -> Vec<PathBuf>;
 }
 
-/// In-memory fake for actor tests: `add`/`remove` record themselves,
-/// and tests script `status` via [`FakeTorrentEngine::set_status`].
+/// In-memory fake for actor tests: adds and removes record themselves,
+/// and tests script status via [`FakeTorrentEngine::set_import_status`].
 #[derive(Default)]
 pub struct FakeTorrentEngine {
     inner: Mutex<FakeInner>,
@@ -101,25 +96,12 @@ struct FakeInner {
     imports: HashMap<TorrentImportId, (NyaaMatch, PathBuf)>,
     import_status: HashMap<TorrentImportId, TorrentStatus>,
     removed_imports: Vec<(TorrentImportId, bool)>,
-    /// Torrents the fake "session" restored from its own persistence
-    /// (info hash → output dir), as librqbit's fastresume does; consumed
-    /// by `reconcile_session`.
-    restored: HashMap<String, PathBuf>,
-    /// Info hashes `reconcile_session` deleted from the fake session.
-    session_deleted: Vec<String>,
     /// Scripted aggregate speeds ([`TorrentEngine::speeds`]).
     speeds: TorrentSpeeds,
 }
 
 impl FakeTorrentEngine {
-    /// Script the status the next `status` call reports for `file`.
-    pub fn set_status(&self, file: Ed2kHash, status: TorrentStatus) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.status.insert(file, status);
-        }
-    }
-
-    /// What was added for `file`, if anything.
+    /// What a promoted import holds for `file`, if anything.
     pub fn added(&self, file: &Ed2kHash) -> Option<(NyaaMatch, PathBuf)> {
         self.inner
             .lock()
@@ -150,19 +132,11 @@ impl FakeTorrentEngine {
             .and_then(|inner| inner.imports.get(&id).cloned())
     }
 
-    /// Model a torrent the underlying session restored from its own
-    /// persistence at startup (as librqbit's fastresume does).
-    pub fn restore_session_torrent(&self, info_hash: &str, output_dir: PathBuf) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.restored.insert(info_hash.to_string(), output_dir);
-        }
-    }
-
-    /// Info hashes `reconcile_session` deleted from the fake session.
-    pub fn session_deleted(&self) -> Vec<String> {
+    /// Every `remove_import` call seen, in order.
+    pub fn removed_imports(&self) -> Vec<(TorrentImportId, bool)> {
         self.inner
             .lock()
-            .map(|inner| inner.session_deleted.clone())
+            .map(|inner| inner.removed_imports.clone())
             .unwrap_or_default()
     }
 
@@ -175,37 +149,6 @@ impl FakeTorrentEngine {
 }
 
 impl TorrentEngine for FakeTorrentEngine {
-    fn add(&self, file: Ed2kHash, chosen: &NyaaMatch, output_dir: PathBuf) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner
-                .torrents
-                .entry(file)
-                .or_insert_with(|| (chosen.clone(), output_dir));
-        }
-    }
-
-    fn remove(&self, file: Ed2kHash, delete_files: bool) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.torrents.remove(&file);
-            inner.status.remove(&file);
-            inner.removed.push((file, delete_files));
-        }
-    }
-
-    fn status(&self, file: &Ed2kHash) -> Option<TorrentStatus> {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|inner| inner.status.get(file).cloned())
-    }
-
-    fn active(&self) -> Vec<Ed2kHash> {
-        self.inner
-            .lock()
-            .map(|inner| inner.torrents.keys().copied().collect())
-            .unwrap_or_default()
-    }
-
     fn add_import(&self, id: TorrentImportId, chosen: &NyaaMatch, output_dir: PathBuf) {
         if let Ok(mut inner) = self.inner.lock() {
             inner
@@ -241,35 +184,25 @@ impl TorrentEngine for FakeTorrentEngine {
         }
     }
 
+    fn remove(&self, file: Ed2kHash, delete_files: bool) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.torrents.remove(&file);
+            inner.status.remove(&file);
+            inner.removed.push((file, delete_files));
+        }
+    }
+
+    fn active(&self) -> Vec<Ed2kHash> {
+        self.inner
+            .lock()
+            .map(|inner| inner.torrents.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
     fn speeds(&self) -> TorrentSpeeds {
         self.inner
             .lock()
             .map(|inner| inner.speeds)
             .unwrap_or_default()
-    }
-
-    fn reconcile_session(&self, keep: &HashMap<String, Ed2kHash>) -> Vec<PathBuf> {
-        let mut kept_dirs = Vec::new();
-        if let Ok(mut inner) = self.inner.lock() {
-            for (info_hash, output_dir) in std::mem::take(&mut inner.restored) {
-                match keep.get(&info_hash) {
-                    Some(&file) => {
-                        kept_dirs.push(output_dir.clone());
-                        inner.torrents.entry(file).or_insert_with(|| {
-                            (
-                                NyaaMatch {
-                                    title: String::new(),
-                                    torrent_url: format!("magnet:?xt=urn:btih:{info_hash}"),
-                                    info_hash,
-                                },
-                                output_dir,
-                            )
-                        });
-                    }
-                    None => inner.session_deleted.push(info_hash),
-                }
-            }
-        }
-        kept_dirs
     }
 }

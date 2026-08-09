@@ -30,10 +30,9 @@ use tokio::sync::mpsc;
 use crate::actors::network::Clock;
 use crate::config::CacheRetention;
 use crate::download::{DownloadAction, DownloadConfig, Downloads};
-use crate::storage::{CacheEntry, SeriesKey, Storage, TorrentRow, WatchRecord};
+use crate::storage::{CacheEntry, SeriesKey, Storage, WatchRecord};
 use crate::torrent::engine::{TorrentEngine, TorrentImportId};
-use crate::torrent::nyaa::{self, NyaaBrowseResult, NyaaMatch, NyaaSource};
-use crate::torrent::{TorrentFetchAction, TorrentFetchConfig, TorrentFetches};
+use crate::torrent::nyaa::{self, NyaaBrowseResult, NyaaSource};
 
 /// What resolving a playlist entry against the media roots found.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,11 +184,10 @@ pub enum FileCommand {
     /// Retention policy changed (settings save).
     SetRetention(CacheRetention),
     /// The BitTorrent setting changed (settings save). Disabling applies
-    /// immediately: active torrents are removed (files deleted, registry
-    /// pruned, seeding stops) and in-flight fetches fall back to the
-    /// peer path. Enabling only works when the engine was constructed at
-    /// startup; otherwise it stays a no-op until restart (the session
-    /// posts the notice).
+    /// immediately: seeding torrents are removed (files deleted) and
+    /// pending Nyaa imports are cancelled. Enabling only works when the
+    /// engine was constructed at startup; otherwise it stays a no-op
+    /// until restart (the session posts the notice).
     SetTorrentEnabled(bool),
     /// Scan the media library now (new/changed files → hashes → index).
     /// Fired internally at startup and on a timer; also exposed for a
@@ -204,8 +202,6 @@ pub enum FileCommand {
         file: Ed2kHash,
         /// File size, for chunk/block geometry.
         size_bytes: u64,
-        /// Release filename (the nyaa search query for the torrent path).
-        filename: String,
         /// Candidate source peers (present peers that have it).
         sources: Vec<dessplay_core::net::PeerId>,
         /// Playback chunk anchor for the sequential window.
@@ -438,13 +434,11 @@ pub struct FileConfig {
     /// source is snubbed at 30s), so hashing yields and resumes once
     /// transfers go quiet. Use [`SCAN_TRANSFER_QUIET_DEFAULT`].
     pub scan_transfer_quiet: std::time::Duration,
-    /// The BitTorrent engine for torrent-first downloads; `None`
-    /// disables the torrent path (peer transfer only, today's behavior).
+    /// The BitTorrent engine for the explicit Nyaa browse import;
+    /// `None` disables the torrent path entirely.
     pub torrent: Option<Arc<dyn TorrentEngine>>,
-    /// The nyaa search backing the torrent path; `None` disables it.
+    /// The nyaa search backing the browse import; `None` disables it.
     pub nyaa: Option<Arc<dyn NyaaSource>>,
-    /// Torrent fetch policy tuning (stall/search timeouts, cooldown).
-    pub torrent_fetch: TorrentFetchConfig,
 }
 
 /// Production default for [`FileConfig::scan_transfer_quiet`].
@@ -493,13 +487,6 @@ enum Done {
         /// Its hash, or why not.
         result: std::io::Result<Ed2kFileHash>,
     },
-    /// A nyaa search finished (torrent-first downloads).
-    NyaaSearched {
-        /// The file the search was for.
-        file: Ed2kHash,
-        /// The accepted match, or `None` (no match / search error).
-        found: Option<NyaaMatch>,
-    },
     /// User-initiated browse search completed.
     NyaaBrowseSearched {
         query: String,
@@ -509,15 +496,6 @@ enum Done {
     NyaaImportHashed {
         id: TorrentImportId,
         payload: PathBuf,
-        result: std::io::Result<Ed2kFileHash>,
-    },
-    /// A completed torrent payload finished ed2k-hashing.
-    TorrentHashed {
-        /// The file the torrent was fetched for.
-        file: Ed2kHash,
-        /// The payload path inside the torrent output dir.
-        payload: PathBuf,
-        /// Its hash, or why not.
         result: std::io::Result<Ed2kFileHash>,
     },
     /// A manually-mapped file finished hashing (so we can serve it).
@@ -570,9 +548,10 @@ pub async fn run(
             return;
         }
     };
-    // Registered torrents rejoin the engine (or are dropped for files
-    // evicted while the app was closed) before any commands land.
-    actor.reconcile_torrents();
+    // Torrents never survive a restart: the previous run's leftover
+    // payload dirs are garbage by construction. Swept before any
+    // commands land.
+    actor.sweep_torrents_dir();
     // Drives snub detection and pipeline refill.
     let mut tick = tokio::time::interval(DOWNLOAD_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -630,8 +609,6 @@ struct Actor {
     local_files: HashMap<Ed2kHash, PathBuf>,
     /// Active downloads (the scheduling brain).
     downloads: Downloads,
-    /// Torrent-first fetch policy (searching/running/failed per file).
-    fetches: TorrentFetches,
     /// The live BitTorrent gate: starts as `torrent.is_some()` and
     /// follows the setting via [`FileCommand::SetTorrentEnabled`].
     /// Disabling flips this off immediately; enabling only sticks when
@@ -639,7 +616,7 @@ struct Actor {
     torrent_enabled: bool,
     /// The BitTorrent engine (`None` = torrent path disabled).
     torrent: Option<Arc<dyn TorrentEngine>>,
-    /// The nyaa search source (`None` = torrent path disabled).
+    /// The nyaa browse search source (`None` = torrent path disabled).
     nyaa: Option<Arc<dyn NyaaSource>>,
     /// User-selected torrents that do not have an ed2k identity yet.
     nyaa_imports: HashMap<TorrentImportId, PendingNyaaImport>,
@@ -966,7 +943,6 @@ impl Actor {
             hashing: HashSet::new(),
             local_files,
             downloads: Downloads::new(config.download),
-            fetches: TorrentFetches::new(config.torrent_fetch),
             torrent_enabled: config.torrent.is_some(),
             torrent: config.torrent,
             nyaa: config.nyaa,
@@ -1073,7 +1049,6 @@ impl Actor {
             FileCommand::StartDownload {
                 file,
                 size_bytes,
-                filename,
                 sources,
                 play_chunk,
             } => {
@@ -1108,33 +1083,6 @@ impl Actor {
                         })
                         .await;
                 }
-                // Torrent-first (design.md, BitTorrent Downloads): the
-                // fetch policy searches nyaa and hands the peer path a
-                // Fallback when the torrent route can't deliver. With no
-                // engine wired — or the setting live-disabled — straight
-                // to the peer path.
-                if self.torrent_enabled && self.torrent.is_some() && self.nyaa.is_some() {
-                    let actions = self.fetches.on_start_download(
-                        file,
-                        filename,
-                        size_bytes,
-                        sources.clone(),
-                        play_chunk,
-                        (self.clock)(),
-                    );
-                    self.run_torrent_actions(actions).await;
-                    // While the torrent path works (or after its fallback
-                    // already started the peer download), keep an active
-                    // peer download's source set fresh — re-emits are the
-                    // only source-refresh channel.
-                    if self.downloads.is_active(&file) {
-                        let actions =
-                            self.downloads
-                                .set_sources(file, sources, play_chunk, (self.clock)());
-                        self.run_download_actions(actions).await;
-                    }
-                    return;
-                }
                 self.start_peer_download(file, size_bytes, sources, play_chunk)
                     .await;
             }
@@ -1157,64 +1105,15 @@ impl Actor {
         }
     }
 
-    /// Periodic maintenance: snub/refill the downloads, poll running
-    /// torrents.
+    /// Periodic maintenance: snub/refill the downloads, poll pending
+    /// Nyaa imports.
     async fn on_tick(&mut self) {
         let actions = self.downloads.tick((self.clock)());
         self.run_download_actions(actions).await;
-        self.poll_torrents().await;
         self.poll_nyaa_imports().await;
         self.poll_rechecks().await;
         // Resume deferred scan hashing once transfers go quiet (#21).
         self.pump_library_scan();
-    }
-
-    /// Poll running torrents' engine status (progress, completion,
-    /// failure) and run the fetch policy's watchdogs.
-    async fn poll_torrents(&mut self) {
-        if !self.torrent_enabled {
-            return;
-        }
-        let Some(engine) = self.torrent.clone() else {
-            return;
-        };
-        let now = (self.clock)();
-        for file in self.fetches.running_files() {
-            let Some(status) = engine.status(&file) else {
-                continue;
-            };
-            if status.error {
-                tracing::warn!(%file, "torrent engine reported failure");
-                let actions = self.fetches.on_engine_failed(file, now);
-                self.run_torrent_actions(actions).await;
-            } else if status.finished
-                && let Some(payload) = status.payload
-            {
-                // `on_completed` transitions Running → Verifying exactly
-                // once, so the hash is spawned exactly once.
-                if self.fetches.on_completed(file) {
-                    tracing::info!(
-                        %file,
-                        payload = %payload.display(),
-                        "torrent complete; verifying against the ed2k root"
-                    );
-                    let done_tx = self.done_tx.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let result = std::fs::File::open(&payload).and_then(ed2k_hash_reader);
-                        let _ = done_tx.blocking_send(Done::TorrentHashed {
-                            file,
-                            payload,
-                            result,
-                        });
-                    });
-                }
-            } else {
-                let actions = self.fetches.on_progress(file, status.progress_bytes, now);
-                self.run_torrent_actions(actions).await;
-            }
-        }
-        let actions = self.fetches.tick(now);
-        self.run_torrent_actions(actions).await;
     }
 
     async fn search_nyaa(&mut self, query: String) {
@@ -1738,19 +1637,10 @@ impl Actor {
     }
 
     /// A verified local copy turned up while a download for the same
-    /// file was in flight (it arrived through another channel): stop
-    /// both the peer download and any torrent fetch. The caller has
-    /// already recorded the local copy.
-    async fn cancel_redundant_download(&mut self, file: Ed2kHash) {
-        self.cancel_redundant_peer_download(file).await;
-        let actions = self.fetches.cancel(&file);
-        self.run_torrent_actions(actions).await;
-    }
-
-    /// The peer-path half of [`Self::cancel_redundant_download`]: tell
+    /// file was in flight (it arrived through another channel): tell
     /// the sources to drop our in-flight chunk requests and remove the
-    /// partial cache file. Called alone when the *torrent* path is what
-    /// delivered the copy (its own state must survive to keep seeding).
+    /// partial cache file. The caller has already recorded the local
+    /// copy.
     async fn cancel_redundant_peer_download(&mut self, file: Ed2kHash) {
         if self.downloads.is_active(&file) {
             tracing::info!(%file, "local copy appeared; cancelling the peer download");
@@ -1768,8 +1658,7 @@ impl Actor {
         }
     }
 
-    /// Begin (or refresh) the peer-transfer download — today's Phase-9B
-    /// path, and the fallback when the torrent route can't deliver.
+    /// Begin (or refresh) the peer-transfer download (Phase 9B).
     async fn start_peer_download(
         &mut self,
         file: Ed2kHash,
@@ -1799,193 +1688,54 @@ impl Actor {
         self.run_download_actions(actions).await;
     }
 
-    /// Apply the torrent fetch policy's actions: dispatch nyaa searches
-    /// to the blocking pool, drive the engine, start the peer fallback,
-    /// and surface progress.
-    async fn run_torrent_actions(&mut self, actions: Vec<TorrentFetchAction>) {
-        for action in actions {
-            match action {
-                TorrentFetchAction::Search {
-                    file,
-                    filename,
-                    size_bytes,
-                    banned,
-                } => {
-                    let Some(source) = self.nyaa.clone() else {
-                        continue;
-                    };
-                    tracing::info!(%file, filename, "searching nyaa for a torrent");
-                    let done_tx = self.done_tx.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let found = match source.search(&filename) {
-                            Ok(xml) => nyaa::pick_match(
-                                &nyaa::parse_rss(&xml),
-                                &filename,
-                                size_bytes,
-                                &banned,
-                            ),
-                            Err(e) => {
-                                tracing::warn!(%file, "nyaa search failed: {e}");
-                                None
-                            }
-                        };
-                        let _ = done_tx.blocking_send(Done::NyaaSearched { file, found });
-                    });
-                }
-                TorrentFetchAction::Add { file, chosen } => {
-                    let Some(engine) = &self.torrent else {
-                        continue;
-                    };
-                    tracing::info!(
-                        %file,
-                        title = %chosen.title,
-                        info_hash = %chosen.info_hash,
-                        "adding torrent"
-                    );
-                    if let Err(e) = self.storage.upsert_torrent(&TorrentRow {
-                        hash: file,
-                        info_hash: chosen.info_hash.clone(),
-                        name: chosen.title.clone(),
-                        added_at: (self.clock)() as i64,
-                    }) {
-                        tracing::error!("recording torrent: {e}");
-                    }
-                    engine.add(file, &chosen, self.torrent_dir(file));
-                }
-                TorrentFetchAction::Remove { file } => self.drop_torrent(file),
-                TorrentFetchAction::Fallback {
-                    file,
-                    size_bytes,
-                    sources,
-                    play_chunk,
-                } => {
-                    if !self.local_files.contains_key(&file) {
-                        self.start_peer_download(file, size_bytes, sources, play_chunk)
-                            .await;
-                    }
-                }
-                TorrentFetchAction::Progress { file, progress_bps } => {
-                    // Always the non-playable variant: torrent pieces
-                    // arrive out of order, so a partial torrent is never
-                    // playable at any percentage (complete-only
-                    // playability; it flips straight to Ready after
-                    // ed2k verification).
-                    let _ = self
-                        .out
-                        .send(FileOutput::Availability {
-                            file,
-                            availability: FileAvailability::Downloading { progress_bps },
-                        })
-                        .await;
-                }
-            }
-        }
-    }
-
-    /// Where a torrent's payload downloads to (per-file subdir, so a
-    /// multi-file surprise stays contained).
-    fn torrent_dir(&self, file: Ed2kHash) -> PathBuf {
-        self.cache_dir.join("torrents").join(file.to_string())
-    }
-
-    /// Startup reconciliation of the torrent registry (design.md,
-    /// BitTorrent Downloads): a registered torrent whose file is still
-    /// cached is re-added — instant when librqbit's fastresume already
-    /// restored it, a magnet re-fetch otherwise — so it keeps seeding; a
-    /// row whose file was evicted while the app was closed loses its
-    /// torrent. A torrent mid-download at shutdown has no cache entry
-    /// yet and is dropped too — in-flight downloads don't survive
-    /// restarts (matching the peer path), and the next `StartDownload`
-    /// re-searches.
-    ///
-    /// The engine's own persisted session is reconciled first: fastresume
-    /// restores every torrent of the previous run, including ones no
-    /// registry row claims (a mid-download auto torrent, an abandoned
-    /// import — its row is only written on completion), which would
-    /// otherwise resume and seed untracked forever. Import directories
-    /// no surviving torrent uses are swept in the same pass. When the
-    /// torrent path is disabled there is no session either; leftovers
-    /// are reconciled on the next torrent-enabled start.
-    fn reconcile_torrents(&mut self) {
-        let Some(engine) = self.torrent.clone() else {
-            return;
-        };
-        let rows = match self.storage.torrents() {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!("listing registered torrents: {e}");
-                return;
-            }
-        };
-        let keep: HashMap<String, Ed2kHash> = rows
-            .iter()
-            .filter(|row| self.local_files.contains_key(&row.hash))
-            .map(|row| (row.info_hash.to_lowercase(), row.hash))
-            .collect();
-        let kept_dirs: HashSet<PathBuf> = engine.reconcile_session(&keep).into_iter().collect();
-        self.sweep_import_dirs(&kept_dirs);
-        for row in rows {
-            if self.local_files.contains_key(&row.hash) {
-                tracing::debug!(file = %row.hash, name = row.name, "re-adding torrent to seed");
-                let chosen = NyaaMatch {
-                    torrent_url: format!("magnet:?xt=urn:btih:{}", row.info_hash),
-                    info_hash: row.info_hash,
-                    title: row.name,
-                };
-                engine.add(row.hash, &chosen, self.torrent_dir(row.hash));
-            } else {
-                tracing::info!(
-                    file = %row.hash,
-                    name = row.name,
-                    "cached file gone; removing its torrent"
-                );
-                self.drop_torrent(row.hash);
-            }
-        }
-    }
-
-    /// Delete abandoned `torrents/import-*` payload directories. Import
-    /// ids reset every launch and pending imports don't survive restarts,
-    /// so at startup any import dir is abandoned — except one a surviving
-    /// session torrent (a *promoted* import, claimed by its registry row)
-    /// still seeds from, which `kept` protects.
-    fn sweep_import_dirs(&self, kept: &HashSet<PathBuf>) {
+    /// Startup sweep of `<cache>/torrents/`: torrents never survive a
+    /// restart (design.md, BitTorrent Downloads — an import seeds only
+    /// for the session that downloaded it, and the engine keeps no
+    /// persistent session), so everything left under the engine root —
+    /// abandoned `import-*` payload dirs, prior versions' leftovers —
+    /// is garbage. The one exception: an entry that still hosts a
+    /// *registered cache file* (a completed import whose hardlink into
+    /// the hash-addressed cache failed and was registered in place) is
+    /// spared; deleting it would take the cached copy with it.
+    fn sweep_torrents_dir(&self) {
         let torrents_dir = self.cache_dir.join("torrents");
         let Ok(dir) = std::fs::read_dir(&torrents_dir) else {
             return;
         };
         for dirent in dir.flatten() {
             let path = dirent.path();
-            let is_import = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("import-"));
-            if !is_import || kept.contains(&path) {
+            if self
+                .local_files
+                .values()
+                .any(|local| local.starts_with(&path))
+            {
+                tracing::debug!(
+                    path = %path.display(),
+                    "sparing torrent dir hosting a registered cache file"
+                );
                 continue;
             }
-            match std::fs::remove_dir_all(&path) {
-                Ok(()) => {
-                    tracing::info!(path = %path.display(), "sweeping abandoned import dir")
-                }
+            let result = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            match result {
+                Ok(()) => tracing::info!(path = %path.display(), "sweeping stale torrent data"),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => tracing::warn!(path = %path.display(), "sweeping import dir: {e}"),
+                Err(e) => tracing::warn!(path = %path.display(), "sweeping torrent data: {e}"),
             }
         }
     }
 
-    /// Remove `file`'s torrent everywhere: the engine (with its files),
-    /// the registry row, and the output dir. Safe to call when no
-    /// torrent exists — every step is a no-op then.
     /// Apply a live BitTorrent-setting change (design.md, BitTorrent
     /// Downloads: disabling applies immediately). Disable: every
-    /// in-flight fetch falls back to the peer path with its stashed
-    /// sources, every engine torrent (including completed, seeding
-    /// ones — the uplink saturator) is removed with its files and
-    /// registry row, and pending user-selected imports are cancelled.
-    /// The cached copies of *completed* downloads are untouched: they
-    /// were hardlinked/copied into the hash-addressed cache at
-    /// verification. The librqbit session (and its DHT socket) stays
-    /// alive until restart — bounded chatter, no payload traffic.
+    /// seeding torrent (the uplink saturator) is removed with its
+    /// files, and pending user-selected imports are cancelled. The
+    /// cached copies of *completed* imports are untouched: they were
+    /// hardlinked/copied into the hash-addressed cache at verification.
+    /// The librqbit session (and its DHT socket) stays alive until
+    /// restart — bounded chatter, no payload traffic.
     async fn set_torrent_enabled(&mut self, enabled: bool) {
         if enabled {
             self.torrent_enabled = self.torrent.is_some();
@@ -2004,9 +1754,7 @@ impl Actor {
             return;
         }
         self.torrent_enabled = false;
-        tracing::info!("BitTorrent disabled; removing torrents and falling back to peers");
-        let actions = self.fetches.disable_all();
-        self.run_torrent_actions(actions).await;
+        tracing::info!("BitTorrent disabled; removing torrents");
         if let Some(engine) = self.torrent.clone() {
             for file in engine.active() {
                 self.drop_torrent(file);
@@ -2019,95 +1767,13 @@ impl Actor {
         }
     }
 
+    /// Stop seeding `file` (a promoted import): remove its torrent from
+    /// the engine along with its payload files. The cached copy is a
+    /// separate hardlink and survives; an emptied import dir is swept
+    /// at the next startup. Safe to call when no torrent exists.
     fn drop_torrent(&mut self, file: Ed2kHash) {
         if let Some(engine) = &self.torrent {
             engine.remove(file, true);
-        }
-        if let Err(e) = self.storage.remove_torrent(file) {
-            tracing::error!("forgetting torrent: {e}");
-        }
-        let dir = self.torrent_dir(file);
-        if let Err(e) = std::fs::remove_dir_all(&dir)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(path = %dir.display(), "removing torrent dir: {e}");
-        }
-    }
-
-    /// A completed torrent payload finished ed2k-hashing: on a root
-    /// match, place it in the hash-addressed cache and converge into the
-    /// normal download-complete path; on a mismatch, ban the release and
-    /// fall back to peers.
-    async fn on_torrent_hashed(
-        &mut self,
-        file: Ed2kHash,
-        payload: PathBuf,
-        result: std::io::Result<Ed2kFileHash>,
-    ) {
-        // The fetch may have been cancelled while the payload hash was in
-        // flight — a local copy adopted from a media root cancels the
-        // fetch and deletes the payload dir. Acting on the stale result
-        // anyway would overwrite the adopted path in `local_files` with
-        // the dead payload path (advertising Ready for a file we don't
-        // hold), so a completion for a no-longer-active fetch is dropped.
-        if !self.fetches.is_active(&file) {
-            tracing::debug!(%file, "dropping torrent hash result for a cancelled fetch");
-            return;
-        }
-        let now = (self.clock)();
-        match result {
-            Ok(hashed) if hashed.root == file => {
-                // A racing peer download is now redundant. Cancel it
-                // first — its partial sits exactly where the verified
-                // payload is about to be linked.
-                self.cancel_redundant_peer_download(file).await;
-                let cache_path = self.download_path(file);
-                match place_in_cache(&payload, &cache_path) {
-                    Ok(()) => {
-                        self.fetches.on_verified(&file);
-                        self.on_download_complete(file, cache_path, hashed.blocks)
-                            .await;
-                    }
-                    Err(e) if payload.exists() => {
-                        // Disk trouble, not the release's fault: keep the
-                        // payload where it is and register it directly —
-                        // the cache entry's path is what matters, and
-                        // eviction removes the torrent alongside it.
-                        tracing::warn!(
-                            %file,
-                            "placing torrent payload in cache failed ({e}); using it in place"
-                        );
-                        self.fetches.on_verified(&file);
-                        self.on_download_complete(file, payload, hashed.blocks)
-                            .await;
-                    }
-                    Err(e) => {
-                        // The payload itself is gone (deleted under us),
-                        // not mere cache-dir trouble: registering its path
-                        // would advertise Ready for a file we don't hold.
-                        tracing::warn!(
-                            %file,
-                            "torrent payload vanished before cache placement ({e}); falling back"
-                        );
-                        let actions = self.fetches.on_engine_failed(file, now);
-                        self.run_torrent_actions(actions).await;
-                    }
-                }
-            }
-            Ok(hashed) => {
-                tracing::warn!(
-                    %file,
-                    actual = %hashed.root,
-                    "torrent payload failed ed2k verification; banning the release"
-                );
-                let actions = self.fetches.on_verify_failed(file, now);
-                self.run_torrent_actions(actions).await;
-            }
-            Err(e) => {
-                tracing::warn!(%file, "reading torrent payload back: {e}");
-                let actions = self.fetches.on_engine_failed(file, now);
-                self.run_torrent_actions(actions).await;
-            }
         }
     }
 
@@ -2121,7 +1787,6 @@ impl Actor {
             return;
         };
         let expected_size = pending.result.size_bytes;
-        let chosen = pending.result.chosen.clone();
         let hashed = match result {
             Ok(hashed) if hashed.size_bytes == expected_size => hashed,
             Ok(hashed) => {
@@ -2150,16 +1815,11 @@ impl Actor {
                 payload
             }
         };
+        // Re-key the import to its file so eviction and the live-disable
+        // path can end its seeding by hash. Session-only: nothing is
+        // persisted, and the torrent dies with the process.
         if let Some(engine) = &self.torrent {
             engine.promote_import(id, file);
-        }
-        if let Err(e) = self.storage.upsert_torrent(&TorrentRow {
-            hash: file,
-            info_hash: chosen.info_hash,
-            name: chosen.title,
-            added_at: (self.clock)() as i64,
-        }) {
-            tracing::error!(%file, "recording imported torrent: {e}");
         }
         self.on_download_complete(file, local_path.clone(), hashed.blocks.clone())
             .await;
@@ -2430,10 +2090,8 @@ impl Actor {
                 // A verified local copy can be served to peers.
                 if let Resolution::Verified(path) = &resolution {
                     self.local_files.insert(file, path.clone());
-                    if (self.downloads.is_active(&file) || self.fetches.is_active(&file))
-                        && *path != self.download_path(file)
-                    {
-                        self.cancel_redundant_download(file).await;
+                    if self.downloads.is_active(&file) && *path != self.download_path(file) {
+                        self.cancel_redundant_peer_download(file).await;
                     }
                     // Resolving (loading) a file is an "access": bump the
                     // cache entry's last_access so retention runs from last
@@ -2508,17 +2166,6 @@ impl Actor {
                     tracing::debug!(path = %path.display(), "hashing manual mapping failed: {e}");
                 }
             },
-            Done::NyaaSearched { file, found } => {
-                match &found {
-                    Some(m) => tracing::info!(%file, title = %m.title, "nyaa match accepted"),
-                    None => {
-                        tracing::info!(%file, "no nyaa match; falling back to peer transfer")
-                    }
-                }
-                let now = (self.clock)();
-                let actions = self.fetches.on_searched(file, found, now);
-                self.run_torrent_actions(actions).await;
-            }
             Done::NyaaBrowseSearched { query, result } => {
                 let _ = self
                     .out
@@ -2530,11 +2177,6 @@ impl Actor {
                 payload,
                 result,
             } => self.on_nyaa_import_hashed(id, payload, result).await,
-            Done::TorrentHashed {
-                file,
-                payload,
-                result,
-            } => self.on_torrent_hashed(file, payload, result).await,
             Done::Placeholder { file, result } => match result {
                 Ok(path) => {
                     let _ = self
@@ -2634,10 +2276,7 @@ impl Actor {
                         // unmet resolve or an active download: adopt it.
                         // By-hash, so it works even under a different
                         // filename (where the walk trigger can't see it).
-                        if self.wanted.remove(&root).is_some()
-                            || self.downloads.is_active(&root)
-                            || self.fetches.is_active(&root)
-                        {
+                        if self.wanted.remove(&root).is_some() || self.downloads.is_active(&root) {
                             tracing::info!(
                                 file = %root,
                                 path = %item.path.display(),
@@ -2645,8 +2284,8 @@ impl Actor {
                             );
                             self.local_files.insert(root, item.path.clone());
                             self.rechecks.remove(&root);
-                            if self.downloads.is_active(&root) || self.fetches.is_active(&root) {
-                                self.cancel_redundant_download(root).await;
+                            if self.downloads.is_active(&root) {
+                                self.cancel_redundant_peer_download(root).await;
                             }
                             let _ = self
                                 .out
@@ -4201,17 +3840,6 @@ mod tests {
         Arc::new(|| 1_700_000_000_000)
     }
 
-    /// A real wall clock, for tests that need timeouts to actually
-    /// elapse (the torrent stall watchdog).
-    fn wall_clock() -> Clock {
-        Arc::new(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0)
-        })
-    }
-
     struct Rig {
         commands: mpsc::Sender<FileCommand>,
         outputs: mpsc::Receiver<FileOutput>,
@@ -4256,7 +3884,6 @@ mod tests {
                 scan_transfer_quiet: Duration::from_secs(2),
                 torrent: None,
                 nyaa: None,
-                torrent_fetch: TorrentFetchConfig::default(),
             },
             cmd_rx,
             out_tx,
@@ -4311,7 +3938,6 @@ mod tests {
                 scan_transfer_quiet: Duration::from_secs(2),
                 torrent: None,
                 nyaa: None,
-                torrent_fetch: TorrentFetchConfig::default(),
             },
             out_tx,
             done_tx,
@@ -6275,7 +5901,6 @@ mod tests {
             .send(FileCommand::StartDownload {
                 file,
                 size_bytes: contents.len() as u64,
-                filename: "episode.mkv".into(),
                 sources: vec![peer],
                 play_chunk: 0,
             })
@@ -6370,35 +5995,26 @@ mod tests {
         assert_eq!(path, renamed);
     }
 
-    // ---- torrent-first download tests (fake engine, scripted nyaa).
+    // ---- Nyaa browse-import tests (fake engine).
 
     use crate::torrent::engine::{FakeTorrentEngine, TorrentStatus};
+    use crate::torrent::nyaa::NyaaMatch;
 
-    /// A nyaa source that always returns the same feed (or an error).
-    struct FixedNyaa(Option<String>);
+    /// A nyaa source for rigs whose tests never run a browse search
+    /// (the import tests hand the actor a pre-inspected result).
+    struct NoNyaa;
 
-    impl NyaaSource for FixedNyaa {
-        fn search(&self, _filename: &str) -> std::io::Result<String> {
-            match &self.0 {
-                Some(xml) => Ok(xml.clone()),
-                None => Err(std::io::Error::other("nyaa unreachable")),
-            }
+    impl NyaaSource for NoNyaa {
+        fn search_anime(&self, _query: &str) -> std::io::Result<String> {
+            Err(std::io::Error::other("no search in this test"))
+        }
+
+        fn fetch_torrent(&self, _url: &str) -> std::io::Result<Vec<u8>> {
+            Err(std::io::Error::other("no metadata in this test"))
         }
     }
 
-    /// A minimal single-item nyaa feed the parser accepts.
-    fn rss_for(title: &str, size_bytes: u64, info_hash: &str) -> String {
-        format!(
-            r#"<rss version="2.0" xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel><item><title>{title}</title><link>https://nyaa.si/download/1.torrent</link><nyaa:infoHash>{info_hash}</nyaa:infoHash><nyaa:size>{size_bytes} B</nyaa:size><nyaa:seeders>10</nyaa:seeders></item></channel></rss>"#
-        )
-    }
-
-    fn spawn_torrent_rig(
-        roots: Vec<PathBuf>,
-        nyaa_xml: Option<String>,
-        fetch: TorrentFetchConfig,
-        clock: Clock,
-    ) -> (Rig, Arc<FakeTorrentEngine>) {
+    fn spawn_torrent_rig(roots: Vec<PathBuf>, clock: Clock) -> (Rig, Arc<FakeTorrentEngine>) {
         let storage = Storage::open_in_memory().unwrap();
         let cache_dir = tempfile::tempdir().unwrap();
         let engine = Arc::new(FakeTorrentEngine::default());
@@ -6416,8 +6032,7 @@ mod tests {
                 scan_interval: None,
                 scan_transfer_quiet: Duration::from_secs(2),
                 torrent: Some(engine.clone() as Arc<dyn TorrentEngine>),
-                nyaa: Some(Arc::new(FixedNyaa(nyaa_xml))),
-                torrent_fetch: fetch,
+                nyaa: Some(Arc::new(NoNyaa)),
             },
             cmd_rx,
             out_tx,
@@ -6432,25 +6047,53 @@ mod tests {
         )
     }
 
-    fn start_download_cmd(file: Ed2kHash, size: u64, sources: Vec<PeerId>) -> FileCommand {
-        FileCommand::StartDownload {
-            file,
-            size_bytes: size,
-            filename: "ep1.mkv".into(),
-            sources,
-            play_chunk: 0,
-        }
-    }
-
-    /// Wait until the fake engine has been handed the torrent.
-    async fn wait_added(engine: &FakeTorrentEngine, file: Ed2kHash) -> PathBuf {
+    /// Wait until the fake engine has been handed the import.
+    async fn wait_import_added(engine: &FakeTorrentEngine, id: TorrentImportId) -> PathBuf {
         for _ in 0..100 {
-            if let Some((_, dir)) = engine.added(&file) {
+            if let Some((_, dir)) = engine.added_import(id) {
                 return dir;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!("torrent was never added to the engine");
+        panic!("import was never added to the engine");
+    }
+
+    /// Drive a browse import to a verified, promoted completion: start
+    /// it, materialize the payload, script the engine finished, and wait
+    /// for the successful finish. Returns the imported file's hash.
+    async fn complete_import(
+        rig: &mut Rig,
+        engine: &FakeTorrentEngine,
+        id: TorrentImportId,
+        contents: &[u8],
+    ) -> Ed2kHash {
+        rig.commands
+            .send(FileCommand::StartNyaaImport {
+                id,
+                result: browse_result("chosen.mkv", contents.len() as u64),
+                after: None,
+            })
+            .await
+            .unwrap();
+        let out_dir = wait_import_added(engine, id).await;
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let payload = out_dir.join("chosen.mkv");
+        std::fs::write(&payload, contents).unwrap();
+        engine.set_import_status(
+            id,
+            TorrentStatus {
+                progress_bytes: contents.len() as u64,
+                finished: true,
+                error: false,
+                payload: Some(payload),
+            },
+        );
+        loop {
+            if let FileOutput::NyaaImportFinished { result, .. } = next_output(rig).await {
+                let (hashed, _) = result.expect("import must finish cleanly");
+                return hashed.root;
+            }
+        }
     }
 
     fn browse_result(filename: &str, size_bytes: u64) -> NyaaBrowseResult {
@@ -6472,12 +6115,7 @@ mod tests {
         let contents = b"selected current-season episode".as_slice();
         let hashed = ed2k_hash_bytes(contents);
         let id = TorrentImportId(7);
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(String::new()),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
+        let (mut rig, engine) = spawn_torrent_rig(vec![], test_clock());
         rig.commands
             .send(FileCommand::StartNyaaImport {
                 id,
@@ -6535,12 +6173,7 @@ mod tests {
     #[tokio::test]
     async fn selected_nyaa_import_can_be_cancelled() {
         let id = TorrentImportId(8);
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(String::new()),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
+        let (mut rig, engine) = spawn_torrent_rig(vec![], test_clock());
         rig.commands
             .send(FileCommand::StartNyaaImport {
                 id,
@@ -6564,215 +6197,39 @@ mod tests {
         assert!(engine.added_import(id).is_none());
     }
 
-    /// No acceptable nyaa result: the fetch falls back to the peer
-    /// transfer with the stashed sources (observable as the peer path's
-    /// opening BlockHashRequest), and nothing reaches the engine.
-    #[tokio::test]
-    async fn no_nyaa_match_falls_back_to_peer_download() {
-        let contents = b"an episode nobody uploaded".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            // A feed for some other release entirely.
-            Some(rss_for("unrelated.mkv", 12345, "cc")),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
-        let peer = PeerId::new("seed");
-        rig.commands
-            .send(start_download_cmd(file, contents.len() as u64, vec![peer]))
-            .await
-            .unwrap();
-        loop {
-            match next_output(&mut rig).await {
-                FileOutput::SendPeer { message, .. } => {
-                    assert!(matches!(*message, PeerMessage::BlockHashRequest { .. }));
-                    break;
-                }
-                _ => continue,
-            }
-        }
-        assert!(engine.added(&file).is_none(), "no match must not add");
-    }
-
-    /// The happy path: nyaa match → engine add → payload completes →
-    /// ed2k verifies → hardlinked into the hash-addressed cache →
-    /// Ready + DownloadComplete, exactly like a peer download.
-    #[tokio::test]
-    async fn torrent_completion_verifies_and_resolves_ready() {
-        let contents = b"a well-seeded current-season episode".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
-        rig.commands
-            .send(start_download_cmd(file, contents.len() as u64, vec![]))
-            .await
-            .unwrap();
-
-        let out_dir = wait_added(&engine, file).await;
-        std::fs::create_dir_all(&out_dir).unwrap();
-        let payload = out_dir.join("ep1.mkv");
-        std::fs::write(&payload, contents).unwrap();
-        engine.set_status(
-            file,
-            TorrentStatus {
-                progress_bytes: contents.len() as u64,
-                finished: true,
-                error: false,
-                payload: Some(payload.clone()),
-            },
-        );
-
-        let mut ready = false;
-        loop {
-            match next_output(&mut rig).await {
-                FileOutput::Availability {
-                    file: f,
-                    availability: FileAvailability::Ready,
-                } if f == file => ready = true,
-                FileOutput::DownloadComplete { file: f, path } if f == file => {
-                    assert!(ready, "Ready must precede DownloadComplete");
-                    let cache_path = rig
-                        ._cache_dir
-                        .as_ref()
-                        .unwrap()
-                        .path()
-                        .join(file.to_string());
-                    assert_eq!(path, cache_path);
-                    assert_eq!(std::fs::read(&cache_path).unwrap(), contents);
-                    assert!(payload.exists(), "payload keeps seeding in place");
-                    break;
-                }
-                _ => continue,
-            }
-        }
-    }
-
-    /// A mislabeled release: the payload completes but does not hash to
-    /// the entry's ed2k root. The torrent is removed (files deleted),
-    /// the release banned, and the peer fallback engaged.
-    #[tokio::test]
-    async fn torrent_ed2k_mismatch_bans_and_falls_back() {
-        let contents = b"the real episode contents".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
-        let peer = PeerId::new("seed");
-        rig.commands
-            .send(start_download_cmd(file, contents.len() as u64, vec![peer]))
-            .await
-            .unwrap();
-
-        let out_dir = wait_added(&engine, file).await;
-        std::fs::create_dir_all(&out_dir).unwrap();
-        let payload = out_dir.join("ep1.mkv");
-        // Same length, different bytes: passes the size check, fails ed2k.
-        std::fs::write(&payload, b"a mislabeled other encoding!!").unwrap();
-        engine.set_status(
-            file,
-            TorrentStatus {
-                progress_bytes: contents.len() as u64,
-                finished: true,
-                error: false,
-                payload: Some(payload.clone()),
-            },
-        );
-
-        // Peer fallback engages (BlockHashRequest to the stashed source).
-        loop {
-            match next_output(&mut rig).await {
-                FileOutput::SendPeer { message, .. }
-                    if matches!(*message, PeerMessage::BlockHashRequest { .. }) =>
-                {
-                    break;
-                }
-                _ => continue,
-            }
-        }
-        assert_eq!(engine.removed(), vec![(file, true)]);
-    }
-
-    /// A torrent that never moves a byte is declared stalled and handed
-    /// to the peer fallback; the engine torrent is removed.
-    #[tokio::test]
-    async fn torrent_stall_falls_back_to_peer_download() {
-        let contents = b"a dead swarm's episode".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
-            TorrentFetchConfig {
-                stall_timeout_millis: 400,
-                ..TorrentFetchConfig::default()
-            },
-            wall_clock(),
-        );
-        let peer = PeerId::new("seed");
-        rig.commands
-            .send(start_download_cmd(file, contents.len() as u64, vec![peer]))
-            .await
-            .unwrap();
-        wait_added(&engine, file).await;
-        // No progress ever reported; the stall watchdog must fire and
-        // the peer path open with a BlockHashRequest.
-        loop {
-            match next_output(&mut rig).await {
-                FileOutput::SendPeer { message, .. }
-                    if matches!(*message, PeerMessage::BlockHashRequest { .. }) =>
-                {
-                    break;
-                }
-                _ => continue,
-            }
-        }
-        assert_eq!(engine.removed(), vec![(file, true)]);
-    }
-
     /// The live BitTorrent toggle (design.md, BitTorrent Downloads):
-    /// disabling mid-download removes the engine torrent (files deleted)
-    /// and hands the fetch to the peer path with its stashed sources —
-    /// the mid-session escape hatch for a saturated uplink.
+    /// disabling removes a completed import's still-seeding torrent
+    /// (files deleted) — the mid-session escape hatch for a saturated
+    /// uplink. The cached copy survives.
     #[tokio::test]
-    async fn disable_removes_torrents_and_falls_back_to_peers() {
+    async fn disable_removes_seeding_torrents() {
         let contents = b"an episode the uplink cannot afford".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
-        let peer = PeerId::new("seed");
-        rig.commands
-            .send(start_download_cmd(file, contents.len() as u64, vec![peer]))
-            .await
-            .unwrap();
-        wait_added(&engine, file).await;
+        let (mut rig, engine) = spawn_torrent_rig(vec![], test_clock());
+        let file = complete_import(&mut rig, &engine, TorrentImportId(3), contents).await;
+        assert!(engine.added(&file).is_some(), "import seeds after promote");
 
         rig.commands
             .send(FileCommand::SetTorrentEnabled(false))
             .await
             .unwrap();
-        // Peer fallback engages with the stashed source.
-        loop {
-            match next_output(&mut rig).await {
-                FileOutput::SendPeer { message, .. }
-                    if matches!(*message, PeerMessage::BlockHashRequest { .. }) =>
-                {
-                    break;
-                }
-                _ => continue,
+        for _ in 0..100 {
+            if engine.removed() == vec![(file, true)] {
+                let cache_path = rig
+                    ._cache_dir
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .join(file.to_string());
+                assert_eq!(
+                    std::fs::read(&cache_path).unwrap(),
+                    contents,
+                    "the cached copy must survive the disable"
+                );
+                return;
             }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(engine.removed(), vec![(file, true)]);
+        panic!("disable never removed the seeding torrent");
     }
 
     /// Disabling BitTorrent cancels pending user-selected imports (they
@@ -6780,12 +6237,7 @@ mod tests {
     #[tokio::test]
     async fn disable_cancels_pending_nyaa_imports() {
         let id = TorrentImportId(11);
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(String::new()),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
+        let (mut rig, engine) = spawn_torrent_rig(vec![], test_clock());
         rig.commands
             .send(FileCommand::StartNyaaImport {
                 id,
@@ -6811,146 +6263,42 @@ mod tests {
         assert!(engine.added_import(id).is_none(), "import removed");
     }
 
-    /// While disabled, StartDownload skips the torrent path entirely and
-    /// goes straight to the peer relay; re-enabling (the engine exists)
-    /// restores torrent-first for later downloads.
+    /// While the setting is off, a browse import is refused with a
+    /// pointer to Settings instead of silently starting the engine.
     #[tokio::test]
-    async fn disabled_downloads_use_peers_until_re_enabled() {
-        let contents = b"episode fetched while torrents are off".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
+    async fn import_while_disabled_is_refused() {
+        let (mut rig, engine) = spawn_torrent_rig(vec![], test_clock());
         rig.commands
             .send(FileCommand::SetTorrentEnabled(false))
             .await
             .unwrap();
-        let peer = PeerId::new("seed");
         rig.commands
-            .send(start_download_cmd(file, contents.len() as u64, vec![peer]))
-            .await
-            .unwrap();
-        loop {
-            match next_output(&mut rig).await {
-                FileOutput::SendPeer { message, .. }
-                    if matches!(*message, PeerMessage::BlockHashRequest { .. }) =>
-                {
-                    break;
-                }
-                _ => continue,
-            }
-        }
-        assert!(
-            engine.added(&file).is_none(),
-            "no torrent while disabled: {:?}",
-            engine.added(&file)
-        );
-
-        rig.commands
-            .send(FileCommand::SetTorrentEnabled(true))
-            .await
-            .unwrap();
-        rig.commands
-            .send(start_download_cmd(
-                file,
-                contents.len() as u64,
-                vec![PeerId::new("seed")],
-            ))
-            .await
-            .unwrap();
-        wait_added(&engine, file).await;
-    }
-
-    /// A local copy landing in a media root mid-fetch makes the torrent
-    /// redundant: the walk-triggered resolve adopts it and the torrent
-    /// (still downloading) is removed.
-    #[tokio::test]
-    async fn a_local_copy_cancels_the_torrent_fetch() {
-        let root = tempfile::tempdir().unwrap();
-        let contents = b"the episode that arrived by other means".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![root.path().to_path_buf()],
-            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
-        // The entry is missing, so the walk trigger knows its name.
-        rig.commands
-            .send(FileCommand::Resolve {
-                file,
-                filename: "ep1.mkv".into(),
+            .send(FileCommand::StartNyaaImport {
+                id: TorrentImportId(4),
+                result: browse_result("refused.mkv", 100),
+                after: None,
             })
             .await
             .unwrap();
-        rig.commands
-            .send(start_download_cmd(file, contents.len() as u64, vec![]))
-            .await
-            .unwrap();
-        wait_added(&engine, file).await;
-
-        // The same file lands in a media root behind our back.
-        write(root.path(), "Anime/ep1.mkv", contents);
-        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
-
         loop {
-            match next_output(&mut rig).await {
-                FileOutput::Resolved {
-                    file: f,
-                    resolution: Resolution::Verified(_),
-                } if f == file => break,
-                _ => continue,
-            }
-        }
-        // The redundant torrent is gone from the engine.
-        for _ in 0..100 {
-            if engine.removed() == vec![(file, true)] {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("torrent was never removed after the local copy appeared");
-    }
-
-    /// Eviction ends seeding: evicting the cached file also removes the
-    /// torrent (and its payload) from the engine.
-    #[tokio::test]
-    async fn eviction_removes_the_torrent() {
-        let contents = b"a watched episode past retention".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-        let (mut rig, engine) = spawn_torrent_rig(
-            vec![],
-            Some(rss_for("ep1.mkv", contents.len() as u64, "aa")),
-            TorrentFetchConfig::default(),
-            test_clock(),
-        );
-        rig.commands
-            .send(start_download_cmd(file, contents.len() as u64, vec![]))
-            .await
-            .unwrap();
-        let out_dir = wait_added(&engine, file).await;
-        std::fs::create_dir_all(&out_dir).unwrap();
-        let payload = out_dir.join("ep1.mkv");
-        std::fs::write(&payload, contents).unwrap();
-        engine.set_status(
-            file,
-            TorrentStatus {
-                progress_bytes: contents.len() as u64,
-                finished: true,
-                error: false,
-                payload: Some(payload.clone()),
-            },
-        );
-        loop {
-            if let FileOutput::DownloadComplete { file: f, .. } = next_output(&mut rig).await
-                && f == file
-            {
+            if let FileOutput::NyaaImportFinished { result, .. } = next_output(&mut rig).await {
+                assert_eq!(
+                    result.unwrap_err(),
+                    "BitTorrent downloads are disabled; enable them in Settings."
+                );
                 break;
             }
         }
+        assert!(engine.added_import(TorrentImportId(4)).is_none());
+    }
+
+    /// Eviction ends seeding: evicting the cached file also removes the
+    /// promoted import's torrent (and its payload) from the engine.
+    #[tokio::test]
+    async fn eviction_removes_the_torrent() {
+        let contents = b"a watched episode past retention".as_slice();
+        let (mut rig, engine) = spawn_torrent_rig(vec![], test_clock());
+        let file = complete_import(&mut rig, &engine, TorrentImportId(5), contents).await;
 
         // Watched by the group, AfterWatch retention: evict now.
         rig.commands
@@ -6979,291 +6327,75 @@ mod tests {
         );
     }
 
-    /// Startup reconciliation: a registered torrent whose file is still
-    /// cached is re-added (by magnet) to keep seeding; one whose file
-    /// was evicted while the app was closed is removed.
+    /// Startup sweeps everything under `<cache>/torrents/` — torrents
+    /// never survive a restart, so abandoned import dirs, prior
+    /// versions' per-hash payload dirs, and a legacy librqbit session
+    /// dir are all garbage. The one exception: a dir hosting a
+    /// *registered cache file* (a completed import whose hardlink into
+    /// the cache failed and was registered in place) must be spared.
+    /// The sweep runs with the engine disabled too — that is exactly
+    /// when leftovers would otherwise linger forever.
     #[tokio::test]
-    async fn startup_reconciles_registered_torrents() {
-        use crate::storage::TorrentRow;
-
-        let contents = b"a cached, still-seeding episode".as_slice();
+    async fn startup_sweeps_stale_torrents_dir() {
+        let contents = b"a cache entry living inside its import dir".as_slice();
         let kept = ed2k_hash_bytes(contents).root;
-        let evicted = ed2k_hash_bytes(b"a file evicted while closed").root;
 
         let storage = Storage::open_in_memory().unwrap();
         let cache_dir = tempfile::tempdir().unwrap();
-        // The kept file's cache entry, with its file present on disk.
-        let kept_path = cache_dir.path().join(kept.to_string());
+        let torrents_dir = cache_dir.path().join("torrents");
+        // A cache entry registered in place inside an import dir (the
+        // failed-hardlink fallback).
+        let kept_dir = torrents_dir.join("import-5");
+        std::fs::create_dir_all(&kept_dir).unwrap();
+        let kept_path = kept_dir.join("kept.mkv");
         std::fs::write(&kept_path, contents).unwrap();
         storage
             .upsert_cache_entry(&CacheEntry {
                 hash: kept,
-                path: kept_path,
+                path: kept_path.clone(),
                 size_bytes: contents.len() as u64,
                 last_access: 0,
             })
             .unwrap();
-        for (hash, info_hash) in [(kept, "aa"), (evicted, "bb")] {
-            storage
-                .upsert_torrent(&TorrentRow {
-                    hash,
-                    info_hash: info_hash.into(),
-                    name: "ep.mkv".into(),
-                    added_at: 0,
-                })
-                .unwrap();
-        }
-
-        let engine = Arc::new(FakeTorrentEngine::default());
-        let (_cmd_tx, cmd_rx) = mpsc::channel(16);
-        let (out_tx, _out_rx) = mpsc::channel(64);
-        tokio::spawn(run(
-            FileConfig {
-                storage,
-                media_roots: vec![],
-                retention: CacheRetention::Infinite,
-                cache_dir: cache_dir.path().to_path_buf(),
-                clock: test_clock(),
-                download: DownloadConfig::default(),
-                upload_limit: None,
-                scan_interval: None,
-                scan_transfer_quiet: Duration::from_secs(2),
-                torrent: Some(engine.clone() as Arc<dyn TorrentEngine>),
-                nyaa: Some(Arc::new(FixedNyaa(None))),
-                torrent_fetch: TorrentFetchConfig::default(),
-            },
-            cmd_rx,
-            out_tx,
-        ));
-
-        for _ in 0..100 {
-            if engine.added(&kept).is_some() && engine.removed().contains(&(evicted, true)) {
-                let (chosen, _) = engine.added(&kept).unwrap();
-                assert_eq!(chosen.torrent_url, "magnet:?xt=urn:btih:aa");
-                assert!(
-                    engine.added(&evicted).is_none(),
-                    "the evicted file's torrent must not be re-added"
-                );
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("startup reconciliation never ran");
-    }
-
-    /// Regression (2026-07-19 audit): a torrent completes and its payload
-    /// is being ed2k-hashed when the library scan adopts a media-root
-    /// copy of the same file — adoption cancels the fetch and deletes the
-    /// payload dir. The late `TorrentHashed` must then be dropped: acting
-    /// on it overwrote the valid adopted path in `local_files` with the
-    /// deleted payload path and advertised Ready for a file we don't
-    /// hold, which the next serve attempt flipped to Missing.
-    #[tokio::test]
-    async fn late_torrent_hash_never_clobbers_an_adopted_local_copy() {
-        let contents = b"the adopted episode".as_slice();
-        let file = ed2k_hash_bytes(contents).root;
-
-        let storage = Storage::open_in_memory().unwrap();
-        let cache_dir = tempfile::tempdir().unwrap();
-        let media_root = tempfile::tempdir().unwrap();
-        let engine = Arc::new(FakeTorrentEngine::default());
-        let (out_tx, mut out_rx) = mpsc::channel(1024);
-        let (done_tx, _done_rx) = mpsc::channel(1024);
-        let (stream_tx, _stream_rx) = mpsc::channel(64);
-        let mut actor = Actor::new(
-            FileConfig {
-                storage,
-                media_roots: vec![media_root.path().to_path_buf()],
-                retention: CacheRetention::Infinite,
-                cache_dir: cache_dir.path().to_path_buf(),
-                clock: test_clock(),
-                download: DownloadConfig::default(),
-                upload_limit: None,
-                scan_interval: None,
-                scan_transfer_quiet: Duration::from_secs(2),
-                torrent: Some(engine.clone() as Arc<dyn TorrentEngine>),
-                nyaa: Some(Arc::new(FixedNyaa(None))),
-                torrent_fetch: TorrentFetchConfig::default(),
-            },
-            out_tx,
-            done_tx,
-            stream_tx,
-        )
-        .unwrap();
-
-        // Drive the fetch to Verifying: search resolved, torrent
-        // completed, payload ed2k hash in flight.
-        let payload = actor.torrent_dir(file).join("release.mkv");
-        std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
-        std::fs::write(&payload, contents).unwrap();
-        actor.fetches.on_start_download(
-            file,
-            "release.mkv".into(),
-            contents.len() as u64,
-            vec![],
-            0,
-            0,
-        );
-        actor.fetches.on_searched(
-            file,
-            Some(NyaaMatch {
-                title: "release".into(),
-                torrent_url: "magnet:?xt=urn:btih:dd".into(),
-                info_hash: "dd".into(),
-            }),
-            0,
-        );
-        assert!(
-            actor.fetches.on_completed(file),
-            "fetch must reach Verifying"
-        );
-
-        // The library scan finds the same file in a media root and adopts
-        // it while the hash is still in flight (the scan-adoption path:
-        // record the copy, cancel the now-redundant download — which
-        // deletes the torrent payload dir).
-        let adopted = media_root.path().join("release.mkv");
-        std::fs::write(&adopted, contents).unwrap();
-        actor.local_files.insert(file, adopted.clone());
-        actor.cancel_redundant_download(file).await;
-        assert!(
-            !actor.fetches.is_active(&file),
-            "cancel must clear the fetch"
-        );
-
-        // The stale hash result lands after the cancel.
-        actor
-            .on_torrent_hashed(file, payload.clone(), Ok(ed2k_hash_bytes(contents)))
-            .await;
-
-        assert_eq!(
-            actor.local_files.get(&file),
-            Some(&adopted),
-            "a late torrent hash must not clobber the adopted local copy"
-        );
-        while let Ok(output) = out_rx.try_recv() {
-            if let FileOutput::DownloadComplete { path, .. } = output {
-                assert_eq!(
-                    path, adopted,
-                    "DownloadComplete must never carry the dead payload path"
-                );
-            }
-        }
-    }
-
-    /// Startup reconciliation must also cover torrents the engine's *own*
-    /// persistence restored (librqbit fastresume): a mid-download auto
-    /// torrent and an abandoned Nyaa import resume invisibly unless the
-    /// session itself is reconciled — the app-side registry ("torrents"
-    /// table) knows nothing about the import, and the wrapper's in-memory
-    /// map is empty after a restart, so `remove` alone can't reach either
-    /// (design.md, BitTorrent Downloads: in-flight downloads and pending
-    /// imports don't survive restarts). A *promoted* import that still
-    /// seeds from its import dir is claimed by its registry row and must
-    /// survive, directory included.
-    #[tokio::test]
-    async fn startup_reconciles_the_engines_persisted_session() {
-        use crate::storage::TorrentRow;
-
-        let contents = b"a seeding, promoted nyaa import".as_slice();
-        let promoted = ed2k_hash_bytes(contents).root;
-        let mid_download = ed2k_hash_bytes(b"was 40% done at shutdown").root;
-
-        let storage = Storage::open_in_memory().unwrap();
-        let cache_dir = tempfile::tempdir().unwrap();
-        // The promoted import: cached file, registry row, session torrent
-        // seeding out of its original import dir.
-        let promoted_path = cache_dir.path().join(promoted.to_string());
-        std::fs::write(&promoted_path, contents).unwrap();
-        storage
-            .upsert_cache_entry(&CacheEntry {
-                hash: promoted,
-                path: promoted_path,
-                size_bytes: contents.len() as u64,
-                last_access: 0,
-            })
-            .unwrap();
-        storage
-            .upsert_torrent(&TorrentRow {
-                hash: promoted,
-                info_hash: "cc".into(),
-                name: "import.mkv".into(),
-                added_at: 0,
-            })
-            .unwrap();
-        // The mid-download auto torrent: registry row, no cached file.
-        storage
-            .upsert_torrent(&TorrentRow {
-                hash: mid_download,
-                info_hash: "aa".into(),
-                name: "ep.mkv".into(),
-                added_at: 0,
-            })
-            .unwrap();
-        let torrents_dir = cache_dir.path().join("torrents");
-        let import_live = torrents_dir.join("import-2");
-        let import_abandoned = torrents_dir.join("import-1");
-        for dir in [&import_live, &import_abandoned] {
+        // Garbage: an abandoned import, a prior version's per-hash
+        // payload dir, and a legacy librqbit session dir.
+        let abandoned = torrents_dir.join("import-1");
+        let legacy_hash_dir = torrents_dir.join(ed2k_hash_bytes(b"legacy").root.to_string());
+        let legacy_session = torrents_dir.join(".session");
+        for dir in [&abandoned, &legacy_hash_dir, &legacy_session] {
             std::fs::create_dir_all(dir).unwrap();
-            std::fs::write(dir.join("payload.mkv"), b"partial").unwrap();
+            std::fs::write(dir.join("leftover"), b"stale").unwrap();
         }
 
-        let engine = Arc::new(FakeTorrentEngine::default());
-        // What librqbit's fastresume brings back: the promoted import
-        // (claimed by its row), the mid-download torrent (row exists but
-        // its file was never cached), and an abandoned import (no row at
-        // all — the row is only written on completion).
-        engine.restore_session_torrent("cc", import_live.clone());
-        engine.restore_session_torrent("aa", torrents_dir.join(mid_download.to_string()));
-        engine.restore_session_torrent("bb", import_abandoned.clone());
+        let mut rig = spawn_rig_at(
+            storage,
+            vec![],
+            CacheRetention::Infinite,
+            cache_dir.path().to_path_buf(),
+        );
+        // The sweep runs before commands are processed; use a resolve
+        // round-trip as the startup barrier.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hash(1),
+                filename: "barrier.mkv".into(),
+            })
+            .await
+            .unwrap();
+        let _ = next_output(&mut rig).await;
 
-        let (_cmd_tx, cmd_rx) = mpsc::channel(16);
-        let (out_tx, _out_rx) = mpsc::channel(64);
-        tokio::spawn(run(
-            FileConfig {
-                storage,
-                media_roots: vec![],
-                retention: CacheRetention::Infinite,
-                cache_dir: cache_dir.path().to_path_buf(),
-                clock: test_clock(),
-                download: DownloadConfig::default(),
-                upload_limit: None,
-                scan_interval: None,
-                scan_transfer_quiet: Duration::from_secs(2),
-                torrent: Some(engine.clone() as Arc<dyn TorrentEngine>),
-                nyaa: Some(Arc::new(FixedNyaa(None))),
-                torrent_fetch: TorrentFetchConfig::default(),
-            },
-            cmd_rx,
-            out_tx,
-        ));
-
-        for _ in 0..100 {
-            let deleted = engine.session_deleted();
-            if deleted.contains(&"aa".to_string()) && deleted.contains(&"bb".to_string()) {
-                assert!(
-                    !deleted.contains(&"cc".to_string()),
-                    "the promoted import's session torrent must survive"
-                );
-                assert!(
-                    engine.added(&promoted).is_some(),
-                    "the promoted import must be adopted under its file key"
-                );
-                assert!(
-                    !import_abandoned.exists(),
-                    "the abandoned import dir must be swept"
-                );
-                assert!(
-                    import_live.exists(),
-                    "the promoted import's seeding dir must survive"
-                );
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!(
-            "session reconciliation never deleted the unclaimed torrents (deleted: {:?})",
-            engine.session_deleted()
+        assert!(!abandoned.exists(), "abandoned import dir must be swept");
+        assert!(
+            !legacy_hash_dir.exists(),
+            "legacy per-hash payload dir must be swept"
+        );
+        assert!(
+            !legacy_session.exists(),
+            "legacy librqbit session dir must be swept"
+        );
+        assert!(
+            kept_path.exists(),
+            "a dir hosting a registered cache file must be spared"
         );
     }
 }

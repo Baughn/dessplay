@@ -494,13 +494,13 @@ pub struct Settings {
     /// the download root. When false, archive directly into the root.
     /// Default true, preserving the original archive layout.
     pub archive_subdirectory: bool,
-    /// Try a public torrent (nyaa) before the peer relay when fetching a
-    /// missing file (design.md, BitTorrent Downloads). When off at
-    /// startup the torrent engine is never started — peer transfer
-    /// only. **Disabling applies immediately** (active torrents are
-    /// removed and downloads fall back to the peer path — the escape
-    /// hatch for a saturated uplink); enabling requires a restart when
-    /// the engine was off at startup. Default off.
+    /// Enable the Playlist pane's explicit Nyaa browse import
+    /// (design.md, BitTorrent Downloads). When off at startup the
+    /// torrent engine is never started. **Disabling applies
+    /// immediately** (seeding torrents are removed and pending imports
+    /// cancelled — the escape hatch for a saturated uplink); enabling
+    /// requires a restart when the engine was off at startup. Default
+    /// off.
     pub torrent_enabled: bool,
     /// Bridge our own chat to IRC so the conversation survives the app
     /// being closed (design.md, IRC bridge). Default on.

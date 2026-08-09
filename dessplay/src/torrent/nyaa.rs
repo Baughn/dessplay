@@ -1,12 +1,13 @@
-//! nyaa.si RSS search: find a torrent for an exact release filename.
+//! nyaa.si RSS search backing the Playlist pane's explicit browse
+//! import (`n`).
 //!
-//! The query is the playlist entry's filename (release names embed a CRC
-//! tag, so an exact-title hit is near-certainly the right payload); the
-//! result still gets ed2k-verified after download before it counts as a
-//! local copy. Blocking by design — call from `spawn_blocking`, exactly
-//! like the server's anime-titles fetch.
+//! The query is free-form user text against the Anime category; each
+//! candidate's `.torrent` metadata is inspected before display so only
+//! safe single-file payloads are offered, and the selected payload is
+//! still ed2k-hashed after download before it becomes a playlist entry.
+//! Blocking by design — call from `spawn_blocking`, exactly like the
+//! server's anime-titles fetch.
 
-use std::collections::HashSet;
 use std::path::{Component, Path};
 
 use librqbit::{TorrentMetaV1Owned, torrent_from_bytes};
@@ -23,23 +24,18 @@ pub struct NyaaItem {
     pub torrent_url: String,
     /// BitTorrent info hash, lowercase hex.
     pub info_hash: String,
-    /// Bounds on the payload size, parsed from nyaa's human-formatted
-    /// `<nyaa:size>`: the range of actual byte sizes that would display
-    /// as that (rounded) string. `None` if the field was missing or
-    /// unparseable.
-    pub size_bounds: Option<(u64, u64)>,
     /// Current seeder count.
     pub seeders: u32,
 }
 
-/// An accepted search result, ready to hand to the torrent engine.
+/// A selected search result, ready to hand to the torrent engine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NyaaMatch {
     /// Release title.
     pub title: String,
     /// The `.torrent` download URL.
     pub torrent_url: String,
-    /// Info hash, lowercase hex (magnet fallback, ban bookkeeping).
+    /// Info hash, lowercase hex (magnet fallback, dedup).
     pub info_hash: String,
 }
 
@@ -59,54 +55,24 @@ pub struct NyaaBrowseResult {
     pub chosen: NyaaMatch,
 }
 
-/// Nyaa search category.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NyaaCategory {
-    /// Every category, used by the automatic exact-filename lookup.
-    All,
-    /// Anime, all subcategories (`c=1_0`), used by the playlist browser.
-    Anime,
-}
-
-impl NyaaCategory {
-    fn query_value(self) -> &'static str {
-        match self {
-            Self::All => "0_0",
-            Self::Anime => "1_0",
-        }
-    }
-}
-
-/// Source of raw RSS for a filename query. Mocked in tests; HTTP in
-/// production. Blocking by design — call from `spawn_blocking`.
+/// Source of raw RSS and torrent metadata for a browse search. Mocked in
+/// tests; HTTP in production. Blocking by design — call from
+/// `spawn_blocking`.
 pub trait NyaaSource: Send + Sync + 'static {
-    /// Fetch the RSS results for searching `filename`.
-    fn search(&self, filename: &str) -> std::io::Result<String>;
-
-    /// Fetch an RSS feed in a specific category. Existing test sources only
-    /// need exact lookup, so the default preserves the old behavior.
-    fn search_category(&self, query: &str, _category: NyaaCategory) -> std::io::Result<String> {
-        self.search(query)
-    }
+    /// Fetch the RSS results for `query` in the Anime category (`c=1_0`).
+    fn search_anime(&self, query: &str) -> std::io::Result<String>;
 
     /// Fetch raw `.torrent` metadata for browse-result inspection.
-    fn fetch_torrent(&self, _url: &str) -> std::io::Result<Vec<u8>> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "torrent metadata fetching is unsupported",
-        ))
-    }
+    fn fetch_torrent(&self, url: &str) -> std::io::Result<Vec<u8>>;
 }
 
 /// The real thing: one GET against nyaa.si.
 pub struct HttpNyaaSource;
 
-/// An agent with a hard 30s per-call timeout, matching the fetch
-/// policy's `search_timeout_millis` watchdog. ureq's default has *no*
+/// An agent with a hard 30s per-call timeout. ureq's default has *no*
 /// timeout, so a connected-but-silent host would park the blocking
-/// thread until TCP gives up — the policy-side watchdog recovers the
-/// fetch but not the thread, and leaked threads accumulate across the
-/// 15-minute search retries.
+/// thread until TCP gives up, and leaked threads accumulate across
+/// repeated searches.
 pub(super) fn http_agent() -> ureq::Agent {
     ureq::Agent::from(
         ureq::config::Config::builder()
@@ -115,28 +81,18 @@ pub(super) fn http_agent() -> ureq::Agent {
     )
 }
 
-/// Build the RSS search URL for an exact filename query.
-pub fn search_url(filename: &str) -> String {
-    search_url_for(filename, NyaaCategory::All)
-}
-
-/// Build an RSS search URL for a query and category.
-pub fn search_url_for(query: &str, category: NyaaCategory) -> String {
+/// Build the RSS search URL for an Anime-category query.
+pub fn anime_search_url(query: &str) -> String {
     format!(
-        "https://nyaa.si/?page=rss&q={}&c={}&f=0",
+        "https://nyaa.si/?page=rss&q={}&c=1_0&f=0",
         utf8_percent_encode(query, NON_ALPHANUMERIC),
-        category.query_value(),
     )
 }
 
 impl NyaaSource for HttpNyaaSource {
-    fn search(&self, filename: &str) -> std::io::Result<String> {
-        self.search_category(filename, NyaaCategory::All)
-    }
-
-    fn search_category(&self, query: &str, category: NyaaCategory) -> std::io::Result<String> {
+    fn search_anime(&self, query: &str) -> std::io::Result<String> {
         let response = http_agent()
-            .get(search_url_for(query, category))
+            .get(anime_search_url(query))
             .header("User-Agent", "dessplay/1")
             .call()
             .map_err(std::io::Error::other)?;
@@ -174,7 +130,7 @@ pub fn browse_single_file_results(
     query: &str,
     limit: usize,
 ) -> std::io::Result<Vec<NyaaBrowseResult>> {
-    let xml = source.search_category(query, NyaaCategory::Anime)?;
+    let xml = source.search_anime(query)?;
     let mut results = Vec::new();
     for item in parse_rss(&xml).into_iter().take(limit) {
         if item.seeders == 0 {
@@ -288,7 +244,6 @@ enum Field {
     Title,
     Link,
     InfoHash,
-    Size,
     Seeders,
 }
 
@@ -298,7 +253,6 @@ impl Field {
             b"title" => Some(Self::Title),
             b"link" => Some(Self::Link),
             b"nyaa:infoHash" => Some(Self::InfoHash),
-            b"nyaa:size" => Some(Self::Size),
             b"nyaa:seeders" => Some(Self::Seeders),
             _ => None,
         }
@@ -310,7 +264,6 @@ struct PartialItem {
     title: Option<String>,
     link: Option<String>,
     info_hash: Option<String>,
-    size_bounds: Option<(u64, u64)>,
     seeders: Option<u32>,
 }
 
@@ -320,7 +273,6 @@ impl PartialItem {
             Field::Title => self.title = Some(text.to_string()),
             Field::Link => self.link = Some(text.to_string()),
             Field::InfoHash => self.info_hash = Some(text.to_ascii_lowercase()),
-            Field::Size => self.size_bounds = parse_size(text),
             Field::Seeders => self.seeders = text.trim().parse().ok(),
         }
     }
@@ -330,101 +282,8 @@ impl PartialItem {
             title: self.title.take()?,
             torrent_url: self.link.take()?,
             info_hash: self.info_hash.take()?,
-            size_bounds: self.size_bounds,
             seeders: self.seeders.unwrap_or(0),
         })
-    }
-}
-
-/// Parse nyaa's human-formatted size ("1.4 GiB") into the bounds of
-/// actual byte sizes that would display as that string. The display is
-/// rounded to the shown decimals, and the rounding quantum dwarfs any
-/// percentage tolerance at GiB scale (±0.05 GiB ≈ ±3.8% of "1.3 GiB"),
-/// so the bounds — value ± half the last decimal's step — are what a
-/// sanity check must compare against, never the midpoint alone.
-pub fn parse_size(text: &str) -> Option<(u64, u64)> {
-    let text = text.trim();
-    let split = text.find(|c: char| c != '.' && !c.is_ascii_digit())?;
-    let (number, unit) = text.split_at(split);
-    let number = number.trim();
-    let value: f64 = number.parse().ok()?;
-    let scale: f64 = match unit.trim() {
-        "B" | "Bytes" => 1.0,
-        "KiB" => 1024.0,
-        "MiB" => 1024.0 * 1024.0,
-        "GiB" => 1024.0 * 1024.0 * 1024.0,
-        "TiB" => 1024.0f64.powi(4),
-        _ => return None,
-    };
-    let decimals = number
-        .rsplit_once('.')
-        .map_or(0, |(_, frac)| frac.len() as i32);
-    let half_step = 10f64.powi(-decimals) * scale / 2.0;
-    let bytes = value * scale;
-    (bytes.is_finite() && bytes >= 0.0).then_some((
-        (bytes - half_step).max(0.0) as u64,
-        (bytes + half_step) as u64,
-    ))
-}
-
-/// Extra slack beyond the display-rounding bounds: how far the entry's
-/// exact byte size may sit outside the range nyaa's rounded size string
-/// covers and still count as the same payload.
-const SIZE_TOLERANCE: f64 = 0.03;
-
-/// Pick the acceptable result for `filename`, or `None`.
-///
-/// Accepts an item whose title equals the filename (whitespace-normalized,
-/// case-insensitive, extension optional), with at least one seeder, whose
-/// size bounds (the display-rounding range, ±3% slack) contain
-/// `size_bytes`, and whose info hash isn't banned (a previous download of
-/// it failed ed2k verification). Ties break to the most seeders.
-pub fn pick_match(
-    items: &[NyaaItem],
-    filename: &str,
-    size_bytes: u64,
-    banned: &HashSet<String>,
-) -> Option<NyaaMatch> {
-    let want_full = normalize_title(filename);
-    let want_stem = normalize_title(stem(filename));
-    items
-        .iter()
-        .filter(|item| {
-            let title = normalize_title(&item.title);
-            (title == want_full || title == want_stem)
-                && item.seeders >= 1
-                && !banned.contains(&item.info_hash)
-                && item.size_bounds.is_some_and(|(lo, hi)| {
-                    let want = size_bytes as f64;
-                    let slack = want * SIZE_TOLERANCE;
-                    want >= lo as f64 - slack && want <= hi as f64 + slack
-                })
-        })
-        .max_by_key(|item| item.seeders)
-        .map(|item| NyaaMatch {
-            title: item.title.clone(),
-            torrent_url: item.torrent_url.clone(),
-            info_hash: item.info_hash.clone(),
-        })
-}
-
-/// Whitespace-collapse + lowercase, so cosmetic differences don't reject
-/// the right release.
-fn normalize_title(title: &str) -> String {
-    title
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
-/// Filename minus its extension (nyaa titles sometimes drop it).
-fn stem(filename: &str) -> &str {
-    match filename.rsplit_once('.') {
-        // Only strip something extension-shaped; "Show S2 - 01" has no dot
-        // and "a.b/weird" never reaches here (filenames, not paths).
-        Some((stem, ext)) if !stem.is_empty() && ext.len() <= 4 => stem,
-        _ => filename,
     }
 }
 
@@ -456,7 +315,6 @@ mod tests {
             items[0].info_hash,
             "0123456789abcdef0123456789abcdef01234567"
         );
-        assert_eq!(items[0].size_bounds, parse_size("1.4 GiB"));
         assert_eq!(items[0].seeders, 412);
         // Entity-escaped title round-trips.
         assert_eq!(
@@ -466,165 +324,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_size_units() {
-        let mib = 1024.0 * 1024.0;
-        assert_eq!(
-            parse_size("711.7 MiB"),
-            Some((((711.7 - 0.05) * mib) as u64, ((711.7 + 0.05) * mib) as u64))
-        );
-        let gib = 1024.0f64.powi(3);
-        assert_eq!(
-            parse_size("1.4 GiB"),
-            Some((((1.4 - 0.05) * gib) as u64, ((1.4 + 0.05) * gib) as u64))
-        );
-        // No decimals shown: half a unit either way.
-        assert_eq!(parse_size("512 B"), Some((511, 512)));
-        assert_eq!(parse_size("3 KiB"), Some((2560, 3584)));
-        assert_eq!(parse_size("nonsense"), None);
-        assert_eq!(parse_size("1.4 GB"), None); // nyaa uses binary units only
-    }
-
-    #[test]
-    fn picks_exact_title_match() {
-        let items = fixture_items();
-        let size = (1.4 * 1024.0f64.powi(3)) as u64;
-        let m = pick_match(
-            &items,
-            "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv",
-            size,
-            &HashSet::new(),
-        )
-        .unwrap();
-        assert_eq!(m.info_hash, "0123456789abcdef0123456789abcdef01234567");
-    }
-
-    #[test]
-    fn matches_title_without_extension() {
-        let items = vec![NyaaItem {
-            title: "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4]".into(),
-            torrent_url: "https://nyaa.si/download/1.torrent".into(),
-            info_hash: "aa".into(),
-            size_bounds: Some((1000, 1000)),
-            seeders: 5,
-        }];
-        let m = pick_match(
-            &items,
-            "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv",
-            1000,
-            &HashSet::new(),
-        );
-        assert!(m.is_some());
-    }
-
-    #[test]
-    fn rejects_wrong_title() {
-        let items = fixture_items();
-        assert!(
-            pick_match(
-                &items,
-                "[SubsPlease] Clevatess S2 - 02 (1080p) [11111111].mkv",
-                (1.4 * 1024.0f64.powi(3)) as u64,
-                &HashSet::new(),
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn accepts_a_size_hidden_by_display_rounding() {
-        // Regression (2026-07-09, live): the real Clevatess S2-01 is
-        // 1,447,979,541 bytes (1.348 GiB) but nyaa displays "1.3 GiB"
-        // (1,395,864,371) — a 3.6% apparent deviation from rounding
-        // alone, which the plain ±3% check rejected.
-        let items = vec![NyaaItem {
-            title: "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv".into(),
-            torrent_url: "https://nyaa.si/download/2129710.torrent".into(),
-            info_hash: "123051cef95247353e061c58ee1cb713691f72b4".into(),
-            size_bounds: parse_size("1.3 GiB"),
-            seeders: 1716,
-        }];
-        let m = pick_match(
-            &items,
-            "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv",
-            1_447_979_541,
-            &HashSet::new(),
-        );
-        assert!(m.is_some());
-    }
-
-    #[test]
-    fn rejects_size_out_of_tolerance() {
-        let items = fixture_items();
-        // Right title, but claim the file is half the size nyaa reports.
-        assert!(
-            pick_match(
-                &items,
-                "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv",
-                (0.7 * 1024.0f64.powi(3)) as u64,
-                &HashSet::new(),
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn rejects_zero_seeders() {
-        let mut items = fixture_items();
-        items[0].seeders = 0;
-        assert!(
-            pick_match(
-                &items,
-                "[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv",
-                (1.4 * 1024.0f64.powi(3)) as u64,
-                &HashSet::new(),
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn skips_banned_info_hash_and_falls_to_next() {
-        let size = 1000;
-        let make = |hash: &str, seeders| NyaaItem {
-            title: "Show - 01.mkv".into(),
-            torrent_url: format!("https://nyaa.si/download/{hash}.torrent"),
-            info_hash: hash.into(),
-            size_bounds: Some((size, size)),
-            seeders,
-        };
-        let items = vec![make("aa", 100), make("bb", 10)];
-        let banned: HashSet<String> = ["aa".to_string()].into();
-        let m = pick_match(&items, "Show - 01.mkv", size, &banned).unwrap();
-        assert_eq!(m.info_hash, "bb");
-    }
-
-    #[test]
-    fn ties_break_to_most_seeders() {
-        let make = |hash: &str, seeders| NyaaItem {
-            title: "Show - 01.mkv".into(),
-            torrent_url: "u".into(),
-            info_hash: hash.into(),
-            size_bounds: Some((1000, 1000)),
-            seeders,
-        };
-        let items = vec![make("aa", 3), make("bb", 30), make("cc", 7)];
-        let m = pick_match(&items, "Show - 01.mkv", 1000, &HashSet::new()).unwrap();
-        assert_eq!(m.info_hash, "bb");
-    }
-
-    #[test]
-    fn search_url_percent_encodes() {
-        let url = search_url("[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv");
+    fn anime_search_url_percent_encodes() {
+        let url = anime_search_url("[SubsPlease] Clevatess S2 - 01 (1080p) [6855D1F4].mkv");
         assert!(url.starts_with("https://nyaa.si/?page=rss&q="));
-        assert!(url.ends_with("&c=0_0&f=0"));
+        assert!(url.ends_with("&c=1_0&f=0"));
         assert!(!url.contains('['));
         assert!(!url.contains(' '));
-    }
-
-    #[test]
-    fn anime_search_url_uses_anime_category() {
-        let url = search_url_for("karen", NyaaCategory::Anime);
-        assert_eq!(url, "https://nyaa.si/?page=rss&q=karen&c=1_0&f=0");
     }
 
     fn single_torrent(name: &str, length: u64) -> Vec<u8> {
@@ -662,12 +367,7 @@ mod tests {
     }
 
     impl NyaaSource for BrowseSource {
-        fn search(&self, _filename: &str) -> std::io::Result<String> {
-            Ok(self.rss.clone())
-        }
-
-        fn search_category(&self, _query: &str, category: NyaaCategory) -> std::io::Result<String> {
-            assert_eq!(category, NyaaCategory::Anime);
+        fn search_anime(&self, _query: &str) -> std::io::Result<String> {
             Ok(self.rss.clone())
         }
 
