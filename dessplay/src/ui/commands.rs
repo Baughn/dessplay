@@ -64,6 +64,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         help: "ping absent friends on IRC",
     },
     SlashCommand {
+        name: "/reveal",
+        args: "",
+        help: "reveal the newest spoiler on screen",
+    },
+    SlashCommand {
         name: "/settings",
         args: "",
         help: "open settings",

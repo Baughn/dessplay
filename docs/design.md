@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-09
+Last updated: 2026-08-12
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -658,6 +658,25 @@ different encodes/versions. See [Content Hash](#content-hash).
   (trailing punctuation like `:` or `,` is matched-through but stays plain).
   Mentions of *your own* username are additionally reversed, so a ping stands
   out at a glance.
+- **Spoiler tags**: `||spoiler||` (Discord's syntax, for familiarity)
+  hides part of a message. Spoilers are a **display concern** — the raw
+  `||...||` text is what syncs and archives (the CTCP-action rule: only
+  the display sites decode) — and every display surface hides the run:
+  the chat log renders it as deterministically scrambled letters
+  (alphanumerics replaced class-for-class, CJK included, so nothing
+  leaks) under sparse combining marks ("low-grade zalgo"); the player
+  OSD and the **outbound IRC bridge** substitute the same static
+  scramble, bars dropped. In the chat pane, **clicking** the scrambled
+  run plays a ~600ms re-randomization tease; a **second click within 5
+  seconds** reveals the original (bars dropped) for the rest of the
+  session, per client. A click after the window lapses re-teases with
+  fresh letters. `/reveal` is the keyboard equivalent. The OSD and IRC
+  deliberately have no reveal — IRC is public, logged, and one group
+  member's primary chat surface. The sender sees their own spoilers
+  scrambled too; inbound IRC and `/me` bodies parse spoilers like any
+  chat text, while system, subtitle, and narrator lines never do. The
+  scramble is seeded by message identity (no RNG): stable across
+  repaints, identical between the chat pane and the OSD.
 - System messages (joins, disconnects, state changes) appear in chat --
   see [System Messages](#system-messages)
 - Text commands start with `/`. Typing `/` shows a grey, filtered list of
@@ -705,6 +724,9 @@ different encodes/versions. See [Content Hash](#content-hash).
     action phrase renders **grey** (terminals have no italics, so colour
     marks the emote); the sender keeps its palette colour and mentions
     still highlight through it.
+  - `/reveal` -- reveal the newest still-hidden [spoiler](#chat) on
+    screen (the keyboard path for the spoiler click flow; repeat for
+    earlier ones). Posts a local notice when nothing on screen is hidden.
   - `/settings` -- open the settings screen (also `F3`)
 
 ### IRC Bridge
@@ -729,7 +751,12 @@ chat pane. It is **on by default**; defaults are `irc.rizon.net`, TLS
   events, subtitles, and narrator/system lines are never forwarded. A
   `/me` action goes out as a real IRC CTCP ACTION (the wire form is
   identical to DessPlay's inline `"\x01ACTION …\x01"`, so it forwards
-  verbatim). Long plain lines are split to fit IRC's 512-byte limit; newlines
+  verbatim). **`||spoiler||` runs are masked at the tap** with their
+  static scramble (bars dropped, CTCP framing preserved): the channel is
+  public and logged, one group member reads chat *only* there, and IRC
+  has no reveal affordance -- raw bars would hand the spoiler to exactly
+  the people the sender hid it from (see [Chat](#chat), Spoiler tags).
+  Long plain lines are split to fit IRC's 512-byte limit; newlines
   become separate messages. A `/me` **CTCP action is never split** -- chunking
   it would break the `\x01` framing or emit several separate emotes for one
   action, so an over-long emote is left to the server's 512-byte truncation
@@ -1450,9 +1477,11 @@ pane under the pointer only when that pane is **already focused** (the
 chat scrolls its log, list panes move their selection like Up/Down);
 over an unfocused pane it is ignored — touchpads emit wheel events by
 accident, so a graze must neither scroll invisibly nor steal focus.
-Clicking never activates (no double-click Enter); mouse events are
-ignored while a modal is open. Keyboard-only terminals lose nothing —
-every mouse action has a key equivalent.
+Clicking never activates a row (no double-click Enter); the one
+click-driven action is the chat [spoiler](#chat) reveal, whose key
+equivalent is `/reveal`. Mouse events are ignored while a modal is
+open. Keyboard-only terminals lose nothing — every mouse action has a
+key equivalent.
 
 ### Keyboard Shortcuts
 

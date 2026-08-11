@@ -2124,3 +2124,163 @@ fn hashing_progress_overlay_appears_and_clears() {
     ui.set_hash_progress("ep2.mkv".into(), 0, 0, true);
     assert!(!render(&mut ui, 100, 30).contains("Hashing"));
 }
+
+// ---- Spoiler tags (design.md, Chat) ------------------------------------
+
+fn snapshot_at(view: StateView, peers: Vec<PeerInfo>, now: u64) -> UiSnapshot {
+    let mut snapshot = snapshot(view, peers);
+    snapshot.now = now;
+    snapshot
+}
+
+fn chat_message(state: &mut CrdtState, t: u64, from: &str, text: &str) {
+    state.append_chat(dessplay_core::types::ChatMessage {
+        timestamp: ts(t),
+        sender: UserId::new(from),
+        text: text.into(),
+    });
+}
+
+/// The first chat message renders at the top of the log; its body
+/// starts after the "HH:MM " (6) + "nero: " prefix and the left border.
+/// "the ||secret|| twist" puts the run at display chars 4..10, so a
+/// click at column 18 lands inside it on body row 1.
+const SPOILER_CLICK: (u16, u16) = (18, 1);
+
+#[test]
+fn spoiler_scrambles_then_click_twice_reveals() {
+    let mut state = CrdtState::new();
+    chat_message(&mut state, 1_000, "nero", "the ||secret|| twist");
+    let mut ui = ui();
+    let peers = vec![peer("kim"), peer("nero")];
+    ui.apply_snapshot(snapshot_at(state.view(), peers.clone(), 10_000));
+    let before = render(&mut ui, 100, 30);
+    assert!(!before.contains("secret"), "spoiler leaked:\n{before}");
+    assert!(!before.contains("||"), "bars leaked:\n{before}");
+    assert!(before.contains("nero:"), "{before}");
+    // The low-grade zalgo made it to the buffer: combining marks ride
+    // on the scrambled letters.
+    assert!(
+        before
+            .chars()
+            .any(|c| ('\u{0300}'..='\u{0330}').contains(&c)),
+        "no combining marks in:\n{before}"
+    );
+
+    // First click: the re-randomization tease starts.
+    let (col, row) = SPOILER_CLICK;
+    ui.handle(click(col, row));
+    // Frames derive from the clock; snapshots carry it forward.
+    ui.apply_snapshot(snapshot_at(state.view(), peers.clone(), 10_300));
+    let teasing = render(&mut ui, 100, 30);
+    assert!(!teasing.contains("secret"), "{teasing}");
+    assert_ne!(teasing, before, "the tease should change the letters");
+
+    // Second click within 5s reveals for the session.
+    ui.handle(click(col, row));
+    let revealed = render(&mut ui, 100, 30);
+    assert!(revealed.contains("the secret twist"), "{revealed}");
+    assert!(!revealed.contains("||"), "{revealed}");
+}
+
+#[test]
+fn lapsed_reveal_window_requires_a_fresh_double_click() {
+    let mut state = CrdtState::new();
+    chat_message(&mut state, 1_000, "nero", "the ||secret|| twist");
+    let mut ui = ui();
+    let peers = vec![peer("kim"), peer("nero")];
+    ui.apply_snapshot(snapshot_at(state.view(), peers.clone(), 10_000));
+    render(&mut ui, 100, 30);
+    let (col, row) = SPOILER_CLICK;
+    ui.handle(click(col, row));
+    // The tease finishes and the 5s window lapses.
+    ui.apply_snapshot(snapshot_at(state.view(), peers.clone(), 20_000));
+    // This click is a fresh first click (re-tease), not a reveal…
+    ui.handle(click(col, row));
+    let still_hidden = render(&mut ui, 100, 30);
+    assert!(!still_hidden.contains("secret"), "{still_hidden}");
+    // …and the next one (within the new window) reveals.
+    ui.handle(click(col, row));
+    assert!(render(&mut ui, 100, 30).contains("the secret twist"));
+}
+
+#[test]
+fn own_spoilers_are_scrambled_too() {
+    let mut state = CrdtState::new();
+    chat_message(&mut state, 1_000, "kim", "mine ||hidden|| words");
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot_at(state.view(), vec![peer("kim")], 10_000));
+    let screen = render(&mut ui, 100, 30);
+    assert!(!screen.contains("hidden"), "own spoiler leaked:\n{screen}");
+    assert!(!screen.contains("||"), "{screen}");
+}
+
+#[test]
+fn reveal_command_walks_newest_to_oldest_then_notices() {
+    let mut state = CrdtState::new();
+    chat_message(&mut state, 1_000, "nero", "first ||alpha|| here");
+    chat_message(&mut state, 2_000, "nero", "second ||beta|| here");
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot_at(
+        state.view(),
+        vec![peer("kim"), peer("nero")],
+        10_000,
+    ));
+    render(&mut ui, 100, 30);
+
+    // Newest first.
+    type_str(&mut ui, "/reveal");
+    assert!(ui.handle(key(Key::Enter)).is_empty());
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("beta"), "{screen}");
+    assert!(!screen.contains("alpha"), "{screen}");
+
+    // Repeat reveals the older one.
+    type_str(&mut ui, "/reveal");
+    assert!(ui.handle(key(Key::Enter)).is_empty());
+    assert!(render(&mut ui, 100, 30).contains("alpha"));
+
+    // Nothing hidden left: a local notice, no state change.
+    type_str(&mut ui, "/reveal");
+    let actions = ui.handle(key(Key::Enter));
+    assert!(
+        matches!(actions.as_slice(), [UserAction::Notice(text)] if text.contains("no hidden spoiler")),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn spoiler_reveal_state_survives_scrolling() {
+    // The reveal is keyed by message identity, not screen position: a
+    // scroll between the two clicks cannot retarget it.
+    let mut state = CrdtState::new();
+    for i in 0..24 {
+        chat_message(&mut state, 1_000 + i, "nero", "filler line");
+    }
+    chat_message(&mut state, 2_000, "nero", "the ||secret|| twist");
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot_at(
+        state.view(),
+        vec![peer("kim"), peer("nero")],
+        10_000,
+    ));
+    let screen = render(&mut ui, 100, 30);
+    assert!(!screen.contains("secret"), "{screen}");
+
+    // The newest message sits on the last body row of the log. The left
+    // column is panes-area height (30 - 3 status - 1 keybar - 1 bottom
+    // line); the log is that minus the 3-row input, minus 2 border rows.
+    let (left, ..) = pane_rects(100, 30);
+    let log_bottom_row = left.y + (left.height - 3) - 2;
+    ui.handle(click(18, log_bottom_row));
+    // Scroll up and back down between the two clicks (chat has focus).
+    ui.handle(wheel(10, 5, true));
+    render(&mut ui, 100, 30);
+    ui.handle(wheel(10, 5, false));
+    render(&mut ui, 100, 30);
+    ui.handle(click(18, log_bottom_row));
+    assert!(
+        render(&mut ui, 100, 30).contains("the secret twist"),
+        "reveal lost across a scroll"
+    );
+}

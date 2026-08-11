@@ -4,6 +4,9 @@
 //! [`super::widgets`]. (We use the component model but not tui-realm's
 //! threaded event listener — see ui-architecture.md, Framework Choice.)
 
+use std::collections::HashMap;
+
+use dessplay_core::spoiler;
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, NoUserEvent};
@@ -72,9 +75,77 @@ const CHAT_WHEEL_STEP: usize = 3;
 /// Indent applied to wrapped continuation lines in the chat log.
 const CHAT_WRAP_INDENT: usize = 2;
 /// Most command suggestions shown at once in the discoverability popup.
-/// Sized to fit the whole command table on a bare `/` with a little
-/// headroom (see [`super::commands::SLASH_COMMANDS`]).
-const CHAT_SUGGESTION_MAX: u16 = 11;
+/// Sized to fit the whole command table on a bare `/` — bump it when a
+/// command is added (see [`super::commands::SLASH_COMMANDS`]).
+const CHAT_SUGGESTION_MAX: u16 = 12;
+
+/// Frames of re-randomization a spoiler click plays before settling.
+const SPOILER_FRAMES: u32 = 6;
+/// Milliseconds per spoiler re-randomization frame.
+const SPOILER_FRAME_MS: u64 = 100;
+/// A second click within this window of the first reveals the spoiler.
+const SPOILER_REVEAL_WINDOW_MS: u64 = 5000;
+
+/// Stable identity of one `||spoiler||` run: which message (shared-clock
+/// millis + sender, the same pair the chat interleave already treats as
+/// identity) and which run within it. Position-free, so scrolling between
+/// the two reveal clicks cannot retarget the state.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct SpoilerKey {
+    millis: u64,
+    sender: String,
+    index: usize,
+}
+
+/// Per-spoiler reveal state (absent from the map = hidden, generation 0).
+/// Generations are monotonic across re-teases so a repeat click shows
+/// fresh letters instead of replaying the same frames.
+#[derive(Clone, Debug)]
+enum SpoilerState {
+    /// First click landed: re-randomizing, one generation per frame.
+    Animating {
+        anim_started: u64,
+        base_gen: u32,
+        generation: u32,
+        first_click: u64,
+    },
+    /// Frames done; a second click within the window reveals.
+    Armed { generation: u32, first_click: u64 },
+    /// Shown in the clear for the rest of the session.
+    Revealed,
+}
+
+/// A clickable spoiler region within one visual chat line. Columns are
+/// relative to the line's first cell in [`wrap_chat_line`]'s output and
+/// absolute screen columns once recorded in [`RenderedChatLog`].
+#[derive(Clone, Debug)]
+struct SpoilerHit {
+    cols: std::ops::Range<u16>,
+    key: SpoilerKey,
+}
+
+/// The chat log viewport the last render actually drew: its rect plus,
+/// per visible body row, the clickable spoiler ranges. The chat-pane
+/// analogue of [`RenderedList`] — click mapping uses render-recorded
+/// geometry, never a click-time re-derivation. Zero-default misses every
+/// click until the first draw.
+#[derive(Default)]
+struct RenderedChatLog {
+    area: Rect,
+    rows: Vec<Vec<SpoilerHit>>,
+}
+
+impl RenderedChatLog {
+    /// The spoiler under a screen position, if any (border cells miss).
+    fn hit(&self, column: u16, row: u16) -> Option<&SpoilerKey> {
+        let body_row = row.checked_sub(self.area.y + 1)? as usize;
+        self.rows
+            .get(body_row)?
+            .iter()
+            .find(|hit| hit.cols.contains(&column))
+            .map(|hit| &hit.key)
+    }
+}
 
 /// Chat log + always-visible input line.
 pub struct ChatPane {
@@ -96,6 +167,11 @@ pub struct ChatPane {
     me: String,
     /// Tab-completion cycling state (see [`ChatPane::try_tab_complete`]).
     completion: Option<CompletionState>,
+    /// Per-spoiler reveal state, keyed by message identity (per-client,
+    /// session-lifetime — nothing here is synced).
+    spoilers: HashMap<SpoilerKey, SpoilerState>,
+    /// The log viewport the last render drew (spoiler click mapping).
+    rendered: RenderedChatLog,
 }
 
 /// In-flight Tab-completion cycle. While the input still equals `produced`,
@@ -128,6 +204,8 @@ impl Default for ChatPane {
             usernames: Vec::new(),
             me: String::new(),
             completion: None,
+            spoilers: HashMap::new(),
+            rendered: RenderedChatLog::default(),
         }
     }
 }
@@ -146,6 +224,122 @@ impl ChatPane {
     /// Set the local user's name (for self-mention emphasis).
     pub fn set_me(&mut self, me: String) {
         self.me = me;
+    }
+
+    /// A left-click landed inside the chat pane: if it hit a spoiler,
+    /// advance its reveal state machine. First click starts the
+    /// re-randomization tease and arms a window; a second click within
+    /// [`SPOILER_REVEAL_WINDOW_MS`] of the first reveals for the session;
+    /// a click after the window lapses re-teases (with fresh letters —
+    /// generations are monotonic). Clicks anywhere else are no-ops here
+    /// (pane focusing lives in the dispatcher).
+    pub(crate) fn click(&mut self, column: u16, row: u16, now_millis: u64) {
+        let Some(key) = self.rendered.hit(column, row).cloned() else {
+            return;
+        };
+        let next = match self.spoilers.get(&key) {
+            None => SpoilerState::Animating {
+                anim_started: now_millis,
+                base_gen: 0,
+                generation: 0,
+                first_click: now_millis,
+            },
+            Some(
+                SpoilerState::Animating {
+                    first_click,
+                    generation,
+                    ..
+                }
+                | SpoilerState::Armed {
+                    first_click,
+                    generation,
+                },
+            ) => {
+                if now_millis.saturating_sub(*first_click) <= SPOILER_REVEAL_WINDOW_MS {
+                    SpoilerState::Revealed
+                } else {
+                    // Window lapsed: this click is a fresh first click.
+                    SpoilerState::Animating {
+                        anim_started: now_millis,
+                        base_gen: *generation,
+                        generation: *generation,
+                        first_click: now_millis,
+                    }
+                }
+            }
+            Some(SpoilerState::Revealed) => return,
+        };
+        self.spoilers.insert(key, next);
+    }
+
+    /// Advance every animating spoiler to the frame `now_millis` implies
+    /// (derived from wall time, never per-tick increments — the marquee
+    /// discipline). Returns whether a redraw could change the screen.
+    pub(crate) fn advance_spoilers(&mut self, now_millis: u64) -> bool {
+        let mut changed = false;
+        for state in self.spoilers.values_mut() {
+            let SpoilerState::Animating {
+                anim_started,
+                base_gen,
+                generation,
+                first_click,
+            } = *state
+            else {
+                continue;
+            };
+            let elapsed_frames = (now_millis.saturating_sub(anim_started) / SPOILER_FRAME_MS)
+                .min(u64::from(SPOILER_FRAMES));
+            let next_gen = base_gen + elapsed_frames as u32;
+            if next_gen == generation {
+                continue;
+            }
+            changed = true;
+            *state = if next_gen >= base_gen + SPOILER_FRAMES {
+                SpoilerState::Armed {
+                    generation: next_gen,
+                    first_click,
+                }
+            } else {
+                SpoilerState::Animating {
+                    anim_started,
+                    base_gen,
+                    generation: next_gen,
+                    first_click,
+                }
+            };
+        }
+        changed
+    }
+
+    /// Whether any spoiler tease is mid-animation (drives the shell's
+    /// fast tick).
+    pub(crate) fn spoiler_animating(&self) -> bool {
+        self.spoilers
+            .values()
+            .any(|s| matches!(s, SpoilerState::Animating { .. }))
+    }
+
+    /// `/reveal`: reveal the newest still-hidden spoiler in the visible
+    /// log (bottom = newest; hidden runs are exactly the ones that emit
+    /// hit ranges). Returns whether anything was revealed.
+    pub(crate) fn reveal_newest_visible(&mut self) -> bool {
+        // Hidden runs are the ones that emit hit ranges, but the recorded
+        // rows only refresh on the next draw — skip keys already revealed
+        // so a repeat between draws can't re-pick the same run.
+        let Some(key) = self
+            .rendered
+            .rows
+            .iter()
+            .rev()
+            .flat_map(|row| row.iter().rev())
+            .map(|hit| &hit.key)
+            .find(|key| !matches!(self.spoilers.get(key), Some(SpoilerState::Revealed)))
+            .cloned()
+        else {
+            return false;
+        };
+        self.spoilers.insert(key, SpoilerState::Revealed);
+        true
     }
 
     /// Try to Tab-complete a username at the end of the input. Returns
@@ -331,11 +525,12 @@ impl ChatPane {
             log_area
         };
         let width = log_area.width.saturating_sub(2) as usize;
-        // Flatten every message into wrapped visual lines.
-        let lines: Vec<Line> = self
+        // Flatten every message into wrapped visual lines (paired with
+        // their clickable spoiler ranges).
+        let lines: Vec<(Line, Vec<SpoilerHit>)> = self
             .lines
             .iter()
-            .flat_map(|line| wrap_chat_line(line, width, &self.usernames, &self.me))
+            .flat_map(|line| wrap_chat_line(line, width, &self.usernames, &self.me, &self.spoilers))
             .collect();
         let visible = log_area.height.saturating_sub(2) as usize;
         // Clamp the scroll so it can never run past the top of the log.
@@ -343,10 +538,26 @@ impl ChatPane {
         self.scroll_offset = self.scroll_offset.min(max_offset);
         let end = lines.len().saturating_sub(self.scroll_offset);
         let start = end.saturating_sub(visible);
+        // Record the drawn viewport for spoiler click mapping: shift the
+        // line-relative hit columns to absolute screen columns (past the
+        // left border); body row i sits at log_area.y + 1 + i.
+        self.rendered = RenderedChatLog {
+            area: log_area,
+            rows: lines[start..end]
+                .iter()
+                .map(|(_, hits)| {
+                    hits.iter()
+                        .map(|hit| SpoilerHit {
+                            cols: hit.cols.start + log_area.x + 1..hit.cols.end + log_area.x + 1,
+                            key: hit.key.clone(),
+                        })
+                        .collect()
+                })
+                .collect(),
+        };
         let items: Vec<ListItem> = lines[start..end]
             .iter()
-            .cloned()
-            .map(ListItem::new)
+            .map(|(line, _)| ListItem::new(line.clone()))
             .collect();
         frame.render_widget(
             List::new(items).block(
@@ -364,12 +575,21 @@ impl ChatPane {
 /// Greedy word-wrap. The first visual line gets `first_width` (the chat
 /// prefix eats into it); later lines get `rest_width`. Breaks at spaces
 /// where possible, hard-breaks any word longer than the available width.
-fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
+///
+/// Each chunk is a contiguous char-slice of `text` (only boundary join
+/// spaces are dropped); the second tuple element is the chunk's starting
+/// char offset in `text`, which lets callers map char ranges of the
+/// input (spoiler runs) onto the wrapped lines.
+fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<(String, usize)> {
     let width_for = |idx: usize| if idx == 0 { first_width } else { rest_width }.max(1);
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines: Vec<(String, usize)> = Vec::new();
     let mut cur = String::new();
+    let mut cur_start = 0;
     let mut width = width_for(0);
+    let mut next_word_start = 0;
     for mut word in text.split(' ') {
+        let mut word_start = next_word_start;
+        next_word_start += word.chars().count() + 1;
         loop {
             let cur_len = cur.chars().count();
             let space = usize::from(!cur.is_empty());
@@ -377,6 +597,9 @@ fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
             if cur_len + space + wlen <= width {
                 if space == 1 {
                     cur.push(' ');
+                } else {
+                    // Chunk begins with this word.
+                    cur_start = word_start;
                 }
                 cur.push_str(word);
                 break;
@@ -389,18 +612,20 @@ fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
                     .map(|(i, _)| i)
                     .unwrap_or(word.len());
                 let (head, tail) = word.split_at(split_at);
+                cur_start = word_start;
                 cur.push_str(head);
-                lines.push(std::mem::take(&mut cur));
+                lines.push((std::mem::take(&mut cur), cur_start));
                 width = width_for(lines.len());
+                word_start += head.chars().count();
                 word = tail;
             } else {
                 // Flush and retry the word on a fresh line.
-                lines.push(std::mem::take(&mut cur));
+                lines.push((std::mem::take(&mut cur), cur_start));
                 width = width_for(lines.len());
             }
         }
     }
-    lines.push(cur);
+    lines.push((cur, cur_start));
     lines
 }
 
@@ -483,13 +708,141 @@ fn highlight_mentions(
     spans
 }
 
-/// Render one chat message as one or more wrapped visual lines.
+/// A spoiler run's position within a composed display body: its char
+/// range, identity, and — while hidden — the `(seed, generation)` that
+/// scrambled it (`None` = revealed, shown in the clear).
+struct SpoilerRun {
+    chars: std::ops::Range<usize>,
+    key: SpoilerKey,
+    hidden: Option<(u64, u32)>,
+}
+
+/// Compose the display body for a chat message: `||spoiler||` runs
+/// replaced by their scramble (or the original once revealed), bars
+/// dropped, everything else verbatim. Returns the display string plus
+/// each run's char range within it. The scramble is 1:1 in chars, so
+/// the char-count wrap and hit math downstream stay exact.
+fn compose_spoiler_body(
+    line: &ChatLine,
+    spoilers: &HashMap<SpoilerKey, SpoilerState>,
+) -> (String, Vec<SpoilerRun>) {
+    if !line.text.contains("||") {
+        return (line.text.clone(), Vec::new());
+    }
+    let mut display = String::new();
+    let mut chars = 0;
+    let mut runs = Vec::new();
+    let mut index = 0;
+    for segment in spoiler::parse(&line.text) {
+        match segment {
+            spoiler::Segment::Text(t) => {
+                display.push_str(t);
+                chars += t.chars().count();
+            }
+            spoiler::Segment::Spoiler(s) => {
+                let key = SpoilerKey {
+                    millis: line.millis,
+                    sender: line.sender.clone(),
+                    index,
+                };
+                let hidden = match spoilers.get(&key) {
+                    Some(SpoilerState::Revealed) => None,
+                    Some(
+                        SpoilerState::Animating { generation, .. }
+                        | SpoilerState::Armed { generation, .. },
+                    ) => Some((spoiler::seed(line.millis, &line.sender, index), *generation)),
+                    None => Some((spoiler::seed(line.millis, &line.sender, index), 0)),
+                };
+                match hidden {
+                    Some((seed, generation)) => {
+                        display.push_str(&spoiler::scramble(s, seed, generation));
+                    }
+                    None => display.push_str(s),
+                }
+                let len = s.chars().count();
+                runs.push(SpoilerRun {
+                    chars: chars..chars + len,
+                    key,
+                    hidden,
+                });
+                chars += len;
+                index += 1;
+            }
+        }
+    }
+    (display, runs)
+}
+
+/// Style one wrapped chunk of a composed body: mention highlighting
+/// outside spoiler runs, zalgo'd scramble inside hidden ones, plain
+/// `base` inside revealed ones. Returns the spans plus the hidden runs'
+/// hit ranges, in columns relative to the chunk's first cell (the zalgo
+/// marks are zero-width — added here, after wrapping, precisely so they
+/// can't perturb the char-count columns).
+fn spoiler_chunk_spans(
+    chunk: &str,
+    chunk_start: usize,
+    runs: &[SpoilerRun],
+    usernames: &[String],
+    me: &str,
+    base: Style,
+) -> (Vec<Span<'static>>, Vec<SpoilerHit>) {
+    let chunk_chars: Vec<char> = chunk.chars().collect();
+    let chunk_end = chunk_start + chunk_chars.len();
+    // Slice by chunk-relative char positions.
+    let slice = |a: usize, b: usize| -> String { chunk_chars[a..b].iter().collect() };
+    let mut spans = Vec::new();
+    let mut hits = Vec::new();
+    let mut pos = chunk_start;
+    for run in runs {
+        let start = run.chars.start.max(chunk_start);
+        let end = run.chars.end.min(chunk_end);
+        if start >= end {
+            continue;
+        }
+        if start > pos {
+            spans.extend(highlight_mentions(
+                &slice(pos - chunk_start, start - chunk_start),
+                usernames,
+                me,
+                base,
+            ));
+        }
+        let text = slice(start - chunk_start, end - chunk_start);
+        match run.hidden {
+            Some((seed, generation)) => {
+                let corrupted = spoiler::zalgo(&text, seed, generation, start - run.chars.start);
+                spans.push(Span::styled(corrupted, theme::spoiler()));
+                hits.push(SpoilerHit {
+                    cols: (start - chunk_start) as u16..(end - chunk_start) as u16,
+                    key: run.key.clone(),
+                });
+            }
+            None => spans.push(Span::styled(text, base)),
+        }
+        pos = end;
+    }
+    if pos < chunk_end {
+        spans.extend(highlight_mentions(
+            &slice(pos - chunk_start, chunk_end - chunk_start),
+            usernames,
+            me,
+            base,
+        ));
+    }
+    (spans, hits)
+}
+
+/// Render one chat message as one or more wrapped visual lines, each
+/// paired with its clickable spoiler ranges (relative columns; empty for
+/// the line kinds that never carry spoilers).
 fn wrap_chat_line(
     line: &ChatLine,
     width: usize,
     usernames: &[String],
     me: &str,
-) -> Vec<Line<'static>> {
+    spoilers: &HashMap<SpoilerKey, SpoilerState>,
+) -> Vec<(Line<'static>, Vec<SpoilerHit>)> {
     use tuirealm::ratatui::style::Modifier;
     let indent: String = " ".repeat(CHAT_WRAP_INDENT);
     if line.separator {
@@ -500,7 +853,7 @@ fn wrap_chat_line(
         let dashes = total - label_w;
         let left = dashes / 2;
         let bar = format!("{}{}{}", "─".repeat(left), label, "─".repeat(dashes - left));
-        return vec![Line::from(Span::styled(bar, theme::dim()))];
+        return vec![(Line::from(Span::styled(bar, theme::dim())), Vec::new())];
     }
     if line.subtitle {
         // Local subtitle (Intermixed mode): dim, no sender, "»" marker,
@@ -516,15 +869,16 @@ fn wrap_chat_line(
         chunks
             .into_iter()
             .enumerate()
-            .map(|(i, chunk)| {
-                if i == 0 {
+            .map(|(i, (chunk, _))| {
+                let visual = if i == 0 {
                     Line::from(vec![
                         Span::styled(time.clone(), theme::dim()),
                         Span::styled(chunk, theme::dim()),
                     ])
                 } else {
                     Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim()))
-                }
+                };
+                (visual, Vec::new())
             })
             .collect()
     } else if line.system {
@@ -540,15 +894,16 @@ fn wrap_chat_line(
         chunks
             .into_iter()
             .enumerate()
-            .map(|(i, chunk)| {
-                if i == 0 {
+            .map(|(i, (chunk, _))| {
+                let visual = if i == 0 {
                     Line::from(vec![
                         Span::styled(time.clone(), theme::dim()),
                         Span::styled(chunk, theme::dim()),
                     ])
                 } else {
                     Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim()))
-                }
+                };
+                (visual, Vec::new())
             })
             .collect()
     } else if line.action {
@@ -563,8 +918,9 @@ fn wrap_chat_line(
             + tag.chars().count()
             + marker.chars().count()
             + sender.chars().count();
+        let (display, runs) = compose_spoiler_body(line, spoilers);
         let chunks = wrap_body(
-            &line.text,
+            &display,
             width.saturating_sub(prefix_width),
             width.saturating_sub(CHAT_WRAP_INDENT),
         );
@@ -572,12 +928,21 @@ fn wrap_chat_line(
         chunks
             .into_iter()
             .enumerate()
-            .map(|(i, chunk)| {
+            .map(|(i, (chunk, chunk_start))| {
                 // The action phrase renders grey (#27) — the terminal has
                 // no italics, so colour is what marks an emote. Mentions
                 // still highlight through it.
-                let body = highlight_mentions(&chunk, usernames, me, theme::dim());
-                if i == 0 {
+                let (body, mut hits) =
+                    spoiler_chunk_spans(&chunk, chunk_start, &runs, usernames, me, theme::dim());
+                let offset = (if i == 0 {
+                    prefix_width
+                } else {
+                    CHAT_WRAP_INDENT
+                }) as u16;
+                for hit in &mut hits {
+                    hit.cols = hit.cols.start + offset..hit.cols.end + offset;
+                }
+                let visual = if i == 0 {
                     let mut spans = vec![Span::styled(time.clone(), theme::dim())];
                     if !tag.is_empty() {
                         spans.push(Span::styled(tag, theme::dim()));
@@ -590,7 +955,8 @@ fn wrap_chat_line(
                     let mut spans = vec![Span::raw(indent.clone())];
                     spans.extend(body);
                     Line::from(spans)
-                }
+                };
+                (visual, hits)
             })
             .collect()
     } else {
@@ -601,8 +967,9 @@ fn wrap_chat_line(
         let tag = if line.irc { "irc " } else { "" };
         let sender = format!("{}: ", line.sender);
         let prefix_width = time.chars().count() + tag.chars().count() + sender.chars().count();
+        let (display, runs) = compose_spoiler_body(line, spoilers);
         let chunks = wrap_body(
-            &line.text,
+            &display,
             width.saturating_sub(prefix_width),
             width.saturating_sub(CHAT_WRAP_INDENT),
         );
@@ -610,9 +977,24 @@ fn wrap_chat_line(
         chunks
             .into_iter()
             .enumerate()
-            .map(|(i, chunk)| {
-                let body = highlight_mentions(&chunk, usernames, me, Style::default());
-                if i == 0 {
+            .map(|(i, (chunk, chunk_start))| {
+                let (body, mut hits) = spoiler_chunk_spans(
+                    &chunk,
+                    chunk_start,
+                    &runs,
+                    usernames,
+                    me,
+                    Style::default(),
+                );
+                let offset = (if i == 0 {
+                    prefix_width
+                } else {
+                    CHAT_WRAP_INDENT
+                }) as u16;
+                for hit in &mut hits {
+                    hit.cols = hit.cols.start + offset..hit.cols.end + offset;
+                }
+                let visual = if i == 0 {
                     let mut spans = vec![Span::styled(time.clone(), theme::dim())];
                     if !tag.is_empty() {
                         spans.push(Span::styled(tag, theme::dim()));
@@ -624,7 +1006,8 @@ fn wrap_chat_line(
                     let mut spans = vec![Span::raw(indent.clone())];
                     spans.extend(body);
                     Line::from(spans)
-                }
+                };
+                (visual, hits)
             })
             .collect()
     }
@@ -2338,43 +2721,63 @@ mod users_pane_tests {
 #[cfg(test)]
 mod chat_wrap_tests {
     use super::wrap_body;
+    use proptest::prelude::*;
+
+    /// Every chunk must be a contiguous char-slice of the input starting
+    /// at its reported offset — the invariant spoiler hit-mapping needs.
+    fn assert_offsets(text: &str, chunks: &[(String, usize)]) {
+        let chars: Vec<char> = text.chars().collect();
+        for (chunk, start) in chunks {
+            let len = chunk.chars().count();
+            let expected: String = chars[*start..*start + len].iter().collect();
+            assert_eq!(chunk, &expected, "chunk not at reported offset {start}");
+        }
+    }
 
     #[test]
     fn breaks_at_spaces() {
         // first_width and rest_width both 10.
         let lines = wrap_body("the quick brown fox", 10, 10);
-        for line in &lines {
+        for (line, _) in &lines {
             assert!(line.chars().count() <= 10, "line too wide: {line:?}");
         }
         // Reassembling with single spaces recovers the words in order.
+        let joined = lines
+            .iter()
+            .map(|(line, _)| line.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert_eq!(
-            lines.join(" ").split_whitespace().collect::<Vec<_>>(),
+            joined.split_whitespace().collect::<Vec<_>>(),
             ["the", "quick", "brown", "fox"]
         );
+        assert_offsets("the quick brown fox", &lines);
     }
 
     #[test]
     fn hard_breaks_overlong_word() {
         let lines = wrap_body("supercalifragilistic", 5, 5);
         assert!(lines.len() > 1, "long word should be split");
-        for line in &lines {
+        for (line, _) in &lines {
             assert!(line.chars().count() <= 5, "chunk too wide: {line:?}");
         }
-        assert_eq!(lines.concat(), "supercalifragilistic");
+        let concat: String = lines.iter().map(|(line, _)| line.as_str()).collect();
+        assert_eq!(concat, "supercalifragilistic");
+        assert_offsets("supercalifragilistic", &lines);
     }
 
     #[test]
     fn respects_narrower_first_line() {
         // First line only fits "ab"; the rest get width 10.
         let lines = wrap_body("ab cdefghij", 2, 10);
-        assert_eq!(lines[0], "ab");
-        assert_eq!(lines[1], "cdefghij");
+        assert_eq!(lines[0], ("ab".to_string(), 0));
+        assert_eq!(lines[1], ("cdefghij".to_string(), 3));
     }
 
     #[test]
     fn exact_width_stays_on_one_line() {
         let lines = wrap_body("abcde", 5, 5);
-        assert_eq!(lines, vec!["abcde".to_string()]);
+        assert_eq!(lines, vec![("abcde".to_string(), 0)]);
     }
 
     #[test]
@@ -2382,6 +2785,261 @@ mod chat_wrap_tests {
         // Degenerate width is clamped to 1 internally; must terminate.
         let lines = wrap_body("hi there", 0, 0);
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn offsets_survive_multiple_spaces() {
+        // "a" at 0; the double space collapses at the boundary; "b" at 3.
+        let lines = wrap_body("a  b", 1, 1);
+        assert_offsets("a  b", &lines);
+        assert_eq!(lines.last(), Some(&("b".to_string(), 3)));
+    }
+
+    proptest! {
+        #[test]
+        fn chunks_are_slices_at_their_offsets(
+            text in "[a-c ]{0,40}",
+            first in 1usize..12,
+            rest in 1usize..12,
+        ) {
+            let lines = wrap_body(&text, first, rest);
+            assert_offsets(&text, &lines);
+        }
+    }
+}
+
+#[cfg(test)]
+mod chat_popup_tests {
+    use super::CHAT_SUGGESTION_MAX;
+
+    /// The popup cap must fit the whole command table, or a bare `/`
+    /// silently drops rows.
+    #[test]
+    fn suggestion_cap_fits_command_table() {
+        assert!(super::super::commands::SLASH_COMMANDS.len() <= CHAT_SUGGESTION_MAX as usize);
+    }
+}
+
+#[cfg(test)]
+mod chat_spoiler_tests {
+    use super::*;
+    use tuirealm::ratatui::layout::Rect;
+
+    fn chat_line(text: &str) -> ChatLine {
+        ChatLine {
+            time: "12:00".to_string(),
+            sender: "kim".to_string(),
+            text: text.to_string(),
+            system: false,
+            subtitle: false,
+            separator: false,
+            action: false,
+            irc: false,
+            millis: 1_000,
+        }
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn key(index: usize) -> SpoilerKey {
+        SpoilerKey {
+            millis: 1_000,
+            sender: "kim".to_string(),
+            index,
+        }
+    }
+
+    #[test]
+    fn hidden_spoiler_is_scrambled_with_hit_range() {
+        let line = chat_line("the ||secret|| word");
+        let wrapped = wrap_chat_line(&line, 80, &[], "me", &HashMap::new());
+        assert_eq!(wrapped.len(), 1);
+        let (visual, hits) = &wrapped[0];
+        let text = line_text(visual);
+        assert!(!text.contains("secret"), "spoiler leaked: {text:?}");
+        assert!(!text.contains('|'), "bars leaked: {text:?}");
+        assert!(text.contains("the ") && text.contains(" word"));
+        // Prefix "12:00 " (6) + "kim: " (5) = 11; run at display chars 4..10.
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].cols, 15..21);
+        assert_eq!(hits[0].key, key(0));
+    }
+
+    #[test]
+    fn revealed_spoiler_shows_original_without_hits() {
+        let line = chat_line("the ||secret|| word");
+        let mut spoilers = HashMap::new();
+        spoilers.insert(key(0), SpoilerState::Revealed);
+        let wrapped = wrap_chat_line(&line, 80, &[], "me", &spoilers);
+        let (visual, hits) = &wrapped[0];
+        let text = line_text(visual);
+        assert!(text.contains("the secret word"), "got {text:?}");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn spoiler_spanning_wrap_boundary_hits_both_lines() {
+        // Pane width 16: first chunk gets 16 - 11 = 5 cells, so the
+        // nine-char run hard-breaks across two visual lines.
+        let line = chat_line("||secretive|| end");
+        let wrapped = wrap_chat_line(&line, 16, &[], "me", &HashMap::new());
+        assert!(wrapped.len() >= 2, "expected a wrapped run");
+        let first_hits = &wrapped[0].1;
+        let second_hits = &wrapped[1].1;
+        assert_eq!(first_hits.len(), 1);
+        assert_eq!(second_hits.len(), 1);
+        assert_eq!(first_hits[0].key, key(0));
+        assert_eq!(second_hits[0].key, key(0));
+        // First line: cols 11..16 (5 chars after the prefix); second:
+        // the remaining 4 chars after the continuation indent.
+        assert_eq!(first_hits[0].cols, 11..16);
+        assert_eq!(second_hits[0].cols, 2..6);
+        // The scrambled halves stay in sync with the unsplit scramble:
+        // same seed, same char offsets (zalgo split-stability is
+        // property-tested in dessplay-core).
+        assert!(!line_text(&wrapped[0].0).contains("secre"));
+    }
+
+    #[test]
+    fn action_line_spoiler_is_scrambled() {
+        let mut line = chat_line("reads ||the twist|| aloud");
+        line.action = true;
+        let wrapped = wrap_chat_line(&line, 80, &[], "me", &HashMap::new());
+        let (visual, hits) = &wrapped[0];
+        let text = line_text(visual);
+        assert!(!text.contains("the twist"), "got {text:?}");
+        assert!(!text.contains('|'));
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn mentions_highlight_outside_but_not_inside_hidden_runs() {
+        let names = vec!["Nero".to_string()];
+        let line = chat_line("Nero said ||Nero dies||");
+        let wrapped = wrap_chat_line(&line, 80, &names, "me", &HashMap::new());
+        let (visual, _) = &wrapped[0];
+        // The mention outside the run keeps its user style...
+        let styled: Vec<_> = visual
+            .spans
+            .iter()
+            .filter(|s| s.content.as_ref() == "Nero")
+            .collect();
+        assert_eq!(styled.len(), 1, "exactly the outside mention: {visual:?}");
+        assert_eq!(
+            styled[0].style,
+            theme::user_style("Nero").add_modifier(tuirealm::ratatui::style::Modifier::BOLD)
+        );
+        // ...and the hidden run contains no "Nero" at all (scrambled).
+        let hidden: String = visual
+            .spans
+            .iter()
+            .filter(|s| s.style == theme::spoiler())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(!hidden.contains("Nero"));
+    }
+
+    /// A pane whose last "render" recorded the given hit rows (each row
+    /// one hit at columns 5..10), so click tests can drive the state
+    /// machine without a real draw. (ChatPane's fields are private, so
+    /// default-then-assign is the only construction seam.)
+    #[allow(clippy::field_reassign_with_default)]
+    fn pane_with_hit_rows(count: usize) -> ChatPane {
+        let mut pane = ChatPane::default();
+        pane.rendered = RenderedChatLog {
+            area: Rect::new(0, 0, 40, 10),
+            rows: (0..count)
+                .map(|i| {
+                    vec![SpoilerHit {
+                        cols: 5..10,
+                        key: key(i),
+                    }]
+                })
+                .collect(),
+        };
+        pane
+    }
+
+    #[test]
+    fn click_tease_then_reveal_within_window() {
+        let mut pane = pane_with_hit_rows(1);
+        // Miss: border row.
+        pane.click(6, 0, 1_000);
+        assert!(pane.spoilers.is_empty());
+        // First click: animation starts at generation 0.
+        pane.click(6, 1, 1_000);
+        assert!(pane.spoiler_animating());
+        // Frames derive from wall time.
+        assert!(pane.advance_spoilers(1_250));
+        assert!(matches!(
+            pane.spoilers.get(&key(0)),
+            Some(SpoilerState::Animating { generation: 2, .. })
+        ));
+        // Settles into Armed after the last frame.
+        assert!(pane.advance_spoilers(2_000));
+        assert!(matches!(
+            pane.spoilers.get(&key(0)),
+            Some(SpoilerState::Armed { generation, .. }) if *generation == SPOILER_FRAMES
+        ));
+        assert!(!pane.spoiler_animating());
+        // Second click within the 5s window reveals.
+        pane.click(6, 1, 4_000);
+        assert!(matches!(
+            pane.spoilers.get(&key(0)),
+            Some(SpoilerState::Revealed)
+        ));
+        // Further clicks are no-ops.
+        pane.click(6, 1, 4_100);
+        assert!(matches!(
+            pane.spoilers.get(&key(0)),
+            Some(SpoilerState::Revealed)
+        ));
+    }
+
+    #[test]
+    fn lapsed_window_reteases_with_fresh_generations() {
+        let mut pane = pane_with_hit_rows(1);
+        pane.click(6, 1, 0);
+        pane.advance_spoilers(600);
+        // Window lapsed: this is a fresh first click, continuing the
+        // generation counter (fresh letters, not a replay).
+        pane.click(6, 1, 6_000);
+        assert!(matches!(
+            pane.spoilers.get(&key(0)),
+            Some(SpoilerState::Animating { base_gen, .. }) if *base_gen == SPOILER_FRAMES
+        ));
+        pane.advance_spoilers(6_600);
+        // Second click within 5s of the *new* first click reveals.
+        pane.click(6, 1, 7_000);
+        assert!(matches!(
+            pane.spoilers.get(&key(0)),
+            Some(SpoilerState::Revealed)
+        ));
+    }
+
+    #[test]
+    fn reveal_newest_visible_walks_bottom_up() {
+        let mut pane = pane_with_hit_rows(2);
+        // Bottom row (newest) first.
+        assert!(pane.reveal_newest_visible());
+        assert!(matches!(
+            pane.spoilers.get(&key(1)),
+            Some(SpoilerState::Revealed)
+        ));
+        assert!(!matches!(
+            pane.spoilers.get(&key(0)),
+            Some(SpoilerState::Revealed)
+        ));
+        // Repeat (without a re-render) picks the remaining hidden one.
+        assert!(pane.reveal_newest_visible());
+        assert!(matches!(
+            pane.spoilers.get(&key(0)),
+            Some(SpoilerState::Revealed)
+        ));
+        // Nothing hidden left.
+        assert!(!pane.reveal_newest_visible());
     }
 }
 

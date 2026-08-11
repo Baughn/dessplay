@@ -1060,6 +1060,29 @@ fn summon_report(pinged: &[(UserId, String)], unmatched: &[UserId]) -> String {
     text
 }
 
+/// Mask `||spoiler||` runs in an outbound IRC chat line (CTCP-aware:
+/// a `/me` action is masked inside its `\x01ACTION …\x01` framing). The
+/// message has no shared timestamp yet at the tap, so the scramble seed
+/// hashes the text itself — the letters differ from the TUI/OSD rendering
+/// of the same message, which nobody cross-checks, while staying
+/// deterministic per message.
+fn mask_irc_chat(text: &str, sender: &UserId) -> String {
+    use std::hash::{Hash, Hasher};
+    if !text.contains("||") {
+        return text.to_string();
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    let seed_base = hasher.finish();
+    let sender = sender.to_string();
+    match dessplay_core::types::decode_action(text) {
+        Some(phrase) => dessplay_core::types::encode_action(&dessplay_core::spoiler::mask_message(
+            phrase, seed_base, &sender,
+        )),
+        None => dessplay_core::spoiler::mask_message(text, seed_base, &sender),
+    }
+}
+
 /// The interactive bridge loop: actors on one side, UI channels on the
 /// other. Extracted from [`run_interactive`] so it is testable without
 /// a terminal — supervision bugs ("Ctrl-C doesn't quit") live here, and
@@ -1172,12 +1195,17 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // only ever carries the local user's mutations
                             // (remote ops arrive as SyncCommand::Server), so
                             // this forwards exactly our own messages — not
-                            // events, subtitles, or narrator lines. Lossy
+                            // events, subtitles, or narrator lines. Spoiler
+                            // runs are masked before they leave: IRC is
+                            // public, logged, and someone's primary chat
+                            // surface, with no reveal affordance. Lossy
                             // try_send: never await the bridge here (it may
                             // be mid-reconnect with a full channel).
                             if let Mutation::Chat { text } = &mutation {
                                 let _ = self.irc_tx.try_send(
-                                    crate::actors::irc::IrcCommand::SendChat(text.clone()),
+                                    crate::actors::irc::IrcCommand::SendChat(mask_irc_chat(
+                                        text, &self.me,
+                                    )),
                                 );
                             }
                             let _ = self
@@ -2023,6 +2051,31 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    #[test]
+    fn irc_tap_masks_spoilers() {
+        let me = UserId::new("baughn");
+        let masked = mask_irc_chat("the ||secret|| twist", &me);
+        assert!(!masked.contains('|'), "bars leaked: {masked:?}");
+        assert!(!masked.contains("secret"), "spoiler leaked: {masked:?}");
+        assert!(masked.starts_with("the ") && masked.ends_with(" twist"));
+        // Deterministic per message.
+        assert_eq!(masked, mask_irc_chat("the ||secret|| twist", &me));
+        // Spoiler-free lines pass through untouched.
+        assert_eq!(mask_irc_chat("plain line", &me), "plain line");
+    }
+
+    #[test]
+    fn irc_tap_masks_inside_ctcp_actions() {
+        use dessplay_core::types::{decode_action, encode_action};
+        let me = UserId::new("baughn");
+        let masked = mask_irc_chat(&encode_action("spoils ||everything||"), &me);
+        // The CTCP framing survives (format_privmsg's no-split rule keys
+        // on it) and the phrase inside is masked.
+        let phrase = decode_action(&masked).expect("CTCP framing lost");
+        assert!(!phrase.contains('|') && !phrase.contains("everything"));
+        assert!(phrase.starts_with("spoils "));
+    }
 
     #[test]
     fn default_port_handling() {

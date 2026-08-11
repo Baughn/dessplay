@@ -295,6 +295,12 @@ pub struct Ui {
     /// session's leftover (the register persists in synced state until
     /// compaction) and is adopted already-done instead of played.
     startup_shared_millis: Option<u64>,
+    /// Latest known millis — the max of the shell's wall-clock ticks and
+    /// the snapshots' shared clock, never rewinding (the SpeakerColors
+    /// discipline). Click-time state machines (the spoiler double-click
+    /// window) read this; `Ui` itself never touches a system clock, so
+    /// tests stay deterministic.
+    clock: u64,
     /// In-flight playlist-add hashes: (filename, done, total). Drawn as
     /// a progress overlay while non-empty (the no-silent-work rule).
     hashing: Vec<(String, u64, u64)>,
@@ -371,6 +377,7 @@ impl Ui {
             speaker_colors: SpeakerColors::default(),
             marquee: None,
             startup_shared_millis: None,
+            clock: 0,
             hashing: Vec::new(),
             nyaa_imports: BTreeMap::new(),
             next_nyaa_import_id: 1,
@@ -403,19 +410,23 @@ impl Ui {
     /// independently of session traffic. Returns whether a redraw could
     /// change what's on screen.
     pub(crate) fn advance_clock(&mut self, now_millis: u64) -> bool {
+        self.clock = self.clock.max(now_millis);
         let speakers = self.speaker_colors.advance(now_millis);
         let marquee = self.advance_marquee(now_millis);
-        speakers || marquee
+        let spoilers = self.chat.advance_spoilers(now_millis);
+        speakers || marquee || spoilers
     }
 
     /// How soon the shell should tick again: fast while a marquee pass
-    /// is animating (smooth scroll), the lazy 1s otherwise. The idle
-    /// discipline is preserved either way — a tick only repaints when
-    /// [`Self::advance_clock`] reports a change.
+    /// or a spoiler re-randomization tease is animating, the lazy 1s
+    /// otherwise. The idle discipline is preserved either way — a tick
+    /// only repaints when [`Self::advance_clock`] reports a change.
     pub(crate) fn next_tick_hint(&self) -> std::time::Duration {
-        match &self.marquee {
-            Some(anim) if !anim.done => std::time::Duration::from_millis(100),
-            _ => std::time::Duration::from_secs(1),
+        let marquee_live = matches!(&self.marquee, Some(anim) if !anim.done);
+        if marquee_live || self.chat.spoiler_animating() {
+            std::time::Duration::from_millis(100)
+        } else {
+            std::time::Duration::from_secs(1)
         }
     }
 
@@ -766,6 +777,7 @@ impl Ui {
 
     /// Replace the snapshot and recompute every pane's props.
     pub fn apply_snapshot(&mut self, snapshot: UiSnapshot) {
+        self.clock = self.clock.max(snapshot.now);
         self.speaker_colors.advance(snapshot.now);
         // Marquee lifecycle: a new LWW stamp starts a fresh pass (even
         // for identical text — a rewrite replays); the same stamp never
@@ -803,6 +815,9 @@ impl Ui {
             None => self.marquee = None,
         }
         self.advance_marquee(snapshot.now);
+        // Snapshots arrive at ~10Hz during playback, so they advance a
+        // running spoiler tease too (same policy as the marquee above).
+        self.chat.advance_spoilers(snapshot.now);
         let chat = self.merged_chat(&snapshot.view);
         self.chat.set_lines(chat);
         self.chat
@@ -963,7 +978,9 @@ impl Ui {
                 // at render time, so the click lands on the row the
                 // user saw regardless of focus or centering policy.
                 match target {
-                    Focus::Chat => {}
+                    // Chat has no row selection; a click there drives the
+                    // spoiler reveal state machine (and focuses, below).
+                    Focus::Chat => self.chat.click(mouse.column, mouse.row, self.clock),
                     Focus::Series => self.series.click(mouse.column, mouse.row),
                     Focus::Users => self.users.click(mouse.column, mouse.row),
                     Focus::Playlist => self.playlist.click(mouse.column, mouse.row),
@@ -1683,6 +1700,19 @@ impl Ui {
             },
             // Play past a committed-but-absent blocker of the current file.
             "/ack" => self.acknowledge_blockers(),
+            // `/reveal`: keyboard path for the spoiler mouse flow
+            // (design.md: every mouse action has a key equivalent).
+            // Reveals the newest still-hidden spoiler in the visible
+            // log directly — no click tease.
+            "/reveal" => {
+                if self.chat.reveal_newest_visible() {
+                    Vec::new()
+                } else {
+                    vec![UserAction::Notice(
+                        "/reveal: no hidden spoiler on screen".to_string(),
+                    )]
+                }
+            }
             // Ping absent known users on IRC (design.md #4).
             "/summon" => self.command_summon(),
             other => vec![UserAction::Notice(format!(

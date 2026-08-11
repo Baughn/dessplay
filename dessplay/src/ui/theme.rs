@@ -322,6 +322,13 @@ pub fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
+/// Style for a hidden `||spoiler||` run in the chat log. The scrambled
+/// zalgo text is the real visual marker; this exists as a semantic name
+/// so the look can evolve without touching the chat renderer.
+pub fn spoiler() -> Style {
+    dim()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

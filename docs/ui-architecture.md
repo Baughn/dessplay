@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-07-27
+Last updated: 2026-08-12
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -274,6 +274,16 @@ snapshot data to component props:
   `ChatPane::try_tab_complete` returns whether it consumed the key (it does
   only when the trailing word is a prefix of some username), so `Tab` still
   cycles panes whenever completion doesn't apply.
+
+  The pane also owns the **spoiler state** (design.md, Chat): a
+  per-client `SpoilerKey -> {animating, armed, revealed}` map keyed by
+  message identity `(millis, sender, run index)` — never position, so
+  scrolling between the two reveal clicks can't retarget it, and never
+  synced. `||spoiler||` runs are parsed and scrambled at render time by
+  `dessplay-core::spoiler` (deterministic, hash-seeded — no RNG); the
+  zero-width zalgo marks are added *after* the char-count wrap so they
+  can't skew columns. The click state machine (`ChatPane::click`,
+  `advance_spoilers`) and `/reveal` both live in the component.
 - **Subtitle log**: rolling log of subtitle lines from the PlayerActor,
   each stamped with the in-video position (displayed timestamp), a
   wall-clock arrival (chat interleave key), and an optional ASS speaker.
@@ -350,12 +360,15 @@ snapshot data to component props:
   suggestion > live marquee > info suggestion > blank. The render
   returns the measured slot width so the done-check uses real geometry
   (a never-drawn pass keeps animating conservatively). The UI thread's
-  timeout tick adapts via `Ui::next_tick_hint` — ~100ms while a pass
-  animates, the lazy 1s otherwise — and the idle-redraw discipline
-  holds: a tick repaints only when `advance_clock` (which also advances
-  the speaker-color window) reports a change. Tests drive
-  `advance_clock` with synthetic millis; the UI thread is not on tokio
-  time.
+  timeout tick adapts via `Ui::next_tick_hint` — ~100ms while a marquee
+  pass or a chat spoiler re-randomization tease animates, the lazy 1s
+  otherwise — and the idle-redraw discipline holds: a tick repaints
+  only when `advance_clock` (which also advances the speaker-color
+  window and the spoiler tease frames, all wall-millis-derived rather
+  than per-tick incremented) reports a change. Snapshots advance the
+  marquee and spoiler animations too, like the speaker window. Tests
+  drive `advance_clock` with synthetic millis; the UI thread is not on
+  tokio time.
 
 This mapping is a pure function (presence and subtitle data arrive as
 explicit inputs alongside the snapshot), making it testable independently.
@@ -414,6 +427,18 @@ the handler hit-tests against them:
   unfocused) therefore lives *only* in the render call and cannot drift
   from a click-time re-derivation. Non-selectable rows (the seeders
   line) and border cells are misses.
+- **Chat clicks** drive the spoiler reveal (design.md, Chat) on the
+  same render-recorded principle: `ChatPane::render` stores a
+  `RenderedChatLog` — the log rect plus, per visible body row, the
+  clickable spoiler column ranges the wrap actually produced (the chat
+  analogue of `RenderedList`; hidden runs are exactly the rows that
+  emit ranges). The dispatcher's chat arm passes the click and
+  `Ui::clock` — the max-monotonic merge of wall ticks and snapshot
+  shared-clock millis; `Ui` itself never reads a system clock — into
+  the pane's state machine for the 5-second double-click window. The
+  shell freshens that clock (`advance_clock`) before dispatching each
+  input event. Clicks anywhere else in the chat column still just
+  focus.
 - **Wheel**: scrolls the pane under the pointer **only when it is
   already focused** — the chat scrolls its log a few lines per tick,
   list panes move their cursor like Up/Down. Over an unfocused pane it

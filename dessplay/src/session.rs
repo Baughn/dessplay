@@ -27,6 +27,7 @@ use std::path::PathBuf;
 
 use dessplay_core::derive;
 use dessplay_core::net::PeerInfo;
+use dessplay_core::spoiler;
 use dessplay_core::state::StateView;
 use dessplay_core::types::{
     Ed2kHash, FileAvailability, ListEntryId, ManualState, PlaybackIntent, SeekAuthority,
@@ -1567,9 +1568,15 @@ impl PlayerWiring {
                     if msg.sender == self.me {
                         continue;
                     }
+                    // `||spoiler||` runs are masked with their static
+                    // scramble: the OSD has no reveal affordance. The
+                    // seed matches the chat pane's (same millis, sender,
+                    // index), so both surfaces show the same letters.
+                    let sender = msg.sender.to_string();
+                    let mask = |body: &str| spoiler::mask_message(body, msg.timestamp.0, &sender);
                     let osd = match decode_action(&msg.text) {
-                        Some(phrase) => format!("* {} {}", msg.sender, phrase),
-                        None => format!("{}: {}", msg.sender, msg.text),
+                        Some(phrase) => format!("* {} {}", msg.sender, mask(phrase)),
+                        None => format!("{}: {}", msg.sender, mask(&msg.text)),
                     };
                     out.push(Directive::Player(PlayerCommand::ShowOsd(osd)));
                 }
@@ -4649,6 +4656,53 @@ mod tests {
             })
             .collect();
         assert_eq!(osd, vec!["baughn: a reply"]);
+    }
+
+    #[test]
+    fn osd_masks_spoilers_with_the_static_scramble() {
+        // `||spoiler||` runs never reach the video overlay in the clear:
+        // the OSD has no reveal affordance. The mask uses the same seed
+        // as the chat pane's generation-0 scramble.
+        let mut state = playing_state();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&state.view(), &[peer("kim")]);
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(6),
+            sender: UserId::new("baughn"),
+            text: "the ||secret|| twist".into(),
+        });
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(7),
+            sender: UserId::new("baughn"),
+            text: dessplay_core::types::encode_action("spoils ||everything||"),
+        });
+        let out = wiring.on_state(&state.view(), &[peer("kim")]);
+        let osd: Vec<_> = player_cmds(&out)
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                PlayerCommand::ShowOsd(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(osd.len(), 2);
+        for line in &osd {
+            assert!(!line.contains('|'), "bars leaked: {line:?}");
+        }
+        assert!(!osd[0].contains("secret"), "spoiler leaked: {:?}", osd[0]);
+        assert_eq!(
+            osd[0],
+            format!(
+                "baughn: {}",
+                spoiler::mask_message("the ||secret|| twist", ts(6).0, "baughn")
+            )
+        );
+        // The `/me` action is masked inside its decoded phrase.
+        assert!(osd[1].starts_with("* baughn "), "got {:?}", osd[1]);
+        assert!(
+            !osd[1].contains("everything"),
+            "spoiler leaked: {:?}",
+            osd[1]
+        );
     }
 
     #[test]

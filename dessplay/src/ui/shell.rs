@@ -212,11 +212,7 @@ pub fn run_ui_loop<A: TerminalAdapter>(
         let input = match inputs.recv_timeout(ui.next_tick_hint()) {
             Ok(input) => input,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                let now_millis = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_millis() as u64)
-                    .unwrap_or_default();
-                if ui.advance_clock(now_millis)
+                if ui.advance_clock(now_millis())
                     && adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err()
                 {
                     break;
@@ -283,6 +279,13 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                     Some(std::time::Instant::now());
             }
             UiInput::Event(event) => {
+                // Freshen the Ui clock (and any running animation) to the
+                // moment of the event: click-time state machines — the
+                // spoiler double-click window — read `Ui::clock`, which
+                // would otherwise be up to one lazy tick stale. The
+                // returned redraw hint is moot; every input is followed
+                // by a draw below anyway.
+                let _ = ui.advance_clock(now_millis());
                 for action in ui.handle(event) {
                     let quit = action == UserAction::Quit;
                     if actions.blocking_send(action).is_err() || quit {
@@ -296,6 +299,15 @@ pub fn run_ui_loop<A: TerminalAdapter>(
             break;
         }
     }
+}
+
+/// Wall-clock unix millis, the UI thread's only time source (the `Ui`
+/// itself never reads a clock; tests drive it with synthetic millis).
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 /// Coarse event description for trace logs. Deliberately omits the
