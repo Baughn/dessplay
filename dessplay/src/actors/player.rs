@@ -2233,7 +2233,7 @@ mod tests {
 
         // mpv goes away and stays down across several retry attempts.
         c1.events.send(PlayerEvent::Exited { clean: true }).unwrap();
-        // Far past the old 10s SOCKET_WAIT deadline.
+        // Far past the SOCKET_WAIT deadline.
         tokio::time::sleep(Duration::from_secs(60)).await;
 
         assert_eq!(

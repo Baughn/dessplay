@@ -45,8 +45,16 @@ use tokio::task::JoinHandle;
 
 use super::{Player, PlayerError, PlayerEvent, PlayerFactory, SpeakerName};
 
-/// How long to wait for mpv to create its IPC socket.
-const SOCKET_WAIT: Duration = Duration::from_secs(10);
+/// How long to wait for mpv to create its IPC socket. Generous: the first
+/// launch after an mpv update can take tens of seconds before mpv gets as
+/// far as binding the socket (macOS verifies the updated binary's code
+/// signature on first run; font caches rebuild), and a slow start misread
+/// as a crash kills mpv mid-warmup and posts a bogus "my player crashed"
+/// (2026-08-11). A genuinely dead mpv is caught by the child poll in
+/// [`wait_for_socket`], never by this deadline.
+const SOCKET_WAIT: Duration = Duration::from_secs(30);
+/// A socket wait longer than this is worth explaining in the log.
+const SOCKET_WAIT_SLOW_NOTE: Duration = Duration::from_secs(5);
 /// Grace period between `quit` and a kill on shutdown.
 const QUIT_GRACE: Duration = Duration::from_secs(2);
 
@@ -85,7 +93,7 @@ impl MpvPlayer {
         // A stale socket from a previous run would make the wait below
         // succeed against nothing.
         let _ = std::fs::remove_file(&socket);
-        let child = Command::new(binary)
+        let mut child = Command::new(binary)
             .arg("--idle=yes")
             .arg("--keep-open=yes")
             .arg("--force-window=yes")
@@ -100,7 +108,7 @@ impl MpvPlayer {
             .map_err(|e| PlayerError::Setup(format!("spawning {binary}: {e}")))?;
         tracing::info!(binary, socket = %socket.display(), "mpv spawned");
 
-        let stream = wait_for_socket(&socket).await?;
+        let stream = wait_for_socket(&socket, Some(&mut child)).await?;
         Self::setup(stream, Some(child)).await
     }
 
@@ -111,7 +119,7 @@ impl MpvPlayer {
     /// with `--idle --keep-open` so our EOF/load mechanics hold.
     pub async fn attach(socket: PathBuf) -> Result<MpvPlayer, PlayerError> {
         tracing::info!(socket = %socket.display(), "attaching to mpv");
-        let stream = wait_for_socket(&socket).await?;
+        let stream = wait_for_socket(&socket, None).await?;
         Self::setup(stream, None).await
     }
 
@@ -198,17 +206,40 @@ async fn send_command(
         .map_err(|e| PlayerError::Gone(format!("mpv ipc write: {e}")))
 }
 
-async fn wait_for_socket(socket: &Path) -> Result<UnixStream, PlayerError> {
-    let deadline = tokio::time::Instant::now() + SOCKET_WAIT;
+async fn wait_for_socket(
+    socket: &Path,
+    mut child: Option<&mut Child>,
+) -> Result<UnixStream, PlayerError> {
+    let started = tokio::time::Instant::now();
+    let deadline = started + SOCKET_WAIT;
+    let mut noted_slow = false;
     loop {
         match UnixStream::connect(socket).await {
             Ok(stream) => return Ok(stream),
             Err(e) => {
-                if tokio::time::Instant::now() >= deadline {
+                // A dead mpv never binds the socket: fail with its exit
+                // status now instead of waiting out the whole deadline.
+                if let Some(child) = child.as_deref_mut()
+                    && let Ok(Some(status)) = child.try_wait()
+                {
+                    return Err(PlayerError::Setup(format!(
+                        "mpv exited during startup ({status}) before its socket {} came up",
+                        socket.display()
+                    )));
+                }
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
                     return Err(PlayerError::Setup(format!(
                         "mpv socket {} never came up: {e}",
                         socket.display()
                     )));
+                }
+                if !noted_slow && now >= started + SOCKET_WAIT_SLOW_NOTE {
+                    noted_slow = true;
+                    tracing::info!(
+                        "mpv is taking a while to start (first run after an update \
+                         can be slow); still waiting for its socket"
+                    );
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -1274,6 +1305,61 @@ mod tests {
                 "Due to heavy snowfall, the trains will be delayed.".into(),
                 None
             )
+        );
+    }
+
+    /// Regression (2026-08-11): the first mpv launch after an mpv update can
+    /// take well over 10s to create its IPC socket (macOS verifies the new
+    /// binary's code signature; font caches rebuild). That slow start was
+    /// misread as a crash — the socket wait expired, the half-started mpv was
+    /// killed, and the client posted "my player crashed". A socket that comes
+    /// up late must still connect.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_mpv_startup_is_not_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("mpv.sock");
+        // mpv "creates" its socket 15 virtual seconds in — past the old 10s
+        // deadline, within the new one.
+        let bind_at = socket.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let listener = tokio::net::UnixListener::bind(&bind_at).unwrap();
+            // Hold the listener so the connect completes.
+            let _ = listener.accept().await;
+        });
+        wait_for_socket(&socket, None)
+            .await
+            .expect("a slow (15s) socket appearance must not be a launch failure");
+    }
+
+    /// The counterpart guard: a genuinely dead mpv never creates its socket,
+    /// so the wait must fail as soon as the child's exit is observed — with
+    /// the exit status — rather than burning the whole deadline first.
+    #[tokio::test]
+    async fn a_dead_mpv_child_fails_the_socket_wait_promptly() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("mpv.sock");
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 3")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let err = wait_for_socket(&socket, Some(&mut child))
+            .await
+            .expect_err("a dead child must fail the socket wait");
+        assert!(
+            started.elapsed() < BUDGET,
+            "the dead-child failure took {:?}; it must not wait out the socket deadline",
+            started.elapsed()
+        );
+        assert!(
+            err.to_string().contains("exited"),
+            "the error must say mpv exited (got: {err})"
         );
     }
 }
