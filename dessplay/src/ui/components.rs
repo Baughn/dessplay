@@ -595,15 +595,20 @@ impl ChatPane {
     }
 }
 
-/// Greedy word-wrap. The first visual line gets `first_width` (the chat
-/// prefix eats into it); later lines get `rest_width`. Breaks at spaces
-/// where possible, hard-breaks any word longer than the available width.
+/// Greedy word-wrap over **display width** (terminal cells, via
+/// `unicode-width`) — ratatui lays out by cell width, so double-width
+/// CJK must consume two cells of budget, not one. The first visual line
+/// gets `first_width` cells (the chat prefix eats into it); later lines
+/// get `rest_width`. Breaks at spaces where possible, hard-breaks any
+/// word wider than the available cells.
 ///
 /// Each chunk is a contiguous char-slice of `text` (only boundary join
 /// spaces are dropped); the second tuple element is the chunk's starting
-/// char offset in `text`, which lets callers map char ranges of the
-/// input (spoiler runs) onto the wrapped lines.
+/// **char offset** in `text` (identity, not geometry), which lets
+/// callers map char ranges of the input (spoiler runs) onto the wrapped
+/// lines.
 fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<(String, usize)> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     let width_for = |idx: usize| if idx == 0 { first_width } else { rest_width }.max(1);
     let mut lines: Vec<(String, usize)> = Vec::new();
     let mut cur = String::new();
@@ -614,10 +619,10 @@ fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<(String, 
         let mut word_start = next_word_start;
         next_word_start += word.chars().count() + 1;
         loop {
-            let cur_len = cur.chars().count();
+            let cur_cells = cur.width();
             let space = usize::from(!cur.is_empty());
-            let wlen = word.chars().count();
-            if cur_len + space + wlen <= width {
+            let word_cells = word.width();
+            if cur_cells + space + word_cells <= width {
                 if space == 1 {
                     cur.push(' ');
                 } else {
@@ -628,12 +633,20 @@ fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<(String, 
                 break;
             }
             if cur.is_empty() {
-                // Word alone exceeds the line: hard-break it.
-                let split_at = word
-                    .char_indices()
-                    .nth(width)
-                    .map(|(i, _)| i)
-                    .unwrap_or(word.len());
+                // Word alone exceeds the line: hard-break it after the
+                // last char that still fits `width` cells — but always
+                // after at least one, so a single over-wide char cannot
+                // stall the loop.
+                let mut used = 0;
+                let mut split_at = word.len();
+                for (taken, (i, c)) in word.char_indices().enumerate() {
+                    let cells = c.width().unwrap_or(0);
+                    if taken > 0 && used + cells > width {
+                        split_at = i;
+                        break;
+                    }
+                    used += cells;
+                }
                 let (head, tail) = word.split_at(split_at);
                 cur_start = word_start;
                 cur.push_str(head);
@@ -744,7 +757,10 @@ struct SpoilerRun {
 /// replaced by their scramble (or the original once revealed), bars
 /// dropped, everything else verbatim. Returns the display string plus
 /// each run's char range within it. The scramble is 1:1 in chars, so
-/// the char-count wrap and hit math downstream stay exact.
+/// run char ranges map exactly onto the display text; geometry (wrap
+/// budgets, hit columns) is then measured in display cells over this
+/// composed text — never the source, whose widths the scramble changes
+/// (a double-width CJK char becomes one single-width ASCII letter).
 fn compose_spoiler_body(
     line: &ChatLine,
     spoilers: &HashMap<SpoilerKey, SpoilerState>,
@@ -795,9 +811,10 @@ fn compose_spoiler_body(
 /// Style one wrapped chunk of a composed body: mention highlighting
 /// outside spoiler runs, zalgo'd scramble inside hidden ones, plain
 /// `base` inside revealed ones. Returns the spans plus the hidden runs'
-/// hit ranges, in columns relative to the chunk's first cell (the zalgo
+/// hit ranges, in **display cells** relative to the chunk's first cell —
+/// ratatui advances by cell width, so hit geometry must too (the zalgo
 /// marks are zero-width — added here, after wrapping, precisely so they
-/// can't perturb the char-count columns).
+/// can't perturb the columns).
 fn spoiler_chunk_spans(
     chunk: &str,
     chunk_start: usize,
@@ -806,10 +823,19 @@ fn spoiler_chunk_spans(
     me: &str,
     base: Style,
 ) -> (Vec<Span<'static>>, Vec<SpoilerHit>) {
+    use unicode_width::UnicodeWidthChar;
     let chunk_chars: Vec<char> = chunk.chars().collect();
     let chunk_end = chunk_start + chunk_chars.len();
     // Slice by chunk-relative char positions.
     let slice = |a: usize, b: usize| -> String { chunk_chars[a..b].iter().collect() };
+    // Display column of a chunk-relative char index: hits are screen
+    // geometry, so they advance by cell width, not char count.
+    let col_of = |idx: usize| -> usize {
+        chunk_chars[..idx]
+            .iter()
+            .map(|c| c.width().unwrap_or(0))
+            .sum()
+    };
     let mut spans = Vec::new();
     let mut hits = Vec::new();
     let mut pos = chunk_start;
@@ -833,7 +859,7 @@ fn spoiler_chunk_spans(
                 let corrupted = spoiler::zalgo(&text, seed, generation, start - run.chars.start);
                 spans.push(Span::styled(corrupted, theme::spoiler()));
                 hits.push(SpoilerHit {
-                    cols: (start - chunk_start) as u16..(end - chunk_start) as u16,
+                    cols: col_of(start - chunk_start) as u16..col_of(end - chunk_start) as u16,
                     key: run.key.clone(),
                 });
             }
@@ -863,11 +889,12 @@ fn wrap_chat_line(
     spoilers: &HashMap<SpoilerKey, SpoilerState>,
 ) -> Vec<(Line<'static>, Vec<SpoilerHit>)> {
     use tuirealm::ratatui::style::Modifier;
+    use unicode_width::UnicodeWidthStr;
     let indent: String = " ".repeat(CHAT_WRAP_INDENT);
     if line.separator {
         // Render-time day divider: the date label centered between dashes.
         let label = format!(" {} ", line.text);
-        let label_w = label.chars().count();
+        let label_w = label.width();
         let total = width.max(label_w);
         let dashes = total - label_w;
         let left = dashes / 2;
@@ -878,7 +905,7 @@ fn wrap_chat_line(
         // Local subtitle (Intermixed mode): dim, no sender, "»" marker,
         // in-video timestamp.
         let time = format!("{} ", line.time);
-        let prefix_width = time.chars().count();
+        let prefix_width = time.width();
         let body = format!("» {}", line.text);
         let chunks = wrap_body(
             &body,
@@ -903,7 +930,7 @@ fn wrap_chat_line(
     } else if line.system {
         // Local system notice: dim, no sender, "*" marker.
         let time = format!("{} ", line.time);
-        let prefix_width = time.chars().count();
+        let prefix_width = time.width();
         let body = format!("* {}", line.text);
         let chunks = wrap_body(
             &body,
@@ -933,10 +960,9 @@ fn wrap_chat_line(
         let tag = if line.irc { "irc " } else { "" };
         let marker = "* ";
         let sender = format!("{} ", line.sender);
-        let prefix_width = time.chars().count()
-            + tag.chars().count()
-            + marker.chars().count()
-            + sender.chars().count();
+        // Display cells, not chars: a CJK sender name is two cells wide
+        // per char, and the hit columns offset by this prefix.
+        let prefix_width = time.width() + tag.width() + marker.width() + sender.width();
         let (display, runs) = compose_spoiler_body(line, spoilers);
         let chunks = wrap_body(
             &display,
@@ -985,7 +1011,8 @@ fn wrap_chat_line(
         let time = format!("{} ", line.time);
         let tag = if line.irc { "irc " } else { "" };
         let sender = format!("{}: ", line.sender);
-        let prefix_width = time.chars().count() + tag.chars().count() + sender.chars().count();
+        // Display cells, not chars — see the action branch above.
+        let prefix_width = time.width() + tag.width() + sender.width();
         let (display, runs) = compose_spoiler_body(line, spoilers);
         let chunks = wrap_body(
             &display,
@@ -2945,6 +2972,42 @@ mod chat_spoiler_tests {
         // same seed, same char offsets (zalgo split-stability is
         // property-tested in dessplay-core).
         assert!(!line_text(&wrapped[0].0).contains("secre"));
+    }
+
+    /// Regression: hit columns are screen geometry, so they must advance
+    /// by display width (ratatui lays out by cell width), not char count
+    /// — double-width CJK before the run shifts its real cells right,
+    /// and the scramble shrinks wide alphanumerics to single-width
+    /// ASCII, so the run's own span shrinks too.
+    #[test]
+    fn hit_columns_use_display_width() {
+        let line = chat_line("彼は||死ぬ||よ");
+        let wrapped = wrap_chat_line(&line, 80, &[], "me", &HashMap::new());
+        let (_, hits) = &wrapped[0];
+        // Prefix "12:00 " (6) + "kim: " (5) = 11 cells; 彼は = 4 cells;
+        // the run scrambles to two single-width ASCII letters → 15..17.
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].cols, 15..17);
+    }
+
+    /// The same, end to end: a click at the run's *rendered* columns
+    /// reveals it; a click one cell left (the "は" cell) does not.
+    #[test]
+    fn click_lands_on_wide_prefixed_spoiler_at_rendered_columns() {
+        use tuirealm::ratatui::Terminal;
+        use tuirealm::ratatui::backend::TestBackend;
+        let mut pane = ChatPane::default();
+        pane.set_lines(vec![chat_line("彼は||死ぬ||よ")]);
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        terminal
+            .draw(|frame| pane.render(frame, frame.area()))
+            .unwrap();
+        // Left border (1) + prefix (11 cells) + 彼は (4 cells): the two
+        // scrambled letters occupy screen columns 16..18 on body row 1.
+        pane.click(15, 1, 1_000);
+        assert!(pane.spoilers.is_empty(), "click left of the run must miss");
+        pane.click(16, 1, 1_000);
+        assert!(pane.spoiler_animating(), "click on the run must hit");
     }
 
     #[test]

@@ -99,17 +99,22 @@ fn decide(seed: u64, tag: u8, generation: u32, index: usize) -> u64 {
     fnv1a(h, &(index as u64).to_le_bytes())
 }
 
-/// Deterministic 1:1 scramble of a spoiler run: every alphanumeric
-/// becomes a hash-picked ASCII letter/digit of the same class
-/// (uppercase → `A-Z`, digit → `0-9`, anything else alphanumeric —
-/// including CJK/Cyrillic, which must not leak — → `a-z`); all other
-/// characters pass through. The char count is preserved exactly, which
-/// the chat pane's char-count wrap and click hit-testing rely on.
+/// Deterministic 1:1 scramble of a spoiler run. Only whitespace and
+/// plain ASCII punctuation pass through — they are structure, not
+/// content. **Every** other character becomes a hash-picked ASCII
+/// substitute of the same class: digit → `0-9`, uppercase → `A-Z`,
+/// anything else — lowercase, CJK/Cyrillic, emoji, arrows, combining
+/// marks, any of which could carry the spoiler — → `a-z`. The char
+/// count is preserved exactly, and the output carries nothing outside
+/// ASCII-or-whitespace (property-tested), so a scrambled run can never
+/// hold a [`ZALGO_MARKS`] codepoint. Display geometry can change (a
+/// double-width emoji shrinks to one cell), so the chat pane measures
+/// columns on the composed *display* text, never the source.
 pub fn scramble(text: &str, seed: u64, generation: u32) -> String {
     text.chars()
         .enumerate()
         .map(|(i, c)| {
-            if !c.is_alphanumeric() {
+            if c.is_whitespace() || c.is_ascii_punctuation() {
                 return c;
             }
             let h = decide(seed, 0, generation, i);
@@ -284,22 +289,23 @@ mod tests {
             );
         }
 
-        /// Scramble is deterministic, char-count-preserving, leaves
-        /// non-alphanumerics alone, and keeps the character class.
+        /// Scramble is deterministic, char-count-preserving, passes only
+        /// whitespace and ASCII punctuation through, and keeps the
+        /// character class of everything it substitutes.
         #[test]
         fn scramble_invariants(text in "\\PC*", seed in any::<u64>(), generation in any::<u32>()) {
             let out = scramble(&text, seed, generation);
             prop_assert_eq!(&out, &scramble(&text, seed, generation));
             prop_assert_eq!(out.chars().count(), text.chars().count());
             for (a, b) in text.chars().zip(out.chars()) {
-                if a.is_alphanumeric() {
+                if a.is_whitespace() || a.is_ascii_punctuation() {
+                    prop_assert_eq!(a, b);
+                } else {
                     prop_assert!(b.is_ascii_alphanumeric(), "{a:?} -> {b:?} not ASCII");
                     prop_assert_eq!(a.is_numeric(), b.is_ascii_digit());
                     if !a.is_numeric() {
                         prop_assert_eq!(a.is_uppercase(), b.is_ascii_uppercase());
                     }
-                } else {
-                    prop_assert_eq!(a, b);
                 }
             }
         }
@@ -307,15 +313,17 @@ mod tests {
         /// Stripping the combining marks recovers the input exactly, and
         /// marks never follow whitespace.
         ///
-        /// The input is constrained to text that carries none of our
-        /// mark codepoints: with one already present (NFD text can),
-        /// strip-based recovery is ill-defined — an original mark is
-        /// indistinguishable from an inserted one. Nothing in
-        /// production strips marks; this pins "zalgo only inserts,
-        /// never alters" on the domain where stripping is well-defined.
+        /// Production only ever zalgos *scrambled* text, so the input is
+        /// generated the same way — and the scramble structurally cannot
+        /// emit a mark codepoint (see `scramble_output_is_structurally_clean`),
+        /// which is what makes strip-based recovery well-defined: with a
+        /// mark already present (NFD text can carry one), an original
+        /// mark would be indistinguishable from an inserted one. This
+        /// pins "zalgo only inserts, never alters" on exactly the domain
+        /// zalgo runs on.
         #[test]
         fn zalgo_marks_strip_cleanly(raw in "\\PC*", seed in any::<u64>(), generation in any::<u32>(), offset in 0usize..64) {
-            let text: String = raw.chars().filter(|c| !ZALGO_MARKS.contains(c)).collect();
+            let text = scramble(&raw, seed, generation);
             let out = zalgo(&text, seed, generation, offset);
             let stripped: String = out.chars().filter(|c| !ZALGO_MARKS.contains(c)).collect();
             prop_assert_eq!(stripped, text.clone());
@@ -325,6 +333,22 @@ mod tests {
                     prop_assert!(prev.is_some_and(|p| !p.is_whitespace()));
                 }
                 prev = Some(c);
+            }
+        }
+
+        /// Everything the scramble emits is ASCII alphanumeric,
+        /// whitespace, or ASCII punctuation — no other codepoint can
+        /// leak through a scrambled run. In particular the output can
+        /// never carry one of the [`ZALGO_MARKS`], which is what makes
+        /// `zalgo_marks_strip_cleanly`'s strip-based recovery
+        /// structurally well-defined.
+        #[test]
+        fn scramble_output_is_structurally_clean(text in "\\PC*", seed in any::<u64>(), generation in any::<u32>()) {
+            for c in scramble(&text, seed, generation).chars() {
+                prop_assert!(
+                    c.is_ascii_alphanumeric() || c.is_whitespace() || c.is_ascii_punctuation(),
+                    "{c:?} leaked through the scramble"
+                );
             }
         }
 
@@ -355,6 +379,21 @@ mod tests {
         let out = scramble("秘密のことば тайна", 7, 0);
         assert!(out.is_ascii());
         assert!(!out.contains('秘') && !out.contains('т'));
+    }
+
+    #[test]
+    fn scramble_hides_symbols_and_emoji() {
+        // Emoji, pictographs, arrows, combining marks — anything that
+        // isn't whitespace or plain ASCII punctuation can carry the
+        // spoiler ("||💀 for the elf||") and must scramble like the CJK
+        // case; only structure passes through.
+        let out = scramble("💀 dies → ashes 🔥, e\u{0301}!", 7, 0);
+        assert!(out.is_ascii(), "non-ASCII leaked: {out:?}");
+        assert!(out.ends_with('!') && out.contains(", "));
+        assert_eq!(
+            out.chars().count(),
+            "💀 dies → ashes 🔥, e\u{0301}!".chars().count()
+        );
     }
 
     #[test]

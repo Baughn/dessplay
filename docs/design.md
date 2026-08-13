@@ -675,9 +675,11 @@ different encodes/versions. See [Content Hash](#content-hash).
   `||...||` text is what syncs and archives (the CTCP-action rule: only
   the display sites decode) — and every display surface hides the run:
   the chat log renders it as deterministically scrambled letters
-  (alphanumerics replaced class-for-class, CJK included, so nothing
-  leaks) under sparse combining marks ("low-grade zalgo"); the player
-  OSD and the **outbound IRC bridge** substitute the same static
+  (everything except whitespace and plain ASCII punctuation replaced
+  class-for-class — letters and digits keep their class; CJK, emoji,
+  arrows, and other symbols become letters — so nothing leaks) under
+  sparse combining marks ("low-grade zalgo"); the player OSD and the
+  **outbound IRC bridge** substitute the same static
   scramble, bars dropped. In the chat pane, **clicking** the scrambled
   run plays a ~600ms re-randomization tease; a **second click within 5
   seconds** reveals the original (bars dropped) for the rest of the
