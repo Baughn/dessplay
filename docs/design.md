@@ -1379,7 +1379,9 @@ active torrent (and the toggle really does apply immediately — see
 [BitTorrent Downloads](#bittorrent-downloads)), "sync stalled — server
 silent Ns", and a divergence notice. Suggestions carry a severity
 (dim / yellow / red), only re-render when they change, and a cleared
-condition holds the slot ~30s against threshold flicker. When the row
+condition holds the slot ~30s against threshold flicker — but a full
+disconnect clears the slot at once (the `link:` notice supersedes it;
+a condition persisting across the reconnect re-emits). When the row
 is tight the health metrics keep their full width (they are the row's
 reason to exist), the progress bar truncates next, and the suggestion
 takes whatever middle space remains — dropped entirely rather than

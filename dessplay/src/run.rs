@@ -1706,9 +1706,24 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         None => {
                             // Stale health must not outlive the connection
-                            // that measured it.
+                            // that measured it — nor a stale suggestion:
+                            // the row's "link: down" notice supersedes
+                            // whatever the rules were saying ("sync
+                            // stalled — server silent 80s" beside "link:
+                            // down" reads as two problems). The advisor
+                            // retires provider state too (its clear rides
+                            // the ordinary suggestion channel), so a
+                            // condition persisting across the reconnect
+                            // re-emits on the first connected sample.
                             self.health = None;
                             self.health_level.reset();
+                            self.suggestion = None;
+                            self.advisor.on_disconnect();
+                            // The transfer plane died with the connection;
+                            // a stale flag would re-raise the port warning
+                            // the moment we reconnect, before the network
+                            // actor has even re-dialed the transfer link.
+                            self.transfer_link_down = false;
                         }
                     }
                     ui_dirty = true;

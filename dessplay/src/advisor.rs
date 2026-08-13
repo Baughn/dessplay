@@ -128,6 +128,12 @@ pub trait AdvisorProvider: Send {
     fn name(&self) -> &'static str;
     /// Consider the context; deliver any change through `out`.
     fn advise(&mut self, ctx: &AdvisorContext, out: &mpsc::Sender<SuggestionUpdate>);
+    /// The server link dropped: whatever the provider was suggesting is
+    /// superseded by the health row's own `link: down` notice, so retire
+    /// it — emit a clear if one was showing, and reset change-detection
+    /// so a condition that persists across the reconnect re-emits.
+    /// Default: nothing to retire.
+    fn on_disconnect(&mut self, _out: &mpsc::Sender<SuggestionUpdate>) {}
 }
 
 /// Minimum spacing between advise passes; health samples arrive at 1Hz
@@ -223,6 +229,18 @@ impl Advisor {
                     }
                 }
             }
+        }
+    }
+
+    /// The server link dropped (the session loop's health watch yielded
+    /// `None`): let every provider retire its suggestion — the row's
+    /// `link: down` notice supersedes whatever the rules were saying —
+    /// and bypass the throttle so the first sample after a reconnect
+    /// advises immediately instead of sitting out [`ADVISE_INTERVAL`].
+    pub fn on_disconnect(&mut self) {
+        self.last_advise = None;
+        for provider in &mut self.providers {
+            provider.on_disconnect(&self.tx);
         }
     }
 
@@ -401,6 +419,18 @@ impl AdvisorProvider for RuleProvider {
             None => {}
         }
     }
+
+    fn on_disconnect(&mut self, out: &mpsc::Sender<SuggestionUpdate>) {
+        // No CLEAR_HOLD here: this is a hard link loss superseded by
+        // the row's own `link: down` notice, not threshold flicker.
+        // Dropping `active` also resets change-detection, so a
+        // condition that persists across the reconnect re-emits even
+        // with identical text.
+        if self.active.take().is_some() {
+            self.quiet_since = None;
+            let _ = out.try_send(SuggestionUpdate(None));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -505,6 +535,81 @@ mod tests {
             drain(&mut rx).is_empty(),
             "same suggestion still active; no clear, no re-emit"
         );
+    }
+
+    /// Regression (2026-08-12 review): a disconnect used to leave the
+    /// rules' suggestion pinned — "sync stalled — server silent 80s"
+    /// rendered beside `link: down — retrying` for the whole outage.
+    /// `on_disconnect` retires it at once (no CLEAR_HOLD — the link
+    /// notice supersedes it, this is not threshold flicker) and resets
+    /// change-detection, so a condition that persists across the
+    /// reconnect with *identical text* (the torrent rule's is static)
+    /// still re-emits.
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_retires_the_suggestion_and_rearms_the_rules() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut rules = RuleProvider::default();
+        rules.advise(&ctx(HealthLevel::Degraded), &tx);
+        assert_eq!(drain(&mut rx).len(), 1, "suggestion set");
+
+        rules.on_disconnect(&tx);
+        assert_eq!(
+            drain(&mut rx),
+            vec![SuggestionUpdate(None)],
+            "cleared immediately, not held for CLEAR_HOLD"
+        );
+        rules.on_disconnect(&tx);
+        assert!(drain(&mut rx).is_empty(), "nothing left to retire");
+
+        // Reconnect with the condition (and text) unchanged: without
+        // the reset, change-detection would swallow this forever.
+        rules.advise(&ctx(HealthLevel::Degraded), &tx);
+        assert_eq!(drain(&mut rx).len(), 1, "re-emitted after reconnect");
+    }
+
+    /// The advisor-level half of the same regression: the session
+    /// loop's health watch yields `None` on disconnect and calls
+    /// `on_disconnect`, which must deliver the clear through the
+    /// ordinary suggestion channel and bypass the 5s throttle so the
+    /// first post-reconnect sample advises immediately.
+    #[tokio::test(start_paused = true)]
+    async fn advisor_on_disconnect_clears_and_bypasses_the_throttle() {
+        let mut advisor = Advisor::with_rules();
+        let health = |advisor: &mut Advisor| {
+            advisor.on_health(
+                &StateView::default(),
+                LinkStatus::Connected,
+                HealthLevel::Degraded,
+                Some(HealthSample {
+                    rtt_millis: Some(2_000),
+                    unanswered_probes: 0,
+                    server_silence_millis: 80_000,
+                    up_bps: 500_000,
+                    down_bps: 0,
+                }),
+                true,
+                true,
+                false,
+            );
+        };
+        health(&mut advisor);
+        let update = advisor.suggestions.try_recv().expect("suggestion set");
+        assert!(update.0.is_some());
+
+        advisor.on_disconnect();
+        assert_eq!(
+            advisor.suggestions.try_recv().expect("clear delivered"),
+            SuggestionUpdate(None)
+        );
+
+        // Still inside the throttle window: the reset lets the first
+        // connected sample advise (and re-emit) at once.
+        health(&mut advisor);
+        let update = advisor
+            .suggestions
+            .try_recv()
+            .expect("re-advised without waiting out the throttle");
+        assert!(update.0.is_some());
     }
 
     /// A permanently-unreachable transfer link (blocked port + 1) is
