@@ -306,8 +306,16 @@ mod tests {
 
         /// Stripping the combining marks recovers the input exactly, and
         /// marks never follow whitespace.
+        ///
+        /// The input is constrained to text that carries none of our
+        /// mark codepoints: with one already present (NFD text can),
+        /// strip-based recovery is ill-defined — an original mark is
+        /// indistinguishable from an inserted one. Nothing in
+        /// production strips marks; this pins "zalgo only inserts,
+        /// never alters" on the domain where stripping is well-defined.
         #[test]
-        fn zalgo_marks_strip_cleanly(text in "\\PC*", seed in any::<u64>(), generation in any::<u32>(), offset in 0usize..64) {
+        fn zalgo_marks_strip_cleanly(raw in "\\PC*", seed in any::<u64>(), generation in any::<u32>(), offset in 0usize..64) {
+            let text: String = raw.chars().filter(|c| !ZALGO_MARKS.contains(c)).collect();
             let out = zalgo(&text, seed, generation, offset);
             let stripped: String = out.chars().filter(|c| !ZALGO_MARKS.contains(c)).collect();
             prop_assert_eq!(stripped, text.clone());
