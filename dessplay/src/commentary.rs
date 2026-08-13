@@ -64,8 +64,14 @@ use crate::config::CommentaryInterval;
 /// single-user gimmick, not a configuration surface.
 const MODEL: &str = "claude-opus-4-6";
 /// Thinking effort for both calls — the task is short and low-stakes.
+/// Paired with `thinking: {type: "adaptive"}` (the recommended shape on
+/// the pinned model and the only accepted on-mode on newer ones — the
+/// old fixed-budget `{type: "enabled", budget_tokens}` shape is
+/// deprecated on claude-opus-4-6 and a 400 on anything newer, so a
+/// routine model bump must never resurrect it).
 const EFFORT: &str = "low";
-/// Caps thinking *plus* text on this model, so it must not be lowballed.
+/// Caps thinking *plus* text: adaptive thinking spends out of the same
+/// `max_tokens` budget as the reply, so it must not be lowballed.
 const MAX_TOKENS: u32 = 3000;
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Vision calls are slow; the nyaa agent's 30s would spuriously abort.
@@ -380,18 +386,21 @@ fn build_comment_body(req: &CommentRequest) -> serde_json::Value {
     serde_json::json!({
         "model": MODEL,
         "max_tokens": MAX_TOKENS,
-        "thinking": {"type": "enabled", "budget_tokens": MAX_TOKENS - 768},
+        "thinking": {"type": "adaptive"},
         "output_config": { "effort": EFFORT },
         "system": [{ "type": "text", "text": req.system }],
         "messages": messages,
     })
 }
 
-/// The (single-turn, uncached) body for the character-list call.
+/// The (single-turn, uncached) body for the character-list call. Same
+/// deliberate thinking depth as the comment call ([`EFFORT`]) — one
+/// documented setting for the whole feature, not two divergent shapes.
 fn build_character_body(req: &CharacterRequest) -> serde_json::Value {
     serde_json::json!({
         "model": MODEL,
         "max_tokens": MAX_TOKENS,
+        "thinking": {"type": "adaptive"},
         "output_config": { "effort": EFFORT },
         "messages": [{ "role": "user", "content": character_prompt(req) }],
     })
@@ -1570,6 +1579,46 @@ mod tests {
                 fake.comment_requests.lock().unwrap()[0].cache,
                 expected,
                 "interval {secs}s"
+            );
+        }
+    }
+
+    /// Both request bodies use the same deliberate thinking depth:
+    /// `thinking: {type: "adaptive"}` with `output_config.effort` (the
+    /// recommended shape on the pinned claude-opus-4-6 and the only
+    /// accepted on-mode on newer models). The deprecated
+    /// `{type: "enabled", budget_tokens}` shape must never reappear —
+    /// it turns a routine model bump into a 400 on every call
+    /// (2026-08-12 review).
+    #[test]
+    fn both_bodies_use_adaptive_thinking_at_the_shared_effort() {
+        let comment = build_comment_body(&CommentRequest {
+            system: "card".into(),
+            history: Vec::new(),
+            user_text: "turn".into(),
+            screenshot: None,
+            cache: false,
+        });
+        let character = build_character_body(&CharacterRequest {
+            series: "s".into(),
+            episode: None,
+            recent_subtitles: Vec::new(),
+        });
+        for (what, body) in [("comment", &comment), ("cast", &character)] {
+            assert_eq!(
+                body["thinking"],
+                serde_json::json!({"type": "adaptive"}),
+                "{what} call uses adaptive thinking"
+            );
+            assert_eq!(
+                body["output_config"]["effort"], EFFORT,
+                "{what} call carries the shared effort"
+            );
+            assert!(
+                !serde_json::to_string(body)
+                    .unwrap()
+                    .contains("budget_tokens"),
+                "{what} call must not use the deprecated fixed-budget shape"
             );
         }
     }
