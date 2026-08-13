@@ -16,7 +16,10 @@
 //! already said. A fresh commentator starts a fresh thread, seeded with
 //! the *text* of this episode's earlier comments — not the images or
 //! subtitles — so the voice changes but the conversation doesn't reset
-//! to zero. The 5% re-roll is also the size limit: threads die young.
+//! to zero. The 5% re-roll keeps threads young in expectation; because
+//! its tail is geometric, frames are capped separately — only the most
+//! recent [`RETAINED_FRAMES`] turns keep their screenshot bytes, while
+//! the text history is never trimmed.
 //!
 //! Requests opt into Anthropic's ephemeral prompt cache whenever the
 //! interval (jitter included) fits inside the cache's 5-minute TTL —
@@ -85,6 +88,14 @@ const MAX_COMMENT_CHARS: usize = 220;
 /// How long to wait for mpv to finish writing the screenshot.
 const SCREENSHOT_POLLS: u32 = 20;
 const SCREENSHOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How many of a thread's most recent turns keep their screenshot
+/// bytes. Text history is never trimmed (the conversation — and the
+/// cached prefix up to the trim point — stays intact), but frames are
+/// heavy (~hundreds of KB each, re-uploaded on every tick), and the 5%
+/// re-roll's geometric tail means a voice can live for 60+ turns:
+/// without a cap that is tens of MB of base64 per request on the very
+/// uplink the health line exists to protect.
+const RETAINED_FRAMES: usize = 2;
 /// Ceiling on screenshot bytes attached to a request. The API rejects
 /// any image whose *base64* exceeds 10MiB (observed 2026-07-26: mpv
 /// writes 16-bit PNGs for 10-bit video, ~8MB raw → 11MB base64 → HTTP
@@ -525,6 +536,14 @@ pub struct TickPlan {
     pub pick_commentator: bool,
 }
 
+/// Identity of "what is playing" for the episode-change header and the
+/// comment-seed scope: series name, episode label, and the now-playing
+/// **filename**. The filename is the load-bearing part for unlinked
+/// series — AniDB-unknown files all get `episode: None` and share one
+/// hint-derived series name, so without it the key never changed
+/// across such a series' episodes (2026-08-12 review).
+type EpisodeKey = (String, Option<String>, Option<String>);
+
 /// Everything the blocking job needs, gathered on the loop thread.
 struct JobSpec {
     /// The voice to keep, or `None` to pick one (a fresh thread).
@@ -533,6 +552,8 @@ struct JobSpec {
     pick_index: u64,
     series: String,
     episode: Option<String>,
+    /// The now-playing filename (the file half of [`EpisodeKey`]).
+    filename: Option<String>,
     /// Ring tail for the character-list call (context, not the turn).
     cast_subtitles: Vec<String>,
     /// The already-rendered user turn.
@@ -557,6 +578,8 @@ pub struct JobOutcome {
     /// a series change). Keys the episode-comment seed.
     series: String,
     episode: Option<String>,
+    /// The now-playing filename (the file half of [`EpisodeKey`]).
+    filename: Option<String>,
     /// The turn as sent, echoed back so the engine can append it to the
     /// thread only once it actually succeeded.
     user_text: String,
@@ -582,9 +605,9 @@ pub struct CommentaryEngine {
     /// Normalized comments for the currently playing episode, any
     /// voice — the seed for a fresh thread's first turn.
     episode_comments: Vec<String>,
-    /// `(series, episode)` of the last successful comment; a change
-    /// resets [`Self::episode_comments`] and headers the next turn.
-    episode_key: Option<(String, Option<String>)>,
+    /// [`EpisodeKey`] of the last successful comment; a change resets
+    /// [`Self::episode_comments`] and headers the next turn.
+    episode_key: Option<EpisodeKey>,
     /// Subtitle cursor: highest ring sequence number already delivered.
     sent_seq: u64,
     rng: StdRng,
@@ -778,7 +801,9 @@ impl CommentaryEngine {
         // in tests) never crosses into the blocking task.
         let pick_index: u64 = self.rng.random();
         let episode = ctx.episode.clone();
-        let same_episode = self.episode_key.as_ref() == Some(&(series.clone(), episode.clone()));
+        let filename = ctx.filename.clone();
+        let same_episode =
+            self.episode_key.as_ref() == Some(&(series.clone(), episode.clone(), filename.clone()));
         // Only dialogue the model hasn't seen; the cursor commits when
         // the job succeeds, so a failed attempt resends. Rendered
         // speaker-attributed (`Name: line`) — the model can't see the
@@ -821,6 +846,7 @@ impl CommentaryEngine {
             pick_index,
             series: series.clone(),
             episode: episode.clone(),
+            filename,
             cast_subtitles: ctx
                 .subtitles
                 .iter()
@@ -873,7 +899,11 @@ impl CommentaryEngine {
                     series = %outcome.commentator.series,
                     "commentary: {}", outcome.text
                 );
-                let key = (outcome.series.clone(), outcome.episode.clone());
+                let key = (
+                    outcome.series.clone(),
+                    outcome.episode.clone(),
+                    outcome.filename.clone(),
+                );
                 if self.episode_key.as_ref() != Some(&key) {
                     self.episode_comments.clear();
                     self.episode_key = Some(key);
@@ -895,6 +925,14 @@ impl CommentaryEngine {
                         screenshot: outcome.screenshot,
                         assistant: outcome.raw,
                     });
+                    // Cap retained *frames*, not the thread: all text
+                    // stays (and with it the cached prefix up to the
+                    // trim point), but only the newest turns keep their
+                    // screenshot bytes — see [`RETAINED_FRAMES`].
+                    let trim = thread.turns.len().saturating_sub(RETAINED_FRAMES);
+                    for turn in &mut thread.turns[..trim] {
+                        turn.screenshot = None;
+                    }
                 }
                 self.episode_comments.push(outcome.text.clone());
                 self.sent_seq = self.sent_seq.max(outcome.seq);
@@ -958,6 +996,7 @@ fn run_job(
         fresh,
         series: spec.series,
         episode: spec.episode,
+        filename: spec.filename,
         user_text: spec.user_text,
         screenshot: screenshot_bytes,
         raw,
@@ -1304,6 +1343,110 @@ mod tests {
             "the seed is scoped to the current episode: {}",
             requests[2].user_text
         );
+    }
+
+    /// Regression (2026-08-12 review): AniDB-unknown files all get
+    /// `episode: None` and share one hint-derived series name, so an
+    /// episode key of `(series, episode)` never changed across an
+    /// unlinked series' episodes — the "Now playing" header never
+    /// re-fired (undermining the spoiler bound) and the comment seed
+    /// grew across every episode all night. The key must include the
+    /// file identity.
+    #[tokio::test]
+    async fn unlinked_episode_change_is_keyed_by_the_file() {
+        let fake = FakeModel::scripted(
+            &["Amu"],
+            &[Ok("From file one."), Ok("From file two."), Ok("Later.")],
+        );
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
+
+        let mut ep1 = ctx("s");
+        ep1.episode = None;
+        ep1.filename = Some("[Judas] Show - 01.mkv".into());
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ep1, None);
+        take(&mut engine).await.unwrap();
+
+        let mut ep2 = ctx("s");
+        ep2.episode = None;
+        ep2.filename = Some("[Judas] Show - 02.mkv".into());
+        ep2.subtitles.push(ring(3, None, "New ep line."));
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ep2, None);
+        take(&mut engine).await.unwrap();
+
+        // Fresh voice mid-file-two: seeded with file two's comment only.
+        engine.spawn_job(
+            TickPlan {
+                pick_commentator: true,
+            },
+            &ep2,
+            None,
+        );
+        take(&mut engine).await.unwrap();
+
+        let requests = fake.comment_requests.lock().unwrap();
+        assert!(
+            requests[1].user_text.contains("Now playing"),
+            "a file change on an unlinked series re-headers the turn: {}",
+            requests[1].user_text
+        );
+        assert!(requests[2].user_text.contains("From file two."));
+        assert!(
+            !requests[2].user_text.contains("From file one."),
+            "the seed is scoped to the current file: {}",
+            requests[2].user_text
+        );
+    }
+
+    /// Threads keep their text forever but not their frames: only the
+    /// most recent [`RETAINED_FRAMES`] turns keep screenshot bytes, so
+    /// a long-lived commentator (the 5% re-roll's geometric tail) never
+    /// re-uploads every historical frame on every tick (2026-08-12
+    /// review — multi-MB request bodies on the uplink the health line
+    /// exists to protect).
+    #[tokio::test]
+    async fn thread_retains_only_the_most_recent_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = FakeModel::new(&["Amu"], "<Amu> hi");
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
+        for i in 0..4 {
+            let path = dir.path().join("frame.jpg");
+            std::fs::write(&path, format!("frame {i}")).unwrap();
+            let plan = engine.plan_tick(&gates("s")).unwrap();
+            engine.spawn_job(plan, &ctx("s"), Some(path));
+            take(&mut engine).await.unwrap();
+        }
+        // A fifth, frameless tick: its history is the four turns above.
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ctx("s"), None);
+        take(&mut engine).await.unwrap();
+
+        let requests = fake.comment_requests.lock().unwrap();
+        let last = &requests[4];
+        assert_eq!(last.history.len(), 4, "text history is never trimmed");
+        let frames: Vec<bool> = last
+            .history
+            .iter()
+            .map(|turn| turn.screenshot.is_some())
+            .collect();
+        assert_eq!(
+            frames,
+            [false, false, true, true],
+            "only the most recent turns keep their frames"
+        );
+        // And the rendered request carries exactly that many image
+        // blocks — the upload cap is the point.
+        let body = build_comment_body(last);
+        let images = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["content"].as_array())
+            .flatten()
+            .filter(|block| block["type"] == "image")
+            .count();
+        assert_eq!(images, RETAINED_FRAMES);
     }
 
     /// The cache flag follows the interval: on when a jittered tick

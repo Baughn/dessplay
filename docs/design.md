@@ -1430,12 +1430,21 @@ middle slot on **every** client.
   absence never blocks the tick). The model's replies ride along as
   assistant turns, so the commentator remembers what it already said.
   An episode — or series — change stays in-thread: the next turn opens
-  with a "Now playing" header. A commentator change (the 5% re-roll)
+  with a "Now playing" header. Episode identity is keyed by the
+  now-playing **file** (alongside series name and episode label) —
+  AniDB-unknown files all share one hint-derived series name and no
+  episode number, so without the file in the key an unlinked series'
+  episode changes would never re-header (or reset the comment seed
+  below). A commentator change (the 5% re-roll)
   cuts the thread; the fresh commentator's first turn is seeded with
   the **text** of the current episode's earlier comments — never the
   images or subtitles behind them — so the voice changes without the
-  conversation restarting from nothing. The 5% re-roll doubles as the
-  size limit: threads die young, no compaction needed.
+  conversation restarting from nothing. The 5% re-roll keeps threads
+  young *in expectation*, but its tail is geometric, so frames are
+  capped separately: only the most recent one or two turns keep their
+  screenshot bytes (the text history is never trimmed, so the
+  conversation — and the cached prefix up to the trim point — stays
+  intact).
 - **Caching.** When the interval (jitter included) fits inside the
   Anthropic prompt cache's 5-minute ephemeral TTL — the 2 min and
   4 min presets; the 4 min preset exists precisely to duck under
