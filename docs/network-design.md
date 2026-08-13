@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-08-09
+Last updated: 2026-08-13
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -116,7 +116,15 @@ bind to a superseded session.
 link redials itself on a backoff; its death degrades transfers (which
 retry at their own layer) and never marks a user Lost. The server
 closes a session's transfer connection when its control connection
-ends.
+ends. A transfer link that will not come up is not fully silent,
+though: past three consecutive failed dial/setup attempts the network
+actor tells the session (`TransferLinkDown`), and the health line's
+advisor shows "file transfer link down — is the transfer port
+(control port + 1) open?" — the port is opened separately, and a
+blocked one leaves auth, chat, and presence looking healthy while
+every download sits at 0%. The first few failures stay silent
+(transient blips self-heal on the backoff); recovery clears the
+advisory.
 
 **Dialing.** The client resolves *all* of the server's A/AAAA addresses and
 tries them in family-interleaved order (the resolver's preferred family
@@ -174,6 +182,19 @@ classified by its first frame (a `RelayEnvelope` header):
    two. After the header the stream carries bare `PeerMessage` frames:
    `ChunkRequest`/`Cancel` toward the uploader, `ChunkData` back. See
    [Flow Control](#flow-control).
+
+   **Stream opens follow an answered-request contract**: the network
+   actor answers every open request from the transfer layer — with the
+   live stream, or with an explicit failure event — and buffers
+   requests that arrive while the link is still coming up
+   (reconnect-until-AuthOk). It never drops one silently: the transfer
+   layer asks exactly once per pending transfer and retries on its own
+   tick only when answered with failure, so a lost answer would wedge
+   that transfer until restart. Stream lifecycle events are
+   **generation-stamped**: a fresh stream for the same (peer, file)
+   replaces its predecessor, and a predecessor's late close/end event
+   names the generation it belongs to, so it can never tear down the
+   replacement.
 
 Reconnection uses full CvRDT merge rather than a gap-fill stream; there
 are no other application streams in the current protocol.
@@ -664,7 +685,12 @@ Informed by BitTorrent — and notably, there is **no per-chunk timeout**:
   sources. A chunk in transit is never re-requested — only a silent
   *source* is — which avoids both spurious duplicate fetches (too-short
   timeout) and stalled playback (too-long timeout). Real chunk loss is
-  rare and surfaces as a snub.
+  rare and surfaces as a snub. A **closed or reset data stream is the
+  same signal, acted on immediately**: the source's in-flight chunks
+  requeue and re-plan at once (`Downloads::on_source_stream_lost`)
+  rather than sitting dead until the 30s timeout — the source itself is
+  kept (the stream, not the peer, died; the next request toward it
+  opens a fresh one, see [Transfer Resumption](#transfer-resumption)).
 - **Endgame.** When the remaining work fits in one pipeline, a chunk may
   be requested from *several* sources at once; whichever arrives first
   wins and the losers are `Cancel`led — so the tail isn't stuck behind
@@ -744,7 +770,11 @@ throttle:
   [Scheduling](#scheduling-request-window-snub-endgame)).
 - QUIC flow-control windows (16 MiB/stream, 64 MiB/connection) are
   receive-side memory bounds sized to never be the binding constraint
-  under BBR.
+  under BBR. The concurrent-bidi-stream cap is likewise raised to 1024
+  (quinn's default 100 makes `open_bi` silently *wait* at the limit,
+  and one stream per transfer means a seeder redeploy legitimately
+  runs hundreds); the stream open also runs off the network actor's
+  link loop, so a wait at the cap parks only its own task.
 - The relay and data streams live on the transfer connection, so bulk
   transfer never competes with state sync on the control connection at
   the QUIC layer — and the two connections carry different DSCP tags

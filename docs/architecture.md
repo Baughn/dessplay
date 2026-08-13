@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-08-09
+Last updated: 2026-08-13
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -476,6 +476,32 @@ peer source (the actor treats an empty source set as the ordinary
 awaiting-source state and picks sources up from a later refresh).
 Seeder auto-fetch (headless, fetch everything) is the remaining 9B
 piece.
+
+Two contracts keep the stream bookkeeping honest (2026-08-12 review):
+
+- **Answered requests.** Every `OpenTransfer` the file actor emits is
+  answered by the network actor — with a `TransferStream` or an
+  explicit `TransferStreamFailed { peer, file }` — never silently
+  dropped, because the actor's "already asked" latch is its pending
+  message queue for that `(peer, file)`. On failure it drops the
+  queued sends and requeues the source's in-flight chunks; the next
+  download tick re-plans and re-asks (a paced retry, so a down link is
+  not re-asked in a tight loop). A `TransferLinkReset` (bridged from
+  the network's Disconnected event — the server tears the transfer
+  connection down with the control connection) fails every pending
+  open whose answer died with the aborted link task.
+- **Generation-stamped lifecycle.** Download streams and serve tasks
+  are keyed by `(peer, file)` and a fresh stream replaces a stale
+  predecessor, but their end events (`DownloadClosed`/`ServeEnded`)
+  arrive on a different channel than the streams, so a predecessor's
+  late event can drain after the replacement is installed. Each
+  installation carries a monotonic generation; end events name theirs
+  and are ignored when stale — otherwise a stale `ServeEnded` aborts
+  the fresh serve task and the downloader eats a 30s snub. A
+  closed/reset download stream is also the immediate snub signal: the
+  `DownloadClosed` arm requeues that source's in-flight chunks and
+  re-plans at once (`Downloads::on_source_stream_lost`) instead of
+  waiting out the 30s timeout.
 
 **The Nyaa browse import** (design.md, BitTorrent Downloads) is the one
 torrent feature: an explicit, user-driven search-and-download,
