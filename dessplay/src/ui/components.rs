@@ -88,13 +88,36 @@ const SPOILER_REVEAL_WINDOW_MS: u64 = 5000;
 
 /// Stable identity of one `||spoiler||` run: which message (shared-clock
 /// millis + sender, the same pair the chat interleave already treats as
-/// identity) and which run within it. Position-free, so scrolling between
-/// the two reveal clicks cannot retarget the state.
+/// identity, **plus** a hash of the message text) and which run within
+/// it. Position-free, so scrolling between the two reveal clicks cannot
+/// retarget the state.
+///
+/// The text hash is keying only — [`spoiler::seed`] stays text-free so
+/// the mpv OSD reproduces the same letters from (stamp, sender, index).
+/// Without it, two messages colliding on (millis, sender) — the IRC
+/// bridge stamps two PRIVMSGs from one TCP read with the same local
+/// millisecond — would share reveal state, and revealing one would
+/// silently reveal the other.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct SpoilerKey {
     millis: u64,
     sender: String,
     index: usize,
+    text_hash: u64,
+}
+
+impl SpoilerKey {
+    fn new(millis: u64, sender: &str, index: usize, message_text: &str) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        message_text.hash(&mut hasher);
+        Self {
+            millis,
+            sender: sender.to_string(),
+            index,
+            text_hash: hasher.finish(),
+        }
+    }
 }
 
 /// Per-spoiler reveal state (absent from the map = hidden, generation 0).
@@ -740,11 +763,7 @@ fn compose_spoiler_body(
                 chars += t.chars().count();
             }
             spoiler::Segment::Spoiler(s) => {
-                let key = SpoilerKey {
-                    millis: line.millis,
-                    sender: line.sender.clone(),
-                    index,
-                };
+                let key = SpoilerKey::new(line.millis, &line.sender, index, &line.text);
                 let hidden = match spoilers.get(&key) {
                     Some(SpoilerState::Revealed) => None,
                     Some(
@@ -2843,12 +2862,38 @@ mod chat_spoiler_tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// The key `compose_spoiler_body` derives for run `index` of a
+    /// [`chat_line`] with the given text.
+    fn key_for(text: &str, index: usize) -> SpoilerKey {
+        SpoilerKey::new(1_000, "kim", index, text)
+    }
+
+    /// A synthetic run identity for the click-state-machine tests, where
+    /// only key consistency matters (no message text is in play).
     fn key(index: usize) -> SpoilerKey {
-        SpoilerKey {
-            millis: 1_000,
-            sender: "kim".to_string(),
-            index,
-        }
+        key_for("synthetic", index)
+    }
+
+    /// Regression: two messages colliding on (millis, sender) — the
+    /// realistic source is the IRC bridge, which stamps two PRIVMSGs
+    /// arriving in one TCP read with the same local millisecond — must
+    /// not share reveal state. Revealing A's spoiler must leave B's
+    /// scrambled (the exact disclosure the feature exists to prevent).
+    #[test]
+    fn same_millisecond_messages_keep_separate_reveal_state() {
+        let a = crate::ui::props::irc_line(1_000, "kim".into(), "one ||alpha|| here".into(), false);
+        let b =
+            crate::ui::props::irc_line(1_000, "kim".into(), "two ||omega|| there".into(), false);
+        let key_a = wrap_chat_line(&a, 80, &[], "me", &HashMap::new())[0].1[0]
+            .key
+            .clone();
+        let mut spoilers = HashMap::new();
+        spoilers.insert(key_a, SpoilerState::Revealed);
+        let wrapped_b = wrap_chat_line(&b, 80, &[], "me", &spoilers);
+        let (visual, hits) = &wrapped_b[0];
+        let text = line_text(visual);
+        assert!(!text.contains("omega"), "revealing A leaked B: {text:?}");
+        assert_eq!(hits.len(), 1, "B keeps its clickable hit range");
     }
 
     #[test]
@@ -2864,14 +2909,14 @@ mod chat_spoiler_tests {
         // Prefix "12:00 " (6) + "kim: " (5) = 11; run at display chars 4..10.
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].cols, 15..21);
-        assert_eq!(hits[0].key, key(0));
+        assert_eq!(hits[0].key, key_for("the ||secret|| word", 0));
     }
 
     #[test]
     fn revealed_spoiler_shows_original_without_hits() {
         let line = chat_line("the ||secret|| word");
         let mut spoilers = HashMap::new();
-        spoilers.insert(key(0), SpoilerState::Revealed);
+        spoilers.insert(key_for("the ||secret|| word", 0), SpoilerState::Revealed);
         let wrapped = wrap_chat_line(&line, 80, &[], "me", &spoilers);
         let (visual, hits) = &wrapped[0];
         let text = line_text(visual);
@@ -2890,8 +2935,8 @@ mod chat_spoiler_tests {
         let second_hits = &wrapped[1].1;
         assert_eq!(first_hits.len(), 1);
         assert_eq!(second_hits.len(), 1);
-        assert_eq!(first_hits[0].key, key(0));
-        assert_eq!(second_hits[0].key, key(0));
+        assert_eq!(first_hits[0].key, key_for("||secretive|| end", 0));
+        assert_eq!(second_hits[0].key, key_for("||secretive|| end", 0));
         // First line: cols 11..16 (5 chars after the prefix); second:
         // the remaining 4 chars after the continuation indent.
         assert_eq!(first_hits[0].cols, 11..16);
