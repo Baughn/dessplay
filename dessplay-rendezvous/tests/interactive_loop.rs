@@ -108,6 +108,7 @@ fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRi
         irc_events,
         irc_alive: true,
         link: Default::default(),
+        transfer_link_down: false,
         torrent_engine: None,
         health: None,
         health_level: Default::default(),

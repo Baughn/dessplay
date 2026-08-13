@@ -975,6 +975,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         irc_events,
         irc_alive: true,
         link: crate::ui::props::LinkStatus::default(),
+        transfer_link_down: false,
         torrent_engine,
         health: None,
         health_level: crate::ui::props::HealthHysteresis::default(),
@@ -1148,6 +1149,11 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     /// Server-link state for the status bar, tracked from the network
     /// actor's Connecting/Connected/Disconnected events.
     pub link: crate::ui::props::LinkStatus,
+    /// The transfer link (control port + 1) has failed several
+    /// consecutive dials — set on `TransferLinkDown`, cleared on
+    /// `TransferLinkUp`. Feeds the advisor's "is the transfer port
+    /// open?" rule; nothing else about the connection surfaces it.
+    pub transfer_link_down: bool,
     /// The torrent engine, retained for the 1Hz health sample's speed
     /// read (`None` when torrents are disabled or failed to start).
     pub torrent_engine: Option<Arc<dyn crate::torrent::engine::TorrentEngine>>,
@@ -1472,6 +1478,18 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 .on_transfer_stream_failed(peer.clone(), *file)
                                 .await;
                         }
+                        ClientEvent::Network(NetworkEvent::TransferLinkDown {
+                            consecutive_failures,
+                        }) => {
+                            tracing::warn!(
+                                consecutive_failures,
+                                "transfer link is down (is the transfer port open?)"
+                            );
+                            self.transfer_link_down = true;
+                        }
+                        ClientEvent::Network(NetworkEvent::TransferLinkUp) => {
+                            self.transfer_link_down = false;
+                        }
                         ClientEvent::Network(NetworkEvent::Connected { .. }) => {
                             self.link = crate::ui::props::LinkStatus::Connected;
                             if first_connected {
@@ -1574,6 +1592,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         self.health,
                         self.settings.torrent_enabled,
                         false,
+                        self.transfer_link_down,
                     );
                     let holds_file = last_view.now_playing.is_some_and(|file| {
                         last_view.file_availability.get(&(self.me.clone(), file))
@@ -1664,6 +1683,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 self.health,
                                 self.settings.torrent_enabled,
                                 torrent_active,
+                                self.transfer_link_down,
                             );
                         }
                         None => {

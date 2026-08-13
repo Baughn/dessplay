@@ -175,6 +175,20 @@ pub enum NetworkEvent {
         /// The file the stream was for.
         file: dessplay_core::types::Ed2kHash,
     },
+    /// The transfer link has failed several consecutive dial/setup
+    /// attempts. The control connection can be perfectly healthy while
+    /// the transfer port (control + 1) is blocked — auth succeeds, chat
+    /// flows, and every download silently sits at 0% — so past a small
+    /// threshold the session is told, and the advisor turns it into
+    /// the "is the transfer port open?" suggestion. The first few
+    /// failures stay silent (transient blips self-heal on the backoff).
+    TransferLinkDown {
+        /// How many attempts in a row have failed.
+        consecutive_failures: u32,
+    },
+    /// The transfer link came up after a [`NetworkEvent::TransferLinkDown`]
+    /// was reported; clears the advisory.
+    TransferLinkUp,
     /// Connection lost; the actor will retry.
     Disconnected {
         /// Human-readable cause.
@@ -384,6 +398,13 @@ async fn forward_open(
 /// up yet (pre-AuthOk). Matches the link op channel's depth; past it
 /// the newest request is answered with failure instead.
 const PENDING_OPEN_BUFFER: usize = 64;
+
+/// Consecutive failed transfer-link dial/setup attempts before the
+/// session is told ([`NetworkEvent::TransferLinkDown`]). The first few
+/// stay silent: transient blips self-heal on the backoff, but a
+/// *blocked* transfer port (control + 1 must be opened separately)
+/// fails every attempt forever while everything else looks healthy.
+const TRANSFER_LINK_DOWN_THRESHOLD: u32 = 3;
 
 /// Probes sent back-to-back right after connecting, to seed the offset
 /// window before the steady-state cadence takes over.
@@ -599,11 +620,19 @@ async fn run_transfer_link<C: Connector>(
     events: mpsc::Sender<NetworkEvent>,
     counters: Arc<NetCounters>,
 ) {
+    // Consecutive failed attempts to bring the link up (dial or
+    // setup). A blocked transfer port fails every attempt forever
+    // while everything else looks healthy, so past the threshold the
+    // session is told once — and told again when the link recovers.
+    let mut consecutive_failures: u32 = 0;
+    let mut down_reported = false;
     loop {
         let conn = match connector.connect().await {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::debug!("transfer link dial failed: {e}");
+                note_transfer_link_failure(&events, &mut consecutive_failures, &mut down_reported)
+                    .await;
                 tokio::time::sleep(backoff).await;
                 continue;
             }
@@ -632,12 +661,19 @@ async fn run_transfer_link<C: Connector>(
             Ok(halves) => halves,
             Err(e) => {
                 tracing::debug!("transfer link setup failed: {e}");
+                note_transfer_link_failure(&events, &mut consecutive_failures, &mut down_reported)
+                    .await;
                 conn.close("transfer link setup failed").await;
                 tokio::time::sleep(backoff).await;
                 continue;
             }
         };
         tracing::debug!("transfer link up");
+        consecutive_failures = 0;
+        if down_reported {
+            down_reported = false;
+            let _ = events.send(NetworkEvent::TransferLinkUp).await;
+        }
         // The relay-stream reader runs apart from the writer (read_frame
         // is not cancel-safe, so it must not race in a select); its exit
         // is one link-death signal, `conn.recv()` errors the other.
@@ -709,6 +745,30 @@ async fn run_transfer_link<C: Connector>(
         }
         conn.close("transfer link reset").await;
         tokio::time::sleep(backoff).await;
+    }
+}
+
+/// One more failed attempt to bring the transfer link up: at the
+/// threshold, tell the session once (see
+/// [`NetworkEvent::TransferLinkDown`]); further failures stay quiet
+/// until the link recovers.
+async fn note_transfer_link_failure(
+    events: &mpsc::Sender<NetworkEvent>,
+    consecutive_failures: &mut u32,
+    down_reported: &mut bool,
+) {
+    *consecutive_failures += 1;
+    if *consecutive_failures == TRANSFER_LINK_DOWN_THRESHOLD && !*down_reported {
+        *down_reported = true;
+        tracing::warn!(
+            consecutive_failures = *consecutive_failures,
+            "transfer link is not coming up (is the transfer port open?)"
+        );
+        let _ = events
+            .send(NetworkEvent::TransferLinkDown {
+                consecutive_failures: *consecutive_failures,
+            })
+            .await;
     }
 }
 
@@ -1855,6 +1915,119 @@ mod tests {
             failures, 6,
             "every open past the link channel's capacity must be answered with failure"
         );
+    }
+
+    /// A connector that fails its first `fail_first` connect attempts,
+    /// then delegates to the sim — a transfer port that starts blocked
+    /// and later opens.
+    struct FlakyConnector {
+        inner: dessplay_core::net::sim::SimConnector,
+        fail_remaining: Arc<AtomicU32>,
+    }
+
+    impl Connector for FlakyConnector {
+        type Conn = SimTransport;
+
+        async fn connect(&self) -> Result<Self::Conn, TransportError> {
+            let mut remaining = self.fail_remaining.load(Ordering::SeqCst);
+            loop {
+                if remaining == 0 {
+                    return self.inner.connect().await;
+                }
+                match self.fail_remaining.compare_exchange(
+                    remaining,
+                    remaining - 1,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => return Err(TransportError::Setup("port blocked".into())),
+                    Err(actual) => remaining = actual,
+                }
+            }
+        }
+    }
+
+    /// Spawn the actor with a control link that works and a transfer
+    /// link that fails its first `fail_first` dials; run for `duration`
+    /// and return the (Down, Up) transfer-link events observed.
+    async fn transfer_link_events(
+        seed: u64,
+        fail_first: u32,
+        duration: Duration,
+    ) -> (Vec<u32>, u32) {
+        let net = SimNetwork::new(seed);
+        let server = EndpointId::new("server");
+        tokio::spawn(fake_server(net.listener(&server), paused_clock(), true));
+        let transfer = EndpointId::new("server-transfer");
+        tokio::spawn(fake_transfer_server(net.listener(&transfer)));
+
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(4096);
+        let connector = Arc::new(FlakyConnector {
+            inner: net.connector(&EndpointId::new("kim"), &server),
+            fail_remaining: Arc::new(AtomicU32::new(0)),
+        });
+        let transfer_connector = Arc::new(FlakyConnector {
+            inner: net.connector(&EndpointId::new("kim"), &transfer),
+            fail_remaining: Arc::new(AtomicU32::new(fail_first)),
+        });
+        let actor = tokio::spawn(run(
+            connector,
+            transfer_connector,
+            config_with_clock(paused_clock()),
+            command_rx,
+            event_tx,
+        ));
+        tokio::time::sleep(duration).await;
+        command_tx.send(NetworkCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), actor)
+            .await
+            .expect("clean shutdown")
+            .unwrap();
+
+        let mut downs = Vec::new();
+        let mut ups = 0;
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                NetworkEvent::TransferLinkDown {
+                    consecutive_failures,
+                } => downs.push(consecutive_failures),
+                NetworkEvent::TransferLinkUp => ups += 1,
+                _ => {}
+            }
+        }
+        (downs, ups)
+    }
+
+    /// A blocked transfer port is invisible in every other signal (auth
+    /// succeeds, chat flows) while downloads sit at 0% forever: past
+    /// [`TRANSFER_LINK_DOWN_THRESHOLD`] consecutive dial failures the
+    /// actor must say so — once, not once per failure — and report
+    /// recovery when a later dial succeeds.
+    #[tokio::test(start_paused = true)]
+    async fn a_repeatedly_failing_transfer_dial_is_reported_past_the_threshold() {
+        // Fails far past the threshold, then recovers (backoff is 2s;
+        // 60s covers plenty of attempts).
+        let (downs, ups) = transfer_link_events(37, 10, Duration::from_secs(60)).await;
+        assert_eq!(
+            downs,
+            vec![TRANSFER_LINK_DOWN_THRESHOLD],
+            "one Down at the threshold, no repeats while it stays down"
+        );
+        assert_eq!(ups, 1, "recovery is reported once the link comes up");
+    }
+
+    /// The first few dial failures stay silent — transient blips
+    /// self-heal on the backoff and must not ping the advisor.
+    #[tokio::test(start_paused = true)]
+    async fn a_brief_transfer_dial_blip_stays_silent() {
+        let below = TRANSFER_LINK_DOWN_THRESHOLD - 1;
+        let (downs, ups) = transfer_link_events(41, below, Duration::from_secs(60)).await;
+        assert!(
+            downs.is_empty(),
+            "failures below the threshold must stay silent: {downs:?}"
+        );
+        assert_eq!(ups, 0, "no Down means no Up");
     }
 
     /// Sanity for the interrupt-capable connect path: a normal connect

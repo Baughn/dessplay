@@ -112,6 +112,11 @@ pub struct AdvisorContext {
     pub torrent_enabled: bool,
     /// The torrent engine is actually moving or holding torrents.
     pub torrent_active: bool,
+    /// The transfer link (control port + 1) has failed several
+    /// consecutive dials — auth and chat work but every download sits
+    /// at 0% (a blocked or unforwarded port, typically). Set from
+    /// `NetworkEvent::TransferLinkDown`, cleared on `TransferLinkUp`.
+    pub transfer_link_down: bool,
 }
 
 /// A source of suggestions. Must not block — called from the bridge
@@ -242,6 +247,7 @@ impl Advisor {
         sample: Option<HealthSample>,
         torrent_enabled: bool,
         torrent_active: bool,
+        transfer_link_down: bool,
     ) {
         let now = tokio::time::Instant::now();
         if self
@@ -254,7 +260,15 @@ impl Advisor {
         if self.diverged && level == HealthLevel::Ok {
             self.diverged = false;
         }
-        let ctx = self.context(view, link, level, sample, torrent_enabled, torrent_active);
+        let ctx = self.context(
+            view,
+            link,
+            level,
+            sample,
+            torrent_enabled,
+            torrent_active,
+            transfer_link_down,
+        );
         for provider in &mut self.providers {
             provider.advise(&ctx, &self.tx);
         }
@@ -263,6 +277,7 @@ impl Advisor {
     /// Assemble the context — the same now-playing lookups the status
     /// bar's props use. `pub(crate)` so the commentary engine's tick can
     /// reuse the assembled series/episode/subtitle context verbatim.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn context(
         &self,
         view: &StateView,
@@ -271,6 +286,7 @@ impl Advisor {
         sample: Option<HealthSample>,
         torrent_enabled: bool,
         torrent_active: bool,
+        transfer_link_down: bool,
     ) -> AdvisorContext {
         let entry = view
             .now_playing
@@ -290,6 +306,7 @@ impl Advisor {
             diverged: self.diverged,
             torrent_enabled,
             torrent_active,
+            transfer_link_down,
         }
     }
 }
@@ -329,6 +346,18 @@ impl RuleProvider {
             return Some(Suggestion {
                 id: "sync-stalled",
                 text: format!("sync stalled — server silent {silence}s"),
+                severity: Severity::Warning,
+            });
+        }
+        if ctx.transfer_link_down {
+            // Auth works, chat flows, health reads fine — and every
+            // download sits at 0%: the transfer connection (control
+            // port + 1, opened separately in the firewall) is not
+            // coming up. Nothing else surfaces this.
+            return Some(Suggestion {
+                id: "transfer-link",
+                text: "file transfer link down — is the transfer port (control port + 1) open?"
+                    .into(),
                 severity: Severity::Warning,
             });
         }
@@ -478,6 +507,47 @@ mod tests {
         );
     }
 
+    /// A permanently-unreachable transfer link (blocked port + 1) is
+    /// invisible in every other signal — auth succeeds, chat flows,
+    /// health reads fine — while every download sits at 0% forever.
+    /// The transfer-link rule must surface it as a warning, and the
+    /// hold-then-clear semantics match the other rules.
+    #[tokio::test(start_paused = true)]
+    async fn transfer_link_rule_fires_and_clears_after_the_hold() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut rules = RuleProvider::default();
+        // A healthy link otherwise: only the transfer plane is dead.
+        let down = AdvisorContext {
+            link: LinkStatus::Connected,
+            level: HealthLevel::Ok,
+            transfer_link_down: true,
+            ..AdvisorContext::default()
+        };
+        rules.advise(&down, &tx);
+        rules.advise(&down, &tx);
+        let updates = drain(&mut rx);
+        assert_eq!(updates.len(), 1, "one emission per change");
+        let suggestion = updates[0].0.clone().unwrap();
+        assert_eq!(suggestion.id, "transfer-link");
+        assert_eq!(suggestion.severity, Severity::Warning);
+        assert!(
+            suggestion.text.contains("transfer"),
+            "the text should name the transfer link: {}",
+            suggestion.text
+        );
+
+        // Recovery clears after the anti-flicker hold, like every rule.
+        let up = AdvisorContext {
+            transfer_link_down: false,
+            ..down
+        };
+        rules.advise(&up, &tx);
+        assert!(drain(&mut rx).is_empty(), "held, not cleared yet");
+        tokio::time::advance(Duration::from_secs(31)).await;
+        rules.advise(&up, &tx);
+        assert_eq!(drain(&mut rx), vec![SuggestionUpdate(None)]);
+    }
+
     /// The advisor throttles advise passes, dedupes the subtitle ring
     /// with the shared collapse, and caps it at [`SUBTITLE_RING`] lines.
     #[tokio::test(start_paused = true)]
@@ -592,6 +662,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         tokio::time::sleep(Duration::from_secs(3)).await;
         let update = advisor.suggestions.try_recv().expect("delivered");
@@ -619,6 +690,7 @@ mod tests {
                 LinkStatus::Connected,
                 HealthLevel::Ok,
                 None,
+                false,
                 false,
                 false,
             );
