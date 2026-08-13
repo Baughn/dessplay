@@ -346,6 +346,18 @@ impl CrdtState {
         Ok(Self::decode_snapshot_flagged(blob)?.0)
     }
 
+    /// The first [`PROTOCOL_VERSION`](crate::net::message::PROTOCOL_VERSION)
+    /// whose storage snapshots carried the [`SNAPSHOT_MAGIC`] envelope;
+    /// anything older is the untagged [`CrdtStateUntaggedV6`] fallback.
+    /// Every version from here up to (but excluding) the current one must
+    /// appear in [`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`](Self::LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS)
+    /// or [`FROZEN_LAYOUT_SNAPSHOT_VERSIONS`](Self::FROZEN_LAYOUT_SNAPSHOT_VERSIONS)
+    /// — enforced by `every_tagged_snapshot_version_is_deliberately_handled`
+    /// (tests/migration.rs), so a `PROTOCOL_VERSION` bump fails the test
+    /// suite until the storage decision is made, instead of failing at
+    /// server deploy (which bricked tsugumi on 2026-07-28).
+    pub const FIRST_TAGGED_SNAPSHOT_VERSION: u32 = 7;
+
     /// Older tagged versions whose persisted [`CrdtState`] layout is
     /// **identical** to the current one, accepted as a deliberate
     /// migration decision (the refuse-to-guess policy's explicit decode
@@ -356,8 +368,19 @@ impl CrdtState {
     /// (postcard encodes the variant index, so every v9 body — which can
     /// only contain the older variants — still decodes with the current
     /// type). Every entry here asserts "I checked the diff; the current
-    /// type decodes the old postcard body unchanged."
-    const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 3] = [7, 8, 9];
+    /// type decodes the old postcard body unchanged" — and is backed by a
+    /// checked-in fixture blob in that version's real bytes
+    /// (tests/fixtures/, captured once when the version entered this list
+    /// and never regenerated; see tests/fixtures/README.md).
+    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 3] = [7, 8, 9];
+
+    /// Older tagged versions decoded by an explicit **frozen-layout**
+    /// decode arm in [`decode_snapshot_flagged`](Self::decode_snapshot_flagged)
+    /// — a frozen copy of that version's layout plus an upgrade, for a
+    /// bump that *did* reshape persisted state. None exist yet; adding
+    /// an arm also appends its version here so the exhaustiveness test
+    /// knows it is handled.
+    pub const FROZEN_LAYOUT_SNAPSHOT_VERSIONS: [u32; 0] = [];
 
     /// [`decode_snapshot`](Self::decode_snapshot), also reporting whether
     /// a **migration** was used (`true` = the blob was written by an

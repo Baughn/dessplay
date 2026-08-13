@@ -839,10 +839,17 @@ for storage because *blobs outlive deployments*; connections don't.
   list is a per-change assertion ("I checked the diff; the current type
   decodes the old body"), not a default — a bump that *does* reshape
   existing state must not be added there, and gets a frozen-layout
-  decode arm instead. Caught in the field the same day:
+  decode arm instead (listed in `FROZEN_LAYOUT_SNAPSHOT_VERSIONS`).
+  Caught in the field the same day:
   the server refused to start on its own v7-tagged authoritative
   snapshot after the bump, exactly as designed, and this arm is the
-  deliberate migration the policy demands.
+  deliberate migration the policy demands. Since then the
+  forgotten-entry failure is a **red build, not a dead deploy**:
+  `every_tagged_snapshot_version_is_deliberately_handled`
+  (dessplay-core/tests/migration.rs) fails whenever any version in
+  `FIRST_TAGGED_SNAPSHOT_VERSION..PROTOCOL_VERSION` is handled by
+  neither list, so a `PROTOCOL_VERSION` bump — wire-only or not —
+  cannot pass the test suite until someone makes the storage decision.
 - **Tagged, any other version**: hard error naming both versions -- the
   refuse-to-start posture. A deliberate migration adds an explicit
   decode arm (a frozen copy of the old layout + upgrade) for that

@@ -16,6 +16,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use dessplay_core::net::message::PROTOCOL_VERSION;
 use dessplay_core::state::SNAPSHOT_MAGIC;
 use dessplay_core::types::{
     ActorId, ChatMessage, Ed2kHash, SeriesWatchState, SharedTimestamp, UserId,
@@ -66,6 +67,56 @@ fn series_watch_state_discriminants_are_stable() {
         wire::decode::<SeriesWatchState>(&[1]).unwrap(),
         SeriesWatchState::NotWatching
     );
+}
+
+/// A `PROTOCOL_VERSION` bump must fail HERE, not at server deploy.
+/// Layout compatibility is deliberately keyed on `PROTOCOL_VERSION`
+/// (one version, no second constant to keep in step), which means a
+/// **wire-only** bump also moves the storage tag past the newest
+/// handled snapshot version — exactly what bricked the tsugumi server
+/// on 2026-07-28 (it refused to start on its own authoritative v7
+/// snapshot after the v7 → v9 bump, because nobody had updated the
+/// compat list). This test turns that forgotten-entry failure into a
+/// red build: every tagged version below the current one must be
+/// handled somewhere, or the bump does not pass the suite.
+#[test]
+fn every_tagged_snapshot_version_is_deliberately_handled() {
+    for version in CrdtState::FIRST_TAGGED_SNAPSHOT_VERSION..PROTOCOL_VERSION {
+        let compatible = CrdtState::LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS.contains(&version);
+        let frozen = CrdtState::FROZEN_LAYOUT_SNAPSHOT_VERSIONS.contains(&version);
+        assert!(
+            !(compatible && frozen),
+            "v{version} is listed as both layout-compatible and frozen-layout; pick one"
+        );
+        assert!(
+            compatible || frozen,
+            "PROTOCOL_VERSION moved past v{version}, but nothing says how a \
+             v{version}-tagged storage snapshot decodes — on the server that is a \
+             refuse-to-start at deploy (the 2026-07-28 outage). Decide now:\n\
+             - persisted CrdtState layout UNCHANGED since v{version} (check the \
+               diff!): append {version} to LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS and \
+               capture its fixture blob (`cargo test -p dessplay-core --test \
+               migration -- --ignored capture_missing_snapshot_fixtures`; policy \
+               in tests/fixtures/README.md, pin in \
+               layout_compatible_fixture_blobs_decode_to_the_expected_view);\n\
+             - layout CHANGED: add a frozen-layout decode arm for v{version} in \
+               decode_snapshot_flagged and list it in \
+               FROZEN_LAYOUT_SNAPSHOT_VERSIONS."
+        );
+    }
+
+    // Sanity on the lists themselves: every entry names a real, older
+    // tagged version (a typo'd or never-removed entry is also a wrong
+    // corruption decision on the authoritative store).
+    for v in CrdtState::LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS
+        .into_iter()
+        .chain(CrdtState::FROZEN_LAYOUT_SNAPSHOT_VERSIONS)
+    {
+        assert!(
+            (CrdtState::FIRST_TAGGED_SNAPSHOT_VERSION..PROTOCOL_VERSION).contains(&v),
+            "v{v} in a handled-versions list is not an older tagged version"
+        );
+    }
 }
 
 #[test]
