@@ -399,9 +399,16 @@ It can have one of three values:
   download assembles in place at its final cache path, so completion needs
   no reload) and watches with the group; if playback catches up to a gap —
   or a seek lands past the downloaded region — the verdict flips back, the
-  user gates, and the group pauses until the window refills. The playback
+  user gates, and the group pauses until the window refills (a seek
+  re-anchors the verdict and fetch window immediately, not at the next
+  position sample). The playback
   position also re-anchors the download's sequential fetch window, so the
-  scheduler always fetches exactly the range whose absence would gate. The
+  scheduler always fetches exactly the range whose absence would gate.
+  Because the partial is sparse (unfetched regions read as zeros), the
+  player can report a bogus end-of-file mid-episode; a partial's EOF
+  report is therefore only believed when the last known position sits
+  within a few seconds of the entry's duration — anything earlier is
+  dropped, and the flipped verdict gates instead. The
   download-speed-vs-bitrate half of the original rule remains **deferred**
   — no synced throughput signal exists to evaluate it, see
   [Future Plans](#future-plans).

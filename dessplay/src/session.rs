@@ -202,13 +202,28 @@ pub enum Directive {
     },
 }
 
+/// What we've told the player to load: the file, the exact path we
+/// commanded, and whether it is a still-downloading partial. The path is
+/// part of the identity — an adopted local copy arrives as a `Verified`
+/// resolution at a *different* path after the partial was deleted, and a
+/// hash-only guard kept the player on the deleted partial's orphaned
+/// inode while advertising Ready (2026-08-12 review). `partial` gates
+/// the EOF report: a sparse partial reads zeros past the fetched region,
+/// so mpv can reach `eof-reached` mid-episode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadedFile {
+    file: Ed2kHash,
+    path: PathBuf,
+    partial: bool,
+}
+
 /// The session's player-side policy state.
 pub struct PlayerWiring {
     me: UserId,
     resolved: HashMap<Ed2kHash, Resolution>,
     pending_resolve: HashSet<Ed2kHash>,
     /// What we've told the player to load.
-    loaded: Option<Ed2kHash>,
+    loaded: Option<LoadedFile>,
     /// Last authority sample forwarded as SyncTo (dedup).
     last_synced: Option<(UserId, dessplay_core::types::PlaybackPosition)>,
     /// Chat messages already shown as OSD.
@@ -276,6 +291,15 @@ const WATCHED_FRACTION: f64 = 0.85;
 /// client prefetches (design.md, Pre-fetching). A small fixed lookahead;
 /// disk/retention-aware depth is future work. Seeders fetch everything.
 const PREFETCH_AHEAD: usize = 2;
+
+/// How close (millis) a partial's last known position must be to the
+/// entry's duration for its EOF report to be believed. A sparse partial
+/// reads zeros past the fetched region, so mpv can hit `eof-reached`
+/// mid-episode (a stalled download, or a seek past the window); only an
+/// EOF at the real end may advance the group. Positions tick about once
+/// a second and the probed duration can differ slightly from mpv's, so
+/// the epsilon is a few seconds.
+const PARTIAL_EOF_EPSILON_MILLIS: u64 = 5_000;
 
 /// How many consecutive snapshots a same-file position spread past the
 /// player's hard-seek band must persist before `report_drift` warns.
@@ -1179,6 +1203,15 @@ impl PlayerWiring {
     /// matcher, it is verified by construction.
     pub fn note_local_file(&mut self, file: Ed2kHash, path: PathBuf) -> Vec<Directive> {
         self.pending_resolve.remove(&file);
+        // The download we were playing completed in place (same path):
+        // the loaded copy is the verified one now — no reload, but the
+        // partial gating (EOF epsilon) no longer applies.
+        if let Some(l) = self.loaded.as_mut()
+            && l.file == file
+            && l.path == path
+        {
+            l.partial = false;
+        }
         self.resolved.insert(file, Resolution::Verified(path));
         vec![Directive::Mutate(Mutation::SetFileAvailability {
             file,
@@ -1231,14 +1264,18 @@ impl PlayerWiring {
         out
     }
 
-    /// True iff we hold the *real* verified now-playing video (not a
-    /// placeholder, not a stale frame). `loaded` only ever names a verified
-    /// now-playing file — the placeholder Load deliberately leaves it
-    /// untouched (see `FileOutput::PlaceholderReady`) — so this is the single
-    /// gate on "our player may speak for the group": publishing our position,
+    /// True iff we hold the *real* now-playing video (not a placeholder,
+    /// not a stale frame). `loaded` only ever names the real video for
+    /// the file it carries — a verified local copy, or a playing partial
+    /// whose fetched window is ed2k-verified — and the placeholder Load
+    /// deliberately leaves it untouched (see
+    /// `FileOutput::PlaceholderReady`), so this is the single gate on
+    /// "our player may speak for the group": publishing our position,
     /// taking seek authority, following a reference, and unpausing.
     fn holds_now_playing(&self, view: &StateView) -> bool {
-        self.loaded.is_some() && self.loaded == view.now_playing
+        self.loaded
+            .as_ref()
+            .is_some_and(|l| view.now_playing == Some(l.file))
     }
 
     /// True iff this client may *speak for the group* about `file`: it is the
@@ -1251,6 +1288,31 @@ impl PlayerWiring {
     /// `holds_now_playing`.) See `holds_now_playing`.
     fn speaks_for_now_playing(&self, view: &StateView, file: Ed2kHash) -> bool {
         view.now_playing == Some(file) && self.holds_now_playing(view)
+    }
+
+    /// Whether our last known position for `file` is within
+    /// [`PARTIAL_EOF_EPSILON_MILLIS`] of the playlist entry's duration —
+    /// the "this EOF is the real end" test for a loaded partial. `false`
+    /// when no position was seen or the duration is unknown (the player
+    /// backfills the duration right after the partial loads, so it is
+    /// effectively always known by the time an EOF can fire).
+    fn position_near_end(&self, view: &StateView, file: Ed2kHash) -> bool {
+        let Some((position_file, position_millis)) = self.last_position else {
+            return false;
+        };
+        if position_file != file {
+            return false;
+        }
+        let Some(duration) = view
+            .playlist
+            .iter()
+            .find(|e| e.hash == file)
+            .and_then(|e| e.state.duration_millis)
+            .filter(|&d| d > 0)
+        else {
+            return false;
+        };
+        position_millis.saturating_add(PARTIAL_EOF_EPSILON_MILLIS) >= duration
     }
 
     /// The position reference this client slaves to for drift correction,
@@ -1475,22 +1537,43 @@ impl PlayerWiring {
         // the source set as peers/availability change.
         out.extend(self.plan_download(view, peers));
 
-        // Load now-playing once it has a verified local copy.
+        // Load now-playing once it has a verified local copy — and
+        // *re*-load when the verified copy lives at a different path than
+        // what the player has (an adopted local copy: the "local copy
+        // trumps the download" path deleted the partial we were playing,
+        // so staying on it would play a deleted orphan while advertising
+        // Ready; mpv restores the position on load, as the crash-relaunch
+        // path already relies on).
         if let Some(file) = view.now_playing
-            && self.loaded != Some(file)
             && let Some(Resolution::Verified(path)) = self.resolved.get(&file)
         {
-            self.loaded = Some(file);
-            out.push(Directive::Player(PlayerCommand::Load {
-                file,
-                path: path.clone(),
-                title: playlist_title(view, file),
-            }));
+            if self
+                .loaded
+                .as_ref()
+                .is_some_and(|l| l.file == file && l.path == *path)
+            {
+                // Same copy (a download completed in place): verified now.
+                if let Some(l) = self.loaded.as_mut() {
+                    l.partial = false;
+                }
+            } else {
+                self.loaded = Some(LoadedFile {
+                    file,
+                    path: path.clone(),
+                    partial: false,
+                });
+                out.push(Directive::Player(PlayerCommand::Load {
+                    file,
+                    path: path.clone(),
+                    title: playlist_title(view, file),
+                }));
+            }
         }
 
         // Re-assert the derived playback state; the actor dedups.
-        // `self.loaded` only ever names the real verified now-playing
-        // video — a placeholder is never "now-playing" by this measure,
+        // `self.loaded` only ever names the real now-playing video (a
+        // verified copy, or a playing partial whose window is verified)
+        // — a placeholder is never "now-playing" by this measure,
         // which is exactly why it must not be told to play. When the
         // loaded file is *not* the now-playing one (now-playing switched
         // to something we don't hold, so a stale frame or placeholder is
@@ -1550,7 +1633,7 @@ impl PlayerWiring {
         // keyed on the loaded file too: a Load in this same batch spawns
         // the player, and commands sent before it landed on nothing.
         let summary = view.now_playing.and_then(|_| blocker_summary(view, peers));
-        let key = (self.loaded, summary);
+        let key = (self.loaded.as_ref().map(|l| l.file), summary);
         if self.blocker_overlay_sent != key {
             out.push(Directive::Player(PlayerCommand::SetBlockerOverlay(
                 key.1.clone(),
@@ -1634,20 +1717,37 @@ impl PlayerWiring {
             file,
             availability,
         })];
-        // If this was what the session is waiting on, load it now.
+        // If this was what the session is waiting on, load it now — or
+        // *re*-load it when the verified copy lives at a different path
+        // than what the player has (an adopted local copy; see the
+        // matching block in `on_state`).
         if view.now_playing == Some(file)
-            && self.loaded != Some(file)
             && let Some(Resolution::Verified(path)) = self.resolved.get(&file)
         {
-            self.loaded = Some(file);
-            out.push(Directive::Player(PlayerCommand::Load {
-                file,
-                path: path.clone(),
-                title: playlist_title(view, file),
-            }));
-            out.push(Directive::Player(PlayerCommand::SetPlaying(
-                derive::playback_active(view, peers),
-            )));
+            if self
+                .loaded
+                .as_ref()
+                .is_some_and(|l| l.file == file && l.path == *path)
+            {
+                // Same copy (a download completed in place): verified now.
+                if let Some(l) = self.loaded.as_mut() {
+                    l.partial = false;
+                }
+            } else {
+                self.loaded = Some(LoadedFile {
+                    file,
+                    path: path.clone(),
+                    partial: false,
+                });
+                out.push(Directive::Player(PlayerCommand::Load {
+                    file,
+                    path: path.clone(),
+                    title: playlist_title(view, file),
+                }));
+                out.push(Directive::Player(PlayerCommand::SetPlaying(
+                    derive::playback_active(view, peers),
+                )));
+            }
         }
         out
     }
@@ -1670,11 +1770,15 @@ impl PlayerWiring {
         view: &StateView,
         peers: &[PeerInfo],
     ) -> Vec<Directive> {
-        if view.now_playing != Some(file) || self.loaded == Some(file) {
+        if view.now_playing != Some(file) || self.loaded.as_ref().is_some_and(|l| l.file == file) {
             return vec![];
         }
         tracing::info!(%file, "download playable; loading the partial file");
-        self.loaded = Some(file);
+        self.loaded = Some(LoadedFile {
+            file,
+            path: path.clone(),
+            partial: true,
+        });
         vec![
             Directive::Player(PlayerCommand::Load {
                 file,
@@ -1760,17 +1864,27 @@ impl PlayerWiring {
                     None => vec![],
                     // `holds_now_playing` guarantees `now_playing` is the file
                     // we hold, so it tags the published position.
-                    Some(file) => vec![
-                        Directive::Mutate(Mutation::SetUserSeek {
-                            file,
-                            from_millis,
-                            to_millis,
-                        }),
-                        Directive::Mutate(Mutation::SetPlaybackPosition {
-                            position_millis: to_millis,
-                            file,
-                        }),
-                    ],
+                    Some(file) => {
+                        // Re-anchor our own position estimate immediately —
+                        // don't wait for the next PositionTick. The playable
+                        // verdict and the download's sequential fetch window
+                        // both derive from `last_position`, and a seek past
+                        // the downloaded region must flip the verdict and
+                        // re-aim the window before the demuxer walks into
+                        // the unfetched zeros (design.md, File State).
+                        self.last_position = Some((file, to_millis));
+                        vec![
+                            Directive::Mutate(Mutation::SetUserSeek {
+                                file,
+                                from_millis,
+                                to_millis,
+                            }),
+                            Directive::Mutate(Mutation::SetPlaybackPosition {
+                                position_millis: to_millis,
+                                file,
+                            }),
+                        ]
+                    }
                 }
             }
             PlayerOutput::PositionTick {
@@ -1840,17 +1954,35 @@ impl PlayerWiring {
                 // the real now-playing video. This also harmlessly drops
                 // duplicate/stale reports for an already-advanced file (the
                 // server ignores those anyway). See `speaks_for_now_playing`.
-                if self.speaks_for_now_playing(view, file) {
-                    vec![Directive::ReportEof(file)]
-                } else {
+                //
+                // A loaded *partial* gets one more gate: it is sparse, so
+                // unfetched regions read as zeros and mpv can reach
+                // `eof-reached` mid-episode (a stalled download, or a seek
+                // past the fetched window). Only an EOF whose last known
+                // position sits within [`PARTIAL_EOF_EPSILON_MILLIS`] of
+                // the entry's duration is the real end; anything earlier
+                // is the zeros talking — drop it (the playable verdict
+                // flips and gates instead).
+                if !self.speaks_for_now_playing(view, file) {
                     vec![]
+                } else if self.loaded.as_ref().is_some_and(|l| l.partial)
+                    && !self.position_near_end(view, file)
+                {
+                    tracing::warn!(
+                        %file,
+                        position = ?self.last_position,
+                        "ignoring EOF from a partial file away from the end"
+                    );
+                    vec![]
+                } else {
+                    vec![Directive::ReportEof(file)]
                 }
             }
             PlayerOutput::LoadFailed { file } => {
                 // The path we loaded is gone/unreadable. Forget it, flip
                 // to Missing, and re-resolve so a re-download (or a
                 // re-appeared file) can recover. Next derive re-loads.
-                if self.loaded == Some(file) {
+                if self.loaded.as_ref().is_some_and(|l| l.file == file) {
                     self.loaded = None;
                 }
                 self.resolved.remove(&file);
@@ -2735,6 +2867,16 @@ mod tests {
 
     fn me() -> UserId {
         UserId::new("kim")
+    }
+
+    /// A verified `loaded` value for tests that force "we hold the real
+    /// now-playing video" directly.
+    fn loaded(i: u8) -> Option<LoadedFile> {
+        Some(LoadedFile {
+            file: hash(i),
+            path: PathBuf::from("/media/ep1.mkv"),
+            partial: false,
+        })
     }
 
     fn user_seek(user: UserId, event_at: u64, from_millis: u64, to_millis: u64) -> UserSeek {
@@ -3787,6 +3929,162 @@ mod tests {
     }
 
     #[test]
+    fn adopted_local_copy_at_a_new_path_reloads_the_player() {
+        // Regression (2026-08-12 review): `loaded` was a bare hash, so
+        // when the "local copy trumps the download" path deleted the
+        // partial and resolved Verified at a media-root path, the
+        // same-hash guard skipped the reload — the player kept playing
+        // the deleted partial's orphaned inode while advertising Ready.
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+
+        let out = wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/ep1.mkv".into()),
+            &view,
+            &[peer("kim")],
+        );
+        let load = player_cmds(&out).into_iter().find_map(|cmd| match cmd {
+            PlayerCommand::Load { path, .. } => Some(path.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            load,
+            Some(PathBuf::from("/media/ep1.mkv")),
+            "a verified copy at a different path must re-issue the Load"
+        );
+    }
+
+    #[test]
+    fn in_place_download_completion_does_not_reload() {
+        // The partial assembles at its final cache path, so completion
+        // at the *same* path needs no reload (design.md, File State).
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+
+        let out = wiring.note_local_file(hash(1), "/cache/files/aa".into());
+        assert!(
+            !player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
+            "an in-place completion must not reload"
+        );
+        let out = wiring.on_state(&view, &[peer("kim")]);
+        assert!(
+            !player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
+            "later snapshots must not reload the same copy either"
+        );
+    }
+
+    #[test]
+    fn partial_eof_away_from_the_end_is_not_reported() {
+        // Regression (2026-08-12 review): a sparse partial reads zeros
+        // past the fetched region, so mpv can report `eof-reached`
+        // mid-episode (a stalled download, or a seek past the window).
+        // Forwarding it would mark the episode watched and advance
+        // now-playing for the whole group off one bogus report.
+        let mut wiring = PlayerWiring::new(me());
+        let view = timed_state(1_000_000).view();
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 400_000,
+            },
+            &view,
+        );
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert!(
+            !out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
+            "a partial's EOF at 40% of the duration must not be reported: {out:?}"
+        );
+    }
+
+    #[test]
+    fn partial_eof_at_the_end_is_reported() {
+        // The genuine end of a still-flagged partial (position within
+        // the epsilon of the duration) must still advance the group.
+        let mut wiring = PlayerWiring::new(me());
+        let view = timed_state(1_000_000).view();
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 999_000,
+            },
+            &view,
+        );
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert!(
+            out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
+            "a partial's EOF at the real end must be reported: {out:?}"
+        );
+    }
+
+    #[test]
+    fn user_seek_reanchors_the_download_window_immediately() {
+        // Regression (2026-08-12 review): the playable verdict and the
+        // sequential fetch window are derived from `last_position`,
+        // which only updated on `PositionTick` — so for 1–2s after a
+        // seek past the downloaded region the client kept advertising
+        // DownloadingPlayable while demuxing zeros. The seek itself
+        // must re-anchor synchronously.
+        let chunk = dessplay_core::net::CHUNK_SIZE;
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(
+            A,
+            ts(1),
+            NewPlaylistEntry {
+                hash: hash(1),
+                added_by: UserId::new("baughn"),
+                filename: "ep1.mkv".into(),
+                size_bytes: 1000 * chunk,
+                duration_millis: Some(1_000_000),
+            },
+        );
+        state.set_now_playing(A, ts(2), Some(hash(1)));
+        state.set_playback_intent(A, ts(3), dessplay_core::types::PlaybackIntent::Playing);
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+
+        // A user seek to 50% — no PositionTick yet.
+        wiring.on_player(
+            PlayerOutput::UserSeeked {
+                from_millis: 0,
+                to_millis: 500_000,
+            },
+            &view,
+        );
+        let anchor = wiring
+            .on_state(&view, &[peer("kim")])
+            .iter()
+            .find_map(|d| match d {
+                Directive::StartDownload { play_chunk, .. } => Some(*play_chunk),
+                _ => None,
+            });
+        assert_eq!(
+            anchor,
+            Some(500),
+            "a user seek must re-anchor the download window without waiting for a tick"
+        );
+    }
+
+    #[test]
     fn download_anchor_follows_our_playback_position() {
         let chunk = dessplay_core::net::CHUNK_SIZE;
         let mut state = CrdtState::new();
@@ -4384,7 +4682,7 @@ mod tests {
         );
 
         // Once we hold the real video, the same tick IS credited.
-        wiring.loaded = Some(hash(1));
+        wiring.loaded = loaded(1);
         let credited = wiring.on_player(
             PlayerOutput::PositionTick {
                 file: hash(1),
@@ -4433,7 +4731,7 @@ mod tests {
         );
 
         // With the real video loaded, a seek DOES take authority.
-        wiring.loaded = Some(hash(1));
+        wiring.loaded = loaded(1);
         let real = wiring.on_player(
             PlayerOutput::UserSeeked {
                 from_millis: 0,
@@ -4491,7 +4789,7 @@ mod tests {
         // We already hold the real now-playing video; a stray path
         // observation (e.g. a late echo) must not trigger re-adoption.
         let mut wiring = PlayerWiring::new(me());
-        wiring.loaded = Some(hash(1));
+        wiring.loaded = loaded(1);
         let view = playing_state().view();
         let directives = wiring.on_player(
             PlayerOutput::PathObserved {
@@ -4831,7 +5129,7 @@ mod tests {
     #[test]
     fn user_seek_takes_authority_and_publishes_position() {
         let mut wiring = PlayerWiring::new(me());
-        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
+        wiring.loaded = loaded(1); // we hold the real now-playing video
         let view = playing_state().view();
         let directives = wiring.on_player(
             PlayerOutput::UserSeeked {
@@ -4911,7 +5209,7 @@ mod tests {
     #[test]
     fn crossing_85_percent_records_watched_once() {
         let mut wiring = PlayerWiring::new(me());
-        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
+        wiring.loaded = loaded(1); // we hold the real now-playing video
         let view = timed_state(100_000).view();
         // Below threshold: nothing.
         let before = wiring.on_player(
@@ -4951,7 +5249,7 @@ mod tests {
         // new now-playing file -- neither marking it watched nor
         // publishing it as our position. (docs/design.md, Watch Tracking)
         let mut wiring = PlayerWiring::new(me());
-        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
+        wiring.loaded = loaded(1); // we hold the real now-playing video
         // now-playing is hash(1) with a known 100s duration.
         let view = timed_state(100_000).view();
         // A trailing tick from a different (just-ended) file, well past
@@ -5000,7 +5298,7 @@ mod tests {
             }),
         );
         let mut wiring = PlayerWiring::new(me());
-        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
+        wiring.loaded = loaded(1); // we hold the real now-playing video
         let directives = wiring.on_player(
             PlayerOutput::PositionTick {
                 file: hash(1),
@@ -5030,7 +5328,7 @@ mod tests {
         // the 85% rule never fires (the EOF report still marks group
         // progress separately).
         let mut wiring = PlayerWiring::new(me());
-        wiring.loaded = Some(hash(1)); // we hold the real now-playing video
+        wiring.loaded = loaded(1); // we hold the real now-playing video
         let view = playing_state().view(); // entry(1) has duration None
         let directives = wiring.on_player(
             PlayerOutput::PositionTick {
