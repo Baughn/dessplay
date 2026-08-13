@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dessplay_core::hash::{Ed2kFileHash, ed2k_hash_reader};
 use dessplay_core::net::framing::{read_frame, write_frame};
@@ -3200,12 +3201,22 @@ async fn serve_transfer(
 /// returning `false`. A `std` mutex — held only for the arithmetic.
 struct UploadPacer {
     inner: std::sync::Mutex<UploadLimiter>,
+    /// Total bytes ever taken — the serve side's committed send volume
+    /// (each take precedes the disk read for one chunk). The
+    /// slow-reader property test asserts this stays bounded by
+    /// buffers + one chunk in hand while a stream's far end never
+    /// reads: it is the observable that catches a serve-side
+    /// read-ahead regression (chunks pulled off disk into a queue
+    /// instead of the write await being the flow control — the
+    /// 2026-07-28 bufferbloat shape).
+    taken: AtomicU64,
 }
 
 impl UploadPacer {
     fn new(limit: Option<u64>) -> Self {
         UploadPacer {
             inner: std::sync::Mutex::new(UploadLimiter::new(limit)),
+            taken: AtomicU64::new(0),
         }
     }
 
@@ -3217,10 +3228,16 @@ impl UploadPacer {
                 Err(_) => true, // poisoned: fail open, never wedge serving
             };
             if granted {
+                self.taken.fetch_add(bytes, Ordering::Relaxed);
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+
+    /// Total bytes ever taken (see the field doc).
+    fn taken_bytes(&self) -> u64 {
+        self.taken.load(Ordering::Relaxed)
     }
 }
 
@@ -4110,6 +4127,114 @@ mod tests {
             "hash_cache was rebuilt {rebuilds} times for {n} files -- \
              it must not be cloned once per scanned file"
         );
+    }
+
+    /// The overhaul's core property (2026-07-28 proposal, Testing
+    /// sketch): "a slow reader bounds the uploader's in-flight bytes to
+    /// buffers + windows, regardless of file size or source count." The
+    /// serve loop's flow control is the stream-write await itself, so a
+    /// stream whose far end never reads must stop the serve side from
+    /// *committing* more than one stream buffer plus the chunk in hand
+    /// — measured at the upload pacer, whose take precedes each chunk's
+    /// disk read. A read-ahead regression (chunks pulled into a queue
+    /// while a writer task drains it — the 2026-07-28 bufferbloat
+    /// shape) grows this figure with the request backlog and fails the
+    /// bound, no matter how the stream itself backpressures.
+    #[tokio::test]
+    async fn a_never_reading_downloader_bounds_the_serve_sides_committed_bytes() {
+        use dessplay_core::net::{CHUNK_SIZE, chunk_count};
+
+        const STREAM_BUFFER: usize = 64 * 1024;
+        // Per stream: the stream buffer, one chunk mid-write, and one
+        // chunk taken-but-not-yet-written.
+        let per_stream_bound = STREAM_BUFFER as u64 + 2 * CHUNK_SIZE;
+
+        // Matrix over file size × stalled-stream count (the "regardless
+        // of file size or source count" clause). Deterministic: the
+        // property is a hard bound, not a distribution.
+        for (blocks, streams) in [(1usize, 1usize), (2, 3)] {
+            let contents: Vec<u8> = (0..blocks * dessplay_core::hash::ED2K_BLOCK_SIZE as usize
+                + 77_000)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stall.mkv");
+            std::fs::write(&path, &contents).unwrap();
+            let size = contents.len() as u64;
+
+            // Sanity: the request backlog dwarfs the bound, so a
+            // read-ahead regression cannot pass by accident.
+            let backlog = u64::from(chunk_count(size)) * CHUNK_SIZE;
+            assert!(backlog > 4 * per_stream_bound * streams as u64);
+
+            let pacer = Arc::new(UploadPacer::new(None));
+            let (event_tx, mut event_rx) = mpsc::channel(64);
+            let mut far_ends = Vec::new(); // kept alive; never read
+            for i in 0..streams {
+                let (near, far) = {
+                    let (a, b) = tokio::io::duplex(STREAM_BUFFER);
+                    let (a_read, a_write) = tokio::io::split(a);
+                    let (b_read, b_write) = tokio::io::split(b);
+                    (
+                        BiStream {
+                            send: Box::new(a_write) as _,
+                            recv: Box::new(a_read) as _,
+                        },
+                        BiStream {
+                            send: Box::new(b_write) as _,
+                            recv: Box::new(b_read) as _,
+                        },
+                    )
+                };
+                tokio::spawn(serve_transfer(
+                    near,
+                    PeerId::new(format!("slow{i}")),
+                    hash(1),
+                    path.clone(),
+                    Arc::clone(&pacer),
+                    test_clock(),
+                    event_tx.clone(),
+                ));
+                // Request the whole file, then never read a byte.
+                let mut far = far;
+                let request = wire::encode(&PeerMessage::ChunkRequest {
+                    file: hash(1),
+                    chunks: (0..chunk_count(size)).collect(),
+                })
+                .unwrap();
+                write_frame(&mut far.send, &request).await.unwrap();
+                far_ends.push(far);
+            }
+
+            // Let the serve tasks run until the committed volume goes
+            // quiet — each task parked on its full stream.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let before = pacer.taken_bytes();
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if pacer.taken_bytes() == before && before > 0 {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "serve tasks never settled (taken {})",
+                    pacer.taken_bytes()
+                );
+            }
+            assert!(
+                event_rx.try_recv().is_err(),
+                "no serve task should have exited"
+            );
+            let taken = pacer.taken_bytes();
+            let bound = per_stream_bound * streams as u64;
+            assert!(
+                taken <= bound,
+                "blocks={blocks} streams={streams}: served side committed {taken} bytes \
+                 against a stalled reader (bound {bound}) — reading ahead of the stream \
+                 write instead of letting the write await be the flow control"
+            );
+            drop(far_ends);
+        }
     }
 
     /// The answered-request contract across a control-connection death:

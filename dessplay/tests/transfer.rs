@@ -490,6 +490,147 @@ async fn two_seed_transfer_completes_and_stays_efficient() {
     );
 }
 
+/// A write half that counts every byte the far side accepted — the
+/// measure of how much the serve task managed to push into the stream.
+struct CountingWrite {
+    inner: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+    count: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl tokio::io::AsyncWrite for CountingWrite {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(written)) = &poll {
+            self.count
+                .fetch_add(*written as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// The slow-reader property, end-to-end shape (2026-07-28 proposal,
+/// Testing sketch): a serve stream whose far end never reads a byte
+/// must **settle** — the serve task parks on its full stream instead
+/// of erroring, spinning, or tearing the serve down — with the bytes
+/// the stream accepted bounded by its buffer plus one in-flight chunk
+/// frame. The stream-accepted figure alone cannot expose a serve-side
+/// read-ahead regression (the transport bounds it regardless), so the
+/// sharp half of the property — the serve side's *committed* bytes
+/// stay bounded too — lives at the serve-task level:
+/// `actors::file::tests::a_never_reading_downloader_bounds_the_serve_sides_committed_bytes`.
+#[tokio::test]
+async fn a_never_reading_downloader_bounds_the_uploaders_written_bytes() {
+    use dessplay_core::net::framing::write_frame;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const STREAM_BUFFER: usize = 64 * 1024;
+    // One partially-written chunk frame can straddle the buffer edge:
+    // allow a full chunk plus framing/envelope slack past the buffer.
+    let bound = STREAM_BUFFER as u64 + dessplay_core::net::CHUNK_SIZE + 1024;
+
+    // Matrix over file size and stalled-source count — deterministic,
+    // no seeds needed (the property is a hard bound, not a
+    // distribution).
+    for (blocks, stalled_streams) in [(1usize, 1usize), (2, 3)] {
+        let bytes = data(blocks * ED2K_BLOCK_SIZE as usize + 77_000);
+        let hash = ed2k_hash_bytes(&bytes);
+        let filename = "stall.mkv";
+        let mut seeder = spawn_actor("seed", &[(filename, &bytes)]);
+        make_seeder_ready(&mut seeder, filename, hash.root).await;
+
+        // Sanity: the request backlog dwarfs the allowed bound, so a
+        // buffering regression cannot pass by accident.
+        let requested_bytes = u64::from(dessplay_core::net::chunk_count(hash.size_bytes))
+            * dessplay_core::net::CHUNK_SIZE;
+        assert!(
+            requested_bytes > 4 * bound,
+            "test setup: request backlog ({requested_bytes}) must dwarf the bound ({bound})"
+        );
+
+        let mut fars = Vec::new(); // kept alive: dropping closes the stream
+        let mut counters = Vec::new();
+        for i in 0..stalled_streams {
+            let (a, b) = tokio::io::duplex(STREAM_BUFFER);
+            let (a_read, a_write) = tokio::io::split(a);
+            let (b_read, b_write) = tokio::io::split(b);
+            let count = Arc::new(AtomicU64::new(0));
+            let near = dessplay_core::net::BiStream {
+                send: Box::new(CountingWrite {
+                    inner: Box::new(b_write),
+                    count: Arc::clone(&count),
+                }),
+                recv: Box::new(b_read),
+            };
+            seeder
+                .commands
+                .send(FileCommand::TransferStream {
+                    peer: PeerId::new(&format!("slow{i}")),
+                    file: hash.root,
+                    outbound: false,
+                    stream: near,
+                })
+                .await
+                .unwrap();
+            // Request the entire file on this stream — then never read.
+            let mut far_send: Box<dyn tokio::io::AsyncWrite + Send + Unpin> = Box::new(a_write);
+            let request = dessplay_core::wire::encode(&PeerMessage::ChunkRequest {
+                file: hash.root,
+                chunks: (0..dessplay_core::net::chunk_count(hash.size_bytes)).collect(),
+            })
+            .unwrap();
+            write_frame(&mut far_send, &request).await.unwrap();
+            fars.push((far_send, a_read));
+            counters.push(count);
+        }
+
+        // Let the serve tasks run until every counter has gone quiet —
+        // i.e. each task is parked on its full stream.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let before: Vec<u64> = counters.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let after: Vec<u64> = counters.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+            if before == after && after.iter().all(|&c| c > 0) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "serve tasks never settled; counters: {after:?}"
+            );
+        }
+
+        for (i, count) in counters.iter().enumerate() {
+            let written = count.load(Ordering::Relaxed);
+            assert!(
+                written <= bound,
+                "stalled stream {i} (blocks={blocks}, streams={stalled_streams}): \
+                 {written} bytes written, bound {bound} — the serve side is buffering \
+                 instead of blocking on its stream"
+            );
+        }
+        drop(fars);
+    }
+}
+
 /// The answered-request contract (2026-08-12 review, HIGH): a stream
 /// open the network layer cannot satisfy is answered with
 /// `TransferStreamFailed`, and the file actor must clear its pending
