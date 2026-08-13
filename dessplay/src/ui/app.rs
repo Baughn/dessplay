@@ -254,9 +254,12 @@ struct MarqueeAnim {
     started_at_millis: u64,
     /// The last computed cell offset (draws render this).
     offset: usize,
-    /// The middle slot's width from the last draw; 0 until measured.
-    /// The done-check waits for a real measurement rather than guess.
-    slot_width: usize,
+    /// The middle slot's width from the last draw; `None` until a draw
+    /// has measured it. The done-check waits for a real measurement
+    /// rather than guess — but a *measured* zero (a narrow terminal
+    /// while a file plays) terminates the pass at once, or the 10 Hz
+    /// animation tick would pin the shell forever.
+    slot_width: Option<usize>,
     /// The pass has fully exited; the slot reverts to the suggestion.
     done: bool,
 }
@@ -436,10 +439,13 @@ impl Ui {
         }
     }
 
-    /// Recompute the marquee offset from wall time; returns whether it
-    /// moved. Done latches when the text has fully exited the slot — but
-    /// only against a *measured* slot width (a pass that has never been
-    /// drawn keeps animating conservatively; the first draw measures).
+    /// Recompute the marquee offset from wall time; returns whether
+    /// anything changed. Done latches when the text has fully exited the
+    /// slot — but only against a *measured* slot width (a pass that has
+    /// never been drawn keeps animating conservatively; the first draw
+    /// measures). A measured width of **zero** is a real measurement,
+    /// not "not yet measured": the pass ends immediately, since no cell
+    /// of it can ever be shown.
     fn advance_marquee(&mut self, now_millis: u64) -> bool {
         let Some(anim) = &mut self.marquee else {
             return false;
@@ -449,14 +455,15 @@ impl Ui {
         }
         let elapsed = now_millis.saturating_sub(anim.started_at_millis);
         let offset = (elapsed * props::MARQUEE_CELLS_PER_SEC / 1000) as usize;
-        if offset == anim.offset {
-            return false;
-        }
+        let moved = offset != anim.offset;
         anim.offset = offset;
-        if anim.slot_width > 0 && offset >= anim.slot_width + anim.text_width {
+        if let Some(width) = anim.slot_width
+            && (width == 0 || offset >= width + anim.text_width)
+        {
             anim.done = true;
+            return true;
         }
-        true
+        moved
     }
 
     /// Append a subtitle line to the rolling log (empty lines are
@@ -815,7 +822,7 @@ impl Ui {
                         // it, or a wall-ahead clock skips its entry.
                         started_at_millis: self.clock,
                         offset: 0,
-                        slot_width: 0,
+                        slot_width: None,
                         done: stale || mode != MarqueeMode::Marquee,
                     });
                     if !stale && mode == MarqueeMode::Chat {
@@ -2045,7 +2052,7 @@ impl Ui {
         if let Some(anim) = &mut self.marquee {
             // Measure the slot every draw (even while a warning owns
             // it), so the done-check tracks the real width.
-            anim.slot_width = slot_width;
+            anim.slot_width = Some(slot_width);
         }
         self.status.view(frame, status_area);
         self.keybar.view(frame, keybar_area);
@@ -2803,6 +2810,99 @@ mod tests {
         assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
     }
 
+    /// Regression (2026-08-12 review): on a terminal narrower than ~83
+    /// columns while a file is playing, the 47-cell progress text and
+    /// ~32-cell health metrics leave the middle slot genuinely
+    /// zero-width — a real measurement, not "not yet measured". The
+    /// done-latch used to require `slot_width > 0`, so the pass never
+    /// terminated and `next_tick_hint()` pinned the shell to 10 Hz
+    /// full-screen repaints until compaction or a restart.
+    #[test]
+    fn marquee_pass_terminates_on_a_zero_width_slot() {
+        use crate::ui::props::{HealthProps, HealthSample};
+        use dessplay_core::types::PlaybackPosition;
+
+        // A playing snapshot: now-playing with a duration, our own
+        // position sample (non-empty progress text), link Connected
+        // with a health sample (full metrics on the right).
+        let hash = Ed2kHash([1; 16]);
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(
+            A,
+            SharedTimestamp(1),
+            dessplay_core::playlist::NewPlaylistEntry {
+                hash,
+                added_by: UserId::new("baughn"),
+                filename: "ep1.mkv".into(),
+                size_bytes: 1,
+                duration_millis: Some(1_440_000),
+            },
+        );
+        state.set_now_playing(A, SharedTimestamp(2), Some(hash));
+        state.set_playback_position(
+            A,
+            SharedTimestamp(3),
+            me(),
+            PlaybackPosition {
+                position_millis: 754_000,
+                timestamp: SharedTimestamp(3),
+                file: hash,
+            },
+        );
+        let mut view = state.view();
+        view.marquee = Some((
+            SharedTimestamp(1_000),
+            dessplay_core::types::MarqueeMessage {
+                text: "<Amu> Whaaaat?".into(),
+                set_by: None,
+            },
+        ));
+        let sample = HealthSample {
+            rtt_millis: Some(89),
+            unanswered_probes: 0,
+            server_silence_millis: 0,
+            up_bps: 1_200_000,
+            down_bps: 340_000,
+        };
+        let snapshot = UiSnapshot {
+            view: std::sync::Arc::new(view),
+            now: 1_000,
+            link: props::LinkStatus::Connected,
+            health: HealthProps {
+                link: props::LinkStatus::Connected,
+                sample: Some(sample),
+                ..HealthProps::default()
+            },
+            ..UiSnapshot::default()
+        };
+        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
+        ui.apply_snapshot(snapshot);
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
+
+        // Draw at 80 columns: the slot measures as zero. Sanity-check
+        // the collapse arithmetic so this test can't pass vacuously on
+        // a roomy slot.
+        let buffer = render_buffer_at(&mut ui, 80, 30);
+        let bottom: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 25)].symbol())
+            .collect();
+        assert!(bottom.contains("sync ok"), "health metrics drawn: {bottom}");
+        assert!(bottom.contains("] 12:34 /"), "progress drawn: {bottom}");
+        assert!(
+            !bottom.contains("Whaaa"),
+            "no room for any marquee cell: {bottom}"
+        );
+
+        // A minute later the pass is long over; the tick hint must be
+        // back to the lazy 1s even though the text never fit on screen.
+        assert!(ui.advance_clock(61_000));
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_secs(1),
+            "a zero-width slot must still terminate the pass"
+        );
+    }
+
     #[test]
     fn saving_a_non_marquee_mode_stops_a_pass_mid_scroll() {
         let mut ui = ui_with_view(StateView::default());
@@ -2854,10 +2954,14 @@ mod tests {
     }
 
     fn render_test_buffer(ui: &mut Ui) -> tuirealm::ratatui::buffer::Buffer {
+        render_buffer_at(ui, 100, 30)
+    }
+
+    fn render_buffer_at(ui: &mut Ui, width: u16, height: u16) -> tuirealm::ratatui::buffer::Buffer {
         use tuirealm::ratatui::Terminal;
         use tuirealm::ratatui::backend::TestBackend;
 
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| ui.draw(frame))
             .unwrap()
