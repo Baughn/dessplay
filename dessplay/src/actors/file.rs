@@ -3331,7 +3331,9 @@ impl UploadPacer {
         }
     }
 
-    /// Total bytes ever taken (see the field doc).
+    /// Total bytes ever taken (see the field doc). Read only by the
+    /// slow-reader bound test; the counter itself is always maintained.
+    #[cfg(test)]
     fn taken_bytes(&self) -> u64 {
         self.taken.load(Ordering::Relaxed)
     }
