@@ -52,11 +52,20 @@ pub struct UiSnapshot {
     /// Known usernames not currently in `peers` (design.md #15) — valid
     /// targets for `n` / `/skip <name>` even before they show up.
     pub known_offline: Vec<dessplay_core::net::KnownUser>,
-    /// Shared-clock millis when this snapshot was built — the "now" the
-    /// Users pane's "last seen Nd ago" labels are relative to. Threaded
-    /// explicitly (not read from the system clock inside `props`) so the
-    /// mapping stays a pure, testable function of its inputs.
+    /// **Wall-clock** millis when this snapshot was built — the "now"
+    /// the Users pane's "last seen Nd ago" labels are relative to, and
+    /// the clock domain day separators deliberately use (design.md,
+    /// System Messages: local time, per client). Threaded explicitly
+    /// (not read from the system clock inside `props`) so the mapping
+    /// stays a pure, testable function of its inputs.
     pub now: u64,
+    /// **Shared-clock** millis when this snapshot was built (`now` plus
+    /// the time-sync offset). This is the domain synced LWW stamps live
+    /// in, so anything comparing against a stamp — the marquee's
+    /// staleness guard — must use this, never `now`: a wall clock
+    /// leading the group would otherwise read fresh stamps as stale
+    /// (and a lagging one would replay last night's leftovers).
+    pub shared_now: u64,
     /// Local watch history: series (by AniDB id or filename-parsed name)
     /// -> last-watched millis (drives the Recent mode sort).
     pub recency: BTreeMap<crate::storage::SeriesKey, u64>,
@@ -791,8 +800,9 @@ impl Ui {
     /// Replace the snapshot and recompute every pane's props.
     pub fn apply_snapshot(&mut self, snapshot: UiSnapshot) {
         // Same merge-first discipline as `advance_clock`: every animator
-        // runs on the merged clock, never a single domain's raw value.
-        self.clock = self.clock.max(snapshot.now);
+        // runs on the merged clock — the max of every domain the
+        // snapshot carries — never a single domain's raw value.
+        self.clock = self.clock.max(snapshot.now).max(snapshot.shared_now);
         self.speaker_colors.advance(self.clock);
         // Marquee lifecycle: a new LWW stamp starts a fresh pass (even
         // for identical text — a rewrite replays); the same stamp never
@@ -806,7 +816,13 @@ impl Ui {
         // this runs before the chat merge below), Off shows nothing —
         // both still adopt the stamp, so flipping back to Marquee never
         // replays an old message.
-        let startup = *self.startup_shared_millis.get_or_insert(snapshot.now);
+        // Seeded from the snapshot's *shared* clock — the stamp it
+        // gates lives in that domain (2026-08-12 review: seeding from
+        // the wall-clock `now` made a leading clock suppress fresh
+        // comments and a lagging one replay stale ones).
+        let startup = *self
+            .startup_shared_millis
+            .get_or_insert(snapshot.shared_now);
         match &snapshot.view.marquee {
             Some((stamp, message)) => {
                 if self.marquee.as_ref().map(|anim| anim.key) != Some(*stamp) {
@@ -2659,6 +2675,8 @@ mod tests {
         UiSnapshot {
             view: std::sync::Arc::new(view),
             now,
+            // The two domains coincide unless a test separates them.
+            shared_now: now,
             ..UiSnapshot::default()
         }
     }
@@ -2741,6 +2759,41 @@ mod tests {
         // A fresh write this session plays normally.
         ui.apply_snapshot(marquee_snapshot("<Amu> Whaaaat?", 3_602_000, 3_602_000));
         assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
+    }
+
+    /// Regression (2026-08-12 review): the staleness guard compares the
+    /// marquee's **shared-clock** LWW stamp against the first snapshot's
+    /// "now" — which used to be raw wall-clock. A wall clock leading the
+    /// group by N suppressed every marquee written in the first N ms; a
+    /// lagging one replayed last night's final comment. The guard must
+    /// seed from the snapshot's shared clock.
+    #[test]
+    fn marquee_staleness_guard_uses_the_shared_clock_not_wall() {
+        // Wall clock 95s ahead of the group: a comment stamped "now" in
+        // shared time sits behind snapshot.now, but it is fresh and
+        // must play.
+        let mut ui = ui_with_view(StateView::default());
+        let mut snapshot = marquee_snapshot("<Amu> Whaaaat?", 5_000, 100_000);
+        snapshot.shared_now = 4_000;
+        ui.apply_snapshot(snapshot);
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_millis(100),
+            "a stamp fresh by the shared clock plays, whatever the wall says"
+        );
+
+        // The true-stale case still never plays: a stamp from before
+        // this session's first snapshot (in shared time) is last
+        // night's leftover.
+        let mut ui = ui_with_view(StateView::default());
+        let mut snapshot = marquee_snapshot("<Amu> Whaaaat?", 500, 100_000);
+        snapshot.shared_now = 3_600_000;
+        ui.apply_snapshot(snapshot);
+        assert_eq!(
+            ui.next_tick_hint(),
+            std::time::Duration::from_secs(1),
+            "a pre-startup stamp stays stale under the shared clock too"
+        );
     }
 
     #[test]

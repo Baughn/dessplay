@@ -53,6 +53,7 @@ impl UiClient {
             peers: self.handle.peers.borrow().clone(),
             known_offline: self.handle.known_offline.borrow().clone(),
             now: 0,
+            shared_now: 0,
             recency: BTreeMap::new(),
             cache_hashes: Default::default(),
             watched_hashes: Default::default(),

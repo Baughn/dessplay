@@ -152,6 +152,7 @@ fn snapshot(view: StateView, peers: Vec<PeerInfo>) -> UiSnapshot {
         peers,
         known_offline: Default::default(),
         now: 0,
+        shared_now: 0,
         recency: BTreeMap::new(),
         cache_hashes: Default::default(),
         watched_hashes: Default::default(),
@@ -169,6 +170,7 @@ fn snapshot_with_cache(view: StateView, peers: Vec<PeerInfo>, cache: &[Ed2kHash]
         peers,
         known_offline: Default::default(),
         now: 0,
+        shared_now: 0,
         recency: BTreeMap::new(),
         cache_hashes: cache.iter().copied().collect(),
         watched_hashes: Default::default(),
@@ -2130,6 +2132,7 @@ fn hashing_progress_overlay_appears_and_clears() {
 fn snapshot_at(view: StateView, peers: Vec<PeerInfo>, now: u64) -> UiSnapshot {
     let mut snapshot = snapshot(view, peers);
     snapshot.now = now;
+    snapshot.shared_now = now;
     snapshot
 }
 

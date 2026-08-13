@@ -2390,6 +2390,13 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         }
     }
 
+    /// The latest time-sync offset (shared clock − wall clock), millis.
+    /// The run loop uses it to stamp snapshots with a shared-clock
+    /// `shared_now` alongside the wall-clock `now`.
+    pub fn clock_offset(&self) -> i64 {
+        self.clock_offset
+    }
+
     /// Quit the player (if one ever spawned).
     pub async fn shutdown(&mut self) {
         if let Some(player) = &self.player {

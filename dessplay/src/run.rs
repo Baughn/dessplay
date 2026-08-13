@@ -1941,11 +1941,18 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 && peer.role == dessplay_core::net::Role::Interactive
                 && peer.presence == dessplay_core::net::Presence::Present
         });
+        // Wall clock for local-domain consumers (last-seen labels, day
+        // separators); shared clock for anything compared against synced
+        // LWW stamps (the marquee staleness guard) — the two drift apart
+        // by exactly the time-sync offset.
+        let now = (system_clock())();
+        let shared_now = now.saturating_add_signed(self.shell.clock_offset());
         Some(crate::ui::app::UiSnapshot {
             view: std::sync::Arc::new(view),
             peers,
             known_offline: self.handle.known_offline.borrow().clone(),
-            now: (system_clock())(),
+            now,
+            shared_now,
             recency,
             cache_hashes,
             watched_hashes,
