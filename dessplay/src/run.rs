@@ -1614,14 +1614,23 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         series: ctx.series_name.clone(),
                     };
                     if let Some(plan) = self.commentary.plan_tick(&gates) {
-                        let path = self.commentary.screenshot_path();
                         // Only poll for a frame a player was actually asked
-                        // to write.
-                        let shot = self
-                            .shell
-                            .request_screenshot(path.clone())
-                            .await
-                            .then_some(path);
+                        // to write. A leftover frame from a slow mpv must
+                        // never masquerade as this tick's: the path is
+                        // deleted before the command goes out, and the
+                        // request instant rides along so a write predating
+                        // it is rejected (commentary::poll_screenshot).
+                        let shot = match self.commentary.screenshot_path() {
+                            Some(path) => {
+                                let requested_at = std::time::SystemTime::now();
+                                let _ = std::fs::remove_file(&path);
+                                self.shell
+                                    .request_screenshot(path.clone())
+                                    .await
+                                    .then_some((path, requested_at))
+                            }
+                            None => None,
+                        };
                         self.commentary.spawn_job(plan, &ctx, shot);
                     }
                 }

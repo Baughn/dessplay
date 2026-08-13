@@ -116,6 +116,10 @@ pub enum CommentaryError {
     Refused,
     /// The character list came back empty.
     NoCharacters,
+    /// The blocking job panicked. Mapped to an ordinary failure so the
+    /// in-flight guard always releases (a dropped, unsent result sender
+    /// used to latch it forever — 2026-08-12 review).
+    Panicked(String),
 }
 
 impl std::fmt::Display for CommentaryError {
@@ -125,6 +129,7 @@ impl std::fmt::Display for CommentaryError {
             CommentaryError::Api(e) => write!(f, "api: {e}"),
             CommentaryError::Refused => write!(f, "model refused"),
             CommentaryError::NoCharacters => write!(f, "empty character list"),
+            CommentaryError::Panicked(msg) => write!(f, "job panicked: {msg}"),
         }
     }
 }
@@ -617,8 +622,43 @@ pub struct CommentaryEngine {
     /// from [`Self::ticker`] so the two arms borrow disjointly) and
     /// feeds each into [`Self::finish`].
     pub results: mpsc::Receiver<Result<JobOutcome, CommentaryError>>,
-    /// Where the player writes screenshots (one path, overwritten).
-    screenshot_path: PathBuf,
+    /// Where the player writes screenshots (one stable path inside a
+    /// private per-process directory, overwritten every tick). `None`
+    /// when the directory could not be created — screenshots are
+    /// disabled, commentary itself still runs.
+    screenshots: Option<ScreenshotSlot>,
+}
+
+/// The screenshot drop point: one stable path (`frame.jpg`) inside an
+/// engine-owned temporary directory, mode 0700 on Unix. A predictable
+/// name in the shared, world-writable `$TMPDIR` was a symlink-following
+/// exfiltration hazard (2026-08-12 review): `poll_screenshot` reads
+/// whatever the path resolves to and ships it to the API, so the path
+/// must live where only this user can plant anything. The path stays
+/// stable across ticks within a session — mpv just overwrites it — and
+/// the directory (and any leftover frame) is removed on drop.
+struct ScreenshotSlot {
+    path: PathBuf,
+    /// Owns the directory; kept alive for the engine's lifetime.
+    _dir: tempfile::TempDir,
+}
+
+impl ScreenshotSlot {
+    fn create() -> std::io::Result<Self> {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("dessplay-commentary-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        let dir = builder.tempdir()?;
+        // .jpg drives mpv's format inference: a PNG of a 10-bit source
+        // is 16-bit and ~8MB — past the API's image cap — where a JPEG
+        // frame is a few hundred KB.
+        let path = dir.path().join("frame.jpg");
+        Ok(Self { path, _dir: dir })
+    }
 }
 
 impl CommentaryEngine {
@@ -676,11 +716,15 @@ impl CommentaryEngine {
             in_flight: false,
             results_tx,
             results,
-            // .jpg drives mpv's format inference: a PNG of a 10-bit
-            // source is 16-bit and ~8MB — past the API's image cap —
-            // where a JPEG frame is a few hundred KB.
-            screenshot_path: std::env::temp_dir()
-                .join(format!("dessplay-commentary-{}.jpg", std::process::id())),
+            screenshots: ScreenshotSlot::create()
+                .inspect_err(|e| {
+                    // Never a reason to break commentary — the frame is
+                    // best-effort on top of best-effort.
+                    tracing::warn!(
+                        "commentary: no private screenshot dir ({e}); screenshots disabled"
+                    );
+                })
+                .ok(),
         }
     }
 
@@ -704,6 +748,11 @@ impl CommentaryEngine {
     /// re-cadence on an interval change. Clearing the token drops the
     /// thread too (a fresh token starts fresh); an in-flight call
     /// finishes and its result is discarded if the engine is off by then.
+    /// `in_flight` is deliberately *not* reset here: the job always
+    /// delivers an outcome (panics included — see `spawn_job`'s
+    /// catch_unwind) and [`Self::finish`] clears the guard, while
+    /// resetting it under a live job would let calls stack — the very
+    /// thing the guard exists to prevent.
     pub fn reconfigure(&mut self, token: Option<&str>, interval: CommentaryInterval) {
         self.model = token.map(|token| {
             Arc::new(AnthropicModel::new(token.to_string())) as Arc<dyn CommentaryModel>
@@ -719,9 +768,11 @@ impl CommentaryEngine {
         self.log_state("reconfigured");
     }
 
-    /// Where the player should write the screenshot for the next job.
-    pub fn screenshot_path(&self) -> PathBuf {
-        self.screenshot_path.clone()
+    /// Where the player should write the screenshot for the next job;
+    /// `None` when the private directory could not be created (the
+    /// tick then simply goes out frameless).
+    pub fn screenshot_path(&self) -> Option<PathBuf> {
+        self.screenshots.as_ref().map(|slot| slot.path.clone())
     }
 
     /// The current voice, if any (tests peek at it).
@@ -783,9 +834,16 @@ impl CommentaryEngine {
     }
 
     /// Launch the blocking job for a planned tick. `screenshot` is the
-    /// path the player was asked to write, or `None` when no player is
-    /// running (skip the poll entirely).
-    pub fn spawn_job(&mut self, plan: TickPlan, ctx: &AdvisorContext, screenshot: Option<PathBuf>) {
+    /// path the player was asked to write plus the instant the request
+    /// was issued (a frame whose mtime predates it is a stale leftover
+    /// and is never attached), or `None` when no player is running
+    /// (skip the poll entirely).
+    pub fn spawn_job(
+        &mut self,
+        plan: TickPlan,
+        ctx: &AdvisorContext,
+        screenshot: Option<(PathBuf, std::time::SystemTime)>,
+    ) {
         let Some(model) = self.model.clone() else {
             return;
         };
@@ -872,7 +930,19 @@ impl CommentaryEngine {
             "commentary: requesting a comment"
         );
         tokio::task::spawn_blocking(move || {
-            let outcome = run_job(model.as_ref(), spec, screenshot.as_deref());
+            // The outcome must reach `finish` even when the job panics
+            // (fs read, base64, the HTTP client, a future model impl):
+            // a dropped, unsent sender used to latch `in_flight` for
+            // the rest of the session (2026-08-12 review). A panic is
+            // just another failure — a warn line and a skipped tick,
+            // per the design.md failure policy.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let screenshot = screenshot
+                    .as_ref()
+                    .map(|(path, requested_at)| (path.as_path(), *requested_at));
+                run_job(model.as_ref(), spec, screenshot)
+            }))
+            .unwrap_or_else(|panic| Err(CommentaryError::Panicked(panic_message(&*panic))));
             let _ = tx.blocking_send(outcome);
         });
     }
@@ -946,14 +1016,27 @@ impl CommentaryEngine {
     }
 }
 
+/// Best-effort text of a panic payload (`&str` / `String` from
+/// `panic!`; anything else is opaque).
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".into()
+    }
+}
+
 /// The blocking job body: poll the screenshot, resolve the voice, ask
 /// for the comment. Runs entirely on a blocking thread.
 fn run_job(
     model: &dyn CommentaryModel,
     spec: JobSpec,
-    screenshot: Option<&Path>,
+    screenshot: Option<(&Path, std::time::SystemTime)>,
 ) -> Result<JobOutcome, CommentaryError> {
-    let screenshot_bytes = screenshot.and_then(poll_screenshot);
+    let screenshot_bytes =
+        screenshot.and_then(|(path, requested_at)| poll_screenshot(path, requested_at));
     let fresh = spec.keep.is_none();
     let commentator = match spec.keep {
         Some(commentator) => commentator,
@@ -1009,14 +1092,29 @@ fn run_job(
 /// be non-empty, and hold the same size across two polls. A miss is
 /// `None` — the comment goes out without the frame. A frame over
 /// [`MAX_SCREENSHOT_BYTES`] is likewise dropped: the API rejects it
-/// outright, and losing the image beats losing the whole comment.
-fn poll_screenshot(path: &Path) -> Option<Vec<u8>> {
+/// outright, and losing the image beats losing the whole comment. A
+/// file whose mtime predates `requested_at` is a leftover an earlier
+/// tick's slow mpv finished late (the caller deletes the path before
+/// each request, but a late write can still race in behind that) — it
+/// is deleted and never attached.
+fn poll_screenshot(path: &Path, requested_at: std::time::SystemTime) -> Option<Vec<u8>> {
     let mut last_len = None;
     for _ in 0..SCREENSHOT_POLLS {
         std::thread::sleep(SCREENSHOT_POLL_INTERVAL);
         if let Ok(meta) = std::fs::metadata(path) {
             let len = meta.len();
             if len > 0 && last_len == Some(len) {
+                if meta
+                    .modified()
+                    .ok()
+                    .is_some_and(|written| written < requested_at)
+                {
+                    // Written before this tick asked for it: a previous
+                    // tick's late frame, minutes old by now.
+                    let _ = std::fs::remove_file(path);
+                    tracing::debug!("screenshot predates the request; dropped");
+                    return None;
+                }
                 let frame = std::fs::read(path).ok();
                 let _ = std::fs::remove_file(path);
                 if len > MAX_SCREENSHOT_BYTES {
@@ -1414,7 +1512,11 @@ mod tests {
             let path = dir.path().join("frame.jpg");
             std::fs::write(&path, format!("frame {i}")).unwrap();
             let plan = engine.plan_tick(&gates("s")).unwrap();
-            engine.spawn_job(plan, &ctx("s"), Some(path));
+            engine.spawn_job(
+                plan,
+                &ctx("s"),
+                Some((path, std::time::SystemTime::UNIX_EPOCH)),
+            );
             take(&mut engine).await.unwrap();
         }
         // A fifth, frameless tick: its history is the four turns above.
@@ -1797,7 +1899,11 @@ mod tests {
         let fake = FakeModel::new(&["Amu"], "<Amu> hi");
         let mut engine = engine(fake.clone(), NO_REROLL_SEED);
         let plan = engine.plan_tick(&gates("s")).unwrap();
-        engine.spawn_job(plan, &ctx("s"), Some(path.clone()));
+        engine.spawn_job(
+            plan,
+            &ctx("s"),
+            Some((path.clone(), std::time::SystemTime::UNIX_EPOCH)),
+        );
         take(&mut engine).await.unwrap();
         assert_eq!(
             fake.comment_requests.lock().unwrap()[0].screenshot,
@@ -1828,11 +1934,61 @@ mod tests {
         assert_eq!(
             engine
                 .screenshot_path()
+                .expect("private dir created")
                 .extension()
                 .and_then(|e| e.to_str()),
             Some("jpg"),
             "PNG frames from 10-bit video exceed the API image cap"
         );
+    }
+
+    /// The screenshot path lives in a private, engine-owned directory
+    /// (0700 on Unix), never at a predictable name in the shared
+    /// world-writable $TMPDIR — `poll_screenshot` reads whatever the
+    /// path resolves to and ships it to the API, so a pre-planted
+    /// symlink there meant local-file exfiltration (2026-08-12
+    /// review). The path stays stable across ticks (mpv overwrites the
+    /// same file).
+    #[tokio::test]
+    async fn screenshot_path_is_private_and_stable() {
+        let engine = engine(FakeModel::new(&["Amu"], "hi"), 1);
+        let path = engine.screenshot_path().expect("private dir created");
+        let dir = path.parent().unwrap();
+        assert!(dir.is_dir(), "the directory exists up front");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "only this user can reach the frame");
+        }
+        assert_eq!(
+            engine.screenshot_path(),
+            Some(path.clone()),
+            "one stable path per session — mpv overwrites it"
+        );
+        drop(engine);
+        assert!(!dir.exists(), "the engine cleans up its directory");
+    }
+
+    /// Regression (2026-08-12 review): a screenshot mpv finished
+    /// writing *after* a tick's poll window used to survive on disk and
+    /// get attached to the next tick, minutes later. Any file whose
+    /// mtime predates the request instant is a stale leftover and must
+    /// be rejected (and cleaned up).
+    #[test]
+    fn stale_screenshot_predating_the_request_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frame.jpg");
+        std::fs::write(&path, b"stale frame").unwrap();
+        // The request "happens" well after the file was written, so the
+        // pre-planted frame is unambiguously stale.
+        let requested_at = std::time::SystemTime::now() + Duration::from_secs(3600);
+        assert_eq!(
+            poll_screenshot(&path, requested_at),
+            None,
+            "a frame older than the request is never attached"
+        );
+        assert!(!path.exists(), "the stale frame is cleaned up");
     }
 
     /// Belt and braces for the same regression: a frame that is still
@@ -1843,7 +1999,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("frame.jpg");
         std::fs::write(&path, vec![0u8; MAX_SCREENSHOT_BYTES as usize + 1]).unwrap();
-        assert_eq!(poll_screenshot(&path), None);
+        assert_eq!(
+            poll_screenshot(&path, std::time::SystemTime::UNIX_EPOCH),
+            None
+        );
         assert!(!path.exists(), "the oversized frame is still cleaned up");
     }
 
@@ -1855,6 +2014,49 @@ mod tests {
         let body = br#"{"type":"error","error":{"type":"invalid_request_error","message":"image exceeds 10 MB maximum"}}"#;
         assert_eq!(api_error_detail(body), "image exceeds 10 MB maximum");
         assert_eq!(api_error_detail(b"not json at all"), "not json at all");
+    }
+
+    /// Regression (2026-08-12 review): a panic inside the blocking job
+    /// used to drop the result sender unsent — `in_flight` latched
+    /// forever and the feature died silently for the session. The
+    /// outcome must always be delivered (design.md failure policy:
+    /// every failure is a log line and a skipped tick), releasing the
+    /// guard so the next tick proceeds.
+    #[tokio::test]
+    async fn a_panicking_job_still_delivers_a_failure_and_releases_the_guard() {
+        struct PanickingModel;
+        impl CommentaryModel for PanickingModel {
+            fn list_characters(
+                &self,
+                _req: &CharacterRequest,
+            ) -> Result<Vec<String>, CommentaryError> {
+                Ok(vec!["Amu".into()])
+            }
+
+            fn write_comment(&self, _req: &CommentRequest) -> Result<String, CommentaryError> {
+                panic!("scripted panic");
+            }
+        }
+
+        let mut engine = engine(Arc::new(PanickingModel), NO_REROLL_SEED);
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ctx("s"), None);
+        let outcome = tokio::time::timeout(Duration::from_secs(5), engine.results.recv())
+            .await
+            .expect("a panicking job must still deliver an outcome")
+            .expect("engine holds the sender");
+        match &outcome {
+            Err(CommentaryError::Panicked(msg)) => {
+                assert!(msg.contains("scripted panic"), "carries the payload: {msg}");
+            }
+            Err(e) => panic!("expected a Panicked outcome, got: {e}"),
+            Ok(_) => panic!("a panicking job must not succeed"),
+        }
+        assert_eq!(engine.finish(outcome), None, "failures skip quietly");
+        assert!(
+            engine.plan_tick(&gates("s")).is_some(),
+            "the in-flight guard is released; the next tick proceeds"
+        );
     }
 
     /// Reconfiguring off mid-flight discards the late result; a token

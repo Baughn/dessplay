@@ -25,6 +25,9 @@ base64 = { workspace = true }
 csv = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The commentary engine's private screenshot directory (a predictable
+# path in the shared $TMPDIR was a symlink-following hazard).
+tempfile = { workspace = true }
 tuirealm = { workspace = true }
 crossterm = { workspace = true }
 palette = { workspace = true }
@@ -47,6 +50,5 @@ rlimit = { workspace = true }
 [dev-dependencies]
 insta = { workspace = true }
 proptest = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 dessplay-core = { path = "../dessplay-core", features = ["test-support"] }
