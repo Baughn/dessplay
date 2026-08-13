@@ -868,7 +868,19 @@ for storage because *blobs outlive deployments*; connections don't.
   pre-envelope protocol-v6 shape every deployed database held when the
   envelope landed (2026-07-25). It decodes flagged (`migrated = true`),
   and the server backs up its whole database before first persisting
-  the migrated result, exactly as before.
+  the migrated result, exactly as before. "Frozen" here means the
+  **top-level field list** only: the nested value types are the live
+  ones and have already drifted append-only since the envelope landed
+  (`anidb_unavailable`, `DownloadingPlayable`) -- which postcard
+  tolerates, so real pre-envelope blobs still decode. That property is
+  pinned from 2026-08-13 by a checked-in binary fixture
+  (tests/fixtures/snapshot-untagged-v6.bin, same written-once policy as
+  above). The fallback, its fixture, and the test-support v6 encoder
+  are deletable once every deployment (the tsugumi server and every
+  client `dessplay.db`) has run a post-2026-07-25 build once and thereby
+  re-persisted its blob tagged -- verifiable per database by the blob's
+  leading 0xFF; the condition and check live on `CrdtStateUntaggedV6`'s
+  doc comment.
 
 Any future `CrdtState` shape change is therefore: bump
 `PROTOCOL_VERSION` (snapshots cross the wire untagged, so the group and

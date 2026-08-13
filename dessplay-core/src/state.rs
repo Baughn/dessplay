@@ -222,21 +222,42 @@ pub struct StateSnapshot {
 /// first byte is 0xFF: an untagged postcard [`CrdtState`] begins with
 /// the playlist map's vclock length varint, and 0xFF there would claim
 /// a continuation-varint clock size no real state can reach — so the
-/// magic can never collide with a legacy blob (pinned by
-/// `untagged_v6_blob_decodes_via_the_legacy_fallback`).
+/// magic can never collide with a legacy blob (pinned by the
+/// `untagged_encodings_never_begin_with_the_magic` property test over
+/// generated states, tests/migration.rs).
 pub const SNAPSHOT_MAGIC: [u8; 4] = [0xFF, b'D', b'S', b'S'];
 
 /// The **untagged** on-disk layout of [`CrdtState`] as written by
 /// protocol-v6 builds, before storage snapshots gained the
-/// [`SNAPSHOT_MAGIC`] envelope. Field-for-field the v6 shape, frozen so
-/// later [`CrdtState`] changes cannot silently alter what this decodes.
-/// This is the one legacy fallback [`CrdtState::decode_snapshot`]
-/// keeps: every database deployed at the envelope change (clients and
-/// the authoritative server) held exactly this layout. The older
-/// V1..V5 fallback chain — five frozen structs plus upgrade helpers,
-/// grown one per shape change because untagged blobs could only be
-/// told apart by trial decode — was deleted along with the trial
-/// decoding; docs/sync-state.md keeps the retrospective.
+/// [`SNAPSHOT_MAGIC`] envelope. This is the one legacy fallback
+/// [`CrdtState::decode_snapshot`] keeps: every database deployed at
+/// the envelope change (clients and the authoritative server) held
+/// exactly this layout. The older V1..V5 fallback chain — five frozen
+/// structs plus upgrade helpers, grown one per shape change because
+/// untagged blobs could only be told apart by trial decode — was
+/// deleted along with the trial decoding; docs/sync-state.md keeps the
+/// retrospective.
+///
+/// **What "frozen" means here:** only the *top-level field list* is
+/// frozen. The nested value types (`SeriesListEntry`,
+/// `FileAvailability`, …) are the live `crate::types` shapes and drift
+/// with them — they already have since the envelope landed
+/// (`anidb_unavailable`, `DownloadingPlayable`), append-only in the
+/// postcard sense, which is why real pre-envelope blobs still decode.
+/// Since 2026-08-13 that property is pinned by a checked-in binary
+/// blob (tests/fixtures/snapshot-untagged-v6.bin, captured once and
+/// never regenerated): a nested change that breaks old bytes fails
+/// `untagged_v6_fixture_blob_decodes_via_the_legacy_fallback` instead
+/// of silently orphaning deployed databases.
+///
+/// **Deletable** (this struct, the fixture, and
+/// [`CrdtState::encode_untagged_v6_for_tests`]) once every deployment
+/// has re-persisted tagged state — concretely: the tsugumi server plus
+/// every client `dessplay.db` has run a ≥v7 (post-2026-07-25) build at
+/// least once, which rewrites `crdt_state` with the envelope (verify:
+/// the blob starts with 0xFF; e.g.
+/// `SELECT hex(substr(state,1,4)) FROM crdt_state`). Written
+/// 2026-08-13.
 #[derive(Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(Default, Serialize))]
 struct CrdtStateUntaggedV6 {
@@ -291,9 +312,14 @@ impl From<CrdtStateUntaggedV6> for CrdtState {
 #[cfg(any(test, feature = "test-support"))]
 impl CrdtState {
     /// Encode this state in the **untagged legacy v6** layout (the
-    /// pre-envelope on-disk shape), for fabricating faithful migration
-    /// fixtures — including from other crates' tests, which cannot reach
-    /// the private [`CrdtStateUntaggedV6`]. Drops any post-v6 fields.
+    /// pre-envelope on-disk shape), for fabricating migration fixtures
+    /// — including from other crates' tests, which cannot reach the
+    /// private [`CrdtStateUntaggedV6`]. Drops any post-v6 fields. Note
+    /// the caveat on [`CrdtStateUntaggedV6`]: nested value shapes ride
+    /// the live types, so a blob from this encoder drifts with the
+    /// decoder it is testing — the checked-in binary fixture
+    /// (tests/fixtures/snapshot-untagged-v6.bin), not this encoder, is
+    /// the drift pin.
     pub fn encode_untagged_v6_for_tests(&self) -> Result<Vec<u8>, crate::wire::WireError> {
         let state = self.clone();
         crate::wire::encode(&CrdtStateUntaggedV6 {
@@ -1115,8 +1141,10 @@ mod tests {
     /// The one surviving legacy fallback: an **untagged** protocol-v6
     /// blob (the layout every deployed database held when storage
     /// snapshots gained the [`SNAPSHOT_MAGIC`] envelope) must decode
-    /// flagged and migrate forward intact. Also pins the envelope's
-    /// discriminator: no legacy blob can begin with the magic's 0xFF.
+    /// flagged and migrate forward intact. (The 0xFF discriminator and
+    /// the frozen-bytes drift pin live in tests/migration.rs —
+    /// `untagged_encodings_never_begin_with_the_magic` and
+    /// `untagged_v6_fixture_blob_decodes_via_the_legacy_fallback`.)
     #[test]
     fn untagged_v6_blob_decodes_via_the_legacy_fallback() {
         let mut legacy = CrdtStateUntaggedV6::default();
@@ -1157,7 +1185,12 @@ mod tests {
     /// decode arm said so. A layout-compatible older tag must decode,
     /// flagged as a migration (so the server backs up the database
     /// before persisting the re-tagged blob); a tag outside the
-    /// compatible set must still be refused, not guessed at.
+    /// compatible set must still be refused, not guessed at. (This
+    /// covers the *mechanics* — flags, re-tagging, refusal — with a
+    /// re-tagged current-layout body; whether each listed version's
+    /// **real bytes** still decode is pinned by the frozen fixtures in
+    /// tests/migration.rs,
+    /// `layout_compatible_fixture_blobs_decode_to_the_expected_view`.)
     #[test]
     fn layout_compatible_tagged_versions_migrate_and_others_refuse() {
         let mut state = CrdtState::new();

@@ -9,15 +9,26 @@
 //! outright (the server's refuse-to-start posture) rather than guessed
 //! at; a deliberate migration adds an explicit decode arm instead.
 //!
-//! These tests pin the envelope format, the legacy fallback (via the
-//! test-support fixture encoder, which stays faithful to the frozen v6
-//! layout even as `CrdtState` changes), the version-mismatch error, and
-//! the corrupt-blob error the client's tolerant loader relies on.
+//! These tests pin the envelope format, the exhaustiveness contract on
+//! the handled-versions lists (a `PROTOCOL_VERSION` bump is a red build
+//! until the storage decision is made), the version-mismatch error, and
+//! the corrupt-blob error the client's tolerant loader relies on. The
+//! decode paths for **older** layouts — the compat-listed tagged
+//! versions and the untagged v6 fallback — are pinned by checked-in
+//! binary fixture blobs (tests/fixtures/, captured once and never
+//! regenerated), because a fixture fabricated by a live encoder drifts
+//! with the very code it is supposed to check.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+
+use common::arb_step;
+use dessplay_core::test_support::run_script;
+use proptest::prelude::*;
 
 use dessplay_core::net::message::PROTOCOL_VERSION;
 use dessplay_core::state::SNAPSHOT_MAGIC;
@@ -457,8 +468,11 @@ fn tagged_snapshot_round_trips() {
 
 #[test]
 fn untagged_legacy_blob_decodes_flagged() {
-    // The one legacy fallback: an untagged v6 blob (fabricated via the
-    // test-support fixture encoder, which is frozen to the v6 layout).
+    // The fallback plumbing, via the test-support fixture encoder. Note
+    // this encoder freezes only the v6 *top-level field list* — nested
+    // value shapes ride the live types, so encoder and decoder drift
+    // together and this test alone cannot catch that drift. The real
+    // pin is the checked-in binary fixture below.
     let state = sample_state();
     let blob = state.encode_untagged_v6_for_tests().unwrap();
     assert_ne!(
@@ -469,6 +483,41 @@ fn untagged_legacy_blob_decodes_flagged() {
     let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap();
     assert!(migrated, "an untagged blob must report the fallback");
     assert_eq!(decoded.view(), state.view());
+}
+
+/// The untagged-v6 fallback, pinned by **frozen bytes**: the checked-in
+/// blob (captured 2026-08-13, never regenerated — see
+/// tests/fixtures/README.md) decodes and migrates forward to the
+/// expected view. `CrdtStateUntaggedV6` freezes only its top-level
+/// field list; its nested value types are the live `types` shapes, and
+/// only append-only drift keeps old bytes decodable — this fixture is
+/// what fails when a nested change breaks that, where the live-encoder
+/// test above would drift along and stay green.
+#[test]
+fn untagged_v6_fixture_blob_decodes_via_the_legacy_fallback() {
+    let blob = read_fixture("snapshot-untagged-v6.bin");
+    assert_ne!(
+        blob[0], SNAPSHOT_MAGIC[0],
+        "legacy blobs must not collide with the envelope magic"
+    );
+
+    let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap_or_else(|e| {
+        panic!(
+            "the checked-in untagged-v6 fixture no longer decodes ({e}): a nested \
+             type change broke the append-only drift the fallback depends on — \
+             pre-envelope databases are now unreadable (on the server, a fatal \
+             refusal BEFORE the pre-migration backup runs). Do not regenerate the \
+             fixture; either revert the shape change or freeze the nested types \
+             into CrdtStateUntaggedV6."
+        )
+    });
+    assert!(migrated, "an untagged blob must report the fallback");
+
+    // The v6 layout predates the marquee register; everything else must
+    // survive the round trip through the frozen bytes.
+    let mut expected = rich_sample_state().view();
+    expected.marquee = None;
+    assert_eq!(decoded.view(), expected);
 }
 
 #[test]
@@ -492,4 +541,27 @@ fn genuinely_corrupt_blob_still_errors() {
     // this to drop-and-resync).
     assert!(CrdtState::decode_snapshot(b"not a valid postcard CrdtState").is_err());
     assert!(CrdtState::decode_snapshot(&[]).is_err());
+}
+
+proptest! {
+    /// `SNAPSHOT_MAGIC`'s discriminator claim — no untagged postcard
+    /// state begins with 0xFF (the first field is the playlist map's
+    /// vclock length varint, and 0xFF there would claim a
+    /// continuation-varint size no real state reaches) — checked over
+    /// generated states, in both the current untagged encoding and the
+    /// legacy v6 one, rather than asserted on a single handpicked
+    /// fixture's first byte.
+    #[test]
+    fn untagged_encodings_never_begin_with_the_magic(
+        steps in proptest::collection::vec(arb_step(), 0..40),
+    ) {
+        let (state, _) = run_script(&steps);
+        let current = wire::encode(&state)
+            .map_err(|e| TestCaseError::fail(format!("encode failed: {e}")))?;
+        prop_assert_ne!(current[0], SNAPSHOT_MAGIC[0]);
+        let v6 = state
+            .encode_untagged_v6_for_tests()
+            .map_err(|e| TestCaseError::fail(format!("v6 encode failed: {e}")))?;
+        prop_assert_ne!(v6[0], SNAPSHOT_MAGIC[0]);
+    }
 }
