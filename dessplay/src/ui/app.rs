@@ -410,10 +410,16 @@ impl Ui {
     /// independently of session traffic. Returns whether a redraw could
     /// change what's on screen.
     pub(crate) fn advance_clock(&mut self, now_millis: u64) -> bool {
+        // Merge first: clicks and animation starts are stamped from the
+        // merged clock (max of wall and shared), so frames must advance
+        // in the same domain — feeding animators the raw wall millis
+        // computes zero (or rewound) elapsed time whenever the local
+        // clock trails the shared one.
         self.clock = self.clock.max(now_millis);
-        let speakers = self.speaker_colors.advance(now_millis);
-        let marquee = self.advance_marquee(now_millis);
-        let spoilers = self.chat.advance_spoilers(now_millis);
+        let now = self.clock;
+        let speakers = self.speaker_colors.advance(now);
+        let marquee = self.advance_marquee(now);
+        let spoilers = self.chat.advance_spoilers(now);
         speakers || marquee || spoilers
     }
 
@@ -777,8 +783,10 @@ impl Ui {
 
     /// Replace the snapshot and recompute every pane's props.
     pub fn apply_snapshot(&mut self, snapshot: UiSnapshot) {
+        // Same merge-first discipline as `advance_clock`: every animator
+        // runs on the merged clock, never a single domain's raw value.
         self.clock = self.clock.max(snapshot.now);
-        self.speaker_colors.advance(snapshot.now);
+        self.speaker_colors.advance(self.clock);
         // Marquee lifecycle: a new LWW stamp starts a fresh pass (even
         // for identical text — a rewrite replays); the same stamp never
         // restarts, including after `done`; a cleared register drops the
@@ -802,7 +810,10 @@ impl Ui {
                         key: *stamp,
                         text_width: message.text.width(),
                         text: message.text.clone(),
-                        started_at_millis: snapshot.now,
+                        // Merged clock, not snapshot.now: the pass must
+                        // start at elapsed 0 in the domain that advances
+                        // it, or a wall-ahead clock skips its entry.
+                        started_at_millis: self.clock,
                         offset: 0,
                         slot_width: 0,
                         done: stale || mode != MarqueeMode::Marquee,
@@ -814,10 +825,10 @@ impl Ui {
             }
             None => self.marquee = None,
         }
-        self.advance_marquee(snapshot.now);
+        self.advance_marquee(self.clock);
         // Snapshots arrive at ~10Hz during playback, so they advance a
         // running spoiler tease too (same policy as the marquee above).
-        self.chat.advance_spoilers(snapshot.now);
+        self.chat.advance_spoilers(self.clock);
         let chat = self.merged_chat(&snapshot.view);
         self.chat.set_lines(chat);
         self.chat
@@ -2596,6 +2607,36 @@ mod tests {
     }
 
     // ---- Marquee (design.md, AI Commentary) ----------------------------
+
+    /// Regression: clicks are stamped from the merged `Ui::clock` (max
+    /// of wall and shared), so spoiler frames must advance on the same
+    /// merged clock. `advance_clock` used to forward the **raw** wall
+    /// millis: with a local clock trailing the shared clock, a
+    /// tick-driven frame computed `elapsed = 0` and rewound the
+    /// generation to 0 — generation-0 letters look unclicked, and the
+    /// 100ms tick pin held for the whole skew window.
+    #[test]
+    fn spoiler_tease_ignores_a_trailing_wall_clock() {
+        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
+        ui.apply_snapshot(UiSnapshot {
+            now: 30_000,
+            ..UiSnapshot::default()
+        });
+        ui.chat.test_install_spoiler_hit();
+        ui.chat.click(6, 1, ui.clock); // the dispatcher's exact stamping
+        assert_eq!(ui.chat.test_spoiler_generations(), vec![0]);
+        // Snapshots advance the tease (they arrive at ~10Hz during
+        // playback).
+        ui.apply_snapshot(UiSnapshot {
+            now: 30_250,
+            ..UiSnapshot::default()
+        });
+        assert_eq!(ui.chat.test_spoiler_generations(), vec![2]);
+        // A tick carrying wall millis far behind the shared clock must
+        // not rewind the animation.
+        ui.advance_clock(300);
+        assert_eq!(ui.chat.test_spoiler_generations(), vec![2]);
+    }
 
     fn marquee_snapshot(text: &str, stamp: u64, now: u64) -> UiSnapshot {
         let view = StateView {

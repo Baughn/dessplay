@@ -1059,6 +1059,37 @@ fn wrap_chat_line(
     }
 }
 
+/// Test seams for the Ui-level clock-domain tests (`app.rs`), which
+/// need a clickable spoiler without a real draw and a view of the
+/// animation state `ChatPane` keeps private.
+#[cfg(test)]
+impl ChatPane {
+    /// Pretend the last render drew one spoiler hit at columns 5..10 of
+    /// body row 0 (screen row 1).
+    pub(crate) fn test_install_spoiler_hit(&mut self) {
+        self.rendered = RenderedChatLog {
+            area: Rect::new(0, 0, 40, 10),
+            rows: vec![vec![SpoilerHit {
+                cols: 5..10,
+                key: SpoilerKey::new(1_000, "kim", 0, "||x||"),
+            }]],
+        };
+    }
+
+    /// The animation generation of every tracked spoiler (revealed runs
+    /// report `u32::MAX`), in map order.
+    pub(crate) fn test_spoiler_generations(&self) -> Vec<u32> {
+        self.spoilers
+            .values()
+            .map(|s| match s {
+                SpoilerState::Animating { generation, .. }
+                | SpoilerState::Armed { generation, .. } => *generation,
+                SpoilerState::Revealed => u32::MAX,
+            })
+            .collect()
+    }
+}
+
 passive_component!(ChatPane);
 
 impl AppComponent<Msg, NoUserEvent> for ChatPane {
