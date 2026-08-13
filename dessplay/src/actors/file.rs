@@ -657,7 +657,14 @@ struct Actor {
     /// Each owns its stream and paces itself against `upload`, so a
     /// slow downloader backpressures only its own stream. Dropping a
     /// guard aborts the task.
-    serve_tasks: HashMap<(PeerId, Ed2kHash), TaskGuard>,
+    serve_tasks: HashMap<(PeerId, Ed2kHash), ServeTask>,
+    /// Monotonic stamp for stream installations (download streams and
+    /// serve tasks share it). New streams deliberately replace stale
+    /// predecessors under the same `(peer, file)` key; the stamp lets
+    /// `ServeEnded`/`DownloadClosed` events name *which* installation
+    /// ended, so a predecessor's late event never removes (or, for
+    /// serves, aborts) its replacement.
+    stream_generation: u64,
     /// Upload pacing for serving chunks (`None` = unlimited); shared
     /// across serve tasks so the cap covers their sum.
     upload: Arc<UploadPacer>,
@@ -729,7 +736,19 @@ impl Drop for TaskGuard {
 /// down it) and the reader task feeding its chunks into the actor.
 struct DownloadStream {
     send: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+    /// Which installation this is (see [`Actor::stream_generation`]):
+    /// lifecycle events from a replaced predecessor carry an older
+    /// stamp and must not act on this entry.
+    generation: u64,
     _reader: TaskGuard,
+}
+
+/// A registered serve task (see [`Actor::serve_tasks`]), stamped like
+/// [`DownloadStream`] so a stale `ServeEnded` can't abort a fresh
+/// replacement.
+struct ServeTask {
+    generation: u64,
+    _task: TaskGuard,
 }
 
 /// Traffic from stream reader and serve tasks back into the actor loop.
@@ -752,6 +771,13 @@ enum StreamEvent {
         from: PeerId,
         /// The file.
         file: Ed2kHash,
+        /// The stream installation this close belongs to. Streams
+        /// arrive on the command channel while closes arrive on
+        /// `stream_rx`; the unbiased select can drain a predecessor's
+        /// close *after* its replacement was installed, and acting on
+        /// it would tear the fresh stream down (the server's
+        /// `transfer_conn_id` guard, same pattern).
+        generation: u64,
     },
     /// A serve task exited (downloader closed the stream, or the file
     /// vanished under it).
@@ -760,6 +786,9 @@ enum StreamEvent {
         to: PeerId,
         /// The file.
         file: Ed2kHash,
+        /// The serve-task installation this exit belongs to (see
+        /// [`StreamEvent::DownloadClosed::generation`]).
+        generation: u64,
     },
 }
 
@@ -976,6 +1005,7 @@ impl Actor {
             download_streams: HashMap::new(),
             pending_streams: HashMap::new(),
             serve_tasks: HashMap::new(),
+            stream_generation: 0,
             upload: Arc::new(UploadPacer::new(config.upload_limit)),
             last_progress_at: HashMap::new(),
             last_playable_written: HashMap::new(),
@@ -2109,16 +2139,19 @@ impl Actor {
             return;
         }
         let BiStream { send, recv } = stream;
+        let generation = self.next_stream_generation();
         let reader = tokio::spawn(read_download_stream(
             recv,
             peer.clone(),
             file,
+            generation,
             self.stream_tx.clone(),
         ));
         self.download_streams.insert(
             (peer.clone(), file),
             DownloadStream {
                 send,
+                generation,
                 _reader: TaskGuard(reader),
             },
         );
@@ -2142,10 +2175,12 @@ impl Actor {
             return;
         };
         tracing::debug!(%peer, %file, "serve stream opened");
+        let generation = self.next_stream_generation();
         let task = tokio::spawn(serve_transfer(
             stream,
             peer.clone(),
             file,
+            generation,
             path,
             Arc::clone(&self.upload),
             Arc::clone(&self.clock),
@@ -2153,7 +2188,20 @@ impl Actor {
         ));
         // A fresh stream for the same transfer replaces (aborts) any
         // stale predecessor.
-        self.serve_tasks.insert((peer, file), TaskGuard(task));
+        self.serve_tasks.insert(
+            (peer, file),
+            ServeTask {
+                generation,
+                _task: TaskGuard(task),
+            },
+        );
+    }
+
+    /// The next stream-installation stamp (see
+    /// [`Actor::stream_generation`]).
+    fn next_stream_generation(&mut self) -> u64 {
+        self.stream_generation += 1;
+        self.stream_generation
     }
 
     /// Traffic and lifecycle from stream reader / serve tasks.
@@ -2173,9 +2221,27 @@ impl Actor {
                 );
                 self.run_download_actions(actions).await;
             }
-            StreamEvent::DownloadClosed { from, file } => {
+            StreamEvent::DownloadClosed {
+                from,
+                file,
+                generation,
+            } => {
+                let key = (from.clone(), file);
+                // A close from a predecessor already replaced by a
+                // fresh stream is stale: acting on it would remove the
+                // live stream and requeue its healthy in-flight work.
+                // (No entry at all is *not* stale — the last stream's
+                // close still requeues; the removal is just a no-op.)
+                if self
+                    .download_streams
+                    .get(&key)
+                    .is_some_and(|s| s.generation != generation)
+                {
+                    tracing::debug!(%from, %file, "stale download-stream close; ignoring");
+                    return;
+                }
                 tracing::debug!(%from, %file, "download stream closed");
-                self.download_streams.remove(&(from.clone(), file));
+                self.download_streams.remove(&key);
                 // A closed/reset stream is the snub signal (proposal
                 // §3): requeue the source's in-flight chunks and
                 // re-plan now — the next request toward it opens a
@@ -2186,9 +2252,25 @@ impl Actor {
                     .on_source_stream_lost(file, &from, (self.clock)());
                 self.run_download_actions(actions).await;
             }
-            StreamEvent::ServeEnded { to, file } => {
-                tracing::debug!(%to, %file, "serve stream ended");
-                self.serve_tasks.remove(&(to, file));
+            StreamEvent::ServeEnded {
+                to,
+                file,
+                generation,
+            } => {
+                let key = (to.clone(), file);
+                // Remove only the installation that actually ended: a
+                // predecessor's late exit must not abort (TaskGuard
+                // drop) the fresh replacement serving the same peer.
+                if self
+                    .serve_tasks
+                    .get(&key)
+                    .is_some_and(|t| t.generation == generation)
+                {
+                    tracing::debug!(%to, %file, "serve stream ended");
+                    self.serve_tasks.remove(&key);
+                } else {
+                    tracing::debug!(%to, %file, "stale serve-task exit; ignoring");
+                }
             }
         }
     }
@@ -3057,6 +3139,7 @@ async fn read_download_stream(
     mut recv: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
     from: PeerId,
     file: Ed2kHash,
+    generation: u64,
     tx: mpsc::Sender<StreamEvent>,
 ) {
     loop {
@@ -3089,7 +3172,13 @@ async fn read_download_stream(
             }
         }
     }
-    let _ = tx.send(StreamEvent::DownloadClosed { from, file }).await;
+    let _ = tx
+        .send(StreamEvent::DownloadClosed {
+            from,
+            file,
+            generation,
+        })
+        .await;
 }
 
 /// Serve one transfer: read `ChunkRequest`/`Cancel` frames off the
@@ -3103,6 +3192,7 @@ async fn serve_transfer(
     stream: BiStream,
     to: PeerId,
     file: Ed2kHash,
+    generation: u64,
     path: PathBuf,
     upload: Arc<UploadPacer>,
     clock: Clock,
@@ -3193,7 +3283,13 @@ async fn serve_transfer(
         }
     }
     tracing::debug!(%to, %file, served_bytes = served, "serve task exiting");
-    let _ = tx.send(StreamEvent::ServeEnded { to, file }).await;
+    let _ = tx
+        .send(StreamEvent::ServeEnded {
+            to,
+            file,
+            generation,
+        })
+        .await;
 }
 
 /// The shared, task-safe face of [`UploadLimiter`]: serve tasks call
@@ -4190,6 +4286,7 @@ mod tests {
                     near,
                     PeerId::new(format!("slow{i}")),
                     hash(1),
+                    i as u64 + 1,
                     path.clone(),
                     Arc::clone(&pacer),
                     test_clock(),
@@ -4310,6 +4407,120 @@ mod tests {
             matches!(out_rx.try_recv(), Ok(FileOutput::OpenTransfer { .. })),
             "a send after the reset must ask for a fresh stream"
         );
+    }
+
+    /// Streams and serve tasks are keyed by bare `(peer, file)`, and a
+    /// fresh stream deliberately replaces a stale predecessor — but the
+    /// end events (`DownloadClosed`/`ServeEnded`) arrive on a different
+    /// channel than the streams themselves, so the unbiased select can
+    /// drain a predecessor's end event *after* the replacement is
+    /// installed. It must be ignored: for serves, acting on it aborts
+    /// the fresh task (TaskGuard drop), silencing the downloader until
+    /// its 30s snub. Same pattern as the server's `transfer_conn_id`
+    /// guard.
+    #[tokio::test]
+    async fn a_stale_stream_end_event_does_not_remove_the_fresh_replacement() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let (out_tx, _out_rx) = mpsc::channel(256);
+        let (done_tx, _done_rx) = mpsc::channel(64);
+        let (stream_tx, _stream_rx) = mpsc::channel(64);
+        let mut actor = Actor::new(
+            FileConfig {
+                storage: Storage::open_in_memory().unwrap(),
+                media_roots: vec![],
+                retention: CacheRetention::default(),
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: None,
+                nyaa: None,
+            },
+            out_tx,
+            done_tx,
+            stream_tx,
+        )
+        .unwrap();
+
+        let file = hash(1);
+        let peer = PeerId::new("kim");
+        let key = (peer.clone(), file);
+        let bistream = || {
+            // The far half is dropped: these streams are dead on
+            // arrival, which is fine — the test delivers the lifecycle
+            // events by hand and never pumps them.
+            let (a, _b) = tokio::io::duplex(4096);
+            let (a_read, a_write) = tokio::io::split(a);
+            BiStream {
+                send: Box::new(a_write) as _,
+                recv: Box::new(a_read) as _,
+            }
+        };
+
+        // ---- Download side: stream gen 1 replaced by gen 2.
+        actor
+            .start_peer_download(file, 1024, vec![peer.clone()], 0)
+            .await;
+        actor
+            .on_download_stream(peer.clone(), file, bistream())
+            .await;
+        let stale = actor.download_streams[&key].generation;
+        actor
+            .on_download_stream(peer.clone(), file, bistream())
+            .await;
+        let fresh = actor.download_streams[&key].generation;
+        assert_ne!(stale, fresh);
+        actor
+            .on_stream_event(StreamEvent::DownloadClosed {
+                from: peer.clone(),
+                file,
+                generation: stale,
+            })
+            .await;
+        assert!(
+            actor.download_streams.contains_key(&key),
+            "the predecessor's late Closed removed the fresh download stream"
+        );
+        // The current generation's close is genuine and removes.
+        actor
+            .on_stream_event(StreamEvent::DownloadClosed {
+                from: peer.clone(),
+                file,
+                generation: fresh,
+            })
+            .await;
+        assert!(!actor.download_streams.contains_key(&key));
+
+        // ---- Serve side: task gen A replaced by gen B.
+        let served = cache_dir.path().join("served.mkv");
+        std::fs::write(&served, b"contents").unwrap();
+        actor.local_files.insert(file, served);
+        actor.on_serve_stream(peer.clone(), file, bistream());
+        let stale = actor.serve_tasks[&key].generation;
+        actor.on_serve_stream(peer.clone(), file, bistream());
+        let fresh = actor.serve_tasks[&key].generation;
+        assert_ne!(stale, fresh);
+        actor
+            .on_stream_event(StreamEvent::ServeEnded {
+                to: peer.clone(),
+                file,
+                generation: stale,
+            })
+            .await;
+        assert!(
+            actor.serve_tasks.contains_key(&key),
+            "the predecessor's late ServeEnded aborted the fresh serve task"
+        );
+        actor
+            .on_stream_event(StreamEvent::ServeEnded {
+                to: peer.clone(),
+                file,
+                generation: fresh,
+            })
+            .await;
+        assert!(!actor.serve_tasks.contains_key(&key));
     }
 
     /// Spec (Download Cache and Retention): an evictable file is deleted
