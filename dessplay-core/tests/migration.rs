@@ -16,14 +16,22 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
 use dessplay_core::net::message::PROTOCOL_VERSION;
 use dessplay_core::state::SNAPSHOT_MAGIC;
 use dessplay_core::types::{
-    ActorId, ChatMessage, Ed2kHash, SeriesWatchState, SharedTimestamp, UserId,
+    ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, FileAvailability,
+    FileCatalogEntry, FileHashInfo, ListEntryId, ListStatus, ManualState, MarqueeMessage,
+    MetadataSource, NextEpState, PlaybackIntent, PlaybackPosition, RelationKind, SeekAuthority,
+    SeriesListEntry, SeriesRelation, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    UserSeek,
 };
-use dessplay_core::{CrdtState, wire};
+use dessplay_core::{CrdtState, NewPlaylistEntry, wire};
 
 const A: ActorId = ActorId(1);
+const A2: ActorId = ActorId(2);
 
 fn ts(t: u64) -> SharedTimestamp {
     SharedTimestamp(t)
@@ -46,6 +54,316 @@ fn sample_state() -> CrdtState {
         text: "hi".into(),
     });
     state
+}
+
+/// The state behind every checked-in fixture blob under tests/fixtures/.
+/// Populated across every `CrdtState` field — playlist entries, series
+/// preferences (including a `set_by` attribution), every
+/// `FileAvailability` variant including `DownloadingPlayable`, a List
+/// entry with watchers/aliases/manual files, chat (plain and CTCP
+/// action), a marquee — so a *misaligned* decode of a fixture cannot
+/// accidentally reproduce the expected view.
+///
+/// **Do not change what this writes.** The fixture blobs freeze this
+/// function's encoding as of their capture date; the decode tests
+/// compare a fixture against this function's view at test time, so a
+/// semantic change here breaks every already-captured fixture. New
+/// fixture content belongs in a new builder.
+fn rich_sample_state() -> CrdtState {
+    let baughn = || UserId::new("baughn");
+    let kim = || UserId::new("kim");
+    let nero = || UserId::new("nero");
+    let entry_id = ListEntryId(7);
+
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(
+        A,
+        ts(10),
+        NewPlaylistEntry {
+            hash: hash(1),
+            added_by: baughn(),
+            filename: "[Judas] Sousou no Frieren - 03.mkv".into(),
+            size_bytes: 730_000_000,
+            duration_millis: Some(1_420_000),
+        },
+    );
+    state.push_playlist_entry(
+        A2,
+        ts(11),
+        NewPlaylistEntry {
+            hash: hash(2),
+            added_by: kim(),
+            filename: "RahXephon - 05.mkv".into(),
+            size_bytes: 350_000_000,
+            duration_millis: None,
+        },
+    );
+    state.set_watched(A, ts(12), hash(1), true);
+    state.set_now_playing(A, ts(13), Some(hash(2)));
+    state.set_seek_authority(
+        A,
+        ts(14),
+        SeekAuthority::User(UserSeek {
+            user: kim(),
+            file: hash(2),
+            event_at: ts(14),
+            from_millis: 492_000,
+            to_millis: 754_000,
+        }),
+    );
+    state.set_playback_intent(A, ts(15), PlaybackIntent::Playing);
+    state.set_series_preference(
+        A,
+        ts(16),
+        baughn(),
+        entry_id,
+        SeriesWatchState::Watching,
+        None,
+    );
+    state.set_series_preference(
+        A2,
+        ts(17),
+        kim(),
+        entry_id,
+        SeriesWatchState::NotWatching,
+        Some(nero()),
+    );
+    state.set_manual_override(A, ts(18), baughn(), Some(ManualState::Paused));
+    state.set_manual_override(
+        A2,
+        ts(19),
+        nero(),
+        Some(ManualState::Away { set_by: kim() }),
+    );
+    state.set_file_availability(A, ts(20), baughn(), hash(1), FileAvailability::Ready);
+    state.set_file_availability(
+        A,
+        ts(21),
+        baughn(),
+        hash(2),
+        FileAvailability::Downloading { progress_bps: 3400 },
+    );
+    state.set_file_availability(
+        A2,
+        ts(22),
+        kim(),
+        hash(2),
+        FileAvailability::DownloadingPlayable { progress_bps: 8200 },
+    );
+    state.set_file_availability(A2, ts(23), nero(), hash(2), FileAvailability::Missing);
+    state.set_anidb_metadata(
+        A,
+        ts(24),
+        hash(1),
+        Some(AniDbMetadata {
+            source: MetadataSource::AniDb,
+            series_name: "Sousou no Frieren".into(),
+            series_id: Some(AniDbSeriesId(17617)),
+            episode_number: Some("3".into()),
+        }),
+    );
+    state.set_anidb_metadata(
+        A,
+        ts(25),
+        hash(2),
+        Some(AniDbMetadata {
+            source: MetadataSource::FilenameDerived,
+            series_name: "RahXephon".into(),
+            series_id: None,
+            episode_number: None,
+        }),
+    );
+    state.set_series_relations(
+        A,
+        ts(26),
+        AniDbSeriesId(17617),
+        SeriesRelations {
+            title: "Sousou no Frieren".into(),
+            year: Some(2023),
+            episode_count: Some(28),
+            relations: BTreeSet::from([SeriesRelation {
+                kind: RelationKind::Sequel,
+                target: AniDbSeriesId(18886),
+            }]),
+        },
+    );
+    state.set_file_catalog(
+        A,
+        ts(27),
+        hash(2),
+        FileCatalogEntry {
+            filename: "RahXephon - 05.mkv".into(),
+            size_bytes: 350_000_000,
+            duration_millis: None,
+        },
+    );
+    state.put_list_entry(
+        A,
+        ts(28),
+        entry_id,
+        SeriesListEntry {
+            name: "Sousou no Frieren".into(),
+            nero_name: Some("Funeral Frieren".into()),
+            genre: Some("fantasy".into()),
+            notes: vec!["movie when?".into()],
+            recommender: Some("Baughn".into()),
+            status: ListStatus::Active,
+            status_note: None,
+            source: Some("SubsPlease".into()),
+            watchers: BTreeSet::from([baughn(), kim()]),
+            anidb_series_id: Some(AniDbSeriesId(17617)),
+            local_aliases: BTreeSet::from(["Frieren".to_owned()]),
+            manual_files: BTreeSet::from([hash(1)]),
+            anidb_unavailable: false,
+        },
+    );
+    state.set_next_ep(
+        A,
+        ts(29),
+        entry_id,
+        NextEpState {
+            next_ep: Some("4".into()),
+            available: true,
+        },
+    );
+    state.request_lookup(FileHashInfo {
+        hash: hash(2),
+        size: 350_000_000,
+        filename: "RahXephon - 05.mkv".into(),
+        mtime: Some(1_726_000_000_000),
+        series_hint: Some("RahXephon".into()),
+    });
+    state.append_chat(ChatMessage {
+        timestamp: ts(30),
+        sender: baughn(),
+        text: "spoilers: ||the fern wins||".into(),
+    });
+    state.append_chat(ChatMessage {
+        timestamp: ts(31),
+        sender: kim(),
+        text: "\u{1}ACTION waves\u{1}".into(),
+    });
+    state.set_playback_position(
+        A,
+        ts(32),
+        baughn(),
+        PlaybackPosition {
+            position_millis: 754_321,
+            timestamp: ts(32),
+            file: hash(2),
+        },
+    );
+    state.acknowledge_absent(hash(2), nero());
+    state.set_marquee(
+        A,
+        ts(33),
+        Some(MarqueeMessage {
+            text: "<Amu> Whaaaat?".into(),
+            set_by: Some(baughn()),
+        }),
+    );
+    state
+}
+
+fn fixtures_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+fn read_fixture(name: &str) -> Vec<u8> {
+    let path = fixtures_dir().join(name);
+    std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "missing fixture {}: {e}\n\
+             A new compat version's fixture is captured ONCE, at the moment of \
+             the bump: `cargo test -p dessplay-core --test migration -- --ignored \
+             capture_missing_snapshot_fixtures`. Existing fixtures are never \
+             regenerated — see tests/fixtures/README.md.",
+            path.display()
+        )
+    })
+}
+
+/// A fixture blob for `version`: today's snapshot encoding, re-tagged.
+/// Honest by the compat-list assertion — a version enters
+/// `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` only when its persisted layout
+/// is byte-identical to the current one, so capturing with the current
+/// encoder *at the moment of the bump* reproduces that version's real
+/// bytes. Once written the file is frozen: any later drift of the
+/// current type fails the decode test instead of re-baking the fixture.
+fn tagged_fixture_bytes(version: u32) -> Vec<u8> {
+    let mut blob = rich_sample_state().encode_snapshot().unwrap();
+    blob[SNAPSHOT_MAGIC.len()..SNAPSHOT_MAGIC.len() + 4].copy_from_slice(&version.to_le_bytes());
+    blob
+}
+
+/// Fixture capture. Run explicitly (`-- --ignored
+/// capture_missing_snapshot_fixtures`) when a version is added to
+/// `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`; commit the new file. Writes
+/// only fixtures that do not exist yet — an existing fixture is never
+/// rewritten, because its whole value is that its bytes stay frozen at
+/// capture time (tests/fixtures/README.md).
+#[test]
+#[ignore = "writes new fixture blobs; run once when a version enters the compat list"]
+fn capture_missing_snapshot_fixtures() {
+    std::fs::create_dir_all(fixtures_dir()).unwrap();
+    for version in CrdtState::LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS {
+        let path = fixtures_dir().join(format!("snapshot-v{version}.bin"));
+        if path.exists() {
+            continue;
+        }
+        std::fs::write(&path, tagged_fixture_bytes(version)).unwrap();
+        eprintln!("captured {}", path.display());
+    }
+    let v6 = fixtures_dir().join("snapshot-untagged-v6.bin");
+    if !v6.exists() {
+        let blob = rich_sample_state().encode_untagged_v6_for_tests().unwrap();
+        std::fs::write(&v6, blob).unwrap();
+        eprintln!("captured {}", v6.display());
+    }
+}
+
+/// Every version in `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` decodes from
+/// its checked-in fixture blob — **real frozen bytes**, not a re-tagged
+/// fresh encoding — to the expected resolved view. This is what makes a
+/// compat-list entry mean something: if the current type drifts against
+/// a listed version's bytes (postcard is positional, and a misaligned
+/// decode can succeed with silently wrong values), this fails, and that
+/// version must move to a frozen-layout decode arm.
+#[test]
+fn layout_compatible_fixture_blobs_decode_to_the_expected_view() {
+    let expected = rich_sample_state().view();
+    for version in CrdtState::LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS {
+        let blob = read_fixture(&format!("snapshot-v{version}.bin"));
+        assert_eq!(blob[..4], SNAPSHOT_MAGIC, "fixture v{version}: bad magic");
+        assert_eq!(
+            u32::from_le_bytes(blob[4..8].try_into().unwrap()),
+            version,
+            "fixture v{version} is tagged with the wrong version"
+        );
+
+        let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap_or_else(|e| {
+            panic!(
+                "the checked-in v{version} fixture no longer decodes ({e}): the \
+                     current CrdtState layout has drifted from v{version}'s bytes, so \
+                     v{version} can no longer sit in LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS \
+                     — move it to a frozen-layout decode arm (do NOT regenerate the \
+                     fixture; its bytes are the contract)"
+            )
+        });
+        assert!(migrated, "a v{version} tag must report the migration");
+        assert_eq!(
+            decoded.protocol_version, PROTOCOL_VERSION,
+            "the migrated state re-tags itself"
+        );
+        assert_eq!(
+            decoded.view(),
+            expected,
+            "the v{version} fixture decoded, but to the WRONG view — a misaligned \
+             (silently corrupting) decode; v{version} must leave \
+             LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS for a frozen-layout decode arm \
+             (do NOT regenerate the fixture)"
+        );
+    }
 }
 
 #[test]

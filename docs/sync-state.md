@@ -850,6 +850,16 @@ for storage because *blobs outlive deployments*; connections don't.
   `FIRST_TAGGED_SNAPSHOT_VERSION..PROTOCOL_VERSION` is handled by
   neither list, so a `PROTOCOL_VERSION` bump — wire-only or not —
   cannot pass the test suite until someone makes the storage decision.
+  Each listed version is also backed by a checked-in **fixture blob** in
+  that version's real bytes (dessplay-core/tests/fixtures/): captured
+  once at the moment of the bump — when the current encoder still
+  reproduces the old bytes, by the very assertion that puts the version
+  on the list — and **never regenerated**, so later drift of the current
+  type against a listed version's bytes fails
+  `layout_compatible_fixture_blobs_decode_to_the_expected_view` instead
+  of decoding misaligned (postcard is positional; a wrong compat entry
+  can otherwise succeed with silently wrong values). Policy details in
+  tests/fixtures/README.md.
 - **Tagged, any other version**: hard error naming both versions -- the
   refuse-to-start posture. A deliberate migration adds an explicit
   decode arm (a frozen copy of the old layout + upgrade) for that
