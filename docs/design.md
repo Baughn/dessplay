@@ -408,7 +408,12 @@ It can have one of three values:
   player can report a bogus end-of-file mid-episode; a partial's EOF
   report is therefore only believed when the last known position sits
   within a few seconds of the entry's duration — anything earlier is
-  dropped, and the flipped verdict gates instead. The
+  dropped, and the flipped verdict gates instead. A partial the player
+  cannot open at all (an `.mp4` whose index sits in the unfetched tail)
+  is not offered again until ~10% more of the file has arrived — the
+  same bytes fail the same way, and repeated failures must not loop
+  (the player-process analogue is the crash ladder, see
+  [Player Lifecycle](#player-lifecycle)). The
   download-speed-vs-bitrate half of the original rule remains **deferred**
   — no synced throughput signal exists to evaluate it, see
   [Future Plans](#future-plans).

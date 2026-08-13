@@ -274,6 +274,15 @@ pub struct PlayerWiring {
     /// is anomalous — `report_drift` warns once when this crosses
     /// [`DRIFT_PERSIST_SNAPSHOTS`]. Reset on convergence or unload.
     drift_high_snapshots: u32,
+    /// Partials the player failed to open (`LoadFailed` while `loaded`
+    /// was a partial), with our advertised download progress (basis
+    /// points) at the failure. The canonical case is an `.mp4` whose
+    /// `moov` atom sits in the unfetched tail: re-loading the same bytes
+    /// fails the same way, so `on_download_playable` refuses to re-offer
+    /// the partial until meaningfully more data has landed
+    /// ([`PARTIAL_RETRY_PROGRESS_BPS`]). Cleared when the file resolves
+    /// Verified (the download completed, or a real copy appeared).
+    partial_load_failed: HashMap<Ed2kHash, u16>,
     /// Our player's last file-attributed position sample, feeding the
     /// download scheduler's playback anchor (`StartDownload.play_chunk`)
     /// so the sequential window — and the playable check — track where
@@ -300,6 +309,13 @@ const PREFETCH_AHEAD: usize = 2;
 /// a second and the probed duration can differ slightly from mpv's, so
 /// the epsilon is a few seconds.
 const PARTIAL_EOF_EPSILON_MILLIS: u64 = 5_000;
+
+/// How much more of the file (basis points) must have downloaded before a
+/// partial the player failed to open is offered for loading again. 10% is
+/// "meaningful new data": enough that the failure mode (headers still in
+/// an unfetched region) has plausibly changed, while never re-trying more
+/// than a handful of times over a whole download.
+const PARTIAL_RETRY_PROGRESS_BPS: u16 = 1_000;
 
 /// How many consecutive snapshots a same-file position spread past the
 /// player's hard-seek band must persist before `report_drift` warns.
@@ -632,6 +648,7 @@ impl PlayerWiring {
             narrator: None,
             auto_download: true,
             drift_high_snapshots: 0,
+            partial_load_failed: HashMap::new(),
             last_position: None,
         }
     }
@@ -1212,6 +1229,7 @@ impl PlayerWiring {
         {
             l.partial = false;
         }
+        self.partial_load_failed.remove(&file);
         self.resolved.insert(file, Resolution::Verified(path));
         vec![Directive::Mutate(Mutation::SetFileAvailability {
             file,
@@ -1288,6 +1306,18 @@ impl PlayerWiring {
     /// `holds_now_playing`.) See `holds_now_playing`.
     fn speaks_for_now_playing(&self, view: &StateView, file: Ed2kHash) -> bool {
         view.now_playing == Some(file) && self.holds_now_playing(view)
+    }
+
+    /// Our own advertised download progress for `file` in basis points
+    /// (0 when we advertise nothing, or something other than a download).
+    fn own_progress_bps(&self, view: &StateView, file: Ed2kHash) -> u16 {
+        match view.file_availability.get(&(self.me.clone(), file)) {
+            Some(
+                FileAvailability::Downloading { progress_bps }
+                | FileAvailability::DownloadingPlayable { progress_bps },
+            ) => *progress_bps,
+            _ => 0,
+        }
     }
 
     /// Whether our last known position for `file` is within
@@ -1702,7 +1732,10 @@ impl PlayerWiring {
     ) -> Vec<Directive> {
         self.pending_resolve.remove(&file);
         let availability = match &resolution {
-            Resolution::Verified(_) => FileAvailability::Ready,
+            Resolution::Verified(_) => {
+                self.partial_load_failed.remove(&file);
+                FileAvailability::Ready
+            }
             Resolution::HashMismatch(path) => {
                 tracing::info!(%file, path = %path.display(), "local copy has different contents; treating as missing");
                 FileAvailability::Missing
@@ -1772,6 +1805,23 @@ impl PlayerWiring {
     ) -> Vec<Directive> {
         if view.now_playing != Some(file) || self.loaded.as_ref().is_some_and(|l| l.file == file) {
             return vec![];
+        }
+        // A partial the player already failed to open is only re-offered
+        // once meaningfully more data has landed — the same bytes fail
+        // the same way. Completion clears this via the verified-load
+        // path (see the `LoadFailed` arm).
+        if let Some(&failed_at) = self.partial_load_failed.get(&file) {
+            let progress = self.own_progress_bps(view, file);
+            if progress < failed_at.saturating_add(PARTIAL_RETRY_PROGRESS_BPS) {
+                tracing::debug!(
+                    %file,
+                    progress,
+                    failed_at,
+                    "partial previously failed to load; waiting for more data"
+                );
+                return vec![];
+            }
+            self.partial_load_failed.remove(&file);
         }
         tracing::info!(%file, "download playable; loading the partial file");
         self.loaded = Some(LoadedFile {
@@ -1979,11 +2029,33 @@ impl PlayerWiring {
                 }
             }
             PlayerOutput::LoadFailed { file } => {
-                // The path we loaded is gone/unreadable. Forget it, flip
-                // to Missing, and re-resolve so a re-download (or a
-                // re-appeared file) can recover. Next derive re-loads.
+                let was_partial = self
+                    .loaded
+                    .as_ref()
+                    .is_some_and(|l| l.file == file && l.partial);
                 if self.loaded.as_ref().is_some_and(|l| l.file == file) {
                     self.loaded = None;
+                }
+                if was_partial {
+                    // The player can't open the still-downloading partial
+                    // (the canonical case: an .mp4 whose moov atom sits
+                    // in the unfetched tail). The download itself is
+                    // fine: there is no local copy to forget and nothing
+                    // to re-resolve — a mid-download partial can never
+                    // verify, and re-resolving would re-hash the moving
+                    // sparse file. Remember the progress at failure;
+                    // `on_download_playable` refuses the partial until
+                    // meaningfully more data lands (2026-08-12 review:
+                    // the load → fail → re-hash → re-load loop had no
+                    // backoff and flapped availability group-wide).
+                    let progress = self.own_progress_bps(view, file);
+                    tracing::info!(
+                        %file,
+                        progress_bps = progress,
+                        "player can't open the partial; deferring until more data lands"
+                    );
+                    self.partial_load_failed.insert(file, progress);
+                    return vec![];
                 }
                 self.resolved.remove(&file);
                 let mut out = vec![
@@ -4030,6 +4102,92 @@ mod tests {
         assert!(
             out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
             "a partial's EOF at the real end must be reported: {out:?}"
+        );
+    }
+
+    #[test]
+    fn unopenable_partial_is_not_reoffered_until_more_data_lands() {
+        // Regression (2026-08-12 review): mpv failing to open a partial
+        // (the canonical case: an .mp4 whose moov atom sits in the
+        // unfetched tail) looped load → fail → full re-hash of the
+        // moving sparse file → re-load, flapping availability
+        // group-wide with no backoff. After a partial LoadFailed the
+        // partial must not be re-offered until meaningfully more data
+        // (+10%) lands, and no re-resolve may be issued while the
+        // download is running (it can never verify).
+        let mut state = playing_state();
+        state.set_file_availability(
+            A,
+            ts(5),
+            me(),
+            hash(1),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 2_000,
+            },
+        );
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        let out =
+            wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        assert!(
+            player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::Load { .. }))
+        );
+
+        // The player can't open it.
+        let out = wiring.on_player(PlayerOutput::LoadFailed { file: hash(1) }, &view);
+        assert!(
+            !out.iter().any(|d| matches!(
+                d,
+                Directive::Resolve { .. } | Directive::ForgetLocalFile { .. }
+            )),
+            "an unopenable partial must not re-resolve (the download is still running): {out:?}"
+        );
+
+        // Re-offered at the same progress: refused.
+        let out =
+            wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        assert!(
+            out.is_empty(),
+            "the failed partial must not be re-offered without new data: {out:?}"
+        );
+
+        // Not enough new data yet (+9%): still refused.
+        state.set_file_availability(
+            A,
+            ts(6),
+            me(),
+            hash(1),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 2_900,
+            },
+        );
+        let view = state.view();
+        let out =
+            wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        assert!(out.is_empty(), "+9% is not meaningful new data: {out:?}");
+
+        // +10%: worth another try.
+        state.set_file_availability(
+            A,
+            ts(7),
+            me(),
+            hash(1),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 3_000,
+            },
+        );
+        let view = state.view();
+        let out =
+            wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        assert!(
+            player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
+            "+10% more data must re-offer the partial: {out:?}"
         );
     }
 

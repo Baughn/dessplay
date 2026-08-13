@@ -2575,8 +2575,12 @@ impl Actor {
         let roots = self.media_roots.clone();
         let cache = Arc::clone(&self.hash_cache);
         // A completed download lives hash-named in the cache; offer it as
-        // a by-hash candidate (the filename search can't find it).
-        let cache_candidate = Some(self.download_path(file));
+        // a by-hash candidate (the filename search can't find it). Never
+        // while a download for the file is running: the candidate would
+        // be the live partial — a full ed2k pass over a moving, full-size
+        // sparse file on every resolve (its mtime churn defeats the hash
+        // cache), and a partial can never verify anyway.
+        let cache_candidate = (!self.downloads.is_active(&file)).then(|| self.download_path(file));
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
@@ -5993,6 +5997,73 @@ mod tests {
             }
         };
         assert_eq!(path, renamed);
+    }
+
+    /// Regression (2026-08-12 review): the by-hash cache candidate is
+    /// the live download's own partial. Offering it while the download
+    /// is active costs a full ed2k pass over a moving, full-size sparse
+    /// file on every resolve (its mtime churn defeats the hash cache),
+    /// and a partial must never resolve Verified out from under the
+    /// scheduler. While `downloads.is_active`, resolve must skip the
+    /// `<cache>/<hash>` candidate entirely.
+    #[tokio::test]
+    async fn resolve_skips_the_cache_candidate_while_its_download_is_active() {
+        let contents = b"a partial that happens to look complete".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        let file = hashed.root;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut rig = spawn_rig_at(
+            Storage::open_in_memory().unwrap(),
+            vec![],
+            CacheRetention::default(),
+            cache.path().to_path_buf(),
+        );
+
+        // An active download for the file (one silent source).
+        rig.commands
+            .send(FileCommand::StartDownload {
+                file,
+                size_bytes: contents.len() as u64,
+                sources: vec![PeerId::new("src")],
+                play_chunk: 0,
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::SendPeer { message, .. } => {
+                assert!(matches!(*message, PeerMessage::BlockHashRequest { .. }));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        // The partial at the cache path holds verifying bytes (the moving
+        // file just happens to look complete at this instant).
+        std::fs::write(cache.path().join(file.to_string()), contents).unwrap();
+
+        rig.commands
+            .send(FileCommand::Resolve {
+                file,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved {
+                    file: f,
+                    resolution,
+                } if f == file => {
+                    assert_eq!(
+                        resolution,
+                        Resolution::NotFound,
+                        "the live partial must not be offered as a resolve candidate"
+                    );
+                    break;
+                }
+                _ => continue,
+            }
+        }
     }
 
     // ---- Nyaa browse-import tests (fake engine).
