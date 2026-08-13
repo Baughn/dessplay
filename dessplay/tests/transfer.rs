@@ -583,7 +583,7 @@ async fn a_never_reading_downloader_bounds_the_uploaders_written_bytes() {
             seeder
                 .commands
                 .send(FileCommand::TransferStream {
-                    peer: PeerId::new(&format!("slow{i}")),
+                    peer: PeerId::new(format!("slow{i}")),
                     file: hash.root,
                     outbound: false,
                     stream: near,

@@ -2178,9 +2178,11 @@ impl Actor {
         let generation = self.next_stream_generation();
         let task = tokio::spawn(serve_transfer(
             stream,
-            peer.clone(),
-            file,
-            generation,
+            ServeStreamId {
+                to: peer.clone(),
+                file,
+                generation,
+            },
             path,
             Arc::clone(&self.upload),
             Arc::clone(&self.clock),
@@ -3181,6 +3183,15 @@ async fn read_download_stream(
         .await;
 }
 
+/// Identity of one serve stream: the recipient, the file, and the
+/// bookkeeping generation that guards its end event against a stale
+/// predecessor's.
+struct ServeStreamId {
+    to: PeerId,
+    file: Ed2kHash,
+    generation: u64,
+}
+
 /// Serve one transfer: read `ChunkRequest`/`Cancel` frames off the
 /// stream into a queue, and stream `ChunkData` back as fast as the
 /// stream accepts — the write await *is* the flow control (BBR and the
@@ -3190,14 +3201,17 @@ async fn read_download_stream(
 /// vanishes; either way the closed stream is the downloader's signal.
 async fn serve_transfer(
     stream: BiStream,
-    to: PeerId,
-    file: Ed2kHash,
-    generation: u64,
+    id: ServeStreamId,
     path: PathBuf,
     upload: Arc<UploadPacer>,
     clock: Clock,
     tx: mpsc::Sender<StreamEvent>,
 ) {
+    let ServeStreamId {
+        to,
+        file,
+        generation,
+    } = id;
     let BiStream { mut send, recv } = stream;
     // Control frames read apart from the writer (read_frame is not
     // cancel-safe); unbounded is fine — requests are tiny and bounded
@@ -4286,9 +4300,11 @@ mod tests {
                 };
                 tokio::spawn(serve_transfer(
                     near,
-                    PeerId::new(format!("slow{i}")),
-                    hash(1),
-                    i as u64 + 1,
+                    ServeStreamId {
+                        to: PeerId::new(format!("slow{i}")),
+                        file: hash(1),
+                        generation: i as u64 + 1,
+                    },
                     path.clone(),
                     Arc::clone(&pacer),
                     test_clock(),
