@@ -206,6 +206,22 @@ impl SeederTransfer {
             .await;
     }
 
+    /// The network layer answered a stream-open request with failure:
+    /// the file actor clears its pending queue and retries on its tick
+    /// (the answered-request contract).
+    pub async fn on_transfer_stream_failed(&self, peer: PeerId, file: Ed2kHash) {
+        let _ = self
+            .file
+            .send(FileCommand::TransferStreamFailed { peer, file })
+            .await;
+    }
+
+    /// The control connection died, taking the transfer plane (and any
+    /// unanswered stream opens) with it: fail the pending queues.
+    pub async fn on_transfer_link_reset(&self) {
+        let _ = self.file.send(FileCommand::TransferLinkReset).await;
+    }
+
     /// Present peers (any role) advertising `file` Ready, excluding us.
     fn sources(&self, view: &StateView, peers: &[PeerInfo], file: Ed2kHash) -> Vec<PeerId> {
         peers

@@ -230,6 +230,28 @@ pub enum FileCommand {
         /// The live stream.
         stream: BiStream,
     },
+    /// The network layer could not satisfy an [`FileOutput::OpenTransfer`]
+    /// request (link down or backlogged, open or header write failed) —
+    /// the failure half of the answered-request contract. Clears the
+    /// pending-stream queue for `(peer, file)` and requeues the source's
+    /// in-flight chunks, so the next download tick re-plans and
+    /// re-requests a stream instead of waiting forever on a request the
+    /// network dropped.
+    TransferStreamFailed {
+        /// The uploader the stream was for.
+        peer: dessplay_core::net::PeerId,
+        /// The file the stream was for.
+        file: Ed2kHash,
+    },
+    /// The control connection died. The server closes a session's
+    /// transfer connection when its control connection ends, so every
+    /// data stream — including opens still waiting on an answer inside
+    /// the (now torn-down) transfer link — is implicitly dead. Live
+    /// streams' readers observe the close themselves (`DownloadClosed`);
+    /// the never-opened pending queues have no reader, so this fails
+    /// them all explicitly, keeping the answered-request contract
+    /// airtight across a reconnect.
+    TransferLinkReset,
     /// A local copy vanished under us mid-session (the player failed to
     /// load it). Drop it from the servable set, prune its cache/hash
     /// bookkeeping, and flip availability to Missing so it re-resolves —
@@ -370,8 +392,11 @@ pub enum FileOutput {
     },
     /// Ask the network layer for a data stream to `to` for `file` (we
     /// are downloading from them). The bridge loop turns this into a
-    /// `NetworkCommand::OpenTransferStream`; the stream comes back as
-    /// [`FileCommand::TransferStream`] with `outbound: true`.
+    /// `NetworkCommand::OpenTransferStream`; the answer comes back as
+    /// [`FileCommand::TransferStream`] with `outbound: true`, or as
+    /// [`FileCommand::TransferStreamFailed`] — the network layer
+    /// answers every request (the answered-request contract), because
+    /// this actor's "already asked" latch is the pending queue itself.
     OpenTransfer {
         /// The uploader.
         to: dessplay_core::net::PeerId,
@@ -1101,7 +1126,53 @@ impl Actor {
                     self.on_serve_stream(peer, file, stream);
                 }
             }
+            FileCommand::TransferStreamFailed { peer, file } => {
+                self.on_transfer_stream_failed(peer, file);
+            }
+            FileCommand::TransferLinkReset => self.on_transfer_link_reset(),
             FileCommand::ForgetLocalFile { file } => self.lost_local_file(file).await,
+        }
+    }
+
+    /// The network layer answered an [`FileOutput::OpenTransfer`] with
+    /// failure: see [`FileCommand::TransferStreamFailed`]. Drops the
+    /// queued sends (they will never be delivered) and requeues the
+    /// source's in-flight chunks **without** an immediate re-plan — a
+    /// failure can come back in the same breath while the link is down,
+    /// and re-planning here would re-ask instantly and spin through the
+    /// failure loop. The download tick (250ms) re-plans, re-requests,
+    /// and thereby re-asks for a stream: a paced retry.
+    fn on_transfer_stream_failed(&mut self, peer: PeerId, file: Ed2kHash) {
+        let key = (peer.clone(), file);
+        if self.download_streams.contains_key(&key) {
+            // A live stream arrived since this failure was reported (a
+            // stale answer from an earlier request): nothing to redo.
+            return;
+        }
+        if self.pending_streams.remove(&key).is_some() {
+            tracing::debug!(
+                %peer, %file,
+                "stream open failed; dropping queued sends for a paced retry"
+            );
+        }
+        self.downloads.requeue_source(file, &peer, (self.clock)());
+    }
+
+    /// The control connection (and with it the whole transfer plane)
+    /// died: see [`FileCommand::TransferLinkReset`]. Every pending
+    /// (never-opened) stream is failed; live streams' readers observe
+    /// the connection close themselves and report `DownloadClosed`.
+    fn on_transfer_link_reset(&mut self) {
+        let keys: Vec<(PeerId, Ed2kHash)> = self.pending_streams.keys().cloned().collect();
+        if keys.is_empty() {
+            return;
+        }
+        tracing::debug!(
+            pending = keys.len(),
+            "transfer link reset; failing pending stream opens"
+        );
+        for (peer, file) in keys {
+            self.on_transfer_stream_failed(peer, file);
         }
     }
 
@@ -2007,11 +2078,21 @@ impl Actor {
     }
 
     /// Queue a message for a not-yet-open data stream; the first queued
-    /// message asks the network layer to open one.
+    /// message asks the network layer to open one. The queue-emptiness
+    /// latch is sound because the network layer answers every open
+    /// (stream or [`FileCommand::TransferStreamFailed`], which clears
+    /// the queue) — the cap below is a belt-and-braces memory bound,
+    /// not the recovery mechanism.
     async fn queue_for_stream(&mut self, to: PeerId, file: Ed2kHash, message: PeerMessage) {
         let queue = self.pending_streams.entry((to.clone(), file)).or_default();
         let fresh = queue.is_empty();
         queue.push(message);
+        if queue.len() > PENDING_STREAM_MESSAGES {
+            // Stale chunk control is worthless — the scheduler re-plans
+            // everything the moment the stream (or its failure) lands.
+            tracing::debug!(%to, %file, "pending stream queue full; dropping oldest");
+            queue.remove(0);
+        }
         if fresh {
             let _ = self.out.send(FileOutput::OpenTransfer { to, file }).await;
         }
@@ -2962,6 +3043,11 @@ fn sanitize_component(name: &str) -> String {
 /// How often the actor runs snub/refill maintenance (a safety net; data
 /// arrival drives refill directly).
 const DOWNLOAD_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Cap on messages queued for a data stream that hasn't arrived yet
+/// (per `(peer, file)`). The answered-request contract means the queue
+/// is short-lived; this bounds memory if an answer is ever lost anyway.
+const PENDING_STREAM_MESSAGES: usize = 64;
 
 /// Read a download data stream: each `ChunkData` frame feeds the actor
 /// (the bounded stream-event channel is the disk-write backpressure);
@@ -4023,6 +4109,81 @@ mod tests {
             rebuilds < n,
             "hash_cache was rebuilt {rebuilds} times for {n} files -- \
              it must not be cloned once per scanned file"
+        );
+    }
+
+    /// The answered-request contract across a control-connection death:
+    /// the transfer link task is aborted with stream opens still queued
+    /// inside it, so their answers are lost with it.
+    /// `TransferLinkReset` (bridged from the network's Disconnected
+    /// event) must fail every pending queue so the next chunk-control
+    /// send re-asks for a stream — pre-fix the queue-emptiness latch
+    /// held "already asked" forever and the transfer stayed wedged
+    /// across the reconnect.
+    #[tokio::test]
+    async fn transfer_link_reset_fails_pending_opens_so_the_next_send_re_asks() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let (out_tx, mut out_rx) = mpsc::channel(64);
+        let (done_tx, _done_rx) = mpsc::channel(64);
+        let (stream_tx, _stream_rx) = mpsc::channel(64);
+        let mut actor = Actor::new(
+            FileConfig {
+                storage: Storage::open_in_memory().unwrap(),
+                media_roots: vec![],
+                retention: CacheRetention::default(),
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: None,
+                nyaa: None,
+            },
+            out_tx,
+            done_tx,
+            stream_tx,
+        )
+        .unwrap();
+
+        let file = hash(1);
+        let seed = PeerId::new("seed");
+        actor
+            .start_peer_download(file, 1024, vec![seed.clone()], 0)
+            .await;
+        while out_rx.try_recv().is_ok() {} // drain solicitation traffic
+
+        let request = |chunks: Vec<u32>| PeerMessage::ChunkRequest { file, chunks };
+        // The first chunk-control send queues and asks for a stream;
+        // a second send while pending must not re-ask (the latch).
+        actor
+            .send_on_stream(seed.clone(), file, request(vec![0]))
+            .await;
+        assert!(
+            matches!(out_rx.try_recv(), Ok(FileOutput::OpenTransfer { .. })),
+            "the first queued message asks for a stream"
+        );
+        actor
+            .send_on_stream(seed.clone(), file, request(vec![1]))
+            .await;
+        assert!(
+            out_rx.try_recv().is_err(),
+            "a queued key must not re-ask while its open is outstanding"
+        );
+
+        // The control connection dies: the open's answer is lost with
+        // the aborted link task, and the reset stands in for it.
+        actor.on_transfer_link_reset();
+        assert!(
+            actor.pending_streams.is_empty(),
+            "the reset must fail every pending open"
+        );
+
+        // The next planned request re-asks for a stream.
+        actor.send_on_stream(seed, file, request(vec![0])).await;
+        assert!(
+            matches!(out_rx.try_recv(), Ok(FileOutput::OpenTransfer { .. })),
+            "a send after the reset must ask for a fresh stream"
         );
     }
 

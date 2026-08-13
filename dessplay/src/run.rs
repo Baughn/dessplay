@@ -601,6 +601,12 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                         }
                         continue;
                     }
+                    ClientEvent::Network(NetworkEvent::TransferStreamFailed { peer, file }) => {
+                        if let Some(transfer) = seeder_transfer.as_mut() {
+                            transfer.on_transfer_stream_failed(peer, file).await;
+                        }
+                        continue;
+                    }
                     event => event,
                 };
                 // Drive the seeder's transfer from each event: route
@@ -650,6 +656,11 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
                     }
                     ClientEvent::Network(NetworkEvent::Disconnected { reason }) => {
                         tracing::warn!("disconnected ({reason}); retrying");
+                        // The transfer plane dies with the control
+                        // connection: fail any unanswered stream opens.
+                        if let Some(transfer) = seeder_transfer.as_mut() {
+                            transfer.on_transfer_link_reset().await;
+                        }
                     }
                     ClientEvent::Network(NetworkEvent::PeerList { peers, known_offline }) => {
                         if first_peer_list {
@@ -1448,6 +1459,18 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         ClientEvent::Network(NetworkEvent::Disconnected { .. }) => {
                             self.link = crate::ui::props::LinkStatus::Down;
+                            // The transfer plane dies with the control
+                            // connection: fail any stream opens still
+                            // awaiting an answer.
+                            self.shell.on_transfer_link_reset().await;
+                        }
+                        ClientEvent::Network(NetworkEvent::TransferStreamFailed {
+                            peer,
+                            file,
+                        }) => {
+                            self.shell
+                                .on_transfer_stream_failed(peer.clone(), *file)
+                                .await;
                         }
                         ClientEvent::Network(NetworkEvent::Connected { .. }) => {
                             self.link = crate::ui::props::LinkStatus::Connected;

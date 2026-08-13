@@ -86,6 +86,17 @@ pub const STREAM_RECEIVE_WINDOW: u64 = 16 * 1024 * 1024;
 /// Connection-level flow control window (multiple transfer streams).
 pub const CONNECTION_RECEIVE_WINDOW: u64 = 64 * 1024 * 1024;
 
+/// Concurrent bidirectional streams the peer may have open. quinn's
+/// default is 100, and `open_bi()` at the cap does not fail — it
+/// silently *waits* for a credit. One stream per active transfer is
+/// the design (protocol v9), and a seeder redeploying against a long
+/// playlist legitimately runs hundreds of concurrent transfers, so the
+/// cap is raised well past any plausible count instead of acting as a
+/// hidden throttle. (The stream *open* also runs off the network
+/// actor's link loop, so even a wait at this cap parks only its own
+/// task.)
+pub const MAX_CONCURRENT_BIDI_STREAMS: u32 = 1024;
+
 fn shared_transport_config() -> quinn::TransportConfig {
     let mut config = quinn::TransportConfig::default();
     // BBR, not the default loss-based Cubic: the bottleneck is a home
@@ -108,6 +119,7 @@ fn shared_transport_config() -> quinn::TransportConfig {
         quinn::VarInt::from_u64(CONNECTION_RECEIVE_WINDOW).unwrap_or(quinn::VarInt::MAX),
     );
     config.send_window(CONNECTION_RECEIVE_WINDOW);
+    config.max_concurrent_bidi_streams(quinn::VarInt::from_u32(MAX_CONCURRENT_BIDI_STREAMS));
     config.datagram_receive_buffer_size(Some(1024 * 1024));
     config
 }

@@ -2560,6 +2560,28 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             .await;
     }
 
+    /// The network layer answered a stream-open request with failure:
+    /// forward it so the file actor clears its pending queue and
+    /// retries on its own tick (the answered-request contract).
+    pub async fn on_transfer_stream_failed(
+        &self,
+        peer: dessplay_core::net::PeerId,
+        file: dessplay_core::types::Ed2kHash,
+    ) {
+        let _ = self
+            .file
+            .send(FileCommand::TransferStreamFailed { peer, file })
+            .await;
+    }
+
+    /// The control connection died — and the server tears down the
+    /// session's transfer connection with it, taking any unanswered
+    /// stream opens along. Tell the file actor so pending queues fail
+    /// instead of waiting on answers that died with the link.
+    pub async fn on_transfer_link_reset(&self) {
+        let _ = self.file.send(FileCommand::TransferLinkReset).await;
+    }
+
     async fn spawn_player(&mut self) {
         let Some(factory) = self.factory.take() else {
             return; // already spawned and gone (fatal launch failure)

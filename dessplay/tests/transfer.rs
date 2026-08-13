@@ -143,6 +143,19 @@ fn pumped_stream_pair(
 /// the server's data-stream pump on `OpenTransfer` — until the named
 /// leecher reports the file complete (or a timeout).
 async fn pump_until_complete(actors: &mut [Actor], leecher: &str, budget: Duration) -> Outcome {
+    pump_transfer(actors, leecher, budget, 0).await
+}
+
+/// Like [`pump_until_complete`], but the first `fail_opens` stream-open
+/// requests are answered with `TransferStreamFailed` instead of a
+/// stream — the network actor's failure half of the answered-request
+/// contract (a down or backlogged transfer link).
+async fn pump_transfer(
+    actors: &mut [Actor],
+    leecher: &str,
+    budget: Duration,
+    mut fail_opens: usize,
+) -> Outcome {
     let senders: HashMap<String, mpsc::Sender<FileCommand>> = actors
         .iter()
         .map(|a| (a.name.clone(), a.commands.clone()))
@@ -175,6 +188,19 @@ async fn pump_until_complete(actors: &mut [Actor], leecher: &str, budget: Durati
                     }
                 }
                 FileOutput::OpenTransfer { to, file } => {
+                    // The network actor's failure answer, when injected:
+                    // the requester must clear its pending queue and
+                    // re-request on a later tick.
+                    if fail_opens > 0 {
+                        fail_opens -= 1;
+                        let _ = senders[&from]
+                            .send(FileCommand::TransferStreamFailed {
+                                peer: to.clone(),
+                                file,
+                            })
+                            .await;
+                        continue;
+                    }
                     // The server's role: join the two ends with a byte
                     // pump. The downloader gets its stream back
                     // (outbound), the uploader an incoming serve stream.
@@ -461,6 +487,47 @@ async fn two_seed_transfer_completes_and_stays_efficient() {
     assert!(
         wasted <= endgame_tail,
         "waste {wasted} exceeds the endgame tail {endgame_tail} — bulk mode is duplicating chunks"
+    );
+}
+
+/// The answered-request contract (2026-08-12 review, HIGH): a stream
+/// open the network layer cannot satisfy is answered with
+/// `TransferStreamFailed`, and the file actor must clear its pending
+/// queue and re-request a stream on a later tick. Pre-fix the queued
+/// messages latched "already asked" forever — the failure answer did
+/// not exist, nothing retried, and the transfer wedged until restart
+/// (one 30-second wifi blip during the first open was enough).
+#[tokio::test]
+async fn a_failed_stream_open_is_retried_and_the_transfer_completes() {
+    let bytes = data(ED2K_BLOCK_SIZE as usize + 41_000); // 2 blocks
+    let hash = ed2k_hash_bytes(&bytes);
+    let filename = "blip.mkv";
+
+    let mut seeder = spawn_actor("seed", &[(filename, &bytes)]);
+    let leecher = spawn_actor("leech", &[]);
+    make_seeder_ready(&mut seeder, filename, hash.root).await;
+
+    leecher
+        .commands
+        .send(FileCommand::StartDownload {
+            file: hash.root,
+            size_bytes: hash.size_bytes,
+            sources: vec![PeerId::new("seed")],
+            play_chunk: 0,
+        })
+        .await
+        .unwrap();
+
+    // The first open fails (link down); the transfer must still finish.
+    let mut actors = vec![seeder, leecher];
+    let outcome = pump_transfer(&mut actors, "leech", Duration::from_secs(30), 1).await;
+    let path = outcome
+        .completed_path
+        .expect("the transfer must recover from a failed stream open");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "assembled file matches"
     );
 }
 

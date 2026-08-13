@@ -57,8 +57,14 @@ pub enum NetworkCommand {
     /// Open a per-transfer **data stream** to `to` for `file` (the
     /// downloader side of a transfer). The server pumps it byte-for-byte
     /// to the target; the opened stream comes back as
-    /// [`NetworkEvent::TransferStream`] with `outbound: true`. Dropped
-    /// if the transfer link isn't up — transfer logic retries.
+    /// [`NetworkEvent::TransferStream`] with `outbound: true`.
+    ///
+    /// **Answered-request contract:** every open is answered — with the
+    /// stream, or with [`NetworkEvent::TransferStreamFailed`] — never
+    /// silently dropped. Requests arriving before the transfer link is
+    /// up (the reconnect-until-AuthOk window) are buffered and drained
+    /// on AuthOk. The file actor keys its "already asked" latch on this
+    /// contract; a lost answer would wedge that transfer until restart.
     OpenTransferStream {
         /// The uploader.
         to: PeerId,
@@ -156,6 +162,18 @@ pub enum NetworkEvent {
         outbound: bool,
         /// The live stream.
         stream: dessplay_core::net::BiStream,
+    },
+    /// An [`NetworkCommand::OpenTransferStream`] could not be satisfied
+    /// (link down or backlogged, the open itself failed, or the header
+    /// write died). The answered-request contract's failure half: the
+    /// file actor clears its pending queue for `(peer, file)` and
+    /// re-requests on its own tick, so a failed open delays a transfer
+    /// instead of wedging it.
+    TransferStreamFailed {
+        /// The uploader the stream was for.
+        peer: PeerId,
+        /// The file the stream was for.
+        file: dessplay_core::types::Ed2kHash,
     },
     /// Connection lost; the actor will retry.
     Disconnected {
@@ -338,6 +356,34 @@ impl NetworkConfig {
         }
     }
 }
+
+/// Hand a stream-open request to the transfer link, answering with
+/// [`NetworkEvent::TransferStreamFailed`] when the link's channel is
+/// full — the answered-request contract: every open gets the stream or
+/// an explicit failure, so the file actor retries on its own tick
+/// instead of waiting on an answer that will never come.
+async fn forward_open(
+    link: &TransferLink,
+    to: PeerId,
+    file: dessplay_core::types::Ed2kHash,
+    events: &mpsc::Sender<NetworkEvent>,
+) {
+    if link
+        .tx
+        .try_send(TransferOp::OpenStream(to.clone(), file))
+        .is_err()
+    {
+        tracing::debug!(%to, %file, "transfer link backlogged; answering open with failure");
+        let _ = events
+            .send(NetworkEvent::TransferStreamFailed { peer: to, file })
+            .await;
+    }
+}
+
+/// How many stream-open requests buffer while the transfer link is not
+/// up yet (pre-AuthOk). Matches the link op channel's depth; past it
+/// the newest request is answered with failure instead.
+const PENDING_OPEN_BUFFER: usize = 64;
 
 /// Probes sent back-to-back right after connecting, to seed the offset
 /// window before the steady-state cadence takes over.
@@ -621,23 +667,25 @@ async fn run_transfer_link<C: Connector>(
                             }
                         }
                         TransferOp::OpenStream(to, file) => {
-                            // Open the data stream and hand it off in a
-                            // task — the header write can block on flow
-                            // control and must not stall the link loop.
-                            match conn.open_stream().await {
-                                Ok(stream) => {
-                                    tokio::spawn(announce_data_stream(
-                                        counted_stream(stream, &counters),
-                                        to,
-                                        file,
-                                        events.clone(),
-                                    ));
-                                }
-                                Err(e) => {
-                                    tracing::debug!("opening data stream: {e}");
-                                    break false;
-                                }
-                            }
+                            // Open + header write + hand-off run in a
+                            // task: at the transport's concurrent-stream
+                            // cap `open_stream` *waits* for a credit
+                            // rather than failing, and the header write
+                            // can block on flow control — an await
+                            // parked here would stop the loop accepting
+                            // server-pumped serve streams and drain the
+                            // op channel into try_send drops. A failure
+                            // inside the task is answered with
+                            // TransferStreamFailed (never silence); a
+                            // dead connection is observed by the
+                            // conn.recv() arm as usual.
+                            tokio::spawn(open_data_stream(
+                                Arc::clone(&conn),
+                                to,
+                                file,
+                                events.clone(),
+                                Arc::clone(&counters),
+                            ));
                         }
                     }
                 }
@@ -664,35 +712,53 @@ async fn run_transfer_link<C: Connector>(
     }
 }
 
-/// Write a fresh data stream's `OpenTransfer` header, then surface it as
-/// an outbound [`NetworkEvent::TransferStream`]. Failures just drop the
-/// stream — the transfer layer retries on its own cadence.
-async fn announce_data_stream(
-    stream: dessplay_core::net::BiStream,
+/// Open a data stream toward `to` for `file`, write its `OpenTransfer`
+/// header, and surface it as an outbound [`NetworkEvent::TransferStream`].
+/// Runs as its own task — the open can wait indefinitely for a stream
+/// credit and the header write can block on flow control, neither of
+/// which may park the link loop. Every failure is answered with
+/// [`NetworkEvent::TransferStreamFailed`] (the answered-request
+/// contract): the file actor clears its pending queue and retries on
+/// its own tick, so a failed open can never wedge a transfer.
+async fn open_data_stream<T: Transport>(
+    conn: Arc<T>,
     to: PeerId,
     file: dessplay_core::types::Ed2kHash,
     events: mpsc::Sender<NetworkEvent>,
+    counters: Arc<NetCounters>,
 ) {
-    let dessplay_core::net::BiStream { mut send, recv } = stream;
-    let header = RelayEnvelope::OpenTransfer {
-        to: to.clone(),
-        file,
-    };
-    let Ok(frame) = wire::encode(&header) else {
-        return;
-    };
-    if let Err(e) = write_frame(&mut send, &frame).await {
-        tracing::debug!(%to, %file, "announcing data stream: {e}");
-        return;
-    }
-    let _ = events
-        .send(NetworkEvent::TransferStream {
-            peer: to,
+    let opened = async {
+        let stream = conn.open_stream().await?;
+        let dessplay_core::net::BiStream { mut send, recv } = counted_stream(stream, &counters);
+        let header = RelayEnvelope::OpenTransfer {
+            to: to.clone(),
             file,
-            outbound: true,
-            stream: dessplay_core::net::BiStream { send, recv },
-        })
-        .await;
+        };
+        let frame =
+            wire::encode(&header).map_err(|e| TransportError::Setup(format!("encode: {e}")))?;
+        write_frame(&mut send, &frame)
+            .await
+            .map_err(TransportError::from)?;
+        Ok::<_, TransportError>(dessplay_core::net::BiStream { send, recv })
+    };
+    match opened.await {
+        Ok(stream) => {
+            let _ = events
+                .send(NetworkEvent::TransferStream {
+                    peer: to,
+                    file,
+                    outbound: true,
+                    stream,
+                })
+                .await;
+        }
+        Err(e) => {
+            tracing::debug!(%to, %file, "opening data stream failed: {e}");
+            let _ = events
+                .send(NetworkEvent::TransferStreamFailed { peer: to, file })
+                .await;
+        }
+    }
 }
 
 /// Read an incoming (server-pumped) stream's header and surface it as an
@@ -795,6 +861,10 @@ async fn run_connection<T: Transport, C: Connector>(
     // task dies with this connection (AbortOnDrop): a reconnect gets a
     // fresh token and a fresh link.
     let mut transfer: Option<TransferLink> = None;
+    // Stream-open requests that arrived before the transfer link exists
+    // (the reconnect-until-AuthOk window). Buffered, not dropped — the
+    // answered-request contract — and drained into the link on AuthOk.
+    let mut pending_opens: Vec<(PeerId, dessplay_core::types::Ed2kHash)> = Vec::new();
 
     // ---- Health bookkeeping (LinkHealth samples). All measured with
     // local monotonic Instants — never shared-clock timestamps, whose
@@ -856,10 +926,16 @@ async fn run_connection<T: Transport, C: Connector>(
                             events.clone(),
                             Arc::clone(&counters),
                         ));
-                        transfer = Some(TransferLink {
+                        let link = TransferLink {
                             tx,
                             _task: AbortOnDrop(task),
-                        });
+                        };
+                        // Answer the opens that buffered while the link
+                        // was coming up.
+                        for (to, file) in pending_opens.drain(..) {
+                            forward_open(&link, to, file, events).await;
+                        }
+                        transfer = Some(link);
                     }
                     ServerControl::AuthFailed => {
                         return ConnectionEnd::Rejected("the server rejected the password".into());
@@ -1009,12 +1085,23 @@ async fn run_connection<T: Transport, C: Connector>(
                         }
                     }
                     Some(NetworkCommand::OpenTransferStream { to, file }) => {
-                        let Some(link) = transfer.as_ref() else {
-                            tracing::debug!("transfer link not up; dropping OpenTransferStream");
-                            continue;
-                        };
-                        if let Err(e) = link.tx.try_send(TransferOp::OpenStream(to, file)) {
-                            tracing::debug!("transfer link backlogged; dropping open: {e}");
+                        // Answered-request contract: the stream, an
+                        // explicit failure, or (pre-AuthOk) a buffered
+                        // request — never a silent drop.
+                        match transfer.as_ref() {
+                            Some(link) => forward_open(link, to, file, events).await,
+                            None if pending_opens.len() < PENDING_OPEN_BUFFER => {
+                                pending_opens.push((to, file));
+                            }
+                            None => {
+                                tracing::debug!(
+                                    %to, %file,
+                                    "pre-auth open buffer full; answering with failure"
+                                );
+                                let _ = events
+                                    .send(NetworkEvent::TransferStreamFailed { peer: to, file })
+                                    .await;
+                            }
                         }
                     }
                     Some(NetworkCommand::Shutdown) | None => {
@@ -1419,6 +1506,355 @@ mod tests {
         })
         .await
         .expect("data-stream bytes never showed up in the health rates");
+    }
+
+    /// A sim-backed transport whose `open_stream` hangs once a budget of
+    /// allowed opens is spent — models quinn parked awaiting a stream
+    /// credit at `max_concurrent_bidi_streams`.
+    struct BudgetedTransport {
+        inner: SimTransport,
+        open_budget: Arc<AtomicU32>,
+    }
+
+    impl Transport for BudgetedTransport {
+        async fn send_control(&self, frame: &[u8]) -> Result<(), TransportError> {
+            self.inner.send_control(frame).await
+        }
+
+        async fn send_datagram(&self, frame: &[u8]) -> Result<(), TransportError> {
+            self.inner.send_datagram(frame).await
+        }
+
+        fn max_datagram_size(&self) -> Option<usize> {
+            self.inner.max_datagram_size()
+        }
+
+        async fn open_stream(&self) -> Result<dessplay_core::net::BiStream, TransportError> {
+            let mut budget = self.open_budget.load(Ordering::SeqCst);
+            loop {
+                if budget == 0 {
+                    // Out of credits: wait forever, exactly like
+                    // quinn's open_bi at the concurrency cap.
+                    std::future::pending::<()>().await;
+                }
+                match self.open_budget.compare_exchange(
+                    budget,
+                    budget - 1,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => budget = actual,
+                }
+            }
+            self.inner.open_stream().await
+        }
+
+        async fn recv(&self) -> Result<TransportEvent, TransportError> {
+            self.inner.recv().await
+        }
+
+        async fn close(&self, reason: &str) {
+            self.inner.close(reason).await
+        }
+    }
+
+    /// Connector wrapper for [`BudgetedTransport`], optionally refusing
+    /// to connect at all (a blocked transfer port).
+    struct BudgetedConnector {
+        inner: dessplay_core::net::sim::SimConnector,
+        open_budget: Arc<AtomicU32>,
+        never_connect: bool,
+    }
+
+    impl BudgetedConnector {
+        fn new(inner: dessplay_core::net::sim::SimConnector, open_budget: u32) -> Self {
+            BudgetedConnector {
+                inner,
+                open_budget: Arc::new(AtomicU32::new(open_budget)),
+                never_connect: false,
+            }
+        }
+    }
+
+    impl Connector for BudgetedConnector {
+        type Conn = BudgetedTransport;
+
+        async fn connect(&self) -> Result<Self::Conn, TransportError> {
+            if self.never_connect {
+                std::future::pending::<()>().await;
+            }
+            let inner = self.inner.connect().await?;
+            Ok(BudgetedTransport {
+                inner,
+                open_budget: Arc::clone(&self.open_budget),
+            })
+        }
+    }
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// The answered-request contract, buffering half: an
+    /// `OpenTransferStream` arriving before AuthOk (the window where
+    /// the transfer link does not exist yet) must be buffered and
+    /// satisfied once the link comes up — pre-fix it was silently
+    /// dropped, permanently wedging that (source, file) transfer.
+    #[tokio::test(start_paused = true)]
+    async fn an_open_requested_before_auth_ok_is_buffered_and_answered() {
+        let net = SimNetwork::new(23);
+        let server = EndpointId::new("server");
+        let listener = net.listener(&server);
+        let clock = paused_clock();
+        // A control server that answers Auth only after 500ms — the
+        // pre-AuthOk window the buffering exists for.
+        tokio::spawn(async move {
+            let Ok((conn, addr)) = listener.accept().await else {
+                return;
+            };
+            loop {
+                let payload = match conn.recv().await {
+                    Ok(TransportEvent::Control(bytes) | TransportEvent::Datagram(bytes)) => bytes,
+                    Ok(TransportEvent::IncomingStream(_)) => continue,
+                    Ok(TransportEvent::Closed { .. }) | Err(_) => return,
+                };
+                let Ok(WireMessage::Control(msg)) = wire::decode(&payload) else {
+                    continue;
+                };
+                let reply = match msg {
+                    ServerControl::Auth { .. } => {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        ServerControl::AuthOk {
+                            observed_addr: addr,
+                            transfer_token: 42,
+                        }
+                    }
+                    ServerControl::TimeSyncRequest { client_send } => {
+                        let now = (clock)();
+                        ServerControl::TimeSyncResponse {
+                            client_send,
+                            server_recv: now,
+                            server_send: now,
+                        }
+                    }
+                    _ => continue,
+                };
+                let frame = wire::encode(&WireMessage::Control(reply)).unwrap();
+                let _ = conn.send_control(&frame).await;
+            }
+        });
+        let transfer = EndpointId::new("server-transfer");
+        tokio::spawn(fake_transfer_server(net.listener(&transfer)));
+
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(4096);
+        let connector = Arc::new(net.connector(&EndpointId::new("kim"), &server));
+        let transfer_connector = Arc::new(net.connector(&EndpointId::new("kim"), &transfer));
+        let _actor = tokio::spawn(run(
+            connector,
+            transfer_connector,
+            config_with_clock(paused_clock()),
+            command_rx,
+            event_tx,
+        ));
+
+        // Let the connect + Auth happen, then request the stream while
+        // AuthOk is still pending.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        command_tx
+            .send(NetworkCommand::OpenTransferStream {
+                to: UserId::new("nas"),
+                file: Ed2kHash([1; 16]),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match event_rx.recv().await.expect("actor alive") {
+                    NetworkEvent::TransferStream { outbound: true, .. } => break,
+                    NetworkEvent::TransferStreamFailed { .. } => {
+                        panic!("a buffered open must not be answered with failure")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("an open requested before AuthOk was dropped instead of buffered");
+    }
+
+    /// The inline-open hazard (2026-08-12 review): at the transport's
+    /// concurrent-stream cap, `open_stream` *waits* — parked inline in
+    /// the link loop it would stop `conn.recv()` being polled, so
+    /// server-pumped serve streams toward us would never be accepted.
+    /// The open must run off-loop: while one open hangs forever, an
+    /// incoming stream must still surface.
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_stream_open_does_not_stall_the_transfer_link() {
+        let net = SimNetwork::new(29);
+        let server = EndpointId::new("server");
+        tokio::spawn(fake_server(net.listener(&server), paused_clock(), true));
+        let transfer = EndpointId::new("server-transfer");
+        let transfer_listener = net.listener(&transfer);
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        // A transfer server that, on signal, opens a TransferFrom
+        // stream toward the client (a peer wants to download from us).
+        tokio::spawn(async move {
+            let Ok((conn, _addr)) = transfer_listener.accept().await else {
+                return;
+            };
+            let conn = Arc::new(conn);
+            let pusher = Arc::clone(&conn);
+            tokio::spawn(async move {
+                let _ = go_rx.await;
+                let Ok(mut stream) = pusher.open_stream().await else {
+                    return;
+                };
+                let header = wire::encode(&RelayEnvelope::TransferFrom {
+                    from: UserId::new("nas"),
+                    file: Ed2kHash([7; 16]),
+                })
+                .unwrap();
+                let _ = write_frame(&mut stream.send, &header).await;
+                // Keep the stream alive.
+                std::future::pending::<()>().await
+            });
+            // Hold incoming streams (the client's relay stream) —
+            // dropping one closes it and tears the link down.
+            let mut held = Vec::new();
+            loop {
+                match conn.recv().await {
+                    Ok(TransportEvent::IncomingStream(stream)) => held.push(stream),
+                    Ok(TransportEvent::Closed { .. }) | Err(_) => return,
+                    Ok(_) => continue,
+                }
+            }
+        });
+
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(4096);
+        // Control opens are unlimited; the transfer connection has
+        // exactly one credit — the relay stream — so the data-stream
+        // open hangs forever.
+        let connector = Arc::new(BudgetedConnector::new(
+            net.connector(&EndpointId::new("kim"), &server),
+            u32::MAX,
+        ));
+        let transfer_connector = Arc::new(BudgetedConnector::new(
+            net.connector(&EndpointId::new("kim"), &transfer),
+            1,
+        ));
+        let _actor = tokio::spawn(run(
+            connector,
+            transfer_connector,
+            config_with_clock(paused_clock()),
+            command_rx,
+            event_tx,
+        ));
+
+        // Wait for auth + link-up, then request a data stream whose
+        // open will hang at the (exhausted) stream budget.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let NetworkEvent::Connected { .. } = event_rx.recv().await.expect("actor alive")
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("never connected");
+        tokio::time::sleep(Duration::from_millis(500)).await; // link-up
+        command_tx
+            .send(NetworkCommand::OpenTransferStream {
+                to: UserId::new("nas"),
+                file: Ed2kHash([1; 16]),
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await; // reach the link loop
+
+        // The server now pushes a serve stream toward us. It must
+        // surface even though the outbound open is parked forever.
+        go_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let NetworkEvent::TransferStream {
+                    outbound: false, ..
+                } = event_rx.recv().await.expect("actor alive")
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("a hung outbound open starved incoming stream acceptance");
+    }
+
+    /// The answered-request contract, failure half: opens the link
+    /// cannot take (its op channel is full because the link task is
+    /// stuck dialing) are answered with `TransferStreamFailed`, never
+    /// silently dropped.
+    #[tokio::test(start_paused = true)]
+    async fn a_backlogged_transfer_link_answers_opens_with_failure() {
+        let net = SimNetwork::new(31);
+        let server = EndpointId::new("server");
+        tokio::spawn(fake_server(net.listener(&server), paused_clock(), true));
+
+        let (command_tx, command_rx) = mpsc::channel(256);
+        let (event_tx, mut event_rx) = mpsc::channel(4096);
+        let connector = Arc::new(BudgetedConnector::new(
+            net.connector(&EndpointId::new("kim"), &server),
+            u32::MAX,
+        ));
+        // The transfer dial never completes: ops pile into the link's
+        // 64-slot channel.
+        let transfer_connector = Arc::new(BudgetedConnector {
+            inner: net.connector(&EndpointId::new("kim"), &EndpointId::new("server-transfer")),
+            open_budget: Arc::new(AtomicU32::new(u32::MAX)),
+            never_connect: true,
+        });
+        let _actor = tokio::spawn(run(
+            connector,
+            transfer_connector,
+            config_with_clock(paused_clock()),
+            command_rx,
+            event_tx,
+        ));
+
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let NetworkEvent::Connected { .. } = event_rx.recv().await.expect("actor alive")
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("never connected");
+
+        // 70 opens into a 64-slot channel: the overflow must each be
+        // answered with an explicit failure.
+        for i in 0..70u8 {
+            command_tx
+                .send(NetworkCommand::OpenTransferStream {
+                    to: UserId::new("nas"),
+                    file: Ed2kHash([i; 16]),
+                })
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut failures = 0;
+        while let Ok(event) = event_rx.try_recv() {
+            if let NetworkEvent::TransferStreamFailed { .. } = event {
+                failures += 1;
+            }
+        }
+        assert_eq!(
+            failures, 6,
+            "every open past the link channel's capacity must be answered with failure"
+        );
     }
 
     /// Sanity for the interrupt-capable connect path: a normal connect
