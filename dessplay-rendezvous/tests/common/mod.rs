@@ -359,11 +359,11 @@ impl PlayerClient {
         self.control.events.send(event).expect("player pump gone");
     }
 
-    /// Wait for a `loadfile` and confirm it the way real mpv does: the
-    /// observed `path` echo, then file-loaded. File-attributed events
-    /// (positions, seeks, EOF) are only attributed once the path echo
-    /// lands (design.md, Events from Player: evidence-based attribution),
-    /// so a test that goes on to inject them must confirm the load first.
+    /// Wait for a `loadfile`. The auto-acking mock confirms it the way
+    /// real mpv does — the observed `path` echo, then file-loaded, then
+    /// duration — so by the time the Load command is visible here,
+    /// file-attributed events (positions, seeks, EOF) are attributed
+    /// (design.md, Events from Player: evidence-based attribution).
     /// Returns the loaded path.
     pub async fn expect_load(&mut self, budget: Duration) -> std::path::PathBuf {
         let cmd = self
@@ -372,10 +372,6 @@ impl PlayerClient {
         let MockCommand::Load(path, _) = cmd else {
             unreachable!()
         };
-        self.user(PlayerEvent::PathChanged {
-            path: path.to_string_lossy().into_owned(),
-        });
-        self.user(PlayerEvent::Loaded);
         path
     }
 

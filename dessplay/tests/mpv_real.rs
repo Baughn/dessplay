@@ -70,6 +70,25 @@ async fn full_journey_against_real_mpv() {
     .expect("launching mpv");
 
     player.load(&video, None).await.unwrap();
+    // Event order is load-bearing: the observed `path` echo must precede
+    // file-loaded and duration — it is what opens the actor's attribution
+    // gate (design.md, Events from Player), and the MockPlayer acks in
+    // this order on the strength of it. Verify real mpv actually does.
+    expect_event(&player, BUDGET, |e| match e {
+        PlayerEvent::PathChanged { path } => {
+            assert_eq!(
+                Path::new(path),
+                video,
+                "path echo names a different file than the load"
+            );
+            Some(())
+        }
+        PlayerEvent::Loaded | PlayerEvent::DurationKnown { .. } => {
+            panic!("{e:?} arrived before the loaded file's path echo")
+        }
+        _ => None,
+    })
+    .await;
     expect_event(&player, BUDGET, |e| {
         matches!(e, PlayerEvent::Loaded).then_some(())
     })

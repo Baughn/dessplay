@@ -653,3 +653,43 @@ async fn dragging_the_right_file_clears_missing() {
         )
         .await;
 }
+
+/// A playlist entry added without a duration (the adder didn't hold the
+/// file, so nothing probed it) gets one backfilled from the holder's
+/// player: mpv reports the duration after the load, and the session
+/// writes `SetPlaylistDuration` for every client. End-to-end this rests
+/// on the mock acking mpv's real event order — `path` echo, then
+/// file-loaded, then duration (design.md, Events from Player) — because
+/// a `DurationKnown` arriving before the path echo is dropped by the
+/// attribution gate, silently losing the backfill (2026-08-12 review).
+#[tokio::test(start_paused = true)]
+async fn duration_backfills_from_the_holders_player_probe() {
+    let harness = Harness::new(708);
+    let mut kim = harness.player_client("kim", 1);
+    let file = media_file(1);
+    kim.install(&file);
+
+    let mut entry = file_entry(&file, "kim");
+    entry.duration_millis = None;
+    mutate(&kim, Mutation::PushPlaylist { new: entry }).await;
+    mutate(
+        &kim,
+        Mutation::SetNowPlaying {
+            file: Some(file.hash),
+        },
+    )
+    .await;
+
+    // Kim's player loads the file; the auto-mock confirms the load and
+    // reports the duration, which must land in the shared playlist.
+    kim.expect_load(BUDGET).await;
+    eventually_views(&[&kim], BUDGET, |views| {
+        views.iter().all(|v| {
+            v.playlist.iter().any(|e| {
+                e.hash == file.hash
+                    && e.state.duration_millis == Some(dessplay::player::mock::AUTO_DURATION_MILLIS)
+            })
+        })
+    })
+    .await;
+}

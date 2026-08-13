@@ -11,8 +11,8 @@
 //!   precision.
 //! - [`MockPlayer::auto_pair`] acks commands the way mpv would
 //!   (`set_pause` fires `PauseChanged`, `seek` fires `Seeked`, `load`
-//!   fires `Loaded` + `DurationKnown`), so scenario tests don't have to
-//!   hand-echo every command.
+//!   fires `PathChanged` + `Loaded` + `DurationKnown`, in mpv's real
+//!   order), so scenario tests don't have to hand-echo every command.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -132,6 +132,14 @@ impl Player for MockPlayer {
         if self.load_fails {
             return Err(PlayerError::Gone("mock load failure".into()));
         }
+        // Ack in mpv's real order — the `path` echo first, then
+        // file-loaded, then duration (design.md, Events from Player).
+        // The observed path is what opens the actor's attribution gate:
+        // acked after `DurationKnown`, the gate would silently drop the
+        // duration report (2026-08-12 review).
+        self.ack(PlayerEvent::PathChanged {
+            path: path.to_string_lossy().into_owned(),
+        });
         self.ack(PlayerEvent::Loaded);
         self.ack(PlayerEvent::DurationKnown {
             duration_millis: AUTO_DURATION_MILLIS,
