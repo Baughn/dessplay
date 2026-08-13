@@ -292,7 +292,7 @@ struct Actor<F: PlayerFactory> {
     /// session's bounded player channel up into its main loop. The run
     /// loop polls this for the result; the factory rides along so it is
     /// available for the next relaunch.
-    pending_spawn: Option<oneshot::Receiver<(F, Result<F::Player, PlayerError>)>>,
+    pending_spawn: Option<oneshot::Receiver<Spawned<F>>>,
     /// Whether a pending spawn's failure exits the actor (startup and
     /// crash relaunch, matching the old inline paths) or leaves it idle
     /// awaiting another Load (the give-up recovery path).
@@ -422,11 +422,15 @@ async fn recv_from<P: Player>(player: &Option<P>) -> Result<PlayerEvent, PlayerE
     }
 }
 
+/// A background launch's delivery: the factory riding back for the
+/// next relaunch, plus the launch result.
+type Spawned<F> = (F, Result<<F as PlayerFactory>::Player, PlayerError>);
+
 /// Await a pending background spawn's delivery. `None` when the spawn
 /// task died without delivering (a panic in the factory).
 async fn recv_spawned<F: PlayerFactory>(
-    pending: &mut Option<oneshot::Receiver<(F, Result<F::Player, PlayerError>)>>,
-) -> Option<(F, Result<F::Player, PlayerError>)> {
+    pending: &mut Option<oneshot::Receiver<Spawned<F>>>,
+) -> Option<Spawned<F>> {
     match pending {
         Some(rx) => rx.await.ok(),
         // Unreachable: the select arm is gated on `is_some`.
