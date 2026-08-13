@@ -301,9 +301,14 @@ already names the new one during that window. The actor therefore tracks
 the last *observed* `path` — mpv's own report, ordered with every other
 event — and accepts file-attributed observations only while it equals
 the commanded path; observations in the gap are dropped as the old
-file's (design.md, Events from Player). The load-failure report is the
-deliberate exception: a file that never opens may never get a path
-observation, and suppressing the report is the worse failure direction.
+file's (design.md, Events from Player). Drift correction sits behind the
+same gate (authority samples are ignored and the `DriftController` reset
+while the player is off the commanded file — e.g. a user drag-in). Two
+deliberate exceptions: the load-failure report (a file that never opens
+may never get a path observation, and suppressing the report is the
+worse failure direction), and programmatic-seek echo accounting (an
+outstanding echo is consumed even by a gated-out `Seeked` — it is our
+own seek, and leaking it would swallow the user's next genuine seek).
 
 ### Session policy (`session.rs`)
 

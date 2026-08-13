@@ -689,6 +689,18 @@ impl<F: PlayerFactory> Actor<F> {
 
     /// Apply the drift bands against the authority's sample.
     async fn drift_correct(&mut self, sample: u64, timestamp: SharedTimestamp, playing: bool) {
+        // The same evidence gate as every other file-attributed
+        // operation: the authority's sample speaks about `current`, and
+        // until the player confirms it holds that file (mid-load, or the
+        // user's own drag-in is up) a correction would slew or hard-seek
+        // the wrong video. Reset the controller too, so a run
+        // accumulated before the gate closed cannot fire off the stale
+        // estimate the moment the gate re-opens (belt to the foreign
+        // `PathChanged` reset's suspenders).
+        if !self.player_on_current_file() {
+            self.drift.reset();
+            return;
+        }
         if self.pending_user_seek.is_some() {
             // The user is scrubbing; they're about to become authority.
             return;
@@ -731,6 +743,15 @@ impl<F: PlayerFactory> Actor<F> {
                 self.handle_pause_observation(paused).await;
             }
             PlayerEvent::Seeked { position_millis } => {
+                // An outstanding programmatic echo is consumed regardless
+                // of attribution — it is *our own* seek coming back, and
+                // an unconsumed echo would swallow the user's next
+                // genuine seek as stale (the counter is otherwise only
+                // cleared by a Load or a player death).
+                let echo = self.pending_seek_echoes > 0;
+                if echo {
+                    self.pending_seek_echoes -= 1;
+                }
                 // A seek observed before the player confirms our latest
                 // `Load` landed on the *previous* file (a trailing echo,
                 // or the reply to a position query issued on it) — it
@@ -747,9 +768,7 @@ impl<F: PlayerFactory> Actor<F> {
                         .or_else(|| self.estimate_now())
                         .unwrap_or(position_millis);
                     self.note_position(position_millis);
-                    if self.pending_seek_echoes > 0 {
-                        self.pending_seek_echoes -= 1;
-                    } else {
+                    if !echo {
                         tracing::debug!(position_millis, "user seek (debouncing)");
                         self.pending_user_seek =
                             Some((from_millis, position_millis, Instant::now()));
@@ -810,6 +829,12 @@ impl<F: PlayerFactory> Actor<F> {
                         path = %observed.display(),
                         "user loaded a file directly into the player"
                     );
+                    // The attribution gate just closed: forget any drift
+                    // run in progress, so a stale near-complete run can't
+                    // fire a correction the moment the gate re-opens.
+                    // (Load and player death already reset on their gate
+                    // closures.)
+                    self.drift.reset();
                     let _ = self
                         .outputs
                         .send(PlayerOutput::PathObserved { path: observed })
@@ -1968,6 +1993,147 @@ mod tests {
             "{speed_commands} speed commands in 5 simulated minutes — the \
              drift controller is flapping (each command is an audible \
              tempo step; a handful per correction episode is the budget)"
+        );
+    }
+
+    /// Regression (2026-08-12 review): drift correction is file-attributed
+    /// work like every other observation. While the player is off the
+    /// current file — the user dragged their own file in (the normal
+    /// workflow in attach mode), or a load is still in flight — authority
+    /// samples must not slew or hard-seek the player: it would yank the
+    /// user's own unrelated video around.
+    #[tokio::test(start_paused = true)]
+    async fn drift_correction_is_gated_while_the_player_is_off_the_current_file() {
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        // The user drags their own file into mpv: the gate closes.
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/elsewhere/dragged.mkv".into(),
+            })
+            .unwrap();
+        settle().await;
+        let _ = drain_outputs(&mut outputs);
+        // The authority is 10s away — normally a sustained hard seek.
+        sync_to_repeatedly(&commands, 20_000).await;
+        assert_eq!(
+            control.drain_commands(),
+            vec![],
+            "drift correction acted on the user's own file"
+        );
+    }
+
+    /// The controller's engage/seek run must not survive a gate closure:
+    /// out-of-band samples accumulated before the drag-in plus one after
+    /// the gate re-opens must not complete the run and fire a correction
+    /// off the stale estimate — the run restarts clean.
+    #[tokio::test(start_paused = true)]
+    async fn a_gate_closure_resets_the_drift_run() {
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        // Two out-of-band samples: one short of the ENGAGE_RUN of 3.
+        for _ in 0..2 {
+            commands
+                .send(PlayerCommand::SyncTo {
+                    position_millis: 20_000,
+                    timestamp: SharedTimestamp(1_000_000),
+                    playing: false,
+                })
+                .await
+                .unwrap();
+        }
+        settle().await;
+        assert_eq!(control.drain_commands(), vec![]);
+
+        // The gate closes (drag-in) and re-opens (back on our file).
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/elsewhere/dragged.mkv".into(),
+            })
+            .unwrap();
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep1.mkv".into(),
+            })
+            .unwrap();
+        settle().await;
+        let _ = drain_outputs(&mut outputs);
+
+        // With the reset, further samples start a fresh run instead of
+        // completing the stale one.
+        for _ in 0..2 {
+            commands
+                .send(PlayerCommand::SyncTo {
+                    position_millis: 20_000,
+                    timestamp: SharedTimestamp(1_000_000),
+                    playing: false,
+                })
+                .await
+                .unwrap();
+        }
+        settle().await;
+        assert_eq!(
+            control.drain_commands(),
+            vec![],
+            "a stale pre-drag-in drift run fired a correction"
+        );
+
+        // Sanity: a full sustained run still corrects.
+        sync_to_repeatedly(&commands, 20_000).await;
+        assert_eq!(control.drain_commands(), vec![MockCommand::Seek(20_000)]);
+    }
+
+    /// Regression (2026-08-12 review): a programmatic seek's echo must be
+    /// consumed even when it arrives while the attribution gate is closed
+    /// — it is *our own* seek. Leaked, the stale counter swallows the
+    /// user's next genuine seek after the gate re-opens.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_out_programmatic_seek_echo_is_still_consumed() {
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        // A drift hard seek arms a pending echo (the manual mock does
+        // not ack, so it stays outstanding).
+        sync_to_repeatedly(&commands, 20_000).await;
+        assert_eq!(control.drain_commands(), vec![MockCommand::Seek(20_000)]);
+
+        // The user drags in their own file before the echo lands…
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/elsewhere/dragged.mkv".into(),
+            })
+            .unwrap();
+        // …and the echo arrives while the gate is closed.
+        control
+            .events
+            .send(PlayerEvent::Seeked {
+                position_millis: 20_000,
+            })
+            .unwrap();
+        settle().await;
+
+        // Back on our file; the user scrubs. The scrub must surface as a
+        // UserSeeked, not be swallowed as the leaked echo.
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep1.mkv".into(),
+            })
+            .unwrap();
+        control
+            .events
+            .send(PlayerEvent::Seeked {
+                position_millis: 55_000,
+            })
+            .unwrap();
+        tokio::time::sleep(SEEK_DEBOUNCE + Duration::from_millis(100)).await;
+        let outs = drain_outputs(&mut outputs);
+        assert!(
+            outs.contains(&PlayerOutput::UserSeeked {
+                from_millis: 20_000,
+                to_millis: 55_000,
+            }),
+            "the user's scrub was swallowed by a leaked programmatic echo: {outs:?}"
         );
     }
 

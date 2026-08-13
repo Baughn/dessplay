@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-12
+Last updated: 2026-08-13
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -2278,13 +2278,20 @@ file it *commanded* — which already names the new file during that
 window. The observed `path` property closes it: mpv's IPC event stream
 is ordered, so the actor accepts file-attributed observations only while
 the last observed path equals the commanded one; observations in the gap
-belong to the old file and are dropped. This is what makes the
+belong to the old file and are dropped. The same gate covers outgoing
+**drift correction**: authority samples are ignored (and the drift
+controller's state reset) while the player is off the commanded file, so
+a mid-load window — or a file the user dragged in themselves — is never
+slewed or hard-seeked. This is what makes the
 `PlaybackPosition` file tag (Playback Rules, drift correction)
-trustworthy at its source. The one
-exception is the load-*failure* report: a file that fails to open may
-never produce a path observation at all, so gating it would suppress the
-report entirely; a stale one merely re-resolves the file (wrong but
-self-healing, the safe direction).
+trustworthy at its source. Two carve-outs: the load-*failure* report —
+a file that fails to open may never produce a path observation at all,
+so gating it would suppress the report entirely; a stale one merely
+re-resolves the file (wrong but self-healing, the safe direction) — and
+the *echo accounting* of a programmatic seek, which is consumed even
+when the echo arrives gated-out (it is our own seek; leaving it
+outstanding would swallow the user's next genuine seek as a stale echo).
+Only the user-seek/debounce half of seek handling sits behind the gate.
 
 ### Subtitle Display
 
