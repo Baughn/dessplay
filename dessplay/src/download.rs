@@ -421,6 +421,54 @@ impl Downloads {
         }
     }
 
+    /// The data stream carrying `peer`'s transfer died (closed or
+    /// reset). The proposal treats this as the same signal as a snub —
+    /// "a closed/reset stream is the same signal" — so the source's
+    /// in-flight chunks requeue and re-plan **immediately** instead of
+    /// sitting dead until the 30s snub. Unlike a snub the *source* is
+    /// kept: the stream, not the peer, failed, and the next request
+    /// toward it simply opens a fresh one (network-design.md, Transfer
+    /// Resumption). Its snub clock re-arms and its solicited flag
+    /// clears, so a source that lost its stream before answering is
+    /// re-solicited too.
+    pub fn on_source_stream_lost(
+        &mut self,
+        file: Ed2kHash,
+        peer: &PeerId,
+        now: u64,
+    ) -> Vec<DownloadAction> {
+        self.requeue_source(file, peer, now);
+        self.progress_and_refill(file, now)
+    }
+
+    /// The requeue half of [`Self::on_source_stream_lost`], without the
+    /// immediate re-plan — the caller's next tick re-plans instead.
+    /// Used when the failure is the local link's (a stream *open* the
+    /// network actor answered with failure): an immediate re-plan would
+    /// re-ask the link in the same breath and spin through the failure
+    /// loop; the download tick paces the retry.
+    pub fn requeue_source(&mut self, file: Ed2kHash, peer: &PeerId, now: u64) {
+        let Some(d) = self.files.get_mut(&file) else {
+            return;
+        };
+        let Some(src) = d.sources.get_mut(peer) else {
+            return;
+        };
+        let chunks = drain_in_flight(src, &mut d.stats);
+        if !chunks.is_empty() {
+            tracing::debug!(
+                %peer,
+                requeued = chunks.len(),
+                "data stream lost; requeueing its in-flight chunks"
+            );
+        }
+        // The stream died, not the peer: keep the source, but clear its
+        // solicited latch (a reply lost with the stream must be
+        // re-asked) and re-arm its snub clock like a fresh request.
+        src.solicited = false;
+        src.last_progress = now;
+    }
+
     /// Periodic tick: snub silent sources, re-ask for block hashes if
     /// stuck, and refill pipelines.
     pub fn tick(&mut self, now: u64) -> Vec<DownloadAction> {
@@ -570,8 +618,7 @@ impl Downloads {
             .collect();
         for peer in snubbed {
             if let Some(src) = d.sources.get_mut(&peer) {
-                let chunks: Vec<u32> = src.in_flight.drain().collect();
-                d.stats.chunks_requeued += chunks.len() as u64;
+                let chunks = drain_in_flight(src, &mut d.stats);
                 tracing::debug!(%peer, requeued = chunks.len(), "snubbing silent source");
                 actions.push(DownloadAction::Send {
                     to: peer.clone(),
@@ -720,6 +767,15 @@ impl Downloads {
         actions.extend(plan_requests(d, &self.config, file));
         actions
     }
+}
+
+/// Drain a source's in-flight chunks back into the needed pool,
+/// counting them as requeued. Shared by the snub and stream-lost paths
+/// — the two "this source's outstanding work is not coming" signals.
+fn drain_in_flight(src: &mut Source, stats: &mut TransferStats) -> Vec<u32> {
+    let chunks: Vec<u32> = src.in_flight.drain().collect();
+    stats.chunks_requeued += chunks.len() as u64;
+    chunks
 }
 
 /// Decide which chunks to request from which sources to fill pipelines.
@@ -1451,6 +1507,75 @@ mod tests {
         );
         let stats = r.downloads.stats(&r.file).unwrap();
         assert!(stats.chunks_requeued > 0);
+    }
+
+    /// Proposal §3: "a closed/reset stream is the same signal" as a
+    /// snub. A lost data stream must requeue that source's in-flight
+    /// chunks and re-plan **immediately** — pre-fix the `DownloadClosed`
+    /// arm only removed the stream entry and `Downloads` had no API to
+    /// be told, so a full request window sat in `in_flight`,
+    /// `plan_requests` computed zero free slots, and the transfer went
+    /// dead for the whole 30s snub timeout on every stream reset.
+    #[test]
+    fn a_lost_stream_requeues_in_flight_chunks_immediately() {
+        let config = DownloadConfig {
+            pipeline_depth: 64,
+            max_sources: 4,
+            snub_timeout_millis: 30_000,
+        };
+        // 2 blocks ≈ 77 chunks: more than one 64-chunk window, so the
+        // plan is bulk mode with a genuinely full window on one source.
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
+        r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("a"), peer("b")],
+            0,
+            1000,
+        );
+        r.downloads.on_peer_message(
+            peer("a"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            1100,
+        );
+        let mut actions = Vec::new();
+        for name in ["a", "b"] {
+            actions.extend(r.downloads.on_peer_message(
+                peer(name),
+                PeerMessage::FileAvailability {
+                    file: r.file,
+                    bitfield: r.full_bitfield(),
+                },
+                1200,
+            ));
+        }
+        // 'a' (first by peer-id order) holds a full 64-chunk window.
+        let to_a: HashSet<u32> = requests(&actions)
+            .into_iter()
+            .filter(|(p, _)| p == "a")
+            .flat_map(|(_, c)| c)
+            .collect();
+        assert_eq!(to_a.len(), 64, "the window should be full: {to_a:?}");
+
+        // The data stream to 'a' dies at t=2000 — far inside the snub
+        // timeout. Its chunks must be re-planned in the *returned*
+        // actions, with no clock advance.
+        let actions = r.downloads.on_source_stream_lost(r.file, &peer("a"), 2000);
+        let replanned: HashSet<u32> = requests(&actions)
+            .into_iter()
+            .flat_map(|(_, c)| c)
+            .collect();
+        assert_eq!(
+            replanned, to_a,
+            "every chunk in flight on the lost stream must be re-planned immediately"
+        );
+        let stats = r.downloads.stats(&r.file).unwrap();
+        assert_eq!(stats.chunks_requeued, 64, "the requeue must be counted");
     }
 
     #[test]

@@ -2093,9 +2093,16 @@ impl Actor {
             }
             StreamEvent::DownloadClosed { from, file } => {
                 tracing::debug!(%from, %file, "download stream closed");
-                self.download_streams.remove(&(from, file));
-                // The next send toward this source reopens one; a dead
-                // source is the snub logic's business.
+                self.download_streams.remove(&(from.clone(), file));
+                // A closed/reset stream is the snub signal (proposal
+                // §3): requeue the source's in-flight chunks and
+                // re-plan now — the next request toward it opens a
+                // fresh stream — instead of leaving the window dead
+                // until the 30s snub timeout.
+                let actions = self
+                    .downloads
+                    .on_source_stream_lost(file, &from, (self.clock)());
+                self.run_download_actions(actions).await;
             }
             StreamEvent::ServeEnded { to, file } => {
                 tracing::debug!(%to, %file, "serve stream ended");
