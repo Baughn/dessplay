@@ -297,6 +297,83 @@ fn health_row_shows_metrics_and_right_aligned_suggestion() {
     assert!(narrow.contains("▲1.2M"), "{narrow}");
 }
 
+/// Regression (2026-08-12 review): the documented truncation order is
+/// health > progress > suggestion (design.md, Connection Health Line) —
+/// the progress bar truncates *before* the middle slot drops. The bar
+/// used to reserve everything but two cells, so on a terminal narrower
+/// than ~`health_width + 49` columns a Warning suggestion (and the
+/// whole marquee) was invisible whenever a file was playing.
+#[test]
+fn progress_bar_truncates_before_the_suggestion_drops() {
+    use dessplay::ui::props::{HealthProps, HealthSample, LinkStatus, SuggestionProps, Tone};
+    use dessplay_core::types::PlaybackPosition;
+
+    // A playing file: now-playing with a duration and our own position
+    // sample, so the 47-cell progress text renders.
+    let mut state = CrdtState::new();
+    state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+    state.set_now_playing(A, ts(2), Some(hash(1)));
+    state.set_playback_position(
+        A,
+        ts(3),
+        UserId::new("kim"),
+        PlaybackPosition {
+            position_millis: 754_000,
+            timestamp: ts(3),
+            file: hash(1),
+        },
+    );
+    let mut snap = snapshot(state.view(), vec![peer("kim")]);
+    snap.health = HealthProps {
+        link: LinkStatus::Connected,
+        sample: Some(HealthSample {
+            rtt_millis: Some(89),
+            unanswered_probes: 0,
+            server_silence_millis: 0,
+            up_bps: 1_200_000,
+            down_bps: 340_000,
+        }),
+        suggestion: Some(SuggestionProps {
+            text: "high latency — disable BitTorrent (F3)".into(),
+            tone: Tone::Paused,
+        }),
+        ..Default::default()
+    };
+    let mut ui = ui();
+    ui.apply_snapshot(snap);
+
+    // 80 columns: full progress (47) + health (32) leave 1 cell — the
+    // bar must yield, not the warning.
+    let rendered = render(&mut ui, 80, 30);
+    let row = rendered
+        .lines()
+        .find(|line| line.contains("sync ok"))
+        .expect("health row rendered");
+    assert!(
+        row.contains("high latency — disable BitTorrent (F3)"),
+        "the warning renders; the bar truncates first: {row:?}"
+    );
+    assert!(
+        row.starts_with('['),
+        "the truncated progress bar is still drawn at the left: {row:?}"
+    );
+    assert!(
+        !row.contains("12:34"),
+        "the progress bar visibly truncated to make room: {row:?}"
+    );
+    assert!(row.ends_with("sync ok"), "health keeps its width: {row:?}");
+
+    // A roomy terminal still shows everything untruncated — no
+    // reservation shrinks the bar when there is space for both.
+    let wide = render(&mut ui, 200, 30);
+    let row = wide
+        .lines()
+        .find(|line| line.contains("sync ok"))
+        .expect("health row rendered");
+    assert!(row.contains("] 12:34 / 24:00"), "{row:?}");
+    assert!(row.contains("disable BitTorrent (F3)"), "{row:?}");
+}
+
 /// The health row is dead to the mouse: a click there focuses nothing
 /// and selects nothing (it is outside every recorded pane rect).
 #[test]

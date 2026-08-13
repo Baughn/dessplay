@@ -2190,7 +2190,9 @@ impl HealthLine {
         use unicode_width::UnicodeWidthStr;
         let width = area.width as usize;
 
-        // Right end: the health fragments, dim separators between.
+        // Right end: the health fragments, dim separators between. They
+        // always keep their full width — they are the row's reason to
+        // exist (design.md, Connection Health Line).
         let mut health = Vec::new();
         for (text, tone) in super::props::health_fragments(&self.props) {
             if !health.is_empty() {
@@ -2199,11 +2201,47 @@ impl HealthLine {
             health.push(Span::styled(text, theme::tone_style(tone)));
         }
         let health_width: usize = health.iter().map(|span| span.content.width()).sum();
+        let remaining = width.saturating_sub(health_width);
 
-        // Left end: the progress bar, truncated only if the terminal is
-        // too narrow to hold both (the health metrics win — they are
-        // the row's reason to exist).
-        let progress_max = width.saturating_sub(health_width + 2);
+        // Middle-slot budget, reserved *before* the progress bar is
+        // measured so design.md's truncation order holds: health full
+        // width, then the bar truncates, and only then is the slot
+        // dropped. The prospective occupant (by the same precedence the
+        // rendering below applies: warning > marquee > info suggestion)
+        // claims its text plus the two 2-space margins — text-width
+        // capped, for the marquee too: a window as wide as the line
+        // shows all of it mid-pass, and any slack the bar leaves anyway
+        // still widens the slot below (`free` is what renders, not the
+        // reservation). An empty middle reserves nothing, and a
+        // reservation that cannot reach MIN_SLOT useful cells reserves
+        // nothing either — the slot is dropped entirely rather than
+        // rendering a lone ellipsis.
+        const MIN_SLOT: usize = 4 + 4;
+        let occupant_width = {
+            let suggestion = self.props.suggestion.as_ref();
+            let warning = suggestion.filter(|s| s.tone != super::props::Tone::Muted);
+            warning
+                .map(|s| s.text.width())
+                .or_else(|| marquee.map(|(text, _)| text.width()))
+                .or_else(|| suggestion.map(|s| s.text.width()))
+        };
+        let reserved = match occupant_width {
+            Some(text_width) => {
+                let desired = (text_width + 4).max(MIN_SLOT).min(remaining);
+                if desired >= MIN_SLOT { desired } else { 0 }
+            }
+            None => 0,
+        };
+
+        // Left end: the progress bar takes what the health metrics and
+        // the reserved slot leave over (with a 2-cell gap toward the
+        // metrics when nothing is reserved; a reserved slot carries its
+        // own margins).
+        let progress_max = if reserved > 0 {
+            remaining - reserved
+        } else {
+            remaining.saturating_sub(2)
+        };
         let (progress, progress_width) = truncate_display(progress, progress_max);
 
         // Middle: the suggestion / commentary slot, centered in the
@@ -2212,7 +2250,7 @@ impl HealthLine {
         // when the space is too tight for useful text.
         let free = width.saturating_sub(progress_width + health_width);
         let mut spans = vec![Span::raw(progress)];
-        let suggestion = self.props.suggestion.as_ref().filter(|_| free >= 4 + 4);
+        let suggestion = self.props.suggestion.as_ref().filter(|_| free >= MIN_SLOT);
         // A warning (or worse) owns the slot; the marquee scrolls only
         // over an empty or merely-informational slot. The ≥2-space
         // margins live inside the marquee window (its `free - 4`).
@@ -2221,7 +2259,7 @@ impl HealthLine {
             .is_none()
             .then(|| {
                 marquee
-                    .filter(|_| free >= 4 + 4)
+                    .filter(|_| free >= MIN_SLOT)
                     .and_then(|(text, offset)| super::props::marquee_window(text, free - 4, offset))
             })
             .flatten();

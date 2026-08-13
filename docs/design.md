@@ -1383,7 +1383,12 @@ condition holds the slot ~30s against threshold flicker. When the row
 is tight the health metrics keep their full width (they are the row's
 reason to exist), the progress bar truncates next, and the suggestion
 takes whatever middle space remains — dropped entirely rather than
-rendering a lone ellipsis. The slot is also where the
+rendering a lone ellipsis. The slot's claim on the bar is
+**text-width-capped** — it reserves its occupant's text plus the
+2-space margins, the marquee included (a window as wide as the line
+shows all of it mid-pass), so the bar never shrinks further than the
+middle actually needs; an empty middle reserves nothing. The slot is
+also where the
 [AI commentary marquee](#ai-commentary-the-marquee) scrolls; slot
 precedence is **warning/critical suggestion > live marquee > info
 suggestion > blank** — a health warning is the row's job, so the

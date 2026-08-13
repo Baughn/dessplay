@@ -2863,21 +2863,14 @@ mod tests {
         assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
     }
 
-    /// Regression (2026-08-12 review): on a terminal narrower than ~83
-    /// columns while a file is playing, the 47-cell progress text and
-    /// ~32-cell health metrics leave the middle slot genuinely
-    /// zero-width — a real measurement, not "not yet measured". The
-    /// done-latch used to require `slot_width > 0`, so the pass never
-    /// terminated and `next_tick_hint()` pinned the shell to 10 Hz
-    /// full-screen repaints until compaction or a restart.
-    #[test]
-    fn marquee_pass_terminates_on_a_zero_width_slot() {
+    /// A playing snapshot with a live marquee: now-playing with a
+    /// duration, our own position sample (the 47-cell progress text),
+    /// link Connected with a health sample (~32 cells of metrics on
+    /// the right).
+    fn playing_marquee_snapshot() -> UiSnapshot {
         use crate::ui::props::{HealthProps, HealthSample};
         use dessplay_core::types::PlaybackPosition;
 
-        // A playing snapshot: now-playing with a duration, our own
-        // position sample (non-empty progress text), link Connected
-        // with a health sample (full metrics on the right).
         let hash = Ed2kHash([1; 16]);
         let mut state = CrdtState::new();
         state.push_playlist_entry(
@@ -2917,7 +2910,7 @@ mod tests {
             up_bps: 1_200_000,
             down_bps: 340_000,
         };
-        let snapshot = UiSnapshot {
+        UiSnapshot {
             view: std::sync::Arc::new(view),
             now: 1_000,
             link: props::LinkStatus::Connected,
@@ -2927,23 +2920,70 @@ mod tests {
                 ..HealthProps::default()
             },
             ..UiSnapshot::default()
-        };
+        }
+    }
+
+    /// Regression (2026-08-12 review, spec-drift): the progress bar
+    /// used to reserve everything but two cells, so at 80 columns with
+    /// a file playing the marquee never got a single cell — design.md's
+    /// truncation order (health > progress > slot) says the *bar*
+    /// yields first. The pass must scroll through a real window while
+    /// the bar renders truncated beside it.
+    #[test]
+    fn marquee_gets_scroll_space_over_a_full_progress_bar() {
         let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
-        ui.apply_snapshot(snapshot);
+        ui.apply_snapshot(playing_marquee_snapshot());
         assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
 
-        // Draw at 80 columns: the slot measures as zero. Sanity-check
-        // the collapse arithmetic so this test can't pass vacuously on
-        // a roomy slot.
+        // 1s in (15 cells): the line has entered the slot.
+        assert!(ui.advance_clock(2_000));
         let buffer = render_buffer_at(&mut ui, 80, 30);
         let bottom: String = (0..buffer.area.width)
             .map(|x| buffer[(x, 25)].symbol())
             .collect();
         assert!(bottom.contains("sync ok"), "health metrics drawn: {bottom}");
-        assert!(bottom.contains("] 12:34 /"), "progress drawn: {bottom}");
+        assert!(bottom.contains("Whaaa"), "marquee cells visible: {bottom}");
+        assert!(
+            !bottom.contains("12:34"),
+            "the bar truncated to make room: {bottom}"
+        );
+        let slot = ui.marquee.as_ref().unwrap().slot_width;
+        assert!(
+            slot.is_some_and(|width| width > 0),
+            "a real scroll window was measured: {slot:?}"
+        );
+    }
+
+    /// Regression (2026-08-12 review): on a terminal too narrow to give
+    /// the slot its 8-cell minimum even after the progress bar yields
+    /// (health ~32 cells; 36 columns leave 4), the middle slot is
+    /// genuinely zero-width — a real measurement, not "not yet
+    /// measured". The done-latch used to require `slot_width > 0`, so
+    /// the pass never terminated and `next_tick_hint()` pinned the
+    /// shell to 10 Hz full-screen repaints until compaction or a
+    /// restart.
+    #[test]
+    fn marquee_pass_terminates_on_a_zero_width_slot() {
+        let mut ui = Ui::with_setup(me(), Settings::default(), vec![], false);
+        ui.apply_snapshot(playing_marquee_snapshot());
+        assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(100));
+
+        // Draw at 36 columns: the slot measures as zero. Sanity-check
+        // the collapse arithmetic so this test can't pass vacuously on
+        // a roomy slot.
+        let buffer = render_buffer_at(&mut ui, 36, 30);
+        let bottom: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 25)].symbol())
+            .collect();
+        assert!(bottom.contains("sync ok"), "health metrics drawn: {bottom}");
         assert!(
             !bottom.contains("Whaaa"),
             "no room for any marquee cell: {bottom}"
+        );
+        assert_eq!(
+            ui.marquee.as_ref().unwrap().slot_width,
+            Some(0),
+            "the zero slot is a real measurement"
         );
 
         // A minute later the pass is long over; the tick hint must be
