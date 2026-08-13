@@ -1818,7 +1818,14 @@ A verified copy cancels the peer download (sources are told to drop our
 in-flight chunk requests; the partial cache file is deleted) and the entry
 resolves Ready at the local path. The scan also adopts by **hash**: a
 matching file under a *different* filename, invisible to the name-based
-walk trigger, is adopted when its scan hash comes in.
+walk trigger, is adopted when its scan hash comes in. Every "a local
+copy turned up" channel — resolve, scan adoption, and a completed
+[browse import](#bittorrent-downloads) — funnels through one adoption
+seam, so none can skip the cancel. A browse import cancels the peer
+download *before* placing its payload in the cache (both share the
+hash-addressed cache path), and an import of a file **already held
+under a media root** finishes against the library copy instead of
+demoting it to a retention-evictable cache row.
 
 **Pre-fetching**: clients with downloading enabled fetch playlist entries
 *ahead* of now-playing (in playlist order) in the background, so next week's

@@ -1636,11 +1636,30 @@ impl Actor {
             .await;
     }
 
+    /// A complete, verified local copy of `file` exists at `path`: the
+    /// single seam every "a local copy turned up" channel goes through —
+    /// the resolve path, the library-scan adoption, and the browse-import
+    /// completion — so no path can skip cancelling the now-redundant
+    /// peer download again (the 2026-08-12 review found the browse
+    /// import had regressed exactly that). The cancel deletes the
+    /// partial at `<cache>/<hash>` and drops its streams, so a caller
+    /// that then places a copy at that same path must call this
+    /// *before* placing (see `on_nyaa_import_hashed`). The genuine
+    /// download-completion path (`on_download_complete`) runs after the
+    /// scheduler has already retired the download and its `path` *is*
+    /// the download path, so it never cancels here.
+    async fn adopt_local_copy(&mut self, file: Ed2kHash, path: PathBuf) {
+        if self.downloads.is_active(&file) && path != self.download_path(file) {
+            self.cancel_redundant_peer_download(file).await;
+        }
+        self.local_files.insert(file, path);
+    }
+
     /// A verified local copy turned up while a download for the same
     /// file was in flight (it arrived through another channel): tell
     /// the sources to drop our in-flight chunk requests and remove the
-    /// partial cache file. The caller has already recorded the local
-    /// copy.
+    /// partial cache file. Callers go through [`Self::adopt_local_copy`];
+    /// this is its cancel half.
     async fn cancel_redundant_peer_download(&mut self, file: Ed2kHash) {
         if self.downloads.is_active(&file) {
             tracing::info!(%file, "local copy appeared; cancelling the peer download");
@@ -1807,6 +1826,39 @@ impl Actor {
             }
         };
         let file = hashed.root;
+        // Re-key the import to its file so eviction and the live-disable
+        // path can end its seeding by hash. Session-only: nothing is
+        // persisted, and the torrent dies with the process.
+        if let Some(engine) = &self.torrent {
+            engine.promote_import(id, file);
+        }
+        // Already held at a real (non-cache) path — a library file the
+        // user happened to also import: finish against that copy instead
+        // of demoting it to a retention-evictable cache row that would
+        // shadow it (2026-08-12 review, still-open). The torrent keeps
+        // seeding from its import dir either way.
+        let held = self
+            .local_files
+            .get(&file)
+            .filter(|p| **p != self.download_path(file) && p.is_file())
+            .cloned();
+        if let Some(existing) = held {
+            tracing::info!(
+                %file,
+                path = %existing.display(),
+                "browse import matches a file we already hold; keeping the library copy"
+            );
+            self.adopt_local_copy(file, existing.clone()).await;
+            self.finish_nyaa_import(id, Ok((hashed, existing))).await;
+            return;
+        }
+        // The payload is a complete verified copy: adopt it, cancelling
+        // any in-flight peer download of the same file *before* the
+        // cache placement below — both share `<cache>/<hash>`, and
+        // placing first would unlink the partial under the live
+        // ChunkStore's fd while the orphaned download flapped the
+        // group's gate (2026-08-12 review, regression).
+        self.adopt_local_copy(file, payload.clone()).await;
         let cache_path = self.download_path(file);
         let local_path = match place_in_cache(&payload, &cache_path) {
             Ok(()) => cache_path,
@@ -1815,12 +1867,6 @@ impl Actor {
                 payload
             }
         };
-        // Re-key the import to its file so eviction and the live-disable
-        // path can end its seeding by hash. Session-only: nothing is
-        // persisted, and the torrent dies with the process.
-        if let Some(engine) = &self.torrent {
-            engine.promote_import(id, file);
-        }
         self.on_download_complete(file, local_path.clone(), hashed.blocks.clone())
             .await;
         self.finish_nyaa_import(id, Ok((hashed, local_path))).await;
@@ -2089,10 +2135,7 @@ impl Actor {
                 }
                 // A verified local copy can be served to peers.
                 if let Resolution::Verified(path) = &resolution {
-                    self.local_files.insert(file, path.clone());
-                    if self.downloads.is_active(&file) && *path != self.download_path(file) {
-                        self.cancel_redundant_peer_download(file).await;
-                    }
+                    self.adopt_local_copy(file, path.clone()).await;
                     // Resolving (loading) a file is an "access": bump the
                     // cache entry's last_access so retention runs from last
                     // access, not download time (design.md Download Cache).
@@ -2282,11 +2325,8 @@ impl Actor {
                                 path = %item.path.display(),
                                 "library scan found a file we were missing; adopting"
                             );
-                            self.local_files.insert(root, item.path.clone());
                             self.rechecks.remove(&root);
-                            if self.downloads.is_active(&root) {
-                                self.cancel_redundant_peer_download(root).await;
-                            }
+                            self.adopt_local_copy(root, item.path.clone()).await;
                             let _ = self
                                 .out
                                 .send(FileOutput::Resolved {
@@ -6086,7 +6126,16 @@ mod tests {
     }
 
     fn spawn_torrent_rig(roots: Vec<PathBuf>, clock: Clock) -> (Rig, Arc<FakeTorrentEngine>) {
-        let storage = Storage::open_in_memory().unwrap();
+        spawn_torrent_rig_with_storage(Storage::open_in_memory().unwrap(), roots, clock)
+    }
+
+    /// As [`spawn_torrent_rig`], with caller-supplied storage (so a test
+    /// can reopen the database and inspect cache bookkeeping).
+    fn spawn_torrent_rig_with_storage(
+        storage: Storage,
+        roots: Vec<PathBuf>,
+        clock: Clock,
+    ) -> (Rig, Arc<FakeTorrentEngine>) {
         let cache_dir = tempfile::tempdir().unwrap();
         let engine = Arc::new(FakeTorrentEngine::default());
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
@@ -6138,6 +6187,20 @@ mod tests {
         id: TorrentImportId,
         contents: &[u8],
     ) -> Ed2kHash {
+        complete_import_result(rig, engine, id, contents)
+            .await
+            .0
+            .root
+    }
+
+    /// As [`complete_import`], returning the full finish payload (the
+    /// hash and the local path the import finished against).
+    async fn complete_import_result(
+        rig: &mut Rig,
+        engine: &FakeTorrentEngine,
+        id: TorrentImportId,
+        contents: &[u8],
+    ) -> (Ed2kFileHash, PathBuf) {
         rig.commands
             .send(FileCommand::StartNyaaImport {
                 id,
@@ -6161,8 +6224,7 @@ mod tests {
         );
         loop {
             if let FileOutput::NyaaImportFinished { result, .. } = next_output(rig).await {
-                let (hashed, _) = result.expect("import must finish cleanly");
-                return hashed.root;
+                return result.expect("import must finish cleanly");
             }
         }
     }
@@ -6239,6 +6301,197 @@ mod tests {
             "import must be promoted"
         );
         assert!(engine.added_import(id).is_none());
+    }
+
+    /// Regression (2026-08-12 review; regressed from 2026-07-19): a
+    /// completed browse import never cancelled the in-flight peer
+    /// download of the same hash. The orphaned download kept running:
+    /// its next progress overwrote Ready with `Downloading` (gating the
+    /// group on a user holding a complete verified copy),
+    /// `place_in_cache` unlinked `<cache>/<hash>` under the live
+    /// ChunkStore fd, and late chunks "completed" the download a second
+    /// time.
+    #[tokio::test]
+    async fn nyaa_import_completion_cancels_the_redundant_peer_download() {
+        let chunk = dessplay_core::net::CHUNK_SIZE as usize;
+        let contents: Vec<u8> = (0..chunk + 16).map(|i| (i % 251) as u8).collect();
+        let hashed = ed2k_hash_bytes(&contents);
+        let file = hashed.root;
+        let peer = PeerId::new("seeder");
+        let (mut rig, engine) = spawn_torrent_rig(vec![], test_clock());
+
+        // An active peer download for the same file, far enough along
+        // to have chunk requests in flight.
+        rig.commands
+            .send(FileCommand::StartDownload {
+                file,
+                size_bytes: contents.len() as u64,
+                sources: vec![peer.clone()],
+                play_chunk: 0,
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::SendPeer { message, .. } => {
+                assert!(matches!(*message, PeerMessage::BlockHashRequest { .. }));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: peer.clone(),
+                message: Box::new(PeerMessage::BlockHashes {
+                    file,
+                    hashes: hashed.blocks.clone(),
+                }),
+            })
+            .await
+            .unwrap();
+        let chunks = dessplay_core::net::chunk_count(contents.len() as u64);
+        let mut bitfield = dessplay_core::net::Bitfield::new(chunks);
+        for index in 0..chunks {
+            bitfield.set(index);
+        }
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: peer.clone(),
+                message: Box::new(PeerMessage::FileAvailability { file, bitfield }),
+            })
+            .await
+            .unwrap();
+        // The chunk requests head for a data stream; the open request
+        // proves they are in flight.
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::OpenTransfer { file: f, .. } if f == file => break,
+                _ => continue,
+            }
+        }
+
+        // The browse import of the same content completes.
+        let (_, local_path) =
+            complete_import_result(&mut rig, &engine, TorrentImportId(21), &contents).await;
+        let cache_path = rig
+            ._cache_dir
+            .as_ref()
+            .unwrap()
+            .path()
+            .join(file.to_string());
+        assert_eq!(local_path, cache_path);
+
+        // The source's late chunks arrive. The cancelled download must
+        // ignore them; before the fix they completed the orphaned
+        // download a second time.
+        for index in 0..chunks {
+            let start = index as usize * chunk;
+            let end = (start + chunk).min(contents.len());
+            rig.commands
+                .send(FileCommand::PeerMessage {
+                    from: peer.clone(),
+                    message: Box::new(PeerMessage::ChunkData {
+                        file,
+                        index,
+                        data: contents[start..end].to_vec(),
+                    }),
+                })
+                .await
+                .unwrap();
+        }
+        // Sentinel: an unrelated resolve flushes the pipeline.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hash(42),
+                filename: "zz.mkv".into(),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Availability {
+                    file: f,
+                    availability,
+                } if f == file => {
+                    panic!("no availability write may follow the import's Ready: {availability:?}");
+                }
+                FileOutput::DownloadComplete { file: f, .. } if f == file => {
+                    panic!("the orphaned peer download completed a second time");
+                }
+                FileOutput::Resolved { file: f, .. } if f == hash(42) => break,
+                _ => continue,
+            }
+        }
+        // The cached copy survived: the cancel deleted the partial
+        // *before* the payload was placed at the same path.
+        assert_eq!(std::fs::read(&cache_path).unwrap(), contents);
+    }
+
+    /// Still-open from 2026-07-19 (re-verified 2026-08-12): a browse
+    /// import of a byte-identical file already under a media root
+    /// overwrote `local_files` with the cache path and added a
+    /// `cache_entries` row — retention would later evict the "cached"
+    /// copy and flip the client Missing for a file that never left its
+    /// library.
+    #[tokio::test]
+    async fn nyaa_import_of_an_already_held_file_keeps_the_library_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"an episode the library already holds".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        let library_path = write(root.path(), "Anime/ep1.mkv", contents);
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let (mut rig, engine) = spawn_torrent_rig_with_storage(
+            Storage::open(&db_path).unwrap(),
+            vec![root.path().to_path_buf()],
+            test_clock(),
+        );
+
+        // The library copy resolves first, so the actor holds it.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hashed.root,
+                filename: "ep1.mkv".into(),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved { resolution, .. } => {
+                    assert_eq!(resolution, Resolution::Verified(library_path.clone()));
+                    break;
+                }
+                _ => continue,
+            }
+        }
+
+        let (_, local_path) =
+            complete_import_result(&mut rig, &engine, TorrentImportId(22), contents).await;
+        assert_eq!(
+            local_path, library_path,
+            "the import must finish against the library copy"
+        );
+
+        // No cache copy shadows the library file...
+        let cache_path = rig
+            ._cache_dir
+            .as_ref()
+            .unwrap()
+            .path()
+            .join(hashed.root.to_string());
+        assert!(
+            !cache_path.exists(),
+            "no cache copy may be created for a file already in the library"
+        );
+        // ...and no cache_entries row was written for it (a row would
+        // make retention evict a copy the library still holds).
+        let check = Storage::open(&db_path).unwrap();
+        assert!(
+            check.cache_entries().unwrap().is_empty(),
+            "no cache_entries row may shadow the library copy"
+        );
+        // The torrent still seeds (promoted), so the live-disable path
+        // can find it by hash.
+        assert!(engine.added(&hashed.root).is_some());
     }
 
     #[tokio::test]
