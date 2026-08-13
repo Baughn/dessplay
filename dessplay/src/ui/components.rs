@@ -416,14 +416,15 @@ impl ChatPane {
         self.input.clear();
     }
 
-    /// Insert pasted text at the cursor, character by character — exactly
-    /// as if it had been typed (design.md #33). Used for a bracketed
-    /// paste that isn't a playlist-add path.
+    /// Insert pasted text at the cursor, as if typed (design.md #33) —
+    /// which means control characters are dropped, the invariant every
+    /// [`LineBuffer`]-backed field enforces (typing can never produce
+    /// one, and a sent message syncs its bytes to every peer's
+    /// terminal). Used for a bracketed paste that isn't a playlist-add
+    /// path.
     pub(crate) fn insert_text(&mut self, text: &str) {
         self.history_pos = None;
-        for c in text.chars() {
-            self.input.insert(c);
-        }
+        self.input.buffer_mut().insert_paste(text);
     }
 
     /// Keys shown in the keybinding bar (derived from the keymap).
@@ -3219,6 +3220,18 @@ mod chat_input_tests {
         for c in text.chars() {
             pane.on(&key(Key::Char(c)));
         }
+    }
+
+    /// Regression: pasted control characters must be dropped, like every
+    /// other text field (`LineBuffer::insert_paste`). The chat input was
+    /// the one editor that inserted `\n` / `\x1b` verbatim — and a sent
+    /// message syncs those bytes to every peer's chat log, OSD, IRC, and
+    /// the archive.
+    #[test]
+    fn pasted_control_characters_are_dropped() {
+        let mut pane = focused_pane();
+        pane.insert_text("one\ntwo\x1b[31m");
+        assert_eq!(pane.text(), "onetwo[31m");
     }
 
     /// Regression: a scrolled input line must reset its horizontal scroll

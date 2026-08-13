@@ -242,9 +242,13 @@ picking it in the browser, anchored after the currently selected entry.
 Any other paste (wrong pane, multiple lines, not a real path) is treated
 as ordinary text and lands in the chat input instead, exactly as if typed.
 While a modal is open, a paste goes to its active text editor (e.g. the
-settings screen's token field) as if typed — except control characters
-are dropped, so a copied value's trailing newline never lands invisibly
-in a field.
+settings screen's token field) as if typed. Either way control
+characters are dropped — typing can never produce one, so a copied
+value's trailing newline never lands invisibly in a field (nor in a
+chat message, whose bytes would sync to every peer's terminal).
+Defensively, the chat display strips control characters from inbound
+synced and IRC-bridged lines too, so a hostile or malformed remote
+message cannot write raw escape bytes into the terminal.
 
 **Reordering:**
 1. Focus the **Playlist** pane

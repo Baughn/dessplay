@@ -375,6 +375,16 @@ pub struct ChatLine {
     pub millis: u64,
 }
 
+/// Strip control characters from remote-authored text before display:
+/// ratatui writes cell symbols through to the terminal, so a raw escape
+/// byte in a hostile or malformed synced/IRC message would land in the
+/// user's emulator. Display boundary only — the synced state keeps the
+/// raw text (the CTCP-action rule: only the display sites decode and
+/// sanitize).
+fn strip_control_chars(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// Format the chat log.
 pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
     view.chat
@@ -384,8 +394,8 @@ pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
             // text; decode it here so the renderer sees a plain phrase plus
             // the `action` flag.
             let (text, action) = match decode_action(&message.text) {
-                Some(phrase) => (phrase.to_string(), true),
-                None => (message.text.clone(), false),
+                Some(phrase) => (strip_control_chars(phrase), true),
+                None => (strip_control_chars(&message.text), false),
             };
             ChatLine {
                 time: hhmm(message.timestamp.0),
@@ -424,7 +434,7 @@ pub fn irc_line(timestamp: u64, sender: String, text: String, action: bool) -> C
     ChatLine {
         time: hhmm(timestamp),
         sender,
-        text,
+        text: strip_control_chars(&text),
         system: false,
         subtitle: false,
         separator: false,
@@ -2071,6 +2081,29 @@ mod tests {
         let lines = chat_lines(&state.view());
         assert_eq!((lines[0].text.as_str(), lines[0].action), ("hello", false));
         assert_eq!((lines[1].text.as_str(), lines[1].action), ("waves", true));
+    }
+
+    /// Regression: a hostile or malformed remote message must not write
+    /// raw escape bytes into the terminal — ratatui passes cell symbols
+    /// through. Control characters are stripped at the display boundary
+    /// (never from synced state).
+    #[test]
+    fn chat_lines_strip_control_characters() {
+        let mut state = CrdtState::new();
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(1),
+            sender: UserId::new("baughn"),
+            text: "evil\x1b[2J\x07text".to_string(),
+        });
+        let lines = chat_lines(&state.view());
+        assert_eq!(lines[0].text, "evil[2Jtext");
+    }
+
+    /// The same boundary for the IRC bridge's local-only lines.
+    #[test]
+    fn irc_lines_strip_control_characters() {
+        let line = irc_line(0, "nick".into(), "hi\x1b[31m\rthere".into(), false);
+        assert_eq!(line.text, "hi[31mthere");
     }
 
     #[test]
