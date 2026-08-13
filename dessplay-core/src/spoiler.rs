@@ -162,8 +162,11 @@ pub fn zalgo(text: &str, seed: u64, generation: u32, char_offset: usize) -> Stri
 /// The static mask for surfaces without a reveal affordance (mpv OSD,
 /// outbound IRC): spoiler runs replaced by their generation-0 scramble,
 /// bars dropped, no zalgo. `seed_base` is the message's shared-clock
-/// millis where known (OSD — matches the TUI's letters) or any fixed
-/// value where not (IRC tap, which runs before the timestamp exists).
+/// millis where known (OSD — matches the TUI's letters); the IRC tap
+/// (which runs before the timestamp exists) supplies a per-process
+/// message sequence number instead — anything **not derived from the
+/// message text**, since a public mask that is a function of the
+/// plaintext would confirm a lurker's guess of the hidden run.
 pub fn mask_message(text: &str, seed_base: u64, sender: &str) -> String {
     if !text.contains("||") {
         return text.to_string();

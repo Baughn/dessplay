@@ -1074,18 +1074,27 @@ fn summon_report(pinged: &[(UserId, String)], unmatched: &[UserId]) -> String {
 
 /// Mask `||spoiler||` runs in an outbound IRC chat line (CTCP-aware:
 /// a `/me` action is masked inside its `\x01ACTION …\x01` framing). The
-/// message has no shared timestamp yet at the tap, so the scramble seed
-/// hashes the text itself — the letters differ from the TUI/OSD rendering
-/// of the same message, which nobody cross-checks, while staying
-/// deterministic per message.
+/// scramble seed is a per-process message sequence number — deliberately
+/// **not** derived from the message text: the channel is public and
+/// logged, and a mask that is a function of the plaintext is a
+/// guess-confirmation oracle (a lurker recomputes the mask for a guessed
+/// spoiler and compares it with what was published). The letters
+/// therefore differ from the TUI/OSD rendering of the same message,
+/// which nobody cross-checks; the message is masked once at the tap, so
+/// the scramble stays stable across IRC line-splitting.
 fn mask_irc_chat(text: &str, sender: &UserId) -> String {
-    use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static MASK_SEQ: AtomicU64 = AtomicU64::new(0);
     if !text.contains("||") {
         return text.to_string();
     }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    let seed_base = hasher.finish();
+    mask_irc_chat_seeded(text, sender, MASK_SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Seed-explicit core of [`mask_irc_chat`]: `seed_base` is the only seed
+/// input, so the plaintext structurally cannot reach the seed
+/// derivation.
+fn mask_irc_chat_seeded(text: &str, sender: &UserId, seed_base: u64) -> String {
     let sender = sender.to_string();
     match dessplay_core::types::decode_action(text) {
         Some(phrase) => dessplay_core::types::encode_action(&dessplay_core::spoiler::mask_message(
@@ -2102,10 +2111,49 @@ mod tests {
         assert!(!masked.contains('|'), "bars leaked: {masked:?}");
         assert!(!masked.contains("secret"), "spoiler leaked: {masked:?}");
         assert!(masked.starts_with("the ") && masked.ends_with(" twist"));
-        // Deterministic per message.
-        assert_eq!(masked, mask_irc_chat("the ||secret|| twist", &me));
+        // Deterministic given a seed (one message is masked once, at
+        // the tap, so its letters are stable across line-splitting).
+        assert_eq!(
+            mask_irc_chat_seeded("the ||secret|| twist", &me, 7),
+            mask_irc_chat_seeded("the ||secret|| twist", &me, 7)
+        );
         // Spoiler-free lines pass through untouched.
         assert_eq!(mask_irc_chat("plain line", &me), "plain line");
+    }
+
+    /// The seed derivation has no text input: the same seed masks two
+    /// different hidden runs (equal length, same char class) to
+    /// identical letters — nothing about the plaintext reaches the
+    /// published scramble.
+    #[test]
+    fn irc_mask_seed_carries_no_message_text() {
+        let me = UserId::new("baughn");
+        let a = mask_irc_chat_seeded("the ||secret|| twist", &me, 7);
+        let b = mask_irc_chat_seeded("the ||dragon|| twist", &me, 7);
+        assert_eq!(a, b);
+    }
+
+    /// Regression: the published mask must not be a deterministic
+    /// function of the plaintext. It used to be seeded from a
+    /// `DefaultHasher` over the whole message, so a channel lurker who
+    /// guessed the hidden run (the surrounding text is published
+    /// verbatim) could recompute the mask and confirm the guess —
+    /// exactly the audience the mask exists to defeat.
+    #[test]
+    fn irc_mask_is_not_recomputable_from_a_guessed_plaintext() {
+        use std::hash::{Hash, Hasher};
+        let me = UserId::new("baughn");
+        let text = "the ||secret|| twist";
+        let masked = mask_irc_chat(text, &me);
+        // The attack: guess the plaintext, recompute its
+        // text-hash-seeded mask, compare with what was published.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        let oracle = dessplay_core::spoiler::mask_message(text, hasher.finish(), "baughn");
+        assert_ne!(
+            masked, oracle,
+            "the published mask fingerprints the plaintext"
+        );
     }
 
     #[test]

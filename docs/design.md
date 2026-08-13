@@ -678,9 +678,10 @@ different encodes/versions. See [Content Hash](#content-hash).
   (everything except whitespace and plain ASCII punctuation replaced
   class-for-class — letters and digits keep their class; CJK, emoji,
   arrows, and other symbols become letters — so nothing leaks) under
-  sparse combining marks ("low-grade zalgo"); the player OSD and the
-  **outbound IRC bridge** substitute the same static
-  scramble, bars dropped. In the chat pane, **clicking** the scrambled
+  sparse combining marks ("low-grade zalgo"); the player OSD
+  substitutes the same static scramble, and the **outbound IRC bridge**
+  a static scramble of its own (seeded per message, never from the
+  text — see IRC Bridge, Outbound), bars dropped. In the chat pane, **clicking** the scrambled
   run plays a ~600ms re-randomization tease; a **second click within 5
   seconds** reveals the original (bars dropped) for the rest of the
   session, per client. A click after the window lapses re-teases with
@@ -765,11 +766,16 @@ chat pane. It is **on by default**; defaults are `irc.rizon.net`, TLS
   events, subtitles, and narrator/system lines are never forwarded. A
   `/me` action goes out as a real IRC CTCP ACTION (the wire form is
   identical to DessPlay's inline `"\x01ACTION …\x01"`, so it forwards
-  verbatim). **`||spoiler||` runs are masked at the tap** with their
+  verbatim). **`||spoiler||` runs are masked at the tap** with a
   static scramble (bars dropped, CTCP framing preserved): the channel is
   public and logged, one group member reads chat *only* there, and IRC
   has no reveal affordance -- raw bars would hand the spoiler to exactly
   the people the sender hid it from (see [Chat](#chat), Spoiler tags).
+  The mask is seeded from a per-process message counter, never from the
+  message text -- a plaintext-derived mask would let a channel lurker
+  confirm a guessed spoiler by recomputing it -- so its letters differ
+  from the chat/OSD rendering of the same message (which nobody
+  cross-checks).
   Long plain lines are split to fit IRC's 512-byte limit; newlines
   become separate messages. A `/me` **CTCP action is never split** -- chunking
   it would break the `\x01` framing or emit several separate emotes for one
