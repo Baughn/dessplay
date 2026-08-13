@@ -661,6 +661,21 @@ impl PlayerWiring {
         self
     }
 
+    /// A re-derived `SyncTo` was dropped on a full player channel:
+    /// forget the dedup sample so the next snapshot re-sends it even if
+    /// the authority's sample hasn't changed (it may not, while paused).
+    fn forget_last_synced(&mut self) {
+        self.last_synced = None;
+    }
+
+    /// A `SetBlockerOverlay` was dropped on a full player channel:
+    /// forget the dedup key so the next snapshot re-sends the overlay
+    /// (blocker changes are sparse, so a silent drop could otherwise
+    /// leave a stale "Waiting for …" line up indefinitely).
+    fn forget_blocker_overlay(&mut self) {
+        self.blocker_overlay_sent = (None, None);
+    }
+
     /// Derive the chat log's [system messages](design.md, System
     /// Messages) by diffing this snapshot against the previous one:
     /// joins/leaves, pause/resume/away, not-watching/watching of the
@@ -2397,7 +2412,36 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         }
                     }
                     if let Some(player) = &self.player {
-                        let _ = player.send(cmd).await;
+                        match cmd {
+                            // Re-derived on every snapshot, so dropping one
+                            // on a full channel is safe (the next snapshot
+                            // re-sends) — and an awaited send is not: the
+                            // bounded channel behind a slow actor (e.g. one
+                            // waiting out a 30s player relaunch) would
+                            // wedge this loop within seconds of ~10/s
+                            // snapshots (2026-08-12 review).
+                            cmd @ PlayerCommand::SetPlaying(_) => {
+                                let _ = player.try_send(cmd);
+                            }
+                            cmd @ PlayerCommand::SyncTo { .. } => {
+                                if player.try_send(cmd).is_err() {
+                                    // Re-arm the dedup so the next snapshot
+                                    // re-sends even an unchanged sample.
+                                    self.wiring.forget_last_synced();
+                                }
+                            }
+                            cmd @ PlayerCommand::SetBlockerOverlay(_) => {
+                                if player.try_send(cmd).is_err() {
+                                    self.wiring.forget_blocker_overlay();
+                                }
+                            }
+                            // One-shot commands (Load, Shutdown, ShowOsd,
+                            // Screenshot…) are not re-derived and must not
+                            // be dropped: keep the awaited send.
+                            cmd => {
+                                let _ = player.send(cmd).await;
+                            }
+                        }
                     }
                 }
                 Directive::Mutate(mutation) => {

@@ -227,7 +227,13 @@ the synchronous dispatcher and tui-realm component `on` methods, producing
 **Owns:** the running player (behind the `Player` trait: mpv over JSON
 IPC in production, `MockPlayer` in tests), echo suppression state, the
 drift corrector, the seek debouncer, the position broadcast timer, and
-crash supervision (relaunch via a `PlayerFactory`).
+crash supervision (relaunch via a `PlayerFactory`). Launches and
+relaunches run in a **background task**, never awaited inline in the
+run loop's `select!` — mpv can legitimately take its full 30s socket
+wait to come up (a slow startup is not a crash), and a parked actor
+would stop servicing commands, backing the session's bounded player
+channel up into its main loop. Attach mode instead uses a short bounded
+re-attach probe with capped backoff.
 
 **Receives** (`PlayerCommand`):
 - `Load { file, path }` -- load a video file (opens paused)
@@ -307,6 +313,12 @@ UI threads. `PlayerWiring` maps (state view, peer list, player outputs,
 matcher results) to directives — player commands, mutations, EOF
 reports, matcher runs; `SessionShell` executes those directives against
 the real channels and lazily spawns the player actor on the first load.
+Player commands that are re-derived on every snapshot (`SetPlaying`,
+`SyncTo`, `SetBlockerOverlay`) are sent with `try_send` and dropped when
+the actor's bounded channel is full — the next snapshot re-sends them
+(the shell re-arms the wiring's dedup for the sparse ones), so a slow
+player actor can never wedge the main loop; one-shot commands (`Load`,
+`Shutdown`, …) keep the awaited send.
 `run_interactive` and the multi-client harness drive the same shell, so
 the full pipeline (player → wiring → sync → server → peers → their
 players) is covered in tests without a terminal or a real mpv.

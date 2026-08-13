@@ -36,7 +36,11 @@
 //!   old-file position was broadcast under the new file's identity and
 //!   the group latched onto it (2026-07-27).
 //! - **Crash supervision.** A dead player is relaunched and restored
-//!   (same file, last position, desired pause state). A second death
+//!   (same file, last position, desired pause state). The relaunch runs
+//!   in a background task — mpv can take its full 30s socket wait to
+//!   come up, and awaiting that inline would park the actor (and, via
+//!   the bounded command channel, the session's main loop) for the
+//!   whole wait. A second death
 //!   within [`CRASH_FATAL_WINDOW`] additionally emits
 //!   [`PlayerOutput::FatalCrash`], which the main loop turns into a
 //!   global pause and a chat notice — the relaunch then comes up paused,
@@ -48,7 +52,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use dessplay_core::types::{Ed2kHash, SharedTimestamp};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use super::drift::{DriftAction, DriftController};
@@ -226,7 +230,10 @@ struct Estimate {
 }
 
 struct Actor<F: PlayerFactory> {
-    factory: F,
+    /// `None` exactly while a spawn-mode launch is in flight (the factory
+    /// travels with the background task and comes back with the result;
+    /// see [`Actor::begin_spawn`]). Always `Some` in attach mode.
+    factory: Option<F>,
     outputs: mpsc::Sender<PlayerOutput>,
     clock: Clock,
     offset_millis: i64,
@@ -277,6 +284,19 @@ struct Actor<F: PlayerFactory> {
     /// Attach mode: current delay between re-attach attempts (capped
     /// backoff), reset to [`REATTACH_BACKOFF_INITIAL`] on a fresh detach.
     reattach_backoff: Duration,
+    /// Spawn mode: a launch running in its own background task —
+    /// `factory.spawn()` may legitimately take up to mpv's 30s socket
+    /// wait (a slow startup is not a crash, 7e7ffc9), and awaiting it
+    /// inline in the run loop's `select!` would park the actor (no
+    /// Shutdown, no SetPlaying) for the whole wait, backing the
+    /// session's bounded player channel up into its main loop. The run
+    /// loop polls this for the result; the factory rides along so it is
+    /// available for the next relaunch.
+    pending_spawn: Option<oneshot::Receiver<(F, Result<F::Player, PlayerError>)>>,
+    /// Whether a pending spawn's failure exits the actor (startup and
+    /// crash relaunch, matching the old inline paths) or leaves it idle
+    /// awaiting another Load (the give-up recovery path).
+    spawn_failure_exits: bool,
     /// The rolling chat OSD: `(rendered line, expires_at)`, oldest
     /// first. Retention is constant, so the front always expires first.
     osd_chat: VecDeque<(String, Instant)>,
@@ -294,7 +314,7 @@ pub async fn run<F: PlayerFactory>(
 ) {
     let attach_mode = factory.is_attach();
     let mut actor = Actor {
-        factory,
+        factory: Some(factory),
         outputs,
         clock,
         offset_millis: 0,
@@ -317,27 +337,22 @@ pub async fn run<F: PlayerFactory>(
         attach_mode,
         reattach_at: None,
         reattach_backoff: REATTACH_BACKOFF_INITIAL,
+        pending_spawn: None,
+        spawn_failure_exits: false,
         osd_chat: VecDeque::new(),
         blocker_overlay: None,
     };
 
-    match actor.factory.spawn().await {
-        Ok(player) => {
-            actor.player = Some(player);
-            tracing::info!("player launched");
-        }
-        // Attach mode: the user's mpv isn't up yet. That is not fatal —
-        // wait for it to come up rather than pausing the group and exiting
-        // (design.md: attach mode waits for mpv to come back).
-        Err(e) if actor.attach_mode => {
-            tracing::info!("attached mpv not up yet ({e}); waiting for it to appear");
-            actor.begin_reattach();
-        }
-        Err(e) => {
-            tracing::error!("cannot launch the player: {e}");
-            let _ = actor.outputs.send(PlayerOutput::FatalCrash).await;
-            return;
-        }
+    // Never await a spawn inline: mpv can take its full 30s socket wait
+    // to come up (a slow startup is not a crash), and commands (Load,
+    // Shutdown) must flow meanwhile. Attach mode goes through the same
+    // bounded probe as any re-attach (the user's mpv may not be up yet;
+    // design.md: attach mode waits for it to appear); spawn mode
+    // launches in a background task the loop polls.
+    if attach_mode {
+        actor.begin_reattach();
+    } else {
+        actor.begin_spawn(true);
     }
 
     let mut cadence = tokio::time::interval(POSITION_CADENCE_PLAYING);
@@ -359,6 +374,14 @@ pub async fn run<F: PlayerFactory>(
             }
             event = recv_from(&actor.player), if actor.player.is_some() => {
                 if !actor.handle_player_event(event).await {
+                    break;
+                }
+            }
+            // Spawn mode: a background launch finished (see begin_spawn).
+            spawned = recv_spawned(&mut actor.pending_spawn),
+                if actor.pending_spawn.is_some() =>
+            {
+                if !actor.finish_spawn(spawned).await {
                     break;
                 }
             }
@@ -394,6 +417,18 @@ pub async fn run<F: PlayerFactory>(
 async fn recv_from<P: Player>(player: &Option<P>) -> Result<PlayerEvent, PlayerError> {
     match player {
         Some(p) => p.recv().await,
+        // Unreachable: the select arm is gated on `is_some`.
+        None => std::future::pending().await,
+    }
+}
+
+/// Await a pending background spawn's delivery. `None` when the spawn
+/// task died without delivering (a panic in the factory).
+async fn recv_spawned<F: PlayerFactory>(
+    pending: &mut Option<oneshot::Receiver<(F, Result<F::Player, PlayerError>)>>,
+) -> Option<(F, Result<F::Player, PlayerError>)> {
+    match pending {
+        Some(rx) => rx.await.ok(),
         // Unreachable: the select arm is gated on `is_some`.
         None => std::future::pending().await,
     }
@@ -481,22 +516,16 @@ impl<F: PlayerFactory> Actor<F> {
                     // A new file is a clean slate for the crash-loop counter.
                     self.consecutive_crashes = 0;
                     self.last_death = None;
-                    if self.player.is_none() && self.reattach_at.is_none() {
+                    if self.player.is_none()
+                        && self.reattach_at.is_none()
+                        && self.pending_spawn.is_none()
+                    {
                         // We gave up relaunching after a crash loop; a new
                         // file is the recovery trigger — bring a player back.
-                        // (Skipped while a re-attach is already scheduled: the
-                        // pending retry will pick up this new `current`.)
-                        match self.factory.spawn().await {
-                            Ok(player) => {
-                                tracing::info!("relaunching player for the new file");
-                                self.player = Some(player);
-                                self.reapply_overlays().await;
-                            }
-                            Err(e) => {
-                                tracing::error!("could not relaunch the player: {e}");
-                                let _ = self.outputs.send(PlayerOutput::FatalCrash).await;
-                            }
-                        }
+                        // (Skipped while a re-attach or a launch is already
+                        // pending: it will pick up this new `current`.)
+                        tracing::info!("relaunching player for the new file");
+                        self.begin_spawn(false);
                     }
                 }
                 if let Some(player) = &self.player
@@ -962,9 +991,13 @@ impl<F: PlayerFactory> Actor<F> {
     /// indefinitely instead of giving up.
     async fn try_reattach(&mut self) {
         self.reattach_at = None;
+        // Attach mode never offloads spawns, so the factory is always here.
+        let Some(factory) = self.factory.as_mut() else {
+            return;
+        };
         // Bound the probe so a down socket cannot park the run loop for the
         // full `wait_for_socket` deadline (see `REATTACH_PROBE_TIMEOUT`).
-        let spawned = tokio::time::timeout(REATTACH_PROBE_TIMEOUT, self.factory.spawn()).await;
+        let spawned = tokio::time::timeout(REATTACH_PROBE_TIMEOUT, factory.spawn()).await;
         if let Ok(Ok(player)) = spawned {
             tracing::info!("re-attached to mpv");
             self.reattach_backoff = REATTACH_BACKOFF_INITIAL;
@@ -996,8 +1029,10 @@ impl<F: PlayerFactory> Actor<F> {
 
     /// Spawn mode: a player we own died. Escalate per design.md — silent
     /// relaunch, a global pause + chat notice on the second death within
-    /// [`CRASH_FATAL_WINDOW`], and give up on the third. Returns false
-    /// when the actor should exit (relaunch impossible).
+    /// [`CRASH_FATAL_WINDOW`], and give up on the third. The relaunch
+    /// itself runs in a background task ([`Self::begin_spawn`]); a
+    /// failed relaunch exits the actor when its result lands. Returns
+    /// false when the actor should exit.
     async fn handle_crash(&mut self, clean: bool) -> bool {
         // A clean exit is still unexpected (a deliberate quit goes
         // through Shutdown, which exits before this runs) — the user
@@ -1044,23 +1079,77 @@ impl<F: PlayerFactory> Actor<F> {
         self.speed = 1.0;
         self.drift.reset();
         self.estimate = None;
-        match self.factory.spawn().await {
+        // Never awaited inline: mpv's socket wait can run for 30s, and
+        // parking here would back the session's bounded player channel
+        // up into its main loop (2026-08-12 review). The run loop picks
+        // up the result and reloads `current`.
+        self.begin_spawn(true);
+        true
+    }
+
+    /// Spawn mode: launch a player in a background task — never inline,
+    /// so the run loop keeps servicing commands for however long mpv
+    /// takes to come up. No-op while a spawn is already in flight (its
+    /// result covers this request too: [`Self::finish_spawn`] reloads
+    /// whatever `current` is by then). `failure_exits` picks what a
+    /// failed launch does: exit the actor (startup, crash relaunch) or
+    /// stay alive awaiting another Load (the give-up recovery path).
+    fn begin_spawn(&mut self, failure_exits: bool) {
+        let Some(mut factory) = self.factory.take() else {
+            return; // a spawn is already in flight
+        };
+        self.spawn_failure_exits = failure_exits;
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = factory.spawn().await;
+            // If the actor exited meanwhile the receiver is gone and the
+            // delivered player is dropped, which shuts it down via its
+            // supervisor.
+            let _ = tx.send((factory, result));
+        });
+        self.pending_spawn = Some(rx);
+    }
+
+    /// A background launch delivered its result: install the player and
+    /// reload `current`, or escalate the failure. Returns false when the
+    /// actor should exit.
+    async fn finish_spawn(
+        &mut self,
+        delivered: Option<(F, Result<F::Player, PlayerError>)>,
+    ) -> bool {
+        self.pending_spawn = None;
+        let Some((factory, result)) = delivered else {
+            // The spawn task died without delivering (a panic in the
+            // factory). The factory is lost with it, so no later launch
+            // can succeed either.
+            tracing::error!("player launch task vanished");
+            let _ = self.outputs.send(PlayerOutput::FatalCrash).await;
+            return false;
+        };
+        self.factory = Some(factory);
+        match result {
             Ok(player) => {
+                tracing::info!("player launched");
                 self.player = Some(player);
                 self.reapply_overlays().await;
-                if let Some((_, path, title)) = self.current.clone()
+                if let Some((file, path, title)) = self.current.clone()
                     && let Some(player) = &self.player
                     && let Err(e) = player.load(&path, title.as_deref()).await
                 {
-                    tracing::warn!("reload after relaunch failed: {e}");
+                    // Same contract as the Load handler's inline failure:
+                    // tell the session so the file flips to Missing and
+                    // re-resolves (the path may have gone stale while the
+                    // player was down).
+                    tracing::warn!(path = %path.display(), "load after launch failed: {e}");
+                    let _ = self.outputs.send(PlayerOutput::LoadFailed { file }).await;
                 }
                 // Position and pause state are restored on Loaded.
                 true
             }
             Err(e) => {
-                tracing::error!("relaunch failed: {e}");
+                tracing::error!("cannot launch the player: {e}");
                 let _ = self.outputs.send(PlayerOutput::FatalCrash).await;
-                false
+                !self.spawn_failure_exits
             }
         }
     }
@@ -1184,7 +1273,7 @@ mod tests {
     fn test_actor() -> (Actor<MockFactory>, mpsc::Receiver<PlayerOutput>) {
         let (out_tx, out_rx) = mpsc::channel(64);
         let actor = Actor {
-            factory: MockFactory::new(vec![]),
+            factory: Some(MockFactory::new(vec![])),
             outputs: out_tx,
             clock: fixed_clock(0),
             offset_millis: 0,
@@ -1207,6 +1296,8 @@ mod tests {
             attach_mode: false,
             reattach_at: None,
             reattach_backoff: REATTACH_BACKOFF_INITIAL,
+            pending_spawn: None,
+            spawn_failure_exits: false,
             osd_chat: VecDeque::new(),
             blocker_overlay: None,
         };
@@ -2285,6 +2376,51 @@ mod tests {
         assert!(
             exited.is_ok(),
             "Shutdown was not serviced while a re-attach probe hung"
+        );
+    }
+
+    /// Regression (2026-08-12 review): a spawn-mode relaunch whose
+    /// `factory.spawn()` hangs (mpv's `wait_for_socket` can legitimately
+    /// run for its full 30s deadline — a slow startup is not a crash)
+    /// must not park the run loop. A Shutdown issued while the relaunch
+    /// is in flight has to be serviced — the spawn runs in its own task,
+    /// never awaited inline in a `select!` arm. Mirrors
+    /// `a_hung_reattach_probe_does_not_block_shutdown`, which covers
+    /// attach mode only.
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_relaunch_spawn_does_not_block_shutdown() {
+        let (p1, c1) = MockPlayer::pair();
+        // Initial launch uses p1; the post-crash relaunch hangs forever.
+        let factory = MockFactory::new([p1]).then_hang();
+        let (commands, mut outputs) = start_factory(factory, fixed_clock(0));
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE,
+                path: "/media/ep1.mkv".into(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        settle().await;
+
+        // The player crashes; the relaunch spawn hangs.
+        c1.events
+            .send(PlayerEvent::Exited { clean: false })
+            .unwrap();
+        settle().await;
+
+        // Shutdown arrives while the relaunch hangs. It must be serviced:
+        // the actor exits and its outputs channel closes. Awaited inline,
+        // the hung spawn would park the select loop and this would time
+        // out.
+        commands.send(PlayerCommand::Shutdown).await.unwrap();
+        let exited = tokio::time::timeout(Duration::from_secs(30), async {
+            while outputs.recv().await.is_some() {}
+        })
+        .await;
+        assert!(
+            exited.is_ok(),
+            "Shutdown was not serviced while a relaunch spawn hung"
         );
     }
 
