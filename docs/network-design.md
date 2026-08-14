@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-08-13
+Last updated: 2026-08-15
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -593,8 +593,9 @@ enum PeerMessage {
 No Hello message is needed: the server authenticated every peer, and relay
 envelopes carry the sender's identity. `Bitfield` is a compact `Vec<u8>`
 newtype (LSB-first bits + a length), not a `bitvec` dependency. `Cancel`
-retracts outstanding requests — used by endgame and when dropping a
-silent source (see [Chunk Selection](#chunk-selection-rarest-first)).
+retracts outstanding requests — used when an urgent chunk's duplicate
+race resolves (endgame included) and when dropping a silent source (see
+[Chunk Selection](#chunk-selection-rarest-first)).
 
 `CannotServe` answers a `BlockHashRequest` from a holder whose local copy
 is **known** to hash to a different identity — a manual mapping to a
@@ -667,9 +668,10 @@ This maximizes the rate at which rare chunks propagate. With 1 seeder and 3
 leechers, the seeder sends different chunks to each leecher; those leechers
 can then serve each other.
 
-### Scheduling: request window, snub, endgame
+### Scheduling: request window, snub, urgent set
 
-Informed by BitTorrent — and notably, there is **no per-chunk timeout**:
+Informed by BitTorrent — with per-chunk re-requests reserved for the
+chunks whose absence gates a deadline:
 
 - **Request window** of 64 outstanding chunk requests *per source*,
   across up to **4 concurrent sources**. Since protocol v9 the window
@@ -680,21 +682,32 @@ Informed by BitTorrent — and notably, there is **no per-chunk timeout**:
   the plausible bandwidth-delay product with margin). Excess requests
   queue as *indices* at the uploader — not as bytes in network buffers.
   The old `--pipeline-depth` flag is gone with the old role.
-- **Snub, not timeout.** A source that sends *nothing* for 30s is dropped
+- **Snub for silence.** A source that sends *nothing* for 30s is dropped
   and its outstanding chunks are `Cancel`led and requeued to other
-  sources. A chunk in transit is never re-requested — only a silent
-  *source* is — which avoids both spurious duplicate fetches (too-short
-  timeout) and stalled playback (too-long timeout). Real chunk loss is
-  rare and surfaces as a snub. A **closed or reset data stream is the
-  same signal, acted on immediately**: the source's in-flight chunks
-  requeue and re-plan at once (`Downloads::on_source_stream_lost`)
-  rather than sitting dead until the 30s timeout — the source itself is
-  kept (the stream, not the peer, died; the next request toward it
-  opens a fresh one, see [Transfer Resumption](#transfer-resumption)).
-- **Endgame.** When the remaining work fits in one pipeline, a chunk may
-  be requested from *several* sources at once; whichever arrives first
-  wins and the losers are `Cancel`led — so the tail isn't stuck behind
-  one slow source.
+  sources. A bulk chunk in transit is never re-requested — only a
+  silent *source* is. A **closed or reset data stream is the same
+  signal, acted on immediately**: the source's in-flight chunks requeue
+  and re-plan at once (`Downloads::on_source_stream_lost`) rather than
+  sitting dead until the 30s timeout — the source itself is kept (the
+  stream, not the peer, died; the next request toward it opens a fresh
+  one, see [Transfer Resumption](#transfer-resumption)).
+- **Urgency for stalls.** The snub alone cannot protect the playable
+  window: a slow-but-delivering source never trips it, and a source
+  whose stream keeps dying re-arms its snub clock on every requeue
+  cycle — either way it can sit on the window's chunks for the whole
+  transfer (the 2026-08-14 regression: playback started at ~100%
+  instead of 20%). So a needed chunk turns **urgent** when its absence
+  gates a deadline: it lies in the playable window's *blocks*
+  (playability is block-granular — the window rounded out to ed2k
+  block boundaries is what actually gates) and was first requested
+  more than `urgent_age` (5s) ago without landing, **or** the whole
+  remaining set fits in one pipeline — endgame, the special case where
+  the completion deadline gates everything left. An urgent chunk may
+  be requested from *several* sources at once, including sources past
+  the concurrency cap; whichever arrives first wins and the losers are
+  `Cancel`led — so neither playback nor the tail is stuck behind one
+  slow source. The age runs from the chunk's *first* request
+  precisely so requeue-and-reassign cycles cannot reset it.
 - Block hashes are fetched and validated against the file's ed2k root
   before any chunk can verify; an invalid list is rejected and re-asked
   from another source.
@@ -767,7 +780,7 @@ throttle:
   its sender within a buffer's worth of data.
 - The **request window** (64 chunks/source, up to 4 sources) only hides
   relay latency — excess queues as indices at the uploader (see
-  [Scheduling](#scheduling-request-window-snub-endgame)).
+  [Scheduling](#scheduling-request-window-snub-urgent-set)).
 - QUIC flow-control windows (16 MiB/stream, 64 MiB/connection) are
   receive-side memory bounds sized to never be the binding constraint
   under BBR. The concurrent-bidi-stream cap is likewise raised to 1024
@@ -785,7 +798,9 @@ throttle:
 When a file is being downloaded for immediate playback:
 
 - Chunk selection switches from rarest-first to **sequential** for the next
-  ~20% of the file ahead of the current playback position
+  ~20% of the file ahead of the current playback position, rounded out to
+  ed2k block boundaries (playability is block-granular, so the enclosing
+  blocks are what actually gate playback)
 - Rarest-first continues for chunks outside the playback window
 - This ensures smooth playback while still distributing rare chunks
 

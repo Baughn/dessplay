@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-08-13
+Last updated: 2026-08-15
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -478,7 +478,8 @@ Phase 9B added the transfer side: `StartDownload` / `PeerMessage` /
 `TransferStream` commands and `SendPeer` / `OpenTransfer` /
 `Availability` / `DownloadComplete` outputs. The scheduling brain is
 `download.rs` (`Downloads` — request window, rarest-first + sequential
-window, source snub, endgame; synchronous and unit-testable); on-disk
+window, source snub, urgent set with endgame as its special case;
+synchronous and unit-testable); on-disk
 assembly + ed2k block verification is `chunkstore.rs`. Chunk traffic
 rides per-transfer data streams (network-design.md, protocol v9): the
 actor opens one per (source, file) for its downloads, and **serves**
@@ -741,7 +742,7 @@ dessplay/                     (client: lib + thin binary)
     commentary.rs             (AI commentary engine: commentator state,
                                Anthropic model seam, marquee writes)
     download.rs               (Downloads: chunk scheduling — request
-                               window, rarest-first, snub, endgame;
+                               window, rarest-first, snub, urgent set;
                                Phase 9B)
     chunkstore.rs             (on-disk chunk assembly + ed2k block
                                verification + resume; Phase 9B)

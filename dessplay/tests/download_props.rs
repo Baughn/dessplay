@@ -82,6 +82,7 @@ proptest! {
             pipeline_depth: 4,
             max_sources: 3,
             snub_timeout_millis: 200,
+            urgent_age_millis: 150,
         };
         let mut downloads = Downloads::new(config);
         let mut now: u64 = 1000;

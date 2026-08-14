@@ -16,14 +16,19 @@
 //! - **Chunk order**: a sequential window of ~20% of the file ahead of
 //!   the playback position first (so playback can start), then
 //!   **rarest-first** (fewest sources have it) for the rest.
-//! - **No per-chunk timeout.** A source that sends *nothing* for
-//!   `snub_timeout` is dropped (snubbed) and its outstanding chunks are
-//!   requeued elsewhere — so a chunk in transit is never re-requested,
-//!   only a silent *source* is. A real chunk loss is rare and surfaces
-//!   as a snub.
-//! - **Endgame**: when few chunks remain, request each from *all*
-//!   sources that have it and `Cancel` the losers as they arrive, so the
-//!   tail isn't stuck behind one slow source.
+//! - **Snub for silence, urgency for stalls.** A source that sends
+//!   *nothing* for `snub_timeout` is dropped (snubbed) and its
+//!   outstanding chunks are requeued elsewhere. A bulk chunk in transit
+//!   is never re-requested — but the snub alone cannot protect the
+//!   playable window: a slow-but-delivering source never trips it, and
+//!   one whose stream keeps dying re-arms its clock on every requeue.
+//! - **Urgent set**: a chunk whose absence gates a deadline — a playable
+//!   -window chunk older than `urgent_age` since its *first* request, or
+//!   any chunk once the remainder fits in one pipeline (endgame, the
+//!   special case where the completion deadline gates everything left) —
+//!   may be requested from *several* sources at once; whichever arrives
+//!   first wins and the losers are `Cancel`led, so neither playback nor
+//!   the tail is stuck behind one slow source.
 //! - **Verification** is the chunk store's (ed2k per block); a corrupt
 //!   block's chunks are cleared and re-fetched.
 
@@ -49,6 +54,14 @@ pub struct DownloadConfig {
     pub max_sources: u32,
     /// Drop a source that sends nothing for this long (millis).
     pub snub_timeout_millis: u64,
+    /// How long a playable-window chunk may sit requested-but-undelivered
+    /// before it turns *urgent* and gets endgame semantics — duplicated
+    /// to other sources, first delivery wins (see `plan_requests`). Aged
+    /// from the chunk's **first** request, not its latest: a source whose
+    /// stream keeps dying requeues and re-grabs its chunks with a fresh
+    /// request each cycle, and an age measured from the latest request
+    /// would never trip (the 2026-08-14 pinned-window regression).
+    pub urgent_age_millis: u64,
 }
 
 impl Default for DownloadConfig {
@@ -57,6 +70,7 @@ impl Default for DownloadConfig {
             pipeline_depth: 16,
             max_sources: 4,
             snub_timeout_millis: 30_000,
+            urgent_age_millis: 5_000,
         }
     }
 }
@@ -229,6 +243,16 @@ struct Download {
     denied: HashSet<PeerId>,
     /// Chunk index playback is at (sequential-window anchor).
     play_chunk: u32,
+    /// Shared-clock millis at which each chunk was *first* committed to
+    /// a source, feeding the urgency check in `plan_requests`. First,
+    /// not latest: a requeue-and-reassign cycle (a source whose stream
+    /// keeps dying) issues a fresh request each pass, and a latest-stamp
+    /// age would reset every cycle and never trip. Entries are never
+    /// cleared while the download lives — for a delivered chunk the
+    /// stamp is moot, and for a chunk re-needed after a block-hash
+    /// mismatch the stale stamp means a playable-window re-fetch goes
+    /// urgent immediately, which is the priority it deserves.
+    first_requested: HashMap<u32, u64>,
     stats: TransferStats,
     last_progress_bps: u16,
     /// Last reported [`ChunkStore::playable_from`] verdict, so a flip is
@@ -303,6 +327,7 @@ impl Downloads {
                     sources: HashMap::new(),
                     denied: HashSet::new(),
                     play_chunk,
+                    first_requested: HashMap::new(),
                     stats: TransferStats::default(),
                     last_progress_bps: 0,
                     last_playable: false,
@@ -700,7 +725,7 @@ impl Downloads {
 
     /// Emit a progress action if the verified fraction changed, then
     /// refill request pipelines.
-    fn progress_and_refill(&mut self, file: Ed2kHash, _now: u64) -> Vec<DownloadAction> {
+    fn progress_and_refill(&mut self, file: Ed2kHash, now: u64) -> Vec<DownloadAction> {
         let mut actions = Vec::new();
         let Some(d) = self.files.get_mut(&file) else {
             return actions;
@@ -764,7 +789,7 @@ impl Downloads {
             });
         }
 
-        actions.extend(plan_requests(d, &self.config, file));
+        actions.extend(plan_requests(d, &self.config, file, now));
         actions
     }
 }
@@ -781,15 +806,64 @@ fn drain_in_flight(src: &mut Source, stats: &mut TransferStats) -> Vec<u32> {
 /// Decide which chunks to request from which sources to fill pipelines.
 /// Pulled out as a free function over `&mut Download` so the ordering
 /// policy is easy to follow and test.
-fn plan_requests(d: &mut Download, config: &DownloadConfig, file: Ed2kHash) -> Vec<DownloadAction> {
+///
+/// A needed chunk is **urgent** when its absence gates a deadline:
+///
+/// - it lies in the playable window and was first committed to a source
+///   more than `urgent_age_millis` ago without landing (a stalled or
+///   repeatedly-failing source is sitting on it), or
+/// - the whole remaining set fits in one pipeline — endgame, the special
+///   case where the completion deadline gates everything left.
+///
+/// Urgent chunks may be requested from several sources at once (the
+/// `assigned` reservation and the `max_sources` cap don't apply);
+/// whichever delivers first wins and `cancel_elsewhere` retracts the
+/// rest. Everything else is bulk mode: single-assignment, window-first,
+/// then rarest-first. Duplication cost is bounded by the urgent set —
+/// in bulk that's only window chunks a source has failed to deliver for
+/// `urgent_age`, where the alternative is gated playback.
+fn plan_requests(
+    d: &mut Download,
+    config: &DownloadConfig,
+    file: Ed2kHash,
+    now: u64,
+) -> Vec<DownloadAction> {
     let needed = d.store.needed_chunks();
     if needed.is_empty() {
         return vec![];
     }
-    let needed_set: HashSet<u32> = needed.iter().copied().collect();
-    // Endgame once the remaining work fits in one global pipeline: then
-    // a chunk may be requested from several sources at once.
+    // Endgame once the remaining work fits in one global pipeline:
+    // everything left is urgent.
     let endgame = (needed.len() as u32) <= config.pipeline_depth;
+
+    let total_chunks = chunk_count(d.size_bytes);
+    let window_end = d
+        .play_chunk
+        .saturating_add(total_chunks / SEQUENTIAL_WINDOW_FRAC + 1);
+    // Playability is *block*-granular ([`ChunkStore::playable_from`]
+    // verifies whole ed2k blocks), so the region that actually gates
+    // playback is the window rounded out to block boundaries — a chunk
+    // just past the window's edge, or behind the anchor but inside the
+    // anchor's block, gates playback exactly as hard as one inside it.
+    // Both the sequential-first ordering and the urgency check use the
+    // aligned region, so what we fetch first, what we rescue, and what
+    // unblocks playback cannot drift apart.
+    let cpb = dessplay_core::net::CHUNKS_PER_BLOCK as u32;
+    let gate_start = (d.play_chunk / cpb) * cpb;
+    let gate_end = window_end.div_ceil(cpb).saturating_mul(cpb);
+    let in_window = |c: u32| c >= gate_start && c < gate_end;
+
+    let urgent: HashSet<u32> = needed
+        .iter()
+        .copied()
+        .filter(|&c| {
+            endgame
+                || (in_window(c)
+                    && d.first_requested
+                        .get(&c)
+                        .is_some_and(|&t0| now.saturating_sub(t0) >= config.urgent_age_millis))
+        })
+        .collect();
 
     // Rarity: how many sources advertise each needed chunk.
     let mut rarity: HashMap<u32, u32> = HashMap::new();
@@ -810,11 +884,6 @@ fn plan_requests(d: &mut Download, config: &DownloadConfig, file: Ed2kHash) -> V
         .flat_map(|s| s.in_flight.iter().copied())
         .collect();
 
-    let total_chunks = chunk_count(d.size_bytes);
-    let window_end = d
-        .play_chunk
-        .saturating_add(total_chunks / SEQUENTIAL_WINDOW_FRAC + 1);
-
     // Deterministic source order (peer id) so the plan is reproducible.
     let mut peers: Vec<PeerId> = d.sources.keys().cloned().collect();
     peers.sort();
@@ -822,11 +891,11 @@ fn plan_requests(d: &mut Download, config: &DownloadConfig, file: Ed2kHash) -> V
     let mut actions = Vec::new();
     let active_cap = config.max_sources as usize;
     for (rank, peer) in peers.into_iter().enumerate() {
-        // Cap concurrent sources (deterministic by id). Endgame ignores
-        // the cap to drain the tail from everyone.
-        if !endgame && rank >= active_cap {
-            break;
-        }
+        // Cap concurrent sources (deterministic by id) for bulk work;
+        // sources past the cap still serve urgent chunks — endgame has
+        // always drained the tail from everyone, and per-chunk urgency
+        // inherits that.
+        let urgent_only = rank >= active_cap;
         let Some(src) = d.sources.get(&peer) else {
             continue;
         };
@@ -835,28 +904,35 @@ fn plan_requests(d: &mut Download, config: &DownloadConfig, file: Ed2kHash) -> V
             continue;
         }
         // Candidate chunks this source has, that we still need, and that
-        // we aren't already getting (from this source always; from
-        // anyone unless endgame).
+        // we aren't already getting from this source. A chunk in flight
+        // *elsewhere* is off-limits in bulk mode but fair game when
+        // urgent — that duplication is the whole point.
         let src_in_flight = src.in_flight.clone();
         let mut candidates: Vec<u32> = needed
             .iter()
             .copied()
             .filter(|&c| {
                 src.bitfield.get(c)
-                    && needed_set.contains(&c)
                     && !src_in_flight.contains(&c)
-                    && (endgame || !assigned.contains(&c))
+                    && if urgent.contains(&c) {
+                        true
+                    } else {
+                        !urgent_only && !assigned.contains(&c)
+                    }
             })
             .collect();
-        // Order: sequential window (by index) first, then rarest-first,
-        // ties by index.
+        // Order: urgent first (by index), then the sequential window (by
+        // index), then rarest-first, ties by index.
         candidates.sort_by(|&a, &b| {
-            let aw = a >= d.play_chunk && a < window_end;
-            let bw = b >= d.play_chunk && b < window_end;
-            bw.cmp(&aw) // window chunks first
+            let au = urgent.contains(&a);
+            let bu = urgent.contains(&b);
+            let aw = in_window(a);
+            let bw = in_window(b);
+            bu.cmp(&au) // urgent chunks first
+                .then(bw.cmp(&aw)) // then window chunks
                 .then_with(|| {
-                    if aw && bw {
-                        a.cmp(&b) // within the window, sequential
+                    if (au && bu) || (aw && bw) {
+                        a.cmp(&b) // urgent/window: sequential
                     } else {
                         rarity
                             .get(&a)
@@ -875,8 +951,13 @@ fn plan_requests(d: &mut Download, config: &DownloadConfig, file: Ed2kHash) -> V
                 src.in_flight.insert(c);
             }
         }
+        for &c in &take {
+            // First commitment only: the urgency age must survive
+            // requeue-and-reassign cycles (see `Download::first_requested`).
+            d.first_requested.entry(c).or_insert(now);
+        }
         // Reserve these so a later source in this same pass won't re-pick
-        // them in bulk mode. (Endgame ignores `assigned`, by design.)
+        // them in bulk mode. (Urgent chunks ignore `assigned`, by design.)
         assigned.extend(take.iter().copied());
         actions.push(DownloadAction::Send {
             to: peer,
@@ -1319,9 +1400,13 @@ mod tests {
             1200,
         );
         let reqs = requests(&actions);
-        // The first batch is the window starting at the play chunk, in
-        // order.
-        assert_eq!(reqs[0].1, vec![50, 51, 52, 53]);
+        // The first batch is the *gating region* — the playable window
+        // rounded out to block boundaries — in order. Playability is
+        // block-granular, so with the anchor at chunk 50 (inside block
+        // 1, chunks 38..76) the chunks from the block's start gate
+        // playback exactly as hard as the anchor itself; the plan
+        // front-loads them rather than leaving them to bulk order.
+        assert_eq!(reqs[0].1, vec![38, 39, 40, 41]);
     }
 
     /// The playable verdict rides `Progress`: it flips on once the 20%
@@ -1445,6 +1530,8 @@ mod tests {
             pipeline_depth: 4,
             max_sources: 4,
             snub_timeout_millis: 30_000,
+            // Urgency off: this test pins the snub path in isolation.
+            urgent_age_millis: u64::MAX,
         };
         let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
         r.downloads.start(
@@ -1522,6 +1609,8 @@ mod tests {
             pipeline_depth: 64,
             max_sources: 4,
             snub_timeout_millis: 30_000,
+            // Urgency off: this test pins the requeue path in isolation.
+            urgent_age_millis: u64::MAX,
         };
         // 2 blocks ≈ 77 chunks: more than one 64-chunk window, so the
         // plan is bulk mode with a genuinely full window on one source.
@@ -1576,6 +1665,226 @@ mod tests {
         );
         let stats = r.downloads.stats(&r.file).unwrap();
         assert_eq!(stats.chunks_requeued, 64, "the requeue must be counted");
+    }
+
+    /// A playable-window chunk stalled in flight on one source past
+    /// `urgent_age_millis` turns urgent and is duplicated to another
+    /// source — per-chunk endgame semantics, instead of the whole-file
+    /// endgame being the only rescue. Regression (2026-08-14): a source
+    /// that accepted its requests but never delivered pinned the first
+    /// window chunks for the entire transfer; bulk mode never duplicates
+    /// an assigned chunk, so playback stayed gated until endgame — the
+    /// player started at ~100% instead of 20%.
+    #[test]
+    fn a_stalled_window_chunk_is_duplicated_past_urgent_age() {
+        let config = DownloadConfig {
+            pipeline_depth: 4,
+            max_sources: 4,
+            // Snub out of the way: 'a' is stalled, not silent-forever,
+            // and urgency must rescue the window on its own.
+            snub_timeout_millis: 600_000,
+            urgent_age_millis: 5_000,
+        };
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
+        let mut t: u64 = 1_000;
+        let _ = r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("a"), peer("b")],
+            0,
+            t,
+        );
+        t += 1;
+        let mut actions = r.downloads.on_peer_message(
+            peer("a"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            t,
+        );
+        for name in ["a", "b"] {
+            t += 1;
+            actions.extend(r.downloads.on_peer_message(
+                peer(name),
+                PeerMessage::FileAvailability {
+                    file: r.file,
+                    bitfield: r.full_bitfield(),
+                },
+                t,
+            ));
+        }
+        // 'a' (first by peer-id order) got the head of the window.
+        let to_a: HashSet<u32> = requests(&actions)
+            .into_iter()
+            .filter(|(p, _)| p == "a")
+            .flat_map(|(_, c)| c)
+            .collect();
+        assert_eq!(to_a, HashSet::from([0, 1, 2, 3]));
+
+        // 'b' delivers everything it is asked for a while; 'a' delivers
+        // nothing. No chunk pinned on 'a' may be re-asked from 'b' —
+        // bulk mode, nothing urgent yet (under 5s since first request).
+        let mut queue: Vec<u32> = requests(&actions)
+            .into_iter()
+            .filter(|(p, _)| p == "b")
+            .flat_map(|(_, c)| c)
+            .collect();
+        for _ in 0..20 {
+            let c = queue.remove(0);
+            t += 1;
+            let acts = r.downloads.on_peer_message(
+                peer("b"),
+                PeerMessage::ChunkData {
+                    file: r.file,
+                    index: c,
+                    data: r.chunk(c),
+                },
+                t,
+            );
+            for (p, chunks) in requests(&acts) {
+                assert_eq!(p, "b", "a stalled source must not be refilled");
+                assert!(
+                    chunks.iter().all(|c| !to_a.contains(c)),
+                    "no duplication before the urgent age: {chunks:?}"
+                );
+                queue.extend(chunks);
+            }
+        }
+
+        // Past the urgent age, the next refill of 'b' must duplicate
+        // the stalled window chunks rather than march on.
+        t += 6_000;
+        let c = queue.remove(0);
+        let acts = r.downloads.on_peer_message(
+            peer("b"),
+            PeerMessage::ChunkData {
+                file: r.file,
+                index: c,
+                data: r.chunk(c),
+            },
+            t,
+        );
+        let refill: Vec<u32> = requests(&acts)
+            .into_iter()
+            .filter(|(p, _)| p == "b")
+            .flat_map(|(_, c)| c)
+            .collect();
+        assert!(
+            refill.iter().any(|c| to_a.contains(c)),
+            "a window chunk stalled past urgent_age must be duplicated to 'b'; got {refill:?}"
+        );
+    }
+
+    /// The 2026-08-14 field regression end-to-end: one source's data
+    /// stream dies on every cycle (each loss requeues its chunks and
+    /// re-arms its snub clock, so it is never snubbed), and each re-plan
+    /// hands it the head of the playable window again. The other source
+    /// delivers honestly. Playability must still flip while the rest of
+    /// the file is outstanding — pre-fix the window stayed pinned until
+    /// whole-file endgame, so the download went straight to `Complete`
+    /// without ever reporting `playable: true`, and the player started
+    /// only once the file finished.
+    #[test]
+    fn a_repeatedly_failing_source_cannot_pin_the_playable_window() {
+        let config = DownloadConfig {
+            pipeline_depth: 4,
+            max_sources: 4,
+            snub_timeout_millis: 30_000,
+            urgent_age_millis: 5_000,
+        };
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
+        let mut t: u64 = 1_000;
+        let mut actions = r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("a"), peer("b")],
+            0,
+            t,
+        );
+        t += 1;
+        actions.extend(r.downloads.on_peer_message(
+            peer("a"),
+            PeerMessage::BlockHashes {
+                file: r.file,
+                hashes: r.hash.blocks.clone(),
+            },
+            t,
+        ));
+        for name in ["a", "b"] {
+            t += 1;
+            actions.extend(r.downloads.on_peer_message(
+                peer(name),
+                PeerMessage::FileAvailability {
+                    file: r.file,
+                    bitfield: r.full_bitfield(),
+                },
+                t,
+            ));
+        }
+
+        let mut saw_playable = false;
+        let mut completed = false;
+        let mut queue: Vec<u32> = Vec::new(); // chunks 'b' owes
+        let mut a_engaged = false; // 'a' has requests whose stream will die
+        'outer: for _round in 0..200 {
+            for a in &actions {
+                match a {
+                    DownloadAction::Progress { playable: true, .. } => saw_playable = true,
+                    DownloadAction::Complete { .. } => {
+                        completed = true;
+                        break 'outer;
+                    }
+                    DownloadAction::Send {
+                        to,
+                        message: PeerMessage::ChunkRequest { chunks, .. },
+                    } => {
+                        if to.to_string() == "b" {
+                            queue.extend(chunks.iter().copied());
+                        } else {
+                            a_engaged = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Each cycle: 'b' delivers a couple of chunks, then 'a''s
+            // data stream dies (requeue + re-arm + immediate re-plan).
+            let mut next = Vec::new();
+            for _ in 0..2 {
+                if queue.is_empty() {
+                    break;
+                }
+                let c = queue.remove(0);
+                t += 1;
+                next.extend(r.downloads.on_peer_message(
+                    peer("b"),
+                    PeerMessage::ChunkData {
+                        file: r.file,
+                        index: c,
+                        data: r.chunk(c),
+                    },
+                    t,
+                ));
+            }
+            t += 2_000;
+            if a_engaged {
+                a_engaged = false;
+                next.extend(r.downloads.on_source_stream_lost(r.file, &peer("a"), t));
+            } else {
+                next.extend(r.downloads.tick(t));
+            }
+            actions = next;
+        }
+        assert!(
+            saw_playable,
+            "playability must flip before completion despite the failing source \
+             (completed = {completed})"
+        );
     }
 
     #[test]
