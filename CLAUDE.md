@@ -81,7 +81,3 @@ Test comprehensively, especially on high-risk areas (echo suppression, network c
 - **High-risk areas get extra coverage**: Echo suppression, CRDT convergence,
   playlist conflict resolution, reconnection/epoch handling.
 
-
----
-
-design.md follows: @docs/design.md
