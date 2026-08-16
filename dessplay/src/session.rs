@@ -258,15 +258,21 @@ pub struct PlayerWiring {
     /// The now-playing file at the last eviction pass; a change is the
     /// EOF-advance (or manual-jump) signal to run another.
     last_now_playing: Option<Ed2kHash>,
-    /// Windowed missing files we've logged a prefetch download start for.
+    /// Wanted missing files we've logged a prefetch download start for.
     /// `plan_download` re-emits `StartDownload` every snapshot (idempotent
     /// in the file actor), so this collapses the log to one line per
-    /// download rather than one per second. Pruned to the current window.
+    /// download rather than one per second. Pruned to the current
+    /// want-set.
     prefetching: HashSet<Ed2kHash>,
-    /// Windowed missing files we've logged as having no available source
-    /// yet (so the "why isn't this downloading?" line is emitted once per
-    /// stall, not every snapshot). Pruned to the current window.
+    /// Wanted missing files with no available source yet, tracked so the
+    /// "why isn't this downloading?" diagnostics are emitted on change,
+    /// not every snapshot. Pruned to the current want-set.
     awaiting_source: HashSet<Ed2kHash>,
+    /// The download fill order last sent to the file actor, so
+    /// `Directive::SetDownloadPriority` goes out only when the anchored
+    /// ranking actually changes (now-playing moved, playlist edited),
+    /// not on every snapshot.
+    last_priority_sent: Vec<Ed2kHash>,
     /// The chat narrator's previous snapshot slice. `None` until the
     /// first state arrives (the initial view is a baseline, not news).
     narrator: Option<NarratorState>,
@@ -304,11 +310,6 @@ pub struct PlayerWiring {
 /// Fraction of a file's duration that counts as "watched" (design.md,
 /// Watch Tracking).
 const WATCHED_FRACTION: f64 = 0.85;
-
-/// How many queued playlist entries past now-playing an interactive
-/// client prefetches (design.md, Pre-fetching). A small fixed lookahead;
-/// disk/retention-aware depth is future work. Seeders fetch everything.
-const PREFETCH_AHEAD: usize = 2;
 
 /// How close (millis) a partial's last known position must be to the
 /// entry's duration for its EOF report to be believed. A sparse partial
@@ -654,6 +655,7 @@ impl PlayerWiring {
             last_now_playing: None,
             prefetching: HashSet::new(),
             awaiting_source: HashSet::new(),
+            last_priority_sent: Vec::new(),
             narrator: None,
             auto_download: true,
             drift_high_snapshots: 0,
@@ -957,28 +959,24 @@ impl PlayerWiring {
             .collect()
     }
 
-    /// Entries at or ahead of the now-playing cursor that we intend to
-    /// watch: the now-playing file plus the next `PREFETCH_AHEAD` queued
-    /// entries (the prefetch window). These are eligible for resolution
-    /// and (re)download regardless of the group's watched flag — a
-    /// re-watch is still a watch. Entries *behind* the cursor are excluded
-    /// by construction (the window starts at now-playing), so position
-    /// relative to the cursor is the whole eligibility test; the watched
-    /// flag does not gate fetching.
-    fn prefetch_window<'a>(
+    /// Playlist entries we want local, in download-priority order: every
+    /// unwatched entry, plus now-playing itself regardless of the
+    /// watched flag (a rewatch is a watch), minus entries whose series
+    /// we've marked NotWatching — no point fetching a show we've opted
+    /// out of. Ranked around now-playing by
+    /// [`derive::anchored_download_order`]: nearest-after first, the
+    /// entries behind the cursor last (design.md, Pre-fetching).
+    fn wanted_entries<'a>(
         &self,
         view: &'a StateView,
     ) -> Vec<&'a dessplay_core::playlist::PlaylistEntry> {
-        let Some(now) = view.now_playing else {
-            return vec![];
-        };
-        let Some(start) = view.playlist.iter().position(|e| e.hash == now) else {
-            return vec![];
-        };
-        view.playlist
-            .iter()
-            .skip(start)
-            .take(1 + PREFETCH_AHEAD)
+        derive::anchored_download_order(&view.playlist, view.now_playing)
+            .into_iter()
+            .filter(|e| {
+                (Some(e.hash) == view.now_playing || view.watched.get(&e.hash) != Some(&true))
+                    && derive::series_watch_for_file(view, &self.me, e.hash)
+                        != dessplay_core::types::SeriesWatchState::NotWatching
+            })
             .collect()
     }
 
@@ -993,31 +991,37 @@ impl PlayerWiring {
             self.awaiting_source.clear();
             return vec![];
         }
-        // Collect the window up front so the `view` borrow is released
+        // Collect the want-set up front so the `view` borrow is released
         // before we touch the per-file log-tracking sets (`&mut self`).
-        // Skip auto-download for entries whose series we've marked
-        // NotWatching — no point fetching a show we've opted out of
-        // (design.md, Pre-fetching). Watching / Maybe / no-metadata still
-        // download. (A NotWatching file already local still loads.)
-        let window: Vec<(Ed2kHash, u64)> = self
-            .prefetch_window(view)
+        // Watching / Maybe / no-metadata entries download; NotWatching
+        // series are filtered by `wanted_entries`. (A NotWatching file
+        // already local still loads.)
+        let wanted: Vec<(Ed2kHash, u64)> = self
+            .wanted_entries(view)
             .iter()
-            .filter(|e| {
-                derive::series_watch_for_file(view, &self.me, e.hash)
-                    != dessplay_core::types::SeriesWatchState::NotWatching
-            })
             .map(|e| (e.hash, e.state.size_bytes))
             .collect();
-        let window_set: HashSet<Ed2kHash> = window.iter().map(|(h, _)| *h).collect();
-        // Forget files that have fallen out of the window, so a later
+        let wanted_set: HashSet<Ed2kHash> = wanted.iter().map(|(h, _)| *h).collect();
+        // Forget files that have fallen out of the want-set, so a later
         // re-entry logs its decision afresh.
-        self.prefetching.retain(|f| window_set.contains(f));
-        self.awaiting_source.retain(|f| window_set.contains(f));
+        self.prefetching.retain(|f| wanted_set.contains(f));
+        self.awaiting_source.retain(|f| wanted_set.contains(f));
 
         let mut out = Vec::new();
-        for (file, size_bytes) in window {
+        // The scheduler's cross-file fill order — the whole ranking,
+        // including entries that are local or still resolving (the
+        // scheduler ranks only files it actually holds, so extras are
+        // harmless). Sent ahead of the StartDownload batch, and only
+        // when it changes.
+        let order: Vec<Ed2kHash> = wanted.iter().map(|(h, _)| *h).collect();
+        if order != self.last_priority_sent {
+            self.last_priority_sent = order.clone();
+            out.push(Directive::SetDownloadPriority { order });
+        }
+        let awaiting_before = self.awaiting_source.len();
+        for (file, size_bytes) in wanted {
             // Have it, or not resolved yet: skip. The watched flag does
-            // *not* gate this — a windowed entry is one we intend to
+            // *not* gate this — a wanted entry is one we intend to
             // watch, redownload included (design.md, Pre-fetching).
             if matches!(
                 self.resolved.get(&file),
@@ -1029,15 +1033,17 @@ impl PlayerWiring {
             }
             let sources = self.download_sources(view, peers, file);
             if sources.is_empty() {
-                // A windowed file no present peer can serve — still
+                // A wanted file no present peer can serve — still
                 // emitted (the peer path treats an empty source set as
                 // the ordinary awaiting-source state and picks up a
                 // source from a later refresh), but tracked as the
                 // diagnostic signal for "why isn't this prefetching?".
-                // Logged once per stall; clears once a source appears.
+                // Per-file at debug (a whole-playlist want-set can stall
+                // many files at once); the aggregate info line below
+                // fires when the count moves.
                 self.prefetching.remove(&file);
                 if self.awaiting_source.insert(file) {
-                    tracing::info!(
+                    tracing::debug!(
                         %file,
                         "prefetch: no present peer has this file Ready; awaiting a source"
                     );
@@ -1057,6 +1063,12 @@ impl PlayerWiring {
                 sources,
                 play_chunk: self.play_anchor_chunk(view, file, size_bytes),
             });
+        }
+        if self.awaiting_source.len() != awaiting_before && !self.awaiting_source.is_empty() {
+            tracing::info!(
+                count = self.awaiting_source.len(),
+                "prefetch: wanted files awaiting a source"
+            );
         }
         out
     }
@@ -1499,13 +1511,13 @@ impl PlayerWiring {
 
         // Kick the matcher for entries we haven't looked for yet.
         // Watched history is skipped (no point hashing gigabytes of
-        // already-seen files) unless it is in the prefetch window — the
-        // now-playing cursor plus the next few queued entries, which we
-        // intend to (re)watch and so must resolve so they can download.
-        let window: HashSet<Ed2kHash> = self.prefetch_window(view).iter().map(|e| e.hash).collect();
+        // already-seen files) unless it is now-playing itself — a
+        // rewatch in progress must resolve so it can download. Every
+        // unwatched entry resolves: the want-set is the whole unwatched
+        // playlist (design.md, Pre-fetching).
         for entry in &view.playlist {
-            let watched =
-                view.watched.get(&entry.hash) == Some(&true) && !window.contains(&entry.hash);
+            let watched = view.watched.get(&entry.hash) == Some(&true)
+                && Some(entry.hash) != view.now_playing;
             if watched
                 || self.resolved.contains_key(&entry.hash)
                 || self.pending_resolve.contains(&entry.hash)
@@ -5801,57 +5813,104 @@ mod tests {
         assert!(has_placeholder(&directives));
     }
 
+    /// Every `SetDownloadPriority` order in `directives`.
+    fn priority_orders(directives: &[Directive]) -> Vec<Vec<Ed2kHash>> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::SetDownloadPriority { order } => Some(order.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The want-set is every unwatched entry plus now-playing itself
+    /// (design.md, Pre-fetching): an unwatched entry *behind* the cursor
+    /// downloads too (it's unseen), a watched entry ahead does not (its
+    /// rewatch fetch starts when it becomes now-playing), and a watched
+    /// now-playing still downloads (a rewatch is a watch). The
+    /// `SetDownloadPriority` order is the anchored ranking, re-sent only
+    /// when it changes.
     #[test]
-    fn watched_in_window_redownloads_but_behind_cursor_does_not() {
-        // The group watched flag means "we have already seen it", not "we
-        // do not want a local copy". Eligibility for resolution and
-        // (re)download is decided by position relative to the now-playing
-        // cursor — the now-playing file plus the next PREFETCH_AHEAD queued
-        // entries — not by the watched flag. So a group-watched entry at or
-        // ahead of the cursor (a re-watch) must download from a peer that
-        // has it; group-watched history *behind* the cursor must not.
+    fn want_set_is_all_unwatched_plus_now_playing_in_anchored_order() {
         let mut state = CrdtState::new();
-        state.push_playlist_entry(A, ts(1), entry(1, "behind.mkv")); // idx 0, behind cursor
-        state.push_playlist_entry(A, ts(2), entry(2, "now.mkv")); // idx 1, now-playing
-        state.push_playlist_entry(A, ts(3), entry(3, "ahead.mkv")); // idx 2, in window
-        state.set_now_playing(A, ts(4), Some(hash(2)));
-        state.set_playback_intent(A, ts(5), PlaybackIntent::Playing);
-        // Both the behind-cursor and the ahead entries are group-watched.
-        state.set_watched(A, ts(6), hash(1), true);
-        state.set_watched(A, ts(7), hash(3), true);
-        // A present peer advertises all three Ready (it holds them).
-        for h in [hash(1), hash(2), hash(3)] {
-            state.set_file_availability(A, ts(8), UserId::new("nas"), h, FileAvailability::Ready);
+        state.push_playlist_entry(A, ts(1), entry(1, "behind-unseen.mkv"));
+        state.push_playlist_entry(A, ts(2), entry(2, "behind-watched.mkv"));
+        state.push_playlist_entry(A, ts(3), entry(3, "now-rewatch.mkv"));
+        state.push_playlist_entry(A, ts(4), entry(4, "ahead.mkv"));
+        state.push_playlist_entry(A, ts(5), entry(5, "ahead-watched.mkv"));
+        state.set_now_playing(A, ts(6), Some(hash(3)));
+        state.set_playback_intent(A, ts(7), PlaybackIntent::Playing);
+        for h in [hash(2), hash(3), hash(5)] {
+            state.set_watched(A, ts(8), h, true);
+        }
+        // A present peer advertises everything Ready (it holds them all).
+        for i in 1..=5 {
+            state.set_file_availability(
+                A,
+                ts(9),
+                UserId::new("nas"),
+                hash(i),
+                FileAvailability::Ready,
+            );
         }
         let view = state.view();
         let peers = [peer("kim"), peer("nas")];
 
         let mut wiring = PlayerWiring::new(me());
-        // The resolution pass decides which entries we look for locally.
         let first = wiring.on_state(&view, &peers);
+        // Resolution: the whole want-set resolves — including the
+        // unwatched entry behind the cursor and the watched now-playing —
+        // while watched non-now-playing history does not.
         let resolves = resolve_files(&first);
-        assert!(
-            resolves.contains(&hash(3)),
-            "in-window watched entry must be resolved: {resolves:?}"
+        for h in [hash(1), hash(3), hash(4)] {
+            assert!(
+                resolves.contains(&h),
+                "wanted entry must resolve: {resolves:?}"
+            );
+        }
+        for h in [hash(2), hash(5)] {
+            assert!(
+                !resolves.contains(&h),
+                "watched history must not resolve: {resolves:?}"
+            );
+        }
+        // The fill order is the anchored ranking of the want-set:
+        // now-playing, then ahead, then behind.
+        assert_eq!(
+            priority_orders(&first),
+            vec![vec![hash(3), hash(4), hash(1)]]
         );
-        assert!(
-            !resolves.contains(&hash(1)),
-            "behind-cursor watched entry must not be resolved: {resolves:?}"
-        );
-        // Each looked-up entry comes back Missing (we do not hold it).
+
+        // Each looked-up entry comes back Missing (we hold nothing).
         for h in &resolves {
             wiring.on_resolved(*h, Resolution::NotFound, &view, &peers);
         }
-        // The next snapshot plans downloads for the window.
-        let downloads = start_download_files(&wiring.on_state(&view, &peers));
+        let second = wiring.on_state(&view, &peers);
+        let downloads = start_download_files(&second);
+        for h in [hash(1), hash(3), hash(4)] {
+            assert!(
+                downloads.contains(&h),
+                "want-set must download: {downloads:?}"
+            );
+        }
+        for h in [hash(2), hash(5)] {
+            assert!(
+                !downloads.contains(&h),
+                "watched history must not download: {downloads:?}"
+            );
+        }
         assert!(
-            downloads.contains(&hash(3)),
-            "an in-window watched re-watch must download: {downloads:?}"
+            priority_orders(&second).is_empty(),
+            "an unchanged order is not re-sent"
         );
-        assert!(
-            !downloads.contains(&hash(1)),
-            "watched history behind the cursor must not download: {downloads:?}"
-        );
+
+        // Now-playing advances: the ranking re-anchors and goes out once.
+        // Entry 3 leaves the want-set (watched, no longer now-playing).
+        state.set_now_playing(A, ts(10), Some(hash(4)));
+        let view = state.view();
+        let third = wiring.on_state(&view, &peers);
+        assert_eq!(priority_orders(&third), vec![vec![hash(4), hash(1)]]);
     }
 
     #[test]
