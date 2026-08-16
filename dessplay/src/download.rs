@@ -12,7 +12,15 @@
 //!   latency-hider, not a throttle: requests and data ride a dedicated
 //!   per-transfer stream paced by BBR + end-to-end stream backpressure,
 //!   so the window only needs to keep the uploader's queue non-empty
-//!   across the relay round trip.
+//!   across the relay round trip. The window is a **shared per-source
+//!   budget across files**: every refill walks the active downloads in
+//!   the priority order set by [`Downloads::set_priority`] (the
+//!   session's anchored playlist ranking) and fills each source's
+//!   pipeline front-to-back, so the file the group needs next gets the
+//!   whole window and the queue behind it advances only on leftovers.
+//!   A priority change needs no cancels — the next refill fills toward
+//!   the new front and at most one window per source of already-issued
+//!   requests drains out.
 //! - **Chunk order**: a sequential window of ~20% of the file ahead of
 //!   the playback position first (so playback can start), then
 //!   **rarest-first** (fewest sources have it) for the rest.
@@ -265,6 +273,10 @@ struct Download {
 pub struct Downloads {
     config: DownloadConfig,
     files: HashMap<Ed2kHash, Download>,
+    /// Cross-file fill order (hash → rank), from
+    /// [`Downloads::set_priority`]. Files not in the map rank last, by
+    /// hash — deterministic even before the first priority arrives.
+    priority: HashMap<Ed2kHash, usize>,
 }
 
 /// Sequential window ahead of playback: the chunk store's playable
@@ -278,7 +290,27 @@ impl Downloads {
         Downloads {
             config,
             files: HashMap::new(),
+            priority: HashMap::new(),
         }
+    }
+
+    /// Set the cross-file fill order (the session's anchored playlist
+    /// ranking; hashes the manager doesn't hold are harmless). Takes
+    /// effect on the next refill — deliberately no replan and no
+    /// cancels here: the ≤250ms tick (or the next chunk event)
+    /// re-targets the budget toward the new front, and at most one
+    /// pipeline per source of stale requests drains out.
+    pub fn set_priority(&mut self, order: Vec<Ed2kHash>) {
+        self.priority = order.into_iter().enumerate().map(|(i, h)| (h, i)).collect();
+    }
+
+    /// Active downloads in fill order: `(rank, hash)`, unranked files
+    /// last. Deterministic (reproducible plans), unlike the raw
+    /// `HashMap` key order.
+    fn priority_ordered_files(&self) -> Vec<Ed2kHash> {
+        let mut files: Vec<Ed2kHash> = self.files.keys().copied().collect();
+        files.sort_by_key(|h| (self.priority.get(h).copied().unwrap_or(usize::MAX), *h));
+        files
     }
 
     /// Whether a download for `file` is active.
@@ -495,14 +527,19 @@ impl Downloads {
     }
 
     /// Periodic tick: snub silent sources, re-ask for block hashes if
-    /// stuck, and refill pipelines.
+    /// stuck, and refill pipelines. The tick is also the **urgent
+    /// sweep**: the one refill that plans deadline-gated work for files
+    /// whose sources have no bulk budget left (see [`Self::plan_all`]) —
+    /// urgency ages at the `urgent_age` (seconds) scale, so the ≤250ms
+    /// tick cadence adds no meaningful latency to it.
     pub fn tick(&mut self, now: u64) -> Vec<DownloadAction> {
-        let files: Vec<Ed2kHash> = self.files.keys().cloned().collect();
+        let files = self.priority_ordered_files();
         let mut actions = Vec::new();
         for file in files {
             actions.extend(self.snub(file, now));
-            actions.extend(self.progress_and_refill(file, now));
+            actions.extend(self.progress_and_solicit(file));
         }
+        actions.extend(self.plan_all(now, true));
         actions
     }
 
@@ -723,9 +760,23 @@ impl Downloads {
         actions
     }
 
-    /// Emit a progress action if the verified fraction changed, then
-    /// refill request pipelines.
+    /// Per-file bookkeeping (completion, solicitation, progress emit)
+    /// followed by a **global** refill. The refill must be global:
+    /// budget freed by this file's event has to flow to the
+    /// highest-priority file that can use it — a per-file refill would
+    /// hand every freed slot straight back to whichever file's chunk
+    /// just landed, and a demoted file would keep its whole pipeline
+    /// forever.
     fn progress_and_refill(&mut self, file: Ed2kHash, now: u64) -> Vec<DownloadAction> {
+        let mut actions = self.progress_and_solicit(file);
+        actions.extend(self.plan_all(now, false));
+        actions
+    }
+
+    /// Emit a progress action if the verified fraction changed, handle
+    /// completion, and solicit block hashes — everything per-file
+    /// *except* planning chunk requests (that's [`Self::plan_all`]).
+    fn progress_and_solicit(&mut self, file: Ed2kHash) -> Vec<DownloadAction> {
         let mut actions = Vec::new();
         let Some(d) = self.files.get_mut(&file) else {
             return actions;
@@ -789,7 +840,59 @@ impl Downloads {
             });
         }
 
-        actions.extend(plan_requests(d, &self.config, file, now));
+        actions
+    }
+
+    /// Refill request pipelines across **all** downloads, walking them
+    /// in priority order against a shared per-source in-flight budget
+    /// (`pipeline_depth` outstanding chunks per source, summed over
+    /// files). The front of the order fills first; files behind it get
+    /// leftovers — that is the whole cross-file policy.
+    ///
+    /// `urgent_sweep` (the tick) additionally plans files whose sources
+    /// have no bulk budget left but that may hold deadline-gated work
+    /// (a stalled playable-window chunk, or endgame — including a
+    /// resumed partial that is near-complete from disk): urgent chunks
+    /// ignore the budget just as they ignore the source cap. Event-
+    /// driven refills skip those files — cheaply, without touching
+    /// their chunk stores — because urgency ages in seconds and the
+    /// next tick is ≤250ms away, while events arrive per-chunk.
+    fn plan_all(&mut self, now: u64, urgent_sweep: bool) -> Vec<DownloadAction> {
+        let depth = self.config.pipeline_depth as usize;
+        let mut budget: HashMap<PeerId, usize> = HashMap::new();
+        for d in self.files.values() {
+            for (peer, src) in &d.sources {
+                *budget.entry(peer.clone()).or_insert(0) += src.in_flight.len();
+            }
+        }
+        let mut actions = Vec::new();
+        for file in self.priority_ordered_files() {
+            let Some(d) = self.files.get_mut(&file) else {
+                continue;
+            };
+            if d.sources.is_empty() || matches!(d.block_hashes, BlockHashes::Pending) {
+                continue;
+            }
+            let has_budget = d
+                .sources
+                .keys()
+                .any(|p| budget.get(p).copied().unwrap_or(0) < depth);
+            if !has_budget {
+                if !urgent_sweep {
+                    continue;
+                }
+                // Urgency is possible only if some chunk has aged since
+                // its first request, or the remainder is endgame-sized
+                // (the needed-count scan is why this branch is
+                // tick-only). Otherwise the file is parked: skip.
+                let urgency_possible =
+                    !d.first_requested.is_empty() || d.store.needed_chunks().len() <= depth;
+                if !urgency_possible {
+                    continue;
+                }
+            }
+            actions.extend(plan_requests(d, &self.config, file, now, &mut budget));
+        }
         actions
     }
 }
@@ -816,17 +919,26 @@ fn drain_in_flight(src: &mut Source, stats: &mut TransferStats) -> Vec<u32> {
 ///   case where the completion deadline gates everything left.
 ///
 /// Urgent chunks may be requested from several sources at once (the
-/// `assigned` reservation and the `max_sources` cap don't apply);
-/// whichever delivers first wins and `cancel_elsewhere` retracts the
-/// rest. Everything else is bulk mode: single-assignment, window-first,
-/// then rarest-first. Duplication cost is bounded by the urgent set —
-/// in bulk that's only window chunks a source has failed to deliver for
-/// `urgent_age`, where the alternative is gated playback.
+/// `assigned` reservation, the `max_sources` cap, and the cross-file
+/// `budget` don't apply); whichever delivers first wins and
+/// `cancel_elsewhere` retracts the rest. Everything else is bulk mode:
+/// single-assignment, window-first, then rarest-first, bounded by the
+/// source's remaining budget. Duplication cost is bounded by the urgent
+/// set — in bulk that's only window chunks a source has failed to
+/// deliver for `urgent_age`, where the alternative is gated playback.
+/// (Simultaneous endgames on several files can transiently overshoot a
+/// source's pipeline by their urgent sets — bounded and accepted.)
+///
+/// `budget` is the shared per-source in-flight count across all files
+/// (see [`Downloads::plan_all`]); every chunk committed here is added
+/// to it, so a lower-priority file planned later in the same pass sees
+/// this file's requests.
 fn plan_requests(
     d: &mut Download,
     config: &DownloadConfig,
     file: Ed2kHash,
     now: u64,
+    budget: &mut HashMap<PeerId, usize>,
 ) -> Vec<DownloadAction> {
     let needed = d.store.needed_chunks();
     if needed.is_empty() {
@@ -899,10 +1011,11 @@ fn plan_requests(
         let Some(src) = d.sources.get(&peer) else {
             continue;
         };
-        let slots = (config.pipeline_depth as usize).saturating_sub(src.in_flight.len());
-        if slots == 0 {
-            continue;
-        }
+        // Bulk slots come from the *shared* budget (this source's
+        // in-flight across every file), so a source saturated by a
+        // higher-priority file serves this one urgent chunks only.
+        let slots = (config.pipeline_depth as usize)
+            .saturating_sub(budget.get(&peer).copied().unwrap_or(0));
         // Candidate chunks this source has, that we still need, and that
         // we aren't already getting from this source. A chunk in flight
         // *elsewhere* is off-limits in bulk mode but fair game when
@@ -942,7 +1055,20 @@ fn plan_requests(
                     }
                 })
         });
-        let take: Vec<u32> = candidates.into_iter().take(slots).collect();
+        // All urgent candidates go out (they sort first and ignore the
+        // budget); bulk fills whatever budget remains.
+        let mut bulk_left = slots;
+        let mut take: Vec<u32> = Vec::new();
+        for c in candidates {
+            if urgent.contains(&c) {
+                take.push(c);
+            } else if bulk_left > 0 {
+                take.push(c);
+                bulk_left -= 1;
+            } else {
+                break; // sorted urgent-first: only bulk remains
+            }
+        }
         if take.is_empty() {
             continue;
         }
@@ -959,6 +1085,9 @@ fn plan_requests(
         // Reserve these so a later source in this same pass won't re-pick
         // them in bulk mode. (Urgent chunks ignore `assigned`, by design.)
         assigned.extend(take.iter().copied());
+        // Charge the shared budget, so later sources here and
+        // lower-priority files planned after us see these commitments.
+        *budget.entry(peer.clone()).or_insert(0) += take.len();
         actions.push(DownloadAction::Send {
             to: peer,
             message: PeerMessage::ChunkRequest { file, chunks: take },
@@ -1140,6 +1269,256 @@ mod tests {
             }
             None
         }
+    }
+
+    /// One file of a multi-file fixture: its own bytes/hash/path, with
+    /// helpers to start it and play an honest source, against a shared
+    /// `Downloads`. (The single-file [`Rig`] predates cross-file
+    /// priority; these tests need two files in one manager.)
+    struct FileFixture {
+        file: Ed2kHash,
+        bytes: Vec<u8>,
+        hash: dessplay_core::hash::Ed2kFileHash,
+        path: PathBuf,
+    }
+
+    fn fixture(dir: &tempfile::TempDir, name: &str, len: usize, tag: u8) -> FileFixture {
+        // Tag the bytes so same-length fixtures get distinct identities.
+        let mut bytes = data(len);
+        for b in &mut bytes {
+            *b ^= tag;
+        }
+        let hash = ed2k_hash_bytes(&bytes);
+        FileFixture {
+            file: hash.root,
+            bytes,
+            hash,
+            path: dir.path().join(name),
+        }
+    }
+
+    impl FileFixture {
+        fn full_bitfield(&self) -> Bitfield {
+            let mut bf = Bitfield::new(chunk_count(self.hash.size_bytes));
+            for i in 0..bf.len() {
+                bf.set(i);
+            }
+            bf
+        }
+
+        fn chunk(&self, index: u32) -> Vec<u8> {
+            let r = chunk_range(index, self.hash.size_bytes);
+            self.bytes[r.start as usize..r.end as usize].to_vec()
+        }
+
+        fn start(
+            &self,
+            downloads: &mut Downloads,
+            sources: Vec<PeerId>,
+            now: u64,
+        ) -> Vec<DownloadAction> {
+            downloads.start(
+                self.file,
+                self.hash.size_bytes,
+                self.hash.root,
+                self.path.clone(),
+                sources,
+                0,
+                now,
+            )
+        }
+
+        /// The source answers our solicitation: valid block hashes,
+        /// then a full availability bitfield.
+        fn serve_hashes(
+            &self,
+            downloads: &mut Downloads,
+            from: &PeerId,
+            now: u64,
+        ) -> Vec<DownloadAction> {
+            let mut actions = downloads.on_peer_message(
+                from.clone(),
+                PeerMessage::BlockHashes {
+                    file: self.file,
+                    hashes: self.hash.blocks.clone(),
+                },
+                now,
+            );
+            actions.extend(downloads.on_peer_message(
+                from.clone(),
+                PeerMessage::FileAvailability {
+                    file: self.file,
+                    bitfield: self.full_bitfield(),
+                },
+                now,
+            ));
+            actions
+        }
+
+        fn deliver(
+            &self,
+            downloads: &mut Downloads,
+            from: &PeerId,
+            index: u32,
+            now: u64,
+        ) -> Vec<DownloadAction> {
+            downloads.on_peer_message(
+                from.clone(),
+                PeerMessage::ChunkData {
+                    file: self.file,
+                    index,
+                    data: self.chunk(index),
+                },
+                now,
+            )
+        }
+    }
+
+    /// Chunk requests in `actions` for `file` only, as (peer, chunks).
+    fn requests_for(actions: &[DownloadAction], file: Ed2kHash) -> Vec<(String, Vec<u32>)> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                DownloadAction::Send {
+                    to,
+                    message: PeerMessage::ChunkRequest { file: f, chunks },
+                } if *f == file => Some((to.to_string(), chunks.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn cancels(actions: &[DownloadAction]) -> usize {
+        actions
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a,
+                    DownloadAction::Send {
+                        message: PeerMessage::Cancel { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// Two same-sized files, one source, priority `[a, b]`, with `a`'s
+    /// hashes+bitfield already served — the shared window is full of
+    /// `a`'s chunks. The starting position for the cross-file tests.
+    fn duo_with_a_filled(
+        config: DownloadConfig,
+    ) -> (
+        Downloads,
+        FileFixture,
+        FileFixture,
+        PeerId,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let a = fixture(&dir, "a.bin", 2 * ED2K_BLOCK_SIZE as usize, 0);
+        let b = fixture(&dir, "b.bin", 2 * ED2K_BLOCK_SIZE as usize, 1);
+        let seed = peer("seed");
+        let mut downloads = Downloads::new(config);
+        downloads.set_priority(vec![a.file, b.file]);
+        a.start(&mut downloads, vec![seed.clone()], 1000);
+        b.start(&mut downloads, vec![seed.clone()], 1000);
+        let actions = a.serve_hashes(&mut downloads, &seed, 1001);
+        let reqs = requests_for(&actions, a.file);
+        assert_eq!(reqs.len(), 1, "a fills the window in one request");
+        assert_eq!(reqs[0].1.len(), config.pipeline_depth as usize);
+        (downloads, a, b, seed, dir)
+    }
+
+    /// The shared per-source window goes to the highest-priority file;
+    /// a lower-priority file on the same source gets nothing (its
+    /// solicitation still goes out — that is not budget-gated).
+    #[test]
+    fn a_higher_priority_file_takes_the_whole_shared_window() {
+        let config = DownloadConfig {
+            pipeline_depth: 8,
+            ..DownloadConfig::default()
+        };
+        let (mut downloads, _a, b, seed, _dir) = duo_with_a_filled(config);
+        // B's hashes+bitfield arrive: the source's budget is already
+        // spent on A, so B gets no chunk requests.
+        let actions = b.serve_hashes(&mut downloads, &seed, 1002);
+        assert!(requests(&actions).is_empty());
+        // And an idle-aged tick doesn't sneak B in either (nothing is
+        // urgent: A is young and B is far from endgame).
+        let tick = downloads.tick(1003);
+        assert!(requests(&tick).is_empty());
+    }
+
+    /// Flipping the priority re-targets each freed slot to the new
+    /// front — with no cancels; the demoted file's in-flight simply
+    /// drains.
+    #[test]
+    fn a_priority_flip_retargets_freed_budget_without_cancels() {
+        let config = DownloadConfig {
+            pipeline_depth: 8,
+            ..DownloadConfig::default()
+        };
+        let (mut downloads, a, b, seed, _dir) = duo_with_a_filled(config);
+        b.serve_hashes(&mut downloads, &seed, 1002);
+        downloads.set_priority(vec![b.file, a.file]);
+        // One of A's chunks lands: the freed slot goes to B, nothing is
+        // re-requested for A, and nothing is cancelled.
+        let actions = a.deliver(&mut downloads, &seed, 0, 1003);
+        assert_eq!(cancels(&actions), 0);
+        assert!(requests_for(&actions, a.file).is_empty());
+        let b_reqs = requests_for(&actions, b.file);
+        assert_eq!(b_reqs.len(), 1);
+        assert_eq!(b_reqs[0].1.len(), 1, "exactly the one freed slot");
+    }
+
+    /// Endgame urgency bypasses the cross-file budget (on the tick's
+    /// urgent sweep): a near-complete low-priority file closes out even
+    /// while a higher-priority file holds the whole window.
+    #[test]
+    fn urgent_work_bypasses_a_saturated_budget() {
+        let config = DownloadConfig {
+            pipeline_depth: 8,
+            ..DownloadConfig::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let a = fixture(&dir, "a.bin", 2 * ED2K_BLOCK_SIZE as usize, 0);
+        // B is endgame-sized from the start: 4 chunks < one pipeline.
+        let b = fixture(&dir, "b.bin", 4 * 256_000, 1);
+        let seed = peer("seed");
+        let mut downloads = Downloads::new(config);
+        downloads.set_priority(vec![a.file, b.file]);
+        a.start(&mut downloads, vec![seed.clone()], 1000);
+        b.start(&mut downloads, vec![seed.clone()], 1000);
+        a.serve_hashes(&mut downloads, &seed, 1001);
+        // Event-driven refills leave the budget-less B parked...
+        let actions = b.serve_hashes(&mut downloads, &seed, 1002);
+        assert!(requests(&actions).is_empty());
+        // ...but the tick's urgent sweep sends B's whole (endgame,
+        // urgent) remainder regardless of the saturated source.
+        let tick = downloads.tick(1003);
+        let b_reqs = requests_for(&tick, b.file);
+        assert_eq!(b_reqs.len(), 1);
+        assert_eq!(b_reqs[0].1, vec![0, 1, 2, 3]);
+        assert!(requests_for(&tick, a.file).is_empty());
+    }
+
+    /// Budget freed by a lost stream flows to the *top-priority* file,
+    /// not back to the file that lost it.
+    #[test]
+    fn a_lost_stream_frees_budget_to_the_top_priority_file() {
+        let config = DownloadConfig {
+            pipeline_depth: 8,
+            ..DownloadConfig::default()
+        };
+        let (mut downloads, a, b, seed, _dir) = duo_with_a_filled(config);
+        b.serve_hashes(&mut downloads, &seed, 1002);
+        downloads.set_priority(vec![b.file, a.file]);
+        let actions = downloads.on_source_stream_lost(a.file, &seed, 1003);
+        assert!(requests_for(&actions, a.file).is_empty());
+        let b_reqs = requests_for(&actions, b.file);
+        assert_eq!(b_reqs.len(), 1);
+        assert_eq!(b_reqs[0].1.len(), 8, "B takes the whole freed window");
     }
 
     #[test]
