@@ -16,8 +16,11 @@
 //! See docs/design.md (User States, Playback Rules, Presence).
 
 use crate::net::{KnownUser, PeerInfo, Presence, Role};
+use crate::playlist::PlaylistEntry;
 use crate::state::StateView;
-use crate::types::{FileAvailability, ManualState, PlaybackIntent, SeriesWatchState, UserId};
+use crate::types::{
+    Ed2kHash, FileAvailability, ManualState, PlaybackIntent, SeriesWatchState, UserId,
+};
 
 /// A user's effective state, derived from their manual override and
 /// their watch preference for the now-playing file's series.
@@ -85,6 +88,28 @@ pub fn series_watch_for_file(
         .get(&(user.clone(), entry))
         .map(|pref| pref.state)
         .unwrap_or(SeriesWatchState::Maybe)
+}
+
+/// Playlist entries in download-priority order, anchored at `anchor`
+/// (normally now-playing): the anchor first, then entries after it in
+/// playlist order (nearest first), then entries before it nearest-first
+/// (lowest priority — a just-skipped-back entry is likelier to be
+/// replayed than the playlist head). No anchor, or an anchor not on the
+/// playlist, degrades to plain playlist order. Filtering (watched,
+/// NotWatching, already-local) stays with the callers: session and
+/// seeder want different want-sets over the same ranking (design.md,
+/// Pre-fetching).
+pub fn anchored_download_order(
+    playlist: &[PlaylistEntry],
+    anchor: Option<Ed2kHash>,
+) -> Vec<&PlaylistEntry> {
+    let Some(i) = anchor.and_then(|a| playlist.iter().position(|e| e.hash == a)) else {
+        return playlist.iter().collect();
+    };
+    playlist[i..]
+        .iter()
+        .chain(playlist[..i].iter().rev())
+        .collect()
 }
 
 /// A user's effective commitment to the **now-playing** file's series
@@ -349,6 +374,67 @@ mod tests {
         state.set_now_playing(SERVER, ts(1), Some(hash(1)));
         state.set_playback_intent(SERVER, ts(2), PlaybackIntent::Playing);
         state
+    }
+
+    /// A playlist of `n` entries with hashes `hash(1)..=hash(n)` in
+    /// order, built through the real ordering machinery.
+    fn playlist_of(n: u8) -> Vec<crate::playlist::PlaylistEntry> {
+        let mut state = CrdtState::new();
+        for i in 1..=n {
+            state.push_playlist_entry(
+                SERVER,
+                ts(i as u64),
+                crate::playlist::NewPlaylistEntry {
+                    hash: hash(i),
+                    added_by: UserId::new("kim"),
+                    filename: format!("ep{i}.mkv"),
+                    size_bytes: 1,
+                    duration_millis: None,
+                },
+            );
+        }
+        state.playlist_entries()
+    }
+
+    fn order_of(entries: Vec<&crate::playlist::PlaylistEntry>) -> Vec<u8> {
+        entries.iter().map(|e| e.hash.0[0]).collect()
+    }
+
+    #[test]
+    fn anchored_order_puts_after_entries_first_then_before_nearest_first() {
+        let playlist = playlist_of(5);
+        let order = anchored_download_order(&playlist, Some(hash(3)));
+        assert_eq!(order_of(order), vec![3, 4, 5, 2, 1]);
+    }
+
+    #[test]
+    fn anchored_order_at_the_edges() {
+        let playlist = playlist_of(4);
+        assert_eq!(
+            order_of(anchored_download_order(&playlist, Some(hash(1)))),
+            vec![1, 2, 3, 4],
+            "anchor at the front is plain playlist order"
+        );
+        assert_eq!(
+            order_of(anchored_download_order(&playlist, Some(hash(4)))),
+            vec![4, 3, 2, 1],
+            "anchor at the end walks backward"
+        );
+    }
+
+    #[test]
+    fn no_anchor_or_unknown_anchor_is_playlist_order() {
+        let playlist = playlist_of(3);
+        assert_eq!(
+            order_of(anchored_download_order(&playlist, None)),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            order_of(anchored_download_order(&playlist, Some(hash(9)))),
+            vec![1, 2, 3],
+            "an anchor not on the playlist degrades to playlist order"
+        );
+        assert!(anchored_download_order(&[], Some(hash(1))).is_empty());
     }
 
     #[test]
