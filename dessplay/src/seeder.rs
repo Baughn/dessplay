@@ -39,6 +39,9 @@ pub struct SeederTransfer {
     /// seeder contributes its library to the group's catalog; dedup so
     /// each hash is requested once per session).
     lookups_requested: HashSet<Ed2kHash>,
+    /// The download fill order last sent to the file actor, so
+    /// `SetDownloadPriority` goes out only when the ranking changes.
+    last_priority: Vec<Ed2kHash>,
 }
 
 impl SeederTransfer {
@@ -63,6 +66,7 @@ impl SeederTransfer {
             resolve_kicked: HashSet::new(),
             have: HashMap::new(),
             lookups_requested: HashSet::new(),
+            last_priority: Vec::new(),
         };
         (transfer, file_outputs)
     }
@@ -86,11 +90,22 @@ impl SeederTransfer {
             }
         }
         // Start downloads for everything still missing that a peer has,
-        // **unwatched entries first** then in playlist order (design.md,
-        // Seeder Behavior): under bandwidth saturation the seeder must
+        // in [`download_order`] (unwatched first, anchored at
+        // now-playing): under bandwidth saturation the seeder must
         // finish the next episode the group needs before its watched
         // back-catalog. `StartDownload` is idempotent (refreshes sources).
-        for entry in download_order(view) {
+        let ordered = download_order(view);
+        // The same ranking is the chunk scheduler's cross-file fill
+        // order (shared per-source budget); sent only when it changes.
+        let order: Vec<Ed2kHash> = ordered.iter().map(|e| e.hash).collect();
+        if order != self.last_priority {
+            self.last_priority = order.clone();
+            let _ = self
+                .file
+                .send(FileCommand::SetDownloadPriority { order })
+                .await;
+        }
+        for entry in ordered {
             let file = entry.hash;
             if self.have.get(&file) == Some(&false) {
                 // Peer sources only: the seeder deliberately runs no
@@ -246,14 +261,17 @@ impl SeederTransfer {
     }
 }
 
-/// The order a seeder starts downloads in: **unwatched entries first**,
-/// then in playlist order (design.md, Seeder Behavior). `view.playlist` is
-/// already in playlist (display) order; a *stable* sort on the group
-/// watched flag (`false` < `true`) keeps that order within each group, so
-/// the next unwatched episode is fetched ahead of watched back-catalog
-/// when bandwidth is scarce.
+/// The order a seeder starts downloads in — and the fill order it hands
+/// the chunk scheduler: **unwatched entries first**, ranked around
+/// now-playing by [`dessplay_core::derive::anchored_download_order`]
+/// (nearest-after first — what the group needs next), then watched
+/// back-catalog in the same anchored order (design.md, Seeder Behavior).
+/// The *stable* sort on the group watched flag (`false` < `true`) keeps
+/// the anchored order within each group; with nothing playing it
+/// degrades to plain playlist order.
 fn download_order(view: &StateView) -> Vec<&dessplay_core::playlist::PlaylistEntry> {
-    let mut ordered: Vec<_> = view.playlist.iter().collect();
+    let mut ordered =
+        dessplay_core::derive::anchored_download_order(&view.playlist, view.now_playing);
     ordered.sort_by_key(|entry| view.watched.get(&entry.hash).copied().unwrap_or(false));
     ordered
 }
@@ -360,8 +378,50 @@ mod tests {
         assert_eq!(raw, vec![1, 2, 3, 4]);
 
         // download_order: unwatched (2,4) first, then watched (1,3), each
-        // preserving playlist order.
+        // preserving playlist order (no now-playing → anchored order
+        // degrades to playlist order).
         let order: Vec<u8> = download_order(&view).iter().map(|e| e.hash.0[0]).collect();
         assert_eq!(order, vec![2, 4, 1, 3]);
+    }
+
+    /// With something playing, the seeder's order anchors there: within
+    /// each watched group, entries after now-playing come nearest-first,
+    /// then entries behind it nearest-first (design.md, Seeder Behavior).
+    #[test]
+    fn download_order_anchors_at_now_playing() {
+        use dessplay_core::playlist::NewPlaylistEntry;
+        use dessplay_core::state::CrdtState;
+        use dessplay_core::types::SharedTimestamp;
+
+        const A: dessplay_core::types::ActorId = dessplay_core::types::ActorId(1);
+        let hash = |i: u8| Ed2kHash([i; 16]);
+        let entry = |i: u8| NewPlaylistEntry {
+            hash: hash(i),
+            added_by: UserId::new("baughn"),
+            filename: format!("ep{i}.mkv"),
+            size_bytes: 1000,
+            duration_millis: None,
+        };
+
+        // Playlist 1..5, watched {1, 2}, now-playing 3.
+        let mut state = CrdtState::new();
+        for i in 1..=5 {
+            state.push_playlist_entry(A, SharedTimestamp(i as u64), entry(i));
+        }
+        state.set_watched(A, SharedTimestamp(10), hash(1), true);
+        state.set_watched(A, SharedTimestamp(11), hash(2), true);
+        state.set_now_playing(A, SharedTimestamp(12), Some(hash(3)));
+        let view = state.view();
+        let order: Vec<u8> = download_order(&view).iter().map(|e| e.hash.0[0]).collect();
+        // Unwatched anchored [3,4,5], then watched behind-anchor
+        // nearest-first [2,1].
+        assert_eq!(order, vec![3, 4, 5, 2, 1]);
+
+        // Now-playing advances into the middle: the unwatched group
+        // re-anchors ([4,5,3]); the watched tail is unchanged.
+        state.set_now_playing(A, SharedTimestamp(13), Some(hash(4)));
+        let view = state.view();
+        let order: Vec<u8> = download_order(&view).iter().map(|e| e.hash.0[0]).collect();
+        assert_eq!(order, vec![4, 5, 3, 2, 1]);
     }
 }
