@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-08-15
+Last updated: 2026-08-16
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -682,6 +682,22 @@ chunks whose absence gates a deadline:
   the plausible bandwidth-delay product with margin). Excess requests
   queue as *indices* at the uploader — not as bytes in network buffers.
   The old `--pipeline-depth` flag is gone with the old role.
+- **The window is a shared per-source budget across files.** Every
+  refill walks the active downloads in the priority order the session
+  sets (`Downloads::set_priority` — the anchored playlist ranking,
+  design.md Pre-fetching) and fills each source's pipeline
+  front-to-back: the file the group needs next takes the whole window;
+  the rest of the want-set advances on leftovers. Refills are always
+  global — budget freed by any file's event flows to the
+  highest-priority file that can use it, never automatically back to
+  the file whose chunk landed — so a priority change (now-playing
+  advanced, playlist edited) re-targets on the next refill with **no
+  cancels**: at most one window per source of already-issued requests
+  drains out. Urgent chunks bypass the budget exactly as they bypass
+  the source cap; urgent work on a budget-less file (e.g. a
+  near-complete resumed partial in endgame behind a higher-priority
+  bulk transfer) is planned on the 250ms tick's urgent sweep, so
+  per-event refills never have to touch parked files.
 - **Snub for silence.** A source that sends *nothing* for 30s is dropped
   and its outstanding chunks are `Cancel`led and requeued to other
   sources. A bulk chunk in transit is never re-requested — only a

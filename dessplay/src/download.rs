@@ -284,6 +284,10 @@ pub struct Downloads {
 /// the range whose absence gates playback.
 const SEQUENTIAL_WINDOW_FRAC: u32 = crate::chunkstore::PLAYABLE_WINDOW_FRAC;
 
+/// Active-download count that triggers a one-shot warning on the way up
+/// (see [`Downloads::start`]).
+const MANY_DOWNLOADS_WARN: usize = 128;
+
 impl Downloads {
     /// A manager with the given tunables.
     pub fn new(config: DownloadConfig) -> Self {
@@ -365,6 +369,16 @@ impl Downloads {
                     last_playable: false,
                 },
             );
+            // Each active download holds an open fd and a sparse partial.
+            // A whole-playlist want-set can legitimately get large (the
+            // startup rlimit raise covers the fds); leave a breadcrumb in
+            // case disk or fd pressure shows up later.
+            if self.files.len() == MANY_DOWNLOADS_WARN {
+                tracing::warn!(
+                    active = self.files.len(),
+                    "many concurrent downloads active (each holds an open file and a partial)"
+                );
+            }
         }
         self.set_sources(file, sources, play_chunk, now)
     }

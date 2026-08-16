@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-08-09
+Last updated: 2026-08-16
 
 ## Table of Contents
 
@@ -665,10 +665,17 @@ be longer than the input.
 Arbitrary sequences of peer protocol events (honest and adversarial:
 wrong-length bitfields, forged block hashes, out-of-range or corrupt
 chunk data, churning source sets, clock jumps) against `download::Downloads`
-with a small real backing file. Must not panic. Liveness ("does chaos
-ever wedge it permanently") is intentionally *not* checked here — see the
-companion proptest below — this target is purely a crash-safety net
-against malformed peer input.
+with **two concurrent downloads** over small real backing files — the
+files share the per-source request budget, and a `SetPriority` event
+churns the cross-file fill order (subsets, reversals, unknown hashes),
+so the priority machinery sees adversarial sequencing too. Must not
+panic. Liveness ("does chaos ever wedge it permanently") is
+intentionally *not* checked here — see the companion proptest below —
+this target is purely a crash-safety net against malformed peer input.
+(The proptest stays single-file; cross-file starvation and re-targeting
+are pinned by deterministic unit tests in `download.rs`, and the
+anchored ranking itself by a proptest in
+`dessplay-core/tests/download_order_props.rs`.)
 
 #### Download Chaos Recovery (`download_props`, proptest)
 Not a fuzz target — an in-repo proptest (`dessplay/tests/download_props.rs`)

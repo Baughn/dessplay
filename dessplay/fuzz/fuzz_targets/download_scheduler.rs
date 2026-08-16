@@ -1,7 +1,7 @@
 //! An arbitrary sequence of peer protocol events (honest and adversarial:
 //! wrong-length bitfields, forged block hashes, out-of-range or corrupt
-//! chunk data, churning source sets, clock jumps) through the download
-//! scheduler must never panic.
+//! chunk data, churning source sets, clock jumps, priority churn) through
+//! the download scheduler must never panic.
 //!
 //! This targets `Downloads`, the chunk-scheduling state machine
 //! (`dessplay::download`) -- the file's own regression-test comments
@@ -10,10 +10,13 @@
 //! bitfields assigned the same chunk in one pass, a source lying about
 //! its block hashes), so it is exactly the kind of state machine that
 //! benefits from adversarial-input fuzzing rather than only hand-picked
-//! scenarios. Liveness ("does chaos ever wedge it permanently") is
-//! covered separately by the `download_props` proptest, which can force
-//! a clean epilogue and assert completion; this target's job is just
-//! crash-safety against malformed peer input.
+//! scenarios. Two concurrent files share the per-source budget (the
+//! cross-file priority machinery is state the single-file tests can't
+//! reach), with `SetPriority` churning the fill order — including
+//! unknown hashes and partial orders. Liveness ("does chaos ever wedge
+//! it permanently") is covered separately by the `download_props`
+//! proptest, which can force a clean epilogue and assert completion;
+//! this target's job is just crash-safety against malformed peer input.
 
 #![no_main]
 
@@ -32,30 +35,42 @@ fn peer(i: u8) -> PeerId {
 }
 
 /// One relayed peer message or scheduling event, honest or adversarial.
+/// `file` selects which of the two concurrent downloads it addresses.
 #[derive(Debug, Arbitrary)]
 enum Event {
     /// A peer advertises its bitfield: the true full one, or a bogus
     /// wrong-length one (exercises `Bitfield::is_valid_for` rejection).
-    Advertise { peer: u8, honest: bool },
+    Advertise { file: u8, peer: u8, honest: bool },
     /// A peer answers a `BlockHashRequest`: the real hashes, or garbage
     /// that won't match the file root.
-    SendBlockHashes { peer: u8, honest: bool },
+    SendBlockHashes { file: u8, peer: u8, honest: bool },
     /// A peer delivers one chunk, at a possibly out-of-range index: the
     /// real bytes, or garbage of an arbitrary (possibly wrong) length.
     SendChunk {
+        file: u8,
         peer: u8,
         index: u16,
         honest: bool,
         garbage_len: u8,
     },
     /// Change which peers are considered present (join/leave/flakiness).
-    SetSources { mask: u8 },
+    SetSources { file: u8, mask: u8 },
     /// Advance the shared clock (crosses snub/re-solicit timeouts).
     Tick { millis: u16 },
-    /// Cancel the download (a local copy appeared through another
+    /// Cancel a download (a local copy appeared through another
     /// channel), optionally restarting it — exercises cancel's cleanup
     /// and a re-start over the partially-written backing file.
-    Cancel { restart: bool },
+    Cancel { file: u8, restart: bool },
+    /// Churn the cross-file fill order: any subset/order of the two
+    /// files, optionally salted with a hash the manager doesn't hold.
+    SetPriority { perm: u8, bogus: bool },
+}
+
+struct FileFx {
+    bytes: Vec<u8>,
+    hash: dessplay_core::hash::Ed2kFileHash,
+    n_chunks: u32,
+    path: PathBuf,
 }
 
 fuzz_target!(|events: Vec<Event>| {
@@ -66,13 +81,21 @@ fuzz_target!(|events: Vec<Event>| {
         return;
     };
 
-    // A small backing file with real content and a real ed2k hash, so
+    // Two small backing files with real content and real ed2k hashes, so
     // "honest" events can supply genuinely valid data to verify against.
     let size_bytes: u64 = 3 * dessplay_core::net::CHUNK_SIZE;
-    let bytes: Vec<u8> = (0..size_bytes).map(|i| (i % 251) as u8).collect();
-    let hash = ed2k_hash_bytes(&bytes);
-    let n_chunks = chunk_count(size_bytes);
-    let path: PathBuf = dir.path().join("dl.bin");
+    let files: Vec<FileFx> = (0..2u8)
+        .map(|tag| {
+            let bytes: Vec<u8> = (0..size_bytes).map(|i| (i % 251) as u8 ^ tag).collect();
+            let hash = ed2k_hash_bytes(&bytes);
+            FileFx {
+                n_chunks: chunk_count(size_bytes),
+                path: dir.path().join(format!("dl{tag}.bin")),
+                bytes,
+                hash,
+            }
+        })
+        .collect();
 
     let config = DownloadConfig {
         pipeline_depth: 4,
@@ -83,105 +106,134 @@ fuzz_target!(|events: Vec<Event>| {
     let mut downloads = Downloads::new(config);
     let mut now: u64 = 1000;
     let all_sources: Vec<PeerId> = PEERS.iter().map(|p| PeerId::new(*p)).collect();
-    let _ = downloads.start(
-        hash.root,
-        size_bytes,
-        hash.root,
-        path.clone(),
-        all_sources.clone(),
-        0,
-        now,
-    );
+    for f in &files {
+        let _ = downloads.start(
+            f.hash.root,
+            size_bytes,
+            f.hash.root,
+            f.path.clone(),
+            all_sources.clone(),
+            0,
+            now,
+        );
+    }
 
     for event in events.into_iter().take(2000) {
         now += 1;
         match event {
-            Event::Advertise { peer: p, honest } => {
+            Event::Advertise {
+                file,
+                peer: p,
+                honest,
+            } => {
+                let f = &files[(file as usize) % files.len()];
                 let bf = if honest {
-                    let mut bf = Bitfield::new(n_chunks);
-                    for i in 0..n_chunks {
+                    let mut bf = Bitfield::new(f.n_chunks);
+                    for i in 0..f.n_chunks {
                         bf.set(i);
                     }
                     bf
                 } else {
                     // Deliberately wrong length: must be rejected, not panic.
-                    Bitfield::new(n_chunks.wrapping_add(7).max(1))
+                    Bitfield::new(f.n_chunks.wrapping_add(7).max(1))
                 };
                 let _ = downloads.on_peer_message(
                     peer(p),
                     PeerMessage::FileAvailability {
-                        file: hash.root,
+                        file: f.hash.root,
                         bitfield: bf,
                     },
                     now,
                 );
             }
-            Event::SendBlockHashes { peer: p, honest } => {
+            Event::SendBlockHashes {
+                file,
+                peer: p,
+                honest,
+            } => {
+                let f = &files[(file as usize) % files.len()];
                 let hashes = if honest {
-                    hash.blocks.clone()
+                    f.hash.blocks.clone()
                 } else {
-                    vec![Ed2kBlockHash([0xAB; 16]); hash.blocks.len().max(1)]
+                    vec![Ed2kBlockHash([0xAB; 16]); f.hash.blocks.len().max(1)]
                 };
                 let _ = downloads.on_peer_message(
                     peer(p),
                     PeerMessage::BlockHashes {
-                        file: hash.root,
+                        file: f.hash.root,
                         hashes,
                     },
                     now,
                 );
             }
             Event::SendChunk {
+                file,
                 peer: p,
                 index,
                 honest,
                 garbage_len,
             } => {
+                let f = &files[(file as usize) % files.len()];
                 // Deliberately allow indices at and beyond `n_chunks`, to
                 // exercise the out-of-range path.
-                let index = (index as u32) % (n_chunks as u32 * 2).max(1);
-                let data = if honest && index < n_chunks {
+                let index = (index as u32) % (f.n_chunks * 2).max(1);
+                let data = if honest && index < f.n_chunks {
                     let r = chunk_range(index, size_bytes);
-                    bytes[r.start as usize..r.end as usize].to_vec()
+                    f.bytes[r.start as usize..r.end as usize].to_vec()
                 } else {
                     vec![0xAA; garbage_len as usize]
                 };
                 let _ = downloads.on_peer_message(
                     peer(p),
                     PeerMessage::ChunkData {
-                        file: hash.root,
+                        file: f.hash.root,
                         index,
                         data,
                     },
                     now,
                 );
             }
-            Event::SetSources { mask } => {
+            Event::SetSources { file, mask } => {
+                let f = &files[(file as usize) % files.len()];
                 let sources: Vec<PeerId> = PEERS
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| mask & (1 << i) != 0)
                     .map(|(_, name)| PeerId::new(*name))
                     .collect();
-                let _ = downloads.set_sources(hash.root, sources, 0, now);
+                let _ = downloads.set_sources(f.hash.root, sources, 0, now);
             }
             Event::Tick { millis } => {
                 now = now.saturating_add(millis as u64);
                 let _ = downloads.tick(now);
             }
-            Event::Cancel { restart } => {
-                let _ = downloads.cancel(&hash.root);
+            Event::Cancel { file, restart } => {
+                let f = &files[(file as usize) % files.len()];
+                let _ = downloads.cancel(&f.hash.root);
                 if restart {
                     let _ = downloads.start(
-                        hash.root,
+                        f.hash.root,
                         size_bytes,
-                        hash.root,
-                        path.clone(),
+                        f.hash.root,
+                        f.path.clone(),
                         all_sources.clone(),
                         0,
                         now,
                     );
                 }
+            }
+            Event::SetPriority { perm, bogus } => {
+                let mut order: Vec<dessplay_core::types::Ed2kHash> = match perm % 5 {
+                    0 => vec![files[0].hash.root, files[1].hash.root],
+                    1 => vec![files[1].hash.root, files[0].hash.root],
+                    2 => vec![files[0].hash.root],
+                    3 => vec![files[1].hash.root],
+                    _ => vec![],
+                };
+                if bogus {
+                    order.push(dessplay_core::types::Ed2kHash([0xEE; 16]));
+                }
+                downloads.set_priority(order);
             }
         }
     }

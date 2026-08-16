@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-13
+Last updated: 2026-08-16
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -930,9 +930,10 @@ which clients are seeders.
   the ready-state display, and presence-based pause rules. The Users pane
   shows them on a separate dim line ("seeders: nas").
 - **Auto-fetches everything.** A seeder downloads every playlist entry as it
-  is added (unwatched entries first, in playlist order), making it the durable
-  seed for the group: whoever adds a file can go offline once the seeder has
-  it. The primary seeder is colocated with the rendezvous server, so serving
+  is added (unwatched entries first, anchored at now-playing exactly like an
+  interactive client's pre-fetch order; watched back-catalog last), making it
+  the durable seed for the group: whoever adds a file can go offline once the
+  seeder has it. The primary seeder is colocated with the rendezvous server, so serving
   a file costs one trip over the NAS uplink per recipient -- the relay-only
   transfer design depends on this arrangement being the common case.
 - **Indexes its library daily.** Like every client the seeder maintains a hash
@@ -1857,15 +1858,24 @@ hash-addressed cache path), and an import of a file **already held
 under a media root** finishes against the library copy instead of
 demoting it to a retention-evictable cache row.
 
-**Pre-fetching**: clients with downloading enabled fetch playlist entries
-*ahead* of now-playing (in playlist order) in the background, so next week's
-episode is usually local before the session starts. Seeders fetch everything
-(see [Client Roles](#client-roles)); interactive clients pre-fetch within
-their retention/disk constraints. An interactive client **skips
-auto-download** for entries whose series it has marked **NotWatching** --
-no point fetching a show you've opted out of. **Maybe** (the default) and
-**Watching** entries are prefetched normally; a NotWatching file that is
-already local still loads (you can mute), it is just never fetched.
+**Pre-fetching**: a client with downloading enabled wants **every unwatched
+playlist entry** local, plus now-playing itself regardless of the watched
+flag (a rewatch is a watch), so next week's episode -- and the whole queue
+behind it -- is usually local before the session starts. Fetch order is
+**anchored at now-playing**: entries after it in playlist order, nearest
+first, then entries behind it (nearest-first), lowest priority. The
+ordering acts at the **chunk level** (network-design.md, Scheduling): the
+per-source request window is one shared budget filled in this order, so a
+now-playing advance or a playlist edit re-targets the running transfers
+within a tick -- no cancels, no restarts. A **watched** entry queued ahead
+of now-playing does not prefetch; its rewatch fetch starts when it becomes
+now-playing. An interactive client **skips auto-download** for entries
+whose series it has marked **NotWatching** -- no point fetching a show
+you've opted out of. **Maybe** (the default) and **Watching** entries are
+fetched normally; a NotWatching file that is already local still loads
+(you can mute), it is just never fetched. Seeders fetch everything, in the
+same anchored order with watched back-catalog last (see
+[Client Roles](#client-roles)).
 
 ### BitTorrent Downloads
 
