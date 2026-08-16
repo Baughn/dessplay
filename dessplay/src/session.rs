@@ -161,6 +161,15 @@ pub enum Directive {
         /// Playback chunk anchor for the sequential window.
         play_chunk: u32,
     },
+    /// Cross-file download fill order: the anchored playlist ranking
+    /// (`derive::anchored_download_order` filtered to the want-set),
+    /// highest priority first. The scheduler's shared per-source chunk
+    /// budget fills in this order. Emitted before the `StartDownload`
+    /// batch whenever the order changes.
+    SetDownloadPriority {
+        /// Wanted files, highest priority first.
+        order: Vec<Ed2kHash>,
+    },
     /// Run a cache-eviction pass (design.md, Download Cache: passes run at
     /// startup and on EOF-advance). `protected` = now-playing + unwatched
     /// playlist entries, never evicted regardless of retention;
@@ -2539,6 +2548,12 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                             sources,
                             play_chunk,
                         })
+                        .await;
+                }
+                Directive::SetDownloadPriority { order } => {
+                    let _ = self
+                        .file
+                        .send(FileCommand::SetDownloadPriority { order })
                         .await;
                 }
                 Directive::RunEviction {

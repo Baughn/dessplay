@@ -208,6 +208,13 @@ pub enum FileCommand {
         /// Playback chunk anchor for the sequential window.
         play_chunk: u32,
     },
+    /// Cross-file download fill order (the session's anchored playlist
+    /// ranking, highest priority first); the scheduler's shared
+    /// per-source budget follows it (`Downloads::set_priority`).
+    SetDownloadPriority {
+        /// Wanted files, highest priority first.
+        order: Vec<Ed2kHash>,
+    },
     /// A file-transfer message relayed from a peer (download or serve).
     PeerMessage {
         /// The sender.
@@ -1142,6 +1149,7 @@ impl Actor {
                 self.start_peer_download(file, size_bytes, sources, play_chunk)
                     .await;
             }
+            FileCommand::SetDownloadPriority { order } => self.downloads.set_priority(order),
             FileCommand::PeerMessage { from, message } => {
                 self.on_peer_message(from, *message).await;
             }
