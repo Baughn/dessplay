@@ -1237,6 +1237,14 @@ impl Ui {
                 self.refresh_keybar();
                 return actions;
             }
+            Some(Msg::ToggleEpisodeWatched { hashes }) => {
+                let actions = self.toggle_episode_watched(hashes);
+                for action in &actions {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return actions;
+            }
             _ => {}
         }
         let action = msg.and_then(|msg| self.update(msg));
@@ -1245,6 +1253,25 @@ impl Ui {
         }
         self.refresh_keybar();
         action.into_iter().collect()
+    }
+
+    /// `w` in the episode browser: toggle the group watched flag for
+    /// the given copies as one episode. The direction follows the
+    /// any-copy rule the display uses — any copy flagged means the
+    /// episode is watched, so the toggle unmarks every flagged copy;
+    /// none flagged marks them all. Only flags that actually change are
+    /// written (no junk `false` rows for copies already unmarked).
+    fn toggle_episode_watched(&self, hashes: &[Ed2kHash]) -> Vec<UserAction> {
+        let flagged = |hash: &Ed2kHash| self.snapshot.view.watched.get(hash) == Some(&true);
+        let watched = !hashes.iter().any(flagged);
+        hashes
+            .iter()
+            .filter(|hash| flagged(hash) != watched)
+            .map(|hash| UserAction::MarkWatched {
+                file: *hash,
+                watched,
+            })
+            .collect()
     }
 
     /// Ctrl-R: toggle our own readiness. Mirrors the player's
@@ -1368,15 +1395,17 @@ impl Ui {
         match msg {
             Msg::None => None,
             // `Msg::SendChat`, `Msg::Command`, `Msg::PlaySelected`,
-            // `Msg::ListEntrySaved`, `Msg::CycleSeriesWatch`, and
-            // `Msg::SetNotWatching` are intercepted in `handle()` (they can
-            // each yield several actions); they never reach `update()`.
+            // `Msg::ListEntrySaved`, `Msg::CycleSeriesWatch`,
+            // `Msg::SetNotWatching`, and `Msg::ToggleEpisodeWatched` are
+            // intercepted in `handle()` (they can each yield several
+            // actions); they never reach `update()`.
             Msg::SendChat(_)
             | Msg::Command(_)
             | Msg::PlaySelected(_)
             | Msg::ListEntrySaved(..)
             | Msg::CycleSeriesWatch(_)
-            | Msg::SetNotWatching(_) => None,
+            | Msg::SetNotWatching(_)
+            | Msg::ToggleEpisodeWatched { .. } => None,
             Msg::CycleSeriesMode | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
@@ -1627,13 +1656,6 @@ impl Ui {
                 }
                 let after = self.snapshot.view.playlist.last().map(|entry| entry.hash);
                 Some(UserAction::AddByHash { hash, after })
-            }
-            Msg::ToggleEpisodeWatched { hash } => {
-                let watched = self.snapshot.view.watched.get(&hash) != Some(&true);
-                Some(UserAction::MarkWatched {
-                    file: hash,
-                    watched,
-                })
             }
             Msg::OpenDirPicker => {
                 self.push_modal(Modal::Files(FileBrowser::for_directory()));
@@ -4023,6 +4045,44 @@ mod tests {
         assert!(
             matches!(ui.modals.last(), Some(Modal::Episodes(_))),
             "a linked entry with held franchise files must open the episode browser"
+        );
+    }
+
+    /// `w` on a whole episode follows the any-copy rule in both
+    /// directions: none of the copies flagged -> mark all; any flagged
+    /// -> unmark, writing only the flags that actually change (no junk
+    /// `false` rows for copies never marked).
+    #[test]
+    fn toggling_an_episode_marks_all_copies_and_unmarks_only_the_flagged() {
+        let mut state = CrdtState::new();
+        let mut ui = ui_with_view(state.view());
+        let hashes = vec![Ed2kHash([1; 16]), Ed2kHash([2; 16])];
+
+        // Nothing flagged: both copies get marked.
+        assert_eq!(
+            ui.toggle_episode_watched(&hashes),
+            vec![
+                UserAction::MarkWatched {
+                    file: Ed2kHash([1; 16]),
+                    watched: true,
+                },
+                UserAction::MarkWatched {
+                    file: Ed2kHash([2; 16]),
+                    watched: true,
+                },
+            ]
+        );
+
+        // One copy flagged: the episode is watched, so `w` unmarks — and
+        // touches only the copy that carries a flag.
+        state.set_watched(A, SharedTimestamp(1), Ed2kHash([1; 16]), true);
+        ui.snapshot.view = std::sync::Arc::new(state.view());
+        assert_eq!(
+            ui.toggle_episode_watched(&hashes),
+            vec![UserAction::MarkWatched {
+                file: Ed2kHash([1; 16]),
+                watched: false,
+            }]
         );
     }
 

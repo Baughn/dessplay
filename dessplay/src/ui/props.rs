@@ -1431,8 +1431,9 @@ pub enum EpisodeRow {
         copy: EpisodeCopy,
     },
     /// Display-only grouping line for a multi-copy episode — not
-    /// selectable, just names the group. `watched` is true only when
-    /// every copy underneath is.
+    /// selectable, just names the group. `watched` is true when *any*
+    /// copy underneath is: one watched encoding means the group saw the
+    /// episode (user decision 2026-08-17).
     Header {
         /// "Episode 03".
         episode: String,
@@ -1571,7 +1572,10 @@ pub fn episode_rows(
                 }]
             } else {
                 let copies: Vec<EpisodeCopy> = group.members.iter().map(copy_of).collect();
-                let watched = copies.iter().all(|copy| copy.watched);
+                // Any watched copy mutes the episode: the group saw it,
+                // whichever encoding carried it. Copies keep their own
+                // per-file marks.
+                let watched = copies.iter().any(|copy| copy.watched);
                 // A multi-member group only ever forms from a shared
                 // `Some` key (the loop above never merges `None`-keyed
                 // entries), so `episode` is always `Some` here;
@@ -1588,11 +1592,21 @@ pub fn episode_rows(
         .collect()
 }
 
-/// The index of the first not-fully-watched row (design.md #11: the
-/// browser's `<` marker and initial cursor placement). `None` when
-/// everything is watched.
+/// The index of the first unwatched row (design.md #11: the browser's
+/// `<` marker and initial cursor placement). `None` when everything is
+/// watched. An unwatched *copy* under a watched header doesn't count —
+/// the episode was seen through another encoding, and the marker means
+/// "continue here", never "here's a leftover duplicate".
 pub fn first_unwatched(rows: &[EpisodeRow]) -> Option<usize> {
-    rows.iter().position(|row| !row.watched())
+    let mut header_watched = false;
+    rows.iter().position(|row| match row {
+        EpisodeRow::Header { watched, .. } => {
+            header_watched = *watched;
+            !watched
+        }
+        EpisodeRow::Child(copy) => !header_watched && !copy.watched,
+        EpisodeRow::Single { copy, .. } => !copy.watched,
+    })
 }
 
 /// How far (Levenshtein distance) a file's derived series name may sit
@@ -1758,6 +1772,33 @@ fn entries_with_unwatched_files(
     view: &StateView,
     watched_hashes: &BTreeSet<Ed2kHash>,
 ) -> BTreeSet<ListEntryId> {
+    // Episode identities watched through *any* copy: a duplicate
+    // encoding of an episode the group has seen is not "something to
+    // watch" (the browser's any-copy muting rule). Identity needs an
+    // AniDB link; filename-derived files fall back to per-file marks.
+    let watched_episodes: BTreeSet<(AniDbSeriesId, &str)> = view
+        .watched
+        .iter()
+        .filter(|(_, watched)| **watched)
+        .map(|(hash, _)| hash)
+        .chain(watched_hashes.iter())
+        .filter_map(|hash| {
+            let metadata = view.anidb_metadata.get(hash)?.as_ref()?;
+            Some((metadata.series_id?, metadata.episode_number.as_deref()?))
+        })
+        .collect();
+    let episode_watched = |hash: &Ed2kHash| {
+        let Some(Some(metadata)) = view.anidb_metadata.get(hash) else {
+            return false;
+        };
+        let (Some(series), Some(episode)) =
+            (metadata.series_id, metadata.episode_number.as_deref())
+        else {
+            return false;
+        };
+        watched_episodes.contains(&(series, episode))
+    };
+
     let held: BTreeSet<Ed2kHash> = view
         .file_availability
         .iter()
@@ -1767,6 +1808,7 @@ fn entries_with_unwatched_files(
     held.into_iter()
         .filter(|hash| !view.watched.get(hash).copied().unwrap_or(false))
         .filter(|hash| !watched_hashes.contains(hash))
+        .filter(|hash| !episode_watched(hash))
         .filter_map(|hash| series_identity::resolve_series_entry_for_file(view, hash))
         .collect()
 }
@@ -3203,6 +3245,60 @@ mod tests {
         assert_eq!(watching.rows[0].name, "Fresh episode");
     }
 
+    /// A held duplicate copy of an episode the group already watched
+    /// through *any* other copy does not float the series: "unwatched"
+    /// means episode identity, not file identity — the same any-copy
+    /// rule as the episode browser's muting.
+    #[test]
+    fn duplicate_copy_of_a_watched_episode_does_not_float() {
+        let mut state = CrdtState::new();
+        let mut put = |id: u128, name: &str| {
+            let mut entry = list_entry(name, ListStatus::Active);
+            entry.anidb_series_id = Some(AniDbSeriesId(id as u32));
+            state.put_list_entry(A, ts(id as u64), ListEntryId(id), entry);
+        };
+        put(1, "Rewatched in HEVC");
+        put(2, "Genuinely fresh");
+        let meta = |series: u32, episode: &str| {
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: format!("series {series}"),
+                series_id: Some(AniDbSeriesId(series)),
+                episode_number: Some(episode.into()),
+            })
+        };
+        // Series 1, episode 01: the watched copy plus a held duplicate
+        // encoding with no watched record of its own.
+        state.set_anidb_metadata(A, ts(10), Ed2kHash([1; 16]), meta(1, "01"));
+        state.set_watched(A, ts(11), Ed2kHash([1; 16]), true);
+        state.set_anidb_metadata(A, ts(12), Ed2kHash([2; 16]), meta(1, "01"));
+        // Series 2, episode 01: held and truly unwatched.
+        state.set_anidb_metadata(A, ts(13), Ed2kHash([3; 16]), meta(2, "01"));
+        for (t, hash) in [(14, [2; 16]), (15, [3; 16])] {
+            state.set_file_availability(
+                A,
+                ts(t),
+                UserId::new("kim"),
+                Ed2kHash(hash),
+                FileAvailability::Ready,
+            );
+        }
+
+        let groups = groups_of(&state, ListSort::Recency);
+        let watching = groups.iter().find(|g| g.heading == "Watching").unwrap();
+        let dimmed: BTreeMap<&str, bool> = watching
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.dimmed))
+            .collect();
+        assert_eq!(
+            dimmed,
+            [("Rewatched in HEVC", true), ("Genuinely fresh", false)]
+                .into_iter()
+                .collect()
+        );
+    }
+
     /// SnEnn display: a linked entry with a numeric `next_ep` renders as
     /// `S⟨ordinal⟩E⟨nn⟩`, the ordinal counted along the prequel chain.
     /// Free text and unlinked entries render verbatim; a cycle in the
@@ -3891,20 +3987,32 @@ mod tests {
         assert_eq!(first_unwatched(&rows), Some(2));
     }
 
+    /// One watched copy marks the whole *episode* watched — the group
+    /// saw it; which encoding carried it doesn't matter (user decision
+    /// 2026-08-17, reversing the earlier every-copy rule). Individual
+    /// copies keep their own per-file marks, and the first-unwatched
+    /// marker skips the whole group rather than landing on a leftover
+    /// duplicate.
     #[test]
-    fn episode_rows_header_watched_only_when_every_copy_is() {
+    fn episode_rows_header_watched_when_any_copy_is() {
         let series = AniDbSeriesId(1);
         let mut state = CrdtState::new();
         state.set_anidb_metadata(A, ts(1), hash(1), Some(metadata(series, "1")));
         state.set_anidb_metadata(A, ts(2), hash(2), Some(metadata(series, "1")));
-        state.set_watched(A, ts(3), hash(1), true);
+        state.set_anidb_metadata(A, ts(3), hash(3), Some(metadata(series, "2")));
+        state.set_watched(A, ts(4), hash(1), true);
         let view = state.view();
-        let rows = episode_rows(&view, &[hash(1), hash(2)], &BTreeSet::new());
+        let rows = episode_rows(&view, &[hash(1), hash(2), hash(3)], &BTreeSet::new());
         let EpisodeRow::Header { watched, .. } = &rows[0] else {
             panic!("expected a Header row")
         };
-        assert!(!watched, "one unwatched copy must keep the group unwatched");
-        assert_eq!(first_unwatched(&rows), Some(0));
+        assert!(watched, "one watched copy must mute the whole episode");
+        // Copies stay truthful per file.
+        assert!(rows[1].watched());
+        assert!(!rows[2].watched());
+        // The marker skips the watched episode's unwatched duplicate and
+        // lands on the genuinely unwatched next episode.
+        assert_eq!(first_unwatched(&rows), Some(3));
     }
 
     fn unlinked_entry(name: &str, aliases: &[&str], manual_files: &[Ed2kHash]) -> SeriesListEntry {

@@ -68,11 +68,14 @@ pub enum Msg {
         /// The chosen file's ed2k hash.
         hash: Ed2kHash,
     },
-    /// Episode browser (`w`): cycle a file's group watched flag
-    /// (design.md #10).
+    /// Episode browser (`w`): cycle the group watched flag for one file
+    /// (a `Single`/`Child` row) or a whole episode's copies (a `Header`
+    /// row) — design.md #10. The toggle direction comes from the
+    /// episode's any-copy state: any copy watched -> unmark all, none
+    /// watched -> mark all.
     ToggleEpisodeWatched {
-        /// The file whose watched flag to flip.
-        hash: Ed2kHash,
+        /// The copies to flip together (one entry for a single file).
+        hashes: Vec<Ed2kHash>,
     },
     /// Move the selected entry after its successor (down).
     MoveDown(Ed2kHash),

@@ -174,15 +174,21 @@ sync state with each other. See [network-design.md](network-design.md).
      there's no evidence they're the same episode.
    - Episodes watched personally (85% history) or by the group (the
      watched flag) render muted, matching the playlist pane's convention.
-     A `<` marker sits on the first not-fully-watched row, and the
-     browser opens (and a season, once selected) with the cursor already
-     there.
-   - `w` cycles the selected file's group watched flag directly (a
-     `MarkWatched` request to the server, mirroring `EofReached`'s
-     watched-flag write): handy for marking an episode watched without
-     playing it to EOF, or undoing an accidental advance. Setting it to
-     watched also runs the same List `next_ep` auto-advance the EOF path
-     gets. No-op on a header row (no single file to act on).
+     A multi-copy episode is watched when **any** copy is — the group
+     saw the episode, whichever encoding carried it — so its header
+     mutes on any watched copy while the copies keep their own per-file
+     marks. A `<` marker sits on the first unwatched row (skipping
+     unwatched duplicates of already-watched episodes), and the browser
+     opens (and a season, once selected) with the cursor already there.
+   - `w` cycles the group watched flag directly (a `MarkWatched`
+     request to the server, mirroring `EofReached`'s watched-flag
+     write): handy for marking an episode watched without playing it to
+     EOF, or undoing an accidental advance. Setting it to watched also
+     runs the same List `next_ep` auto-advance the EOF path gets. On a
+     copy it flips that file; on a header row it toggles the whole
+     episode — any copy flagged means watched, so `w` unmarks every
+     flagged copy, and marks all copies otherwise. No-op only in the
+     season list.
 6. Sort mode for All Series is persisted across sessions.
 
 **From scratch:**
@@ -1217,7 +1223,10 @@ the weekly `available` flag set, or a **held** unwatched file: some client
 advertises a copy (the availability map) that neither the group watched
 flag nor personal watch history records as seen (the episode browser's
 muting rule), resolving to the entry by the Series Identity order. A bare
-metadata row is not enough -- metadata persists forever, files don't.
+metadata row is not enough -- metadata persists forever, files don't --
+and a duplicate encoding of an episode the group watched through *any*
+other copy doesn't count either (the same any-copy rule, by AniDB
+episode identity).
 Watchable entries sort above those with nothing to watch, most recently
 watched first within each partition (from local watch history, the same
 source as Recent Series); **Alphabetical** is plain name order. Entries
@@ -1596,7 +1605,7 @@ key equivalent.
 | `e` | Series (List mode) | Edit entry (modal) |
 | `l` | Series (List mode) | Link entry to AniDB (search modal) |
 | `Enter` | Episode Browser | Select season (cursor on its first unwatched row) / choose an episode or copy; no-op on a header row |
-| `w` | Episode Browser | Cycle the selected file's group watched flag; no-op on a header row or in the season list |
+| `w` | Episode Browser | Cycle the group watched flag: the selected file, or every copy of the episode on a header row; no-op in the season list |
 | `PgUp` / `PgDn` | Episode Browser | Move the selection by a page |
 | `Esc` / `Backspace` | Episode Browser | Go back (episodes -> seasons -> close) |
 | `Enter` | File Browser | Open directory / choose file (add or map) |

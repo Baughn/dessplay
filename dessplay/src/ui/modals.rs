@@ -1569,17 +1569,17 @@ impl EpisodeBrowser {
                     || personally_watched.contains(&copy.hash);
                 copy.holders = holders_by_hash.get(&copy.hash).cloned().unwrap_or_default();
             }
-            // A header mutes only when every copy under it (the
-            // contiguous Child run that follows) is watched — recomputed
-            // after the copies above.
+            // A header mutes when *any* copy under it (the contiguous
+            // Child run that follows) is watched — same any-copy rule as
+            // `props::episode_rows` — recomputed after the copies above.
             for i in 0..season.episodes.len() {
                 if matches!(season.episodes[i], EpisodeRow::Header { .. }) {
-                    let all = season.episodes[i + 1..]
+                    let any = season.episodes[i + 1..]
                         .iter()
                         .take_while(|row| matches!(row, EpisodeRow::Child(_)))
-                        .all(|row| row.watched());
+                        .any(|row| row.watched());
                     if let EpisodeRow::Header { watched, .. } = &mut season.episodes[i] {
-                        *watched = all;
+                        *watched = any;
                     }
                 }
             }
@@ -1650,16 +1650,22 @@ impl EpisodeBrowser {
         Some(Msg::CloseModal)
     }
 
-    /// `w`: cycle the selected file's group watched flag (design.md
-    /// #10). No-op in the season list or on a `Header` row (no single
-    /// file to act on).
+    /// `w`: cycle the group watched flag (design.md #10) — for the
+    /// selected file, or, on a `Header` row, for every copy of that
+    /// episode at once (the episode is watched when *any* copy is, so
+    /// the toggle acts on the set). No-op in the season list.
     fn act_toggle_watched(&mut self) -> Option<Msg> {
         let index = self.open?;
-        let hash = self.seasons[index]
-            .episodes
-            .get(self.cursor.index())?
-            .hash()?;
-        Some(Msg::ToggleEpisodeWatched { hash })
+        let episodes = &self.seasons[index].episodes;
+        let hashes: Vec<Ed2kHash> = match episodes.get(self.cursor.index())? {
+            EpisodeRow::Single { copy, .. } | EpisodeRow::Child(copy) => vec![copy.hash],
+            EpisodeRow::Header { .. } => episodes[self.cursor.index() + 1..]
+                .iter()
+                .take_while(|row| matches!(row, EpisodeRow::Child(_)))
+                .filter_map(EpisodeRow::hash)
+                .collect(),
+        };
+        (!hashes.is_empty()).then_some(Msg::ToggleEpisodeWatched { hashes })
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -3155,18 +3161,28 @@ mod tests {
         );
     }
 
+    /// `w` on a copy toggles that file; `w` on a Header toggles the
+    /// whole episode — every copy underneath, in one message (user
+    /// decision 2026-08-17; a Header previously declined).
     #[test]
-    fn w_key_toggles_watched_on_a_copy_but_not_a_header() {
+    fn w_key_toggles_a_copy_or_the_whole_episode_from_its_header() {
         let episodes = header_and_children("Episode 3", &[(hash(1), "a.mkv"), (hash(2), "b.mkv")]);
         let seasons = vec![season("S1", episodes)];
         let mut browser = EpisodeBrowser::new("Frieren".into(), seasons);
         browser.on(&enter()); // open the season
-        // On the Header: no hash to act on, so the binding declines.
-        assert_eq!(browser.on(&char_key('w')), None);
+        // On the Header: the episode = both copies.
+        assert_eq!(
+            browser.on(&char_key('w')),
+            Some(Msg::ToggleEpisodeWatched {
+                hashes: vec![hash(1), hash(2)]
+            })
+        );
         browser.on(&down());
         assert_eq!(
             browser.on(&char_key('w')),
-            Some(Msg::ToggleEpisodeWatched { hash: hash(1) })
+            Some(Msg::ToggleEpisodeWatched {
+                hashes: vec![hash(1)]
+            })
         );
     }
 
