@@ -680,6 +680,11 @@ impl SyncActor {
         if self.link == Link::Down {
             // A merge can also arrive from divergence healing while we
             // believe ourselves down; don't replay into a dead link.
+            // With an ordered transport this should be unreachable —
+            // Connected always precedes the first snapshot/merge. It
+            // once fired anyway (the sim reordered frames, 2026-08-17)
+            // and the resulting wedge was silent for 30s+, so shout.
+            tracing::warn!("initial sync arrived while the link is down; not replaying");
             return;
         }
         let first_sync = self.link == Link::AwaitingSync;

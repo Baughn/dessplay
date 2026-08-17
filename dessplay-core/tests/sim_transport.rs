@@ -51,6 +51,49 @@ async fn control_frames_arrive_in_order() {
     ));
 }
 
+/// Regression (2026-08-17): control delivery once used one spawned task
+/// per frame, all racing identical `sleep_until` deadlines. On a busy
+/// multi-thread scheduler (in practice: the first run of a freshly
+/// built test binary) work stealing completed them out of order,
+/// breaking the header contract ("control frames are reliable and
+/// ordered") — the client saw the bootstrap `StateSnapshot` before
+/// `AuthOk`, wedging the sync actor's initial-sync handshake for good.
+/// Model the honest trigger: real time, a multi-thread runtime under
+/// churn, many frames. Unlike the file's other tests this cannot run
+/// paused — a single-thread scheduler hides the race.
+#[tokio::test(flavor = "multi_thread")]
+async fn control_order_survives_scheduler_churn() {
+    let net = SimNetwork::new(7);
+    let (client, server) = connected(&net).await;
+
+    // Keep every worker busy so delivery tasks get stolen and shuffled.
+    let churn: Vec<_> = (0..256)
+        .map(|_| {
+            tokio::spawn(async {
+                for _ in 0..64 {
+                    tokio::task::yield_now().await;
+                }
+            })
+        })
+        .collect();
+
+    const FRAMES: u16 = 500;
+    for i in 0..FRAMES {
+        client.send_control(&i.to_be_bytes()).await.unwrap();
+    }
+    for i in 0..FRAMES {
+        match server.recv().await.unwrap() {
+            TransportEvent::Control(frame) => {
+                assert_eq!(frame, i.to_be_bytes(), "frame {i} arrived out of order");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+    for task in churn {
+        task.await.unwrap();
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn latency_delays_delivery() {
     let net = SimNetwork::new(1);

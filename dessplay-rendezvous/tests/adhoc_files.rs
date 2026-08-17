@@ -16,6 +16,9 @@ use dessplay::ui::msg::UserAction;
 use dessplay_core::types::{Ed2kHash, FileAvailability, UserId};
 
 /// Poll `rig`'s own synced view until `who` advertises `file` Ready.
+/// The timeout dump includes the playlist so a failure distinguishes
+/// "the add never published" (empty playlist too) from "the availability
+/// op specifically was lost" (entry present, availability missing).
 async fn eventually_ready(rig: &LoopRig, who: &str, file: Ed2kHash, budget: Duration) {
     let deadline = tokio::time::Instant::now() + budget;
     loop {
@@ -25,8 +28,12 @@ async fn eventually_ready(rig: &LoopRig, who: &str, file: Ed2kHash, budget: Dura
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "{who} never became Ready for {file}; availability: {:?}",
-            view.file_availability
+            "{who} never became Ready for {file}; availability: {:?}; playlist: {:?}",
+            view.file_availability,
+            view.playlist
+                .iter()
+                .map(|e| &e.state.filename)
+                .collect::<Vec<_>>()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -34,6 +41,7 @@ async fn eventually_ready(rig: &LoopRig, who: &str, file: Ed2kHash, budget: Dura
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dragged_in_out_of_root_file_serves_the_group_and_survives_restart() {
+    init_test_logging();
     let harness = Harness::new(3101);
     let dir_a = tempfile::tempdir().expect("tempdir");
     let dir_b = tempfile::tempdir().expect("tempdir");
@@ -58,6 +66,11 @@ async fn dragged_in_out_of_root_file_serves_the_group_and_survives_restart() {
         .await
         .expect("loop gone");
 
+    // A's own Ready lands on A's replica first: a failure here means
+    // the hash-add chain broke inside A. A failure on the next wait
+    // instead — with kim Ready in its availability dump — means A was
+    // fine and propagation or the transfer wedged.
+    eventually_ready(&rig_a, "kim", file.hash, Duration::from_secs(15)).await;
     // B downloads it from A and flips Ready — the same-session serve
     // that used to wedge on the silent Ready-but-unservable state.
     eventually_ready(&rig_b, "nero", file.hash, Duration::from_secs(30)).await;
@@ -67,7 +80,10 @@ async fn dragged_in_out_of_root_file_serves_the_group_and_survives_restart() {
     // registration.
     rig_b.quit().await;
     rig_a.quit().await;
-    let _rig_a2 = loop_rig(&harness, "kim", 2, dir_a.path());
+    let rig_a2 = loop_rig(&harness, "kim", 2, dir_a.path());
     let rig_c = loop_rig(&harness, "baughn", 1, dir_c.path());
+    // Same localization as above: kim re-advertising off the durable
+    // registration is A's half; baughn Ready is the transfer's.
+    eventually_ready(&rig_a2, "kim", file.hash, Duration::from_secs(15)).await;
     eventually_ready(&rig_c, "baughn", file.hash, Duration::from_secs(30)).await;
 }

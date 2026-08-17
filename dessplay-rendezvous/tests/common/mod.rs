@@ -31,6 +31,21 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 pub const PASSWORD: &str = "hunter2";
 
+/// Route library tracing into test output. The default surfaces only
+/// warnings (e.g. a dropped cross-actor send) so a failing run carries
+/// its own diagnosis without spamming green ones; RUST_LOG overrides
+/// for a full debug chase. Safe to call from every test — later calls
+/// are no-ops.
+pub fn init_test_logging() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("dessplay=warn,dessplay_rendezvous=warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_test_writer()
+        .try_init();
+}
+
 /// A clock that follows paused tokio time from a fixed origin.
 pub fn sim_clock(skew_millis: i64) -> Arc<dyn Fn() -> u64 + Send + Sync> {
     let origin = tokio::time::Instant::now();

@@ -79,6 +79,13 @@ pub const SIM_MAX_DATAGRAM: usize = 1200;
 
 type ConnId = u64;
 type Pending = Vec<(TransportEvent, usize)>;
+/// One reliable event scheduled for ordered delivery: its due time, the
+/// receiving inbox, and the event itself.
+type ReliableItem = (
+    Instant,
+    mpsc::UnboundedSender<TransportEvent>,
+    TransportEvent,
+);
 
 struct NetState {
     rng: StdRng,
@@ -91,6 +98,12 @@ struct NetState {
     clear_at: HashMap<(ConnId, EndpointId), Instant>,
     /// Control frames held by a partition, per (connection, sender).
     pending: HashMap<(ConnId, EndpointId), Pending>,
+    /// Ordered delivery pump per (connection, sender): every reliable
+    /// event of a direction flows through one task, so "control frames
+    /// are reliable and ordered" holds by construction. A per-frame
+    /// task race once broke it under a busy multi-thread scheduler
+    /// (see `control_order_survives_scheduler_churn`).
+    pumps: HashMap<(ConnId, EndpointId), mpsc::UnboundedSender<ReliableItem>>,
     addrs: HashMap<EndpointId, SocketAddr>,
     next_conn: ConnId,
     max_datagram: usize,
@@ -122,6 +135,7 @@ impl SimNetwork {
                 senders: HashMap::new(),
                 clear_at: HashMap::new(),
                 pending: HashMap::new(),
+                pumps: HashMap::new(),
                 addrs: HashMap::new(),
                 next_conn: 0,
                 max_datagram: SIM_MAX_DATAGRAM,
@@ -283,14 +297,36 @@ impl SimNetwork {
             _ => Duration::ZERO,
         };
         let ready = clear + transmit;
-        state.clear_at.insert(key, ready);
+        state.clear_at.insert(key.clone(), ready);
         let deliver_at = ready + link.latency + jitter;
-        drop(state);
 
-        tokio::spawn(async move {
-            tokio::time::sleep_until(deliver_at).await;
-            let _ = target.send(event);
-        });
+        if is_datagram {
+            // Datagrams may race each other (loss and jitter already
+            // reorder them); a task per frame is fine.
+            drop(state);
+            tokio::spawn(async move {
+                tokio::time::sleep_until(deliver_at).await;
+                let _ = target.send(event);
+            });
+        } else {
+            // Reliable events are serialized through the direction's
+            // pump — enqueued under the state lock, so delivery order
+            // matches scheduling order no matter how the runtime
+            // interleaves tasks. A later frame with a shorter latency
+            // still waits its turn: head-of-line blocking is exactly
+            // an ordered stream's semantics.
+            let pump = state.pumps.entry(key).or_insert_with(|| {
+                let (tx, mut rx) = mpsc::unbounded_channel::<ReliableItem>();
+                tokio::spawn(async move {
+                    while let Some((at, target, event)) = rx.recv().await {
+                        tokio::time::sleep_until(at).await;
+                        let _ = target.send(event);
+                    }
+                });
+                tx
+            });
+            let _ = pump.send((deliver_at, target, event));
+        }
         true
     }
 
