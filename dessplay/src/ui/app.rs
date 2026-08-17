@@ -403,6 +403,7 @@ impl Ui {
         };
         ui.chat.set_me(ui.me.to_string());
         ui.series.set_sort(settings.series_sort);
+        ui.series.set_list_sort(settings.list_sort);
         if open_settings {
             ui.push_modal(Modal::Settings(SettingsModal::new(settings, media_roots)));
         }
@@ -883,7 +884,29 @@ impl Ui {
             SeriesMode::Recent => Some(&self.snapshot.recency),
             SeriesMode::All => None,
             SeriesMode::TheList => {
-                let groups = props::list_groups(&self.snapshot.view);
+                // Per-user Watching groups draw from everyone the client
+                // can name: connected peers plus the known-offline roster
+                // (design.md #15) — a committed user's group must not
+                // vanish with their connection.
+                let users: Vec<UserId> = self
+                    .snapshot
+                    .peers
+                    .iter()
+                    .map(|peer| peer.username.clone())
+                    .chain(
+                        self.snapshot
+                            .known_offline
+                            .iter()
+                            .map(|user| user.username.clone()),
+                    )
+                    .collect();
+                let groups = props::list_groups(
+                    &self.snapshot.view,
+                    &self.me,
+                    &users,
+                    self.series.list_sort(),
+                    &self.snapshot.recency,
+                );
                 self.series.set_groups(groups);
                 return;
             }
@@ -1354,6 +1377,16 @@ impl Ui {
             // persisted across sessions").
             Msg::ToggleSeriesSort => {
                 self.settings.series_sort = self.series.sort();
+                self.refresh_series();
+                Some(UserAction::SaveSettings(
+                    Box::new(self.settings.clone()),
+                    self.media_roots.clone(),
+                ))
+            }
+            // The List pane already flipped its own sort; mirror and save,
+            // same pattern as `ToggleSeriesSort` above.
+            Msg::ToggleListSort => {
+                self.settings.list_sort = self.series.list_sort();
                 self.refresh_series();
                 Some(UserAction::SaveSettings(
                     Box::new(self.settings.clone()),

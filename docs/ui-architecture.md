@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-08-12
+Last updated: 2026-08-17
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -148,6 +148,7 @@ enum Msg {
     // Series
     CycleSeriesMode,            // Recent -> All -> The List (m)
     ToggleSeriesSort,           // All mode (s)
+    ToggleListSort,             // The List mode (s)
     SeriesFilterChanged,        // filter text changed (/ to start, Recent / All)
     BrowseFranchise(FranchiseId),
 

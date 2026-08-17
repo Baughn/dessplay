@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use crate::storage::{Result, Storage, StorageError};
-use crate::ui::props::{BrowserSort, SeriesSort};
+use crate::ui::props::{BrowserSort, ListSort, SeriesSort};
 
 /// Which video player to drive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -482,6 +482,9 @@ pub struct Settings {
     /// Sort order for the All Series browser mode (toggled with `s`).
     /// Local-only display preference; persisted across sessions.
     pub series_sort: SeriesSort,
+    /// Sort order for The List mode (toggled with `s`). Local-only
+    /// display preference; persisted across sessions.
+    pub list_sort: ListSort,
     /// Sort order for the add/map file browser (design.md #8).
     /// Local-only display preference; persisted across sessions.
     pub file_browser_sort: BrowserSort,
@@ -536,6 +539,7 @@ impl Default for Settings {
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::default(),
             marquee_mode: MarqueeMode::default(),
             series_sort: SeriesSort::default(),
+            list_sort: ListSort::default(),
             file_browser_sort: BrowserSort::default(),
             auto_download: true,
             archive_subdirectory: true,
@@ -630,6 +634,11 @@ impl Settings {
                 })?,
                 None => defaults.series_sort,
             },
+            list_sort: match storage.setting("list_sort")? {
+                Some(value) => ListSort::parse(&value)
+                    .ok_or_else(|| StorageError::Corrupt(format!("unknown list_sort {value:?}")))?,
+                None => defaults.list_sort,
+            },
             file_browser_sort: match storage.setting("file_browser_sort")? {
                 Some(value) => BrowserSort::parse(&value).ok_or_else(|| {
                     StorageError::Corrupt(format!("unknown file_browser_sort {value:?}"))
@@ -717,6 +726,7 @@ impl Settings {
         )?;
         storage.set_setting("marquee_mode", Some(self.marquee_mode.as_str()))?;
         storage.set_setting("series_sort", Some(self.series_sort.as_str()))?;
+        storage.set_setting("list_sort", Some(self.list_sort.as_str()))?;
         storage.set_setting("file_browser_sort", Some(self.file_browser_sort.as_str()))?;
         storage.set_setting(
             "auto_download",
@@ -787,6 +797,7 @@ mod tests {
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::DisableColors,
             marquee_mode: MarqueeMode::Chat,
             series_sort: SeriesSort::Year,
+            list_sort: ListSort::Alphabetical,
             file_browser_sort: BrowserSort::Newest,
             auto_download: false,
             archive_subdirectory: false,

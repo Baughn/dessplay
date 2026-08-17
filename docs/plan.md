@@ -1621,6 +1621,24 @@ Ready-but-unservable states remain.
 
 ## Phase 32: List Rework
 
+**Status: complete (2026-08-17).** All four pieces landed as planned,
+plus three details settled during implementation (user decisions
+2026-08-17): the Recency partition is *watchable* — the weekly
+`available` flag **or** an unwatched library file resolving to the
+entry (Series Identity order), with the dim set exactly the bottom
+partition; Recency is the fresh-install default, persisted thereafter
+(`list_sort` setting, mirroring `series_sort`); and the local user's
+own "Watching — ⟨user⟩" group renders first, the rest alphabetical.
+"Most recently group-watched" is derived from local watch history (the
+Recent Series source) — group watched flags carry no timestamps.
+Tests: props units (per-user groups incl. multi-membership and
+unknown-user residual, live commitment column, both sorts + partition,
+season ordinals over chains/cycles/missing links, unwatched-file
+resolution via manual_files/aliases), two insta snapshots (both sorts
+over one fixture with per-user groups + SnEnn), and a harness test
+(`list_watching.rs`): kim's commitment lands in nero's List under
+"Watching — kim".
+
 **Goal**: The List answers "what are we watching, whose, and what's
 next" at a glance. Today the users column shows import-time `watchers`
 initials (never live state), grouping ignores per-user commitment, sort

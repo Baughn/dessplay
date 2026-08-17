@@ -20,8 +20,8 @@ use tuirealm::state::State;
 
 use super::msg::Msg;
 use super::props::{
-    ChatLine, FranchiseRow, HealthProps, ListGroup, PlaylistProps, SeriesSort, StatusProps, Tone,
-    UsersProps,
+    ChatLine, FranchiseRow, HealthProps, ListGroup, ListSort, PlaylistProps, SeriesSort,
+    StatusProps, Tone, UsersProps,
 };
 use super::theme;
 use super::widgets::{
@@ -1580,10 +1580,13 @@ enum ListNavRow {
 pub struct SeriesPane {
     mode: SeriesMode,
     sort: SeriesSort,
+    /// Sort order for The List mode (independent of `sort`, which is the
+    /// All-Series toggle; the two modes answer different questions).
+    list_sort: ListSort,
     franchises: Vec<FranchiseRow>,
     groups: Vec<ListGroup>,
     /// Expanded-state override per group heading.
-    expanded: std::collections::BTreeMap<&'static str, bool>,
+    expanded: std::collections::BTreeMap<String, bool>,
     /// Filter text for Recent / All modes (case-insensitive substring on
     /// title). A non-empty filter also drops Recent's watched-only
     /// default. Empty in The List mode. A full [`LineBuffer`], so the
@@ -1617,6 +1620,16 @@ impl SeriesPane {
         self.sort = sort;
     }
 
+    /// Current List-mode sort.
+    pub fn list_sort(&self) -> ListSort {
+        self.list_sort
+    }
+
+    /// Seed the List sort order (from the persisted setting at startup).
+    pub fn set_list_sort(&mut self, sort: ListSort) {
+        self.list_sort = sort;
+    }
+
     /// Current type-to-filter text (Recent / All modes).
     pub fn filter(&self) -> String {
         self.filter.text()
@@ -1637,7 +1650,7 @@ impl SeriesPane {
     fn expanded(&self, group: &ListGroup) -> bool {
         *self
             .expanded
-            .get(group.heading)
+            .get(&group.heading)
             .unwrap_or(&!group.collapsed)
     }
 
@@ -1714,6 +1727,12 @@ impl SeriesPane {
         Some(Msg::ToggleSeriesSort)
     }
 
+    /// `s` (The List): toggle recency/alphabetical sort.
+    fn act_list_sort(&mut self) -> Option<Msg> {
+        self.list_sort = self.list_sort.toggled();
+        Some(Msg::ToggleListSort)
+    }
+
     /// `/`: begin editing the filter.
     fn act_filter_start(&mut self) -> Option<Msg> {
         self.filtering = true;
@@ -1764,7 +1783,8 @@ impl SeriesPane {
             ListNavRow::Heading(g) => {
                 let group = &self.groups[*g];
                 let now = self.expanded(group);
-                self.expanded.insert(group.heading, !now);
+                let heading = group.heading.clone();
+                self.expanded.insert(heading, !now);
                 Some(Msg::None)
             }
             ListNavRow::Entry(g, e) => {
@@ -1866,6 +1886,15 @@ impl SeriesPane {
                         let inner = area.width.saturating_sub(2) as usize;
 
                         let entry = &self.groups[*g].rows[*e];
+                        // Nothing to watch right now (no fresh episode,
+                        // no unwatched file): the whole row dims — the
+                        // display twin of the Recency sort's bottom
+                        // partition.
+                        let name_style = if entry.dimmed {
+                            theme::dim()
+                        } else {
+                            Style::default()
+                        };
                         let mut flex = vec![Span::raw("  ")];
                         // A search that came up empty is a durable "AniDB
                         // doesn't have this" callout (design.md, Series
@@ -1874,7 +1903,7 @@ impl SeriesPane {
                         if entry.series_id.is_none() && entry.anidb_unavailable {
                             flex.push(Span::styled("⊘ ", theme::dim()));
                         }
-                        flex.push(Span::raw(entry.name.clone()));
+                        flex.push(Span::styled(entry.name.clone(), name_style));
                         if let Some(nero) = &entry.nero_name {
                             flex.push(Span::styled(format!(" “{nero}”"), theme::dim()));
                         }
@@ -1887,7 +1916,11 @@ impl SeriesPane {
                         let cells = vec![
                             Cell::new(
                                 entry.next_ep.as_deref().unwrap_or(""),
-                                theme::tone_style(Tone::Normal),
+                                if entry.dimmed {
+                                    theme::dim()
+                                } else {
+                                    theme::tone_style(Tone::Normal)
+                                },
                                 EP_WIDTH,
                                 Align::Left,
                             ),
@@ -2036,6 +2069,11 @@ static SERIES_LIST_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
         pattern: KeyPattern::Char('m'),
         bar: Some(("m", "Mode")),
         action: SeriesPane::act_mode,
+    },
+    Binding {
+        pattern: KeyPattern::Char('s'),
+        bar: Some(("s", "Sort")),
+        action: SeriesPane::act_list_sort,
     },
     Binding {
         pattern: KeyPattern::Plain(Key::Enter),
@@ -2524,6 +2562,7 @@ mod series_pane_tests {
             watchers: String::new(),
             series_id,
             anidb_unavailable: false,
+            dimmed: false,
         }
     }
 
@@ -2535,7 +2574,7 @@ mod series_pane_tests {
         let mut p = SeriesPane::default();
         assert_eq!(p.mode(), SeriesMode::TheList);
         p.set_groups(vec![ListGroup {
-            heading: "Watching",
+            heading: "Watching".to_string(),
             rows: vec![
                 list_row(1, Some(dessplay_core::types::AniDbSeriesId(7))),
                 list_row(2, None),
@@ -2559,6 +2598,183 @@ mod series_pane_tests {
                 dessplay_core::types::ListEntryId(2)
             ))
         );
+    }
+
+    /// `s` toggles the List sort (Recency <-> Alphabetical) and emits the
+    /// persistence message, mirroring the All-mode pattern.
+    #[test]
+    fn s_toggles_the_list_sort() {
+        let mut p = SeriesPane::default();
+        assert_eq!(p.mode(), SeriesMode::TheList);
+        assert_eq!(p.list_sort(), ListSort::Recency);
+        assert_eq!(p.on(&key(Key::Char('s'))), Some(Msg::ToggleListSort));
+        assert_eq!(p.list_sort(), ListSort::Alphabetical);
+        assert_eq!(p.on(&key(Key::Char('s'))), Some(Msg::ToggleListSort));
+        assert_eq!(p.list_sort(), ListSort::Recency);
+        // The All-mode sort is untouched.
+        assert_eq!(p.sort(), SeriesSort::Title);
+    }
+
+    /// A List fixture exercised through the real `list_groups` derivation:
+    /// two committed users (multi-membership), a residual shared Watching
+    /// entry, an SnEnn-rendered next_ep, a dimmed nothing-to-watch row,
+    /// and the shared status groups below.
+    fn list_fixture() -> dessplay_core::CrdtState {
+        use dessplay_core::types::{
+            ActorId, AniDbMetadata, AniDbSeriesId, ListEntryId, ListStatus, MetadataSource,
+            NextEpState, RelationKind, SeriesListEntry, SeriesRelation, SeriesRelations,
+            SeriesWatchState, SharedTimestamp,
+        };
+        let a = ActorId::SERVER;
+        let ts = SharedTimestamp;
+        let mut state = dessplay_core::CrdtState::new();
+        let entry = |name: &str, status: ListStatus, series: Option<u32>| SeriesListEntry {
+            name: name.into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: series.map(AniDbSeriesId),
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
+            anidb_unavailable: false,
+        };
+        // Frieren S2 (id 20, prequel id 10): kim + nero watch, ep 5 out.
+        state.put_list_entry(
+            a,
+            ts(1),
+            ListEntryId(1),
+            entry("Frieren", ListStatus::CurrentSeason, Some(20)),
+        );
+        // Akira: only kim watches; recently watched but nothing left
+        // unwatched -> dims and sinks in Recency order despite leading
+        // alphabetically.
+        state.put_list_entry(
+            a,
+            ts(2),
+            ListEntryId(2),
+            entry("Akira", ListStatus::Active, None),
+        );
+        // Uncommitted: the residual shared Watching group.
+        state.put_list_entry(
+            a,
+            ts(3),
+            ListEntryId(3),
+            entry("Adrift", ListStatus::Active, None),
+        );
+        state.put_list_entry(
+            a,
+            ts(4),
+            ListEntryId(4),
+            entry("Someday", ListStatus::Planned, None),
+        );
+        state.put_list_entry(
+            a,
+            ts(5),
+            ListEntryId(5),
+            entry("Old Favorite", ListStatus::Finished, None),
+        );
+        for (t, user, id) in [(6, "kim", 1), (7, "nero", 1), (8, "kim", 2)] {
+            state.set_series_preference(
+                a,
+                ts(t),
+                dessplay_core::types::UserId::new(user),
+                ListEntryId(id),
+                SeriesWatchState::Watching,
+                None,
+            );
+        }
+        state.set_next_ep(
+            a,
+            ts(9),
+            ListEntryId(1),
+            NextEpState {
+                next_ep: Some("5".into()),
+                available: true,
+            },
+        );
+        state.set_next_ep(
+            a,
+            ts(10),
+            ListEntryId(2),
+            NextEpState {
+                next_ep: Some("movie?".into()),
+                available: false,
+            },
+        );
+        state.set_series_relations(
+            a,
+            ts(11),
+            AniDbSeriesId(20),
+            SeriesRelations {
+                title: "Frieren S2".into(),
+                year: None,
+                episode_count: None,
+                relations: [SeriesRelation {
+                    kind: RelationKind::Prequel,
+                    target: AniDbSeriesId(10),
+                }]
+                .into_iter()
+                .collect(),
+            },
+        );
+        // "Adrift" holds an unwatched file (name-resolved), so it stays
+        // bright and floats in Recency order.
+        state.set_anidb_metadata(
+            a,
+            ts(12),
+            dessplay_core::types::Ed2kHash([3; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: "Adrift".into(),
+                series_id: None,
+                episode_number: None,
+            }),
+        );
+        state
+    }
+
+    fn render_list_pane(p: &mut SeriesPane) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        tuirealm::testing::buffer_to_string(
+            &terminal
+                .draw(|frame| p.render(frame, frame.area()))
+                .unwrap()
+                .buffer
+                .clone(),
+        )
+    }
+
+    fn fixture_groups(sort: ListSort) -> Vec<ListGroup> {
+        use dessplay_core::types::UserId;
+        crate::ui::props::list_groups(
+            &list_fixture().view(),
+            &UserId::new("kim"),
+            &[UserId::new("kim"), UserId::new("nero")],
+            sort,
+            &[(crate::storage::SeriesKey::Name("Akira".into()), 500)]
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn the_list_snapshot_recency() {
+        let mut p = SeriesPane::default();
+        p.set_groups(fixture_groups(ListSort::Recency));
+        insta::assert_snapshot!(render_list_pane(&mut p));
+    }
+
+    #[test]
+    fn the_list_snapshot_alphabetical() {
+        let mut p = SeriesPane::default();
+        p.set_list_sort(ListSort::Alphabetical);
+        p.set_groups(fixture_groups(ListSort::Alphabetical));
+        insta::assert_snapshot!(render_list_pane(&mut p));
     }
 }
 

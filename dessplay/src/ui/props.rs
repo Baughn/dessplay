@@ -1053,6 +1053,45 @@ pub struct FranchiseRow {
     pub year: Option<u16>,
 }
 
+/// Sort order for The List mode (design.md, The List: UI Integration).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ListSort {
+    /// Watchable entries first (this week's episode out, or unwatched
+    /// files held), most recently watched first within each partition.
+    /// The default: the nightly "what's next" order.
+    #[default]
+    Recency,
+    /// By entry name.
+    Alphabetical,
+}
+
+impl ListSort {
+    /// Stable string for persistence in the settings table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ListSort::Recency => "recency",
+            ListSort::Alphabetical => "alphabetical",
+        }
+    }
+
+    /// Parse a persisted value; `None` for an unrecognized string.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "recency" => Some(ListSort::Recency),
+            "alphabetical" => Some(ListSort::Alphabetical),
+            _ => None,
+        }
+    }
+
+    /// Cycle to the other value (The List only has two).
+    pub fn toggled(self) -> Self {
+        match self {
+            ListSort::Recency => ListSort::Alphabetical,
+            ListSort::Alphabetical => ListSort::Recency,
+        }
+    }
+}
+
 /// One row of The List.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ListRow {
@@ -1062,11 +1101,16 @@ pub struct ListRow {
     pub name: String,
     /// Nero's title.
     pub nero_name: Option<String>,
-    /// Next episode text, with availability marker.
+    /// Next episode display text: `SnEnn` for a linked entry whose
+    /// free-text `next_ep` parses as a plain episode number (the season
+    /// ordinal counted along the prequel chain), verbatim otherwise.
     pub next_ep: Option<String>,
     /// This week's episode is out.
     pub available: bool,
-    /// Watcher initials ("BNQ").
+    /// Live commitment initials ("BN"): the users whose
+    /// `series_preference` for this entry is Watching — not the
+    /// import-time `watchers` seed, which records intent once and never
+    /// tracks later `/watch`/`/skip` changes.
     pub watchers: String,
     /// The linked series, if any.
     pub series_id: Option<AniDbSeriesId>,
@@ -1074,14 +1118,18 @@ pub struct ListRow {
     /// hits (design.md, Series Identity) -- confirmed not on AniDB, not
     /// just never checked.
     pub anidb_unavailable: bool,
+    /// Nothing to watch right now: the weekly `available` flag is off
+    /// *and* no known unwatched file maps to this entry. Renders dim, and
+    /// is exactly the bottom partition of the Recency sort.
+    pub dimmed: bool,
 }
 
 /// A status group of List rows.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ListGroup {
-    /// Group heading ("Watching", "Short List", ...).
-    pub heading: &'static str,
-    /// Rows, in entry-name order.
+    /// Group heading ("Watching — Baughn", "Short List", ...).
+    pub heading: String,
+    /// Rows, in [`ListSort`] order.
     pub rows: Vec<ListRow>,
     /// Render collapsed by default (Finished / Dropped).
     pub collapsed: bool,
@@ -1649,69 +1697,259 @@ pub fn candidate_rows(
         .collect()
 }
 
-/// The List, grouped per design: Watching (CurrentSeason + Active)
-/// first, then ShortList, Planned, Waiting, Hiatus, and a collapsed
-/// Finished / Dropped tail.
-pub fn list_groups(view: &StateView) -> Vec<ListGroup> {
-    let mut groups: Vec<(ListGroup, Vec<ListStatus>)> = [
-        (
-            "Watching",
-            vec![ListStatus::CurrentSeason, ListStatus::Active],
-            false,
-        ),
-        ("Short List", vec![ListStatus::ShortList], false),
-        ("Planned", vec![ListStatus::Planned], false),
-        ("Waiting", vec![ListStatus::Waiting], false),
-        ("Hiatus", vec![ListStatus::Hiatus], false),
-        (
-            "Finished / Dropped",
-            vec![ListStatus::Finished, ListStatus::Dropped],
-            true,
-        ),
-    ]
-    .into_iter()
-    .map(|(heading, statuses, collapsed)| {
-        (
-            ListGroup {
-                heading,
-                rows: Vec::new(),
-                collapsed,
-            },
-            statuses,
-        )
-    })
-    .collect();
-
-    for (id, entry) in &view.list_entries {
-        let Some((group, _)) = groups
-            .iter_mut()
-            .find(|(_, statuses)| statuses.contains(&entry.status))
+/// The season ordinal of a linked series: 1 + the number of prequel
+/// steps walkable from it along the replicated relations graph. Best
+/// effort by design — the graph fills in slowly (Phase 8's rate-limited
+/// lookups), so a chain broken by a series with no relations entry yet
+/// counts only the prefix it can see, and converges as lookups land.
+/// Cycle-guarded: AniDB data does contain mutual-prequel mistakes, and a
+/// display derivation must never hang on them. Several prequels from one
+/// node (splits, movies) follow the lowest-id edge, for determinism.
+fn season_ordinal(view: &StateView, series: AniDbSeriesId) -> u32 {
+    let mut seen = BTreeSet::from([series]);
+    let mut current = series;
+    let mut ordinal: u32 = 1;
+    while let Some(relations) = view.series_relations.get(&current) {
+        let Some(prequel) = relations
+            .relations
+            .iter()
+            .filter(|r| r.kind == dessplay_core::types::RelationKind::Prequel)
+            .map(|r| r.target)
+            .min()
         else {
-            continue;
+            break;
         };
+        if !seen.insert(prequel) {
+            break;
+        }
+        ordinal = ordinal.saturating_add(1);
+        current = prequel;
+    }
+    ordinal
+}
+
+/// The `next_ep` display text: `SnEnn` for a linked entry whose free
+/// text parses as a plain episode number, verbatim for everything else
+/// ("S3-05", "Sisters", "movie 5?", unlinked entries).
+fn next_ep_display(view: &StateView, entry: &SeriesListEntry, next_ep: &str) -> String {
+    let (Some(series), Ok(episode)) = (entry.anidb_series_id, next_ep.trim().parse::<u32>()) else {
+        return next_ep.to_string();
+    };
+    format!("S{}E{episode:02}", season_ordinal(view, series))
+}
+
+/// Entries that have a known unwatched file: one pass over the file
+/// metadata, resolving each file to a List entry by the Series Identity
+/// order (design.md) — the linked AniDB series id, then `manual_files`
+/// membership, then an exact derived-name match against `name` /
+/// `local_aliases` — and keeping entries where some resolved file lacks
+/// the group watched flag.
+fn entries_with_unwatched_files(view: &StateView) -> BTreeSet<ListEntryId> {
+    let mut by_series: BTreeMap<AniDbSeriesId, ListEntryId> = BTreeMap::new();
+    let mut by_file: BTreeMap<Ed2kHash, ListEntryId> = BTreeMap::new();
+    let mut by_name: BTreeMap<&str, ListEntryId> = BTreeMap::new();
+    for (id, entry) in &view.list_entries {
+        if let Some(series) = entry.anidb_series_id {
+            by_series.entry(series).or_insert(*id);
+        }
+        for hash in &entry.manual_files {
+            by_file.entry(*hash).or_insert(*id);
+        }
+        by_name.entry(entry.name.as_str()).or_insert(*id);
+        for alias in &entry.local_aliases {
+            by_name.entry(alias.as_str()).or_insert(*id);
+        }
+    }
+
+    let mut unwatched = BTreeSet::new();
+    for (hash, metadata) in &view.anidb_metadata {
+        if view.watched.get(hash).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(metadata) = metadata else { continue };
+        let entry = metadata
+            .series_id
+            .and_then(|series| by_series.get(&series))
+            .or_else(|| by_file.get(hash))
+            .or_else(|| by_name.get(metadata.series_name.as_str()));
+        if let Some(entry) = entry {
+            unwatched.insert(*entry);
+        }
+    }
+    unwatched
+}
+
+/// The List, grouped per design (design.md, The List: UI Integration):
+/// one "Watching — ⟨user⟩" group per committed user (`me` first, the
+/// rest of `users` alphabetically), a residual shared "Watching" group
+/// for Watching-tier entries no rendered group claims, then ShortList,
+/// Planned, Waiting, Hiatus, and a collapsed Finished / Dropped tail.
+///
+/// `users` is the candidate group set (peers + known-offline); `recency`
+/// is the local watch history ([`watch_recency`]) — the closest thing to
+/// a "when did the group last watch this" timestamp, since group watched
+/// flags are plain booleans. Empty groups are dropped.
+pub fn list_groups(
+    view: &StateView,
+    me: &UserId,
+    users: &[UserId],
+    sort: ListSort,
+    recency: &BTreeMap<SeriesKey, u64>,
+) -> Vec<ListGroup> {
+    // Live commitment: who has each entry as Watching, from the resolved
+    // series_preference map (absent = Maybe, which never groups).
+    let mut committed: BTreeMap<ListEntryId, BTreeSet<&UserId>> = BTreeMap::new();
+    for ((user, entry), pref) in &view.series_preference {
+        if pref.state == SeriesWatchState::Watching {
+            committed.entry(*entry).or_default().insert(user);
+        }
+    }
+    let unwatched = entries_with_unwatched_files(view);
+
+    // `me` first, the rest alphabetically, deduped.
+    let mut ordered_users: Vec<&UserId> = vec![me];
+    let mut rest: Vec<&UserId> = users.iter().filter(|user| *user != me).collect();
+    rest.sort();
+    rest.dedup();
+    ordered_users.extend(rest);
+
+    // (heading, statuses, collapsed); per-user groups match on the
+    // Watching-tier statuses and additionally require commitment below.
+    let watching_tier = [ListStatus::CurrentSeason, ListStatus::Active];
+    let mut groups: Vec<(ListGroup, Vec<ListStatus>, Option<&UserId>)> = ordered_users
+        .iter()
+        .map(|user| {
+            (
+                format!("Watching — {user}"),
+                watching_tier.to_vec(),
+                Some(*user),
+            )
+        })
+        .chain([
+            ("Watching".to_string(), watching_tier.to_vec(), None),
+            ("Short List".to_string(), vec![ListStatus::ShortList], None),
+            ("Planned".to_string(), vec![ListStatus::Planned], None),
+            ("Waiting".to_string(), vec![ListStatus::Waiting], None),
+            ("Hiatus".to_string(), vec![ListStatus::Hiatus], None),
+            (
+                "Finished / Dropped".to_string(),
+                vec![ListStatus::Finished, ListStatus::Dropped],
+                None,
+            ),
+        ])
+        .map(|(heading, statuses, user)| {
+            let collapsed = heading == "Finished / Dropped";
+            (
+                ListGroup {
+                    heading,
+                    rows: Vec::new(),
+                    collapsed,
+                },
+                statuses,
+                user,
+            )
+        })
+        .collect();
+    // The residual shared Watching group: index of the `None`-user
+    // Watching-tier group, for entries no per-user group claimed.
+    let residual = ordered_users.len();
+
+    // Sort keys computed alongside each row: (dimmed, newest-watch)
+    // drive the Recency order but don't belong in the rendered row.
+    let mut keyed: Vec<Vec<(Option<u64>, usize)>> = vec![Vec::new(); groups.len()];
+    let mut rows: Vec<ListRow> = Vec::new();
+    for (id, entry) in &view.list_entries {
         let next = view.list_next_ep.get(id);
-        group.rows.push(ListRow {
+        let available = next.is_some_and(|n| n.available);
+        let dimmed = !available && !unwatched.contains(id);
+        let last_watched = entry
+            .anidb_series_id
+            .map(SeriesKey::AniDb)
+            .into_iter()
+            .chain(std::iter::once(SeriesKey::Name(entry.name.clone())))
+            .chain(
+                entry
+                    .local_aliases
+                    .iter()
+                    .map(|alias| SeriesKey::Name(alias.clone())),
+            )
+            .filter_map(|key| recency.get(&key).copied())
+            .max();
+        let row = ListRow {
             id: *id,
             name: entry.name.clone(),
             nero_name: entry.nero_name.clone(),
-            next_ep: next.and_then(|n| n.next_ep.clone()),
-            available: next.is_some_and(|n| n.available),
-            watchers: entry
-                .watchers
-                .iter()
+            next_ep: next
+                .and_then(|n| n.next_ep.as_deref())
+                .map(|text| next_ep_display(view, entry, text)),
+            available,
+            watchers: committed
+                .get(id)
+                .into_iter()
+                .flatten()
                 .filter_map(|user| user.0.chars().next())
                 .map(|c| c.to_ascii_uppercase())
                 .collect(),
             series_id: entry.anidb_series_id,
             anidb_unavailable: entry.anidb_unavailable,
-        });
+            dimmed,
+        };
+        let row_index = rows.len();
+        rows.push(row);
+
+        let mut placed = false;
+        for (g, (_, statuses, user)) in groups.iter().enumerate() {
+            if !statuses.contains(&entry.status) {
+                continue;
+            }
+            match user {
+                // Per-user group: needs that user's live commitment. An
+                // entry lands in every group whose user is committed.
+                Some(user) => {
+                    if committed.get(id).is_some_and(|set| set.contains(*user)) {
+                        keyed[g].push((last_watched, row_index));
+                        placed = true;
+                    }
+                }
+                // Shared status groups take every entry of their status;
+                // the residual Watching group only what nobody claimed
+                // (below), so nothing vanishes — a commitment by a user
+                // outside `users` still isn't a rendered group.
+                None if g != residual => {
+                    keyed[g].push((last_watched, row_index));
+                }
+                None => {}
+            }
+        }
+        if matches!(entry.status, ListStatus::CurrentSeason | ListStatus::Active) && !placed {
+            keyed[residual].push((last_watched, row_index));
+        }
     }
-    for (group, _) in &mut groups {
-        group.rows.sort_by(|a, b| a.name.cmp(&b.name));
+
+    for (g, (group, ..)) in groups.iter_mut().enumerate() {
+        let mut members = std::mem::take(&mut keyed[g]);
+        match sort {
+            ListSort::Alphabetical => {
+                members.sort_by(|(_, a), (_, b)| rows[*a].name.cmp(&rows[*b].name));
+            }
+            // Watchable first, most recently watched first within each
+            // partition (never-watched last), name as the tiebreak.
+            ListSort::Recency => members.sort_by(|(ra, a), (rb, b)| {
+                let (a, b) = (&rows[*a], &rows[*b]);
+                a.dimmed
+                    .cmp(&b.dimmed)
+                    .then_with(|| rb.cmp(ra))
+                    .then_with(|| a.name.cmp(&b.name))
+            }),
+        }
+        group.rows = members
+            .into_iter()
+            .map(|(_, index)| rows[index].clone())
+            .collect();
     }
     groups
         .into_iter()
-        .map(|(group, _)| group)
+        .map(|(group, ..)| group)
         .filter(|group| !group.rows.is_empty())
         .collect()
 }
@@ -1725,7 +1963,8 @@ mod tests {
     use dessplay_core::playlist::NewPlaylistEntry;
     use dessplay_core::types::{
         ActorId, AniDbMetadata, AniDbSeriesId, ListEntryId, ListStatus, ManualState,
-        MetadataSource, PlaybackIntent, SeriesListEntry, SeriesWatchState, SharedTimestamp,
+        MetadataSource, PlaybackIntent, RelationKind, SeriesListEntry, SeriesRelation,
+        SeriesRelations, SeriesWatchState, SharedTimestamp,
     };
 
     const A: ActorId = ActorId::SERVER;
@@ -2542,60 +2781,410 @@ mod tests {
         assert_eq!(props.duration_millis, Some(1_440_000));
     }
 
+    // ---- The List ----------------------------------------------------
+
+    /// A bare List entry; tests override single fields.
+    fn list_entry(name: &str, status: ListStatus) -> SeriesListEntry {
+        SeriesListEntry {
+            name: name.into(),
+            nero_name: None,
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
+            anidb_unavailable: false,
+        }
+    }
+
+    fn commit(state: &mut CrdtState, t: u64, user: &str, entry: u128) {
+        state.set_series_preference(
+            A,
+            ts(t),
+            UserId::new(user),
+            ListEntryId(entry),
+            SeriesWatchState::Watching,
+            None,
+        );
+    }
+
+    /// `list_groups` with the common fixture context: me = "baughn",
+    /// users = baughn/kim/nero, no watch history.
+    fn groups_of(state: &CrdtState, sort: ListSort) -> Vec<ListGroup> {
+        list_groups(
+            &state.view(),
+            &UserId::new("baughn"),
+            &[
+                UserId::new("baughn"),
+                UserId::new("kim"),
+                UserId::new("nero"),
+            ],
+            sort,
+            &BTreeMap::new(),
+        )
+    }
+
+    fn headings(groups: &[ListGroup]) -> Vec<&str> {
+        groups.iter().map(|g| g.heading.as_str()).collect()
+    }
+
     #[test]
     fn list_groups_follow_design_order() {
         let mut state = CrdtState::new();
         let mut put = |id: u128, name: &str, status: ListStatus| {
-            state.put_list_entry(
-                A,
-                ts(id as u64),
-                ListEntryId(id),
-                SeriesListEntry {
-                    name: name.into(),
-                    nero_name: None,
-                    genre: None,
-                    notes: vec![],
-                    recommender: None,
-                    status,
-                    status_note: None,
-                    source: None,
-                    watchers: [UserId::new("Baughn"), UserId::new("Nero")]
-                        .into_iter()
-                        .collect(),
-                    anidb_series_id: None,
-                    local_aliases: Default::default(),
-                    manual_files: Default::default(),
-                    anidb_unavailable: false,
-                },
-            );
+            state.put_list_entry(A, ts(id as u64), ListEntryId(id), list_entry(name, status));
         };
         put(1, "Airing", ListStatus::CurrentSeason);
         put(2, "Binging", ListStatus::Active);
         put(3, "Done", ListStatus::Finished);
         put(4, "Up next", ListStatus::ShortList);
+        // kim is committed to "Airing"; "Binging" has no committed watcher
+        // and falls into the residual shared Watching group.
+        commit(&mut state, 5, "kim", 1);
         state.set_next_ep(
             A,
             ts(10),
             ListEntryId(1),
-            dessplay_core::types::NextEpState {
+            NextEpState {
                 next_ep: Some("12".into()),
                 available: true,
             },
         );
 
-        let groups = list_groups(&state.view());
-        let headings: Vec<&str> = groups.iter().map(|g| g.heading).collect();
+        let groups = groups_of(&state, ListSort::Alphabetical);
         assert_eq!(
-            headings,
-            vec!["Watching", "Short List", "Finished / Dropped"]
+            headings(&groups),
+            vec![
+                "Watching — kim",
+                "Watching",
+                "Short List",
+                "Finished / Dropped"
+            ]
         );
-        let watching = &groups[0];
-        assert_eq!(watching.rows.len(), 2);
-        assert_eq!(watching.rows[0].name, "Airing");
-        assert_eq!(watching.rows[0].next_ep.as_deref(), Some("12"));
-        assert!(watching.rows[0].available);
-        assert_eq!(watching.rows[0].watchers, "BN");
+        let kim = &groups[0];
+        assert_eq!(kim.rows.len(), 1);
+        assert_eq!(kim.rows[0].name, "Airing");
+        assert_eq!(kim.rows[0].next_ep.as_deref(), Some("12"));
+        assert!(kim.rows[0].available);
+        assert_eq!(kim.rows[0].watchers, "K");
+        assert_eq!(groups[1].rows[0].name, "Binging");
         assert!(groups.last().unwrap().collapsed);
+    }
+
+    /// The users column derives from live `series_preference`, not the
+    /// import-time `watchers` seed: the seed says Baughn+Nero, but only
+    /// kim has a Watching preference — the column shows kim alone, and
+    /// the per-user groups follow the preferences too.
+    #[test]
+    fn commitment_column_is_live_preference_not_the_watchers_seed() {
+        let mut state = CrdtState::new();
+        let mut entry = list_entry("Airing", ListStatus::CurrentSeason);
+        entry.watchers = [UserId::new("baughn"), UserId::new("nero")]
+            .into_iter()
+            .collect();
+        state.put_list_entry(A, ts(1), ListEntryId(1), entry);
+        commit(&mut state, 2, "kim", 1);
+        // nero explicitly backed out after the seed.
+        state.set_series_preference(
+            A,
+            ts(3),
+            UserId::new("nero"),
+            ListEntryId(1),
+            SeriesWatchState::NotWatching,
+            None,
+        );
+
+        let groups = groups_of(&state, ListSort::Alphabetical);
+        assert_eq!(headings(&groups), vec!["Watching — kim"]);
+        assert_eq!(groups[0].rows[0].watchers, "K");
+    }
+
+    /// An entry appears in *every* committed user's group — including a
+    /// known-offline user's — with `me` first and the rest alphabetical.
+    #[test]
+    fn entry_appears_in_every_committed_users_group() {
+        let mut state = CrdtState::new();
+        state.put_list_entry(
+            A,
+            ts(1),
+            ListEntryId(1),
+            list_entry("Airing", ListStatus::CurrentSeason),
+        );
+        // baughn is me; nero is known-offline in the fixture's user set.
+        commit(&mut state, 2, "nero", 1);
+        commit(&mut state, 3, "baughn", 1);
+        commit(&mut state, 4, "kim", 1);
+
+        let groups = groups_of(&state, ListSort::Alphabetical);
+        assert_eq!(
+            headings(&groups),
+            vec!["Watching — baughn", "Watching — kim", "Watching — nero"]
+        );
+        for group in &groups {
+            assert_eq!(group.rows.len(), 1, "{}", group.heading);
+            assert_eq!(group.rows[0].name, "Airing");
+        }
+    }
+
+    /// Nothing vanishes: a Watching-tier entry whose only committed
+    /// watcher is a user the client can't name (not a peer, not in the
+    /// known-offline roster — no rendered group) still lands in the
+    /// residual shared Watching group.
+    #[test]
+    fn commitment_by_an_unknown_user_falls_into_the_residual_group() {
+        let mut state = CrdtState::new();
+        state.put_list_entry(
+            A,
+            ts(1),
+            ListEntryId(1),
+            list_entry("Airing", ListStatus::CurrentSeason),
+        );
+        commit(&mut state, 2, "stranger", 1);
+
+        let groups = groups_of(&state, ListSort::Alphabetical);
+        assert_eq!(headings(&groups), vec!["Watching"]);
+        assert_eq!(groups[0].rows[0].name, "Airing");
+        // The column still shows the commitment even without a group.
+        assert_eq!(groups[0].rows[0].watchers, "S");
+    }
+
+    /// A non-Watching-tier status keeps an entry out of the per-user
+    /// groups even when someone is committed: commitment says who waits,
+    /// status says where the entry lives.
+    #[test]
+    fn committed_but_planned_entries_stay_in_their_status_group() {
+        let mut state = CrdtState::new();
+        state.put_list_entry(
+            A,
+            ts(1),
+            ListEntryId(1),
+            list_entry("Someday", ListStatus::Planned),
+        );
+        commit(&mut state, 2, "kim", 1);
+
+        let groups = groups_of(&state, ListSort::Alphabetical);
+        assert_eq!(headings(&groups), vec!["Planned"]);
+        assert_eq!(groups[0].rows[0].watchers, "K");
+    }
+
+    /// Recency order: watchable entries (weekly `available`, or an
+    /// unwatched library file) first, most recently watched first within
+    /// each partition (never-watched last), names as the tiebreak — and
+    /// the bottom partition is exactly the dimmed set.
+    #[test]
+    fn recency_sort_partitions_watchable_first() {
+        let mut state = CrdtState::new();
+        let mut put = |id: u128, name: &str| {
+            let mut entry = list_entry(name, ListStatus::CurrentSeason);
+            entry.anidb_series_id = Some(AniDbSeriesId(id as u32));
+            state.put_list_entry(A, ts(id as u64), ListEntryId(id), entry);
+            commit(&mut state, 100 + id as u64, "kim", id);
+        };
+        put(1, "Available, stale");
+        put(2, "Available, fresh");
+        put(3, "Nothing to watch, fresh");
+        put(4, "Unwatched file held");
+        for id in [1u128, 2] {
+            state.set_next_ep(
+                A,
+                ts(10 + id as u64),
+                ListEntryId(id),
+                NextEpState {
+                    next_ep: Some("5".into()),
+                    available: true,
+                },
+            );
+        }
+        // Entry 4's freshness comes from a held unwatched file, not the
+        // weekly flag.
+        state.set_anidb_metadata(
+            A,
+            ts(20),
+            Ed2kHash([4; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Unwatched file held".into(),
+                series_id: Some(AniDbSeriesId(4)),
+                episode_number: Some("2".into()),
+            }),
+        );
+        let recency: BTreeMap<SeriesKey, u64> = [
+            (SeriesKey::AniDb(AniDbSeriesId(1)), 100),
+            (SeriesKey::AniDb(AniDbSeriesId(2)), 900),
+            (SeriesKey::AniDb(AniDbSeriesId(3)), 950),
+        ]
+        .into_iter()
+        .collect();
+
+        let groups = list_groups(
+            &state.view(),
+            &UserId::new("kim"),
+            &[UserId::new("kim")],
+            ListSort::Recency,
+            &recency,
+        );
+        assert_eq!(headings(&groups), vec!["Watching — kim"]);
+        let names: Vec<&str> = groups[0].rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Available, fresh",        // watchable, watched at 900
+                "Available, stale",        // watchable, watched at 100
+                "Unwatched file held",     // watchable, never watched
+                "Nothing to watch, fresh"  // not watchable, despite 950
+            ]
+        );
+        let dimmed: Vec<bool> = groups[0].rows.iter().map(|r| r.dimmed).collect();
+        assert_eq!(dimmed, vec![false, false, false, true]);
+
+        // Alphabetical ignores all of that.
+        let groups = groups_of(&state, ListSort::Alphabetical);
+        let watching = groups
+            .iter()
+            .find(|g| g.heading == "Watching — kim")
+            .unwrap();
+        let names: Vec<&str> = watching.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Available, fresh",
+                "Available, stale",
+                "Nothing to watch, fresh",
+                "Unwatched file held"
+            ]
+        );
+    }
+
+    /// Unwatched-file resolution follows the Series Identity order for
+    /// unlinked entries too: `manual_files` membership and exact
+    /// alias/name matches light an entry up; a group-watched file does
+    /// not.
+    #[test]
+    fn unwatched_files_resolve_via_manual_files_and_aliases() {
+        let mut state = CrdtState::new();
+        let mut by_alias = list_entry("Alias Show", ListStatus::Active);
+        by_alias.local_aliases = ["Alias Hint".to_string()].into_iter().collect();
+        state.put_list_entry(A, ts(1), ListEntryId(1), by_alias);
+        let mut by_manual = list_entry("Manual Show", ListStatus::Active);
+        by_manual.manual_files = [Ed2kHash([2; 16])].into_iter().collect();
+        state.put_list_entry(A, ts(2), ListEntryId(2), by_manual);
+        state.put_list_entry(
+            A,
+            ts(3),
+            ListEntryId(3),
+            list_entry("Watched Show", ListStatus::Active),
+        );
+
+        let meta = |name: &str| {
+            Some(AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: name.into(),
+                series_id: None,
+                episode_number: None,
+            })
+        };
+        state.set_anidb_metadata(A, ts(4), Ed2kHash([1; 16]), meta("Alias Hint"));
+        state.set_anidb_metadata(A, ts(5), Ed2kHash([2; 16]), meta("No Name Match"));
+        state.set_anidb_metadata(A, ts(6), Ed2kHash([3; 16]), meta("Watched Show"));
+        state.set_watched(A, ts(7), Ed2kHash([3; 16]), true);
+
+        let groups = groups_of(&state, ListSort::Alphabetical);
+        let watching = groups.iter().find(|g| g.heading == "Watching").unwrap();
+        let dimmed: BTreeMap<&str, bool> = watching
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.dimmed))
+            .collect();
+        assert_eq!(
+            dimmed,
+            [
+                ("Alias Show", false),
+                ("Manual Show", false),
+                ("Watched Show", true)
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// SnEnn display: a linked entry with a numeric `next_ep` renders as
+    /// `S⟨ordinal⟩E⟨nn⟩`, the ordinal counted along the prequel chain.
+    /// Free text and unlinked entries render verbatim; a cycle in the
+    /// relations data terminates; a chain broken by a missing relations
+    /// entry counts the visible prefix.
+    #[test]
+    fn next_ep_renders_snenn_for_linked_numeric_entries() {
+        let mut state = CrdtState::new();
+        let relations = |title: &str, prequel: Option<u32>| SeriesRelations {
+            title: title.into(),
+            year: None,
+            episode_count: None,
+            relations: prequel
+                .map(|target| SeriesRelation {
+                    kind: RelationKind::Prequel,
+                    target: AniDbSeriesId(target),
+                })
+                .into_iter()
+                .collect(),
+        };
+        // Season 3 (id 30) -> season 2 (id 20) -> season 1 (id 10).
+        state.set_series_relations(A, ts(1), AniDbSeriesId(30), relations("S3", Some(20)));
+        state.set_series_relations(A, ts(2), AniDbSeriesId(20), relations("S2", Some(10)));
+        state.set_series_relations(A, ts(3), AniDbSeriesId(10), relations("S1", None));
+        // A mutual-prequel mistake: 41 <-> 40.
+        state.set_series_relations(A, ts(4), AniDbSeriesId(41), relations("Cyc B", Some(40)));
+        state.set_series_relations(A, ts(5), AniDbSeriesId(40), relations("Cyc A", Some(41)));
+        // 50's prequel (49) has no relations entry yet: the walk counts
+        // the one visible step and stops.
+        state.set_series_relations(A, ts(6), AniDbSeriesId(50), relations("Broken", Some(49)));
+
+        // (entry id, name, linked series, next_ep free text, expected display)
+        type Case = (
+            u128,
+            &'static str,
+            Option<u32>,
+            &'static str,
+            Option<&'static str>,
+        );
+        let cases: &[Case] = &[
+            (1, "Third season", Some(30), "5", Some("S3E05")),
+            (2, "First season", Some(10), "12", Some("S1E12")),
+            (3, "Cycle", Some(41), "3", Some("S2E03")),
+            (4, "Broken chain", Some(50), "7", Some("S2E07")),
+            // No relations entry at all: a plain S1.
+            (5, "Unknown", Some(99), "9", Some("S1E09")),
+            (6, "Free text", Some(30), "movie 5?", Some("movie 5?")),
+            (7, "Unlinked", None, "8", Some("8")),
+            (8, "No next ep", Some(30), "", None),
+        ];
+        for (id, name, series, next, _) in cases {
+            let mut entry = list_entry(name, ListStatus::Active);
+            entry.anidb_series_id = series.map(AniDbSeriesId);
+            state.put_list_entry(A, ts(100 + *id as u64), ListEntryId(*id), entry);
+            if !next.is_empty() {
+                state.set_next_ep(
+                    A,
+                    ts(200 + *id as u64),
+                    ListEntryId(*id),
+                    NextEpState {
+                        next_ep: Some((*next).into()),
+                        available: false,
+                    },
+                );
+            }
+        }
+
+        let groups = groups_of(&state, ListSort::Alphabetical);
+        let watching = groups.iter().find(|g| g.heading == "Watching").unwrap();
+        for (_, name, _, _, expected) in cases {
+            let row = watching.rows.iter().find(|r| r.name == *name).unwrap();
+            assert_eq!(row.next_ep.as_deref(), *expected, "{name}");
+        }
     }
 
     #[test]

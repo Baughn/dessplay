@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-16
+Last updated: 2026-08-17
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1196,16 +1196,39 @@ certainty:
 
 The Series pane gains **The List** as a third mode (alongside Recent Series /
 All Series) -- and is the pane's default mode, see [Adding Files to the
-Playlist](#adding-files-to-the-playlist) -- grouped by status: CurrentSeason
-and Active first, then ShortList, Planned, Waiting, Hiatus, with
-Finished/Dropped collapsed at the bottom. Pressing `Enter` on an
+Playlist](#adding-files-to-the-playlist). Grouping answers "what are we
+watching, and whose": the Watching tier (CurrentSeason + Active) renders as
+one **"Watching — ⟨user⟩" group per committed user** -- every peer or
+known-offline user whose `series_preference` for the entry is Watching, the
+local user's group first and the rest alphabetical, an entry appearing in
+every applicable group -- with a residual shared **Watching** group for
+Watching-tier entries no rendered group claims (no committed watcher, or
+one the client can't name), so nothing vanishes. Below that the shared
+status groups: ShortList, Planned, Waiting, Hiatus, with Finished/Dropped
+collapsed at the bottom. Pressing `Enter` on an
 Active/CurrentSeason entry jumps toward `next_ep`: for a linked entry, into
 the episode browser with the cursor on that episode if anyone has it; for an
 unlinked entry, into the candidate-ranked disambiguation view described
 above. Either way queueing tonight's episode is a couple of keypresses.
 
-Entries display name, nero_name, next_ep (with an "out" marker from
-`available`), and watcher initials. Editing fields and adding entries happens
+Within each group, `s` toggles the sort (persisted across sessions, like
+All Series' sort): **Recency** (the default) floats watchable entries --
+the weekly `available` flag set, or an unwatched library file resolving to
+the entry by the Series Identity order -- above those with nothing to
+watch, most recently watched first within each partition (from local watch
+history, the same source as Recent Series); **Alphabetical** is plain name
+order. Entries with nothing to watch render dim in either sort -- the dim
+set is exactly Recency's bottom partition.
+
+Entries display name, nero_name, next_ep, and **live commitment initials**:
+the users whose `series_preference` is Watching, not the import-time
+`watchers` seed (which keeps its one-shot preference-seeding role and is
+never displayed). A linked entry whose free-text `next_ep` parses as a
+plain episode number renders it as **`SnEnn`** -- the season ordinal
+counted along the replicated prequel chain (best effort: cycle-guarded,
+counting the visible prefix when the graph hasn't filled in) -- with an
+"out" marker from `available`; anything else ("S3-05", "Sisters",
+"movie 5?", unlinked entries) renders verbatim. Editing fields and adding entries happens
 in a small edit modal (also where `local_aliases`/`manual_files` are edited
 for an unlinked entry); linking an unlinked entry (`l`) opens the AniDB
 search modal: it pre-searches for the entry's name (informal names like
@@ -1558,6 +1581,7 @@ key equivalent.
 | `Home` / `End` (or `Ctrl-A` / `Ctrl-E`) | Chat | Move cursor to start/end of line |
 | `m` | Series | Cycle mode: Recent Series -> All Series -> The List |
 | `s` | Series (All mode) | Toggle sort: by title <-> by year |
+| `s` | Series (List mode) | Toggle sort: recency <-> alphabetical |
 | `/` | Series (Recent / All) | Start filtering franchises by title (removes Recent's watched-only default) |
 | _printable_ | Series (filtering) | Add to the filter text |
 | `Backspace` | Series (filtering) | Delete a filter character; on an empty filter, exit filtering |
