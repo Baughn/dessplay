@@ -1,6 +1,6 @@
 # DessPlay Implementation Plan
 
-Last updated: 2026-08-09
+Last updated: 2026-08-17
 
 The initial 10 phases are bottom-up; later numbered phases capture feature
 batches. Each phase produces testable artifacts. The first
@@ -11,6 +11,10 @@ Phases 11–18 are the **feature-request batch** (triaged 2026-07-02 from
 the group's request sheet; request numbers `#N` refer to its rows).
 Ordering is dependency-driven: the protocol version gate lands first so
 later wire/schema changes are clean flag-days.
+
+Phases 28–30 record **unplanned work** after the fact (2026-07/08 landed
+without plan entries). Phases 31–33 are the **2026-08-17 usage-triage
+batch** — see that triage section for what was closed or dropped.
 
 ## Workspace Layout
 
@@ -561,7 +565,8 @@ block verification/resume, rarest-first, prefetch, seeder auto-fetch).
   client runs at startup (not via a media-root scan).
 - **Future**: disk/retention-aware prefetch depth, seek-aware download
   window, rarest-aware upload prioritization, choking for many-peer
-  scale.
+  scale. *(2026-08-17: superseded — the window/prioritization items
+  landed as Phase 30; the rest was closed in the 2026-08-17 triage.)*
 
 ### What gets built
 - FileActor: hashing, scanning, matching, download coordination, cache
@@ -1455,15 +1460,227 @@ expectation is a manual search plus a dedicated BT client.
 
 ---
 
-## Deferred from the 2026-07-02 batch
+## Phase 28: Transfer Flow-Control Overhaul
 
-Tracked here so they aren't re-triaged from scratch:
+**Status: complete (2026-07-28; hardened 2026-08-13).** Unplanned — see
+[`docs/proposals/2026-07-28-transfer-flow-control.md`](proposals/2026-07-28-transfer-flow-control.md).
+
+QUIC congestion control switched from Cubic to BBR; the client runs
+split DSCP-tagged control and transfer connections; each transfer gets
+its own data stream with end-to-end backpressure; quinn-udp is vendored
+so DSCP tags survive the per-packet ECN cmsg. Position-anchored playable
+gating and partial-file playback landed in the same window. The
+2026-08-13 hardening pass added the answered-request contract for stream
+opens, generation-stamped stream lifecycle events, stream-loss-as-snub,
+and the permanently-unreachable-transfer-link advisory.
+
+---
+
+## Phase 29: AI Commentary & the Synced Marquee
+
+**Status: complete (2026-07-25 → 2026-08-13).** Unplanned; documented in
+design.md (AI Commentary). A generic synced marquee register
+(`PROTOCOL_VERSION` 7) scrolls through the bottom line's middle slot;
+the commentary engine feeds it in-character lines from an Anthropic
+model, with screenshot capture through the player stack,
+speaker-attributed subtitle context, per-thread commentators, and an AI
+settings tab (token + interval). Follow-up hardening: JPEG frames (PNG
+blew the API's 10 MiB image cap), frame/episode retention caps,
+series-change survival, adaptive thinking, and merged-clock marquee
+animation fixes.
+
+---
+
+## Phase 30: Anchored Download Policy
+
+**Status: complete (2026-08-16).** Unplanned; documented in design.md
+(Download Cache and Retention). The want-set became every unwatched
+playlist entry, ordered by `anchored_download_order` around now-playing
+(entries after it first, nearest first; watched back-catalog last); a
+shared per-source chunk budget spends across files in that priority
+order; the session plumbs `SetDownloadPriority` to the scheduler; the
+seeder anchors at now-playing too; urgent-set scheduling generalizes
+endgame to any deadline-gated chunk. Cross-file fuzz coverage pins the
+policy. Supersedes Phase 9B's seek-aware-window and prioritization
+future bullets.
+
+---
+
+## Other unplanned work, 2026-07 → 2026-08
+
+Landed without plan entries; recorded for completeness: the borderless
+connection-health line + advisor seam (2026-07-25), mouse support
+(2026-07-20), Discord-style `||spoiler||` chat tags masked in both IRC
+directions (2026-08-12/13), the tagged snapshot storage envelope with
+frozen-byte compat fixtures (2026-07-25 / 2026-08-13), multi-address
+server dial + DNS re-resolution (2026-07-06/19), known-offline gating
+extended to a week (2026-07-18), and the drift controller's hysteresis +
+tapered-slew rework (2026-07-23).
+
+---
+
+## 2026-08-17 Triage
+
+The 2026-07-02 deferred batch, Phase 9B's future list, and design.md's
+Future Plans, consolidated against six weeks of real usage.
+
+**Closed / dropped:**
+
+- Disk/retention-aware prefetch depth — obsoleted by hardware (the one
+  constrained client now has 2 TiB of disk); was always a single-user
+  problem.
+- Bitrate-aware unpause (the download-speed-vs-bitrate rule half) — not
+  worth automating; since the anchored download policy it comes up
+  rarely, and the group decides by watching how fast the download
+  percentage moves.
+- Intermixed-subtitle interleave by in-video timestamp — arrival order
+  is fine in practice.
+- Web frontend (the `ViewSpec` web renderer) — no interest.
+- Choking for many-peer scale — the group is a fixed handful.
+- **#28** large uncorrected desync — believed fixed (drift-controller
+  hysteresis rework, 2026-07-23); reopen with logs if it recurs.
+
+**Still open, deferred:**
 
 - **#5** subtitle near-duplicate lines — needs a concrete example.
-- **#28** large uncorrected desync — believed fixed by the full-codebase
-  audit; reopen with logs if it recurs.
-- **#9** Nero-names surfacing and **#25** auto-queue next episode —
-  scheduled as Phase 19 (Series Identity & List Commitment), above.
-- **#14 (sound half)** the audible "Dess?!" — blocked on an actual audio
-  asset; the Phase 13 overlay covers the visibility need.
-- **#19** GUI — future work (ui-architecture.md, Web Renderer).
+- **#14 (sound half)** the audible "Dess?!" — blocked on an audio asset.
+- **#19** GUI — deferred until everything else is done; mechanism open
+  (the web-renderer approach is dropped).
+- Automating The List's "episode is out" flag via AniDB air dates.
+
+**New work from usage pain points: Phases 31–33, below.**
+
+---
+
+## Phase 31: Servable Ad-hoc Files & Drag-in Adds
+
+**Goal**: a file dragged into the terminal — from anywhere, including
+outside every media root — plays for everyone, not just the dragger.
+
+Investigation (2026-08-17) found the add half already works: the
+Phase 18 paste branch accepts any existing path with no root check, and
+out-of-root `hash_cache` rows survive Phase 22's root-keyed pruning
+(nullable `media_root`). What's broken is serving.
+
+### What gets built
+- **Bug fix (wider than drag-drop)**: a hash-added file is never
+  registered in the FileActor's servable set (`local_files`), so *any*
+  browse- or paste-added file advertises Ready yet serves nothing for
+  the rest of the session — peers solicit, hit the silent
+  `serve_block_hashes` bail, snub us, and stay Missing, gating the
+  group. (In-root adds self-heal on the next restart via scan adoption;
+  out-of-root adds never do.) Fix: adopt the local copy on
+  `Done::Hashed` alongside `commit_fresh_hashes`; make the
+  "advertised Ready but not held" serve path answer `CannotServe` (or
+  log loudly) instead of silence. Regression test written first, per
+  policy: an added file advertises Ready *and serves* in the same
+  session.
+- **Durable out-of-root registration**: persist the pasted path as a
+  manual-mapping-style row — registered **in place** (user decision
+  2026-08-17: no copy into the cache). The file must stay put; a moved
+  file re-breaks availability, exactly like a manual mapping.
+- **Paste normalization**: shell-unescape backslash escapes, strip
+  quotes, accept `file://` URLs — the forms terminals actually produce
+  on drag — before the existing single-existing-file test. Anything
+  else still lands in the chat input.
+- Fix the stale-resolve race found in the same investigation: a
+  `NotFound` resolve landing after `note_local_file` overwrites the
+  verified entry and starts a pointless download of a file we hold.
+
+### Testing
+- Paste normalization unit tests (escaped, quoted, `file://`,
+  directory, multi-line).
+- Harness: A pastes an out-of-root path → B downloads and plays it;
+  A restarts → still servable.
+- The serving regression test above, confirmed failing before the fix.
+
+### Milestone
+Ad-hoc episode selection is drag → everyone watches. No silent
+Ready-but-unservable states remain.
+
+---
+
+## Phase 32: List Rework
+
+**Goal**: The List answers "what are we watching, whose, and what's
+next" at a glance. Today the users column shows import-time `watchers`
+initials (never live state), grouping ignores per-user commitment, sort
+is hardcoded name order, and next_ep renders as raw free text.
+
+All client-side derivation: `series_preference` is already resolved in
+the `StateView` at the `list_groups` call site — no CRDT or wire change.
+
+### What gets built
+- **Live commitment column**: the users column derives from
+  `series_preference` (who has the series as Watching), replacing the
+  static `watchers`-initials display. The `watchers` set keeps its
+  existing role as a one-shot preference seed.
+- **Per-user Watching groups**: one "Watching — ⟨user⟩" group per user
+  (peers + known-offline) with Watching commitments; an entry appears in
+  every applicable group. The shared status groups (Short List, Planned,
+  Waiting, Hiatus, Finished/Dropped) render below, unchanged; an entry
+  with Watching-tier status (`CurrentSeason`/`Active`) but no committed
+  watcher falls into a residual shared Watching group so nothing
+  vanishes.
+- **Sort toggle** (`s`, currently unbound in List mode; mirrors the
+  All-Series `SeriesSort` pattern including persistence): Alphabetical /
+  Recency. In Recency mode, entries whose next episode is out
+  (`available`) sort above those with nothing unwatched; within each
+  partition, most recently group-watched first.
+- **SnEnn next-ep display**: for linked entries, derive the season
+  ordinal by counting prequels along the replicated `SeriesRelations`
+  chain (the franchise walk already exists) and render a parseable
+  next_ep as `S2E05`; unlinked or unparseable values render verbatim.
+  Column position unchanged (left of the users column).
+
+### Testing
+- Props unit tests: per-user group derivation (multi-membership,
+  known-offline users, the residual group), the live-commitment column,
+  both sort orders + the availability partition, season-ordinal
+  derivation over relation chains (including cycles and missing links).
+- insta snapshots: per-user groups, both sorts, SnEnn rendering.
+- Harness: A `/watch`es a series → B's List shows it under
+  "Watching — A".
+
+### Milestone
+The List is the nightly "what's next" surface: whose-turn groups, fresh
+episodes floating up, `S2E05` at a glance.
+
+---
+
+## Phase 33: Nicknames & Short Titles
+
+**Goal**: the names the group actually uses become first-class. Nero's
+(re)names get a fast entry path, and AniDB's community short titles
+(type-3 rows in the titles dump — already ingested unfiltered into
+server SQLite, just never surfaced per-series) replace unwieldy official
+titles in the List.
+
+### What gets built
+- **`n` in the Series pane, List mode**: opens a minimal single-field
+  editor for the selected entry's `nero_name`. The field and its
+  dim-quoted display after the title already exist; entry today requires
+  the full edit modal. `n` is unbound in every SeriesPane keymap; this
+  becomes the third pane-local meaning of `n` (design.md key table
+  updated).
+- **Short titles over the wire**: append `short_titles: Vec<String>`
+  (kind-3 rows, x-jat/en preferred) to `SeriesRelations`, populated at
+  ANIME-lookup time from the titles table, plus a one-time server
+  backfill for already-settled `series_relations` rows (they are written
+  once and never revisited). `PROTOCOL_VERSION` bump per policy;
+  snapshot-compat fixtures checked.
+- **Display**: a linked List entry with a short title renders it
+  *instead of* the official name (user decision 2026-08-17: save the
+  space — the full name still lives in the edit modal and episode
+  browser), with `nero_name` appended dim as today.
+
+### Testing
+- Storage: kind-3 title query; worker population + backfill over canned
+  dumps.
+- Snapshot/protocol compat per the frozen-fixture policy.
+- UI: short title over official name, nero_name still appended, `n`
+  editor round-trip.
+
+### Milestone
+"GochiUsa" instead of "Gochuumon wa Usagi Desu ka??", and Nero's names
+entered in two keystrokes.

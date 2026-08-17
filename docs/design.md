@@ -418,9 +418,10 @@ It can have one of three values:
   same bytes fail the same way, and repeated failures must not loop
   (the player-process analogue is the crash ladder, see
   [Player Lifecycle](#player-lifecycle)). The
-  download-speed-vs-bitrate half of the original rule remains **deferred**
-  — no synced throughput signal exists to evaluate it, see
-  [Future Plans](#future-plans).
+  download-speed-vs-bitrate half of the original rule was **dropped**
+  (2026-08-17 triage): since the anchored download policy it comes up
+  rarely, and the group decides by watching how fast the download
+  percentage moves.
 
 ### Ready States (UI Display)
 
@@ -2551,18 +2552,19 @@ For v1, this is acceptable. Future improvements could include:
 
 ## Future Plans
 
-- Intermixed subtitles: interleave by the in-video timestamp rather than
-  wall-clock arrival (see [Subtitle Display](#subtitle-display)).
 - Automating The List's "this week's episode is out" flag (possibly via AniDB
   episode air dates).
-- Enforcing the **download-speed-vs-bitrate** half of the Downloading unpause
-  rule (see [File State](#file-state)). Needs a synced throughput signal
-  (the downloader's measured speed vs the file's bitrate); only the
-  position-anchored 20%-window rule is enforced today.
 - Direct client-to-client connections (with or without hole punching) as a
   transfer optimization, slotted in beneath the `send(peer, message)`
   interface. Cut from v2: the relay-through-NAS path makes them unnecessary.
 - [AI Commentary marquee](#ai-commentary-the-marquee) refinements: keying
   the commentator per-user, and marquee sources beyond commentary (the
   register is deliberately generic).
-- Web UI using the same `ViewSpec` approach (see [ui-architecture.md](ui-architecture.md)).
+- A GUI, deferred until everything else is done. The web-renderer approach
+  (ui-architecture.md) was dropped for lack of interest, so the mechanism
+  is open.
+
+Dropped in the 2026-08-17 usage triage (see plan.md for reasoning):
+interleaving Intermixed subtitles by in-video timestamp, the
+bitrate-aware unpause rule, the web frontend, disk-aware prefetch depth,
+and many-peer choking.

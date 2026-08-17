@@ -574,6 +574,10 @@ tests verify rendering and input routing, not CRDT behavior.
 
 ## Web Renderer (Future)
 
+**Status (2026-08-17): dropped for lack of interest.** A GUI remains a
+deferred-to-last item (plan.md, 2026-08-17 triage), but not necessarily
+via this approach. Kept as a design sketch.
+
 The CRDT state and business logic live in `dessplay-core`, independent of
 any UI framework. A future web UI could:
 
