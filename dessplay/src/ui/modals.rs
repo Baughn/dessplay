@@ -1531,6 +1531,62 @@ pub struct EpisodeBrowser {
 }
 
 impl EpisodeBrowser {
+    /// The season rows as currently displayed (tests observe refresh
+    /// behavior through this).
+    #[cfg(test)]
+    pub(crate) fn seasons(&self) -> &[Season] {
+        &self.seasons
+    }
+
+    /// Re-derive the volatile per-copy state — watched marks, holder
+    /// lists, the first-unwatched `<` marker — from a fresh snapshot,
+    /// in place. The dispatcher calls this on every snapshot, so `w`'s
+    /// round-trip (and other clients' toggles and downloads) shows
+    /// without reopening the browser. Row *structure* stays as built at
+    /// open time, and the cursor is untouched — rows are identity-stable
+    /// by hash; only what the group knows about them changes.
+    pub(crate) fn refresh(
+        &mut self,
+        view: &dessplay_core::StateView,
+        personally_watched: &std::collections::BTreeSet<Ed2kHash>,
+    ) {
+        // One pass over the availability map, not one scan per copy.
+        let mut holders_by_hash: std::collections::BTreeMap<Ed2kHash, Vec<_>> =
+            std::collections::BTreeMap::new();
+        for ((user, hash), availability) in &view.file_availability {
+            if *availability == dessplay_core::types::FileAvailability::Ready {
+                holders_by_hash.entry(*hash).or_default().push(user.clone());
+            }
+        }
+        for season in &mut self.seasons {
+            for row in &mut season.episodes {
+                let (EpisodeRow::Single { copy, .. } | EpisodeRow::Child(copy)) = row else {
+                    continue;
+                };
+                // The muting rule, same as `props::episode_rows`: the
+                // group flag or personal history — either counts.
+                copy.watched = view.watched.get(&copy.hash) == Some(&true)
+                    || personally_watched.contains(&copy.hash);
+                copy.holders = holders_by_hash.get(&copy.hash).cloned().unwrap_or_default();
+            }
+            // A header mutes only when every copy under it (the
+            // contiguous Child run that follows) is watched — recomputed
+            // after the copies above.
+            for i in 0..season.episodes.len() {
+                if matches!(season.episodes[i], EpisodeRow::Header { .. }) {
+                    let all = season.episodes[i + 1..]
+                        .iter()
+                        .take_while(|row| matches!(row, EpisodeRow::Child(_)))
+                        .all(|row| row.watched());
+                    if let EpisodeRow::Header { watched, .. } = &mut season.episodes[i] {
+                        *watched = all;
+                    }
+                }
+            }
+            season.first_unwatched = props::first_unwatched(&season.episodes);
+        }
+    }
+
     /// Open on a franchise. With exactly one season, jump straight to
     /// the episode list (the design's single-season shortcut), cursor on
     /// its first unwatched row.
@@ -3038,6 +3094,47 @@ mod tests {
             })
         }));
         rows
+    }
+
+    /// `refresh` re-derives per-copy watched marks and holders from a
+    /// fresh view, recomputes header muting (all copies watched) and the
+    /// first-unwatched marker, and leaves row structure alone.
+    #[test]
+    fn refresh_updates_watched_holders_and_header_muting_in_place() {
+        use dessplay_core::CrdtState;
+        use dessplay_core::types::{ActorId, FileAvailability, SharedTimestamp, UserId};
+        let rows = header_and_children("Episode 2", &[(hash(1), "a.mkv"), (hash(2), "b.mkv")]);
+        let mut browser = EpisodeBrowser::new("X".into(), vec![season("S1", rows)]);
+
+        // The fresh view: copy 1 group-watched, copy 2 personally
+        // watched, and a holder appears for copy 2.
+        let mut state = CrdtState::new();
+        state.set_watched(ActorId::SERVER, SharedTimestamp(1), hash(1), true);
+        state.set_file_availability(
+            ActorId::SERVER,
+            SharedTimestamp(2),
+            UserId::new("kim"),
+            hash(2),
+            FileAvailability::Ready,
+        );
+        let personal = [hash(2)].into_iter().collect();
+        browser.refresh(&state.view(), &personal);
+
+        let season = &browser.seasons()[0];
+        assert!(
+            season.episodes.iter().all(|row| row.watched()),
+            "both copies and the header must mute: {:?}",
+            season
+                .episodes
+                .iter()
+                .map(|r| r.watched())
+                .collect::<Vec<_>>()
+        );
+        let EpisodeRow::Child(copy) = &season.episodes[2] else {
+            panic!("row structure must be untouched");
+        };
+        assert_eq!(copy.holders, vec![UserId::new("kim")]);
+        assert_eq!(season.first_unwatched, None);
     }
 
     #[test]

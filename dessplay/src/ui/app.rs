@@ -877,6 +877,15 @@ impl Ui {
         self.health.set_props(snapshot.health.clone());
         self.snapshot = snapshot;
         self.refresh_series();
+        // Open modals render derived state too: refresh episode
+        // browsers (anywhere in the stack) in place, so `w`'s
+        // round-trip — and other clients' watched toggles and download
+        // completions — shows immediately instead of on reopen.
+        for modal in &mut self.modals {
+            if let Modal::Episodes(browser) = modal {
+                browser.refresh(&self.snapshot.view, &self.snapshot.watched_hashes);
+            }
+        }
     }
 
     fn refresh_series(&mut self) {
@@ -4014,6 +4023,53 @@ mod tests {
         assert!(
             matches!(ui.modals.last(), Some(Modal::Episodes(_))),
             "a linked entry with held franchise files must open the episode browser"
+        );
+    }
+
+    /// Regression (2026-08-17): `w` in the episode browser writes the
+    /// group watched flag, but the open modal froze its rows at open
+    /// time — the mark only appeared after closing and reopening. A
+    /// fresh snapshot (the `w` round-trip, or another client's toggle)
+    /// must update the open browser in place: watched marks, holder
+    /// lists, and the season's first-unwatched marker.
+    #[test]
+    fn episode_browser_updates_watched_marks_from_fresh_snapshots() {
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(1),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show".into(),
+                series_id: Some(AniDbSeriesId(7)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::BrowseFranchise(FranchiseKey::Series(AniDbSeriesId(7))));
+        let Some(Modal::Episodes(browser)) = ui.modals.last() else {
+            panic!("the episode browser should be open");
+        };
+        assert!(!browser.seasons()[0].episodes[0].watched());
+
+        // The flag lands (our own `w`, echoed through the sync actor).
+        state.set_watched(A, SharedTimestamp(2), Ed2kHash([1; 16]), true);
+        ui.apply_snapshot(UiSnapshot {
+            view: std::sync::Arc::new(state.view()),
+            ..Default::default()
+        });
+        let Some(Modal::Episodes(browser)) = ui.modals.last() else {
+            panic!("the episode browser should still be open");
+        };
+        assert!(
+            browser.seasons()[0].episodes[0].watched(),
+            "a fresh snapshot must mute the watched episode without reopening"
+        );
+        assert_eq!(
+            browser.seasons()[0].first_unwatched,
+            None,
+            "the first-unwatched marker follows the fresh flags too"
         );
     }
 

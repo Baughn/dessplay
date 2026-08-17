@@ -491,7 +491,12 @@ Modal types:
   large media-root lists scroll. Files includes the default-on **Archive
   subdirectory** toggle; the UI carries its current value in each archive
   action so the file actor receives a complete destination policy.
-- **EpisodeBrowser**: Browse franchise seasons/episodes
+- **EpisodeBrowser**: Browse franchise seasons/episodes. Row structure
+  is built at open time, but the volatile per-copy state — watched
+  marks, holder lists, the first-unwatched `<` marker — is refreshed in
+  place from every `UiSnapshot` (`EpisodeBrowser::refresh`, called by
+  `apply_snapshot` for every browser in the modal stack), so `w`'s
+  round-trip and other clients' toggles show without reopening
 - **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)
 - **AniDbSearch**: Link a List entry to an AniDB series (`l` in List
   mode). Pre-searches for the entry's name; the search runs server-side
