@@ -1765,6 +1765,27 @@ impl Actor {
         self.local_files.insert(file, path);
     }
 
+    /// A user-picked add (browse or paste) finished hashing: register
+    /// the copy as servable. The session advertises the file Ready off
+    /// the same event, so this must land first — without it every
+    /// hash-added file was Ready-but-unservable for the rest of the
+    /// session (Phase 31). An out-of-root path is additionally persisted
+    /// as a manual mapping: the media-root walk can never re-adopt it
+    /// after a restart, so the durable row is what keeps it servable.
+    /// It is registered in place (no copy into the cache); moving the
+    /// file breaks it exactly like a moved manual mapping does.
+    async fn adopt_hash_added(&mut self, file: Ed2kHash, path: PathBuf) {
+        if !self.media_roots.iter().any(|root| path.starts_with(root)) {
+            let now = (self.clock)() as i64;
+            if let Err(e) = self.storage.set_manual_mapping(file, &path, now) {
+                tracing::error!("persisting out-of-root add: {e}");
+            }
+            self.manual.insert(file, path.clone());
+            tracing::info!(path = %path.display(), %file, "out-of-root add registered in place");
+        }
+        self.adopt_local_copy(file, path).await;
+    }
+
     /// A verified local copy turned up while a download for the same
     /// file was in flight (it arrived through another channel): tell
     /// the sources to drop our in-flight chunk requests and remove the
@@ -1988,10 +2009,20 @@ impl Actor {
     async fn serve_block_hashes(&mut self, to: PeerId, file: Ed2kHash) {
         let Some(path) = self.local_files.get(&file).cloned() else {
             // A peer asked us for this file's block hashes -- so it picked
-            // us as a source, meaning we advertised it Ready -- but we no
-            // longer hold it. This silent bail is a prime suspect for a
-            // downloader stuck waiting on block hashes that never come.
-            tracing::debug!(%file, %to, "asked for block hashes we don't hold; ignoring");
+            // us as a source, meaning we advertised it Ready -- but we
+            // don't hold it. Every Ready is backed by a servable
+            // registration before it is advertised (Phase 31), so this is
+            // a genuine inconsistency (the copy was evicted or lost since
+            // the advert): answer definitively so the requester drops us
+            // instead of re-soliciting a silent holder on every cooldown.
+            tracing::warn!(%file, %to, "asked for block hashes we don't hold; replying CannotServe");
+            let _ = self
+                .out
+                .send(FileOutput::SendPeer {
+                    to,
+                    message: Box::new(PeerMessage::CannotServe { file }),
+                })
+                .await;
             return;
         };
         // Don't advertise a file the user deleted under us: drop it and
@@ -2302,6 +2333,19 @@ impl Actor {
                 fresh,
             } => {
                 self.commit_fresh_hashes(fresh);
+                // A resolve walk raced a copy arriving through another
+                // channel (a hash-add, a completed download, a manual
+                // map): the walk's answer is stale — we hold the file.
+                // Drop it rather than re-marking a held file wanted and
+                // re-emitting Missing (Phase 31 stale-resolve race).
+                if matches!(
+                    resolution,
+                    Resolution::NotFound | Resolution::HashMismatch(_)
+                ) && self.local_files.contains_key(&file)
+                {
+                    tracing::debug!(%file, "stale resolve landed after a local copy was adopted; dropping");
+                    return;
+                }
                 // Track unmet resolves so the library walk can spot their
                 // files arriving through another channel; a verified copy
                 // that isn't the download's own completed cache file makes
@@ -2360,6 +2404,11 @@ impl Actor {
                 self.hashing.remove(&add.path);
                 if let (Ok(hash), Some(mtime)) = (&add.result, mtime) {
                     self.commit_fresh_hashes(vec![(add.path.clone(), mtime, hash.clone())]);
+                }
+                // The session flips the file Ready off this event, so the
+                // servable registration must already be in place.
+                if let Ok(hash) = &add.result {
+                    self.adopt_hash_added(hash.root, add.path.clone()).await;
                 }
                 let _ = self.out.send(FileOutput::Hash(HashEvent::Done(add))).await;
             }
@@ -2836,12 +2885,14 @@ impl Actor {
             && hash.size_bytes == metadata.len()
         {
             tracing::debug!(path = %path.display(), "playlist add served from hash cache");
+            let hash = hash.clone();
+            self.adopt_hash_added(hash.root, path.clone()).await;
             let _ = self
                 .out
                 .send(FileOutput::Hash(HashEvent::Done(HashedAdd {
                     path,
                     after,
-                    result: Ok(hash.clone()),
+                    result: Ok(hash),
                 })))
                 .await;
             return;
@@ -4927,6 +4978,213 @@ mod tests {
         }
     }
 
+    /// Regression (Phase 31): a hash-added file (browse or paste) must be
+    /// servable to peers in the same session. Before the fix, `Done::Hashed`
+    /// committed the hash cache but never registered the copy in
+    /// `local_files`, so the session advertised the file Ready while
+    /// `serve_block_hashes` silently bailed — peers solicited, got nothing,
+    /// snubbed us, and stayed Missing.
+    #[tokio::test]
+    async fn hash_added_file_is_servable_to_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"a dragged-in episode".as_slice();
+        // Outside any media root, like a dragged-in path.
+        let path = write(dir.path(), "dragged.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+
+        let mut rig = spawn_rig(
+            Storage::open_in_memory().unwrap(),
+            vec![], // path is in no media root
+            CacheRetention::default(),
+        );
+        rig.commands
+            .send(FileCommand::HashAdd {
+                path: path.clone(),
+                after: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Hash(HashEvent::Done(done)) => {
+                    assert_eq!(done.result.as_ref().unwrap().root, hashed.root);
+                    break;
+                }
+                FileOutput::Hash(HashEvent::Progress { .. }) => {}
+                other => panic!("unexpected output: {other:?}"),
+            }
+        }
+
+        // A peer that saw our Ready advert solicits block hashes.
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file: hashed.root }),
+            })
+            .await
+            .unwrap();
+        match tokio::time::timeout(Duration::from_secs(1), next_output(&mut rig)).await {
+            Ok(FileOutput::SendPeer { message, .. }) => match *message {
+                PeerMessage::BlockHashes { file, hashes } => {
+                    assert_eq!(file, hashed.root);
+                    assert_eq!(hashes.len(), hashed.blocks.len());
+                }
+                other => panic!("expected BlockHashes, got: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected output: {other:?}"),
+            Err(_) => panic!("hash-added file advertised Ready but not servable (silent bail)"),
+        }
+    }
+
+    /// As above, but through `hash_add`'s cache-hit fast path (the file was
+    /// hashed in an earlier session, e.g. a re-add after restart): the
+    /// short-circuit must register the servable copy too.
+    #[tokio::test]
+    async fn hash_added_cache_hit_is_servable_to_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"a re-added episode".as_slice();
+        let path = write(dir.path(), "readd.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+
+        let storage = Storage::open_in_memory().unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        storage
+            .upsert_hash_cache(&path, mtime_millis(&metadata).unwrap(), &hashed, 1)
+            .unwrap();
+
+        let mut rig = spawn_rig(storage, vec![], CacheRetention::default());
+        rig.commands
+            .send(FileCommand::HashAdd {
+                path: path.clone(),
+                after: None,
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::Hash(HashEvent::Done(done)) => {
+                assert_eq!(done.result.unwrap(), hashed);
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file: hashed.root }),
+            })
+            .await
+            .unwrap();
+        match tokio::time::timeout(Duration::from_secs(1), next_output(&mut rig)).await {
+            Ok(FileOutput::SendPeer { message, .. }) => match *message {
+                PeerMessage::BlockHashes { file, .. } => assert_eq!(file, hashed.root),
+                other => panic!("expected BlockHashes, got: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected output: {other:?}"),
+            Err(_) => panic!("cache-hit hash-add not servable (silent bail)"),
+        }
+    }
+
+    /// Phase 31: an out-of-root hash-add is registered durably (a
+    /// manual-mapping-style row, in place — no copy into the cache), so a
+    /// restarted client still serves it. In-root adds self-heal via scan
+    /// adoption; out-of-root paths are unreachable by the media-root walk,
+    /// so without the durable row they went permanently unservable after a
+    /// restart.
+    #[tokio::test]
+    async fn hash_added_out_of_root_file_is_servable_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"an out-of-root episode".as_slice();
+        let path = write(dir.path(), "dragged.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let cache = tempfile::tempdir().unwrap();
+        {
+            let mut rig = spawn_rig_at(
+                Storage::open(&db_path).unwrap(),
+                vec![],
+                CacheRetention::default(),
+                cache.path().to_path_buf(),
+            );
+            rig.commands
+                .send(FileCommand::HashAdd {
+                    path: path.clone(),
+                    after: None,
+                })
+                .await
+                .unwrap();
+            loop {
+                match next_output(&mut rig).await {
+                    FileOutput::Hash(HashEvent::Done(_)) => break,
+                    FileOutput::Hash(HashEvent::Progress { .. }) => {}
+                    other => panic!("unexpected output: {other:?}"),
+                }
+            }
+        } // rig dropped: the actor winds down, like a client quitting
+
+        // A fresh actor over the same storage — the restarted client.
+        let mut rig = spawn_rig_at(
+            Storage::open(&db_path).unwrap(),
+            vec![],
+            CacheRetention::default(),
+            cache.path().to_path_buf(),
+        );
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file: hashed.root }),
+            })
+            .await
+            .unwrap();
+        match tokio::time::timeout(Duration::from_secs(1), next_output(&mut rig)).await {
+            Ok(FileOutput::SendPeer { message, .. }) => match *message {
+                PeerMessage::BlockHashes { file, hashes } => {
+                    assert_eq!(file, hashed.root);
+                    assert_eq!(hashes.len(), hashed.blocks.len());
+                }
+                other => panic!("expected BlockHashes, got: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected output: {other:?}"),
+            Err(_) => panic!("out-of-root add not servable after restart"),
+        }
+    }
+
+    /// Phase 31: a solicitation for a file we don't hold at all answers
+    /// `CannotServe` instead of staying silent. Sources are only ever
+    /// solicited off a Ready advert, and (post-Phase 31) every Ready is
+    /// backed by a `local_files` registration before it is advertised — so
+    /// an unheld solicitation means the copy is genuinely gone (evicted,
+    /// deleted) and the requester should drop us rather than re-solicit a
+    /// permanently silent holder on every cooldown.
+    #[tokio::test]
+    async fn unheld_solicitation_answers_cannot_serve() {
+        let mut rig = spawn_rig(
+            Storage::open_in_memory().unwrap(),
+            vec![],
+            CacheRetention::default(),
+        );
+        let file = hash(9);
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file }),
+            })
+            .await
+            .unwrap();
+        match tokio::time::timeout(Duration::from_secs(1), next_output(&mut rig)).await {
+            Ok(FileOutput::SendPeer { to, message }) => {
+                assert_eq!(to, PeerId::new("peer7"));
+                match *message {
+                    PeerMessage::CannotServe { file: f } => assert_eq!(f, file),
+                    other => panic!("expected CannotServe, got: {other:?}"),
+                }
+            }
+            Ok(other) => panic!("unexpected output: {other:?}"),
+            Err(_) => panic!("unheld solicitation went unanswered (silent bail)"),
+        }
+    }
+
     #[tokio::test]
     async fn manual_mapping_resolves_verified_and_persists() {
         let root = tempfile::tempdir().unwrap();
@@ -5481,11 +5739,9 @@ mod tests {
         }
         assert!(!cached_path.exists());
 
-        // A peer solicits the evicted file, then we issue an unrelated
-        // Resolve as a sentinel. Post-fix the serve request is a silent bail
-        // (we no longer hold it), so the sentinel's Resolved is the next
-        // output; pre-fix the stale servable entry re-emitted a Missing for
-        // the evicted hash first.
+        // A peer solicits the evicted file: we no longer hold it, so the
+        // answer is a definitive CannotServe (Phase 31) — not the pre-fix
+        // spurious Missing re-emitted off the stale servable entry.
         rig.commands
             .send(FileCommand::PeerMessage {
                 from: PeerId::new("peer7"),
@@ -5493,19 +5749,11 @@ mod tests {
             })
             .await
             .unwrap();
-        rig.commands
-            .send(FileCommand::Resolve {
-                file: hash(9),
-                filename: "sentinel.mkv".into(),
-            })
-            .await
-            .unwrap();
         match next_output(&mut rig).await {
-            FileOutput::Resolved { file, .. } => assert_eq!(
-                file,
-                hash(9),
-                "serve request for the evicted file produced a spurious output"
-            ),
+            FileOutput::SendPeer { message, .. } => match *message {
+                PeerMessage::CannotServe { file } => assert_eq!(file, hashed.root),
+                other => panic!("expected CannotServe for the evicted file, got: {other:?}"),
+            },
             other => panic!("evicted file still in the servable set: {other:?}"),
         }
     }

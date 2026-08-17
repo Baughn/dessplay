@@ -1766,7 +1766,23 @@ impl PlayerWiring {
         view: &StateView,
         peers: &[PeerInfo],
     ) -> Vec<Directive> {
-        self.pending_resolve.remove(&file);
+        let was_pending = self.pending_resolve.remove(&file);
+        // A downgrade with no outstanding request is stale when we already
+        // verified a copy ourselves: `note_local_file` cleared the pending
+        // flag when the user's own add (or a completed download) verified
+        // the file while the resolve walk was still running, so a late
+        // NotFound/mismatch must not clobber the verified entry, retract
+        // our Ready advert, or trigger a pointless download (Phase 31).
+        if !was_pending
+            && matches!(
+                resolution,
+                Resolution::NotFound | Resolution::HashMismatch(_)
+            )
+            && matches!(self.resolved.get(&file), Some(Resolution::Verified(_)))
+        {
+            tracing::debug!(%file, "stale resolve after a verified local add; ignoring");
+            return vec![];
+        }
         let availability = match &resolution {
             Resolution::Verified(_) => {
                 self.partial_load_failed.remove(&file);
@@ -6232,6 +6248,40 @@ mod tests {
             player_cmds(&on_state)
                 .iter()
                 .any(|cmd| matches!(cmd, PlayerCommand::Load { .. }))
+        );
+    }
+
+    /// Regression (Phase 31): a `NotFound` resolve that was already in
+    /// flight when the user hash-added the file themselves must not land
+    /// late and clobber the verified entry — before the fix it overwrote
+    /// `Resolution::Verified`, retracted our Ready advert group-wide, and
+    /// started a pointless download of a file sitting on disk.
+    #[test]
+    fn stale_not_found_resolve_does_not_clobber_a_noted_local_file() {
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        // The snapshot arms a resolve for the entry (it is now in flight).
+        let first = wiring.on_state(&view, &[peer("kim")]);
+        assert!(resolve_files(&first).contains(&hash(1)));
+        // Before the walk answers, the user hash-adds the file themselves.
+        wiring.note_local_file(hash(1), "/anywhere/ep1.mkv".into());
+        // The stale walk answer lands late: it must not retract Ready.
+        let stale = wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        assert!(
+            !stale.iter().any(|d| matches!(
+                d,
+                Directive::Mutate(Mutation::SetFileAvailability {
+                    availability: FileAvailability::Missing,
+                    ..
+                })
+            )),
+            "stale NotFound clobbered the verified local file: {stale:?}"
+        );
+        // And no download of a file we hold starts on the next snapshot.
+        let next = wiring.on_state(&view, &[peer("kim")]);
+        assert!(
+            start_download_files(&next).is_empty(),
+            "started downloading a file we hold: {next:?}"
         );
     }
 

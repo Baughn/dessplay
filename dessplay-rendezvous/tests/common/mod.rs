@@ -646,3 +646,114 @@ pub fn user_seek_authority(name: &str, event_at: u64) -> dessplay_core::types::S
         to_millis: 10_000,
     })
 }
+
+/// A full client + production `SessionLoop` against the sim server, no
+/// terminal — the rig for flows that must run the real bridge loop
+/// (UserAction handling, on-disk storage, transfer streams). Unlike
+/// [`Harness::player_client`], its storage lives at a caller-owned
+/// `db_dir`, so dropping the rig and calling [`loop_rig`] again with the
+/// same directory models a client restart.
+pub struct LoopRig {
+    pub actions: mpsc::Sender<dessplay::ui::msg::UserAction>,
+    /// UI inputs the loop pushed (kept alive — sends are lossy
+    /// `try_send`s into this).
+    pub ui_rx: std::sync::mpsc::Receiver<dessplay::ui::shell::UiInput>,
+    pub sync: mpsc::Sender<SyncCommand>,
+    pub task: tokio::task::JoinHandle<dessplay::run::SessionEnd>,
+}
+
+impl LoopRig {
+    /// The rig's current synced view (its own replica).
+    pub async fn view(&self) -> StateView {
+        let (tx, rx) = oneshot::channel();
+        self.sync
+            .send(SyncCommand::GetView(tx))
+            .await
+            .expect("sync actor gone");
+        rx.await.expect("sync actor gone")
+    }
+
+    /// Quit the session loop and wait for it to wind down.
+    pub async fn quit(self) {
+        self.actions
+            .send(dessplay::ui::msg::UserAction::Quit)
+            .await
+            .expect("loop gone");
+        tokio::time::timeout(Duration::from_secs(10), self.task)
+            .await
+            .expect("session loop did not quit")
+            .expect("loop task panicked");
+    }
+}
+
+/// Spawn a [`LoopRig`]. Real time only (`multi_thread` tests): hashing
+/// and transfers live on the blocking pool, which paused time can't
+/// drive.
+pub fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &std::path::Path) -> LoopRig {
+    let handle = harness.client(name, nonce);
+    let sync = handle.sync.clone();
+    let cache_dir = db_dir.join(format!("{name}-cache"));
+    std::fs::create_dir_all(&cache_dir).expect("cache dir");
+    let shell = SessionShell::new(
+        UserId::new(name),
+        MockFactory::new([]),
+        sim_clock(0),
+        dessplay::actors::file::FileConfig {
+            storage: dessplay::storage::Storage::open(&db_dir.join(format!("{name}-file.db")))
+                .expect("opening file storage"),
+            media_roots: vec![],
+            retention: dessplay::config::CacheRetention::default(),
+            cache_dir,
+            clock: sim_clock(0),
+            download: dessplay::download::DownloadConfig::default(),
+            upload_limit: None,
+            scan_interval: None,
+            scan_transfer_quiet: dessplay::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
+            torrent: None,
+            nyaa: None,
+        },
+        true, // auto_download
+        handle.sync.clone(),
+        handle.network.clone(),
+    );
+    let storage = dessplay::storage::Storage::open(&db_dir.join(format!("{name}.db")))
+        .expect("opening storage");
+    let (action_tx, action_rx) = mpsc::channel(64);
+    let (ui_tx, ui_rx) = std::sync::mpsc::sync_channel(64);
+    // Inert IRC bridge: the opposite ends are dropped so it never connects.
+    let (irc_tx, _irc_rx) = mpsc::channel(8);
+    let (_irc_ev_tx, irc_events) = mpsc::channel(8);
+    let mut session = dessplay::run::SessionLoop {
+        handle,
+        shell,
+        actions: action_rx,
+        ui: ui_tx,
+        storage,
+        db_path: db_dir.join(format!("{name}.db")),
+        me: UserId::new(name),
+        settings: dessplay::config::Settings::default(),
+        media_roots: Vec::new(),
+        observed_fingerprint: Box::new(|| None),
+        pin_pending: false,
+        server_addr: "sim".into(),
+        start: std::time::Instant::now(),
+        irc_tx,
+        irc_events,
+        irc_alive: true,
+        link: Default::default(),
+        transfer_link_down: false,
+        torrent_engine: None,
+        health: None,
+        health_level: Default::default(),
+        suggestion: None,
+        advisor: Default::default(),
+        commentary: dessplay::commentary::CommentaryEngine::disabled(),
+    };
+    let task = tokio::spawn(async move { session.run().await });
+    LoopRig {
+        actions: action_tx,
+        ui_rx,
+        sync,
+        task,
+    }
+}

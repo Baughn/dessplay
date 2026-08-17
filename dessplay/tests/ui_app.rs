@@ -1093,6 +1093,49 @@ fn paste_existing_file_path_on_playlist_focus_adds_it() {
     assert!(!ui.modal_open());
 }
 
+/// Phase 31: a pasted existing-file path adds regardless of the focused
+/// pane — a drag lands wherever the cursor happens to be, and there is
+/// no use for posting a file *path* to chat. Here Chat (the default
+/// focus) is focused, and the add still fires.
+#[test]
+fn paste_existing_file_path_adds_from_any_pane() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ep1.mkv");
+    std::fs::write(&file, b"video bytes").unwrap();
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    let actions = ui.handle(paste(&file.display().to_string()));
+    assert_eq!(
+        actions,
+        vec![UserAction::HashAndAdd {
+            path: file,
+            after: None,
+        }]
+    );
+    assert!(!ui.modal_open());
+}
+
+/// Phase 31: the drag forms terminals actually produce — backslash
+/// escapes, quotes, `file://` URLs — normalize before the existing-file
+/// test, so a dragged path with spaces adds instead of landing in chat.
+#[test]
+fn paste_escaped_path_normalizes_and_adds() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ep 1.mkv");
+    std::fs::write(&file, b"video bytes").unwrap();
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    let escaped = file.display().to_string().replace(' ', "\\ ");
+    let actions = ui.handle(paste(&escaped));
+    assert_eq!(
+        actions,
+        vec![UserAction::HashAndAdd {
+            path: file,
+            after: None,
+        }]
+    );
+}
+
 /// A paste while Chat is focused (the default) lands in the chat input as
 /// plain text, exactly as if typed — asserted by sending it and checking
 /// the resulting chat mutation.

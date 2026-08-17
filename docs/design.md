@@ -236,11 +236,21 @@ browser's own edit-distance-to-target ranking is what "alphabetical" means
 for it -- `Tab` still switches it to newest-mtime-first. The choice is
 persisted, like the All Series sort.
 
-**Or paste it in:** with the Playlist pane focused, pasting (terminal
-paste, bracketed) a single path to a file that exists adds it — same as
-picking it in the browser, anchored after the currently selected entry.
-Any other paste (wrong pane, multiple lines, not a real path) is treated
-as ordinary text and lands in the chat input instead, exactly as if typed.
+**Or paste it in:** pasting (terminal paste, bracketed) a single path
+to a file that exists adds it — same as picking it in the browser,
+anchored after the playlist's currently selected entry, whichever pane
+is focused (a drag lands wherever the cursor happens to be, and there
+is no use for posting a file *path* to chat). The path may arrive in
+any of the shapes terminals actually produce on drag — bare,
+shell-escaped (`My\ Show/ep.mkv`), quoted, or a percent-encoded
+`file://` URL — each reading is tried and the first that names an
+existing file wins. The file may live anywhere, including outside
+every media root: an out-of-root add is registered **in place** as a
+manual-mapping row (no copy into the cache), which also makes it
+servable across restarts — moving the file afterwards breaks it
+exactly like a moved manual mapping. Any other paste (multiple lines,
+nothing that names a real file) is treated as ordinary text and lands
+in the chat input instead, exactly as if typed.
 While a modal is open, a paste goes to its active text editor (e.g. the
 settings screen's token field) as if typed. Either way control
 characters are dropped — typing can never produce one, so a copied
@@ -2490,7 +2500,7 @@ re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned; row-less hash-named files >1 week old swept) |
 | `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size), plus nullable owning media root; skips re-hashing unchanged files and doubles as the library index |
 | `library_roots` | Durable root lifecycle (`vanished_at`, `removed_at`); hides disconnected roots indefinitely and expires removed-root index rows after seven days |
-| `manual_mappings` | Playlist hash → user-picked local path |
+| `manual_mappings` | Playlist hash → user-picked local path; also holds out-of-root hash-adds (paste/browse), registered in place so they stay servable across restarts |
 | `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |
 | `tofu_fingerprints` | Pinned server cert fingerprints; write-once (replacing requires explicit forget) |
 

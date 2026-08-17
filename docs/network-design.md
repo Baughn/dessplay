@@ -597,16 +597,27 @@ retracts outstanding requests — used when an urgent chunk's duplicate
 race resolves (endgame included) and when dropping a silent source (see
 [Chunk Selection](#chunk-selection-rarest-first)).
 
-`CannotServe` answers a `BlockHashRequest` from a holder whose local copy
-is **known** to hash to a different identity — a manual mapping to a
-different encode, which design.md deliberately leaves playable locally
-(filename-trusted) and therefore advertised Ready. Ready normally implies
-servable; this is the one designed exception, so the holder says so
-explicitly and the requester drops it as a source for that download and
-never re-solicits it (unlike a snub, which retries after a cooldown). A
-holder that merely hasn't finished hashing stays silent instead — that
-state is transient and resolves into either `BlockHashes` or
-`CannotServe` on a later solicitation.
+`CannotServe` is the definitive "I can never serve this" answer to a
+`BlockHashRequest`; the requester drops the sender as a source for that
+download and never re-solicits it (unlike a snub, which retries after a
+cooldown). Two states produce it:
+
+- The holder's local copy is **known** to hash to a different identity —
+  a manual mapping to a different encode, which design.md deliberately
+  leaves playable locally (filename-trusted) and therefore advertised
+  Ready. Ready normally implies servable; this is the one *designed*
+  exception.
+- The holder doesn't hold the file at all. Every Ready advert is backed
+  by a servable registration before it goes out (Phase 31), so a
+  solicitation for an unheld file means the copy is genuinely gone since
+  the advert (evicted, deleted behind the app's back) — the holder
+  answers definitively (and logs a warning: it advertised something it
+  cannot back) rather than leaving the requester to re-solicit a
+  permanently silent source on every cooldown.
+
+A holder that merely hasn't finished hashing its copy stays silent
+instead — that state is transient and resolves into either
+`BlockHashes` or `CannotServe` on a later solicitation.
 
 ### Chunks
 

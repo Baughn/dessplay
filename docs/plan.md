@@ -1554,6 +1554,25 @@ Future Plans, consolidated against six weeks of real usage.
 
 ## Phase 31: Servable Ad-hoc Files & Drag-in Adds
 
+**Status: complete (2026-08-17).** All four pieces landed as planned,
+plus one scope change decided during implementation: the paste add is
+now **unconditional on focus** (user decision 2026-08-17 — a valid
+file path pastes as an add from any pane; there is no use for posting
+a file *path* to chat; only modal text editors still capture the
+paste). Delivered: hash-adds register the servable copy on
+`Done::Hashed` *and* on the cache-hit fast path (`adopt_hash_added`);
+out-of-root adds persist as manual-mapping rows, registered in place;
+the not-held serve bail answers `CannotServe` + a warning instead of
+silence; the stale-resolve race is guarded at both layers (the actor
+drops a NotFound/mismatch for a held file; the session ignores a
+non-pending downgrade of a Verified entry). Tests: five regression
+tests written first and confirmed failing (serve-after-add fresh +
+cache-hit, restart durability, CannotServe, stale resolve), paste
+normalization units, dispatcher-level paste tests, and an end-to-end
+harness test (`adhoc_files.rs`) over the promoted-to-common `LoopRig`:
+A drags in an out-of-root file → B downloads it; A restarts → a fresh
+client still downloads it from A.
+
 **Goal**: a file dragged into the terminal — from anywhere, including
 outside every media root — plays for everyone, not just the dragger.
 

@@ -23,15 +23,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::*;
-use dessplay::config::Settings;
-use dessplay::player::mock::MockFactory;
-use dessplay::run::{SessionEnd, SessionLoop};
-use dessplay::session::SessionShell;
-use dessplay::storage::Storage;
+use dessplay::run::SessionEnd;
 use dessplay::ui::msg::UserAction;
 use dessplay::ui::shell::UiInput;
-use dessplay_core::types::UserId;
-use tokio::sync::mpsc;
 
 fn mkfifo(path: &Path) {
     let status = std::process::Command::new("mkfifo")
@@ -45,84 +39,6 @@ fn mkfifo(path: &Path) {
 /// write side and immediately close it (the reader sees EOF).
 fn release_fifo(fifo: &Path) {
     let _ = std::fs::OpenOptions::new().write(true).open(fifo);
-}
-
-struct LoopRig {
-    actions: mpsc::Sender<UserAction>,
-    /// UI inputs the loop pushed (kept alive — sends are lossy
-    /// `try_send`s into this).
-    ui_rx: std::sync::mpsc::Receiver<UiInput>,
-    sync: mpsc::Sender<dessplay::actors::sync::SyncCommand>,
-    task: tokio::task::JoinHandle<SessionEnd>,
-}
-
-/// A full client + session loop against the sim server, no terminal.
-fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &Path) -> LoopRig {
-    let handle = harness.client(name, nonce);
-    let sync = handle.sync.clone();
-    let cache_dir = db_dir.join(format!("{name}-cache"));
-    std::fs::create_dir_all(&cache_dir).expect("cache dir");
-    let shell = SessionShell::new(
-        UserId::new(name),
-        MockFactory::new([]),
-        sim_clock(0),
-        dessplay::actors::file::FileConfig {
-            storage: Storage::open(&db_dir.join(format!("{name}-file.db")))
-                .expect("opening file storage"),
-            media_roots: vec![],
-            retention: dessplay::config::CacheRetention::default(),
-            cache_dir,
-            clock: sim_clock(0),
-            download: dessplay::download::DownloadConfig::default(),
-            upload_limit: None,
-            scan_interval: None,
-            scan_transfer_quiet: dessplay::actors::file::SCAN_TRANSFER_QUIET_DEFAULT,
-            torrent: None,
-            nyaa: None,
-        },
-        true, // auto_download
-        handle.sync.clone(),
-        handle.network.clone(),
-    );
-    let storage = Storage::open(&db_dir.join(format!("{name}.db"))).expect("opening storage");
-    let (action_tx, action_rx) = mpsc::channel(64);
-    let (ui_tx, ui_rx) = std::sync::mpsc::sync_channel(64);
-    // Inert IRC bridge: the opposite ends are dropped so it never connects.
-    let (irc_tx, _irc_rx) = mpsc::channel(8);
-    let (_irc_ev_tx, irc_events) = mpsc::channel(8);
-    let mut session = SessionLoop {
-        handle,
-        shell,
-        actions: action_rx,
-        ui: ui_tx,
-        storage,
-        db_path: db_dir.join(format!("{name}.db")),
-        me: UserId::new(name),
-        settings: Settings::default(),
-        media_roots: Vec::new(),
-        observed_fingerprint: Box::new(|| None),
-        pin_pending: false,
-        server_addr: "sim".into(),
-        start: std::time::Instant::now(),
-        irc_tx,
-        irc_events,
-        irc_alive: true,
-        link: Default::default(),
-        transfer_link_down: false,
-        torrent_engine: None,
-        health: None,
-        health_level: Default::default(),
-        suggestion: None,
-        advisor: Default::default(),
-        commentary: dessplay::commentary::CommentaryEngine::disabled(),
-    };
-    let task = tokio::spawn(async move { session.run().await });
-    LoopRig {
-        actions: action_tx,
-        ui_rx,
-        sync,
-        task,
-    }
 }
 
 /// The Ctrl-C regression: a quit must be processed even while a

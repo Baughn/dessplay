@@ -1079,24 +1079,20 @@ impl Ui {
             }
             return actions;
         }
-        // Bracketed paste (design.md #33). A single existing-file path
-        // pasted while the Playlist pane is focused becomes a playlist
-        // add, exactly like picking it in the file browser; any other
-        // paste (wrong pane, not a real file, multi-line) lands in the
-        // chat input as plain text, as if typed. While a modal is open
-        // the event falls through to the modal, whose active text editor
+        // Bracketed paste (design.md #33). A pasted single existing-file
+        // path — dragged in from anywhere, whichever pane is focused —
+        // becomes a playlist add, exactly like picking it in the file
+        // browser (there is no use for posting a file path to chat); any
+        // other paste (not a real file, multi-line) lands in the chat
+        // input as plain text, as if typed. While a modal is open the
+        // event falls through to the modal, whose active text editor
         // accepts it (LineBuffer::edit handles Event::Paste).
         if let Event::Paste(text) = &ev
             && self.modals.is_empty()
         {
-            let trimmed = text.trim();
-            let is_file_path = self.focus == Focus::Playlist
-                && !trimmed.is_empty()
-                && !trimmed.contains('\n')
-                && std::path::Path::new(trimmed).is_file();
-            if is_file_path {
+            if let Some(path) = pasted_file_path(text) {
                 let msg = Msg::FileChosen {
-                    path: PathBuf::from(trimmed),
+                    path,
                     after: self.playlist.selected_hash(),
                 };
                 let action = self.update(msg);
@@ -2197,6 +2193,63 @@ fn hash_overlay_rect(
         width,
         height,
     }
+}
+
+/// Interpret pasted text as a dragged-in file path. Terminals hand a
+/// drag to the app as pasted text in one of a few shapes — the bare
+/// path, a shell-escaped path (`/a/My\ Show/ep.mkv`), a quoted path, or
+/// a `file://` URL — so each reading is tried against the filesystem
+/// and the first that names an existing file wins (design.md #33).
+/// Multi-line pastes and anything that names no existing file are not
+/// paths (the caller sends those to the chat input instead). Existence
+/// is the arbiter, so text that merely *looks* escaped or quoted still
+/// adds fine when the literal path exists.
+fn pasted_file_path(text: &str) -> Option<PathBuf> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        return None;
+    }
+    let mut candidates: Vec<String> = vec![trimmed.to_string()];
+    // Wrapped in matching quotes (Windows Terminal, some Linux terminals).
+    for quote in ['\'', '"'] {
+        if trimmed.len() >= 2 && trimmed.starts_with(quote) && trimmed.ends_with(quote) {
+            candidates.push(trimmed[1..trimmed.len() - 1].to_string());
+        }
+    }
+    // Shell backslash-escapes (`My\ Show`) — the macOS Terminal drag form.
+    if trimmed.contains('\\') {
+        let mut unescaped = String::with_capacity(trimmed.len());
+        let mut chars = trimmed.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        unescaped.push(next);
+                    }
+                }
+                c => unescaped.push(c),
+            }
+        }
+        candidates.push(unescaped);
+    }
+    // file:// URLs (percent-encoded), with an optional host part
+    // (`file:///path` or `file://localhost/path`).
+    if let Some(rest) = trimmed.strip_prefix("file://") {
+        let path = if rest.starts_with('/') {
+            rest
+        } else {
+            rest.find('/').map(|i| &rest[i..]).unwrap_or(rest)
+        };
+        candidates.push(
+            percent_encoding::percent_decode_str(path)
+                .decode_utf8_lossy()
+                .into_owned(),
+        );
+    }
+    candidates
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
 }
 
 #[cfg(test)]
@@ -4063,5 +4116,83 @@ mod tests {
         let actions = ui.command("/frobnicate");
         assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
         assert!(!actions.iter().any(|a| matches!(a, UserAction::Quit)));
+    }
+
+    // ---- pasted_file_path: the drag-in normalization (Phase 31).
+
+    /// A temp dir holding `My Show/ep 1.mkv` — a path with spaces, the
+    /// case every terminal escapes or quotes on drag.
+    fn spaced_file() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("My Show");
+        std::fs::create_dir(&sub).unwrap();
+        let path = sub.join("ep 1.mkv");
+        std::fs::write(&path, b"x").unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn pasted_bare_path_is_accepted() {
+        let (_dir, path) = spaced_file();
+        assert_eq!(
+            pasted_file_path(&path.display().to_string()),
+            Some(path.clone())
+        );
+        // Terminals often append a trailing newline to a drag.
+        assert_eq!(
+            pasted_file_path(&format!("{}\n", path.display())),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn pasted_backslash_escaped_path_is_unescaped() {
+        let (_dir, path) = spaced_file();
+        let escaped = path.display().to_string().replace(' ', "\\ ");
+        assert_ne!(escaped, path.display().to_string());
+        assert_eq!(pasted_file_path(&escaped), Some(path));
+    }
+
+    #[test]
+    fn pasted_quoted_paths_are_unquoted() {
+        let (_dir, path) = spaced_file();
+        assert_eq!(
+            pasted_file_path(&format!("'{}'", path.display())),
+            Some(path.clone())
+        );
+        assert_eq!(
+            pasted_file_path(&format!("\"{}\"", path.display())),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn pasted_file_url_is_decoded() {
+        let (_dir, path) = spaced_file();
+        let url = format!("file://{}", path.display().to_string().replace(' ', "%20"));
+        assert_eq!(pasted_file_path(&url), Some(path.clone()));
+        // With a host part, as some platforms produce.
+        let url = format!(
+            "file://localhost{}",
+            path.display().to_string().replace(' ', "%20")
+        );
+        assert_eq!(pasted_file_path(&url), Some(path));
+    }
+
+    #[test]
+    fn pasted_non_paths_are_rejected() {
+        let (_dir, path) = spaced_file();
+        // A directory is not an addable file.
+        assert_eq!(
+            pasted_file_path(&path.parent().unwrap().display().to_string()),
+            None
+        );
+        // Multi-line text is never a path, even when one line is real.
+        assert_eq!(
+            pasted_file_path(&format!("{}\nand more", path.display())),
+            None
+        );
+        assert_eq!(pasted_file_path("no-such-file.mkv"), None);
+        assert_eq!(pasted_file_path(""), None);
     }
 }

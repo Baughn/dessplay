@@ -292,6 +292,17 @@ handles in Phase 7. Once it exists, the Phase 1 fuzz pattern scales up:
 random input events plus network chaos into full clients, asserting no
 panics and post-quiesce convergence.
 
+One harness rig runs in **real time** rather than paused time: the
+`LoopRig` (`tests/common/mod.rs`) wraps the production `SessionLoop` —
+the actual bridge loop `run_interactive` spawns — around a client, with
+**on-disk storage at a caller-owned directory**. Hashing and transfers
+live on the blocking pool, which paused time cannot drive, so its tests
+are `multi_thread` with real-time budgets. It is the rig for anything
+that must survive the real loop's arm structure (the stuck-hash
+supervision tests) or a **client restart**: drop the rig, call
+`loop_rig` again over the same directory (`adhoc_files.rs` uses this to
+pin that an out-of-root drag-in stays servable across restarts).
+
 ### Determinism Stance
 
 One runtime, paused time, and seeded RNG make scenarios *almost*
