@@ -1762,6 +1762,7 @@ impl Actor {
         if self.downloads.is_active(&file) && path != self.download_path(file) {
             self.cancel_redundant_peer_download(file).await;
         }
+        tracing::debug!(%file, path = %path.display(), "servable local copy registered");
         self.local_files.insert(file, path);
     }
 
@@ -2410,7 +2411,19 @@ impl Actor {
                 if let Ok(hash) = &add.result {
                     self.adopt_hash_added(hash.root, add.path.clone()).await;
                 }
-                let _ = self.out.send(FileOutput::Hash(HashEvent::Done(add))).await;
+                tracing::debug!(
+                    path = %add.path.display(),
+                    ok = add.result.is_ok(),
+                    "hash-add: forwarding completion to the session"
+                );
+                if self
+                    .out
+                    .send(FileOutput::Hash(HashEvent::Done(add)))
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("hash-add completion dropped: session loop is gone");
+                }
             }
             Done::ManualHashed {
                 file,
@@ -2929,14 +2942,19 @@ impl Actor {
                 ok = result.is_ok(),
                 "hash finished"
             );
-            let _ = done_tx.blocking_send(Done::Hashed {
-                add: HashedAdd {
-                    path,
-                    after,
-                    result,
-                },
-                mtime,
-            });
+            if done_tx
+                .blocking_send(Done::Hashed {
+                    add: HashedAdd {
+                        path,
+                        after,
+                        result,
+                    },
+                    mtime,
+                })
+                .is_err()
+            {
+                tracing::warn!("hash result dropped: file actor is gone");
+            }
         });
     }
 

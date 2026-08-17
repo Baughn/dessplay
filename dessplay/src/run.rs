@@ -1289,6 +1289,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // `file_outputs` arm below. Inline hashing
                             // here once starved this loop — frozen UI,
                             // unprocessable Quit (2026-06-12).
+                            tracing::debug!(path = %path.display(), "session loop: HashAndAdd received");
                             self.shell.hash_and_add(path, after).await;
                         }
                         Some(UserAction::SearchNyaa { query }) => {

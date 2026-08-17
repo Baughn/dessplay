@@ -1645,7 +1645,8 @@ the `StateView` at the `list_groups` call site — no CRDT or wire change.
   All-Series `SeriesSort` pattern including persistence): Alphabetical /
   Recency. In Recency mode, entries whose next episode is out
   (`available`) sort above those with nothing unwatched; within each
-  partition, most recently group-watched first.
+  partition, most recently group-watched first. Series without unwatched
+  files are dimmed. Sort mode is the default at start.
 - **SnEnn next-ep display**: for linked entries, derive the season
   ordinal by counting prequels along the replicated `SeriesRelations`
   chain (the franchise walk already exists) and render a parseable

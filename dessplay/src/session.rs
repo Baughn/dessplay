@@ -2223,7 +2223,14 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             tracing::debug!(path = %path.display(), "already hashing; ignoring re-add");
             return;
         }
-        let _ = self.file.send(FileCommand::HashAdd { path, after }).await;
+        if self
+            .file
+            .send(FileCommand::HashAdd { path, after })
+            .await
+            .is_err()
+        {
+            tracing::warn!("hash-add dropped: file actor is gone");
+        }
     }
 
     /// Search Nyaa without blocking the bridge loop.
@@ -2264,6 +2271,11 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| done.path.display().to_string());
+        tracing::debug!(
+            file = %hashed.root,
+            filename = %filename,
+            "hash-add: publishing playlist entry and Ready availability"
+        );
         let _ = self
             .sync
             .send(crate::actors::sync::SyncCommand::Mutate(Box::new(
@@ -2489,10 +2501,15 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                     }
                 }
                 Directive::Mutate(mutation) => {
-                    let _ = self
+                    let name = mutation.name();
+                    if self
                         .sync
                         .send(crate::actors::sync::SyncCommand::Mutate(Box::new(mutation)))
-                        .await;
+                        .await
+                        .is_err()
+                    {
+                        tracing::debug!(mutation = name, "mutation dropped: sync actor is gone");
+                    }
                 }
                 Directive::ReportEof(file) => {
                     let _ = self

@@ -519,7 +519,13 @@ impl SyncActor {
         let user = self.user.clone();
         let ts = self.stamp();
         let is_position = matches!(mutation, Mutation::SetPlaybackPosition { .. });
-        tracing::trace!(mutation = mutation.name(), ts = ts.0, "local mutation");
+        // Position ticks fire at 10Hz — trace. Everything else is rare
+        // and diagnosis-worthy, so it stays visible at debug.
+        if is_position {
+            tracing::trace!(mutation = mutation.name(), ts = ts.0, "local mutation");
+        } else {
+            tracing::debug!(mutation = mutation.name(), ts = ts.0, "local mutation");
+        }
 
         let op = match mutation {
             Mutation::AddPlaylistAfter { anchor, new } => {
