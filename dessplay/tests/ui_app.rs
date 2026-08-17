@@ -1621,6 +1621,77 @@ fn the_list_renders_and_edits() {
     assert!(!ui.modal_open());
 }
 
+/// Phase 33: `n` on a List entry opens the minimal Nero-name editor — a
+/// rename in two keystrokes, without the full edit modal. Enter saves
+/// (trimmed, empty clears), Esc cancels without a write, and committing
+/// an unchanged value writes nothing.
+#[test]
+fn n_edits_nero_name_in_two_keystrokes() {
+    let mut state = CrdtState::new();
+    state.put_list_entry(
+        A,
+        ts(1),
+        ListEntryId(7),
+        SeriesListEntry {
+            name: "Frieren".into(),
+            nero_name: Some("Funeral".into()),
+            genre: None,
+            notes: vec![],
+            recommender: None,
+            status: ListStatus::Active,
+            status_note: None,
+            source: None,
+            watchers: Default::default(),
+            anidb_series_id: None,
+            local_aliases: Default::default(),
+            manual_files: Default::default(),
+            anidb_unavailable: false,
+        },
+    );
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
+    ui.handle(key(Key::Tab)); // Series pane (The List)
+    ui.handle(key(Key::Down)); // heading -> entry
+
+    // Rename: the editor opens prefilled with the current nero_name.
+    ui.handle(key(Key::Char('n')));
+    assert!(ui.modal_open());
+    for _ in 0.."Funeral".len() {
+        ui.handle(key(Key::Backspace));
+    }
+    type_str(&mut ui, "  Sousou no Baughn ");
+    let actions = ui.handle(key(Key::Enter));
+    let [UserAction::Mutate(Mutation::PutListEntry { id, entry })] = actions.as_slice() else {
+        panic!("expected PutListEntry, got {actions:?}");
+    };
+    assert_eq!(*id, ListEntryId(7));
+    assert_eq!(entry.nero_name.as_deref(), Some("Sousou no Baughn"));
+    assert_eq!(entry.name, "Frieren", "only nero_name changes");
+    assert!(!ui.modal_open());
+
+    // Esc cancels without a write.
+    ui.handle(key(Key::Char('n')));
+    type_str(&mut ui, "junk");
+    assert!(ui.handle(key(Key::Esc)).is_empty());
+    assert!(!ui.modal_open());
+
+    // Committing the unchanged prefill writes nothing.
+    ui.handle(key(Key::Char('n')));
+    assert!(ui.handle(key(Key::Enter)).is_empty());
+    assert!(!ui.modal_open());
+
+    // Clearing the field clears the name.
+    ui.handle(key(Key::Char('n')));
+    for _ in 0.."Funeral".len() {
+        ui.handle(key(Key::Backspace));
+    }
+    let actions = ui.handle(key(Key::Enter));
+    let [UserAction::Mutate(Mutation::PutListEntry { entry, .. })] = actions.as_slice() else {
+        panic!("expected PutListEntry, got {actions:?}");
+    };
+    assert_eq!(entry.nero_name, None);
+}
+
 /// Phase 19 completion: the edit modal is where an unlinked entry's
 /// identity data is grown by hand (design.md, Series Identity /
 /// UI Integration) — `local_aliases` as semicolon-separated names, and

@@ -469,6 +469,13 @@ pub struct SeriesRelations {
     pub episode_count: Option<u32>,
     /// Related-anime edges.
     pub relations: BTreeSet<SeriesRelation>,
+    /// Community short titles from the AniDB titles dump (kind 3),
+    /// ordered by display preference (x-jat, then en, then the rest).
+    /// The List renders the first one instead of the official `title`.
+    /// Empty when the series has none, or was settled before the server
+    /// backfill ran. Appended in protocol v11; old snapshot bodies lack
+    /// the field entirely (see the frozen v7–v10 decode arm in state.rs).
+    pub short_titles: Vec<String>,
 }
 
 /// Status of an entry in The List.

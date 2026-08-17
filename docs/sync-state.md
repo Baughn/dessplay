@@ -588,11 +588,21 @@ Files without an AniDB series ID are grouped by `series_name` as a fallback
 
 Server-only writes. `SeriesRelations` holds the series' related-anime edges
 (relation type + target series ID) plus display data (title, year, episode
-count) fetched via the AniDB ANIME command. The server walks relations
-recursively as new series IDs appear, under the same rate limiter as file
-lookups, caching results in its SQLite. Clients compute franchise groupings
-(connected components over sequel/prequel/side-story edges) locally from this
-map.
+count) fetched via the AniDB ANIME command, and `short_titles`
+(appended in protocol v11): the community short titles from the titles
+dump's kind-3 rows, ordered x-jat first, then en, then the rest — The
+List renders the first one instead of the official title. The server
+walks relations recursively as new series IDs appear, under the same
+rate limiter as file lookups, caching results in its SQLite. Short
+titles come from the dump, not the ANIME reply: they are filled at
+lookup time and reconciled by an idempotent worker pass
+(`apply_short_titles`, same shape as `apply_series_hints`) that rewrites
+any entry whose replicated list disagrees with the dump — which is both
+the backfill for rows settled before v11 and the steady-state refresh
+after each daily dump replacement. An empty titles table (fresh server,
+no fetch yet) means "no information" and never writes. Clients compute
+franchise groupings (connected components over sequel/prequel/side-story
+edges) locally from this map.
 
 ### The List
 
@@ -833,19 +843,17 @@ for storage because *blobs outlive deployments*; connections don't.
 
 - **Tagged, current version**: decode the body as the current layout.
 - **Tagged, layout-compatible older version**
-  (`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`, today v7–v9): decode as
-  the current layout, flagged (`migrated = true`). This is the explicit
-  arm for protocol bumps whose old bodies the current type still
-  decodes: v7 → v9 (the DSCP connection split and per-transfer streams,
-  2026-07-28) changed only *wire* messages, and v9 → v10 only
-  **appended** the `FileAvailability::DownloadingPlayable` enum variant
-  (postcard encodes variant indices, so a v9 body — which can only
-  contain the older variants — decodes unchanged). Every entry in the
+  (`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`): decode as the current
+  layout, flagged (`migrated = true`). This is the explicit arm for
+  protocol bumps whose old bodies the current type still decodes —
+  v7 → v9 (wire-only changes) and v9 → v10 (an **appended** enum
+  variant, `FileAvailability::DownloadingPlayable`, which postcard's
+  variant indices tolerate) lived here until v11. Every entry in the
   list is a per-change assertion ("I checked the diff; the current type
   decodes the old body"), not a default — a bump that *does* reshape
   existing state must not be added there, and gets a frozen-layout
   decode arm instead (listed in `FROZEN_LAYOUT_SNAPSHOT_VERSIONS`).
-  Caught in the field the same day:
+  Caught in the field the same day the envelope landed:
   the server refused to start on its own v7-tagged authoritative
   snapshot after the bump, exactly as designed, and this arm is the
   deliberate migration the policy demands. Since then the
@@ -863,19 +871,42 @@ for storage because *blobs outlive deployments*; connections don't.
   type against a listed version's bytes fails
   `layout_compatible_fixture_blobs_decode_to_the_expected_view` instead
   of decoding misaligned (postcard is positional; a wrong compat entry
-  can otherwise succeed with silently wrong values). Policy details in
-  tests/fixtures/README.md.
+  can otherwise succeed with silently wrong values). The list is
+  **empty today**: v11 moved every tagged predecessor to the frozen arm
+  below. Policy details in tests/fixtures/README.md.
+- **Tagged, frozen older layout**
+  (`FROZEN_LAYOUT_SNAPSHOT_VERSIONS`, today v7–v10): decode through a
+  frozen copy of that layout plus an upgrade, flagged. v11 (2026-08-17)
+  appended `short_titles` **inside** `SeriesRelations` — postcard is
+  positional, so an old body simply ends where the new field would
+  begin, and decoding it as the live type would misalign everything
+  after it in the map. v7–v10 share one persisted layout (the old
+  compat-list assertion), so one frozen struct (`CrdtStateV10`, whose
+  `series_relations` holds the frozen `SeriesRelationsV10`) covers all
+  four; the upgrade rebuilds that one map value-by-value, carrying each
+  entry's LWW timestamp over unchanged (so later writes win or lose
+  exactly as against the original) under a dedicated migration actor —
+  deliberately not `ActorId::SERVER`, whose per-origin dedup dots must
+  never be forged. Map-level clocks are rebuilt from scratch, which is
+  safe for the same reason daily compaction may rebuild every map from
+  its resolved view. The v7–v9 fixture blobs pin this arm now (their
+  decode test moved with them); v10's fixture was captured **at the
+  v11 bump** — the last moment the current encoder still produced its
+  bytes — which is the standing rule for any future frozen version:
+  capture the fixture at the bump, or its real bytes are gone.
 - **Tagged, any other version**: hard error naming both versions -- the
   refuse-to-start posture. A deliberate migration adds an explicit
-  decode arm (a frozen copy of the old layout + upgrade) for that
-  version; nothing is ever guessed from bytes.
+  decode arm for that version; nothing is ever guessed from bytes.
 - **Untagged**: the one legacy layout, `CrdtStateUntaggedV6` -- the
   pre-envelope protocol-v6 shape every deployed database held when the
   envelope landed (2026-07-25). It decodes flagged (`migrated = true`),
   and the server backs up its whole database before first persisting
   the migrated result, exactly as before. "Frozen" here means the
-  **top-level field list** only: the nested value types are the live
-  ones and have already drifted append-only since the envelope landed
+  **top-level field list** plus, since v11, the one nested type that no
+  longer drifts append-only: its `series_relations` holds the frozen
+  `SeriesRelationsV10` (pre-envelope bodies predate `short_titles`
+  too). The other nested value types are the live ones and have
+  already drifted append-only since the envelope landed
   (`anidb_unavailable`, `DownloadingPlayable`) -- which postcard
   tolerates, so real pre-envelope blobs still decode. That property is
   pinned from 2026-08-13 by a checked-in binary fixture

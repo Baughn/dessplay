@@ -319,6 +319,7 @@ mod tests {
                     target: AniDbSeriesId(*id),
                 })
                 .collect(),
+            short_titles: vec![],
         }
     }
 

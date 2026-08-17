@@ -2224,6 +2224,85 @@ static SEARCH_KEYMAP: Keymap<AniDbSearchModal, Msg> = Keymap(&[
     },
 ]);
 
+/// Fast path for the group's renaming culture (design.md, The List): a
+/// minimal single-field editor for a List entry's `nero_name`, opened
+/// with `n` in the Series pane's List mode. Two keystrokes to a rename;
+/// the full edit modal stays the place for everything else.
+pub struct NeroNameModal {
+    /// The entry being renamed.
+    pub id: ListEntryId,
+    entry_name: String,
+    editor: FieldEditor,
+}
+
+impl NeroNameModal {
+    /// Open for an entry, prefilled with its current `nero_name`.
+    pub fn new(id: ListEntryId, entry_name: String, current: Option<&str>) -> Self {
+        Self {
+            id,
+            entry_name,
+            editor: FieldEditor::new(current.unwrap_or_default()),
+        }
+    }
+
+    /// Keys for the keybinding bar.
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("Enter", "Save"), ("Esc", "Cancel")]
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
+        let modal = overlay(area, 50, 20);
+        frame.render_widget(Clear, modal);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_style(true))
+                .title(format!("Nero's name — {}", self.entry_name)),
+            modal,
+        );
+        let input_area = Rect {
+            x: modal.x + 2,
+            y: modal.y + 1,
+            width: modal.width.saturating_sub(4),
+            height: 3,
+        };
+        self.editor.view(frame, input_area);
+        let hint_area = Rect {
+            x: modal.x + 2,
+            y: modal.y + 4,
+            width: modal.width.saturating_sub(4),
+            height: 1,
+        };
+        frame.render_widget(
+            tuirealm::ratatui::widgets::Paragraph::new(Span::styled(
+                "empty clears the name",
+                theme::dim(),
+            )),
+            hint_area,
+        );
+    }
+}
+
+passive_modal!(NeroNameModal);
+
+impl AppComponent<Msg, NoUserEvent> for NeroNameModal {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        match self.editor.on(ev) {
+            // Same normalization as the full editor's NeroName row:
+            // trimmed, and empty means "no Nero name".
+            Some(true) => {
+                let value = self.editor.text().trim().to_string();
+                Some(Msg::NeroNameSaved(
+                    self.id,
+                    (!value.is_empty()).then_some(value),
+                ))
+            }
+            Some(false) => Some(Msg::CloseModal),
+            None => Some(Msg::None),
+        }
+    }
+}
+
 passive_modal!(ListEditModal);
 
 impl AppComponent<Msg, NoUserEvent> for ListEditModal {

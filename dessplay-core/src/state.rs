@@ -19,7 +19,7 @@ use crate::types::{
     ActorId, AniDbMetadata, AniDbSeriesId, ChatMessage, Ed2kHash, Epoch, FileAvailability,
     FileCatalogEntry, FileHashInfo, ListEntryId, ManualState, MarqueeMessage, NextEpState,
     PlaybackIntent, PlaybackPosition, PlaylistFileState, SeekAuthority, SeriesListEntry,
-    SeriesPreference, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
+    SeriesPreference, SeriesRelation, SeriesRelations, SeriesWatchState, SharedTimestamp, UserId,
 };
 
 /// A keyed collection of LWW registers — the standard map shape.
@@ -227,6 +227,161 @@ pub struct StateSnapshot {
 /// generated states, tests/migration.rs).
 pub const SNAPSHOT_MAGIC: [u8; 4] = [0xFF, b'D', b'S', b'S'];
 
+/// [`SeriesRelations`] as persisted by protocol v6–v10, before
+/// `short_titles` was appended (v11, 2026-08-17). Frozen: postcard is
+/// positional, so an old body simply *ends* where the new field would
+/// begin — decoding it as the live type misaligns everything after it in
+/// the map. Old blobs decode through this copy instead and upgrade with
+/// an empty `short_titles` (the server backfill repopulates them).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Deserialize)]
+#[cfg_attr(any(test, feature = "test-support"), derive(Serialize))]
+struct SeriesRelationsV10 {
+    title: String,
+    year: Option<u16>,
+    episode_count: Option<u32>,
+    relations: BTreeSet<SeriesRelation>,
+}
+
+impl From<SeriesRelationsV10> for SeriesRelations {
+    fn from(old: SeriesRelationsV10) -> Self {
+        SeriesRelations {
+            title: old.title,
+            year: old.year,
+            episode_count: old.episode_count,
+            relations: old.relations,
+            short_titles: Vec::new(),
+        }
+    }
+}
+
+/// Actor for the map dots written while upgrading a frozen snapshot
+/// layout (the [`map_put`] rebuild in [`upgrade_relations_map`]).
+/// Deliberately **not** [`ActorId::SERVER`]: `Map` dedups ops per
+/// origin, so attributing migration dots to the server could make a
+/// migrated replica silently drop the real server's future writes as
+/// replays. Any other constant is safe for `series_relations` — only
+/// the server ever writes it — and a constant keeps the migration
+/// deterministic across replicas.
+const SNAPSHOT_MIGRATION_ACTOR: ActorId = ActorId(u128::MAX);
+
+/// Rebuild a frozen-layout `series_relations` map as the live type,
+/// carrying each entry's LWW timestamp over unchanged so later writes
+/// win or lose exactly as they would have against the original. Map-
+/// level clocks are rebuilt from scratch under
+/// [`SNAPSHOT_MIGRATION_ACTOR`] — the same view-level rebuild the daily
+/// compaction pass performs, which is what makes dropping them safe.
+fn upgrade_relations_map(
+    old: &LwwMap<AniDbSeriesId, SeriesRelationsV10>,
+) -> LwwMap<AniDbSeriesId, SeriesRelations> {
+    let mut fresh = LwwMap::default();
+    for entry in old.iter() {
+        let (series, reg) = entry.val;
+        if let Some(lww) = reg.read() {
+            map_put(
+                &mut fresh,
+                SNAPSHOT_MIGRATION_ACTOR,
+                lww.timestamp,
+                *series,
+                SeriesRelations::from(lww.value.clone()),
+            );
+        }
+    }
+    fresh
+}
+
+/// The inverse of [`upgrade_relations_map`], for fabricating old-layout
+/// fixture blobs from live states in tests: re-key every entry into the
+/// v6–v10 [`SeriesRelationsV10`] shape (dropping `short_titles`), LWW
+/// timestamps preserved.
+#[cfg(any(test, feature = "test-support"))]
+fn downgrade_relations_map(
+    live: &LwwMap<AniDbSeriesId, SeriesRelations>,
+) -> LwwMap<AniDbSeriesId, SeriesRelationsV10> {
+    let mut old = LwwMap::default();
+    for entry in live.iter() {
+        let (series, reg) = entry.val;
+        if let Some(lww) = reg.read() {
+            let value = lww.value.clone();
+            map_put(
+                &mut old,
+                SNAPSHOT_MIGRATION_ACTOR,
+                lww.timestamp,
+                *series,
+                SeriesRelationsV10 {
+                    title: value.title,
+                    year: value.year,
+                    episode_count: value.episode_count,
+                    relations: value.relations,
+                },
+            );
+        }
+    }
+    old
+}
+
+/// The tagged on-disk layout of [`CrdtState`] as written by protocol
+/// v7–v10 — identical to the live struct except that
+/// `series_relations` holds the frozen [`SeriesRelationsV10`] (v11
+/// appended `short_titles` inside it). One frozen struct covers all
+/// four versions because v7 → v10 never reshaped persisted state (the
+/// old `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` assertion, now inherited
+/// here and still pinned by each version's fixture blob).
+///
+/// Same caveat as [`CrdtStateUntaggedV6`]: only the field list and
+/// `SeriesRelationsV10` are frozen; the other nested value types ride
+/// the live shapes and stay decodable only under append-only drift —
+/// pinned by the checked-in v7–v10 fixture blobs (tests/fixtures/).
+#[derive(Deserialize)]
+struct CrdtStateV10 {
+    playlist: LwwMap<Ed2kHash, Option<PlaylistFileState>>,
+    watched: LwwMap<Ed2kHash, bool>,
+    now_playing: LwwCell<Option<Ed2kHash>>,
+    seek_authority: LwwCell<SeekAuthority>,
+    playback_intent: LwwCell<PlaybackIntent>,
+    series_preference: LwwMap<(UserId, ListEntryId), SeriesPreference>,
+    manual_override: LwwMap<UserId, Option<ManualState>>,
+    file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
+    anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
+    series_relations: LwwMap<AniDbSeriesId, SeriesRelationsV10>,
+    file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
+    list_entries: LwwMap<ListEntryId, SeriesListEntry>,
+    list_next_ep: LwwMap<ListEntryId, NextEpState>,
+    lookup_requests: GSet<FileHashInfo>,
+    chat: GList<ChatMessage>,
+    playback_position: LwwMap<UserId, PlaybackPosition>,
+    acknowledged_absent: GSet<(Ed2kHash, UserId)>,
+    marquee: LwwCell<Option<MarqueeMessage>>,
+    /// Read for layout only; the stored value is discarded on upgrade
+    /// (the envelope tag, not this field, named the blob's version).
+    _protocol_version: u32,
+}
+
+impl From<CrdtStateV10> for CrdtState {
+    fn from(v10: CrdtStateV10) -> Self {
+        CrdtState {
+            playlist: v10.playlist,
+            watched: v10.watched,
+            now_playing: v10.now_playing,
+            seek_authority: v10.seek_authority,
+            playback_intent: v10.playback_intent,
+            series_preference: v10.series_preference,
+            manual_override: v10.manual_override,
+            file_availability: v10.file_availability,
+            anidb_metadata: v10.anidb_metadata,
+            series_relations: upgrade_relations_map(&v10.series_relations),
+            file_catalog: v10.file_catalog,
+            list_entries: v10.list_entries,
+            list_next_ep: v10.list_next_ep,
+            lookup_requests: v10.lookup_requests,
+            chat: v10.chat,
+            playback_position: v10.playback_position,
+            acknowledged_absent: v10.acknowledged_absent,
+            marquee: v10.marquee,
+            protocol_version: crate::net::message::PROTOCOL_VERSION,
+        }
+    }
+}
+
 /// The **untagged** on-disk layout of [`CrdtState`] as written by
 /// protocol-v6 builds, before storage snapshots gained the
 /// [`SNAPSHOT_MAGIC`] envelope. This is the one legacy fallback
@@ -270,7 +425,9 @@ struct CrdtStateUntaggedV6 {
     manual_override: LwwMap<UserId, Option<ManualState>>,
     file_availability: LwwMap<(UserId, Ed2kHash), FileAvailability>,
     anidb_metadata: LwwMap<Ed2kHash, Option<AniDbMetadata>>,
-    series_relations: LwwMap<AniDbSeriesId, SeriesRelations>,
+    /// Frozen since v11 appended `short_titles` inside the value type —
+    /// the one nested shape that no longer drifts append-only.
+    series_relations: LwwMap<AniDbSeriesId, SeriesRelationsV10>,
     file_catalog: LwwMap<Ed2kHash, FileCatalogEntry>,
     list_entries: LwwMap<ListEntryId, SeriesListEntry>,
     list_next_ep: LwwMap<ListEntryId, NextEpState>,
@@ -295,7 +452,7 @@ impl From<CrdtStateUntaggedV6> for CrdtState {
             manual_override: v6.manual_override,
             file_availability: v6.file_availability,
             anidb_metadata: v6.anidb_metadata,
-            series_relations: v6.series_relations,
+            series_relations: upgrade_relations_map(&v6.series_relations),
             file_catalog: v6.file_catalog,
             list_entries: v6.list_entries,
             list_next_ep: v6.list_next_ep,
@@ -332,7 +489,7 @@ impl CrdtState {
             manual_override: state.manual_override,
             file_availability: state.file_availability,
             anidb_metadata: state.anidb_metadata,
-            series_relations: state.series_relations,
+            series_relations: downgrade_relations_map(&state.series_relations),
             file_catalog: state.file_catalog,
             list_entries: state.list_entries,
             list_next_ep: state.list_next_ep,
@@ -387,26 +544,31 @@ impl CrdtState {
     /// Older tagged versions whose persisted [`CrdtState`] layout is
     /// **identical** to the current one, accepted as a deliberate
     /// migration decision (the refuse-to-guess policy's explicit decode
-    /// arm): v7 → v9 changed only wire messages — the DSCP transfer-
-    /// connection split (v8) and per-transfer data streams (v9) — never
-    /// a replicated value type or `CrdtState` itself, and v10 only
-    /// **appended** the `FileAvailability::DownloadingPlayable` variant
-    /// (postcard encodes the variant index, so every v9 body — which can
-    /// only contain the older variants — still decodes with the current
-    /// type). Every entry here asserts "I checked the diff; the current
+    /// arm). Every entry here asserts "I checked the diff; the current
     /// type decodes the old postcard body unchanged" — and is backed by a
     /// checked-in fixture blob in that version's real bytes
     /// (tests/fixtures/, captured once when the version entered this list
-    /// and never regenerated; see tests/fixtures/README.md).
-    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 3] = [7, 8, 9];
+    /// and never regenerated; see tests/fixtures/README.md). Empty since
+    /// v11 appended `SeriesRelations::short_titles`: every older tagged
+    /// version now decodes through the frozen [`CrdtStateV10`] arm
+    /// instead.
+    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 0] = [];
 
     /// Older tagged versions decoded by an explicit **frozen-layout**
     /// decode arm in [`decode_snapshot_flagged`](Self::decode_snapshot_flagged)
     /// — a frozen copy of that version's layout plus an upgrade, for a
-    /// bump that *did* reshape persisted state. None exist yet; adding
-    /// an arm also appends its version here so the exhaustiveness test
-    /// knows it is handled.
-    pub const FROZEN_LAYOUT_SNAPSHOT_VERSIONS: [u32; 0] = [];
+    /// bump that *did* reshape persisted state. v7–v10 share one persisted
+    /// layout (v7 → v9 changed only wire messages; v10 appended an enum
+    /// variant — the old `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` rationale,
+    /// still pinned by each version's fixture blob) and all four decode
+    /// through [`CrdtStateV10`], frozen when v11 appended
+    /// `SeriesRelations::short_titles`. A future frozen version with a
+    /// *different* layout gets its own struct and arm; adding an arm also
+    /// appends its version here so the exhaustiveness test knows it is
+    /// handled. A frozen version's fixture blob must be captured **at the
+    /// moment of the bump** (the current encoder stops producing its
+    /// bytes) — see tests/fixtures/README.md.
+    pub const FROZEN_LAYOUT_SNAPSHOT_VERSIONS: [u32; 4] = [7, 8, 9, 10];
 
     /// [`decode_snapshot`](Self::decode_snapshot), also reporting whether
     /// a **migration** was used (`true` = the blob was written by an
@@ -435,6 +597,15 @@ impl CrdtState {
                 let mut state = crate::wire::decode::<CrdtState>(body)?;
                 state.protocol_version = crate::net::message::PROTOCOL_VERSION;
                 return Ok((state, true));
+            }
+            if Self::FROZEN_LAYOUT_SNAPSHOT_VERSIONS.contains(&version) {
+                tracing::info!(
+                    stored = version,
+                    current = crate::net::message::PROTOCOL_VERSION,
+                    "snapshot from a frozen older layout (v7–v10); migrating"
+                );
+                let state = crate::wire::decode::<CrdtStateV10>(body)?;
+                return Ok((CrdtState::from(state), true));
             }
             tracing::error!(
                 stored = version,

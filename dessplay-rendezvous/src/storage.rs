@@ -791,6 +791,44 @@ impl ServerStorage {
         Ok(hits)
     }
 
+    /// A series' community short titles (kind 3), ordered by display
+    /// preference — x-jat first (the romaji nicknames the group actually
+    /// uses), then en, then everything else — with lang and title as
+    /// deterministic tiebreaks (the worker rewrites `series_relations`
+    /// whenever this list differs from the replicated one, so an
+    /// unstable order would oscillate). Exact duplicate titles across
+    /// languages keep only their most-preferred occurrence.
+    pub fn short_titles(&self, series: AniDbSeriesId) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT title FROM anidb_titles
+             WHERE aid = ?1 AND kind = 3
+             ORDER BY CASE lang WHEN 'x-jat' THEN 0 WHEN 'en' THEN 1 ELSE 2 END,
+                      lang, title",
+        )?;
+        let rows = stmt.query_map(params![series.0 as i64], |row| row.get::<_, String>(0))?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut titles = Vec::new();
+        for row in rows {
+            let title = row?;
+            if seen.insert(title.clone()) {
+                titles.push(title);
+            }
+        }
+        Ok(titles)
+    }
+
+    /// Whether the titles table holds any rows at all. False until the
+    /// first dump fetch lands (`replace_titles` never empties a
+    /// populated table) — the short-title backfill treats that as "no
+    /// information", not "no short titles".
+    pub fn titles_available(&self) -> Result<bool> {
+        self.conn
+            .query_row("SELECT EXISTS (SELECT 1 FROM anidb_titles)", [], |row| {
+                row.get(0)
+            })
+            .map_err(Into::into)
+    }
+
     /// A series' primary title (kind 1), falling back to any official
     /// title (kind 4).
     fn primary_title(&self, series: AniDbSeriesId) -> Result<Option<String>> {
@@ -1380,6 +1418,46 @@ mod tests {
         // A fresh dump replaces everything.
         storage.replace_titles(&[title(9, 1, "Other")]).unwrap();
         assert!(storage.search_titles("frieren", 10).unwrap().is_empty());
+    }
+
+    fn title_in(aid: u32, kind: u8, lang: &str, name: &str) -> TitleRow {
+        TitleRow {
+            series: AniDbSeriesId(aid),
+            kind,
+            lang: lang.into(),
+            title: name.into(),
+        }
+    }
+
+    #[test]
+    fn short_titles_prefer_xjat_then_en_and_dedupe() {
+        let mut storage = ServerStorage::open_in_memory().unwrap();
+        assert!(!storage.titles_available().unwrap());
+        storage
+            .replace_titles(&[
+                // Insertion order deliberately scrambled against the
+                // expected preference order.
+                title_in(1, 3, "de", "KaninchenKaffee"),
+                title_in(1, 3, "en", "GochiUsa"),
+                title_in(1, 1, "x-jat", "Gochuumon wa Usagi Desu ka?"),
+                title_in(1, 3, "x-jat", "Gochiusa"),
+                // The same string under two languages keeps one copy.
+                title_in(1, 3, "ja", "GochiUsa"),
+                // Another series' shorts don't bleed in.
+                title_in(2, 3, "en", "Frieren"),
+                // Kind 2 synonyms are not short titles.
+                title_in(1, 2, "en", "Is the Order a Rabbit?"),
+            ])
+            .unwrap();
+
+        assert!(storage.titles_available().unwrap());
+        assert_eq!(
+            storage.short_titles(AniDbSeriesId(1)).unwrap(),
+            ["Gochiusa", "GochiUsa", "KaninchenKaffee"]
+        );
+        assert_eq!(storage.short_titles(AniDbSeriesId(2)).unwrap(), ["Frieren"]);
+        // No kind-3 rows at all: empty, not an error.
+        assert!(storage.short_titles(AniDbSeriesId(9)).unwrap().is_empty());
     }
 
     #[test]

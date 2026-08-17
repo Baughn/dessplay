@@ -1097,7 +1097,10 @@ impl ListSort {
 pub struct ListRow {
     /// Entry id (selection / edit target).
     pub id: ListEntryId,
-    /// Primary title.
+    /// Display title: the preferred community short title for a linked
+    /// entry that has one (`SeriesRelations::short_titles`), else the
+    /// entry's own name. Also the alphabetical sort key — the row sorts
+    /// where it reads.
     pub name: String,
     /// Nero's title.
     pub nero_name: Option<String>,
@@ -1910,9 +1913,19 @@ pub fn list_groups(
             )
             .filter_map(|key| recency.get(&key).copied())
             .max();
+        // A linked entry with a community short title displays (and
+        // alphabetizes) under it — "GochiUsa", not "Gochuumon wa Usagi
+        // Desu ka??" (design.md, The List). The full name still lives in
+        // the edit modal and the episode browser.
+        let display_name = entry
+            .anidb_series_id
+            .and_then(|series| view.series_relations.get(&series))
+            .and_then(|relations| relations.short_titles.first())
+            .cloned()
+            .unwrap_or_else(|| entry.name.clone());
         let row = ListRow {
             id: *id,
-            name: entry.name.clone(),
+            name: display_name,
             nero_name: entry.nero_name.clone(),
             next_ep: next
                 .and_then(|n| n.next_ep.as_deref())
@@ -2912,6 +2925,47 @@ mod tests {
         assert!(groups.last().unwrap().collapsed);
     }
 
+    /// A linked entry with community short titles displays under the
+    /// preferred one instead of its own (official) name, and
+    /// alphabetizes where it reads; a linked entry whose relations
+    /// carry no short titles, or an unlinked entry, keeps its name.
+    #[test]
+    fn linked_entries_display_their_short_title() {
+        let mut state = CrdtState::new();
+        let mut gochiusa = list_entry("Gochuumon wa Usagi Desu ka??", ListStatus::Planned);
+        gochiusa.anidb_series_id = Some(AniDbSeriesId(1));
+        state.put_list_entry(A, ts(1), ListEntryId(1), gochiusa);
+        let mut plain = list_entry("Zetsubou", ListStatus::Planned);
+        plain.anidb_series_id = Some(AniDbSeriesId(2));
+        state.put_list_entry(A, ts(2), ListEntryId(2), plain);
+        state.put_list_entry(
+            A,
+            ts(3),
+            ListEntryId(3),
+            list_entry("Unlinked", ListStatus::Planned),
+        );
+        let relations = |title: &str, short: &[&str]| SeriesRelations {
+            title: title.into(),
+            year: None,
+            episode_count: None,
+            relations: Default::default(),
+            short_titles: short.iter().map(|s| s.to_string()).collect(),
+        };
+        state.set_series_relations(
+            A,
+            ts(4),
+            AniDbSeriesId(1),
+            relations("Gochuumon wa Usagi Desu ka??", &["GochiUsa", "Gochiusa"]),
+        );
+        state.set_series_relations(A, ts(5), AniDbSeriesId(2), relations("Zetsubou", &[]));
+
+        let groups = groups_of(&state, ListSort::Alphabetical);
+        assert_eq!(headings(&groups), vec!["Planned"]);
+        let names: Vec<&str> = groups[0].rows.iter().map(|r| r.name.as_str()).collect();
+        // "GochiUsa" (not "Gochuumon...") — and sorted as G, before U.
+        assert_eq!(names, vec!["GochiUsa", "Unlinked", "Zetsubou"]);
+    }
+
     /// The users column derives from live `series_preference`, not the
     /// import-time `watchers` seed: the seed says Baughn+Nero, but only
     /// kim has a Watching preference — the column shows kim alone, and
@@ -3318,6 +3372,7 @@ mod tests {
                 })
                 .into_iter()
                 .collect(),
+            short_titles: vec![],
         };
         // Season 3 (id 30) -> season 2 (id 20) -> season 1 (id 10).
         state.set_series_relations(A, ts(1), AniDbSeriesId(30), relations("S3", Some(20)));

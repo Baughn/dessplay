@@ -1,14 +1,13 @@
 ---
 source: dessplay/src/ui/components.rs
-assertion_line: 2778
 expression: render_list_pane(&mut p)
 ---
 ┌The List──────────────────────────────────────────────────┐
 │▾ Watching — kim (2)                                      │
 │  Akira                            movie?       K         │
-│  Frieren                          S2E05     ✓  KN        │
+│  Frieren 2                        S2E05     ✓  KN        │
 │▾ Watching — nero (1)                                     │
-│  Frieren                          S2E05     ✓  KN        │
+│  Frieren 2                        S2E05     ✓  KN        │
 │▾ Watching (1)                                            │
 │  Adrift                                                  │
 │▾ Planned (1)                                             │

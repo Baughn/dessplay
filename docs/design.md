@@ -1236,7 +1236,18 @@ Recency's bottom partition.
 Entries display name, nero_name, next_ep, and **live commitment initials**:
 the users whose `series_preference` is Watching, not the import-time
 `watchers` seed (which keeps its one-shot preference-seeding role and is
-never displayed). A linked entry whose free-text `next_ep` parses as a
+never displayed). A **linked** entry whose `SeriesRelations` carries
+community short titles (the titles dump's kind-3 rows, x-jat preferred
+over en; populated at ANIME-lookup time and reconciled by a worker pass
+whenever the daily dump changes) renders the preferred short title
+*instead of* the official name, and alphabetizes under it — "GochiUsa",
+not "Gochuumon wa Usagi Desu ka??" (user decision 2026-08-17: save the
+space; the full name still lives in the edit modal and the episode
+browser). `nero_name` is appended dim-quoted as always, and gets its own
+fast entry path: `n` on an entry opens a minimal single-field editor
+(Enter saves — trimmed, empty clears — Esc cancels), the group's
+renaming culture in two keystrokes; the full edit modal remains for
+everything else. A linked entry whose free-text `next_ep` parses as a
 plain episode number renders it as **`SnEnn`** -- the season ordinal
 counted along the replicated prequel chain (best effort: cycle-guarded,
 counting the visible prefix when the graph hasn't filled in) -- with an
@@ -1603,6 +1614,7 @@ key equivalent.
 | `Enter` | Series | Browse franchise (episode browser or file browser) |
 | `Enter` | Series (List mode) | Jump to next episode / open entry |
 | `e` | Series (List mode) | Edit entry (modal) |
+| `n` | Series (List mode) | Edit the entry's `nero_name` (minimal single-field editor; empty clears) |
 | `l` | Series (List mode) | Link entry to AniDB (search modal) |
 | `Enter` | Episode Browser | Select season (cursor on its first unwatched row) / choose an episode or copy; no-op on a header row |
 | `w` | Episode Browser | Cycle the group watched flag: the selected file, or every copy of the episode on a header row; no-op in the season list |

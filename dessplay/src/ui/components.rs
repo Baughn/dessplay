@@ -1804,6 +1804,15 @@ impl SeriesPane {
         }
     }
 
+    /// `n` (The List): the minimal `nero_name` editor for the selected
+    /// entry — the fast path for the group's renaming culture.
+    fn act_list_nero(&mut self) -> Option<Msg> {
+        match self.nav_rows().get(self.cursor.index())? {
+            ListNavRow::Entry(g, e) => Some(Msg::EditNeroName(self.groups[*g].rows[*e].id)),
+            ListNavRow::Heading(_) => None,
+        }
+    }
+
     /// `l` (The List): link the selected entry to AniDB.
     fn act_list_link(&mut self) -> Option<Msg> {
         match self.nav_rows().get(self.cursor.index())? {
@@ -2081,6 +2090,11 @@ static SERIES_LIST_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
         pattern: KeyPattern::Char('e'),
         bar: Some(("e", "Edit")),
         action: SeriesPane::act_list_edit,
+    },
+    Binding {
+        pattern: KeyPattern::Char('n'),
+        bar: Some(("n", "Nero name")),
+        action: SeriesPane::act_list_nero,
     },
     Binding {
         pattern: KeyPattern::Char('l'),
@@ -2593,6 +2607,27 @@ mod series_pane_tests {
         );
     }
 
+    /// `n` on a List entry opens the minimal `nero_name` editor (the
+    /// third pane-local meaning of `n`, after Users' NotWatching and
+    /// Playlist's Nyaa); on a heading it does nothing.
+    #[test]
+    fn n_opens_the_nero_name_editor_on_entries_only() {
+        let mut p = SeriesPane::default();
+        assert_eq!(p.mode(), SeriesMode::TheList);
+        p.set_groups(vec![ListGroup {
+            heading: "Watching".to_string(),
+            rows: vec![list_row(1, None)],
+            collapsed: false,
+        }]);
+        // Cursor starts on the heading: no message.
+        assert_eq!(p.on(&key(Key::Char('n'))), None);
+        p.on(&key(Key::Down));
+        assert_eq!(
+            p.on(&key(Key::Char('n'))),
+            Some(Msg::EditNeroName(dessplay_core::types::ListEntryId(1)))
+        );
+    }
+
     /// `s` toggles the List sort (Recency <-> Alphabetical) and emits the
     /// persistence message, mirroring the All-mode pattern.
     #[test]
@@ -2713,6 +2748,9 @@ mod series_pane_tests {
                 }]
                 .into_iter()
                 .collect(),
+                // Differs from the List entry's own name ("Frieren") so
+                // the snapshots show the short title winning the row.
+                short_titles: vec!["Frieren 2".into()],
             },
         );
         // "Adrift" holds an unwatched file (name-resolved, advertised by

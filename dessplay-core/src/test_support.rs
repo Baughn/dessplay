@@ -374,6 +374,7 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
                 }]
                 .into_iter()
                 .collect(),
+                short_titles: vec![format!("s{}", s % SERIES)],
             };
             state.set_series_relations(a, ts, series(*s), relations)
         }

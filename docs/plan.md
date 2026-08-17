@@ -1705,6 +1705,25 @@ episodes floating up, `S2E05` at a glance.
 
 ## Phase 33: Nicknames & Short Titles
 
+**Status: complete (2026-08-17).** All three pieces landed as planned:
+`n` opens a minimal nero_name editor (`NeroNameModal` — Enter saves
+trimmed with empty clearing, Esc cancels, unchanged commits write
+nothing); `SeriesRelations` gained `short_titles` (kind-3 rows, x-jat
+before en, deduped, from a new `ServerStorage::short_titles` query);
+and a linked List entry renders the preferred short title in place of
+the official name, alphabetizing under it. The "backfill" became an
+idempotent every-pass reconcile (`apply_short_titles`, the
+`apply_series_hints` shape) rather than one-shot — it also refreshes
+short titles whenever the daily dump changes, quiesces when replicated
+state matches, and treats an empty titles table as "no information".
+The protocol bump (v10 → v11) reshaped a persisted value type for the
+first time, so v7–v10 moved from `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`
+to the tree's first frozen-layout decode arm (`CrdtStateV10` /
+`SeriesRelationsV10`, value-level rebuild preserving LWW timestamps
+under a dedicated migration actor); v10's fixture blob was captured at
+the bump per the now-documented frozen-version rule
+(tests/fixtures/README.md).
+
 **Goal**: the names the group actually uses become first-class. Nero's
 (re)names get a fast entry path, and AniDB's community short titles
 (type-3 rows in the titles dump — already ingested unfiltered into

@@ -35,6 +35,8 @@ pub enum Msg {
     BrowseFranchise(FranchiseKey),
     /// Edit a List entry.
     EditListEntry(ListEntryId),
+    /// Open the minimal `nero_name` editor for a List entry (`n`).
+    EditNeroName(ListEntryId),
     /// Enter on a List entry: for a linked entry whose franchise holds
     /// files, the episode browser (matched by component membership — the
     /// linked season is often not the franchise root, and may itself be
@@ -114,6 +116,8 @@ pub enum Msg {
     /// (`Some` only when next_ep/available actually changed — that register
     /// is written separately so it never clobbers a concurrent auto-advance).
     ListEntrySaved(ListEntryId, Box<SeriesListEntry>, Option<Box<NextEpState>>),
+    /// Nero-name modal: set (or `None` = clear) the entry's `nero_name`.
+    NeroNameSaved(ListEntryId, Option<String>),
     /// AniDB search modal: run this search.
     AniDbSearchRequested(String),
     /// AniDB search modal: link the entry to this series.
@@ -163,6 +167,8 @@ impl Msg {
             Msg::SeriesFilterChanged => "SeriesFilterChanged",
             Msg::BrowseFranchise(_) => "BrowseFranchise",
             Msg::EditListEntry(_) => "EditListEntry",
+            Msg::EditNeroName(_) => "EditNeroName",
+            Msg::NeroNameSaved(..) => "NeroNameSaved",
             Msg::BrowseListEntry(_) => "BrowseListEntry",
             Msg::LinkListEntry(_) => "LinkListEntry",
             Msg::AniDbSearchRequested(_) => "AniDbSearchRequested",

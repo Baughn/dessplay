@@ -129,10 +129,11 @@ async fn lookup_requests_become_replicated_metadata_and_relations() {
                             && m.series_id == Some(FRIEREN)
                             && m.episode_number.as_deref() == Some("01")
                     })
-                }) && view
-                    .series_relations
-                    .get(&FRIEREN)
-                    .is_some_and(|r| r.title == "Sousou no Frieren" && r.year == Some(2023))
+                }) && view.series_relations.get(&FRIEREN).is_some_and(|r| {
+                    r.title == "Sousou no Frieren"
+                        && r.year == Some(2023)
+                        && r.short_titles == ["Frieren"]
+                })
             })
         },
     )

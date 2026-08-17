@@ -27,8 +27,8 @@ use super::components::{
     ChatPane, HealthLine, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
 };
 use super::modals::{
-    AniDbSearchModal, BrowserLibrary, EpisodeBrowser, FileBrowser, ListEditModal, NyaaActiveImport,
-    NyaaSearchModal, Season, SettingsModal,
+    AniDbSearchModal, BrowserLibrary, EpisodeBrowser, FileBrowser, ListEditModal, NeroNameModal,
+    NyaaActiveImport, NyaaSearchModal, Season, SettingsModal,
 };
 use super::msg::{BrowseRequest, Msg, UserAction};
 use super::props;
@@ -192,6 +192,7 @@ enum Modal {
     Settings(SettingsModal),
     Episodes(EpisodeBrowser),
     ListEdit(ListEditModal),
+    NeroName(NeroNameModal),
     AniDbSearch(AniDbSearchModal),
     NyaaSearch(NyaaSearchModal),
 }
@@ -203,6 +204,7 @@ impl Modal {
             Modal::Settings(modal) => modal,
             Modal::Episodes(modal) => modal,
             Modal::ListEdit(modal) => modal,
+            Modal::NeroName(modal) => modal,
             Modal::AniDbSearch(modal) => modal,
             Modal::NyaaSearch(modal) => modal,
         }
@@ -214,6 +216,7 @@ impl Modal {
             Modal::Settings(modal) => modal.keybindings(),
             Modal::Episodes(modal) => modal.keybindings(),
             Modal::ListEdit(modal) => modal.keybindings(),
+            Modal::NeroName(modal) => modal.keybindings(),
             Modal::AniDbSearch(modal) => modal.keybindings(),
             Modal::NyaaSearch(modal) => modal.keybindings(),
         }
@@ -226,6 +229,7 @@ impl Modal {
             Modal::Settings(_) => "Settings",
             Modal::Episodes(_) => "Episodes",
             Modal::ListEdit(_) => "ListEdit",
+            Modal::NeroName(_) => "NeroName",
             Modal::AniDbSearch(_) => "AniDbSearch",
             Modal::NyaaSearch(_) => "NyaaSearch",
         }
@@ -1459,6 +1463,25 @@ impl Ui {
                     .unwrap_or_default();
                 self.push_modal(Modal::ListEdit(ListEditModal::new(id, entry, next_ep)));
                 None
+            }
+            Msg::EditNeroName(id) => {
+                let entry = self.snapshot.view.list_entries.get(&id)?;
+                self.push_modal(Modal::NeroName(NeroNameModal::new(
+                    id,
+                    entry.name.clone(),
+                    entry.nero_name.as_deref(),
+                )));
+                None
+            }
+            Msg::NeroNameSaved(id, nero_name) => {
+                self.pop_modal();
+                self.sync_focus_attr();
+                let mut entry = self.snapshot.view.list_entries.get(&id)?.clone();
+                if entry.nero_name == nero_name {
+                    return None;
+                }
+                entry.nero_name = nero_name;
+                Some(UserAction::Mutate(Mutation::PutListEntry { id, entry }))
             }
             Msg::BrowseListEntry(id) => {
                 let view = &self.snapshot.view;
@@ -4002,6 +4025,7 @@ mod tests {
                 }]
                 .into_iter()
                 .collect(),
+                short_titles: vec![],
             },
         );
         state.set_series_relations(
@@ -4018,6 +4042,7 @@ mod tests {
                 }]
                 .into_iter()
                 .collect(),
+                short_titles: vec![],
             },
         );
         // A held file for the linked season, so the franchise exists.

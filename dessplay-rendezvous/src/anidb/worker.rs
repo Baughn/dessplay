@@ -92,6 +92,7 @@ pub async fn run<H: AniDbHost>(host: H, api: Arc<dyn AniDbApi>, titles: Arc<dyn 
         seed_queues(&host, &view, now);
         populate_catalog(&host, &view).await;
         apply_series_hints(&host, &view).await;
+        apply_short_titles(&host, &view).await;
         match step(&host, &*api, now).await {
             Ok(true) => {} // did work; the client paces the next send
             Ok(false) => {
@@ -208,6 +209,42 @@ async fn apply_series_hints<H: AniDbHost>(host: &H, view: &StateView) {
                 AniDbMetadata {
                     series_name: hint.to_string(),
                     ..meta.clone()
+                },
+            )
+            .await;
+        }
+    }
+}
+
+/// Reconcile replicated short titles with the titles dump. Settled
+/// `series_relations` rows are written once and never revisited by the
+/// lookup schedule, so this is both the one-time backfill for rows
+/// settled before short titles existed (or before the dump first
+/// landed) and the steady-state refresh after each daily dump
+/// replacement. Same shape as [`apply_series_hints`]: no AniDB call,
+/// independent of the settled schedule, quiesces once the replicated
+/// list matches the dump. An empty titles table means "no information
+/// yet" (a fresh server before its first fetch) and writes nothing.
+async fn apply_short_titles<H: AniDbHost>(host: &H, view: &StateView) {
+    if store(host, "titles presence", |s| s.titles_available()) != Some(true) {
+        return;
+    }
+    for (series, relations) in &view.series_relations {
+        let Some(short_titles) = store(host, "short titles", |s| s.short_titles(*series)) else {
+            continue;
+        };
+        if relations.short_titles != short_titles {
+            tracing::info!(
+                aid = series.0,
+                title = %relations.title,
+                short = ?short_titles,
+                "updating short titles from the dump"
+            );
+            host.write_relations(
+                *series,
+                SeriesRelations {
+                    short_titles,
+                    ..relations.clone()
                 },
             )
             .await;
@@ -418,6 +455,11 @@ async fn lookup_anime<H: AniDbHost>(
                         target,
                     })
                     .collect(),
+                // From the titles dump, not the ANIME reply. Empty if the
+                // dump hasn't landed yet; apply_short_titles fills it in
+                // on a later pass.
+                short_titles: store(host, "short titles", |s| s.short_titles(series))
+                    .unwrap_or_default(),
             };
             host.write_relations(series, relations).await;
             // Walk: queue every related series we haven't fetched yet.
@@ -826,6 +868,7 @@ mod tests {
                 year: Some(2023),
                 episode_count: Some(12),
                 relations: Default::default(),
+                short_titles: vec![],
             },
         )
         .await;
@@ -1240,6 +1283,109 @@ mod tests {
         })
         .await;
         worker.abort();
+    }
+
+    /// Kind-3 (short) rows for GochiUsa in three languages, plus a
+    /// second series with relations but no shorts at all.
+    const GOCHIUSA_DUMP: &str = "\
+        5391|1|x-jat|Gochuumon wa Usagi Desu ka?\n\
+        5391|3|en|GochiUsa\n\
+        5391|3|x-jat|Gochiusa\n\
+        777|1|x-jat|Linked Show\n";
+
+    fn seed_relations(host: &Arc<MockHost>, aid: u32, title: &str) {
+        let relations = SeriesRelations {
+            title: title.into(),
+            year: Some(2014),
+            episode_count: Some(12),
+            relations: Default::default(),
+            short_titles: vec![],
+        };
+        host.mutate(|state, ts| {
+            state.set_series_relations(ActorId::SERVER, ts, AniDbSeriesId(aid), relations);
+        });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn anime_hit_records_short_titles_from_the_dump() {
+        // The titles dump is refreshed at the top of the pass, so an
+        // ANIME hit in the same pass already sees the kind-3 rows —
+        // x-jat preferred over en.
+        let host = MockHost::new();
+        let api = Arc::new(MockApi::default());
+        api.anime.lock().unwrap().insert(
+            AniDbSeriesId(5391),
+            anime_hit(5391, "Gochuumon wa Usagi Desu ka?", &[]),
+        );
+        host.mutate(|state, ts| {
+            state.set_anidb_metadata(
+                ActorId::SERVER,
+                ts,
+                hash(1),
+                Some(AniDbMetadata {
+                    source: MetadataSource::AniDb,
+                    series_name: "Gochuumon wa Usagi Desu ka?".into(),
+                    series_id: Some(AniDbSeriesId(5391)),
+                    episode_number: Some("1".into()),
+                }),
+            );
+        });
+        let (titles, _) = titles_source(GOCHIUSA_DUMP, false);
+        let worker = spawn_worker(&host, &api, titles);
+        eventually(&host, "short titles on the anime hit", |view| {
+            view.series_relations
+                .get(&AniDbSeriesId(5391))
+                .is_some_and(|r| r.short_titles == ["Gochiusa", "GochiUsa"])
+        })
+        .await;
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn short_titles_backfill_updates_settled_relations() {
+        // Relations settled before short titles existed (or before the
+        // dump first landed) are rewritten from the dump alone — no
+        // AniDB call (apply_short_titles takes no API at all) — and the
+        // pass quiesces once the replicated list matches. A series with
+        // no kind-3 rows stays empty without churning writes.
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        seed_relations(&host, 777, "Linked Show");
+        host.with_storage(|s| {
+            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
+                .unwrap();
+        });
+
+        apply_short_titles(&host, &host.view()).await;
+
+        let view = host.view();
+        let gochiusa = &view.series_relations[&AniDbSeriesId(5391)];
+        assert_eq!(gochiusa.short_titles, ["Gochiusa", "GochiUsa"]);
+        // The rest of the settled record is untouched.
+        assert_eq!(gochiusa.title, "Gochuumon wa Usagi Desu ka?");
+        assert_eq!(gochiusa.year, Some(2014));
+        assert!(
+            view.series_relations[&AniDbSeriesId(777)]
+                .short_titles
+                .is_empty()
+        );
+
+        // Quiesced: a second pass writes nothing at all.
+        let before = host.state.lock().unwrap().clone();
+        apply_short_titles(&host, &host.view()).await;
+        assert_eq!(*host.state.lock().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn short_titles_backfill_waits_for_the_first_dump() {
+        // An empty titles table means "never fetched", not "no short
+        // titles" — the backfill must not write empty lists over
+        // everything on a fresh server.
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        let before = host.state.lock().unwrap().clone();
+        apply_short_titles(&host, &host.view()).await;
+        assert_eq!(*host.state.lock().unwrap(), before);
     }
 
     #[tokio::test(start_paused = true)]

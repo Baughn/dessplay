@@ -196,6 +196,11 @@ fn rich_sample_state() -> CrdtState {
                 kind: RelationKind::Sequel,
                 target: AniDbSeriesId(18886),
             }]),
+            // Kept empty: every checked-in fixture predates the field
+            // (v6–v10), decoding through the frozen arm to an empty vec —
+            // this view is what those fixtures are compared against. New
+            // fixture content belongs in a new builder (fixtures README).
+            short_titles: vec![],
         },
     );
     state.set_file_catalog(
@@ -375,6 +380,79 @@ fn layout_compatible_fixture_blobs_decode_to_the_expected_view() {
              (do NOT regenerate the fixture)"
         );
     }
+}
+
+/// Every version in `FROZEN_LAYOUT_SNAPSHOT_VERSIONS` decodes from its
+/// checked-in fixture blob — that version's **real frozen bytes** —
+/// through the frozen `CrdtStateV10` arm to the expected resolved view,
+/// with `short_titles` (which those bodies predate) upgraded to empty.
+/// The v7–v9 blobs were captured while those versions sat in
+/// `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS`; v10's was captured at the v11
+/// bump, the last moment the current encoder still produced its bytes.
+/// If the frozen structs ever drift against these bytes, this fails —
+/// the fixtures are the contract, never regenerate them.
+#[test]
+fn frozen_layout_fixture_blobs_decode_to_the_expected_view() {
+    let expected = rich_sample_state().view();
+    for version in CrdtState::FROZEN_LAYOUT_SNAPSHOT_VERSIONS {
+        let blob = read_fixture(&format!("snapshot-v{version}.bin"));
+        assert_eq!(blob[..4], SNAPSHOT_MAGIC, "fixture v{version}: bad magic");
+        assert_eq!(
+            u32::from_le_bytes(blob[4..8].try_into().unwrap()),
+            version,
+            "fixture v{version} is tagged with the wrong version"
+        );
+
+        let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap_or_else(|e| {
+            panic!(
+                "the checked-in v{version} fixture no longer decodes ({e}): the \
+                 frozen v7–v10 layout structs have drifted from v{version}'s real \
+                 bytes (do NOT regenerate the fixture; its bytes are the contract)"
+            )
+        });
+        assert!(migrated, "a v{version} tag must report the migration");
+        assert_eq!(
+            decoded.protocol_version, PROTOCOL_VERSION,
+            "the migrated state re-tags itself"
+        );
+        assert_eq!(
+            decoded.view(),
+            expected,
+            "the v{version} fixture decoded, but to the WRONG view — a misaligned \
+             (silently corrupting) decode through the frozen arm \
+             (do NOT regenerate the fixture)"
+        );
+    }
+}
+
+/// A frozen-layout blob whose `series_relations` carried data survives
+/// the upgrade with LWW timestamps intact: a later write with an older
+/// stamp must still lose against the migrated entry, exactly as it
+/// would have against the original.
+#[test]
+fn frozen_upgrade_preserves_relations_lww_timestamps() {
+    let blob = read_fixture("snapshot-v10.bin");
+    let (mut decoded, _) = CrdtState::decode_snapshot_flagged(&blob).unwrap();
+
+    let series = AniDbSeriesId(17617);
+    let original = decoded.view().series_relations[&series].clone();
+    assert_eq!(original.title, "Sousou no Frieren");
+    assert_eq!(original.short_titles, Vec::<String>::new());
+
+    // rich_sample_state wrote this entry at ts(26); an older write must lose.
+    let stale = SeriesRelations {
+        title: "Stale".into(),
+        year: None,
+        episode_count: None,
+        relations: BTreeSet::new(),
+        short_titles: vec!["stale".into()],
+    };
+    decoded.set_series_relations(A2, ts(25), series, stale);
+    assert_eq!(
+        decoded.view().series_relations[&series],
+        original,
+        "an older-stamped write must not beat the migrated entry"
+    );
 }
 
 #[test]
