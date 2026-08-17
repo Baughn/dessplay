@@ -1213,12 +1213,16 @@ above. Either way queueing tonight's episode is a couple of keypresses.
 
 Within each group, `s` toggles the sort (persisted across sessions, like
 All Series' sort): **Recency** (the default) floats watchable entries --
-the weekly `available` flag set, or an unwatched library file resolving to
-the entry by the Series Identity order -- above those with nothing to
-watch, most recently watched first within each partition (from local watch
-history, the same source as Recent Series); **Alphabetical** is plain name
-order. Entries with nothing to watch render dim in either sort -- the dim
-set is exactly Recency's bottom partition.
+the weekly `available` flag set, or a **held** unwatched file: some client
+advertises a copy (the availability map) that neither the group watched
+flag nor personal watch history records as seen (the episode browser's
+muting rule), resolving to the entry by the Series Identity order. A bare
+metadata row is not enough -- metadata persists forever, files don't.
+Watchable entries sort above those with nothing to watch, most recently
+watched first within each partition (from local watch history, the same
+source as Recent Series); **Alphabetical** is plain name order. Entries
+with nothing to watch render dim in either sort -- the dim set is exactly
+Recency's bottom partition.
 
 Entries display name, nero_name, next_ep, and **live commitment initials**:
 the users whose `series_preference` is Watching, not the import-time

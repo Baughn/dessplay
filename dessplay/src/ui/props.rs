@@ -11,7 +11,7 @@ use dessplay_core::types::{
     AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus, ManualState, NextEpState,
     SeriesListEntry, SeriesWatchState, UserId, decode_action,
 };
-use dessplay_core::{StateView, franchise};
+use dessplay_core::{StateView, franchise, series_identity};
 
 use crate::player::SpeakerName;
 use crate::storage::SeriesKey;
@@ -1119,8 +1119,10 @@ pub struct ListRow {
     /// just never checked.
     pub anidb_unavailable: bool,
     /// Nothing to watch right now: the weekly `available` flag is off
-    /// *and* no known unwatched file maps to this entry. Renders dim, and
-    /// is exactly the bottom partition of the Recency sort.
+    /// *and* no still-held, unwatched file (by the group flag or
+    /// personal watch history — see [`entries_with_unwatched_files`])
+    /// maps to this entry. Renders dim, and is exactly the bottom
+    /// partition of the Recency sort.
     pub dimmed: bool,
 }
 
@@ -1738,45 +1740,35 @@ fn next_ep_display(view: &StateView, entry: &SeriesListEntry, next_ep: &str) -> 
     format!("S{}E{episode:02}", season_ordinal(view, series))
 }
 
-/// Entries that have a known unwatched file: one pass over the file
-/// metadata, resolving each file to a List entry by the Series Identity
-/// order (design.md) — the linked AniDB series id, then `manual_files`
-/// membership, then an exact derived-name match against `name` /
-/// `local_aliases` — and keeping entries where some resolved file lacks
-/// the group watched flag.
-fn entries_with_unwatched_files(view: &StateView) -> BTreeSet<ListEntryId> {
-    let mut by_series: BTreeMap<AniDbSeriesId, ListEntryId> = BTreeMap::new();
-    let mut by_file: BTreeMap<Ed2kHash, ListEntryId> = BTreeMap::new();
-    let mut by_name: BTreeMap<&str, ListEntryId> = BTreeMap::new();
-    for (id, entry) in &view.list_entries {
-        if let Some(series) = entry.anidb_series_id {
-            by_series.entry(series).or_insert(*id);
-        }
-        for hash in &entry.manual_files {
-            by_file.entry(*hash).or_insert(*id);
-        }
-        by_name.entry(entry.name.as_str()).or_insert(*id);
-        for alias in &entry.local_aliases {
-            by_name.entry(alias.as_str()).or_insert(*id);
-        }
-    }
-
-    let mut unwatched = BTreeSet::new();
-    for (hash, metadata) in &view.anidb_metadata {
-        if view.watched.get(hash).copied().unwrap_or(false) {
-            continue;
-        }
-        let Some(metadata) = metadata else { continue };
-        let entry = metadata
-            .series_id
-            .and_then(|series| by_series.get(&series))
-            .or_else(|| by_file.get(hash))
-            .or_else(|| by_name.get(metadata.series_name.as_str()));
-        if let Some(entry) = entry {
-            unwatched.insert(*entry);
-        }
-    }
-    unwatched
+/// Entries with something to watch tonight: a file some client still
+/// advertises (Ready or downloading — the availability map, which
+/// survives compaction) that is unwatched by **both** durable records —
+/// the group watched flag *and* personal watch history — the episode
+/// browser's muting rule (design.md #11). The group flag alone is not
+/// enough: compaction drops flags for files off the playlist while
+/// metadata rows persist forever, which would resurrect every
+/// long-finished episode as "unwatched". Files are resolved to entries
+/// by the canonical Series Identity order
+/// ([`series_identity::resolve_series_entry_for_file`]).
+///
+/// Iterating held files (a few hundred availability rows) rather than
+/// the whole metadata map (tens of thousands) also keeps this cheap
+/// enough for the per-snapshot refresh.
+fn entries_with_unwatched_files(
+    view: &StateView,
+    watched_hashes: &BTreeSet<Ed2kHash>,
+) -> BTreeSet<ListEntryId> {
+    let held: BTreeSet<Ed2kHash> = view
+        .file_availability
+        .iter()
+        .filter(|(_, availability)| !matches!(availability, FileAvailability::Missing))
+        .map(|((_, hash), _)| *hash)
+        .collect();
+    held.into_iter()
+        .filter(|hash| !view.watched.get(hash).copied().unwrap_or(false))
+        .filter(|hash| !watched_hashes.contains(hash))
+        .filter_map(|hash| series_identity::resolve_series_entry_for_file(view, hash))
+        .collect()
 }
 
 /// The List, grouped per design (design.md, The List: UI Integration):
@@ -1795,6 +1787,7 @@ pub fn list_groups(
     users: &[UserId],
     sort: ListSort,
     recency: &BTreeMap<SeriesKey, u64>,
+    watched_hashes: &BTreeSet<Ed2kHash>,
 ) -> Vec<ListGroup> {
     // Live commitment: who has each entry as Watching, from the resolved
     // series_preference map (absent = Maybe, which never groups).
@@ -1804,7 +1797,7 @@ pub fn list_groups(
             committed.entry(*entry).or_default().insert(user);
         }
     }
-    let unwatched = entries_with_unwatched_files(view);
+    let unwatched = entries_with_unwatched_files(view, watched_hashes);
 
     // `me` first, the rest alphabetically, deduped.
     let mut ordered_users: Vec<&UserId> = vec![me];
@@ -2826,6 +2819,7 @@ mod tests {
             ],
             sort,
             &BTreeMap::new(),
+            &BTreeSet::new(),
         )
     }
 
@@ -3001,7 +2995,7 @@ mod tests {
             );
         }
         // Entry 4's freshness comes from a held unwatched file, not the
-        // weekly flag.
+        // weekly flag: known to the library *and* advertised by a client.
         state.set_anidb_metadata(
             A,
             ts(20),
@@ -3012,6 +3006,13 @@ mod tests {
                 series_id: Some(AniDbSeriesId(4)),
                 episode_number: Some("2".into()),
             }),
+        );
+        state.set_file_availability(
+            A,
+            ts(21),
+            UserId::new("kim"),
+            Ed2kHash([4; 16]),
+            FileAvailability::Ready,
         );
         let recency: BTreeMap<SeriesKey, u64> = [
             (SeriesKey::AniDb(AniDbSeriesId(1)), 100),
@@ -3027,6 +3028,7 @@ mod tests {
             &[UserId::new("kim")],
             ListSort::Recency,
             &recency,
+            &BTreeSet::new(),
         );
         assert_eq!(headings(&groups), vec!["Watching — kim"]);
         let names: Vec<&str> = groups[0].rows.iter().map(|r| r.name.as_str()).collect();
@@ -3092,6 +3094,16 @@ mod tests {
         state.set_anidb_metadata(A, ts(5), Ed2kHash([2; 16]), meta("No Name Match"));
         state.set_anidb_metadata(A, ts(6), Ed2kHash([3; 16]), meta("Watched Show"));
         state.set_watched(A, ts(7), Ed2kHash([3; 16]), true);
+        // All three copies are held; only the watched flag separates them.
+        for (t, hash) in [(8, [1; 16]), (9, [2; 16]), (10, [3; 16])] {
+            state.set_file_availability(
+                A,
+                ts(t),
+                UserId::new("kim"),
+                Ed2kHash(hash),
+                FileAvailability::Ready,
+            );
+        }
 
         let groups = groups_of(&state, ListSort::Alphabetical);
         let watching = groups.iter().find(|g| g.heading == "Watching").unwrap();
@@ -3110,6 +3122,85 @@ mod tests {
             .into_iter()
             .collect()
         );
+    }
+
+    /// Regression (2026-08-17, "everything floats"): "has unwatched
+    /// files" must mean *held and unwatched by the durable record*.
+    /// Compaction drops group watched flags for files off the playlist
+    /// while their metadata rows live forever, so the group flag alone
+    /// resurrects every long-finished episode as "unwatched"; and a
+    /// metadata row whose file nobody holds anymore isn't watchable
+    /// tonight either. A file counts only when some client advertises a
+    /// copy and it is unwatched by both the group flag and personal
+    /// watch history (the episode browser's muting rule, design.md #11).
+    #[test]
+    fn unwatched_needs_a_held_copy_and_survives_compacted_flags() {
+        let mut state = CrdtState::new();
+        let mut put = |id: u128, name: &str| {
+            let mut entry = list_entry(name, ListStatus::Active);
+            entry.anidb_series_id = Some(AniDbSeriesId(id as u32));
+            state.put_list_entry(A, ts(id as u64), ListEntryId(id), entry);
+        };
+        put(1, "Finished long ago");
+        put(2, "Metadata ghost");
+        put(3, "Fresh episode");
+        let meta = |series: u32| {
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: format!("series {series}"),
+                series_id: Some(AniDbSeriesId(series)),
+                episode_number: Some("1".into()),
+            })
+        };
+        // Entry 1: file held and long since watched — but the group flag
+        // was compacted away; only personal history remembers.
+        state.set_anidb_metadata(A, ts(10), Ed2kHash([1; 16]), meta(1));
+        state.set_file_availability(
+            A,
+            ts(11),
+            UserId::new("kim"),
+            Ed2kHash([1; 16]),
+            FileAvailability::Ready,
+        );
+        // Entry 2: a metadata row survives but nobody holds the file.
+        state.set_anidb_metadata(A, ts(12), Ed2kHash([2; 16]), meta(2));
+        // Entry 3: held and genuinely unwatched.
+        state.set_anidb_metadata(A, ts(13), Ed2kHash([3; 16]), meta(3));
+        state.set_file_availability(
+            A,
+            ts(14),
+            UserId::new("kim"),
+            Ed2kHash([3; 16]),
+            FileAvailability::Ready,
+        );
+
+        let personally_watched: BTreeSet<Ed2kHash> = [Ed2kHash([1; 16])].into_iter().collect();
+        let groups = list_groups(
+            &state.view(),
+            &UserId::new("kim"),
+            &[UserId::new("kim")],
+            ListSort::Recency,
+            &BTreeMap::new(),
+            &personally_watched,
+        );
+        let watching = groups.iter().find(|g| g.heading == "Watching").unwrap();
+        let dimmed: BTreeMap<&str, bool> = watching
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.dimmed))
+            .collect();
+        assert_eq!(
+            dimmed,
+            [
+                ("Finished long ago", true),
+                ("Metadata ghost", true),
+                ("Fresh episode", false)
+            ]
+            .into_iter()
+            .collect()
+        );
+        // And the Recency partition follows: the fresh entry on top.
+        assert_eq!(watching.rows[0].name, "Fresh episode");
     }
 
     /// SnEnn display: a linked entry with a numeric `next_ep` renders as

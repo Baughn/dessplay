@@ -906,6 +906,7 @@ impl Ui {
                     &users,
                     self.series.list_sort(),
                     &self.snapshot.recency,
+                    &self.snapshot.watched_hashes,
                 );
                 self.series.set_groups(groups);
                 return;
@@ -1421,9 +1422,27 @@ impl Ui {
                 self.push_modal(Modal::ListEdit(ListEditModal::new(id, entry, next_ep)));
                 None
             }
-            Msg::BrowseUnlinkedListEntry(id) => {
+            Msg::BrowseListEntry(id) => {
                 let view = &self.snapshot.view;
                 let entry = view.list_entries.get(&id)?.clone();
+                // A linked entry whose franchise holds files opens the
+                // episode browser. The franchise is matched by full
+                // component membership: the linked season is usually not
+                // the component root (the franchise's key), and may
+                // itself hold no files — an exact-key lookup here
+                // silently missed both (2026-08-17).
+                if let Some(series) = entry.anidb_series_id
+                    && let Some(key) = franchise::franchises(view)
+                        .into_iter()
+                        .find(|franchise| franchise.members.contains(&series))
+                        .map(|franchise| franchise.key)
+                {
+                    self.open_episode_browser(key);
+                    return None;
+                }
+                // Unlinked — or linked but nothing held anywhere: the
+                // candidate view, then the editor. Never a silent no-op.
+                let view = &self.snapshot.view;
                 let next_ep = view.list_next_ep.get(&id);
                 let rows = props::candidate_rows(view, &entry, next_ep);
                 if rows.is_empty() {
@@ -3908,7 +3927,7 @@ mod tests {
             },
         );
         let mut ui = ui_with_view(state.view());
-        ui.update(Msg::BrowseUnlinkedListEntry(id));
+        ui.update(Msg::BrowseListEntry(id));
         assert!(
             matches!(ui.modals.last(), Some(Modal::Episodes(_))),
             "a candidate should open the disambiguation browser, not the editor"
@@ -3923,10 +3942,101 @@ mod tests {
         state.put_list_entry(A, SharedTimestamp(1), id, entry);
         // No files in the library at all -- nothing to disambiguate.
         let mut ui = ui_with_view(state.view());
-        ui.update(Msg::BrowseUnlinkedListEntry(id));
+        ui.update(Msg::BrowseListEntry(id));
         assert!(
             matches!(ui.modals.last(), Some(Modal::ListEdit(_))),
             "no candidates should fall back to the plain editor"
+        );
+    }
+
+    /// Regression (2026-08-17, "Enter did nothing on Hyakunin no
+    /// Kanojo"): an entry linked to a *non-root* season — S2 here; the
+    /// franchise's key is the component root S1 — must still open the
+    /// episode browser on its franchise. The old exact-key lookup
+    /// (`FranchiseKey::Series(linked_id)`) missed and silently returned.
+    #[test]
+    fn browse_linked_entry_opens_the_franchise_even_when_not_the_component_root() {
+        let mut state = CrdtState::new();
+        state.set_series_relations(
+            A,
+            SharedTimestamp(1),
+            AniDbSeriesId(10),
+            dessplay_core::types::SeriesRelations {
+                title: "Show".into(),
+                year: Some(2024),
+                episode_count: None,
+                relations: [dessplay_core::types::SeriesRelation {
+                    kind: dessplay_core::types::RelationKind::Sequel,
+                    target: AniDbSeriesId(20),
+                }]
+                .into_iter()
+                .collect(),
+            },
+        );
+        state.set_series_relations(
+            A,
+            SharedTimestamp(2),
+            AniDbSeriesId(20),
+            dessplay_core::types::SeriesRelations {
+                title: "Show S2".into(),
+                year: Some(2026),
+                episode_count: None,
+                relations: [dessplay_core::types::SeriesRelation {
+                    kind: dessplay_core::types::RelationKind::Prequel,
+                    target: AniDbSeriesId(10),
+                }]
+                .into_iter()
+                .collect(),
+            },
+        );
+        // A held file for the linked season, so the franchise exists.
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(3),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Show S2".into(),
+                series_id: Some(AniDbSeriesId(20)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let id = ListEntryId(1);
+        let (id, entry) = unlinked_entry(id, "Show S2");
+        let entry = SeriesListEntry {
+            anidb_series_id: Some(AniDbSeriesId(20)),
+            ..entry
+        };
+        state.put_list_entry(A, SharedTimestamp(4), id, entry);
+
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::BrowseListEntry(id));
+        assert!(
+            matches!(ui.modals.last(), Some(Modal::Episodes(_))),
+            "a linked entry with held franchise files must open the episode browser"
+        );
+    }
+
+    /// Regression (same investigation): a linked entry whose franchise
+    /// holds no files anywhere must not be a silent no-op — it takes the
+    /// unlinked path (candidates, then the editor).
+    #[test]
+    fn browse_linked_entry_with_no_held_files_falls_back_instead_of_doing_nothing() {
+        let mut state = CrdtState::new();
+        let id = ListEntryId(1);
+        let (id, entry) = unlinked_entry(id, "Vaporware");
+        let entry = SeriesListEntry {
+            anidb_series_id: Some(AniDbSeriesId(99)),
+            ..entry
+        };
+        state.put_list_entry(A, SharedTimestamp(1), id, entry);
+
+        let mut ui = ui_with_view(state.view());
+        ui.update(Msg::BrowseListEntry(id));
+        assert!(
+            matches!(ui.modals.last(), Some(Modal::ListEdit(_))),
+            "no held files and no candidates: the editor, never silence; got {:?}",
+            ui.modals.last().map(std::mem::discriminant)
         );
     }
 

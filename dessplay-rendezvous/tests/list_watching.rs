@@ -90,6 +90,7 @@ async fn a_watch_commitment_appears_in_the_other_clients_list() {
         &[UserId::new("nero"), UserId::new("kim")],
         ListSort::Recency,
         &BTreeMap::new(),
+        &Default::default(),
     );
     let kim = groups
         .iter()

@@ -25,7 +25,13 @@ use crate::types::{ActorId, SharedTimestamp};
 /// Reductions, by design:
 /// - playlist tombstones are gone (the view never contained them) and
 ///   positions are rebalanced to small flat identifiers;
-/// - watched flags for files no longer on the playlist are dropped;
+/// - watched flags resolving `false` are dropped (an absent entry
+///   already resolves as unwatched everywhere); `true` flags are kept
+///   for **all** files, on the playlist or not — they are the group's
+///   durable watch record, and The List's unwatched-file detection
+///   reads them. (Until 2026-08-17 off-playlist flags were dropped
+///   wholesale, which resurrected every long-finished episode as
+///   "unwatched" the day after it left the playlist.);
 /// - chat keeps only the trailing `chat_keep` messages (archive the
 ///   full log first);
 /// - the lookup-request set empties (clients re-request what still
@@ -56,8 +62,8 @@ pub fn rebuild(
         );
     }
     for (hash, watched) in &view.watched {
-        if view.playlist.iter().any(|entry| entry.hash == *hash) {
-            fresh.set_watched(actor, stamp(), *hash, *watched);
+        if *watched {
+            fresh.set_watched(actor, stamp(), *hash, true);
         }
     }
     fresh.set_now_playing(actor, stamp(), view.now_playing);

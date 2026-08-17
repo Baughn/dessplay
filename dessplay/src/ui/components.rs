@@ -1788,13 +1788,10 @@ impl SeriesPane {
                 Some(Msg::None)
             }
             ListNavRow::Entry(g, e) => {
-                let entry = &self.groups[*g].rows[*e];
-                match entry.series_id {
-                    Some(series) => Some(Msg::BrowseFranchise(
-                        dessplay_core::franchise::FranchiseKey::Series(series),
-                    )),
-                    None => Some(Msg::BrowseUnlinkedListEntry(entry.id)),
-                }
+                // Linked or not, the dispatcher resolves what opening the
+                // entry means (episode browser / candidate view / editor)
+                // — it has the view; this pane only has the row.
+                Some(Msg::BrowseListEntry(self.groups[*g].rows[*e].id))
             }
         }
     }
@@ -2566,11 +2563,13 @@ mod series_pane_tests {
         }
     }
 
-    /// Enter on a linked entry browses its franchise; on an unlinked one it
-    /// tries the candidate-ranked disambiguation view instead (design.md,
-    /// Advancing next_ep) -- never straight to the plain editor anymore.
+    /// Enter on any List entry — linked or not — emits the one
+    /// `BrowseListEntry` message; the dispatcher (which has the view)
+    /// decides between episode browser, candidate view, and editor. The
+    /// pane must not pre-resolve a franchise key: it only has the linked
+    /// id, which is usually not the franchise's component root.
     #[test]
-    fn list_enter_branches_on_whether_the_entry_is_linked() {
+    fn list_enter_opens_the_entry_linked_or_not() {
         let mut p = SeriesPane::default();
         assert_eq!(p.mode(), SeriesMode::TheList);
         p.set_groups(vec![ListGroup {
@@ -2585,18 +2584,12 @@ mod series_pane_tests {
 
         assert_eq!(
             p.on(&key(Key::Enter)),
-            Some(Msg::BrowseFranchise(
-                dessplay_core::franchise::FranchiseKey::Series(
-                    dessplay_core::types::AniDbSeriesId(7)
-                )
-            ))
+            Some(Msg::BrowseListEntry(dessplay_core::types::ListEntryId(1)))
         );
         p.on(&key(Key::Down));
         assert_eq!(
             p.on(&key(Key::Enter)),
-            Some(Msg::BrowseUnlinkedListEntry(
-                dessplay_core::types::ListEntryId(2)
-            ))
+            Some(Msg::BrowseListEntry(dessplay_core::types::ListEntryId(2)))
         );
     }
 
@@ -2722,8 +2715,8 @@ mod series_pane_tests {
                 .collect(),
             },
         );
-        // "Adrift" holds an unwatched file (name-resolved), so it stays
-        // bright and floats in Recency order.
+        // "Adrift" holds an unwatched file (name-resolved, advertised by
+        // a client), so it stays bright and floats in Recency order.
         state.set_anidb_metadata(
             a,
             ts(12),
@@ -2734,6 +2727,13 @@ mod series_pane_tests {
                 series_id: None,
                 episode_number: None,
             }),
+        );
+        state.set_file_availability(
+            a,
+            ts(13),
+            dessplay_core::types::UserId::new("kim"),
+            dessplay_core::types::Ed2kHash([3; 16]),
+            dessplay_core::types::FileAvailability::Ready,
         );
         state
     }
@@ -2759,6 +2759,7 @@ mod series_pane_tests {
             &[(crate::storage::SeriesKey::Name("Akira".into()), 500)]
                 .into_iter()
                 .collect(),
+            &Default::default(),
         )
     }
 

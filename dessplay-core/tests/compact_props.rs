@@ -1,7 +1,7 @@
 //! Property tests for compaction's rebuild: for any history, rebuilding
 //! from the resolved view preserves the view exactly — modulo the
 //! documented reductions (chat trim, lookup-set clear, playlist
-//! position rebalance, dropped watched-flags for off-playlist files).
+//! position rebalance, dropped false watched-flags).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -33,8 +33,13 @@ fn expected_view(mut view: StateView) -> StateView {
     view.lookup_requests.clear();
     view.acknowledged_absent.clear();
     view.marquee = None;
-    view.watched
-        .retain(|hash, _| view.playlist.iter().any(|entry| entry.hash == *hash));
+    // `true` flags survive for every file, on the playlist or not —
+    // they are the group's durable watch record (The List's
+    // unwatched-file detection reads them; the old playlist-scoped
+    // pruning resurrected long-finished episodes as unwatched,
+    // 2026-08-17). `false` flags drop: an absent entry already resolves
+    // as unwatched everywhere.
+    view.watched.retain(|_, watched| *watched);
     view
 }
 

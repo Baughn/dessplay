@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-07-28
+Last updated: 2026-08-17
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -781,8 +781,13 @@ debt taken on by session-scoped ActorIds). Around it, the server:
 
 1. Takes its current resolved view (one lock).
 2. Rebuilds: playlist tombstones are purged and `Identifier` positions
-   reassigned small and flat; watched flags for files no longer on the
-   playlist are dropped; the lookup and acknowledged-absent GSets and
+   reassigned small and flat; watched flags resolving `false` are
+   dropped (absent already reads as unwatched) while `true` flags are
+   kept for **all** files, playlist or not — the group's durable watch
+   record, which The List's unwatched-file detection reads (bounded by
+   files-ever-watched; until 2026-08-17 off-playlist flags were dropped
+   wholesale, resurrecting long-finished episodes as "unwatched"); the
+   lookup and acknowledged-absent GSets and
    the marquee register empty; chat keeps its
    trailing `chat_keep` messages (default 100); playback positions come
    along already coalesced (the view holds one per user); The List is

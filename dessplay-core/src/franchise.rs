@@ -33,8 +33,16 @@ pub struct Franchise {
     /// back to the lowest-id member's, then the parsed name).
     pub title: String,
     /// Member series, sorted by (year, id) — the season order proxy
-    /// until something better exists.
+    /// until something better exists. Filtered to members with known
+    /// files (the browser shows only what the group has touched).
     pub series: Vec<AniDbSeriesId>,
+    /// The *full* connected component, file-less members included.
+    /// Membership tests — "which franchise is this series in?", e.g.
+    /// resolving a List entry's linked id — must use this, not `series`:
+    /// the linked season may hold no files, and the component root (the
+    /// `key`) is usually a different season than the linked one. Empty
+    /// for name-keyed fallback groups.
+    pub members: BTreeSet<AniDbSeriesId>,
     /// First air year across members, for sorting.
     pub year: Option<u16>,
     /// Files known to belong to this franchise (via metadata).
@@ -188,6 +196,7 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
                 key: FranchiseKey::Series(root),
                 title,
                 series,
+                members,
                 year,
                 files,
             })
@@ -211,6 +220,7 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
             key: FranchiseKey::Name(name.clone()),
             title: name,
             series: Vec::new(),
+            members: BTreeSet::new(),
             year: None,
             files,
         });
@@ -605,6 +615,14 @@ mod tests {
         // The file-less Overlord I season is filtered from the members.
         assert_eq!(overlord.series, vec![AniDbSeriesId(16296)]);
         assert_eq!(overlord.files, vec![Ed2kHash([1; 16])]);
+        // ...but the full component keeps it: membership lookups (a List
+        // entry linked to either season) must find this franchise.
+        assert_eq!(
+            overlord.members,
+            [AniDbSeriesId(10816), AniDbSeriesId(16296)]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
     }
 
     /// Spec: only *structural* relation kinds (sequel/prequel chains,

@@ -1631,6 +1631,23 @@ partition; Recency is the fresh-install default, persisted thereafter
 own "Watching — ⟨user⟩" group renders first, the rest alphabetical.
 "Most recently group-watched" is derived from local watch history (the
 Recent Series source) — group watched flags carry no timestamps.
+
+First-poke fixes (same day): Enter on a linked entry silently did
+nothing when the linked season wasn't the franchise's component root
+(the exact-key lookup missed) or held no files — List-entry Enter is
+now one `BrowseListEntry` message resolved by full component
+membership (`Franchise::members`, new), falling back candidate view →
+editor, never silence. And "has unwatched files" was uselessly broad:
+compaction dropped group watched flags for off-playlist files while
+metadata rows persist forever, so every long-finished episode read as
+unwatched. Two-part fix: **compaction now keeps `true` watched flags
+for all files** (the durable group watch record; `false` flags drop —
+absent already means unwatched), and the watchable test requires a
+*held* copy (availability map) unwatched by both the group flag and
+personal watch history (the episode browser's muting rule). Flags
+compacted away before this fix are gone; a leaked "unwatched" episode
+is repaired with `w` in the episode browser, and the flag now
+survives.
 Tests: props units (per-user groups incl. multi-membership and
 unknown-user residual, live commitment column, both sorts + partition,
 season ordinals over chains/cycles/missing links, unwatched-file

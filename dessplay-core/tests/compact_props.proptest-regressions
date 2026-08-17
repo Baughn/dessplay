@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a73acf014dcb9f43fed2c7d2198d8f1fee12db9c64e60abed26701b3b315e81f # shrinks to steps = [ScriptStep { actor: 0, ts: 0, op: AddPlaylist { file: 40, after: None } }, ScriptStep { actor: 0, ts: 0, op: SetWatched { file: 15, watched: false } }]

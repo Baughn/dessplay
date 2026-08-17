@@ -35,11 +35,14 @@ pub enum Msg {
     BrowseFranchise(FranchiseKey),
     /// Edit a List entry.
     EditListEntry(ListEntryId),
-    /// Enter on an unlinked List entry: try the candidate-ranked
-    /// disambiguation view for its next episode (design.md, Advancing
-    /// next_ep); falls back to `EditListEntry` when nothing clears the
-    /// bar.
-    BrowseUnlinkedListEntry(ListEntryId),
+    /// Enter on a List entry: for a linked entry whose franchise holds
+    /// files, the episode browser (matched by component membership — the
+    /// linked season is often not the franchise root, and may itself be
+    /// file-less); otherwise the candidate-ranked disambiguation view
+    /// for its next episode (design.md, Advancing next_ep); falls back
+    /// to `EditListEntry` when nothing clears the bar. Never a silent
+    /// no-op.
+    BrowseListEntry(ListEntryId),
     /// Link a List entry to AniDB (opens the search modal).
     LinkListEntry(ListEntryId),
 
@@ -157,7 +160,7 @@ impl Msg {
             Msg::SeriesFilterChanged => "SeriesFilterChanged",
             Msg::BrowseFranchise(_) => "BrowseFranchise",
             Msg::EditListEntry(_) => "EditListEntry",
-            Msg::BrowseUnlinkedListEntry(_) => "BrowseUnlinkedListEntry",
+            Msg::BrowseListEntry(_) => "BrowseListEntry",
             Msg::LinkListEntry(_) => "LinkListEntry",
             Msg::AniDbSearchRequested(_) => "AniDbSearchRequested",
             Msg::ListEntryLinked(..) => "ListEntryLinked",
