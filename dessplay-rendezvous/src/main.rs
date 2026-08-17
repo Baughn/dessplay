@@ -21,6 +21,7 @@ use clap::Parser;
 use dessplay_core::net::quic::QuicListener;
 use dessplay_core::net::tofu::load_or_generate_cert;
 use dessplay_rendezvous::anidb::client::{UdpClient, UdpWire};
+use dessplay_rendezvous::anidb::curator::AnthropicCurator;
 use dessplay_rendezvous::anidb::titles::HttpTitlesSource;
 use dessplay_rendezvous::server::{self, AniDbConfig, CompactionSchedule, ServerConfig};
 use dessplay_rendezvous::storage::ServerStorage;
@@ -135,6 +136,9 @@ fn run(cli: Cli) -> Result<(), String> {
             Some(AniDbConfig {
                 api: Arc::new(UdpClient::new(wire, user, password)),
                 titles: Arc::new(HttpTitlesSource),
+                // Always constructed; it only runs once a client has
+                // provisioned a token over the wire (SetAnthropicToken).
+                curator: Some(Arc::new(AnthropicCurator::new())),
             })
         }
         (None, None) => {

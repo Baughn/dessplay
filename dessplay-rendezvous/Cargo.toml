@@ -16,6 +16,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ureq = { workspace = true }
 flate2 = { workspace = true }
+# The short-title curator's Anthropic Messages bodies (anidb/curator.rs).
+serde_json = { workspace = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 mimalloc = { workspace = true }

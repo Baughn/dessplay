@@ -9,6 +9,7 @@ encodes `rich_sample_state()`.
 | File | Layout |
 |------|--------|
 | `snapshot-v7.bin` … `snapshot-v10.bin` | Tagged envelope, one per entry of `FROZEN_LAYOUT_SNAPSHOT_VERSIONS` (the shared v7–v10 layout, decoded via `CrdtStateV10`) |
+| `snapshot-v11.bin` | Tagged envelope, one per entry of `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` (current layout under an older tag) |
 | `snapshot-untagged-v6.bin` | The pre-envelope untagged v6 layout (`CrdtStateUntaggedV6`) |
 
 ## Policy: written once, never regenerated
@@ -66,3 +67,8 @@ moved v7–v10 from `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` to the frozen
 `CrdtStateV10` decode arm. Its body is byte-identical to
 `snapshot-v9.bin`'s (only the envelope tag differs), which is the
 layout-compatibility claim made literal.
+
+`snapshot-v11.bin` was captured 2026-08-18 at the v12 bump (wire-only:
+the `SetAnthropicToken` message), when v11 entered
+`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` — the ordinary capture-test flow,
+since the current encoder still reproduces v11 bodies.

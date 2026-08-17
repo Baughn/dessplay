@@ -21,7 +21,9 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// decoded and answered with a readable [`ServerControl::ProtocolMismatch`]
 /// instead of a silent decode failure.
 /// v11 (2026-08-17): appended `SeriesRelations::short_titles`.
-pub const PROTOCOL_VERSION: u32 = 11;
+/// v12 (2026-08-18): appended `ServerControl::SetAnthropicToken`
+/// (wire-only; the persisted layout is unchanged from v11).
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as
@@ -248,6 +250,21 @@ pub enum ServerControl {
         /// The token from this session's [`Self::AuthOk`].
         token: u64,
     },
+
+    // ---- AI curator credential (protocol v12)
+    /// Client -> server: store (`Some`) or clear (`None`) the Anthropic
+    /// API token the server's short-title curator uses (design.md, The
+    /// List). Client-provisioned on purpose: the token lives in one
+    /// client's settings, is pushed on connect (when set) and on any
+    /// settings edit that changes it, and the server persists it in its
+    /// SQLite — so the settings screen is also the interface for
+    /// rotating or removing the server-side credential. Plaintext under
+    /// TLS, like the room password. Never logged, either side. Appended
+    /// last (bump policy).
+    SetAnthropicToken {
+        /// The token, or `None` to clear the stored one.
+        token: Option<String>,
+    },
 }
 
 /// One AniDB name-search result.
@@ -285,6 +302,7 @@ impl ServerControl {
             ServerControl::ProtocolMismatch { .. } => "ProtocolMismatch",
             ServerControl::MarkWatched { .. } => "MarkWatched",
             ServerControl::TransferAuth { .. } => "TransferAuth",
+            ServerControl::SetAnthropicToken { .. } => "SetAnthropicToken",
         }
     }
 }

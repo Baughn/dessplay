@@ -1913,13 +1913,18 @@ pub fn list_groups(
             )
             .filter_map(|key| recency.get(&key).copied())
             .max();
-        // A linked entry with a community short title displays (and
-        // alphabetizes) under it — "GochiUsa", not "Gochuumon wa Usagi
-        // Desu ka??" (design.md, The List). The full name still lives in
-        // the edit modal and the episode browser.
+        // A linked entry with a curated community short title displays
+        // (and alphabetizes) under it — "GochiUsa", not "Gochuumon wa
+        // Usagi Desu ka??" (design.md, The List). Only over the
+        // auto-seeded name, though: an entry whose name differs from
+        // the official title was named by a human, and a human name
+        // always beats the curator (user decision 2026-08-18 — this is
+        // also the fix-it path when the AI picks a clunker). The full
+        // name still lives in the edit modal and the episode browser.
         let display_name = entry
             .anidb_series_id
             .and_then(|series| view.series_relations.get(&series))
+            .filter(|relations| relations.title == entry.name)
             .and_then(|relations| relations.short_titles.first())
             .cloned()
             .unwrap_or_else(|| entry.name.clone());
@@ -2925,23 +2930,31 @@ mod tests {
         assert!(groups.last().unwrap().collapsed);
     }
 
-    /// A linked entry with community short titles displays under the
-    /// preferred one instead of its own (official) name, and
-    /// alphabetizes where it reads; a linked entry whose relations
-    /// carry no short titles, or an unlinked entry, keeps its name.
+    /// A linked entry still carrying its auto-seeded name (== the
+    /// official title) displays under the curated short title, and
+    /// alphabetizes where it reads. A human-named entry keeps its name
+    /// even when a short title exists; entries without short titles,
+    /// and unlinked entries, keep theirs too.
     #[test]
     fn linked_entries_display_their_short_title() {
         let mut state = CrdtState::new();
+        // Auto-seeded: name == official title -> substituted.
         let mut gochiusa = list_entry("Gochuumon wa Usagi Desu ka??", ListStatus::Planned);
         gochiusa.anidb_series_id = Some(AniDbSeriesId(1));
         state.put_list_entry(A, ts(1), ListEntryId(1), gochiusa);
+        // Human-named: name differs from the official title -> kept,
+        // short title or not.
+        let mut renamed = list_entry("Bunny Cafe", ListStatus::Planned);
+        renamed.anidb_series_id = Some(AniDbSeriesId(3));
+        state.put_list_entry(A, ts(2), ListEntryId(2), renamed);
+        // Linked, no curated short title -> kept.
         let mut plain = list_entry("Zetsubou", ListStatus::Planned);
         plain.anidb_series_id = Some(AniDbSeriesId(2));
-        state.put_list_entry(A, ts(2), ListEntryId(2), plain);
+        state.put_list_entry(A, ts(3), ListEntryId(3), plain);
         state.put_list_entry(
             A,
-            ts(3),
-            ListEntryId(3),
+            ts(4),
+            ListEntryId(4),
             list_entry("Unlinked", ListStatus::Planned),
         );
         let relations = |title: &str, short: &[&str]| SeriesRelations {
@@ -2953,17 +2966,27 @@ mod tests {
         };
         state.set_series_relations(
             A,
-            ts(4),
+            ts(5),
             AniDbSeriesId(1),
-            relations("Gochuumon wa Usagi Desu ka??", &["GochiUsa", "Gochiusa"]),
+            relations("Gochuumon wa Usagi Desu ka??", &["GochiUsa"]),
         );
-        state.set_series_relations(A, ts(5), AniDbSeriesId(2), relations("Zetsubou", &[]));
+        state.set_series_relations(A, ts(6), AniDbSeriesId(2), relations("Zetsubou", &[]));
+        state.set_series_relations(
+            A,
+            ts(7),
+            AniDbSeriesId(3),
+            relations("Gochuumon wa Usagi Desu ka?", &["GochiUsa"]),
+        );
 
         let groups = groups_of(&state, ListSort::Alphabetical);
         assert_eq!(headings(&groups), vec!["Planned"]);
         let names: Vec<&str> = groups[0].rows.iter().map(|r| r.name.as_str()).collect();
-        // "GochiUsa" (not "Gochuumon...") — and sorted as G, before U.
-        assert_eq!(names, vec!["GochiUsa", "Unlinked", "Zetsubou"]);
+        // "GochiUsa" (not "Gochuumon...") sorts as G; the human rename
+        // "Bunny Cafe" survives its series' short title.
+        assert_eq!(
+            names,
+            vec!["Bunny Cafe", "GochiUsa", "Unlinked", "Zetsubou"]
+        );
     }
 
     /// The users column derives from live `series_preference`, not the

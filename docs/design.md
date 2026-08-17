@@ -97,7 +97,10 @@ working copy atomically. Tabs containing a missing required value carry a
   **"Baughn only"** — nobody else is expected to set one; clearing it
   disables the feature) and a ladder-cycling comment interval (Off /
   2 min / 4 min / 10 min, default Off; dormant until a token
-  exists). The middle preset is 4:00 rather than 5:00 so a jittered
+  exists). The token does double duty: it is also pushed to the server
+  (on connect, and on any edit — clearing included) as the credential
+  for the AI short-title curator, so this field is the whole lifecycle
+  interface for that server-side token too (see The List). The middle preset is 4:00 rather than 5:00 so a jittered
   request reliably lands inside the Anthropic prompt cache's 5-minute
   ephemeral TTL. Both apply live. The tab's note says plainly that
   recent subtitles and a player screenshot are sent to Anthropic. See
@@ -1236,14 +1239,31 @@ Recency's bottom partition.
 Entries display name, nero_name, next_ep, and **live commitment initials**:
 the users whose `series_preference` is Watching, not the import-time
 `watchers` seed (which keeps its one-shot preference-seeding role and is
-never displayed). A **linked** entry whose `SeriesRelations` carries
-community short titles (the titles dump's kind-3 rows, x-jat preferred
-over en; populated at ANIME-lookup time and reconciled by a worker pass
-whenever the daily dump changes) renders the preferred short title
-*instead of* the official name, and alphabetizes under it — "GochiUsa",
-not "Gochuumon wa Usagi Desu ka??" (user decision 2026-08-17: save the
-space; the full name still lives in the edit modal and the episode
-browser). `nero_name` is appended dim-quoted as always, and gets its own
+never displayed). A **linked** entry whose `SeriesRelations` carries a
+curated community short title renders it *instead of* the official
+name, and alphabetizes under it — "GochiUsa", not "Gochuumon wa Usagi
+Desu ka??" (user decision 2026-08-17: save the space; the full name
+still lives in the edit modal and the episode browser) — but only when
+the entry's name still equals the official title (the auto-seeded
+case): a name a human typed or edited always wins (user decision
+2026-08-18), which is also the fix-it path for a bad curated pick.
+
+The short titles are **AI-curated**, not read raw from the titles dump:
+the dump's kind-3 rows are lowercase search tags ("gochiusa s2", "s;g",
+"HnNKn") and only a quarter of series have one, so the server's worker
+sends each series' full title rows to an Anthropic model once
+(trusting the answer as returned — the human-name precedence above is
+the backstop) and caches the answer forever in its SQLite; the
+reconcile pass then keeps the replicated `short_titles` in step with
+that cache. The API token is **client-provisioned**: it lives in one
+client's settings (the same `anthropic_token` the commentary engine
+uses), is pushed to the server over the encrypted control connection on
+connect and on any settings edit that changes it
+(`SetAnthropicToken`, protocol v12), and the server persists it — so
+the settings screen is also the interface for rotating or removing the
+server-side credential. No token, no curation; nothing else degrades.
+
+`nero_name` is appended dim-quoted as always, and gets its own
 fast entry path: `n` on an entry opens a minimal single-field editor
 (Enter saves — trimmed, empty clears — Esc cancels), the group's
 renaming culture in two keystrokes; the full edit modal remains for
@@ -1673,7 +1693,9 @@ connects over loopback. Responsibilities:
    epoch, and broadcasts the fresh snapshot to all connected clients, which
    adopt it like a stale-epoch reconnect. See [sync-state.md](sync-state.md).
 6. **AniDB lookups**: Enriching playlist items with series/season/episode
-   metadata, and fetching the relations graph for franchise grouping
+   metadata, and fetching the relations graph for franchise grouping —
+   plus the AI short-title curator (see The List), whose Anthropic token
+   is provisioned over the wire by whichever client holds one
 7. **Authoritative actions**: EOF -> next file transitions, server actor ID for
    seek authority, watched flags, List next-episode auto-advance
 

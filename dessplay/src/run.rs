@@ -1433,6 +1433,24 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                     saved.commentary_interval,
                                 );
                             }
+                            // An explicit token edit also (re)provisions —
+                            // or clears — the server's AI-curator
+                            // credential: the settings screen is the
+                            // interface for the server-side token too
+                            // (design.md, The List).
+                            if saved.anthropic_token != self.settings.anthropic_token {
+                                let _ = self
+                                    .handle
+                                    .network
+                                    .send(crate::actors::network::NetworkCommand::SendReliable(
+                                        Box::new(
+                                            dessplay_core::net::ServerControl::SetAnthropicToken {
+                                                token: saved.anthropic_token.clone(),
+                                            },
+                                        ),
+                                    ))
+                                    .await;
+                            }
                             if irc_config_changed(&self.settings, &saved, &self.me) {
                                 let _ = self.irc_tx.try_send(
                                     crate::actors::irc::IrcCommand::Reconfigure(Box::new(
@@ -1518,6 +1536,26 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 {
                                     self.pin_pending = false;
                                 }
+                            }
+                            // Provision the server's AI-curator credential
+                            // from our settings on every (re)connect — the
+                            // server persists it, so this is refresh, not
+                            // requirement. Set-only here: clearing happens
+                            // through an explicit settings edit below,
+                            // never implicitly by a tokenless client
+                            // connecting.
+                            if let Some(token) = self.settings.anthropic_token.clone() {
+                                let _ = self
+                                    .handle
+                                    .network
+                                    .send(crate::actors::network::NetworkCommand::SendReliable(
+                                        Box::new(
+                                            dessplay_core::net::ServerControl::SetAnthropicToken {
+                                                token: Some(token),
+                                            },
+                                        ),
+                                    ))
+                                    .await;
                             }
                             // "Ready on startup": write our manual override
                             // once per session (clears a stale Paused too).

@@ -25,6 +25,7 @@ use dessplay_core::types::{
 };
 
 use super::client::{AniDbApi, LookupError};
+use super::curator::{CurationInput, ShortTitleCurator};
 use super::protocol;
 use super::schedule::{self, Outcome};
 use super::titles::{self, TitlesSource};
@@ -72,12 +73,19 @@ pub trait AniDbHost: Send + Sync + 'static {
 /// Run the worker until a fatal API error. Pacing is cooperative: the
 /// API client enforces the rate limit internally, so a busy worker
 /// simply awaits it.
-pub async fn run<H: AniDbHost>(host: H, api: Arc<dyn AniDbApi>, titles: Arc<dyn TitlesSource>) {
+pub async fn run<H: AniDbHost>(
+    host: H,
+    api: Arc<dyn AniDbApi>,
+    titles: Arc<dyn TitlesSource>,
+    curator: Option<Arc<dyn ShortTitleCurator>>,
+) {
     tracing::info!("anidb worker started");
     reconcile_settled_lookups(&host);
     // Next time to consider a titles refresh; learned from storage on
     // the first pass.
     let mut titles_due: u64 = 0;
+    // Earliest next curator attempt after a failure.
+    let mut curate_backoff: u64 = 0;
     loop {
         let now = host.now();
         refresh_titles_if_due(&host, &titles, now, &mut titles_due).await;
@@ -92,7 +100,7 @@ pub async fn run<H: AniDbHost>(host: H, api: Arc<dyn AniDbApi>, titles: Arc<dyn 
         seed_queues(&host, &view, now);
         populate_catalog(&host, &view).await;
         apply_series_hints(&host, &view).await;
-        apply_short_titles(&host, &view).await;
+        curate_short_titles(&host, &view, curator.as_ref(), now, &mut curate_backoff).await;
         match step(&host, &*api, now).await {
             Ok(true) => {} // did work; the client paces the next send
             Ok(false) => {
@@ -216,29 +224,105 @@ async fn apply_series_hints<H: AniDbHost>(host: &H, view: &StateView) {
     }
 }
 
-/// Reconcile replicated short titles with the titles dump. Settled
-/// `series_relations` rows are written once and never revisited by the
-/// lookup schedule, so this is both the one-time backfill for rows
-/// settled before short titles existed (or before the dump first
-/// landed) and the steady-state refresh after each daily dump
-/// replacement. Same shape as [`apply_series_hints`]: no AniDB call,
-/// independent of the settled schedule, quiesces once the replicated
-/// list matches the dump. An empty titles table means "no information
-/// yet" (a fresh server before its first fetch) and writes nothing.
-async fn apply_short_titles<H: AniDbHost>(host: &H, view: &StateView) {
-    if store(host, "titles presence", |s| s.titles_available()) != Some(true) {
-        return;
+/// How many uncurated series to send the model per pass.
+const CURATE_BATCH: usize = 20;
+/// Back off this long after a curator failure (API down, refusal,
+/// bad token) before trying again.
+const CURATE_RETRY_MILLIS: u64 = 10 * 60 * 1000;
+
+/// Reconcile replicated short titles with the AI curator's cache, and
+/// grow that cache one batch per pass. Settled `series_relations` rows
+/// are written once and never revisited by the lookup schedule, so
+/// this pass is both the backfill for rows settled before curation
+/// existed and the steady state for new series. Same quiescence shape
+/// as [`apply_series_hints`]: once every series in view has a cached
+/// answer and the replicated state matches it, nothing runs but cheap
+/// SQLite reads — the API is consulted once per series, ever.
+///
+/// The curator only runs when a token is stored
+/// ([`crate::storage::ANTHROPIC_TOKEN_KEY`], client-provisioned over
+/// the wire) and the titles table has rows to send. Series without a
+/// cached answer are left untouched — a tokenless server never
+/// clears anything.
+async fn curate_short_titles<H: AniDbHost>(
+    host: &H,
+    view: &StateView,
+    curator: Option<&Arc<dyn ShortTitleCurator>>,
+    now: u64,
+    curate_backoff: &mut u64,
+) {
+    // Grow the cache: one batch of never-asked series per pass.
+    if let Some(curator) = curator
+        && now >= *curate_backoff
+        && let Some(Some(token)) = store(host, "curator token", |s| {
+            s.kv_get(crate::storage::ANTHROPIC_TOKEN_KEY)
+        })
+        && store(host, "titles presence", |s| s.titles_available()) == Some(true)
+    {
+        let mut batch = Vec::new();
+        for series in view.series_relations.keys() {
+            if batch.len() >= CURATE_BATCH {
+                break;
+            }
+            let asked = store(host, "curated cache", |s| s.curated_short_title(*series));
+            if asked != Some(None) {
+                continue; // cached already (or a storage error)
+            }
+            // The dump can lag a brand-new series; retry after refresh.
+            match store(host, "titles for series", |s| s.titles_for(*series)) {
+                Some(rows) if !rows.is_empty() => batch.push(CurationInput {
+                    series: *series,
+                    rows,
+                }),
+                _ => continue,
+            }
+        }
+        if !batch.is_empty() {
+            let asked: Vec<AniDbSeriesId> = batch.iter().map(|input| input.series).collect();
+            let curator = Arc::clone(curator);
+            let result = tokio::task::spawn_blocking(move || curator.curate(&token, &batch)).await;
+            match result {
+                Ok(Ok(answers)) => {
+                    let answered: BTreeSet<AniDbSeriesId> =
+                        answers.iter().map(|(series, _)| *series).collect();
+                    store(host, "caching curated titles", |s| {
+                        for (series, short) in &answers {
+                            s.set_curated_short_title(*series, short.as_deref(), now as i64)?;
+                        }
+                        Ok(())
+                    });
+                    for series in asked {
+                        if !answered.contains(&series) {
+                            tracing::warn!(aid = series.0, "curator reply omitted a series");
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("short-title curation failed (will retry): {e}");
+                    *curate_backoff = now + CURATE_RETRY_MILLIS;
+                }
+                Err(e) => {
+                    tracing::error!("curator task died: {e}");
+                    *curate_backoff = now + CURATE_RETRY_MILLIS;
+                }
+            }
+        }
     }
+
+    // Reconcile replicated state with the cache. Uncached series are
+    // skipped, never cleared.
     for (series, relations) in &view.series_relations {
-        let Some(short_titles) = store(host, "short titles", |s| s.short_titles(*series)) else {
+        let Some(Some(cached)) = store(host, "curated cache", |s| s.curated_short_title(*series))
+        else {
             continue;
         };
+        let short_titles: Vec<String> = cached.into_iter().collect();
         if relations.short_titles != short_titles {
             tracing::info!(
                 aid = series.0,
                 title = %relations.title,
                 short = ?short_titles,
-                "updating short titles from the dump"
+                "updating curated short title"
             );
             host.write_relations(
                 *series,
@@ -455,11 +539,14 @@ async fn lookup_anime<H: AniDbHost>(
                         target,
                     })
                     .collect(),
-                // From the titles dump, not the ANIME reply. Empty if the
-                // dump hasn't landed yet; apply_short_titles fills it in
-                // on a later pass.
-                short_titles: store(host, "short titles", |s| s.short_titles(series))
-                    .unwrap_or_default(),
+                // From the curator's cache, not the ANIME reply. A
+                // never-curated series starts empty;
+                // curate_short_titles fills it in on a later pass.
+                short_titles: store(host, "curated cache", |s| s.curated_short_title(series))
+                    .flatten()
+                    .flatten()
+                    .into_iter()
+                    .collect(),
             };
             host.write_relations(series, relations).await;
             // Walk: queue every related series we haven't fetched yet.
@@ -765,7 +852,7 @@ mod tests {
         titles: Arc<dyn TitlesSource>,
     ) -> tokio::task::JoinHandle<()> {
         let api: Arc<dyn AniDbApi> = Arc::new(Arc::clone(api));
-        tokio::spawn(run(Arc::clone(host), api, titles))
+        tokio::spawn(run(Arc::clone(host), api, titles, None))
     }
 
     #[tokio::test]
@@ -1306,11 +1393,210 @@ mod tests {
         });
     }
 
+    /// Canned curator: answers from a fixed map (missing aids are
+    /// omitted from the reply), counting calls, optionally failing.
+    struct MockCurator {
+        answers: HashMap<u32, Option<&'static str>>,
+        calls: AtomicUsize,
+        fail: std::sync::atomic::AtomicBool,
+    }
+
+    impl MockCurator {
+        fn new(answers: &[(u32, Option<&'static str>)]) -> Arc<Self> {
+            Arc::new(Self {
+                answers: answers.iter().copied().collect(),
+                calls: AtomicUsize::new(0),
+                fail: std::sync::atomic::AtomicBool::new(false),
+            })
+        }
+    }
+
+    impl ShortTitleCurator for Arc<MockCurator> {
+        fn curate(
+            &self,
+            _token: &str,
+            batch: &[CurationInput],
+        ) -> Result<Vec<(AniDbSeriesId, Option<String>)>, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("offline".into());
+            }
+            Ok(batch
+                .iter()
+                .filter_map(|input| {
+                    self.answers
+                        .get(&input.series.0)
+                        .map(|short| (input.series, short.map(str::to_string)))
+                })
+                .collect())
+        }
+    }
+
+    fn dyn_curator(mock: &Arc<MockCurator>) -> Option<Arc<dyn ShortTitleCurator>> {
+        Some(Arc::new(Arc::clone(mock)) as Arc<dyn ShortTitleCurator>)
+    }
+
+    fn provision_token(host: &Arc<MockHost>) {
+        host.with_storage(|s| {
+            s.kv_set(crate::storage::ANTHROPIC_TOKEN_KEY, "sk-ant-test")
+                .unwrap();
+        });
+    }
+
+    /// One curation pass with the standard fixtures.
+    async fn curate_pass(
+        host: &Arc<MockHost>,
+        curator: &Option<Arc<dyn ShortTitleCurator>>,
+        backoff: &mut u64,
+    ) {
+        let now = host.now();
+        curate_short_titles(host, &host.view(), curator.as_ref(), now, backoff).await;
+    }
+
+    #[tokio::test]
+    async fn curator_answers_are_cached_and_written_once() {
+        // Two settled series: one gets a community name, one is
+        // asked-and-answered "no short name". Both answers cache, the
+        // replicated state updates in the same pass, and later passes
+        // neither re-ask nor rewrite.
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        seed_relations(&host, 777, "Linked Show");
+        host.with_storage(|s| {
+            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
+                .unwrap();
+        });
+        provision_token(&host);
+        let mock = MockCurator::new(&[(5391, Some("GochiUsa")), (777, None)]);
+        let curator = dyn_curator(&mock);
+        let mut backoff = 0;
+
+        curate_pass(&host, &curator, &mut backoff).await;
+
+        let view = host.view();
+        let gochiusa = &view.series_relations[&AniDbSeriesId(5391)];
+        assert_eq!(gochiusa.short_titles, ["GochiUsa"]);
+        // The rest of the settled record is untouched.
+        assert_eq!(gochiusa.title, "Gochuumon wa Usagi Desu ka?");
+        assert_eq!(gochiusa.year, Some(2014));
+        assert!(
+            view.series_relations[&AniDbSeriesId(777)]
+                .short_titles
+                .is_empty()
+        );
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+
+        // Quiesced: a second pass asks nothing and writes nothing.
+        let before = host.state.lock().unwrap().clone();
+        curate_pass(&host, &curator, &mut backoff).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*host.state.lock().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn curator_updates_replace_stale_replicated_titles() {
+        // A cached answer overrides whatever is replicated — including
+        // raw dump tags written before curation existed.
+        let host = MockHost::new();
+        // Seeded strictly in the past: the mock's clock stamps writes
+        // without the real server's Lamport floor, and an equal-stamp
+        // LWW tie would resolve by value, not recency.
+        host.state.lock().unwrap().set_series_relations(
+            ActorId::SERVER,
+            SharedTimestamp(1),
+            AniDbSeriesId(5391),
+            SeriesRelations {
+                title: "Gochuumon wa Usagi Desu ka?".into(),
+                year: Some(2014),
+                episode_count: Some(12),
+                relations: Default::default(),
+                short_titles: vec!["gochiusa s2".into()],
+            },
+        );
+        host.with_storage(|s| {
+            s.set_curated_short_title(AniDbSeriesId(5391), Some("GochiUsa"), 1000)
+                .unwrap();
+        });
+
+        // No token, no curator needed: the cache alone drives the write.
+        curate_short_titles(&host, &host.view(), None, host.now(), &mut 0).await;
+        assert_eq!(
+            host.view().series_relations[&AniDbSeriesId(5391)].short_titles,
+            ["GochiUsa"]
+        );
+    }
+
+    #[tokio::test]
+    async fn curator_needs_a_provisioned_token_and_never_clears_uncached() {
+        // Without a stored token nothing is asked; and series without a
+        // cached answer keep their replicated titles untouched.
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        host.with_storage(|s| {
+            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
+                .unwrap();
+        });
+        let mock = MockCurator::new(&[(5391, Some("GochiUsa"))]);
+        let curator = dyn_curator(&mock);
+        let before = host.state.lock().unwrap().clone();
+
+        curate_pass(&host, &curator, &mut 0).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 0, "no token, no call");
+        assert_eq!(*host.state.lock().unwrap(), before);
+
+        // Token present but the titles table is empty (fresh server,
+        // dump not fetched): still nothing to send.
+        let fresh = MockHost::new();
+        seed_relations(&fresh, 5391, "Gochuumon wa Usagi Desu ka?");
+        provision_token(&fresh);
+        curate_pass(&fresh, &curator, &mut 0).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn curator_failures_back_off_and_cache_nothing() {
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        host.with_storage(|s| {
+            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
+                .unwrap();
+        });
+        provision_token(&host);
+        let mock = MockCurator::new(&[(5391, Some("GochiUsa"))]);
+        mock.fail.store(true, Ordering::SeqCst);
+        let curator = dyn_curator(&mock);
+        let mut backoff = 0;
+
+        curate_pass(&host, &curator, &mut backoff).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        assert!(backoff > host.now(), "failure arms the backoff");
+        assert_eq!(
+            host.with_storage(|s| s.curated_short_title(AniDbSeriesId(5391)).unwrap())
+                .unwrap(),
+            None,
+            "a failed batch caches nothing"
+        );
+
+        // Within the backoff window: no further call, even though the
+        // series is still uncurated.
+        curate_pass(&host, &curator, &mut backoff).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+
+        // Past the backoff and healthy again: answered and cached.
+        mock.fail.store(false, Ordering::SeqCst);
+        backoff = 0;
+        curate_pass(&host, &curator, &mut backoff).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            host.view().series_relations[&AniDbSeriesId(5391)].short_titles,
+            ["GochiUsa"]
+        );
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn anime_hit_records_short_titles_from_the_dump() {
-        // The titles dump is refreshed at the top of the pass, so an
-        // ANIME hit in the same pass already sees the kind-3 rows —
-        // x-jat preferred over en.
+    async fn anime_hit_uses_the_curated_cache() {
+        // A lookup for a series whose curated answer is already cached
+        // writes it straight into the fresh relations record.
         let host = MockHost::new();
         let api = Arc::new(MockApi::default());
         api.anime.lock().unwrap().insert(
@@ -1330,62 +1616,19 @@ mod tests {
                 }),
             );
         });
+        host.with_storage(|s| {
+            s.set_curated_short_title(AniDbSeriesId(5391), Some("GochiUsa"), 1000)
+                .unwrap();
+        });
         let (titles, _) = titles_source(GOCHIUSA_DUMP, false);
         let worker = spawn_worker(&host, &api, titles);
-        eventually(&host, "short titles on the anime hit", |view| {
+        eventually(&host, "curated title on the anime hit", |view| {
             view.series_relations
                 .get(&AniDbSeriesId(5391))
-                .is_some_and(|r| r.short_titles == ["Gochiusa", "GochiUsa"])
+                .is_some_and(|r| r.short_titles == ["GochiUsa"])
         })
         .await;
         worker.abort();
-    }
-
-    #[tokio::test]
-    async fn short_titles_backfill_updates_settled_relations() {
-        // Relations settled before short titles existed (or before the
-        // dump first landed) are rewritten from the dump alone — no
-        // AniDB call (apply_short_titles takes no API at all) — and the
-        // pass quiesces once the replicated list matches. A series with
-        // no kind-3 rows stays empty without churning writes.
-        let host = MockHost::new();
-        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
-        seed_relations(&host, 777, "Linked Show");
-        host.with_storage(|s| {
-            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
-                .unwrap();
-        });
-
-        apply_short_titles(&host, &host.view()).await;
-
-        let view = host.view();
-        let gochiusa = &view.series_relations[&AniDbSeriesId(5391)];
-        assert_eq!(gochiusa.short_titles, ["Gochiusa", "GochiUsa"]);
-        // The rest of the settled record is untouched.
-        assert_eq!(gochiusa.title, "Gochuumon wa Usagi Desu ka?");
-        assert_eq!(gochiusa.year, Some(2014));
-        assert!(
-            view.series_relations[&AniDbSeriesId(777)]
-                .short_titles
-                .is_empty()
-        );
-
-        // Quiesced: a second pass writes nothing at all.
-        let before = host.state.lock().unwrap().clone();
-        apply_short_titles(&host, &host.view()).await;
-        assert_eq!(*host.state.lock().unwrap(), before);
-    }
-
-    #[tokio::test]
-    async fn short_titles_backfill_waits_for_the_first_dump() {
-        // An empty titles table means "never fetched", not "no short
-        // titles" — the backfill must not write empty lists over
-        // everything on a fresh server.
-        let host = MockHost::new();
-        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
-        let before = host.state.lock().unwrap().clone();
-        apply_short_titles(&host, &host.view()).await;
-        assert_eq!(*host.state.lock().unwrap(), before);
     }
 
     #[tokio::test(start_paused = true)]

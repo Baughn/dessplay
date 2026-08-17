@@ -589,20 +589,29 @@ Files without an AniDB series ID are grouped by `series_name` as a fallback
 Server-only writes. `SeriesRelations` holds the series' related-anime edges
 (relation type + target series ID) plus display data (title, year, episode
 count) fetched via the AniDB ANIME command, and `short_titles`
-(appended in protocol v11): the community short titles from the titles
-dump's kind-3 rows, ordered x-jat first, then en, then the rest — The
-List renders the first one instead of the official title. The server
-walks relations recursively as new series IDs appear, under the same
-rate limiter as file lookups, caching results in its SQLite. Short
-titles come from the dump, not the ANIME reply: they are filled at
-lookup time and reconciled by an idempotent worker pass
-(`apply_short_titles`, same shape as `apply_series_hints`) that rewrites
-any entry whose replicated list disagrees with the dump — which is both
-the backfill for rows settled before v11 and the steady-state refresh
-after each daily dump replacement. An empty titles table (fresh server,
-no fetch yet) means "no information" and never writes. Clients compute
-franchise groupings (connected components over sequel/prequel/side-story
-edges) locally from this map.
+(appended in protocol v11): the **AI-curated** community short name —
+zero or one entry (the `Vec` is wire form) — that The List renders
+instead of the official title. The server walks relations recursively
+as new series IDs appear, under the same rate limiter as file lookups,
+caching results in its SQLite.
+
+Short titles come from the curator (`anidb/curator.rs`), not the ANIME
+reply and not raw from the titles dump (whose kind-3 rows are lowercase
+search tags, useless for display): the worker's `curate_short_titles`
+pass batches series never asked before to an Anthropic model — the
+dump's full title rows as grounding context, the answer trusted as
+returned — and caches each answer durably in the `ai_short_titles`
+table, including the "no short name exists" answer, so the API is
+consulted **once per series, ever**. The same pass reconciles the
+replicated `short_titles` with that cache and quiesces; uncached series
+are never touched (a tokenless server clears nothing). Curation runs
+only while an API token is stored in the kv table — client-provisioned
+over the wire via `SetAnthropicToken` (protocol v12), pushed by the
+token-holding client on connect and on settings edits, so it can
+appear, rotate, or vanish without a server restart. Failures back off
+ten minutes and cache nothing. Clients compute franchise groupings
+(connected components over sequel/prequel/side-story edges) locally
+from this map.
 
 ### The List
 
@@ -871,9 +880,11 @@ for storage because *blobs outlive deployments*; connections don't.
   type against a listed version's bytes fails
   `layout_compatible_fixture_blobs_decode_to_the_expected_view` instead
   of decoding misaligned (postcard is positional; a wrong compat entry
-  can otherwise succeed with silently wrong values). The list is
-  **empty today**: v11 moved every tagged predecessor to the frozen arm
-  below. Policy details in tests/fixtures/README.md.
+  can otherwise succeed with silently wrong values). Today the list is
+  **[11]**: v7–v10 left it for the frozen arm below when v11 reshaped
+  `SeriesRelations`, and v11 → v12 appended only a wire message
+  (`SetAnthropicToken`), leaving v11 bodies current-layout. Policy
+  details in tests/fixtures/README.md.
 - **Tagged, frozen older layout**
   (`FROZEN_LAYOUT_SNAPSHOT_VERSIONS`, today v7–v10): decode through a
   frozen copy of that layout plus an upgrade, flagged. v11 (2026-08-17)

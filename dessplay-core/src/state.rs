@@ -548,11 +548,12 @@ impl CrdtState {
     /// type decodes the old postcard body unchanged" — and is backed by a
     /// checked-in fixture blob in that version's real bytes
     /// (tests/fixtures/, captured once when the version entered this list
-    /// and never regenerated; see tests/fixtures/README.md). Empty since
-    /// v11 appended `SeriesRelations::short_titles`: every older tagged
-    /// version now decodes through the frozen [`CrdtStateV10`] arm
-    /// instead.
-    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 0] = [];
+    /// and never regenerated; see tests/fixtures/README.md). v7–v10
+    /// left this list when v11 appended `SeriesRelations::short_titles`
+    /// (they decode through the frozen [`CrdtStateV10`] arm instead);
+    /// v11 → v12 appended only the `SetAnthropicToken` wire message, so
+    /// v11 bodies decode as the current layout.
+    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 1] = [11];
 
     /// Older tagged versions decoded by an explicit **frozen-layout**
     /// decode arm in [`decode_snapshot_flagged`](Self::decode_snapshot_flagged)

@@ -10,6 +10,8 @@
 //!   worker can be tested against a mock.
 //! - [`titles`]: the daily anime-titles dump (name search runs locally
 //!   over it; the UDP API has no multi-result search).
+//! - [`curator`]: the AI short-title curator — the dump's raw titles
+//!   in, the community's display name out, cached forever in SQLite.
 //! - [`worker`]: the drainer loop tying it all together — lookup
 //!   requests in, metadata/relations LWW writes out.
 //!
@@ -18,6 +20,7 @@
 //! is the `anidb-probe` binary, run manually.
 
 pub mod client;
+pub mod curator;
 pub mod protocol;
 pub mod record;
 pub mod schedule;

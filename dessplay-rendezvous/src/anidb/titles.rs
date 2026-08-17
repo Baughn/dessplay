@@ -5,8 +5,9 @@
 //! daily, one download per day allowed — into SQLite and answers the
 //! AniDbSearch modal locally. See docs/design.md.
 //!
-//! The fetch is the only HTTP in DessPlay: one blocking GET per day,
-//! run on the blocking pool.
+//! The fetch is one blocking GET per day, run on the blocking pool
+//! (the short-title curator, `super::curator`, is the server's only
+//! other HTTP).
 
 use std::io::Read;
 

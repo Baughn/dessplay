@@ -2672,11 +2672,13 @@ mod series_pane_tests {
             anidb_unavailable: false,
         };
         // Frieren S2 (id 20, prequel id 10): kim + nero watch, ep 5 out.
+        // Named exactly as the relations title (the auto-seeded case),
+        // so the curated short title below substitutes in the render.
         state.put_list_entry(
             a,
             ts(1),
             ListEntryId(1),
-            entry("Frieren", ListStatus::CurrentSeason, Some(20)),
+            entry("Frieren S2", ListStatus::CurrentSeason, Some(20)),
         );
         // Akira: only kim watches; recently watched but nothing left
         // unwatched -> dims and sinks in Recency order despite leading
@@ -2748,8 +2750,9 @@ mod series_pane_tests {
                 }]
                 .into_iter()
                 .collect(),
-                // Differs from the List entry's own name ("Frieren") so
-                // the snapshots show the short title winning the row.
+                // Differs from the entry's auto-seeded name ("Frieren
+                // S2") so the snapshots show the curated title winning
+                // the row.
                 short_titles: vec!["Frieren 2".into()],
             },
         );

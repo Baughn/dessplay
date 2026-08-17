@@ -1724,6 +1724,25 @@ under a dedicated migration actor); v10's fixture blob was captured at
 the bump per the now-documented frozen-version rule
 (tests/fixtures/README.md).
 
+**Redesigned 2026-08-18** after first contact with the real dump: the
+kind-3 rows are lowercase search tags ("gochiusa s2", "s;g", "HnNKn"),
+not display names, and only ~24% of series have one. The short-title
+*source* is now an AI curator (`anidb/curator.rs`): the worker batches
+never-asked series to an Anthropic model (claude-opus-5, effort low,
+structured output; the series' full dump rows as context), trusts the
+answer as returned (user decision — the community name is sometimes
+absent from AniDB entirely), and caches it forever in the
+`ai_short_titles` table, so the API is consulted once per series ever.
+The wire shape (`short_titles: Vec<String>`, 0/1 entries) is unchanged.
+Display gained a precedence rule (user decision): substitution only
+when the entry's name still equals the official title — a human name
+always wins, which is also the fix path for a bad pick. The API token
+is client-provisioned: pushed from the token-holding client's existing
+`anthropic_token` setting on connect and on settings edits
+(`SetAnthropicToken`, protocol v11 → v12, wire-only — v11 joined the
+layout-compatible list), persisted in the server's kv table, cleared by
+clearing the setting.
+
 **Goal**: the names the group actually uses become first-class. Nero's
 (re)names get a fast entry path, and AniDB's community short titles
 (type-3 rows in the titles dump — already ingested unfiltered into

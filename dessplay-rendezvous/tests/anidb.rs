@@ -18,6 +18,7 @@ use dessplay_core::types::{
     SeriesListEntry,
 };
 use dessplay_rendezvous::anidb::client::{AniDbApi, BoxFuture, LookupError};
+use dessplay_rendezvous::anidb::curator::{CurationInput, ShortTitleCurator};
 use dessplay_rendezvous::anidb::protocol::{AnimeResult, FileResult};
 use dessplay_rendezvous::anidb::titles::TitlesSource;
 use dessplay_rendezvous::server::{AniDbConfig, ServerConfig};
@@ -59,6 +60,25 @@ impl TitlesSource for CannedTitles {
 
 const FRIEREN: AniDbSeriesId = AniDbSeriesId(8692);
 
+/// Canned curator: knows the one community name the tests care about.
+struct CannedCurator;
+
+impl ShortTitleCurator for CannedCurator {
+    fn curate(
+        &self,
+        _token: &str,
+        batch: &[CurationInput],
+    ) -> Result<Vec<(AniDbSeriesId, Option<String>)>, String> {
+        Ok(batch
+            .iter()
+            .map(|input| {
+                let short = (input.series == FRIEREN).then(|| "Frieren".to_string());
+                (input.series, short)
+            })
+            .collect())
+    }
+}
+
 fn frieren_harness(seed: u64) -> Harness {
     let api = CannedApi::default();
     api.files.lock().unwrap().insert(
@@ -88,8 +108,24 @@ fn frieren_harness(seed: u64) -> Harness {
         titles: Arc::new(CannedTitles(
             "8692|1|x-jat|Sousou no Frieren\n8692|3|en|Frieren\n5391|1|x-jat|Gochuumon wa Usagi Desu ka?\n5391|3|en|GochiUsa\n",
         )),
+        curator: Some(Arc::new(CannedCurator)),
     });
     Harness::with_config_and_storage(seed, config, Some(ServerStorage::open_in_memory().unwrap()))
+}
+
+/// Provision the curator token over the wire, as the real client does
+/// on connect (design.md, The List: client-provisioned credential).
+async fn provision_token(client: &dessplay::client::ClientHandle) {
+    use dessplay::actors::network::NetworkCommand;
+    client
+        .network
+        .send(NetworkCommand::SendReliable(Box::new(
+            dessplay_core::net::ServerControl::SetAnthropicToken {
+                token: Some("sk-ant-test".into()),
+            },
+        )))
+        .await
+        .unwrap();
 }
 
 fn lookup_request(i: u8, filename: &str) -> Mutation {
@@ -129,11 +165,28 @@ async fn lookup_requests_become_replicated_metadata_and_relations() {
                             && m.series_id == Some(FRIEREN)
                             && m.episode_number.as_deref() == Some("01")
                     })
-                }) && view.series_relations.get(&FRIEREN).is_some_and(|r| {
-                    r.title == "Sousou no Frieren"
-                        && r.year == Some(2023)
-                        && r.short_titles == ["Frieren"]
-                })
+                }) && view
+                    .series_relations
+                    .get(&FRIEREN)
+                    .is_some_and(|r| r.title == "Sousou no Frieren" && r.year == Some(2023))
+            })
+        },
+    )
+    .await;
+
+    // The rest of the curator chain: the token arrives over the wire
+    // (as the real client pushes it on connect — kim is demonstrably
+    // connected, having synced the relations above), gates the canned
+    // curator, and the curated name replicates to everyone.
+    provision_token(&kim).await;
+    eventually_views(
+        &[&kim, &nero],
+        std::time::Duration::from_secs(120),
+        |views| {
+            views.iter().all(|view| {
+                view.series_relations
+                    .get(&FRIEREN)
+                    .is_some_and(|r| r.short_titles == ["Frieren"])
             })
         },
     )

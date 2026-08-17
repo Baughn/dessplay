@@ -140,6 +140,17 @@ const MIGRATIONS: &[&str] = &[
         last_seen INTEGER NOT NULL
     ) STRICT;
     ",
+    // v6 (Phase 33 follow-up): the AI curator's answer cache — one row
+    // per series ever asked. A NULL title means asked-and-no-short-name
+    // (a durable answer, not a miss), so the worker never re-asks either
+    // way. See anidb/curator.rs.
+    "
+    CREATE TABLE ai_short_titles (
+        aid        INTEGER PRIMARY KEY,
+        title      TEXT,               -- NULL = curator said no short name
+        fetched_at INTEGER NOT NULL    -- shared-clock millis
+    ) STRICT;
+    ",
 ];
 
 /// `next_attempt` sentinel for queue entries that are settled and must
@@ -791,36 +802,61 @@ impl ServerStorage {
         Ok(hits)
     }
 
-    /// A series' community short titles (kind 3), ordered by display
-    /// preference — x-jat first (the romaji nicknames the group actually
-    /// uses), then en, then everything else — with lang and title as
-    /// deterministic tiebreaks (the worker rewrites `series_relations`
-    /// whenever this list differs from the replicated one, so an
-    /// unstable order would oscillate). Exact duplicate titles across
-    /// languages keep only their most-preferred occurrence.
-    pub fn short_titles(&self, series: AniDbSeriesId) -> Result<Vec<String>> {
+    /// Every dump row for one series — the curator's raw material
+    /// (primary, synonyms, shorts, officials alike). Deterministic
+    /// order for stable prompts.
+    pub fn titles_for(&self, series: AniDbSeriesId) -> Result<Vec<TitleRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT title FROM anidb_titles
-             WHERE aid = ?1 AND kind = 3
-             ORDER BY CASE lang WHEN 'x-jat' THEN 0 WHEN 'en' THEN 1 ELSE 2 END,
-                      lang, title",
+            "SELECT aid, kind, lang, title FROM anidb_titles
+             WHERE aid = ?1 ORDER BY kind, lang, title",
         )?;
-        let rows = stmt.query_map(params![series.0 as i64], |row| row.get::<_, String>(0))?;
-        let mut seen = std::collections::BTreeSet::new();
-        let mut titles = Vec::new();
-        for row in rows {
-            let title = row?;
-            if seen.insert(title.clone()) {
-                titles.push(title);
-            }
-        }
-        Ok(titles)
+        let rows = stmt.query_map(params![series.0 as i64], |row| {
+            Ok(TitleRow {
+                series: AniDbSeriesId(row.get::<_, i64>(0)? as u32),
+                kind: row.get::<_, i64>(1)? as u8,
+                lang: row.get(2)?,
+                title: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// The curator's cached answer for one series. Outer `None` =
+    /// never asked; `Some(None)` = asked, no community short name
+    /// exists (durable — never re-asked).
+    pub fn curated_short_title(&self, series: AniDbSeriesId) -> Result<Option<Option<String>>> {
+        self.conn
+            .query_row(
+                "SELECT title FROM ai_short_titles WHERE aid = ?1",
+                params![series.0 as i64],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Record the curator's answer for one series (overwriting any
+    /// earlier one).
+    pub fn set_curated_short_title(
+        &self,
+        series: AniDbSeriesId,
+        title: Option<&str>,
+        now: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO ai_short_titles (aid, title, fetched_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (aid) DO UPDATE SET title = excluded.title,
+                                             fetched_at = excluded.fetched_at",
+            params![series.0 as i64, title, now],
+        )?;
+        Ok(())
     }
 
     /// Whether the titles table holds any rows at all. False until the
     /// first dump fetch lands (`replace_titles` never empties a
-    /// populated table) — the short-title backfill treats that as "no
-    /// information", not "no short titles".
+    /// populated table) — the curator treats that as "no information",
+    /// not "no titles to send".
     pub fn titles_available(&self) -> Result<bool> {
         self.conn
             .query_row("SELECT EXISTS (SELECT 1 FROM anidb_titles)", [], |row| {
@@ -865,7 +901,19 @@ impl ServerStorage {
         )?;
         Ok(())
     }
+
+    /// Delete a bookkeeping value (a no-op when absent).
+    pub fn kv_delete(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM kv WHERE key = ?1", params![key])?;
+        Ok(())
+    }
 }
+
+/// kv key holding the Anthropic API token the short-title curator uses.
+/// Client-provisioned over the wire ([`ServerControl::SetAnthropicToken`]
+/// — see dessplay-core); presence is logged, the value never is.
+pub const ANTHROPIC_TOKEN_KEY: &str = "anthropic_token";
 
 /// One ANIME (relations) queue row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1430,34 +1478,67 @@ mod tests {
     }
 
     #[test]
-    fn short_titles_prefer_xjat_then_en_and_dedupe() {
+    fn titles_for_returns_one_series_worth_of_rows() {
         let mut storage = ServerStorage::open_in_memory().unwrap();
         assert!(!storage.titles_available().unwrap());
         storage
             .replace_titles(&[
-                // Insertion order deliberately scrambled against the
-                // expected preference order.
-                title_in(1, 3, "de", "KaninchenKaffee"),
-                title_in(1, 3, "en", "GochiUsa"),
+                title_in(1, 3, "x-jat", "gochiusa"),
                 title_in(1, 1, "x-jat", "Gochuumon wa Usagi Desu ka?"),
-                title_in(1, 3, "x-jat", "Gochiusa"),
-                // The same string under two languages keeps one copy.
-                title_in(1, 3, "ja", "GochiUsa"),
-                // Another series' shorts don't bleed in.
-                title_in(2, 3, "en", "Frieren"),
-                // Kind 2 synonyms are not short titles.
-                title_in(1, 2, "en", "Is the Order a Rabbit?"),
+                title_in(2, 1, "x-jat", "Sousou no Frieren"),
             ])
             .unwrap();
 
         assert!(storage.titles_available().unwrap());
+        let rows = storage.titles_for(AniDbSeriesId(1)).unwrap();
         assert_eq!(
-            storage.short_titles(AniDbSeriesId(1)).unwrap(),
-            ["Gochiusa", "GochiUsa", "KaninchenKaffee"]
+            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            ["Gochuumon wa Usagi Desu ka?", "gochiusa"],
+            "ordered by kind; only this series' rows"
         );
-        assert_eq!(storage.short_titles(AniDbSeriesId(2)).unwrap(), ["Frieren"]);
-        // No kind-3 rows at all: empty, not an error.
-        assert!(storage.short_titles(AniDbSeriesId(9)).unwrap().is_empty());
+        assert!(storage.titles_for(AniDbSeriesId(9)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn curated_short_titles_round_trip_including_the_no_name_answer() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        // Never asked.
+        assert_eq!(storage.curated_short_title(AniDbSeriesId(1)).unwrap(), None);
+        // A real answer.
+        storage
+            .set_curated_short_title(AniDbSeriesId(1), Some("GochiUsa"), 1000)
+            .unwrap();
+        assert_eq!(
+            storage.curated_short_title(AniDbSeriesId(1)).unwrap(),
+            Some(Some("GochiUsa".into()))
+        );
+        // Asked, no short name — durable, distinguishable from never-asked.
+        storage
+            .set_curated_short_title(AniDbSeriesId(2), None, 1000)
+            .unwrap();
+        assert_eq!(
+            storage.curated_short_title(AniDbSeriesId(2)).unwrap(),
+            Some(None)
+        );
+        // Overwrite is allowed.
+        storage
+            .set_curated_short_title(AniDbSeriesId(1), None, 2000)
+            .unwrap();
+        assert_eq!(
+            storage.curated_short_title(AniDbSeriesId(1)).unwrap(),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn kv_delete_clears_a_key() {
+        let storage = ServerStorage::open_in_memory().unwrap();
+        storage.kv_set(ANTHROPIC_TOKEN_KEY, "sk-ant-test").unwrap();
+        assert!(storage.kv_get(ANTHROPIC_TOKEN_KEY).unwrap().is_some());
+        storage.kv_delete(ANTHROPIC_TOKEN_KEY).unwrap();
+        assert_eq!(storage.kv_get(ANTHROPIC_TOKEN_KEY).unwrap(), None);
+        // Deleting an absent key is a no-op, not an error.
+        storage.kv_delete(ANTHROPIC_TOKEN_KEY).unwrap();
     }
 
     #[test]

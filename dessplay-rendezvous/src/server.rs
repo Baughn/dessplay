@@ -29,6 +29,7 @@ use dessplay_core::wire;
 use dessplay_core::{CrdtOp, CrdtState, StateSnapshot};
 
 use crate::anidb::client::AniDbApi;
+use crate::anidb::curator::ShortTitleCurator;
 use crate::anidb::titles::TitlesSource;
 use crate::anidb::worker::{self, AniDbHost};
 use crate::storage::ServerStorage;
@@ -73,6 +74,10 @@ pub struct AniDbConfig {
     pub api: Arc<dyn AniDbApi>,
     /// The anime-titles dump (name search).
     pub titles: Arc<dyn TitlesSource>,
+    /// The AI short-title curator; `None` disables curation (short
+    /// titles then stay whatever is already replicated). Runs only
+    /// when a token has been provisioned over the wire.
+    pub curator: Option<Arc<dyn ShortTitleCurator>>,
 }
 
 /// Server configuration.
@@ -563,7 +568,7 @@ where
     if let Some(anidb) = config.anidb.clone() {
         if lock(&shared.storage).is_some() {
             let host = SharedHost(Arc::clone(&shared));
-            tokio::spawn(worker::run(host, anidb.api, anidb.titles));
+            tokio::spawn(worker::run(host, anidb.api, anidb.titles, anidb.curator));
         } else {
             tracing::warn!("AniDB configured but the server has no storage; disabled");
         }
@@ -1457,6 +1462,32 @@ async fn serve_authed<T: Transport>(
                 };
                 tracing::debug!(user = %username.0, %query, hits = results.len(), "anidb search");
                 send_control(conn, &ServerControl::AniDbSearchResults { query, results }).await;
+            }
+            ServerControl::SetAnthropicToken { token } => {
+                // Client-provisioned curator credential (design.md, The
+                // List): stored in the kv table, read by the worker per
+                // pass — so it takes effect, rotates, or vanishes
+                // without a restart. Presence is logged; the value
+                // never is.
+                let stored = {
+                    let storage = lock(&shared.storage);
+                    storage.as_ref().map(|storage| match &token {
+                        Some(token) => storage.kv_set(crate::storage::ANTHROPIC_TOKEN_KEY, token),
+                        None => storage.kv_delete(crate::storage::ANTHROPIC_TOKEN_KEY),
+                    })
+                };
+                match stored {
+                    Some(Ok(())) => tracing::info!(
+                        user = %username.0,
+                        present = token.is_some(),
+                        "anthropic token updated"
+                    ),
+                    Some(Err(e)) => tracing::error!("storing anthropic token: {e}"),
+                    None => tracing::warn!(
+                        user = %username.0,
+                        "anthropic token ignored: server is running storageless"
+                    ),
+                }
             }
             ServerControl::RequestMerge => {
                 tracing::warn!("client requested a divergence-heal merge");
