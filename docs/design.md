@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-17
+Last updated: 2026-08-19
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1602,13 +1602,34 @@ Clicking never activates a row (no double-click Enter); the one
 click-driven action is the chat [spoiler](#chat) reveal, whose key
 equivalent is `/reveal`. Mouse events are ignored while a modal is
 open. Keyboard-only terminals lose nothing — every mouse action has a
-key equivalent.
+key equivalent, with one deliberate exception: chat text selection
+(below) is mouse-native, and uncommon enough to need no keyboard path.
+
+**Chat text selection:** click-and-drag over the chat log selects text
+for copying (the terminal's own selection needs Shift once mouse
+capture is on, and knows nothing of panes). Releasing the button
+**copies immediately** to the system clipboard (`arboard`; local
+machine only — over SSH the copy quietly degrades). No copy key is
+involved: the terminal owns Cmd-C, and Ctrl-C stays Quit. A drag
+within one message selects a char range and copies it verbatim,
+exactly as displayed (a hidden spoiler copies as its scramble —
+WYSIWYG, no leak). A drag that crosses a message boundary snaps to
+whole lines and copies them in the irccloud log format —
+`HH:MM:SS <nick> body` (`* nick body` for actions; day separators are
+render furniture, skipped) — and a selection is always one of those
+two shapes, never a mix. The reverse-video highlight is held for 5
+seconds after release; while held, Shift-Up/Down extend the selection
+one whole line at a time (a partial selection first widens to its
+whole line, gdocs-style), re-copying on each step. Any other key or
+click — or the timeout — dismisses the highlight; the clipboard keeps
+the last copy. A motionless click never touches the clipboard.
 
 ### Keyboard Shortcuts
 
 | Key | Context | Action |
 |-----|---------|--------|
 | `Ctrl-C` | Any | Quit |
+| `Shift-Up` / `Shift-Down` | Held chat selection | Extend the selection one whole line up/down (re-copies) |
 | `Ctrl-R` | Any | Toggle your own ready/unready (clears a manual pause; flips the now-playing series from NotWatching back to Maybe -- does **not** commit to Watching) |
 | `Tab` | Any | Cycle focus: Chat -> Series -> Users -> Playlist -> Chat |
 | `Tab` | Chat | Complete a username if the end of the input is a prefix of one (see below); otherwise cycle focus |

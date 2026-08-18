@@ -147,15 +147,86 @@ struct SpoilerHit {
     key: SpoilerKey,
 }
 
-/// The chat log viewport the last render actually drew: its rect plus,
-/// per visible body row, the clickable spoiler ranges. The chat-pane
-/// analogue of [`RenderedList`] — click mapping uses render-recorded
+/// How long a finished drag-selection keeps its highlight before it
+/// quietly disappears (the clipboard copy already happened on release).
+const SELECTION_TTL_MS: u64 = 5_000;
+
+/// One end of a selection drag, in **text** coordinates: which chat
+/// line, and which chars of its display body the pointed cell covers.
+/// Text space, not screen space, so scrolling mid-drag cannot smear the
+/// selection. `floor..ceil` is the char under the pointer on a hit and
+/// empty (`floor == ceil`) at a boundary — left of the body or past the
+/// row's last char.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct SelPoint {
+    /// Index into `ChatPane::lines`.
+    line: usize,
+    floor: usize,
+    ceil: usize,
+}
+
+/// What a selection covers. The spec's invariant is structural: a
+/// selection is *either* a char range within one line *or* whole lines
+/// — a partial multi-line span is unrepresentable.
+///
+/// Indices are into the *current* line list; a log rebuild (a new
+/// message inserting a fresh day separator) can shift them during the
+/// short hold window. Harmless by construction: the highlight and the
+/// copy read the same current list, so what is highlighted is always
+/// exactly what copies.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SelRange {
+    /// Part of a single line: a char range of its display body.
+    Partial {
+        line: usize,
+        start: usize,
+        end: usize,
+    },
+    /// Whole lines, inclusive between the two ends. `anchor` is where
+    /// the drag started; `focus` is the end Shift-Up/Down moves
+    /// (gdocs-style, so extending can shrink back across the anchor).
+    Lines { anchor: usize, focus: usize },
+}
+
+/// Drag-selection state machine: press → drag → release copies & holds.
+enum Selection {
+    /// Button down on log text; `focus` stays `None` until the pointer
+    /// moves, so a plain click never selects (or touches the clipboard).
+    Dragging {
+        anchor: SelPoint,
+        focus: Option<SelPoint>,
+    },
+    /// Released: the copy has happened, the highlight lingers until
+    /// `expires_at` (merged-clock millis) or the next unrelated input.
+    Held { range: SelRange, expires_at: u64 },
+}
+
+/// One visual row of the drawn chat log: its clickable spoiler ranges
+/// plus the geometry the selection mapping needs — which chars of which
+/// line's display body this row shows, starting at which screen column.
+struct RowRecord {
+    hits: Vec<SpoilerHit>,
+    /// Index into `ChatPane::lines` of the message this row shows.
+    line: usize,
+    /// The display-body chunk drawn on this row.
+    body: String,
+    /// Char offset of `body` within the line's full display body.
+    char_start: usize,
+    /// Absolute screen column of `body`'s first cell.
+    body_col: u16,
+    /// Day separators are drawn but never selectable.
+    selectable: bool,
+}
+
+/// The chat log viewport the last render actually drew: its rect plus a
+/// [`RowRecord`] per visible body row. The chat-pane analogue of
+/// [`RenderedList`] — click and selection mapping use render-recorded
 /// geometry, never a click-time re-derivation. Zero-default misses every
 /// click until the first draw.
 #[derive(Default)]
 struct RenderedChatLog {
     area: Rect,
-    rows: Vec<Vec<SpoilerHit>>,
+    rows: Vec<RowRecord>,
 }
 
 impl RenderedChatLog {
@@ -164,9 +235,77 @@ impl RenderedChatLog {
         let body_row = row.checked_sub(self.area.y + 1)? as usize;
         self.rows
             .get(body_row)?
+            .hits
             .iter()
             .find(|hit| hit.cols.contains(&column))
             .map(|hit| &hit.key)
+    }
+
+    /// Map a screen position to a text point, exactly: misses (borders,
+    /// the input line, separator rows) return `None`. Anchors a drag.
+    fn point_at(&self, column: u16, row: u16) -> Option<SelPoint> {
+        let body_row = row.checked_sub(self.area.y + 1)? as usize;
+        let record = self.rows.get(body_row)?;
+        record.selectable.then(|| Self::point_in(record, column))
+    }
+
+    /// Map a screen position to the *nearest* text point: rows clamp
+    /// into the drawn log, a separator row resolves to the end of the
+    /// nearest selectable row above it (or the start of the one below).
+    /// Moves a drag's focus, so dragging past an edge or across a day
+    /// divider keeps selecting instead of going dead.
+    fn point_near(&self, column: u16, row: u16) -> Option<SelPoint> {
+        if self.rows.is_empty() {
+            return None;
+        }
+        let body_row = (row.saturating_sub(self.area.y + 1) as usize).min(self.rows.len() - 1);
+        let record = &self.rows[body_row];
+        if record.selectable {
+            return Some(Self::point_in(record, column));
+        }
+        if let Some(above) = self.rows[..body_row].iter().rev().find(|r| r.selectable) {
+            let end = above.char_start + above.body.chars().count();
+            return Some(SelPoint {
+                line: above.line,
+                floor: end,
+                ceil: end,
+            });
+        }
+        let below = self.rows[body_row + 1..].iter().find(|r| r.selectable)?;
+        Some(SelPoint {
+            line: below.line,
+            floor: below.char_start,
+            ceil: below.char_start,
+        })
+    }
+
+    /// The text point a column hits within one row: the char under the
+    /// cell, or an empty boundary left of the body / past its end.
+    fn point_in(record: &RowRecord, column: u16) -> SelPoint {
+        use unicode_width::UnicodeWidthChar;
+        let mut col = record.body_col;
+        let mut idx = record.char_start;
+        if column >= col {
+            for c in record.body.chars() {
+                let cells = c.width().unwrap_or(0) as u16;
+                if cells > 0 && column < col + cells {
+                    return SelPoint {
+                        line: record.line,
+                        floor: idx,
+                        ceil: idx + 1,
+                    };
+                }
+                col += cells;
+                idx += 1;
+            }
+        } else {
+            idx = record.char_start;
+        }
+        SelPoint {
+            line: record.line,
+            floor: idx,
+            ceil: idx,
+        }
     }
 }
 
@@ -195,6 +334,9 @@ pub struct ChatPane {
     spoilers: HashMap<SpoilerKey, SpoilerState>,
     /// The log viewport the last render drew (spoiler click mapping).
     rendered: RenderedChatLog,
+    /// Drag-selection state (design.md, Mouse support): in-flight drag
+    /// or a held, already-copied highlight. Per-client, never synced.
+    selection: Option<Selection>,
 }
 
 /// In-flight Tab-completion cycle. While the input still equals `produced`,
@@ -229,6 +371,7 @@ impl Default for ChatPane {
             completion: None,
             spoilers: HashMap::new(),
             rendered: RenderedChatLog::default(),
+            selection: None,
         }
     }
 }
@@ -354,7 +497,7 @@ impl ChatPane {
             .rows
             .iter()
             .rev()
-            .flat_map(|row| row.iter().rev())
+            .flat_map(|row| row.hits.iter().rev())
             .map(|hit| &hit.key)
             .find(|key| !matches!(self.spoilers.get(key), Some(SpoilerState::Revealed)))
             .cloned()
@@ -363,6 +506,188 @@ impl ChatPane {
         };
         self.spoilers.insert(key, SpoilerState::Revealed);
         true
+    }
+
+    // ---- Drag selection (design.md, Mouse support) -------------------
+
+    /// Mouse button pressed in the chat column: any held highlight is
+    /// already dismissed by the dispatcher; if the press landed on
+    /// selectable log text, arm a potential drag. Selecting starts only
+    /// on motion — a plain click still means "focus / spoiler", and
+    /// never touches the clipboard.
+    pub(crate) fn mouse_down(&mut self, column: u16, row: u16) {
+        self.selection = self
+            .rendered
+            .point_at(column, row)
+            .map(|anchor| Selection::Dragging {
+                anchor,
+                focus: None,
+            });
+    }
+
+    /// Pointer moved with the button held: extend the drag. Coordinates
+    /// clamp into the drawn log (the dispatcher grabs drags for us even
+    /// when the pointer leaves the pane).
+    pub(crate) fn mouse_drag(&mut self, column: u16, row: u16) {
+        if let Some(Selection::Dragging { focus, .. }) = &mut self.selection
+            && let Some(point) = self.rendered.point_near(column, row)
+        {
+            *focus = Some(point);
+        }
+    }
+
+    /// Whether a drag is in progress (drag/release events route here by
+    /// grab, not position).
+    pub(crate) fn dragging(&self) -> bool {
+        matches!(self.selection, Some(Selection::Dragging { .. }))
+    }
+
+    /// Button released: if the drag actually selected something, return
+    /// the clipboard text and hold the highlight for
+    /// [`SELECTION_TTL_MS`]. A motionless press releases into nothing.
+    pub(crate) fn mouse_up(&mut self, now_millis: u64) -> Option<String> {
+        if !self.dragging() {
+            return None;
+        }
+        let range = self.selection_range();
+        self.selection = None;
+        let range = range?;
+        let text = self.copy_text(range)?;
+        self.selection = Some(Selection::Held {
+            range,
+            expires_at: now_millis + SELECTION_TTL_MS,
+        });
+        Some(text)
+    }
+
+    /// Whether a finished selection is being held (Shift-Up/Down extend
+    /// it; any other key dismisses it).
+    pub(crate) fn selection_held(&self) -> bool {
+        matches!(self.selection, Some(Selection::Held { .. }))
+    }
+
+    /// Shift-Up/Down on a held selection: extend by one whole line. A
+    /// partial selection first widens to its whole line (gdocs-style —
+    /// the selection grows back to the start of the first selected
+    /// line), then the focus end steps across lines, skipping day
+    /// separators and shrinking when it re-crosses the anchor. Re-copies
+    /// and re-arms the hold timer; returns the new clipboard text.
+    pub(crate) fn extend_selection(&mut self, up: bool, now_millis: u64) -> Option<String> {
+        let Some(Selection::Held { range, .. }) = &self.selection else {
+            return None;
+        };
+        let (anchor, focus) = match *range {
+            SelRange::Partial { line, .. } => (line, line),
+            SelRange::Lines { anchor, focus } => (anchor, focus),
+        };
+        let focus = self.step_line(focus, up).unwrap_or(focus);
+        let range = SelRange::Lines { anchor, focus };
+        let text = self.copy_text(range)?;
+        self.selection = Some(Selection::Held {
+            range,
+            expires_at: now_millis + SELECTION_TTL_MS,
+        });
+        Some(text)
+    }
+
+    /// The nearest non-separator line index strictly beyond `from` in
+    /// the given direction, if any.
+    fn step_line(&self, from: usize, up: bool) -> Option<usize> {
+        if up {
+            (0..from).rev().find(|&i| !self.lines[i].separator)
+        } else {
+            (from + 1..self.lines.len()).find(|&i| !self.lines[i].separator)
+        }
+    }
+
+    /// Drop any selection (a fresh click or an unrelated key).
+    pub(crate) fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Expire a held highlight; returns whether the screen changed.
+    pub(crate) fn expire_selection(&mut self, now_millis: u64) -> bool {
+        if let Some(Selection::Held { expires_at, .. }) = &self.selection
+            && now_millis >= *expires_at
+        {
+            self.selection = None;
+            return true;
+        }
+        false
+    }
+
+    /// The range the current selection covers (in-flight drag or held),
+    /// if it covers anything at all.
+    fn selection_range(&self) -> Option<SelRange> {
+        match self.selection.as_ref()? {
+            Selection::Held { range, .. } => Some(*range),
+            Selection::Dragging { anchor, focus } => {
+                let focus = focus.as_ref()?;
+                if anchor.line == focus.line {
+                    let start = anchor.floor.min(focus.floor);
+                    let end = anchor.ceil.max(focus.ceil);
+                    (start < end).then_some(SelRange::Partial {
+                        line: anchor.line,
+                        start,
+                        end,
+                    })
+                } else {
+                    Some(SelRange::Lines {
+                        anchor: anchor.line,
+                        focus: focus.line,
+                    })
+                }
+            }
+        }
+    }
+
+    /// The clipboard text for a selection: a partial line verbatim (its
+    /// display body, so a hidden spoiler copies as its scramble —
+    /// WYSIWYG, no leak), whole lines in the irccloud log format
+    /// (`HH:MM:SS <nick> text`). `None` when the range covers no
+    /// copyable text.
+    fn copy_text(&self, range: SelRange) -> Option<String> {
+        match range {
+            SelRange::Partial { line, start, end } => {
+                let line = self.lines.get(line)?;
+                let body = display_body(line, &self.spoilers);
+                let text: String = body.chars().skip(start).take(end - start).collect();
+                (!text.is_empty()).then_some(text)
+            }
+            SelRange::Lines { anchor, focus } => {
+                let (lo, hi) = (anchor.min(focus), anchor.max(focus));
+                let mut out = Vec::new();
+                for line in self.lines.get(lo..=hi)? {
+                    if line.separator {
+                        continue;
+                    }
+                    let body = display_body(line, &self.spoilers);
+                    out.push(if line.subtitle {
+                        // The display body carries the "»"/"*" marker;
+                        // subtitle timestamps are in-video positions, so
+                        // keep them as displayed.
+                        format!("{} {}", line.time, body)
+                    } else if line.system {
+                        format!("{} {}", super::props::hhmmss(line.millis), body)
+                    } else if line.action {
+                        format!(
+                            "{} * {} {}",
+                            super::props::hhmmss(line.millis),
+                            line.sender,
+                            body
+                        )
+                    } else {
+                        format!(
+                            "{} <{}> {}",
+                            super::props::hhmmss(line.millis),
+                            line.sender,
+                            body
+                        )
+                    });
+                }
+                (!out.is_empty()).then(|| out.join("\n"))
+            }
+        }
     }
 
     /// Try to Tab-complete a username at the end of the input. Returns
@@ -549,39 +874,59 @@ impl ChatPane {
             log_area
         };
         let width = log_area.width.saturating_sub(2) as usize;
-        // Flatten every message into wrapped visual lines (paired with
-        // their clickable spoiler ranges).
-        let lines: Vec<(Line, Vec<SpoilerHit>)> = self
+        // Flatten every message into wrapped visual rows (each carrying
+        // its clickable spoiler ranges and selection geometry).
+        let rows: Vec<(usize, ChatRow)> = self
             .lines
             .iter()
-            .flat_map(|line| wrap_chat_line(line, width, &self.usernames, &self.me, &self.spoilers))
+            .enumerate()
+            .flat_map(|(idx, line)| {
+                wrap_chat_line(line, width, &self.usernames, &self.me, &self.spoilers)
+                    .into_iter()
+                    .map(move |row| (idx, row))
+            })
             .collect();
         let visible = log_area.height.saturating_sub(2) as usize;
         // Clamp the scroll so it can never run past the top of the log.
-        let max_offset = lines.len().saturating_sub(visible);
+        let max_offset = rows.len().saturating_sub(visible);
         self.scroll_offset = self.scroll_offset.min(max_offset);
-        let end = lines.len().saturating_sub(self.scroll_offset);
+        let end = rows.len().saturating_sub(self.scroll_offset);
         let start = end.saturating_sub(visible);
-        // Record the drawn viewport for spoiler click mapping: shift the
-        // line-relative hit columns to absolute screen columns (past the
-        // left border); body row i sits at log_area.y + 1 + i.
+        // Record the drawn viewport for spoiler-click and selection
+        // mapping: shift the row-relative columns to absolute screen
+        // columns (past the left border); body row i sits at
+        // log_area.y + 1 + i.
         self.rendered = RenderedChatLog {
             area: log_area,
-            rows: lines[start..end]
+            rows: rows[start..end]
                 .iter()
-                .map(|(_, hits)| {
-                    hits.iter()
+                .map(|(idx, row)| RowRecord {
+                    hits: row
+                        .hits
+                        .iter()
                         .map(|hit| SpoilerHit {
                             cols: hit.cols.start + log_area.x + 1..hit.cols.end + log_area.x + 1,
                             key: hit.key.clone(),
                         })
-                        .collect()
+                        .collect(),
+                    line: *idx,
+                    body: row.body.clone(),
+                    char_start: row.char_start,
+                    body_col: row.body_col + log_area.x + 1,
+                    selectable: row.selectable,
                 })
                 .collect(),
         };
-        let items: Vec<ListItem> = lines[start..end]
+        let selection = self.selection_range();
+        let items: Vec<ListItem> = rows[start..end]
             .iter()
-            .map(|(line, _)| ListItem::new(line.clone()))
+            .map(|(idx, row)| {
+                let visual = match selection_cols(selection, *idx, row) {
+                    Some(cols) => reverse_cols(row.visual.clone(), cols),
+                    None => row.visual.clone(),
+                };
+                ListItem::new(visual)
+            })
             .collect();
         frame.render_widget(
             List::new(items).block(
@@ -879,35 +1224,151 @@ fn spoiler_chunk_spans(
     (spans, hits)
 }
 
-/// Render one chat message as one or more wrapped visual lines, each
-/// paired with its clickable spoiler ranges (relative columns; empty for
-/// the line kinds that never carry spoilers).
+/// One wrapped visual row of a chat line: the drawn spans, its spoiler
+/// hit ranges, and the selection geometry — which chars of the line's
+/// display body this row shows, starting at which relative column.
+struct ChatRow {
+    visual: Line<'static>,
+    hits: Vec<SpoilerHit>,
+    /// The display-body chunk drawn on this row (empty for separators).
+    body: String,
+    /// Char offset of `body` within the line's full display body.
+    char_start: usize,
+    /// Column (relative to the pane's first text cell) of `body`'s
+    /// first cell.
+    body_col: u16,
+    /// Day separators are drawn but never selectable.
+    selectable: bool,
+}
+
+/// The display body of a chat line — exactly the text [`wrap_chat_line`]
+/// wraps (markers included, spoilers as currently shown), so selection
+/// char offsets recorded at render time index straight into it.
+fn display_body(line: &ChatLine, spoilers: &HashMap<SpoilerKey, SpoilerState>) -> String {
+    if line.separator {
+        String::new()
+    } else if line.subtitle {
+        format!("» {}", line.text)
+    } else if line.system {
+        format!("* {}", line.text)
+    } else {
+        compose_spoiler_body(line, spoilers).0
+    }
+}
+
+/// The relative column range of one row a selection highlights, if any.
+fn selection_cols(
+    selection: Option<SelRange>,
+    line: usize,
+    row: &ChatRow,
+) -> Option<std::ops::Range<u16>> {
+    use unicode_width::UnicodeWidthChar;
+    match selection? {
+        SelRange::Lines { anchor, focus } => {
+            let (lo, hi) = (anchor.min(focus), anchor.max(focus));
+            (row.selectable && (lo..=hi).contains(&line)).then_some(0..u16::MAX)
+        }
+        SelRange::Partial {
+            line: sel_line,
+            start,
+            end,
+        } => {
+            if line != sel_line {
+                return None;
+            }
+            let len = row.body.chars().count();
+            let lo = start.max(row.char_start);
+            let hi = end.min(row.char_start + len);
+            if lo >= hi {
+                return None;
+            }
+            let width_to = |n: usize| -> u16 {
+                row.body
+                    .chars()
+                    .take(n)
+                    .map(|c| c.width().unwrap_or(0))
+                    .sum::<usize>() as u16
+            };
+            Some(
+                row.body_col + width_to(lo - row.char_start)
+                    ..row.body_col + width_to(hi - row.char_start),
+            )
+        }
+    }
+}
+
+/// Re-style a drawn line so the cells in `cols` render reversed — the
+/// selection highlight. Splits spans at the range edges; every char
+/// keeps its own style otherwise.
+fn reverse_cols(line: Line<'static>, cols: std::ops::Range<u16>) -> Line<'static> {
+    use tuirealm::ratatui::style::Modifier;
+    use unicode_width::UnicodeWidthChar;
+    let mut col: u16 = 0;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let mut run = String::new();
+        let mut run_rev = false;
+        let mut flush = |run: &mut String, rev: bool| {
+            if !run.is_empty() {
+                let style = if rev {
+                    span.style.add_modifier(Modifier::REVERSED)
+                } else {
+                    span.style
+                };
+                spans.push(Span::styled(std::mem::take(run), style));
+            }
+        };
+        for c in span.content.chars() {
+            let rev = cols.contains(&col);
+            col = col.saturating_add(c.width().unwrap_or(0) as u16);
+            if rev != run_rev {
+                flush(&mut run, run_rev);
+                run_rev = rev;
+            }
+            run.push(c);
+        }
+        flush(&mut run, run_rev);
+    }
+    Line::from(spans)
+}
+
+/// Render one chat message as one or more wrapped visual rows, each
+/// carrying its clickable spoiler ranges (relative columns; empty for
+/// the line kinds that never carry spoilers) and selection geometry.
 fn wrap_chat_line(
     line: &ChatLine,
     width: usize,
     usernames: &[String],
     me: &str,
     spoilers: &HashMap<SpoilerKey, SpoilerState>,
-) -> Vec<(Line<'static>, Vec<SpoilerHit>)> {
+) -> Vec<ChatRow> {
     use tuirealm::ratatui::style::Modifier;
     use unicode_width::UnicodeWidthStr;
     let indent: String = " ".repeat(CHAT_WRAP_INDENT);
     if line.separator {
-        // Render-time day divider: the date label centered between dashes.
+        // Render-time day divider: the date label centered between
+        // dashes. Drawn but never selectable — it is not a message.
         let label = format!(" {} ", line.text);
         let label_w = label.width();
         let total = width.max(label_w);
         let dashes = total - label_w;
         let left = dashes / 2;
         let bar = format!("{}{}{}", "─".repeat(left), label, "─".repeat(dashes - left));
-        return vec![(Line::from(Span::styled(bar, theme::dim())), Vec::new())];
+        return vec![ChatRow {
+            visual: Line::from(Span::styled(bar, theme::dim())),
+            hits: Vec::new(),
+            body: String::new(),
+            char_start: 0,
+            body_col: 0,
+            selectable: false,
+        }];
     }
-    if line.subtitle {
-        // Local subtitle (Intermixed mode): dim, no sender, "»" marker,
-        // in-video timestamp.
+    if line.subtitle || line.system {
+        // Local subtitle (Intermixed mode) / system notice: dim, no
+        // sender, "»" / "*" marker (part of the display body).
         let time = format!("{} ", line.time);
         let prefix_width = time.width();
-        let body = format!("» {}", line.text);
+        let body = display_body(line, spoilers);
         let chunks = wrap_body(
             &body,
             width.saturating_sub(prefix_width),
@@ -916,41 +1377,29 @@ fn wrap_chat_line(
         chunks
             .into_iter()
             .enumerate()
-            .map(|(i, (chunk, _))| {
-                let visual = if i == 0 {
-                    Line::from(vec![
-                        Span::styled(time.clone(), theme::dim()),
-                        Span::styled(chunk, theme::dim()),
-                    ])
+            .map(|(i, (chunk, chunk_start))| {
+                let (visual, body_col) = if i == 0 {
+                    (
+                        Line::from(vec![
+                            Span::styled(time.clone(), theme::dim()),
+                            Span::styled(chunk.clone(), theme::dim()),
+                        ]),
+                        prefix_width as u16,
+                    )
                 } else {
-                    Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim()))
+                    (
+                        Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim())),
+                        CHAT_WRAP_INDENT as u16,
+                    )
                 };
-                (visual, Vec::new())
-            })
-            .collect()
-    } else if line.system {
-        // Local system notice: dim, no sender, "*" marker.
-        let time = format!("{} ", line.time);
-        let prefix_width = time.width();
-        let body = format!("* {}", line.text);
-        let chunks = wrap_body(
-            &body,
-            width.saturating_sub(prefix_width),
-            width.saturating_sub(CHAT_WRAP_INDENT),
-        );
-        chunks
-            .into_iter()
-            .enumerate()
-            .map(|(i, (chunk, _))| {
-                let visual = if i == 0 {
-                    Line::from(vec![
-                        Span::styled(time.clone(), theme::dim()),
-                        Span::styled(chunk, theme::dim()),
-                    ])
-                } else {
-                    Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim()))
-                };
-                (visual, Vec::new())
+                ChatRow {
+                    visual,
+                    hits: Vec::new(),
+                    body: chunk,
+                    char_start: chunk_start,
+                    body_col,
+                    selectable: true,
+                }
             })
             .collect()
     } else if line.action {
@@ -1002,7 +1451,14 @@ fn wrap_chat_line(
                     spans.extend(body);
                     Line::from(spans)
                 };
-                (visual, hits)
+                ChatRow {
+                    visual,
+                    hits,
+                    body: chunk,
+                    char_start: chunk_start,
+                    body_col: offset,
+                    selectable: true,
+                }
             })
             .collect()
     } else {
@@ -1054,7 +1510,14 @@ fn wrap_chat_line(
                     spans.extend(body);
                     Line::from(spans)
                 };
-                (visual, hits)
+                ChatRow {
+                    visual,
+                    hits,
+                    body: chunk,
+                    char_start: chunk_start,
+                    body_col: offset,
+                    selectable: true,
+                }
             })
             .collect()
     }
@@ -1070,10 +1533,17 @@ impl ChatPane {
     pub(crate) fn test_install_spoiler_hit(&mut self) {
         self.rendered = RenderedChatLog {
             area: Rect::new(0, 0, 40, 10),
-            rows: vec![vec![SpoilerHit {
-                cols: 5..10,
-                key: SpoilerKey::new(1_000, "kim", 0, "||x||"),
-            }]],
+            rows: vec![RowRecord {
+                hits: vec![SpoilerHit {
+                    cols: 5..10,
+                    key: SpoilerKey::new(1_000, "kim", 0, "||x||"),
+                }],
+                line: 0,
+                body: String::new(),
+                char_start: 0,
+                body_col: 1,
+                selectable: true,
+            }],
         };
     }
 
@@ -3239,13 +3709,13 @@ mod chat_spoiler_tests {
         let a = crate::ui::props::irc_line(1_000, "kim".into(), "one ||alpha|| here".into(), false);
         let b =
             crate::ui::props::irc_line(1_000, "kim".into(), "two ||omega|| there".into(), false);
-        let key_a = wrap_chat_line(&a, 80, &[], "me", &HashMap::new())[0].1[0]
+        let key_a = wrap_chat_line(&a, 80, &[], "me", &HashMap::new())[0].hits[0]
             .key
             .clone();
         let mut spoilers = HashMap::new();
         spoilers.insert(key_a, SpoilerState::Revealed);
         let wrapped_b = wrap_chat_line(&b, 80, &[], "me", &spoilers);
-        let (visual, hits) = &wrapped_b[0];
+        let ChatRow { visual, hits, .. } = &wrapped_b[0];
         let text = line_text(visual);
         assert!(!text.contains("omega"), "revealing A leaked B: {text:?}");
         assert_eq!(hits.len(), 1, "B keeps its clickable hit range");
@@ -3256,7 +3726,7 @@ mod chat_spoiler_tests {
         let line = chat_line("the ||secret|| word");
         let wrapped = wrap_chat_line(&line, 80, &[], "me", &HashMap::new());
         assert_eq!(wrapped.len(), 1);
-        let (visual, hits) = &wrapped[0];
+        let ChatRow { visual, hits, .. } = &wrapped[0];
         let text = line_text(visual);
         assert!(!text.contains("secret"), "spoiler leaked: {text:?}");
         assert!(!text.contains('|'), "bars leaked: {text:?}");
@@ -3273,7 +3743,7 @@ mod chat_spoiler_tests {
         let mut spoilers = HashMap::new();
         spoilers.insert(key_for("the ||secret|| word", 0), SpoilerState::Revealed);
         let wrapped = wrap_chat_line(&line, 80, &[], "me", &spoilers);
-        let (visual, hits) = &wrapped[0];
+        let ChatRow { visual, hits, .. } = &wrapped[0];
         let text = line_text(visual);
         assert!(text.contains("the secret word"), "got {text:?}");
         assert!(hits.is_empty());
@@ -3286,8 +3756,8 @@ mod chat_spoiler_tests {
         let line = chat_line("||secretive|| end");
         let wrapped = wrap_chat_line(&line, 16, &[], "me", &HashMap::new());
         assert!(wrapped.len() >= 2, "expected a wrapped run");
-        let first_hits = &wrapped[0].1;
-        let second_hits = &wrapped[1].1;
+        let first_hits = &wrapped[0].hits;
+        let second_hits = &wrapped[1].hits;
         assert_eq!(first_hits.len(), 1);
         assert_eq!(second_hits.len(), 1);
         assert_eq!(first_hits[0].key, key_for("||secretive|| end", 0));
@@ -3299,7 +3769,7 @@ mod chat_spoiler_tests {
         // The scrambled halves stay in sync with the unsplit scramble:
         // same seed, same char offsets (zalgo split-stability is
         // property-tested in dessplay-core).
-        assert!(!line_text(&wrapped[0].0).contains("secre"));
+        assert!(!line_text(&wrapped[0].visual).contains("secre"));
     }
 
     /// Regression: hit columns are screen geometry, so they must advance
@@ -3311,7 +3781,7 @@ mod chat_spoiler_tests {
     fn hit_columns_use_display_width() {
         let line = chat_line("彼は||死ぬ||よ");
         let wrapped = wrap_chat_line(&line, 80, &[], "me", &HashMap::new());
-        let (_, hits) = &wrapped[0];
+        let ChatRow { hits, .. } = &wrapped[0];
         // Prefix "12:00 " (6) + "kim: " (5) = 11 cells; 彼は = 4 cells;
         // the run scrambles to two single-width ASCII letters → 15..17.
         assert_eq!(hits.len(), 1);
@@ -3343,7 +3813,7 @@ mod chat_spoiler_tests {
         let mut line = chat_line("reads ||the twist|| aloud");
         line.action = true;
         let wrapped = wrap_chat_line(&line, 80, &[], "me", &HashMap::new());
-        let (visual, hits) = &wrapped[0];
+        let ChatRow { visual, hits, .. } = &wrapped[0];
         let text = line_text(visual);
         assert!(!text.contains("the twist"), "got {text:?}");
         assert!(!text.contains('|'));
@@ -3355,7 +3825,7 @@ mod chat_spoiler_tests {
         let names = vec!["Nero".to_string()];
         let line = chat_line("Nero said ||Nero dies||");
         let wrapped = wrap_chat_line(&line, 80, &names, "me", &HashMap::new());
-        let (visual, _) = &wrapped[0];
+        let ChatRow { visual, .. } = &wrapped[0];
         // The mention outside the run keeps its user style...
         let styled: Vec<_> = visual
             .spans
@@ -3387,11 +3857,16 @@ mod chat_spoiler_tests {
         pane.rendered = RenderedChatLog {
             area: Rect::new(0, 0, 40, 10),
             rows: (0..count)
-                .map(|i| {
-                    vec![SpoilerHit {
+                .map(|i| RowRecord {
+                    hits: vec![SpoilerHit {
                         cols: 5..10,
                         key: key(i),
-                    }]
+                    }],
+                    line: i,
+                    body: String::new(),
+                    char_start: 0,
+                    body_col: 1,
+                    selectable: true,
                 })
                 .collect(),
         };

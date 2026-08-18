@@ -329,6 +329,10 @@ pub enum UserAction {
     /// forwards this to the IRC actor, which resolves each username to a
     /// nick and reports the outcome back as a local system line.
     Summon(Vec<UserId>),
+    /// Put text on the system clipboard (chat drag-selection copy). The
+    /// UI thread stays side-effect-free; the main loop owns the
+    /// clipboard handle.
+    CopyToClipboard(String),
     /// Quit the application.
     Quit,
 }

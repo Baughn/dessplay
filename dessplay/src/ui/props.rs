@@ -503,6 +503,26 @@ pub fn subtitle_line(
     }
 }
 
+/// Unix millis -> "HH:MM:SS" in the machine's local timezone. The
+/// irccloud-style chat-selection copy format; the on-screen log shows
+/// only HH:MM.
+pub(crate) fn hhmmss(millis: u64) -> String {
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_millis_opt(millis as i64).single() {
+        Some(dt) => dt.format("%H:%M:%S").to_string(),
+        // Out-of-range timestamp; fall back to naive UTC math.
+        None => {
+            let secs = (millis / 1_000) % (24 * 3600);
+            format!(
+                "{:02}:{:02}:{:02}",
+                secs / 3600,
+                (secs / 60) % 60,
+                secs % 60
+            )
+        }
+    }
+}
+
 /// Unix millis -> "HH:MM" in the machine's local timezone.
 fn hhmm(millis: u64) -> String {
     use chrono::{Local, TimeZone};

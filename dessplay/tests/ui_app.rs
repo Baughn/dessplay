@@ -2478,3 +2478,222 @@ fn spoiler_reveal_state_survives_scrolling() {
         "reveal lost across a scroll"
     );
 }
+
+// ---- Chat drag-selection copy (design.md, Mouse support) ---------------
+
+fn drag_to(column: u16, row: u16) -> Event<NoUserEvent> {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        modifiers: KeyModifiers::NONE,
+        column,
+        row,
+    })
+}
+
+fn release(column: u16, row: u16) -> Event<NoUserEvent> {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        modifiers: KeyModifiers::NONE,
+        column,
+        row,
+    })
+}
+
+fn shift_key(code: Key) -> Event<NoUserEvent> {
+    Event::Keyboard(KeyEvent {
+        code,
+        modifiers: KeyModifiers::SHIFT,
+    })
+}
+
+/// The whole-lines copy timestamp, computed the same way the app does
+/// (local timezone), so the expectation holds in any TZ.
+fn hhmmss_local(millis: u64) -> String {
+    use chrono::{Local, TimeZone};
+    Local
+        .timestamp_millis_opt(millis as i64)
+        .single()
+        .unwrap()
+        .format("%H:%M:%S")
+        .to_string()
+}
+
+/// Screen (column, row) of the first occurrence of `needle` in the
+/// rendered buffer. Columns count chars, not bytes — the border glyphs
+/// are multi-byte (single-width cells only in these tests).
+fn locate(rendered: &str, needle: &str) -> (u16, u16) {
+    for (row, line) in rendered.lines().enumerate() {
+        if let Some(idx) = line.find(needle) {
+            return (line[..idx].chars().count() as u16, row as u16);
+        }
+    }
+    panic!("{needle:?} not on screen:\n{rendered}");
+}
+
+/// A Ui showing two chat messages from amu, plus their millis.
+fn selection_ui() -> (Ui, u64, u64) {
+    let (m1, m2) = (1_000_000, 1_060_000);
+    let mut state = CrdtState::new();
+    chat_message(&mut state, m1, "amu", "hello world");
+    chat_message(&mut state, m2, "amu", "second line");
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim"), peer("amu")]));
+    (ui, m1, m2)
+}
+
+/// Dragging within one message copies exactly the dragged cells,
+/// verbatim, on release — and only on release.
+#[test]
+fn drag_within_one_message_copies_the_selected_text_verbatim() {
+    let (mut ui, ..) = selection_ui();
+    let rendered = render(&mut ui, 100, 30);
+    let (col, row) = locate(&rendered, "world");
+
+    assert!(ui.handle(click(col, row)).is_empty());
+    assert!(
+        ui.handle(drag_to(col + 4, row)).is_empty(),
+        "no copy mid-drag"
+    );
+    assert_eq!(
+        ui.handle(release(col + 4, row)),
+        vec![UserAction::CopyToClipboard("world".into())]
+    );
+}
+
+/// Dragging across two messages snaps to whole lines and copies them in
+/// the irccloud log format ("HH:MM:SS <nick> text").
+#[test]
+fn drag_across_messages_copies_whole_lines_irccloud_style() {
+    let (mut ui, m1, m2) = selection_ui();
+    let rendered = render(&mut ui, 100, 30);
+    let (col1, row1) = locate(&rendered, "hello world");
+    let (_, row2) = locate(&rendered, "second line");
+
+    ui.handle(click(col1 + 2, row1));
+    ui.handle(drag_to(col1 + 5, row2));
+    let expected = format!(
+        "{} <amu> hello world\n{} <amu> second line",
+        hhmmss_local(m1),
+        hhmmss_local(m2)
+    );
+    assert_eq!(
+        ui.handle(release(col1 + 5, row2)),
+        vec![UserAction::CopyToClipboard(expected)]
+    );
+}
+
+/// A motionless press-and-release is a click, not a selection: the
+/// clipboard is never touched.
+#[test]
+fn plain_click_never_touches_the_clipboard() {
+    let (mut ui, ..) = selection_ui();
+    let rendered = render(&mut ui, 100, 30);
+    let (col, row) = locate(&rendered, "world");
+
+    assert!(ui.handle(click(col, row)).is_empty());
+    assert!(ui.handle(release(col, row)).is_empty());
+}
+
+/// Shift-Down on a held partial selection widens it to whole lines
+/// (from the start of the first selected line, gdocs-style) and
+/// re-copies; Shift-Up steps the focus end back.
+#[test]
+fn shift_up_down_extend_a_held_selection_by_whole_lines() {
+    let (mut ui, m1, m2) = selection_ui();
+    let rendered = render(&mut ui, 100, 30);
+    let (col, row) = locate(&rendered, "world");
+
+    ui.handle(click(col, row));
+    ui.handle(drag_to(col + 4, row));
+    ui.handle(release(col + 4, row));
+
+    let both = format!(
+        "{} <amu> hello world\n{} <amu> second line",
+        hhmmss_local(m1),
+        hhmmss_local(m2)
+    );
+    assert_eq!(
+        ui.handle(shift_key(Key::Down)),
+        vec![UserAction::CopyToClipboard(both)]
+    );
+    let first = format!("{} <amu> hello world", hhmmss_local(m1));
+    assert_eq!(
+        ui.handle(shift_key(Key::Up)),
+        vec![UserAction::CopyToClipboard(first)]
+    );
+}
+
+/// Any unrelated key dismisses the held selection (and still does its
+/// normal job); Shift-Down afterwards has nothing left to extend.
+#[test]
+fn unrelated_key_clears_the_held_selection() {
+    let (mut ui, ..) = selection_ui();
+    let rendered = render(&mut ui, 100, 30);
+    let (col, row) = locate(&rendered, "world");
+
+    ui.handle(click(col, row));
+    ui.handle(drag_to(col + 4, row));
+    ui.handle(release(col + 4, row));
+
+    ui.handle(key(Key::Char('x')));
+    assert!(
+        ui.handle(shift_key(Key::Down)).is_empty(),
+        "cleared selection must not extend or copy"
+    );
+}
+
+/// A drag spanning the wrap boundary of one long message is still a
+/// partial selection of that one message: the copy is the verbatim
+/// text, unbroken by the visual wrap (no newline, no indent).
+#[test]
+fn drag_across_a_wrap_boundary_stays_within_the_message() {
+    let body = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima";
+    let mut state = CrdtState::new();
+    chat_message(&mut state, 1_000_000, "amu", body);
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim"), peer("amu")]));
+    let rendered = render(&mut ui, 100, 30);
+    let (col1, row1) = locate(&rendered, "bravo");
+    let (col2, row2) = locate(&rendered, "golf");
+    assert!(row2 > row1, "the message must wrap for this test");
+
+    ui.handle(click(col1, row1));
+    ui.handle(drag_to(col2 + 3, row2));
+    let start = body.find("bravo").unwrap();
+    let end = body.find("golf").unwrap() + "golf".len();
+    assert_eq!(
+        ui.handle(release(col2 + 3, row2)),
+        vec![UserAction::CopyToClipboard(body[start..end].into())]
+    );
+}
+
+/// A whole-lines copy spanning a day separator skips the separator: it
+/// is a render-time divider, not a message.
+#[test]
+fn whole_line_copy_skips_day_separators() {
+    let (m1, m2) = (1_000_000, 1_000_000 + 86_400_000);
+    let mut state = CrdtState::new();
+    chat_message(&mut state, m1, "amu", "first day");
+    chat_message(&mut state, m2, "amu", "second day");
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(state.view(), vec![peer("kim"), peer("amu")]));
+    let rendered = render(&mut ui, 100, 30);
+    let (col1, row1) = locate(&rendered, "first day");
+    let (_, row2) = locate(&rendered, "second day");
+    assert!(
+        row2 - row1 >= 2,
+        "a separator row must sit between:\n{rendered}"
+    );
+
+    ui.handle(click(col1, row1));
+    ui.handle(drag_to(col1, row2));
+    let expected = format!(
+        "{} <amu> first day\n{} <amu> second day",
+        hhmmss_local(m1),
+        hhmmss_local(m2)
+    );
+    assert_eq!(
+        ui.handle(release(col1, row2)),
+        vec![UserAction::CopyToClipboard(expected)]
+    );
+}

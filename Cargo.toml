@@ -97,6 +97,9 @@ mimalloc = "0.1"
 # torrent (os error 24 storms, 2026-07-09). The crate handles the macOS
 # kern.maxfilesperproc cap that a naive setrlimit(RLIM_INFINITY) trips.
 rlimit = "0.10"
+# System clipboard for chat drag-selection copy (macOS NSPasteboard /
+# X11/Wayland). Local-machine only; over SSH the copy silently degrades.
+arboard = { version = "3", default-features = false }
 
 # Dependencies compile once and are never stepped through incrementally;
 # their full DWARF was the bulk of a 50GB target/. Workspace crates keep

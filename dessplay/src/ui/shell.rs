@@ -165,7 +165,8 @@ pub fn run_ui_thread(
         tracing::warn!("cannot enable bracketed paste: {e}");
     }
     // Mouse capture (design.md, Mouse support): clicks focus panes and
-    // select list rows, the wheel scrolls. Non-fatal — a terminal
+    // select list rows, the wheel scrolls, and dragging selects chat
+    // text for copying. Non-fatal — a terminal
     // without mouse reporting keeps the full keyboard UI. Unlike
     // bracketed paste this *is* tracked by the adapter, so restore()
     // (and the panic hook) disable it on exit.
@@ -327,41 +328,73 @@ fn event_kind(event: &Event<NoUserEvent>) -> &'static str {
     }
 }
 
+/// Whether a raw crossterm event is a left-button drag (the kind a
+/// selection produces in bursts, and the only kind worth coalescing).
+fn is_left_drag(event: &crossterm::event::Event) -> bool {
+    matches!(
+        event,
+        crossterm::event::Event::Mouse(m)
+            if m.kind == crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left)
+    )
+}
+
 /// Read crossterm events on the current (dedicated) thread, forwarding
 /// them as [`UiInput::Event`]s until the channel closes.
 pub fn run_input_thread(inputs: std::sync::mpsc::SyncSender<UiInput>) {
     tracing::debug!("input thread started");
+    // An event read ahead while coalescing a drag run, still to forward.
+    let mut queued: Option<crossterm::event::Event> = None;
     loop {
-        match crossterm::event::read() {
-            Ok(event) => {
-                let event: Event<NoUserEvent> = event.into();
-                if matches!(event, Event::None) {
-                    continue;
-                }
-                // Mouse capture reports every motion and button release,
-                // but only left-clicks and wheel ticks do anything — and
-                // each forwarded event costs a full redraw on the UI
-                // thread, so drop the rest here.
-                if let Event::Mouse(mouse) = &event
-                    && !matches!(
-                        mouse.kind,
-                        MouseEventKind::Down(MouseButton::Left)
-                            | MouseEventKind::ScrollUp
-                            | MouseEventKind::ScrollDown
-                    )
-                {
-                    continue;
-                }
-                tracing::trace!(kind = event_kind(&event), "input event forwarded");
-                if inputs.send(UiInput::Event(event)).is_err() {
-                    tracing::debug!("input thread exiting (channel closed)");
-                    return;
-                }
-            }
+        let mut raw = match queued.take().map(Ok).unwrap_or_else(crossterm::event::read) {
+            Ok(event) => event,
             Err(e) => {
                 tracing::error!("terminal input died: {e}");
                 return;
             }
+        };
+        // A selection drag emits motion events faster than the UI
+        // thread's full-redraw-per-event can drain; coalesce each run
+        // of drags to its newest point (the intermediate points draw
+        // nothing the final one doesn't).
+        while is_left_drag(&raw)
+            && matches!(crossterm::event::poll(std::time::Duration::ZERO), Ok(true))
+        {
+            match crossterm::event::read() {
+                Ok(next) if is_left_drag(&next) => raw = next,
+                Ok(next) => {
+                    queued = Some(next);
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("terminal input died: {e}");
+                    return;
+                }
+            }
+        }
+        let event: Event<NoUserEvent> = raw.into();
+        if matches!(event, Event::None) {
+            continue;
+        }
+        // Mouse capture reports every motion, but only left-button
+        // events (click / selection drag / release) and wheel ticks do
+        // anything — and each forwarded event costs a full redraw on
+        // the UI thread, so drop the rest here.
+        if let Event::Mouse(mouse) = &event
+            && !matches!(
+                mouse.kind,
+                MouseEventKind::Down(MouseButton::Left)
+                    | MouseEventKind::Drag(MouseButton::Left)
+                    | MouseEventKind::Up(MouseButton::Left)
+                    | MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+            )
+        {
+            continue;
+        }
+        tracing::trace!(kind = event_kind(&event), "input event forwarded");
+        if inputs.send(UiInput::Event(event)).is_err() {
+            tracing::debug!("input thread exiting (channel closed)");
+            return;
         }
     }
 }

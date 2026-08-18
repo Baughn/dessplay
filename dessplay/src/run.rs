@@ -1367,6 +1367,22 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 .irc_tx
                                 .try_send(crate::actors::irc::IrcCommand::Summon(absent));
                         }
+                        Some(UserAction::CopyToClipboard(text)) => {
+                            // Chat drag-selection copy. Local machine only
+                            // (arboard); over SSH this quietly degrades —
+                            // acceptable, nobody plays media remotely. A
+                            // fresh handle per copy: copies happen at
+                            // human speed and macOS pasteboard writes are
+                            // self-contained.
+                            match arboard::Clipboard::new()
+                                .and_then(|mut clipboard| clipboard.set_text(text))
+                            {
+                                Ok(()) => {
+                                    tracing::info!("chat selection copied to clipboard");
+                                }
+                                Err(e) => tracing::warn!("clipboard copy failed: {e}"),
+                            }
+                        }
                         Some(UserAction::SaveSettings(saved, roots)) => {
                             if let Err(e) = self.storage.save_settings(&saved) {
                                 tracing::error!("saving settings: {e}");

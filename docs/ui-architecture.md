@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-08-17
+Last updated: 2026-08-19
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -440,6 +440,21 @@ the handler hit-tests against them:
   shell freshens that clock (`advance_clock`) before dispatching each
   input event. Clicks anywhere else in the chat column still just
   focus.
+- **Chat drag-selection** (design.md, Mouse support): a left press on a
+  selectable log row arms a drag (`ChatPane::mouse_down`); drag and
+  release events then route to the chat by **grab, not position**, so
+  leaving the pane mid-drag clamps the selection instead of dropping
+  it. The selection lives in *text* coordinates (line index + display-
+  body char range) mapped through the same render-recorded rows — each
+  `RenderedChatLog` row records which chars of which line it drew, and
+  at which column — so scrolling mid-drag cannot smear it. Release
+  emits `UserAction::CopyToClipboard` (the main loop owns the `arboard`
+  handle; the UI thread stays side-effect-free) and holds the
+  reverse-video highlight for 5s: Shift-Up/Down extend it by whole
+  lines (re-copying), any other input dismisses it, and `advance_clock`
+  expires it. The `SelRange` type makes the spec's invariant
+  structural — a selection is either a char range of one line or whole
+  lines; a partial multi-line span is unrepresentable.
 - **Wheel**: scrolls the pane under the pointer **only when it is
   already focused** — the chat scrolls its log a few lines per tick,
   list panes move their cursor like Up/Down. Over an unfocused pane it
@@ -450,8 +465,10 @@ the handler hit-tests against them:
 
 The production shell enables crossterm mouse capture at setup (non-fatal
 if the terminal refuses; the adapter's `restore()` disables it on exit)
-and the input thread forwards only left-click and wheel events — capture
-also reports every motion, and each forwarded event costs a full redraw.
+and the input thread forwards only left-button events (click, selection
+drag — runs of drags coalesced to their newest point — and release) and
+wheel ticks: capture also reports every motion, and each forwarded event
+costs a full redraw.
 Tests inject `Event::Mouse` through the same `Ui::handle` as keys; the
 first `draw` must happen before a click can land (zero rects miss).
 

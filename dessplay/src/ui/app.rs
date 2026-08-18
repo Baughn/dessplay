@@ -149,6 +149,11 @@ fn log_action(action: &UserAction) {
         UserAction::Summon(absent) => {
             tracing::debug!(count = absent.len(), "user action: Summon");
         }
+        // Contents deliberately not logged: chat may hold spoilers or
+        // anything else the users consider theirs.
+        UserAction::CopyToClipboard(text) => {
+            tracing::debug!(chars = text.chars().count(), "user action: CopyToClipboard");
+        }
         UserAction::Quit => tracing::debug!("user action: Quit"),
     }
 }
@@ -437,7 +442,8 @@ impl Ui {
         let speakers = self.speaker_colors.advance(now);
         let marquee = self.advance_marquee(now);
         let spoilers = self.chat.advance_spoilers(now);
-        speakers || marquee || spoilers
+        let selection = self.chat.expire_selection(now);
+        speakers || marquee || spoilers || selection
     }
 
     /// How soon the shell should tick again: fast while a marquee pass
@@ -1030,6 +1036,30 @@ impl Ui {
         if !self.modals.is_empty() {
             return Vec::new();
         }
+        // Selection drag/release route to the in-progress chat drag
+        // wherever the pointer is — a grab — so leaving the pane
+        // mid-drag keeps selecting (clamped) instead of going dead.
+        match mouse.kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.chat.dragging() {
+                    self.chat.mouse_drag(mouse.column, mouse.row);
+                }
+                return Vec::new();
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(text) = self.chat.mouse_up(self.clock) {
+                    tracing::info!(chars = text.chars().count(), "chat selection copied");
+                    return vec![UserAction::CopyToClipboard(text)];
+                }
+                return Vec::new();
+            }
+            _ => {}
+        }
+        // Any fresh press dismisses a held selection highlight, even
+        // when it lands outside the chat (same rule as unrelated keys).
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.chat.clear_selection();
+        }
         let position = Position::new(mouse.column, mouse.row);
         let target = [
             (self.panes.chat, Focus::Chat),
@@ -1050,8 +1080,12 @@ impl Ui {
                 // user saw regardless of focus or centering policy.
                 match target {
                     // Chat has no row selection; a click there drives the
-                    // spoiler reveal state machine (and focuses, below).
-                    Focus::Chat => self.chat.click(mouse.column, mouse.row, self.clock),
+                    // spoiler reveal state machine (and focuses, below) —
+                    // and arms a potential selection drag.
+                    Focus::Chat => {
+                        self.chat.click(mouse.column, mouse.row, self.clock);
+                        self.chat.mouse_down(mouse.column, mouse.row);
+                    }
                     Focus::Series => self.series.click(mouse.column, mouse.row),
                     Focus::Users => self.users.click(mouse.column, mouse.row),
                     Focus::Playlist => self.playlist.click(mouse.column, mouse.row),
@@ -1092,6 +1126,27 @@ impl Ui {
         // Mouse events route by position, not focus.
         if let Event::Mouse(mouse) = &ev {
             return self.handle_mouse(*mouse);
+        }
+        // A held chat drag-selection owns Shift-Up/Down (extend by one
+        // whole line, re-copy); any other key dismisses the highlight
+        // and then does its normal job. Deliberately no copy binding —
+        // the release already copied.
+        if let Event::Keyboard(KeyEvent { code, modifiers }) = &ev {
+            let extend = match code {
+                Key::Up if *modifiers == KeyModifiers::SHIFT => Some(true),
+                Key::Down if *modifiers == KeyModifiers::SHIFT => Some(false),
+                _ => None,
+            };
+            match extend {
+                Some(up) if self.chat.selection_held() => {
+                    tracing::debug!(up, "user action: extend chat selection");
+                    return match self.chat.extend_selection(up, self.clock) {
+                        Some(text) => vec![UserAction::CopyToClipboard(text)],
+                        None => Vec::new(),
+                    };
+                }
+                _ => self.chat.clear_selection(),
+            }
         }
         // Globals first.
         if let Event::Keyboard(KeyEvent {
@@ -4478,5 +4533,72 @@ mod tests {
         );
         assert_eq!(pasted_file_path("no-such-file.mkv"), None);
         assert_eq!(pasted_file_path(""), None);
+    }
+
+    // ---- Chat drag-selection hold timer (design.md, Mouse support) ----
+
+    /// Whether the buffer cell at (x, y) renders reversed — the
+    /// selection highlight.
+    fn cell_reversed(buffer: &tuirealm::ratatui::buffer::Buffer, x: u16, y: u16) -> bool {
+        buffer[(x, y)]
+            .modifier
+            .contains(tuirealm::ratatui::style::Modifier::REVERSED)
+    }
+
+    /// The held highlight expires SELECTION_TTL_MS (5s) after the
+    /// release: the expiry tick reports a repaint, the reverse-video
+    /// cells disappear, and Shift-Down has nothing left to extend. The
+    /// clipboard copy itself happened on release and is untouched.
+    #[test]
+    fn held_selection_highlight_expires_after_its_ttl() {
+        let mut state = CrdtState::new();
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: SharedTimestamp(1_000),
+            sender: dessplay_core::types::UserId::new("amu"),
+            text: "hello world".into(),
+        });
+        let mut ui = ui_with_view(StateView::default());
+        ui.apply_snapshot(UiSnapshot {
+            view: std::sync::Arc::new(state.view()),
+            now: 10_000,
+            shared_now: 10_000,
+            ..UiSnapshot::default()
+        });
+        // First draw records the log geometry. Body starts past the
+        // border (1) and the "HH:MM amu: " prefix (11): 'w' of "world"
+        // sits at column 18, body row 1.
+        render_test_buffer(&mut ui);
+        let mouse = |kind, column| {
+            Event::Mouse(MouseEvent {
+                kind,
+                modifiers: KeyModifiers::NONE,
+                column,
+                row: 1,
+            })
+        };
+        ui.handle(mouse(MouseEventKind::Down(MouseButton::Left), 18));
+        ui.handle(mouse(MouseEventKind::Drag(MouseButton::Left), 22));
+        assert_eq!(
+            ui.handle(mouse(MouseEventKind::Up(MouseButton::Left), 22)),
+            vec![UserAction::CopyToClipboard("world".into())]
+        );
+        let buffer = render_test_buffer(&mut ui);
+        assert!(cell_reversed(&buffer, 18, 1), "held selection highlights");
+        assert!(!cell_reversed(&buffer, 12, 1), "unselected text does not");
+
+        // One millisecond short of the TTL: nothing changes.
+        assert!(!ui.advance_clock(14_999));
+        // Crossing it wants a repaint, and the highlight is gone.
+        assert!(ui.advance_clock(15_000), "expiry wants a repaint");
+        let buffer = render_test_buffer(&mut ui);
+        assert!(!cell_reversed(&buffer, 18, 1), "highlight expired");
+        assert!(
+            ui.handle(Event::Keyboard(KeyEvent {
+                code: Key::Down,
+                modifiers: KeyModifiers::SHIFT,
+            }))
+            .is_empty(),
+            "an expired selection cannot be extended"
+        );
     }
 }
