@@ -2482,6 +2482,20 @@ impl Actor {
                 self.scan_walking = false;
                 self.reconcile_scan_roots(vanished_roots, online_roots, stale)
                     .await;
+                // A cache hit bearing an unmet resolve's *hash* re-resolves
+                // it below — hash-first resolution finds the copy whatever
+                // its name. This is what adopts copies under a reactivated
+                // (vanished-then-returned) root: their retained rows never
+                // pass through the hashing path's by-hash adoption.
+                let mut arrived: HashMap<Ed2kHash, String> = hits
+                    .iter()
+                    .filter(|file| !self.rechecks.contains_key(&file.hash))
+                    .filter_map(|file| {
+                        self.wanted
+                            .get(&file.hash)
+                            .map(|name| (file.hash, name.clone()))
+                    })
+                    .collect();
                 // Cache hits are known immediately.
                 if !hits.is_empty() {
                     let _ = self
@@ -2500,18 +2514,14 @@ impl Actor {
                 // still being written resolves HashMismatch and the
                 // quiescence watch (#26) picks it up from there — so skip
                 // files already under watch.
-                let arrived: Vec<(Ed2kHash, String)> = self
-                    .scan_worklist
-                    .iter()
-                    .filter_map(|item| {
-                        self.wanted
-                            .iter()
-                            .find(|(hash, name)| {
-                                *name == &item.filename && !self.rechecks.contains_key(hash)
-                            })
-                            .map(|(hash, name)| (*hash, name.clone()))
-                    })
-                    .collect();
+                arrived.extend(self.scan_worklist.iter().filter_map(|item| {
+                    self.wanted
+                        .iter()
+                        .find(|(hash, name)| {
+                            *name == &item.filename && !self.rechecks.contains_key(hash)
+                        })
+                        .map(|(hash, name)| (*hash, name.clone()))
+                }));
                 for (hash, filename) in arrived {
                     tracing::info!(
                         file = %hash,
@@ -3496,11 +3506,15 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Find a local copy of `filename` under `roots`, verified against
-/// `expected`. Candidates are checked in root order (the first root is
-/// the download target, most likely to be current). A candidate whose
-/// (mtime, size) match a cache row is trusted without re-reading;
-/// anything else is hashed and reported back for caching.
+/// Find a local copy of `expected`, hash-first (design.md File
+/// Matching): any live index row bearing the expected root is a viable
+/// copy, whatever its name. Only when the index has no live match does
+/// the exact-`filename` search run — the freshly-arrived-file fast
+/// path, and the only on-demand hashing resolution does. Name
+/// candidates are checked in root order (the first root is the download
+/// target, most likely to be current); one whose (mtime, size) match a
+/// cache row is trusted without re-reading, anything else is hashed and
+/// reported back for caching.
 fn resolve_with_cache(
     filename: &str,
     expected: Ed2kHash,
@@ -3510,9 +3524,23 @@ fn resolve_with_cache(
 ) -> (Resolution, Vec<(PathBuf, i64, Ed2kFileHash)>) {
     let mut fresh = Vec::new();
     let mut mismatch = None;
-    // A completed download is hash-named in the cache dir; check it by
-    // hash first (the filename search below can never match it). A
-    // content-addressed hit is the strongest possible verification.
+    // A row is only evidence while the disk still agrees with it; a
+    // stale or vanished row is skipped, never speculatively re-hashed —
+    // the scan owns re-hashing, and will re-adopt via the wanted set.
+    for (path, (cached_mtime, hash)) in cache {
+        if hash.root != expected {
+            continue;
+        }
+        let Ok(metadata) = std::fs::metadata(path) else {
+            continue;
+        };
+        if mtime_millis(&metadata) == Some(*cached_mtime) && metadata.len() == hash.size_bytes {
+            return (Resolution::Verified(path.clone()), fresh);
+        }
+    }
+    // A completed download is hash-named in the cache dir; check the
+    // path directly — it works even when the index has no row for it.
+    // A content-addressed hit is the strongest possible verification.
     if let Some(candidate) = cache_candidate
         && let Some(root) = candidate_root(&candidate, cache, &mut fresh)
         && root == expected
@@ -4070,6 +4098,62 @@ mod tests {
         );
         assert_eq!(resolution, Resolution::Verified(path));
         assert_eq!(fresh.len(), 1, "the re-hash must be reported for caching");
+    }
+
+    /// Regression (2026-08-18, Dagger's rename): a local copy whose name
+    /// differs from the entry's (underscores swapped for spaces) but is
+    /// already in the index must resolve by hash — matching is hash-first
+    /// (design.md File Matching), the name is not the key — and without
+    /// re-hashing.
+    #[test]
+    fn an_indexed_copy_under_a_different_name_resolves_by_hash() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"the movie".as_slice();
+        let path = write(root.path(), "Nanoha The Movie 1st.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let expected = hashed.root;
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        let cache = HashMap::from([(path.clone(), (mtime, hashed))]);
+
+        let (resolution, fresh) = resolve_with_cache(
+            "Nanoha_The_Movie_1st.mkv",
+            expected,
+            &[root.path().to_path_buf()],
+            &cache,
+            None,
+        );
+        assert_eq!(resolution, Resolution::Verified(path));
+        assert!(fresh.is_empty(), "an indexed copy must not re-hash");
+    }
+
+    /// A by-hash index row is only evidence while the disk still agrees:
+    /// a stale row (mtime moved on) or a vanished file must neither
+    /// produce a Verified copy nor trigger a speculative re-hash — the
+    /// scan owns re-hashing (design.md File Matching).
+    #[test]
+    fn a_stale_or_vanished_index_row_is_not_a_by_hash_match() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"the movie".as_slice();
+        let stale = write(root.path(), "renamed.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let expected = hashed.root;
+        let gone = root.path().join("deleted.mkv");
+        let cache = HashMap::from([
+            // Right root, wrong mtime: stale.
+            (stale, (-1, hashed.clone())),
+            // Right root, no file behind it: vanished.
+            (gone, (0, hashed)),
+        ]);
+
+        let (resolution, fresh) = resolve_with_cache(
+            "Nanoha_The_Movie_1st.mkv",
+            expected,
+            &[root.path().to_path_buf()],
+            &cache,
+            None,
+        );
+        assert_eq!(resolution, Resolution::NotFound);
+        assert!(fresh.is_empty(), "resolution must not hash on a hunch");
     }
 
     // ---- the eviction rule.
@@ -4923,6 +5007,82 @@ mod tests {
         let check = Storage::open(&db_path).unwrap();
         assert_eq!(check.library_paths().unwrap().len(), 2);
         assert_eq!(check.library_roots().unwrap()[0].vanished_at, None);
+    }
+
+    /// Regression (2026-08-18): an entry that resolved NotFound while its
+    /// copy sat under a vanished root must be adopted when the root
+    /// returns — by hash, even though the copy's filename differs from
+    /// the entry's. The returning rows reactivate as scan cache hits and
+    /// so never pass through the hashing path's by-hash adoption; the
+    /// walk has to re-resolve them itself (design.md File Matching,
+    /// step 3).
+    #[tokio::test]
+    async fn reactivated_root_readopts_a_wanted_hash_under_a_different_name() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("mount");
+        std::fs::create_dir_all(&root).unwrap();
+        let contents = b"the movie".as_slice();
+        let path = write(&root, "Nanoha The Movie 1st.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let expected = hashed.root;
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        storage.upsert_hash_cache(&path, mtime, &hashed, 1).unwrap();
+
+        // Model an unmounted dataset: tree parked, empty mountpoint left.
+        let parked = base.path().join("parked");
+        std::fs::rename(&root, &parked).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let mut rig = spawn_rig(storage, vec![root.clone()], CacheRetention::default());
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if Storage::open(&db_path)
+                    .unwrap()
+                    .library_roots()
+                    .unwrap()
+                    .iter()
+                    .any(|state| state.vanished_at.is_some())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("scan never marked the root vanished");
+
+        // With the copy offline the entry resolves NotFound (and is now
+        // wanted). The entry's filename is the underscore variant.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: expected,
+                filename: "Nanoha_The_Movie_1st.mkv".into(),
+            })
+            .await
+            .unwrap();
+        loop {
+            if let FileOutput::Resolved { resolution, .. } = next_output(&mut rig).await {
+                assert_eq!(resolution, Resolution::NotFound);
+                break;
+            }
+        }
+
+        // The dataset comes back; the rescan reactivates its rows as
+        // cache hits and must adopt the wanted copy, name or no name.
+        std::fs::remove_dir(&root).unwrap();
+        std::fs::rename(&parked, &root).unwrap();
+        rig.commands.send(FileCommand::RescanLibrary).await.unwrap();
+        loop {
+            if let FileOutput::Resolved { file, resolution } = next_output(&mut rig).await {
+                assert_eq!(file, expected);
+                assert_eq!(resolution, Resolution::Verified(path));
+                break;
+            }
+        }
     }
 
     #[tokio::test]
