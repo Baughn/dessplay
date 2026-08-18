@@ -1843,12 +1843,42 @@ the [State Sync](#state-sync-protocol) table.
 
 ### File Matching
 
-When a playlist item is added:
+A playlist entry is matched to a local file **by content hash**. The ed2k
+root is the file's identity; the filename recorded in the entry is display
+metadata and a scan-priority hint, never the match key. Any local file with
+the right hash — whatever its name, wherever it sits — is a viable copy.
 
-1. Extract base filename (e.g., "Frieren - 01.mkv")
-2. Search all media roots recursively for exact filename match
-3. If found: store local path
-4. If not found: mark as missing (red in UI)
+When a playlist item is added (or an entry re-resolves):
+
+1. **Look the entry's hash up in the library index** (`hash_cache`). Every
+   live row — media roots and the download cache alike — whose ed2k root
+   equals the entry's hash is a match: store its path, the entry is Ready.
+   Rows under a vanished root don't count (see
+   [Media Library Scanning](#media-library-scanning)); a row whose
+   `(mtime, size)` no longer agrees with the disk is stale, not evidence.
+2. **If the index holds no match**, search the media roots for a file with
+   the entry's exact basename and hash it now. This is the
+   freshly-arrived-file fast path — a copy dropped in moments ago that no
+   scan has reached — and the *only* on-demand hashing resolution ever
+   does. A name match with the wrong hash is a different encode: it goes to
+   the mismatch re-check watcher (see [Content Hash](#content-hash)), not
+   to Ready.
+3. **Otherwise: Missing** (red in UI), and the entry's hash joins the
+   **wanted set**. Whenever a hash subsequently enters the live index — a
+   scan hashes a new or changed file, a vanished root's rows reactivate, a
+   download completes — it is checked against the wanted set and the entry
+   adopts the copy on the spot, by hash, whatever the file is named.
+
+Resolution never walks the disk hashing candidates: the index is expected
+to already exist (the scanner builds and maintains it ahead of demand),
+and a copy the index hasn't absorbed yet is picked up by step 3 when the
+scan reaches it. The basename search in step 2 exists only to close the
+gap between "the file just appeared" and "the next scan pass" — it is an
+optimization, and missing it is never load-bearing.
+
+*Implementation note:* this requires the index to answer by-hash lookups
+(`hash_cache` is keyed by path; a reverse map or SQL index on the root
+serves step 1 and the wanted-set check in step 3).
 
 The adder fills in the entry's `size_bytes` and `duration_millis` (they have
 the file, so both are cheap to read). Size lets downloaders compute chunk
@@ -1878,9 +1908,10 @@ would leak forever. Orphans **older than a week by mtime** are deleted at
 startup — matching the "in-flight downloads don't survive restarts"
 contract — while anything more recent is left alone (it may still be in
 flight or wanted). Resolution
-then finds a cached download **by hash** (it checks `<cache>/<hash>`
-directly), because the cache is hash-named and the media-root *filename*
-search can never match it. Two **runtime guards** cover deletions that
+then finds a cached download like any other local copy — by hash, through
+the index (see [File Matching](#file-matching)); the cache being
+hash-named additionally lets `<cache>/<hash>` be checked directly, with no
+index row needed. Two **runtime guards** cover deletions that
 happen mid-session rather than between runs: a player load failure
 (file gone under us) and a serve-time absence (a peer asks for a file we no
 longer hold) both drop the local copy, prune its bookkeeping, and flip the
