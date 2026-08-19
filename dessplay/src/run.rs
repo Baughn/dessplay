@@ -982,6 +982,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         suggestion: None,
         advisor: crate::advisor::Advisor::with_rules(),
         commentary,
+        clipboard: None,
     };
     let end = session.run().await;
 
@@ -1181,6 +1182,14 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     /// ticks, the persistent commentator, and the Anthropic calls whose
     /// results become marquee writes.
     pub commentary: crate::commentary::CommentaryEngine,
+    /// System clipboard handle, created on first copy and held for the
+    /// rest of the session. X11 clipboards are ownership-based: the
+    /// contents live only as long as the owning `Clipboard` exists, so
+    /// dropping this right after `set_text` loses the copy on desktops
+    /// without a clipboard manager (e.g. stock XFCE). `None` until the
+    /// first copy, and reset to `None` on a failed write so a dead
+    /// connection doesn't wedge every later copy.
+    pub clipboard: Option<arboard::Clipboard>,
 }
 
 impl<F: crate::player::PlayerFactory> SessionLoop<F> {
@@ -1370,17 +1379,29 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         Some(UserAction::CopyToClipboard(text)) => {
                             // Chat drag-selection copy. Local machine only
                             // (arboard); over SSH this quietly degrades —
-                            // acceptable, nobody plays media remotely. A
-                            // fresh handle per copy: copies happen at
-                            // human speed and macOS pasteboard writes are
-                            // self-contained.
-                            match arboard::Clipboard::new()
-                                .and_then(|mut clipboard| clipboard.set_text(text))
-                            {
+                            // acceptable, nobody plays media remotely. The
+                            // handle is lazily created and then held in
+                            // `self.clipboard` for the session: on X11 the
+                            // contents die with their owner, so a per-copy
+                            // handle only works where a clipboard manager
+                            // happens to claim them in time.
+                            let result = match &mut self.clipboard {
+                                Some(clipboard) => clipboard.set_text(text),
+                                none => arboard::Clipboard::new().and_then(|clipboard| {
+                                    none.insert(clipboard).set_text(text)
+                                }),
+                            };
+                            match result {
                                 Ok(()) => {
                                     tracing::info!("chat selection copied to clipboard");
                                 }
-                                Err(e) => tracing::warn!("clipboard copy failed: {e}"),
+                                Err(e) => {
+                                    // Discard the handle: if the write failed
+                                    // its connection may be dead, and a fresh
+                                    // one next time can recover.
+                                    self.clipboard = None;
+                                    tracing::warn!("clipboard copy failed: {e}");
+                                }
                             }
                         }
                         Some(UserAction::SaveSettings(saved, roots)) => {

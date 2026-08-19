@@ -763,6 +763,7 @@ pub fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &std::path::
         suggestion: None,
         advisor: Default::default(),
         commentary: dessplay::commentary::CommentaryEngine::disabled(),
+        clipboard: None,
     };
     let task = tokio::spawn(async move { session.run().await });
     LoopRig {

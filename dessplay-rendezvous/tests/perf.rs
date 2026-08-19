@@ -223,6 +223,7 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
         suggestion: None,
         advisor: Default::default(),
         commentary: dessplay::commentary::CommentaryEngine::disabled(),
+        clipboard: None,
     };
     let loop_task = tokio::spawn(async move { session.run().await });
 
