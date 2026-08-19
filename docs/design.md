@@ -1609,7 +1609,9 @@ key equivalent, with one deliberate exception: chat text selection
 for copying (the terminal's own selection needs Shift once mouse
 capture is on, and knows nothing of panes). Releasing the button
 **copies immediately** to the system clipboard (`arboard`; local
-machine only — over SSH the copy quietly degrades). No copy key is
+machine only — over SSH the copy quietly degrades). On X11 both
+selections are written — CLIPBOARD for Ctrl-V and PRIMARY for
+middle-click / Shift-Insert, the terminal-user reflex. No copy key is
 involved: the terminal owns Cmd-C, and Ctrl-C stays Quit. A drag
 within one message selects a char range and copies it verbatim,
 exactly as displayed (a hidden spoiler copies as its scramble —

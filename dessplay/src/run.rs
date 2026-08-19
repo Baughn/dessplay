@@ -1105,6 +1105,25 @@ fn mask_irc_chat_seeded(text: &str, sender: &UserId, seed_base: u64) -> String {
     }
 }
 
+/// Write `text` to the system clipboard. On Linux/X11 both selections
+/// are written: PRIMARY for middle-click / Shift-Insert paste (the
+/// terminal-user reflex) and CLIPBOARD for Ctrl-V. Other platforms
+/// have a single clipboard and only the `set_text` call applies.
+fn set_clipboard_text(
+    clipboard: &mut arboard::Clipboard,
+    text: String,
+) -> Result<(), arboard::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        use arboard::{LinuxClipboardKind, SetExtLinux};
+        clipboard
+            .set()
+            .clipboard(LinuxClipboardKind::Primary)
+            .text(text.as_str())?;
+    }
+    clipboard.set_text(text)
+}
+
 /// The interactive bridge loop: actors on one side, UI channels on the
 /// other. Extracted from [`run_interactive`] so it is testable without
 /// a terminal — supervision bugs ("Ctrl-C doesn't quit") live here, and
@@ -1386,11 +1405,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // handle only works where a clipboard manager
                             // happens to claim them in time.
                             let result = match &mut self.clipboard {
-                                Some(clipboard) => clipboard.set_text(text),
-                                none => arboard::Clipboard::new().and_then(|clipboard| {
-                                    none.insert(clipboard).set_text(text)
-                                }),
-                            };
+                                Some(clipboard) => Ok(clipboard),
+                                none => arboard::Clipboard::new()
+                                    .map(|clipboard| none.insert(clipboard)),
+                            }
+                            .and_then(|clipboard| set_clipboard_text(clipboard, text));
                             match result {
                                 Ok(()) => {
                                     tracing::info!("chat selection copied to clipboard");
