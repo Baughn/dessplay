@@ -4655,4 +4655,153 @@ mod tests {
             "an expired selection cannot be extended"
         );
     }
+
+    /// Regression (audit 2026-08-20): server chat compaction keeps only
+    /// the trailing `chat_keep` messages and broadcasts the shrunk log.
+    /// A selection held across that shrink kept its stale line index;
+    /// Shift-Up then indexed `lines[10]` of a 2-line log and panicked
+    /// the UI thread (no catch_unwind — the whole TUI exited). The held
+    /// selection is keyed by message identity now: Shift-Up after the
+    /// shrink must not panic, and must extend from the surviving
+    /// selected message — never from a line that no longer exists.
+    #[test]
+    fn shift_up_on_a_selection_held_across_a_chat_compaction_does_not_panic() {
+        let chat_view = |from: u64| {
+            let mut state = CrdtState::new();
+            for i in from..=12 {
+                state.append_chat(dessplay_core::types::ChatMessage {
+                    timestamp: SharedTimestamp(i * 1_000),
+                    sender: dessplay_core::types::UserId::new("amu"),
+                    text: format!("message-{i:02}"),
+                });
+            }
+            state.view()
+        };
+        let snap = |view| UiSnapshot {
+            view: std::sync::Arc::new(view),
+            now: 10_000,
+            shared_now: 10_000,
+            ..UiSnapshot::default()
+        };
+        let mut ui = ui_with_view(StateView::default());
+        ui.apply_snapshot(snap(chat_view(1)));
+        // First draw records the log geometry: 12 one-row messages on
+        // body rows y=1..=12, bodies starting past "HH:MM amu: " and the
+        // border at column 12.
+        render_test_buffer(&mut ui);
+        let mouse = |kind, column, row| {
+            Event::Mouse(MouseEvent {
+                kind,
+                modifiers: KeyModifiers::NONE,
+                column,
+                row,
+            })
+        };
+        // Drag-select part of the last message.
+        ui.handle(mouse(MouseEventKind::Down(MouseButton::Left), 12, 12));
+        ui.handle(mouse(MouseEventKind::Drag(MouseButton::Left), 18, 12));
+        let copied = ui.handle(mouse(MouseEventKind::Up(MouseButton::Left), 18, 12));
+        assert!(
+            matches!(copied.as_slice(), [UserAction::CopyToClipboard(_)]),
+            "release must copy the dragged text: {copied:?}"
+        );
+        // Compaction: a snapshot whose chat holds only the trailing 2.
+        ui.apply_snapshot(snap(chat_view(11)));
+        let actions = ui.handle(Event::Keyboard(KeyEvent {
+            code: Key::Up,
+            modifiers: KeyModifiers::SHIFT,
+        }));
+        // Sane outcomes only: the selection re-anchored onto its message
+        // (the copy covers the survivors) or was dropped — never a copy
+        // of unrelated lines, never a panic.
+        match actions.as_slice() {
+            [UserAction::CopyToClipboard(text)] => {
+                assert!(
+                    text.contains("message-12") && text.contains("message-11"),
+                    "extension must cover the selected message and its \
+                     surviving neighbour: {text:?}"
+                );
+            }
+            [] => {}
+            other => panic!("unexpected actions: {other:?}"),
+        }
+    }
+
+    /// Regression (audit 2026-08-20): the merged log is not append-only
+    /// — a line sorting *before* the selection (a saturated local ring
+    /// evicting an entry, a system line older than recent chat) shifts
+    /// every later index down, and a positionally-held selection then
+    /// highlighted and re-copied a neighbouring message the user never
+    /// selected. The highlight must follow the selected message's
+    /// identity across the rebuild, and Shift-Down must extend from it.
+    #[test]
+    fn held_selection_follows_its_message_when_the_merged_log_shifts() {
+        let mut state = CrdtState::new();
+        for (i, text) in ["alpha", "bravo", "charlie"].iter().enumerate() {
+            state.append_chat(dessplay_core::types::ChatMessage {
+                timestamp: SharedTimestamp((i as u64 + 5) * 1_000),
+                sender: dessplay_core::types::UserId::new("amu"),
+                text: (*text).into(),
+            });
+        }
+        let view = state.view();
+        let snap = || UiSnapshot {
+            view: std::sync::Arc::new(view.clone()),
+            now: 10_000,
+            shared_now: 10_000,
+            ..UiSnapshot::default()
+        };
+        let mut ui = ui_with_view(StateView::default());
+        ui.apply_snapshot(snap());
+        render_test_buffer(&mut ui);
+        let mouse = |kind, column, row| {
+            Event::Mouse(MouseEvent {
+                kind,
+                modifiers: KeyModifiers::NONE,
+                column,
+                row,
+            })
+        };
+        // Select all of "bravo" (body row y=2, body chars at column 12).
+        ui.handle(mouse(MouseEventKind::Down(MouseButton::Left), 12, 2));
+        ui.handle(mouse(MouseEventKind::Drag(MouseButton::Left), 16, 2));
+        assert_eq!(
+            ui.handle(mouse(MouseEventKind::Up(MouseButton::Left), 16, 2)),
+            vec![UserAction::CopyToClipboard("bravo".into())]
+        );
+        // Shift the merged log under the held selection: a system line
+        // older than every chat message sorts to the top on the next
+        // rebuild, moving every chat index down by one.
+        ui.log_system_line(1_000, "the system speaks".into());
+        ui.apply_snapshot(snap());
+        // Rows now: y=1 system, y=2 alpha, y=3 bravo, y=4 charlie.
+        let buffer = render_test_buffer(&mut ui);
+        assert!(
+            cell_reversed(&buffer, 12, 3),
+            "the highlight must follow bravo to its new row"
+        );
+        assert!(
+            !cell_reversed(&buffer, 12, 2),
+            "alpha was never selected and must not highlight"
+        );
+        // Shift-Down extends from bravo: bravo + charlie, never alpha.
+        let actions = ui.handle(Event::Keyboard(KeyEvent {
+            code: Key::Down,
+            modifiers: KeyModifiers::SHIFT,
+        }));
+        match actions.as_slice() {
+            [UserAction::CopyToClipboard(text)] => {
+                assert!(
+                    text.contains("bravo") && text.contains("charlie"),
+                    "extension must cover the selected message: {text:?}"
+                );
+                assert!(
+                    !text.contains("alpha") && !text.contains("system"),
+                    "extension must not copy lines the user never \
+                     selected: {text:?}"
+                );
+            }
+            other => panic!("Shift-Down must extend the selection: {other:?}"),
+        }
+    }
 }

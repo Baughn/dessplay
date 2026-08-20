@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 820e7c5b9fa0303efe36e88b5644588300aa9896c36d30a755c36d26f785c396 # shrinks to (initial, idx) = ([ChatLine { time: "12:00", sender: "a", text: "xy", system: false, subtitle: false, separator: false, action: false, irc: false, millis: 6 }, ChatLine { time: "12:00", sender: "a", text: "xxx", system: false, subtitle: false, separator: true, action: false, irc: false, millis: 5 }, ChatLine { time: "12:00", sender: "a", text: "xy", system: false, subtitle: false, separator: true, action: false, irc: false, millis: 3 }, ChatLine { time: "12:00", sender: "a", text: "x", system: false, subtitle: false, separator: false, action: false, irc: false, millis: 5 }], 3), replacement = [ChatLine { time: "12:00", sender: "b", text: "xxy", system: false, subtitle: false, separator: false, action: false, irc: false, millis: 2 }, ChatLine { time: "12:00", sender: "b", text: "yy", system: false, subtitle: false, separator: false, action: false, irc: false, millis: 5 }], up = true

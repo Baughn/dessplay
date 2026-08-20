@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -454,7 +454,14 @@ the handler hit-tests against them:
   lines (re-copying), any other input dismisses it, and `advance_clock`
   expires it. The `SelRange` type makes the spec's invariant
   structural — a selection is either a char range of one line or whole
-  lines; a partial multi-line span is unrepresentable.
+  lines; a partial multi-line span is unrepresentable. The *held*
+  highlight is keyed by message identity (millis + sender + text hash,
+  the `SpoilerKey` triple) and re-resolved against the current log at
+  each use: the merged log is rebuilt per snapshot and both shrinks
+  (chat compaction) and shifts (saturated local rings, day
+  separators), so an identity-keyed hold follows its messages across
+  rebuilds — or drops when they are gone — where a positional one
+  would retarget or index out of bounds.
 - **Wheel**: scrolls the pane under the pointer **only when it is
   already focused** — the chat scrolls its log a few lines per tick,
   list panes move their cursor like Up/Down. Over an unfocused pane it

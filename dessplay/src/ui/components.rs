@@ -108,15 +108,57 @@ pub(crate) struct SpoilerKey {
 
 impl SpoilerKey {
     fn new(millis: u64, sender: &str, index: usize, message_text: &str) -> Self {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        message_text.hash(&mut hasher);
         Self {
             millis,
             sender: sender.to_string(),
             index,
-            text_hash: hasher.finish(),
+            text_hash: text_hash(message_text),
         }
+    }
+}
+
+/// The message-text hash both identity keys ([`SpoilerKey`],
+/// [`LineKey`]) embed. Keying only — never a seed for anything
+/// user-visible.
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Identity of one chat line, position-free: the same
+/// (millis, sender, text-hash) triple [`SpoilerKey`] is built on,
+/// minus the run index — line-level, not run-level. Keys the *held*
+/// drag-selection, so a log rebuild (every snapshot rebuilds
+/// [`ChatPane::lines`] from scratch, and the merged log both shrinks —
+/// server chat compaction — and shifts — saturated local rings, fresh
+/// day separators) re-resolves the selection onto the same messages
+/// instead of whatever now sits at the old indices.
+#[derive(Clone, PartialEq, Debug)]
+struct LineKey {
+    millis: u64,
+    sender: String,
+    text_hash: u64,
+}
+
+impl LineKey {
+    fn of(line: &ChatLine) -> Self {
+        Self {
+            millis: line.millis,
+            sender: line.sender.clone(),
+            text_hash: text_hash(&line.text),
+        }
+    }
+
+    /// Whether `line` is the message this key identifies. Separators are
+    /// never messages (their text is a render-time date label), so they
+    /// never match.
+    fn matches(&self, line: &ChatLine) -> bool {
+        !line.separator
+            && line.millis == self.millis
+            && line.sender == self.sender
+            && text_hash(&line.text) == self.text_hash
     }
 }
 
@@ -165,15 +207,17 @@ struct SelPoint {
     ceil: usize,
 }
 
-/// What a selection covers. The spec's invariant is structural: a
-/// selection is *either* a char range within one line *or* whole lines
-/// — a partial multi-line span is unrepresentable.
+/// What a selection covers, in positional indices into the *current*
+/// line list. The spec's invariant is structural: a selection is
+/// *either* a char range within one line *or* whole lines — a partial
+/// multi-line span is unrepresentable.
 ///
-/// Indices are into the *current* line list; a log rebuild (a new
-/// message inserting a fresh day separator) can shift them during the
-/// short hold window. Harmless by construction: the highlight and the
-/// copy read the same current list, so what is highlighted is always
-/// exactly what copies.
+/// Positions are only ever computed and consumed against the same list:
+/// an in-flight drag reads the render-recorded rows, and a *held*
+/// selection is stored identity-keyed ([`HeldRange`]) and resolved to
+/// this form at each use. A log rebuild during the hold window
+/// therefore cannot smear the selection — it re-resolves onto the same
+/// messages, or drops when they are gone.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum SelRange {
     /// Part of a single line: a char range of its display body.
@@ -188,17 +232,42 @@ enum SelRange {
     Lines { anchor: usize, focus: usize },
 }
 
+/// A held selection, keyed by message *identity* rather than position:
+/// `set_lines` replaces the whole log at snapshot rate (~10 Hz during
+/// playback) and the merged log shrinks and shifts (chat compaction,
+/// saturated local rings, day separators), so a positional range held
+/// for the 5 s window would silently retarget — or index out of
+/// bounds. [`ChatPane::resolve_held`] maps this back to a positional
+/// [`SelRange`] at each use (highlight, extend), yielding `None` when
+/// an identified message has left the log.
+#[derive(Clone, PartialEq, Debug)]
+enum HeldRange {
+    /// Part of a single line: a char range of its display body.
+    Partial {
+        line: LineKey,
+        start: usize,
+        end: usize,
+    },
+    /// Whole lines, inclusive between the two ends (see
+    /// [`SelRange::Lines`]).
+    Lines { anchor: LineKey, focus: LineKey },
+}
+
 /// Drag-selection state machine: press → drag → release copies & holds.
 enum Selection {
     /// Button down on log text; `focus` stays `None` until the pointer
     /// moves, so a plain click never selects (or touches the clipboard).
+    /// Positional (render-recorded rows *are* per-frame positions), and
+    /// safe so: every consumer reads it through `.get()`-guarded paths
+    /// within milliseconds of the recording frame.
     Dragging {
         anchor: SelPoint,
         focus: Option<SelPoint>,
     },
     /// Released: the copy has happened, the highlight lingers until
     /// `expires_at` (merged-clock millis) or the next unrelated input.
-    Held { range: SelRange, expires_at: u64 },
+    /// Identity-keyed — the 5 s hold spans many log rebuilds.
+    Held { range: HeldRange, expires_at: u64 },
 }
 
 /// One visual row of the drawn chat log: its clickable spoiler ranges
@@ -553,6 +622,10 @@ impl ChatPane {
         self.selection = None;
         let range = range?;
         let text = self.copy_text(range)?;
+        // Re-key positional → identity for the hold: the log is rebuilt
+        // out from under us at snapshot rate, and identity is what lets
+        // the highlight follow its messages across rebuilds.
+        let range = self.hold_range(range)?;
         self.selection = Some(Selection::Held {
             range,
             expires_at: now_millis + SELECTION_TTL_MS,
@@ -576,13 +649,22 @@ impl ChatPane {
         let Some(Selection::Held { range, .. }) = &self.selection else {
             return None;
         };
-        let (anchor, focus) = match *range {
+        // Identity → current positions. The log may have been rebuilt
+        // any number of times since the release; when a selected
+        // message is gone (compaction, ring eviction), there is nothing
+        // to extend — drop the stale highlight rather than guess.
+        let Some(resolved) = self.resolve_held(range) else {
+            self.selection = None;
+            return None;
+        };
+        let (anchor, focus) = match resolved {
             SelRange::Partial { line, .. } => (line, line),
             SelRange::Lines { anchor, focus } => (anchor, focus),
         };
         let focus = self.step_line(focus, up).unwrap_or(focus);
         let range = SelRange::Lines { anchor, focus };
         let text = self.copy_text(range)?;
+        let range = self.hold_range(range)?;
         self.selection = Some(Selection::Held {
             range,
             expires_at: now_millis + SELECTION_TTL_MS,
@@ -591,12 +673,59 @@ impl ChatPane {
     }
 
     /// The nearest non-separator line index strictly beyond `from` in
-    /// the given direction, if any.
+    /// the given direction, if any. `from` is clamped into the list —
+    /// callers pass freshly resolved indices, but no selection path may
+    /// index `lines` on faith (belt and braces).
     fn step_line(&self, from: usize, up: bool) -> Option<usize> {
         if up {
-            (0..from).rev().find(|&i| !self.lines[i].separator)
+            (0..from.min(self.lines.len()))
+                .rev()
+                .find(|&i| !self.lines[i].separator)
         } else {
-            (from + 1..self.lines.len()).find(|&i| !self.lines[i].separator)
+            (from.saturating_add(1)..self.lines.len()).find(|&i| !self.lines[i].separator)
+        }
+    }
+
+    /// The current index of the line `key` identifies, if it is still
+    /// in the log. Linear over the merged log (bounded: synced
+    /// `chat_keep` plus three 100-entry rings), and only ever run while
+    /// a selection is held.
+    fn line_index(&self, key: &LineKey) -> Option<usize> {
+        self.lines.iter().position(|line| key.matches(line))
+    }
+
+    /// Positional → identity, keying `range` by the messages currently
+    /// at its indices. `None` when an index is out of bounds (a drag
+    /// recorded against a log that shrank before release — nothing
+    /// sane to hold).
+    fn hold_range(&self, range: SelRange) -> Option<HeldRange> {
+        match range {
+            SelRange::Partial { line, start, end } => Some(HeldRange::Partial {
+                line: LineKey::of(self.lines.get(line)?),
+                start,
+                end,
+            }),
+            SelRange::Lines { anchor, focus } => Some(HeldRange::Lines {
+                anchor: LineKey::of(self.lines.get(anchor)?),
+                focus: LineKey::of(self.lines.get(focus)?),
+            }),
+        }
+    }
+
+    /// Identity → positional, against the *current* log. `None` when
+    /// any identified message has left it — the caller treats that as
+    /// "the selection is gone".
+    fn resolve_held(&self, range: &HeldRange) -> Option<SelRange> {
+        match range {
+            HeldRange::Partial { line, start, end } => Some(SelRange::Partial {
+                line: self.line_index(line)?,
+                start: *start,
+                end: *end,
+            }),
+            HeldRange::Lines { anchor, focus } => Some(SelRange::Lines {
+                anchor: self.line_index(anchor)?,
+                focus: self.line_index(focus)?,
+            }),
         }
     }
 
@@ -617,10 +746,12 @@ impl ChatPane {
     }
 
     /// The range the current selection covers (in-flight drag or held),
-    /// if it covers anything at all.
+    /// in current-log positions, if it covers anything at all. A held
+    /// range whose messages have left the log resolves to `None` — the
+    /// highlight simply stops drawing.
     fn selection_range(&self) -> Option<SelRange> {
         match self.selection.as_ref()? {
-            Selection::Held { range, .. } => Some(*range),
+            Selection::Held { range, .. } => self.resolve_held(range),
             Selection::Dragging { anchor, focus } => {
                 let focus = focus.as_ref()?;
                 if anchor.line == focus.line {
@@ -3951,6 +4082,87 @@ mod chat_spoiler_tests {
         ));
         // Nothing hidden left.
         assert!(!pane.reveal_newest_visible());
+    }
+}
+
+#[cfg(test)]
+mod chat_selection_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_line() -> impl Strategy<Value = ChatLine> {
+        (0u64..8, "[ab]", "[xy]{1,3}", any::<bool>()).prop_map(
+            |(millis, sender, text, separator)| ChatLine {
+                time: "12:00".into(),
+                sender,
+                text,
+                system: false,
+                subtitle: false,
+                separator,
+                action: false,
+                irc: false,
+                millis,
+            },
+        )
+    }
+
+    /// An initial log plus the index of a non-separator line to select.
+    fn arb_log_and_selection() -> impl Strategy<Value = (Vec<ChatLine>, usize)> {
+        proptest::collection::vec(arb_line(), 1..8).prop_flat_map(|lines| {
+            let len = lines.len();
+            (Just(lines), 0..len).prop_map(|(mut lines, idx)| {
+                lines[idx].separator = false;
+                (lines, idx)
+            })
+        })
+    }
+
+    proptest! {
+        /// Regression (audit 2026-08-20): the log is rebuilt from
+        /// scratch on every snapshot and is neither append-only nor
+        /// monotonic in length — an arbitrary `set_lines` can land
+        /// between the release and the Shift-Up/Down. Extending must
+        /// never panic, and must either follow the selected message's
+        /// identity (highlighting and copying from *it*) or drop the
+        /// selection when the message is gone.
+        #[test]
+        fn extend_after_arbitrary_set_lines_never_panics_and_follows_identity(
+            (initial, idx) in arb_log_and_selection(),
+            replacement in proptest::collection::vec(arb_line(), 0..8),
+            up in any::<bool>(),
+        ) {
+            let mut pane = ChatPane::default();
+            pane.set_lines(initial.clone());
+            // The drag anchors on line `idx` exactly as `point_at`
+            // would produce it: its first char.
+            pane.selection = Some(Selection::Dragging {
+                anchor: SelPoint { line: idx, floor: 0, ceil: 1 },
+                focus: Some(SelPoint { line: idx, floor: 0, ceil: 1 }),
+            });
+            prop_assert!(pane.mouse_up(0).is_some(), "release must copy");
+            pane.set_lines(replacement.clone());
+            let key = LineKey::of(&initial[idx]);
+            // Must not panic, whatever the replacement log looks like.
+            let copied = pane.extend_selection(up, 0);
+            if replacement.iter().any(|line| key.matches(line)) {
+                // The selected message survived the rebuild: the
+                // extension must anchor on *it* — never a neighbour.
+                prop_assert!(copied.is_some(), "extension must copy");
+                let Some(SelRange::Lines { anchor, .. }) = pane.selection_range() else {
+                    return Err(TestCaseError::fail("extension must hold whole lines"));
+                };
+                prop_assert!(
+                    key.matches(&pane.lines[anchor]),
+                    "the highlight must anchor on the selected message"
+                );
+            } else {
+                // Gone: the selection is dropped, nothing is copied.
+                prop_assert!(copied.is_none(), "nothing sane to extend");
+                prop_assert!(!pane.selection_held(), "stale hold must drop");
+            }
+        }
     }
 }
 
