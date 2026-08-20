@@ -35,6 +35,9 @@ unicode-width = { workspace = true }
 image = { workspace = true }
 ab_glyph = { workspace = true }
 strsim = { workspace = true }
+# ListGroupsCache's input fingerprint (same non-cryptographic hasher
+# choice as core's FranchiseCache — SipHash showed up in profiling).
+rustc-hash = { workspace = true }
 chrono = { workspace = true }
 arboard = { workspace = true }
 # Nyaa browse import: nyaa.si RSS search (blocking GET on the

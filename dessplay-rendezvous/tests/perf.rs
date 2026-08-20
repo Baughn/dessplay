@@ -32,10 +32,14 @@
 //!
 //! The "playback load" is modelled by injecting `SetPlaybackPosition`
 //! mutations at a high rate: each one drives the exact
-//! `StateChanged -> snapshot -> apply_snapshot -> franchises()` chain a
+//! `StateChanged -> snapshot -> apply_snapshot -> refresh_series` chain a
 //! real position tick does, and the rate stands in for "several users
 //! playing at once" (which the bug needs to manifest). A large seeded
-//! AniDB metadata library gives `franchises()` realistic work.
+//! AniDB metadata library gives the franchise grouping realistic work,
+//! and a seeded List (entries + advertised files) does the same for
+//! `props::list_groups` — the derivation behind the Series pane's
+//! *default* mode, memoized (`props::ListGroupsCache`) for the same
+//! reason `franchises()` sits behind `FranchiseCache`.
 
 mod common;
 
@@ -54,7 +58,10 @@ use dessplay::storage::Storage;
 use dessplay::ui::app::Ui;
 use dessplay::ui::msg::UserAction;
 use dessplay::ui::shell::{UiInput, run_ui_loop};
-use dessplay_core::types::{AniDbMetadata, AniDbSeriesId, Ed2kHash, MetadataSource, UserId};
+use dessplay_core::types::{
+    AniDbMetadata, AniDbSeriesId, Ed2kHash, FileAvailability, ListEntryId, ListStatus,
+    MetadataSource, SeriesListEntry, UserId,
+};
 use tokio::sync::mpsc;
 use tuirealm::ratatui::layout::Size;
 use tuirealm::terminal::TestTerminalAdapter;
@@ -182,14 +189,61 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
         .expect("sync gone");
         while handle.events.try_recv().is_ok() {}
     }
+    // Seed The List too: the Series pane *defaults* to List mode, so
+    // every snapshot derives `props::list_groups` — O(held files ×
+    // entries) when computed fresh — not the franchise grouping. One
+    // entry per four metadata files (each linked to its series), and
+    // every file advertised Ready, so both the entry walk and the
+    // held-file walk have realistic work. Files past the entry range
+    // resolve to nothing and pay the full three-scan miss, the
+    // derivation's worst case.
+    let entry_count = series_count / 4;
+    for i in 0..entry_count {
+        sync.send(SyncCommand::Mutate(Box::new(Mutation::PutListEntry {
+            id: ListEntryId(u128::from(i) + 1),
+            entry: SeriesListEntry {
+                name: format!("Series {i}"),
+                nero_name: None,
+                genre: None,
+                notes: Vec::new(),
+                recommender: None,
+                status: ListStatus::Active,
+                status_note: None,
+                source: None,
+                watchers: Default::default(),
+                anidb_series_id: Some(AniDbSeriesId(i + 1)),
+                local_aliases: Default::default(),
+                manual_files: Default::default(),
+                anidb_unavailable: false,
+            },
+        })))
+        .await
+        .expect("sync gone");
+        while handle.events.try_recv().is_ok() {}
+    }
+    for i in 0..series_count {
+        sync.send(SyncCommand::Mutate(Box::new(
+            Mutation::SetFileAvailability {
+                file: meta_hash(i),
+                availability: FileAvailability::Ready,
+            },
+        )))
+        .await
+        .expect("sync gone");
+        while handle.events.try_recv().is_ok() {}
+    }
     let want = series_count as usize;
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         while handle.events.try_recv().is_ok() {}
-        if view_via(&sync).await.anidb_metadata.len() >= want {
+        let view = view_via(&sync).await;
+        if view.anidb_metadata.len() >= want
+            && view.list_entries.len() >= entry_count as usize
+            && view.file_availability.len() >= want
+        {
             break;
         }
-        assert!(Instant::now() < deadline, "metadata seed never applied");
+        assert!(Instant::now() < deadline, "seed never applied");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 

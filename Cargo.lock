@@ -857,6 +857,7 @@ dependencies = [
  "rand 0.9.2",
  "rlimit",
  "rusqlite",
+ "rustc-hash",
  "rustls",
  "serde",
  "serde_json",

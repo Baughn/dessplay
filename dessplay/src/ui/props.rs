@@ -1074,7 +1074,9 @@ pub struct FranchiseRow {
 }
 
 /// Sort order for The List mode (design.md, The List: UI Integration).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// `Hash` because the sort is one of [`ListGroupsCache`]'s fingerprint
+/// inputs.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum ListSort {
     /// Watchable entries first (this week's episode out, or unwatched
     /// files held), most recently watched first within each partition.
@@ -1828,11 +1830,14 @@ fn entries_with_unwatched_files(
         .filter(|(_, availability)| !matches!(availability, FileAvailability::Missing))
         .map(|((_, hash), _)| *hash)
         .collect();
+    // One resolution index for the whole walk: resolving each held file
+    // by the scanning resolver would make this O(held × entries).
+    let index = series_identity::SeriesEntryIndex::new(view);
     held.into_iter()
         .filter(|hash| !view.watched.get(hash).copied().unwrap_or(false))
         .filter(|hash| !watched_hashes.contains(hash))
         .filter(|hash| !episode_watched(hash))
-        .filter_map(|hash| series_identity::resolve_series_entry_for_file(view, hash))
+        .filter_map(|hash| index.resolve(view, hash))
         .collect()
 }
 
@@ -2025,6 +2030,97 @@ pub fn list_groups(
         .map(|(group, ..)| group)
         .filter(|group| !group.rows.is_empty())
         .collect()
+}
+
+/// Memoizes [`list_groups`] — the derivation behind the Series pane's
+/// *default* mode — exactly as [`franchise::FranchiseCache`] memoizes the
+/// franchise grouping (whose uncached rebuild was ~1/3 of normal-play
+/// CPU). Snapshots arrive at ~10 Hz during playback; the derivation is
+/// O(held files × entries) computed fresh, while position ticks change
+/// none of its inputs — so they must hit the cache. The grouping is
+/// reachable only through [`ListGroupsCache::get`], so a caller cannot
+/// read a stale grouping without the freshness check running. Guarded by
+/// the perf rig (dessplay-rendezvous/tests/perf.rs), which seeds a
+/// populated List.
+#[derive(Default)]
+pub struct ListGroupsCache {
+    /// Fingerprint of the inputs the cached grouping was built from;
+    /// `None` until the first `get`.
+    key: Option<u64>,
+    groups: Vec<ListGroup>,
+    /// Number of real recomputes; the cache-correctness tests assert
+    /// unchanged inputs (position ticks included) recompute nothing.
+    #[cfg(test)]
+    recomputes: usize,
+}
+
+impl ListGroupsCache {
+    /// The current grouping, recomputing only when an input
+    /// [`list_groups`] reads has changed since the last call.
+    pub fn get(
+        &mut self,
+        view: &StateView,
+        me: &UserId,
+        users: &[UserId],
+        sort: ListSort,
+        recency: &BTreeMap<SeriesKey, u64>,
+        watched_hashes: &BTreeSet<Ed2kHash>,
+    ) -> &[ListGroup] {
+        let key = list_inputs_fingerprint(view, me, users, sort, recency, watched_hashes);
+        if self.key != Some(key) {
+            self.key = Some(key);
+            #[cfg(test)]
+            {
+                self.recomputes += 1;
+            }
+            self.groups = list_groups(view, me, users, sort, recency, watched_hashes);
+        }
+        &self.groups
+    }
+}
+
+/// Fingerprint every input [`list_groups`] (and its helpers) reads:
+/// the List maps (`list_entries`, `list_next_ep`), `series_preference`
+/// (live commitment), the group `watched` flags, the metadata/relations
+/// maps (file→entry resolution, `SnEnn`/short-title display — the same
+/// fingerprint the franchise cache uses), which files are *held*, the
+/// local watch history (`recency` + `watched_hashes`), the user set,
+/// and the sort. Resolved values, not LWW clocks, so a no-op rewrite
+/// doesn't recompute; FxHasher for the same profiling reason as
+/// [`franchise::metadata_relations_fingerprint`].
+///
+/// `file_availability` is deliberately reduced to the *held set* (any
+/// non-Missing advert per file) before hashing: that bit is all the
+/// derivation reads, and hashing the raw values would recompute on
+/// every `Downloading` progress tick.
+fn list_inputs_fingerprint(
+    view: &StateView,
+    me: &UserId,
+    users: &[UserId],
+    sort: ListSort,
+    recency: &BTreeMap<SeriesKey, u64>,
+    watched_hashes: &BTreeSet<Ed2kHash>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = rustc_hash::FxHasher::default();
+    franchise::metadata_relations_fingerprint(view).hash(&mut hasher);
+    view.list_entries.hash(&mut hasher);
+    view.list_next_ep.hash(&mut hasher);
+    view.series_preference.hash(&mut hasher);
+    view.watched.hash(&mut hasher);
+    let held: BTreeSet<Ed2kHash> = view
+        .file_availability
+        .iter()
+        .filter(|(_, availability)| !matches!(availability, FileAvailability::Missing))
+        .map(|((_, hash), _)| *hash)
+        .collect();
+    held.hash(&mut hasher);
+    recency.hash(&mut hasher);
+    watched_hashes.hash(&mut hasher);
+    me.hash(&mut hasher);
+    users.hash(&mut hasher);
+    sort.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]
@@ -3394,6 +3490,274 @@ mod tests {
                 .into_iter()
                 .collect()
         );
+    }
+
+    // ---- ListGroupsCache ---------------------------------------------
+
+    /// Cache fixture: three linked Watching-tier entries, all committed
+    /// by kim so they share one group; a held unwatched file resolves to
+    /// entry 1 ("Zeta Bright" — bright, floats in Recency, sinks
+    /// alphabetically), the other two dim. Enough structure that every
+    /// invalidation input below visibly changes the derived groups.
+    fn cache_state() -> CrdtState {
+        let mut state = CrdtState::new();
+        for (id, name) in [(1, "Zeta Bright"), (2, "Alpha Other"), (3, "Middle Show")] {
+            let mut entry = list_entry(name, ListStatus::Active);
+            entry.anidb_series_id = Some(AniDbSeriesId(id as u32));
+            state.put_list_entry(A, ts(id), ListEntryId(id as u128), entry);
+        }
+        for (t, id) in [(11, 1), (12, 2), (13, 3)] {
+            commit(&mut state, t, "kim", id);
+        }
+        state.set_anidb_metadata(
+            A,
+            ts(4),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "Zeta Bright".into(),
+                series_id: Some(AniDbSeriesId(1)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        state.set_file_availability(
+            A,
+            ts(5),
+            UserId::new("kim"),
+            Ed2kHash([1; 16]),
+            FileAvailability::Ready,
+        );
+        state
+    }
+
+    /// A cache hit returns exactly what a fresh compute would, and the
+    /// non-inputs — position ticks, download progress on an
+    /// already-held file — do not recompute. This is the load the cache
+    /// exists for (~10 Hz snapshots during playback); the CPU-side guard
+    /// is the perf rig.
+    #[test]
+    fn list_groups_cache_hits_match_fresh_compute_and_ignore_ticks() {
+        let mut state = cache_state();
+        let me = UserId::new("kim");
+        let users = [UserId::new("kim")];
+        let mut cache = ListGroupsCache::default();
+
+        let fresh = groups_of(&state, ListSort::Recency);
+        let via_cache = |cache: &mut ListGroupsCache, state: &CrdtState| {
+            cache
+                .get(
+                    &state.view(),
+                    &UserId::new("baughn"),
+                    &[
+                        UserId::new("baughn"),
+                        UserId::new("kim"),
+                        UserId::new("nero"),
+                    ],
+                    ListSort::Recency,
+                    &BTreeMap::new(),
+                    &BTreeSet::new(),
+                )
+                .to_vec()
+        };
+        assert_eq!(via_cache(&mut cache, &state), fresh);
+        assert_eq!(via_cache(&mut cache, &state), fresh);
+        assert_eq!(cache.recomputes, 1, "an unchanged view must not recompute");
+
+        // A position tick — the ~10 Hz snapshot driver — is not an input.
+        state.set_playback_position(
+            A,
+            ts(100),
+            me.clone(),
+            dessplay_core::types::PlaybackPosition {
+                position_millis: 90_000,
+                timestamp: ts(100),
+                file: Ed2kHash([1; 16]),
+            },
+        );
+        // Nor is download *progress* on a file that stays held.
+        state.set_file_availability(
+            A,
+            ts(101),
+            users[0].clone(),
+            Ed2kHash([9; 16]),
+            FileAvailability::Downloading { progress_bps: 1000 },
+        );
+        via_cache(&mut cache, &state);
+        assert_eq!(cache.recomputes, 2, "a new held file must recompute");
+        state.set_file_availability(
+            A,
+            ts(102),
+            users[0].clone(),
+            Ed2kHash([9; 16]),
+            FileAvailability::Downloading { progress_bps: 2000 },
+        );
+        via_cache(&mut cache, &state);
+        assert_eq!(
+            cache.recomputes, 2,
+            "progress ticks on a held file must hit the cache"
+        );
+    }
+
+    /// Every input the derivation reads invalidates the cache, and the
+    /// recomputed groups equal a fresh compute. A stale List that shrugs
+    /// off a watched toggle would be a worse bug than the CPU burn the
+    /// cache saves.
+    #[test]
+    fn list_groups_cache_invalidates_on_each_input() {
+        let state = cache_state();
+        let me = UserId::new("baughn");
+        let users = vec![
+            UserId::new("baughn"),
+            UserId::new("kim"),
+            UserId::new("nero"),
+        ];
+
+        // Each step mutates one input; the harness asserts the cache
+        // recomputed *and* that the input was semantic (the groups
+        // changed), so a step that stops changing the output rots
+        // visibly instead of silently passing.
+        struct Step {
+            name: &'static str,
+            state: CrdtState,
+            users: Vec<UserId>,
+            sort: ListSort,
+            recency: BTreeMap<SeriesKey, u64>,
+            watched_hashes: BTreeSet<Ed2kHash>,
+        }
+        let base = |state: &CrdtState| Step {
+            name: "",
+            state: state.clone(),
+            users: users.clone(),
+            sort: ListSort::Recency,
+            recency: BTreeMap::new(),
+            watched_hashes: BTreeSet::new(),
+        };
+
+        let mut steps = Vec::new();
+        // Group watched flag flips: the held file stops counting and
+        // "Bright Show" dims.
+        let mut watched = base(&state);
+        watched.name = "watched flip";
+        watched
+            .state
+            .set_watched(A, ts(50), Ed2kHash([1; 16]), true);
+        steps.push(watched);
+        // Availability flips to Missing: same effect, different input.
+        let mut availability = base(&state);
+        availability.name = "availability flip";
+        availability.state.set_file_availability(
+            A,
+            ts(50),
+            UserId::new("kim"),
+            Ed2kHash([1; 16]),
+            FileAvailability::Missing,
+        );
+        steps.push(availability);
+        // Sort toggle reorders within groups.
+        let mut sort = base(&state);
+        sort.name = "sort toggle";
+        sort.sort = ListSort::Alphabetical;
+        steps.push(sort);
+        // A user joining (with a commitment) grows the per-user groups.
+        let mut join = base(&state);
+        join.name = "user join";
+        join.users.push(UserId::new("amu"));
+        commit(&mut join.state, 50, "amu", 2);
+        steps.push(join);
+        // Personal watch history: the same file watched only locally.
+        let mut personal = base(&state);
+        personal.name = "personal watch history";
+        personal.watched_hashes.insert(Ed2kHash([1; 16]));
+        steps.push(personal);
+        // Recency floats the more recently watched of the two dimmed
+        // rows within its partition.
+        let mut recency = base(&state);
+        recency.name = "recency";
+        recency
+            .recency
+            .insert(SeriesKey::Name("Middle Show".into()), 500);
+        steps.push(recency);
+        // An entry edit (rename) rewrites the row.
+        let mut rename = base(&state);
+        rename.name = "entry edit";
+        let mut renamed = list_entry("Renamed Show", ListStatus::Active);
+        renamed.anidb_series_id = Some(AniDbSeriesId(2));
+        rename
+            .state
+            .put_list_entry(A, ts(50), ListEntryId(2), renamed);
+        steps.push(rename);
+        // next_ep arrives: episode text + available marker.
+        let mut next_ep = base(&state);
+        next_ep.name = "next_ep";
+        next_ep.state.set_next_ep(
+            A,
+            ts(50),
+            ListEntryId(1),
+            NextEpState {
+                next_ep: Some("5".into()),
+                available: true,
+            },
+        );
+        steps.push(next_ep);
+        // Relations arrive: the curated short title takes over display.
+        let mut relations = base(&state);
+        relations.name = "series relations";
+        relations.state.set_series_relations(
+            A,
+            ts(50),
+            AniDbSeriesId(1),
+            SeriesRelations {
+                title: "Zeta Bright".into(),
+                year: None,
+                episode_count: None,
+                relations: Default::default(),
+                short_titles: vec!["Brights".into()],
+            },
+        );
+        steps.push(relations);
+
+        for step in steps {
+            let mut cache = ListGroupsCache::default();
+            let before = cache
+                .get(
+                    &state.view(),
+                    &me,
+                    &users,
+                    ListSort::Recency,
+                    &BTreeMap::new(),
+                    &BTreeSet::new(),
+                )
+                .to_vec();
+            let after = cache
+                .get(
+                    &step.state.view(),
+                    &me,
+                    &step.users,
+                    step.sort,
+                    &step.recency,
+                    &step.watched_hashes,
+                )
+                .to_vec();
+            assert_eq!(cache.recomputes, 2, "{}: must invalidate", step.name);
+            assert_ne!(
+                after, before,
+                "{}: fixture change must be semantic",
+                step.name
+            );
+            let fresh = list_groups(
+                &step.state.view(),
+                &me,
+                &step.users,
+                step.sort,
+                &step.recency,
+                &step.watched_hashes,
+            );
+            assert_eq!(
+                after, fresh,
+                "{}: cached result must equal fresh",
+                step.name
+            );
+        }
     }
 
     /// SnEnn display: a linked entry with a numeric `next_ep` renders as

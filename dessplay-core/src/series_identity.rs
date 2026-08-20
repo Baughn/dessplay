@@ -52,6 +52,66 @@ pub fn resolve_series_entry_for_file(view: &StateView, file: Ed2kHash) -> Option
         .map(|(id, _)| *id)
 }
 
+/// A prebuilt index over [`StateView::list_entries`] for resolving many
+/// files in one pass: the same claims, the same order, as
+/// [`resolve_series_entry_for_file`] (the `index_resolution_matches_the_scan`
+/// proptest pins the equivalence), but a bulk caller pays O(entries) once
+/// to build it instead of up to three linear entry scans per file. Built
+/// per call from a view — it holds borrows and no freshness logic, so a
+/// stale index is unrepresentable rather than merely avoided.
+pub struct SeriesEntryIndex<'a> {
+    /// First (lowest-id) entry linked to each AniDB series.
+    by_series: std::collections::BTreeMap<AniDbSeriesId, ListEntryId>,
+    /// First entry claiming each file via `manual_files`.
+    by_manual: std::collections::BTreeMap<Ed2kHash, ListEntryId>,
+    /// First entry claiming each name via `name` *or* `local_aliases`
+    /// (within one entry both map to the same id, so folding them into
+    /// one map preserves the scan's first-entry-wins order).
+    by_name: std::collections::BTreeMap<&'a str, ListEntryId>,
+}
+
+impl<'a> SeriesEntryIndex<'a> {
+    /// Index `view.list_entries` (one pass, ascending id order — the
+    /// same order the scan visits, so every "first match wins" tie
+    /// breaks identically).
+    pub fn new(view: &'a StateView) -> Self {
+        let mut by_series = std::collections::BTreeMap::new();
+        let mut by_manual = std::collections::BTreeMap::new();
+        let mut by_name = std::collections::BTreeMap::new();
+        for (id, entry) in &view.list_entries {
+            if let Some(series) = entry.anidb_series_id {
+                by_series.entry(series).or_insert(*id);
+            }
+            for file in &entry.manual_files {
+                by_manual.entry(*file).or_insert(*id);
+            }
+            by_name.entry(entry.name.as_str()).or_insert(*id);
+            for alias in &entry.local_aliases {
+                by_name.entry(alias.as_str()).or_insert(*id);
+            }
+        }
+        Self {
+            by_series,
+            by_manual,
+            by_name,
+        }
+    }
+
+    /// [`resolve_series_entry_for_file`], through the index.
+    pub fn resolve(&self, view: &StateView, file: Ed2kHash) -> Option<ListEntryId> {
+        let metadata = view.anidb_metadata.get(&file).and_then(|m| m.as_ref());
+        if let Some(series) = metadata.and_then(|m| m.series_id)
+            && let Some(id) = self.by_series.get(&series)
+        {
+            return Some(*id);
+        }
+        if let Some(id) = self.by_manual.get(&file) {
+            return Some(*id);
+        }
+        self.by_name.get(metadata?.series_name.as_str()).copied()
+    }
+}
+
 /// Build a fresh List entry for a file that nothing claims yet, seeded
 /// from its metadata -- linked (with `anidb_series_id`) when the file has
 /// one, else unlinked with the derived name seeded as the sole
@@ -319,6 +379,62 @@ mod tests {
                 derive_entry_id(None, &name),
                 "linked and unlinked ids use separate hash domains",
             );
+        }
+
+        /// [`SeriesEntryIndex`] resolves exactly like the per-file scan
+        /// for every file, over arbitrary entry mixtures. The tiny
+        /// alphabets are deliberate: they force shared names, shared
+        /// series links, and competing manual claims, so the scan's
+        /// first-entry-wins tie-breaks are exercised, not dodged.
+        #[test]
+        fn index_resolution_matches_the_scan(
+            entries in proptest::collection::vec(
+                (
+                    proptest::option::of(0u32..4),                       // anidb link
+                    "[a-d]{1,2}",                                        // name
+                    proptest::collection::btree_set("[a-d]{1,2}", 0..3), // aliases
+                    proptest::collection::btree_set(0u8..6, 0..3),       // manual files
+                ),
+                0..6,
+            ),
+            files in proptest::collection::vec(
+                (
+                    0u8..6,                                              // hash
+                    proptest::option::of((proptest::option::of(0u32..4), "[a-d]{1,2}")),
+                ),
+                0..8,
+            ),
+        ) {
+            let mut state = CrdtState::new();
+            for (i, (series, name, aliases, manual)) in entries.into_iter().enumerate() {
+                let mut e = entry(&name);
+                e.anidb_series_id = series.map(AniDbSeriesId);
+                e.local_aliases = aliases;
+                e.manual_files = manual.into_iter().map(hash).collect();
+                state.put_list_entry(A, ts(i as u64 + 1), ListEntryId(i as u128), e);
+            }
+            for (i, (file, metadata)) in files.into_iter().enumerate() {
+                state.set_anidb_metadata(
+                    A,
+                    ts(100 + i as u64),
+                    hash(file),
+                    metadata.map(|(series, name)| AniDbMetadata {
+                        source: MetadataSource::FilenameDerived,
+                        series_name: name,
+                        series_id: series.map(AniDbSeriesId),
+                        episode_number: None,
+                    }),
+                );
+            }
+            let view = state.view();
+            let index = SeriesEntryIndex::new(&view);
+            for file in (0u8..6).map(hash) {
+                prop_assert_eq!(
+                    index.resolve(&view, file),
+                    resolve_series_entry_for_file(&view, file),
+                    "index and scan disagree on {:?}", file,
+                );
+            }
         }
     }
 }

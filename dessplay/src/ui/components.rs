@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use dessplay_core::spoiler;
+use dessplay_core::types::ListEntryId;
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, NoUserEvent};
@@ -2176,6 +2177,19 @@ enum ListNavRow {
     Entry(usize, usize),
 }
 
+/// What the List cursor was aimed at, by identity — a group heading, or
+/// an entry id within a heading (an entry can appear in several per-user
+/// groups, so the heading disambiguates which occurrence). Captured
+/// before a `set_groups` rebuild and resolved against the new groups, so
+/// the ~10 Hz snapshot churn (peers connecting/committing insert whole
+/// groups; availability flips resort Recency) can't silently retarget
+/// `n`/`e`/`l`/Enter — which write destructive, synced state — onto a
+/// neighbouring row.
+enum ListAnchor {
+    Heading(String),
+    Entry { heading: String, id: ListEntryId },
+}
+
 /// Series pane: Recent / All / The List.
 #[derive(Default)]
 pub struct SeriesPane {
@@ -2237,15 +2251,79 @@ impl SeriesPane {
     }
 
     /// Replace franchise rows (Recent / All modes).
+    ///
+    /// No identity re-anchoring here, unlike [`Self::set_groups`]: the
+    /// franchise order only moves on rare events (a watch completing, a
+    /// filter edit — which resets the cursor anyway — or metadata
+    /// arriving), and the sole row action is the non-destructive
+    /// `BrowseFranchise`, so a shifted row can't mis-aim a synced write.
     pub fn set_franchises(&mut self, rows: Vec<FranchiseRow>) {
         self.franchises = rows;
         self.clamp();
     }
 
-    /// Replace List groups.
-    pub fn set_groups(&mut self, groups: Vec<ListGroup>) {
-        self.groups = groups;
-        self.clamp();
+    /// Replace List groups, keeping the cursor aimed at the same thing.
+    ///
+    /// The groups are rebuilt per snapshot and their order is volatile by
+    /// design (per-user groups come and go with peers; Recency resorts on
+    /// availability/watched flips), while `n`/`e`/`l`/Enter resolve
+    /// positionally through [`Self::nav_rows`] — so the cursor re-anchors
+    /// by identity ([`ListAnchor`]) rather than riding its bare row
+    /// index, and falls back to the plain clamp only when the anchored
+    /// row disappeared. Identical groups (the memoized derivation's
+    /// common case) return without touching anything.
+    pub fn set_groups(&mut self, groups: &[ListGroup]) {
+        if self.groups.as_slice() == groups {
+            return;
+        }
+        let anchor = self
+            .nav_rows()
+            .get(self.cursor.index())
+            .map(|row| match row {
+                ListNavRow::Heading(g) => ListAnchor::Heading(self.groups[*g].heading.clone()),
+                ListNavRow::Entry(g, e) => ListAnchor::Entry {
+                    heading: self.groups[*g].heading.clone(),
+                    id: self.groups[*g].rows[*e].id,
+                },
+            });
+        self.groups = groups.to_vec();
+        match anchor.and_then(|anchor| self.anchor_position(&anchor)) {
+            Some(position) => self.cursor.set(position),
+            None => self.clamp(),
+        }
+    }
+
+    /// Where `anchor` sits in the current nav space: an exact
+    /// (heading, id) match first — an entry can appear in several
+    /// per-user groups — then the id under any heading, then the bare
+    /// heading. `None` when it vanished entirely.
+    fn anchor_position(&self, anchor: &ListAnchor) -> Option<usize> {
+        let rows = self.nav_rows();
+        let find = |pred: &dyn Fn(&ListNavRow) -> bool| rows.iter().position(pred);
+        match anchor {
+            ListAnchor::Heading(heading) => find(&|row| {
+                matches!(row, ListNavRow::Heading(g) if self.groups[*g].heading == *heading)
+            }),
+            ListAnchor::Entry { heading, id } => find(&|row| {
+                matches!(row, ListNavRow::Entry(g, e)
+                    if self.groups[*g].rows[*e].id == *id
+                        && self.groups[*g].heading == *heading)
+            })
+            .or_else(|| {
+                find(&|row| matches!(row, ListNavRow::Entry(g, e) if self.groups[*g].rows[*e].id == *id))
+            })
+            .or_else(|| {
+                find(&|row| {
+                    matches!(row, ListNavRow::Heading(g) if self.groups[*g].heading == *heading)
+                })
+            }),
+        }
+    }
+
+    /// Test-only: the cursor's position in the current nav space.
+    #[cfg(test)]
+    fn cursor_index(&self) -> usize {
+        self.cursor.index()
     }
 
     fn expanded(&self, group: &ListGroup) -> bool {
@@ -3187,7 +3265,7 @@ mod series_pane_tests {
     fn list_enter_opens_the_entry_linked_or_not() {
         let mut p = SeriesPane::default();
         assert_eq!(p.mode(), SeriesMode::TheList);
-        p.set_groups(vec![ListGroup {
+        p.set_groups(&[ListGroup {
             heading: "Watching".to_string(),
             rows: vec![
                 list_row(1, Some(dessplay_core::types::AniDbSeriesId(7))),
@@ -3215,7 +3293,7 @@ mod series_pane_tests {
     fn n_opens_the_nero_name_editor_on_entries_only() {
         let mut p = SeriesPane::default();
         assert_eq!(p.mode(), SeriesMode::TheList);
-        p.set_groups(vec![ListGroup {
+        p.set_groups(&[ListGroup {
             heading: "Watching".to_string(),
             rows: vec![list_row(1, None)],
             collapsed: false,
@@ -3226,6 +3304,108 @@ mod series_pane_tests {
         assert_eq!(
             p.on(&key(Key::Char('n'))),
             Some(Msg::EditNeroName(dessplay_core::types::ListEntryId(1)))
+        );
+    }
+
+    fn group(heading: &str, ids: &[u128]) -> ListGroup {
+        ListGroup {
+            heading: heading.to_string(),
+            rows: ids.iter().map(|id| list_row(*id, None)).collect(),
+            collapsed: false,
+        }
+    }
+
+    /// A snapshot that inserts a whole group above the cursor (a peer
+    /// connecting, aging out of known-offline, or newly committing does
+    /// exactly this) must not shift the cursor onto a neighbouring row:
+    /// `n`/`e`/`l`/Enter all write through the cursor, so it re-anchors
+    /// on the entry's identity, not its old row index. Regression for
+    /// the 2026-08-20 review's mis-aimed-keystroke finding.
+    #[test]
+    fn set_groups_reanchors_the_cursor_on_the_same_entry() {
+        let mut p = SeriesPane::default();
+        p.set_groups(&[group("Watching — kim", &[1, 2])]);
+        p.on(&key(Key::Down));
+        p.on(&key(Key::Down)); // heading -> entry 1 -> entry 2
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseListEntry(dessplay_core::types::ListEntryId(2)))
+        );
+        // A freshly committed peer inserts a whole group above.
+        p.set_groups(&[
+            group("Watching — amu", &[9]),
+            group("Watching — kim", &[1, 2]),
+        ]);
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseListEntry(dessplay_core::types::ListEntryId(2)))
+        );
+    }
+
+    /// The same re-anchoring for a cursor sitting on a group heading:
+    /// it follows the heading, not the row index.
+    #[test]
+    fn set_groups_reanchors_a_heading_by_identity() {
+        let mut p = SeriesPane::default();
+        p.set_groups(&[group("Watching — kim", &[1])]);
+        // Cursor starts on the kim heading.
+        p.set_groups(&[group("Watching — amu", &[9]), group("Watching — kim", &[1])]);
+        // Still on the kim heading: Down+Enter opens kim's entry, not
+        // amu's.
+        p.on(&key(Key::Down));
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseListEntry(dessplay_core::types::ListEntryId(1)))
+        );
+    }
+
+    /// An entry can appear in several per-user groups; the anchor
+    /// prefers the occurrence in the same group over the first
+    /// occurrence anywhere.
+    #[test]
+    fn set_groups_prefers_the_same_group_for_a_shared_entry() {
+        let mut p = SeriesPane::default();
+        p.set_groups(&[
+            group("Watching — kim", &[1]),
+            group("Watching — nero", &[1]),
+        ]);
+        for _ in 0..3 {
+            p.on(&key(Key::Down));
+        }
+        // nav: [kim, E1, nero, E1] — cursor on nero's copy.
+        assert_eq!(p.cursor_index(), 3);
+        p.set_groups(&[
+            group("Watching — kim", &[7, 1]),
+            group("Watching — nero", &[1]),
+        ]);
+        // nav: [kim, E7, E1, nero, E1] — still nero's copy.
+        assert_eq!(p.cursor_index(), 4);
+    }
+
+    /// When the anchored entry vanished, the cursor falls back to its
+    /// group's heading; when that is gone too, to the plain clamp — in
+    /// range, no panic, still aimable either way.
+    #[test]
+    fn set_groups_falls_back_when_the_anchored_entry_disappears() {
+        let mut p = SeriesPane::default();
+        p.set_groups(&[group("Watching", &[1, 2, 3])]);
+        for _ in 0..3 {
+            p.on(&key(Key::Down)); // onto entry 3
+        }
+        // Entry gone, heading still there: land on the heading.
+        p.set_groups(&[group("Watching", &[1])]);
+        assert_eq!(p.cursor_index(), 0);
+        p.on(&key(Key::Down));
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseListEntry(dessplay_core::types::ListEntryId(1)))
+        );
+        // Heading gone too: clamp into the new range, still aimable.
+        p.set_groups(&[group("Planned", &[9])]);
+        assert_eq!(p.cursor_index(), 1);
+        assert_eq!(
+            p.on(&key(Key::Enter)),
+            Some(Msg::BrowseListEntry(dessplay_core::types::ListEntryId(9)))
         );
     }
 
@@ -3408,7 +3588,7 @@ mod series_pane_tests {
     #[test]
     fn the_list_snapshot_recency() {
         let mut p = SeriesPane::default();
-        p.set_groups(fixture_groups(ListSort::Recency));
+        p.set_groups(&fixture_groups(ListSort::Recency));
         insta::assert_snapshot!(render_list_pane(&mut p));
     }
 
@@ -3416,7 +3596,7 @@ mod series_pane_tests {
     fn the_list_snapshot_alphabetical() {
         let mut p = SeriesPane::default();
         p.set_list_sort(ListSort::Alphabetical);
-        p.set_groups(fixture_groups(ListSort::Alphabetical));
+        p.set_groups(&fixture_groups(ListSort::Alphabetical));
         insta::assert_snapshot!(render_list_pane(&mut p));
     }
 }

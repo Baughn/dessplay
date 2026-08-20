@@ -341,6 +341,9 @@ pub struct Ui {
     /// playback-position snapshot (was ~⅓ of normal-play CPU). Reachable
     /// only via `get`, so it can never be read without its freshness check.
     franchise_cache: franchise::FranchiseCache,
+    /// The same memoization for The List's grouping — the Series pane's
+    /// *default* mode, O(held files × entries) computed fresh.
+    list_groups_cache: props::ListGroupsCache,
     settings: Settings,
     media_roots: Vec<PathBuf>,
     /// True when `me` is a runtime `--username` override that differs from
@@ -406,6 +409,7 @@ impl Ui {
             irc_log: Vec::new(),
             snapshot: UiSnapshot::default(),
             franchise_cache: franchise::FranchiseCache::default(),
+            list_groups_cache: props::ListGroupsCache::default(),
             settings: settings.clone(),
             media_roots: media_roots.clone(),
             identity_locked,
@@ -919,7 +923,11 @@ impl Ui {
                             .map(|user| user.username.clone()),
                     )
                     .collect();
-                let groups = props::list_groups(
+                // Through the cache: position ticks (and anything else
+                // that leaves the derivation's inputs alone) reuse the
+                // grouping, and `set_groups` skips identical groups
+                // outright.
+                let groups = self.list_groups_cache.get(
                     &self.snapshot.view,
                     &self.me,
                     &users,

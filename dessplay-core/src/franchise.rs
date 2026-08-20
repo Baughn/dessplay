@@ -254,7 +254,7 @@ impl FranchiseCache {
     /// have changed since the last call. Position ticks and other unrelated
     /// state churn leave the fingerprint unchanged and reuse the grouping.
     pub fn get(&mut self, view: &StateView) -> &[Franchise] {
-        let key = inputs_fingerprint(view);
+        let key = metadata_relations_fingerprint(view);
         if self.key != Some(key) {
             self.key = Some(key);
             #[cfg(any(test, feature = "test-support"))]
@@ -267,11 +267,15 @@ impl FranchiseCache {
     }
 }
 
-/// Fingerprint the two maps [`franchises`] reads. Hashes the *resolved*
-/// register values, not the LWW clocks, so a no-op rewrite (same value,
-/// newer timestamp) does not force a recompute. Iteration is by key, so
-/// the fingerprint is order-stable.
-fn inputs_fingerprint(view: &StateView) -> u64 {
+/// Fingerprint the two maps [`franchises`] reads — `anidb_metadata` and
+/// `series_relations`. Hashes the *resolved* register values, not the LWW
+/// clocks, so a no-op rewrite (same value, newer timestamp) does not
+/// force a recompute. Iteration is by key, so the fingerprint is
+/// order-stable. Public because the List-mode cache
+/// (`props::ListGroupsCache` in the client) folds it into its own key:
+/// its derivation reads the same two maps, and one definition of "did
+/// they change" serves both.
+pub fn metadata_relations_fingerprint(view: &StateView) -> u64 {
     use std::hash::{Hash, Hasher};
     // FxHasher (non-cryptographic) rather than the std SipHash default: the
     // fingerprint covers the whole metadata+relations maps every UI snapshot,

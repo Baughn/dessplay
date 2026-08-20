@@ -317,8 +317,20 @@ snapshot data to component props:
   *watched* franchises (recency-keyed), newest first; a `/`-initiated filter
   string (held in the component, applied in `props::franchise_rows`) narrows
   by title and lifts the watched-only default. snapshot.list_entries +
-  snapshot.list_next_ep -> grouped List entries
-  (List mode)
+  snapshot.list_next_ep + series preferences/availability/watched flags +
+  local watch history -> grouped List entries (List mode, the default).
+  Both groupings are memoized on the inputs they actually read
+  (`franchise::FranchiseCache`, `props::ListGroupsCache`): snapshots
+  arrive at ~10 Hz during playback and position ticks change none of
+  those inputs, so recomputing per snapshot was measurable CPU (the
+  uncached franchise rebuild was ~1/3 of normal-play CPU; the List
+  derivation is O(held files × entries)). The List group order is
+  volatile by design (per-user groups come and go with peers; Recency
+  resorts on availability/watched flips), so the pane's cursor re-anchors
+  by identity across `set_groups` rather than keeping its bare row index —
+  `n`/`e`/`l`/Enter act on what the user aimed at. Both caches are guarded
+  by the perf rig (dessplay-rendezvous/tests/perf.rs), which seeds a
+  large library *and* List.
 - **UsersPane**: snapshot.series_preferences + snapshot.manual_overrides
   + snapshot.file_availability + peer presence/roles -> colored user list,
   with departed users and seeders on separate dim lines
