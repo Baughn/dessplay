@@ -17,9 +17,15 @@
 //! the *text* of this episode's earlier comments — not the images or
 //! subtitles — so the voice changes but the conversation doesn't reset
 //! to zero. The 5% re-roll keeps threads young in expectation; because
-//! its tail is geometric, frames are capped separately — only the most
-//! recent [`RETAINED_FRAMES`] turns keep their screenshot bytes, while
-//! the text history is never trimmed.
+//! its tail is geometric, a hard cap backs it up — a thread that
+//! reaches [`MAX_THREAD_TURNS`] turns force-re-rolls on the next tick,
+//! through the same fresh-thread path the dice take. Sent history is
+//! **append-only**: a turn, once sent, is never rewritten or trimmed
+//! (the prompt cache below matches on a byte-stable prefix, so the only
+//! way to shed old turns — and their heavy frames — is to end the
+//! thread), and [`MAX_THREAD_FRAME_BYTES`] sends a turn frameless
+//! rather than let the accumulated screenshots outgrow the API's
+//! request-size cap.
 //!
 //! Requests opt into Anthropic's ephemeral prompt cache whenever the
 //! interval (jitter included) fits inside the cache's 5-minute TTL —
@@ -76,8 +82,9 @@ const MAX_TOKENS: u32 = 3000;
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Vision calls are slow; the nyaa agent's 30s would spuriously abort.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
-/// Chance per tick of re-rolling the commentator once one exists. Also
-/// the thread-length governor: expected thread ≈ 20 turns.
+/// Chance per tick of re-rolling the commentator once one exists. The
+/// geometric expectation is ≈ 20 turns, but the tail is unbounded —
+/// [`MAX_THREAD_TURNS`] is the hard governor.
 const REROLL: f64 = 0.05;
 /// Half-width of the per-comment cadence jitter.
 const JITTER: Duration = Duration::from_secs(15);
@@ -94,14 +101,36 @@ const MAX_COMMENT_CHARS: usize = 220;
 /// How long to wait for mpv to finish writing the screenshot.
 const SCREENSHOT_POLLS: u32 = 20;
 const SCREENSHOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-/// How many of a thread's most recent turns keep their screenshot
-/// bytes. Text history is never trimmed (the conversation — and the
-/// cached prefix up to the trim point — stays intact), but frames are
-/// heavy (~hundreds of KB each, re-uploaded on every tick), and the 5%
-/// re-roll's geometric tail means a voice can live for 60+ turns:
-/// without a cap that is tens of MB of base64 per request on the very
-/// uplink the health line exists to protect.
-const RETAINED_FRAMES: usize = 2;
+/// Hard cap on a thread's length, in completed turns: at the cap the
+/// next tick force-re-rolls the commentator (the same fresh-thread
+/// path the 5% dice take, comment-text seeding included). This — not a
+/// trim — is what bounds request size, because sent history must stay
+/// **append-only**: the prompt cache is strict-prefix over the request
+/// bytes, and an earlier design that stripped old turns' screenshots
+/// rewrote the cached prefix every tick, collapsing
+/// `cache_read_input_tokens` to ~0 whenever frames flowed (2026-08-20
+/// review). The arithmetic behind 10: mpv JPEG frames run ~0.3–0.8 MB
+/// (×4/3 as base64), so the top-of-thread request is ~4–11 MB — a few
+/// seconds of uplink once per ≥2-minute tick, the same order as the
+/// old two-frame trim's bodies, where the uncapped geometric tail
+/// (60+ turns) meant tens of MB. Token-wise the capped prefix is
+/// ~18K tokens (~1600/image + ~200/turn of text), re-billed at
+/// cache-read rates (10% of input price) precisely because the prefix
+/// no longer changes. And 0.95^10 ≈ 0.60, so the dice still retire
+/// ~40% of threads before the cap ever fires — the cap kills the
+/// tail, not the gimmick's feel.
+const MAX_THREAD_TURNS: usize = 10;
+/// Budget for the *total* screenshot bytes a thread may accumulate
+/// (history plus the new turn): a frame, once sent, rides every later
+/// request until the thread cap ends the thread, so the sum — not the
+/// per-frame size — is what must stay inside the API's 32 MB request
+/// cap. Two worst-case frames (the allowance the old trim gave):
+/// 15 MB raw → 20 MB base64, comfortably under the cap even in the
+/// format-surprise case [`MAX_SCREENSHOT_BYTES`] exists for; typical
+/// JPEG threads (≤ [`MAX_THREAD_TURNS`] × ~0.5 MB ≈ 5 MB) never touch
+/// it. A turn over budget goes out frameless — losing an image beats
+/// losing the comment, and beats mutating history to make room.
+const MAX_THREAD_FRAME_BYTES: u64 = 2 * MAX_SCREENSHOT_BYTES;
 /// Ceiling on screenshot bytes attached to a request. The API rejects
 /// any image whose *base64* exceeds 10MiB (observed 2026-07-26: mpv
 /// writes 16-bit PNGs for 10-bit video, ~8MB raw → 11MB base64 → HTTP
@@ -838,7 +867,17 @@ impl CommentaryEngine {
         // module docs) until the re-roll dice or a restart replaces
         // them. The episode-key machinery headers the new series and
         // resets the comment seed on its own.
-        let pick_commentator = self.thread.is_none() || self.rng.random_bool(REROLL);
+        //
+        // A thread at [`MAX_THREAD_TURNS`] force-re-rolls instead:
+        // sent history is append-only (the caching invariant), so
+        // ending the thread is the only way to shed its accumulated
+        // turns. Checked before the dice, which are simply not rolled
+        // on a capped tick.
+        let at_cap = self
+            .thread
+            .as_ref()
+            .is_some_and(|t| t.turns.len() >= MAX_THREAD_TURNS);
+        let pick_commentator = self.thread.is_none() || at_cap || self.rng.random_bool(REROLL);
         Some(TickPlan { pick_commentator })
     }
 
@@ -999,19 +1038,18 @@ impl CommentaryEngine {
                     });
                 }
                 if let Some(thread) = self.thread.as_mut() {
+                    // Append, and only ever append: the turn is stored
+                    // exactly as it went over the wire, because the next
+                    // request replays it byte-for-byte as the cached
+                    // prefix. Length is governed at plan time
+                    // ([`MAX_THREAD_TURNS`]), frame weight at send time
+                    // ([`MAX_THREAD_FRAME_BYTES`]) — never by rewriting
+                    // what the model already saw.
                     thread.turns.push(ThreadTurn {
                         user_text: outcome.user_text,
                         screenshot: outcome.screenshot,
                         assistant: outcome.raw,
                     });
-                    // Cap retained *frames*, not the thread: all text
-                    // stays (and with it the cached prefix up to the
-                    // trim point), but only the newest turns keep their
-                    // screenshot bytes — see [`RETAINED_FRAMES`].
-                    let trim = thread.turns.len().saturating_sub(RETAINED_FRAMES);
-                    for turn in &mut thread.turns[..trim] {
-                        turn.screenshot = None;
-                    }
                 }
                 self.episode_comments.push(outcome.text.clone());
                 self.sent_seq = self.sent_seq.max(outcome.seq);
@@ -1044,8 +1082,31 @@ fn run_job(
     spec: JobSpec,
     screenshot: Option<(&Path, std::time::SystemTime)>,
 ) -> Result<JobOutcome, CommentaryError> {
-    let screenshot_bytes =
-        screenshot.and_then(|(path, requested_at)| poll_screenshot(path, requested_at));
+    let screenshot_bytes = screenshot
+        .and_then(|(path, requested_at)| poll_screenshot(path, requested_at))
+        .filter(|frame| {
+            // Append-only history means this frame, once sent, rides
+            // every later request until the thread cap — so the budget
+            // is on the thread's *total* frame bytes, and an
+            // over-budget turn goes out frameless rather than either
+            // blowing the API's request cap or rewriting sent turns to
+            // make room. See [`MAX_THREAD_FRAME_BYTES`].
+            let carried: u64 = spec
+                .history
+                .iter()
+                .filter_map(|turn| turn.screenshot.as_deref())
+                .map(|bytes| bytes.len() as u64)
+                .sum();
+            let fits = carried + frame.len() as u64 <= MAX_THREAD_FRAME_BYTES;
+            if !fits {
+                tracing::debug!(
+                    carried_bytes = carried,
+                    frame_bytes = frame.len(),
+                    "thread frame budget exhausted; commenting frameless"
+                );
+            }
+            fits
+        });
     let fresh = spec.keep.is_none();
     let commentator = match spec.keep {
         Some(commentator) => commentator,
@@ -1506,20 +1567,70 @@ mod tests {
         );
     }
 
-    /// Threads keep their text forever but not their frames: only the
-    /// most recent [`RETAINED_FRAMES`] turns keep screenshot bytes, so
-    /// a long-lived commentator (the 5% re-roll's geometric tail) never
-    /// re-uploads every historical frame on every tick (2026-08-12
-    /// review — multi-MB request bodies on the uplink the health line
-    /// exists to protect).
+    /// The thread cap: at [`MAX_THREAD_TURNS`] completed turns the
+    /// next tick force-re-rolls — fresh voice, empty history, a request
+    /// body shrunk back to a single turn. Append-only history (the
+    /// caching invariant) means ending the thread is the only way to
+    /// shed its accumulated turns, so the cap is what bounds request
+    /// size where the old trim used to (and broke the cache doing it).
     #[tokio::test]
-    async fn thread_retains_only_the_most_recent_frames() {
+    async fn a_thread_at_the_cap_rerolls_into_a_fresh_thread() {
+        let fake = FakeModel::new(&["Amu"], "<Amu> hi");
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
+        // First tick picks the voice; then drive to the cap with the
+        // dice bypassed (TickPlan built directly, as the re-roll tests
+        // do) so the test pins the cap, not a seed's luck.
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        engine.spawn_job(plan, &ctx("s"), None);
+        take(&mut engine).await.unwrap();
+        for _ in 1..MAX_THREAD_TURNS {
+            engine.spawn_job(
+                TickPlan {
+                    pick_commentator: false,
+                },
+                &ctx("s"),
+                None,
+            );
+            take(&mut engine).await.unwrap();
+        }
+        let plan = engine.plan_tick(&gates("s")).unwrap();
+        assert!(plan.pick_commentator, "a thread at the cap must re-roll");
+        engine.spawn_job(plan, &ctx("s"), None);
+        take(&mut engine).await.unwrap();
+
+        let requests = fake.comment_requests.lock().unwrap();
+        assert_eq!(requests.len(), MAX_THREAD_TURNS + 1);
+        assert_eq!(
+            requests[MAX_THREAD_TURNS - 1].history.len(),
+            MAX_THREAD_TURNS - 1,
+            "the last in-thread request carried the whole thread"
+        );
+        let capped = requests.last().unwrap();
+        assert!(capped.history.is_empty(), "the capped thread is cut");
+        assert_eq!(
+            build_comment_body(capped)["messages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "the request body shrinks back to a single user turn"
+        );
+    }
+
+    /// The frame-byte budget: once a thread's accumulated screenshots
+    /// reach [`MAX_THREAD_FRAME_BYTES`], further turns go out frameless
+    /// — never by stripping frames from already-sent turns (the caching
+    /// invariant), and never by letting the request outgrow the API's
+    /// size cap.
+    #[tokio::test]
+    async fn frame_budget_sends_frameless_once_the_thread_is_heavy() {
         let dir = tempfile::tempdir().unwrap();
         let fake = FakeModel::new(&["Amu"], "<Amu> hi");
         let mut engine = engine(fake.clone(), NO_REROLL_SEED);
-        for i in 0..4 {
+        // Three worst-case frames; the budget admits exactly two.
+        for _ in 0..3 {
             let path = dir.path().join("frame.jpg");
-            std::fs::write(&path, format!("frame {i}")).unwrap();
+            std::fs::write(&path, vec![0u8; MAX_SCREENSHOT_BYTES as usize]).unwrap();
             let plan = engine.plan_tick(&gates("s")).unwrap();
             engine.spawn_job(
                 plan,
@@ -1528,36 +1639,97 @@ mod tests {
             );
             take(&mut engine).await.unwrap();
         }
-        // A fifth, frameless tick: its history is the four turns above.
-        let plan = engine.plan_tick(&gates("s")).unwrap();
-        engine.spawn_job(plan, &ctx("s"), None);
-        take(&mut engine).await.unwrap();
-
         let requests = fake.comment_requests.lock().unwrap();
-        let last = &requests[4];
-        assert_eq!(last.history.len(), 4, "text history is never trimmed");
-        let frames: Vec<bool> = last
-            .history
-            .iter()
-            .map(|turn| turn.screenshot.is_some())
-            .collect();
-        assert_eq!(
-            frames,
-            [false, false, true, true],
-            "only the most recent turns keep their frames"
+        assert!(requests[0].screenshot.is_some());
+        assert!(
+            requests[1].screenshot.is_some(),
+            "two worst-case frames fit"
         );
-        // And the rendered request carries exactly that many image
-        // blocks — the upload cap is the point.
-        let body = build_comment_body(last);
-        let images = body["messages"]
-            .as_array()
-            .unwrap()
+        assert_eq!(
+            requests[2].screenshot, None,
+            "budget spent: the turn goes out frameless"
+        );
+        assert!(
+            requests[2]
+                .history
+                .iter()
+                .all(|turn| turn.screenshot.is_some()),
+            "sent turns keep their frames — the budget never rewrites history"
+        );
+    }
+
+    /// Regression (2026-08-20 review): the old RETAINED_FRAMES trim
+    /// rewrote already-sent turns (stripping their screenshots), so
+    /// each tick changed the bytes of a prefix the previous request had
+    /// already cached. Anthropic's prompt cache is strict-prefix — past
+    /// a few turns every reachable entry diverged and the thread
+    /// re-billed at full price plus the write surcharge, exactly
+    /// inverting the documented cost model. Sent history must be
+    /// append-only: every request's rendered message array must be a
+    /// byte-equal prefix-extension of the previous request's.
+    #[tokio::test]
+    async fn consecutive_tick_bodies_extend_a_byte_stable_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = FakeModel::new(&["Amu"], "<Amu> hi");
+        let mut engine = engine(fake.clone(), NO_REROLL_SEED);
+        for i in 0..4 {
+            let path = dir.path().join("frame.jpg");
+            std::fs::write(&path, format!("frame {i}")).unwrap();
+            let plan = engine.plan_tick(&gates("s")).unwrap();
+            assert_eq!(
+                plan.pick_commentator,
+                i == 0,
+                "NO_REROLL_SEED keeps one thread after the first pick"
+            );
+            engine.spawn_job(
+                plan,
+                &ctx("s"),
+                Some((path, std::time::SystemTime::UNIX_EPOCH)),
+            );
+            take(&mut engine).await.unwrap();
+        }
+        let requests = fake.comment_requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        // Render as the wire would, minus the moving cache marker: the
+        // API matches the prefix on content, and the breakpoint riding
+        // the final block is the one legitimate per-tick difference.
+        let rendered: Vec<Vec<serde_json::Value>> = requests
+            .iter()
+            .map(|req| {
+                build_comment_body(&CommentRequest {
+                    cache: false,
+                    ..req.clone()
+                })["messages"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            })
+            .collect();
+        for (i, pair) in rendered.windows(2).enumerate() {
+            let (prev, next) = (&pair[0], &pair[1]);
+            assert_eq!(
+                next.len(),
+                prev.len() + 2,
+                "tick {} appends exactly one exchange",
+                i + 1
+            );
+            assert_eq!(
+                &next[..prev.len()],
+                &prev[..],
+                "tick {}'s rendered messages must extend tick {}'s byte-for-byte — \
+                 mutating sent history invalidates the prompt cache",
+                i + 1,
+                i
+            );
+        }
+        // Append-only means every sent frame rides along verbatim.
+        let images = rendered[3]
             .iter()
             .filter_map(|m| m["content"].as_array())
             .flatten()
             .filter(|block| block["type"] == "image")
             .count();
-        assert_eq!(images, RETAINED_FRAMES);
+        assert_eq!(images, 4, "all four frames are still in the request");
     }
 
     /// The cache flag follows the interval: on when a jittered tick

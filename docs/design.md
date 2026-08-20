@@ -1549,11 +1549,18 @@ middle slot on **every** client.
   the **text** of the current episode's earlier comments — never the
   images or subtitles behind them — so the voice changes without the
   conversation restarting from nothing. The 5% re-roll keeps threads
-  young *in expectation*, but its tail is geometric, so frames are
-  capped separately: only the most recent one or two turns keep their
-  screenshot bytes (the text history is never trimmed, so the
-  conversation — and the cached prefix up to the trim point — stays
-  intact).
+  young *in expectation*, but its tail is geometric, so a hard cap
+  backs it up: a thread that reaches ~10 turns force-re-rolls on the
+  next tick, through the same fresh-thread path the dice take (seeding
+  included). Sent history is **append-only** — a turn, once sent, is
+  never rewritten or trimmed, because the prompt cache below matches on
+  a byte-stable prefix — so the cap is what bounds the request body,
+  and a per-thread screenshot-byte budget (two worst-case frames'
+  worth) sends a turn frameless rather than let accumulated frames
+  outgrow the API's request-size cap. (An earlier design instead
+  stripped screenshots from turns older than the last two; that rewrote
+  the cached prefix every tick and silently re-billed the whole thread
+  at full price whenever frames flowed.)
 - **Caching.** When the interval (jitter included) fits inside the
   Anthropic prompt cache's 5-minute ephemeral TTL — the 2 min and
   4 min presets; the 4 min preset exists precisely to duck under
