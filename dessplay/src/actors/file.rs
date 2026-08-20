@@ -2104,26 +2104,72 @@ impl Actor {
     }
 
     /// Serve a peer the per-block hashes of a file we hold (from the
-    /// hash cache). Silently ignored if we don't have the file or its
-    /// hashes cached.
+    /// hash cache). A file the session hasn't registered is recovered
+    /// from the library index when a live, visible row backs it; a file
+    /// nothing backs answers *nothing* and retracts our stale Ready —
+    /// `CannotServe` is reserved for the identity mismatch below.
     async fn serve_block_hashes(&mut self, to: PeerId, file: Ed2kHash) {
-        let Some(path) = self.local_files.get(&file).cloned() else {
-            // A peer asked us for this file's block hashes -- so it picked
-            // us as a source, meaning we advertised it Ready -- but we
-            // don't hold it. Every Ready is backed by a servable
-            // registration before it is advertised (Phase 31), so this is
-            // a genuine inconsistency (the copy was evicted or lost since
-            // the advert): answer definitively so the requester drops us
-            // instead of re-soliciting a silent holder on every cooldown.
-            tracing::warn!(%file, %to, "asked for block hashes we don't hold; replying CannotServe");
-            let _ = self
-                .out
-                .send(FileOutput::SendPeer {
-                    to,
-                    message: Box::new(PeerMessage::CannotServe { file }),
-                })
-                .await;
-            return;
+        let path = match self.local_files.get(&file).cloned() {
+            Some(path) => path,
+            None => {
+                // A peer picked us as a source, so the group state says we
+                // advertised this file Ready. Ready is durable CRDT state
+                // while the servable set is session-scoped and rebuilt
+                // lazily — post-restart, a media-root file stays
+                // unregistered until resolved or scan-adopted, and a
+                // watched entry is never resolved at all — so "solicited
+                // but unregistered" is the normal state of a genuine
+                // holder, not an inconsistency. Consult the index by hash
+                // under the same live-and-visible evidence rule
+                // resolution uses: a hit is a real copy backing the
+                // advert — adopt it and serve.
+                let visible = self.visible_scope();
+                match live_index_match(file, &self.hash_cache, &visible).cloned() {
+                    Some(path) => {
+                        tracing::info!(%file, %to, path = %path.display(),
+                            "solicited for an unregistered file the index holds; adopting and serving");
+                        self.adopt_local_copy(file, path.clone()).await;
+                        // Reassert Ready: normally a no-op (Ready is what
+                        // got us solicited), but it heals the record if
+                        // the advert had gone stale some other way.
+                        let _ = self
+                            .out
+                            .send(FileOutput::Availability {
+                                file,
+                                availability: FileAvailability::Ready,
+                            })
+                            .await;
+                        path
+                    }
+                    None => {
+                        // Nothing on disk backs the advert. NOT
+                        // CannotServe: the requester latches that as a
+                        // permanent denial, correct only for "never under
+                        // this identity" (the hash-mismatch arm below) —
+                        // an unheld file is circumstance, and answering
+                        // CannotServe barred a merely-restarted holder
+                        // for the download's lifetime (2026-08-20
+                        // review). Answer nothing — the requester's snub
+                        // path covers the interim — and retract the stale
+                        // Ready so the CRDT stops naming us; a genuine
+                        // copy re-advertises through the ordinary
+                        // adoption channels and the requester's next
+                        // source refresh re-adds us.
+                        tracing::warn!(%file, %to,
+                            "asked for block hashes with nothing on disk to back them; retracting stale Ready");
+                        if !self.downloads.is_active(&file) {
+                            let _ = self
+                                .out
+                                .send(FileOutput::Availability {
+                                    file,
+                                    availability: FileAvailability::Missing,
+                                })
+                                .await;
+                        }
+                        return;
+                    }
+                }
+            }
         };
         // Don't advertise a file the user deleted under us: drop it and
         // flip our own availability to Missing (which re-resolves).
@@ -2342,9 +2388,11 @@ impl Actor {
     fn on_serve_stream(&mut self, peer: PeerId, file: Ed2kHash, stream: BiStream) {
         self.note_transfer_activity();
         let Some(path) = self.local_files.get(&file).cloned() else {
-            // We advertised Ready but no longer hold it — same silent
-            // "advertised but can't serve" failure as serve_block_hashes;
-            // dropping the stream is the signal.
+            // A data stream only follows a successful block-hash
+            // exchange, and serve_block_hashes registers the copy (index
+            // recovery included) before answering — so an unheld file
+            // here means the copy was lost in between. Dropping the
+            // stream is the signal; the downloader moves on.
             tracing::debug!(%peer, %file, "serve stream for a file we don't hold; dropping");
             return;
         };
@@ -3024,6 +3072,19 @@ impl Actor {
         self.hash_cache = Arc::new(cache);
     }
 
+    /// The paths resolution (and serve-time index recovery) may draw
+    /// by-hash evidence from: the current media roots, the download
+    /// cache, and the user's manual mappings (each an exact path —
+    /// `starts_with` on a file path matches only itself). An index row
+    /// outside this scope — e.g. under a root the user removed, whose
+    /// rows survive for the seven-day re-add grace — is hidden.
+    fn visible_scope(&self) -> Vec<PathBuf> {
+        let mut visible = self.media_roots.clone();
+        visible.push(self.cache_dir.clone());
+        visible.extend(self.manual.values().cloned());
+        visible
+    }
+
     async fn resolve(&mut self, file: Ed2kHash, filename: String) {
         // Manual mappings skip the matcher *and* hash verification —
         // the user explicitly chose that file (design.md).
@@ -3043,6 +3104,7 @@ impl Actor {
             tracing::info!(path = %path.display(), "manual mapping points at nothing; re-matching");
         }
         let roots = self.media_roots.clone();
+        let visible = self.visible_scope();
         let cache = Arc::clone(&self.hash_cache);
         // A completed download lives hash-named in the cache; offer it as
         // a by-hash candidate (the filename search can't find it). Never
@@ -3055,7 +3117,7 @@ impl Actor {
         tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
             let (resolution, fresh) =
-                resolve_with_cache(&filename, file, &roots, &cache, cache_candidate);
+                resolve_with_cache(&filename, file, &roots, &visible, &cache, cache_candidate);
             tracing::debug!(
                 filename,
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -3692,10 +3754,39 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// A live, visible index row bearing `expected` — the by-hash step of
+/// resolution (design.md File Matching step 1), also consulted at serve
+/// time when a solicitation names a file the session hasn't registered.
+/// "Live": the disk still agrees with the row's (mtime, size) — a stale
+/// or vanished row is not evidence, and is never speculatively re-hashed
+/// (the scan owns re-hashing). "Visible": the path sits inside `visible`
+/// — the current media roots, the download cache dir, and the
+/// manual-mapping paths. A row outside that scope is retained data, not
+/// evidence: a removed root keeps its rows through the seven-day grace
+/// for a cheap re-add, but its files are hidden the moment the root is
+/// removed (design.md Media Library Scanning; 2026-08-20 review).
+fn live_index_match<'a>(
+    expected: Ed2kHash,
+    cache: &'a HashMap<PathBuf, (i64, Ed2kFileHash)>,
+    visible: &[PathBuf],
+) -> Option<&'a PathBuf> {
+    cache.iter().find_map(|(path, (cached_mtime, hash))| {
+        if hash.root != expected || !visible.iter().any(|scope| path.starts_with(scope)) {
+            return None;
+        }
+        let metadata = std::fs::metadata(path).ok()?;
+        (mtime_millis(&metadata) == Some(*cached_mtime) && metadata.len() == hash.size_bytes)
+            .then_some(path)
+    })
+}
+
 /// Find a local copy of `expected`, hash-first (design.md File
 /// Matching): any live index row bearing the expected root is a viable
-/// copy, whatever its name. Only when the index has no live match does
-/// the exact-`filename` search run — the freshly-arrived-file fast
+/// copy, whatever its name — provided it is *visible* (see
+/// [`live_index_match`]; `visible` is the media roots plus the cache dir
+/// and manual-mapping paths, so a removed root's retained rows don't
+/// resolve). Only when the index has no live match does the
+/// exact-`filename` search run — the freshly-arrived-file fast
 /// path, and the only on-demand hashing resolution does. Name
 /// candidates are checked in root order (the first root is the download
 /// target, most likely to be current); one whose (mtime, size) match a
@@ -3705,24 +3796,14 @@ fn resolve_with_cache(
     filename: &str,
     expected: Ed2kHash,
     roots: &[PathBuf],
+    visible: &[PathBuf],
     cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>,
     cache_candidate: Option<PathBuf>,
 ) -> (Resolution, Vec<(PathBuf, i64, Ed2kFileHash)>) {
     let mut fresh = Vec::new();
     let mut mismatch = None;
-    // A row is only evidence while the disk still agrees with it; a
-    // stale or vanished row is skipped, never speculatively re-hashed —
-    // the scan owns re-hashing, and will re-adopt via the wanted set.
-    for (path, (cached_mtime, hash)) in cache {
-        if hash.root != expected {
-            continue;
-        }
-        let Ok(metadata) = std::fs::metadata(path) else {
-            continue;
-        };
-        if mtime_millis(&metadata) == Some(*cached_mtime) && metadata.len() == hash.size_bytes {
-            return (Resolution::Verified(path.clone()), fresh);
-        }
+    if let Some(path) = live_index_match(expected, cache, visible) {
+        return (Resolution::Verified(path.clone()), fresh);
     }
     // A completed download is hash-named in the cache dir; check the
     // path directly — it works even when the index has no row for it.
@@ -4172,6 +4253,7 @@ mod tests {
             "ep1.mkv",
             expected,
             &[root.path().to_path_buf()],
+            &[root.path().to_path_buf()],
             &HashMap::new(),
             None,
         );
@@ -4190,6 +4272,7 @@ mod tests {
         let (resolution, fresh) = resolve_with_cache(
             "ep1.mkv",
             expected,
+            &[root.path().to_path_buf()],
             &[root.path().to_path_buf()],
             &HashMap::new(),
             None,
@@ -4210,6 +4293,7 @@ mod tests {
             "ep1.mkv",
             expected,
             &[root.path().to_path_buf()],
+            &[root.path().to_path_buf()],
             &HashMap::new(),
             None,
         );
@@ -4225,6 +4309,7 @@ mod tests {
         let (resolution, fresh) = resolve_with_cache(
             "ep1.mkv",
             hash(0),
+            &[root.path().to_path_buf()],
             &[root.path().to_path_buf()],
             &HashMap::new(),
             None,
@@ -4253,6 +4338,7 @@ mod tests {
             "ep1.mkv",
             expected,
             &[root.path().to_path_buf()],
+            &[root.path().to_path_buf()],
             &cache,
             None,
         );
@@ -4279,6 +4365,7 @@ mod tests {
             "ep1.mkv",
             expected,
             &[root.path().to_path_buf()],
+            &[root.path().to_path_buf()],
             &cache,
             None,
         );
@@ -4304,6 +4391,7 @@ mod tests {
         let (resolution, fresh) = resolve_with_cache(
             "Nanoha_The_Movie_1st.mkv",
             expected,
+            &[root.path().to_path_buf()],
             &[root.path().to_path_buf()],
             &cache,
             None,
@@ -4335,11 +4423,128 @@ mod tests {
             "Nanoha_The_Movie_1st.mkv",
             expected,
             &[root.path().to_path_buf()],
+            &[root.path().to_path_buf()],
             &cache,
             None,
         );
         assert_eq!(resolution, Resolution::NotFound);
         assert!(fresh.is_empty(), "resolution must not hash on a hunch");
+    }
+
+    /// Regression (2026-08-20 review): an index row under a root the user
+    /// removed is not evidence — removing a root hides its files
+    /// immediately (design.md, Media Library Scanning), while the rows
+    /// survive for the seven-day grace. Before the fix the by-hash step
+    /// never consulted root scope, so a removed root's files kept
+    /// resolving Verified (and being served) for a week.
+    #[test]
+    fn a_removed_root_index_row_is_not_a_by_hash_match() {
+        let removed = tempfile::tempdir().unwrap();
+        let contents = b"an episode under a removed root".as_slice();
+        let path = write(removed.path(), "kept.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let expected = hashed.root;
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        // A live row (the disk still agrees) — but its root was removed
+        // from the runtime set, so nothing about it is visible.
+        let cache = HashMap::from([(path, (mtime, hashed))]);
+
+        let (resolution, fresh) = resolve_with_cache("kept.mkv", expected, &[], &[], &cache, None);
+        assert_eq!(
+            resolution,
+            Resolution::NotFound,
+            "a removed root's retained index row must not resolve"
+        );
+        assert!(fresh.is_empty(), "resolution must not hash on a hunch");
+    }
+
+    /// The mirror of the above: re-adding the root within the grace
+    /// window makes the retained row evidence again — the file resolves
+    /// Verified with *no* re-hash. Cheap re-adds are the whole point of
+    /// keeping the rows through the grace.
+    #[test]
+    fn a_re_added_root_index_row_resolves_by_hash_without_rehashing() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"an episode under a re-added root".as_slice();
+        let path = write(root.path(), "kept.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let expected = hashed.root;
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        let cache = HashMap::from([(path.clone(), (mtime, hashed))]);
+
+        let (resolution, fresh) = resolve_with_cache(
+            "differently-named.mkv",
+            expected,
+            &[root.path().to_path_buf()],
+            &[root.path().to_path_buf()],
+            &cache,
+            None,
+        );
+        assert_eq!(resolution, Resolution::Verified(path));
+        assert!(fresh.is_empty(), "a grace-window re-add must not re-hash");
+    }
+
+    /// Regression (2026-08-20 review), actor-level: removing a media root
+    /// must stop its files resolving — the index keeps their rows for the
+    /// seven-day grace, but *hidden* ("Removing a root … hides it
+    /// immediately", design.md Media Library Scanning). Re-adding the
+    /// root within the grace makes them resolve again from the retained
+    /// rows.
+    #[tokio::test]
+    async fn a_removed_roots_indexed_file_stops_resolving_until_re_added() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"an episode whose root gets removed".as_slice();
+        let path = write(root.path(), "ep.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        let storage = Storage::open_in_memory().unwrap();
+        storage.upsert_hash_cache(&path, mtime, &hashed, 1).unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+
+        // The user removes the root: its indexed file must stop resolving
+        // even though the row (and the file) still exist.
+        rig.commands
+            .send(FileCommand::SetMediaRoots(vec![]))
+            .await
+            .unwrap();
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hashed.root,
+                filename: "ep.mkv".into(),
+            })
+            .await
+            .unwrap();
+        let (file, resolution) = resolved_output(&mut rig).await;
+        assert_eq!(file, hashed.root);
+        assert_eq!(
+            resolution,
+            Resolution::NotFound,
+            "a removed root's file must not resolve during the grace period"
+        );
+
+        // Re-adding the root within the grace revives the retained row.
+        rig.commands
+            .send(FileCommand::SetMediaRoots(vec![root.path().to_path_buf()]))
+            .await
+            .unwrap();
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hashed.root,
+                filename: "ep.mkv".into(),
+            })
+            .await
+            .unwrap();
+        let (file, resolution) = resolved_output(&mut rig).await;
+        assert_eq!(file, hashed.root);
+        assert_eq!(
+            resolution,
+            Resolution::Verified(path),
+            "a re-added root's file must resolve from the retained rows"
+        );
     }
 
     // ---- the eviction rule.
@@ -4520,6 +4725,16 @@ mod tests {
             .await
             .expect("output timeout")
             .expect("actor gone")
+    }
+
+    /// The next `Resolved` output, skipping unrelated ones (scan and
+    /// availability events interleave freely).
+    async fn resolved_output(rig: &mut Rig) -> (Ed2kHash, Resolution) {
+        loop {
+            if let FileOutput::Resolved { file, resolution } = next_output(rig).await {
+                return (file, resolution);
+            }
+        }
     }
 
     /// Regression (2026-07-03): a full library scan reported one
@@ -5695,15 +5910,18 @@ mod tests {
         }
     }
 
-    /// Phase 31: a solicitation for a file we don't hold at all answers
-    /// `CannotServe` instead of staying silent. Sources are only ever
-    /// solicited off a Ready advert, and (post-Phase 31) every Ready is
-    /// backed by a `local_files` registration before it is advertised — so
-    /// an unheld solicitation means the copy is genuinely gone (evicted,
-    /// deleted) and the requester should drop us rather than re-solicit a
-    /// permanently silent holder on every cooldown.
+    /// Regression (2026-08-20 review): a solicitation for a file nothing
+    /// on disk backs (no registration, no live index row) answers
+    /// *nothing* — `CannotServe` is reserved for "never under this
+    /// identity" (the hash-mismatch arm), because the requester latches it
+    /// as a permanent denial, and "we don't hold it right now" is
+    /// circumstance, not identity. (Phase 31 answered CannotServe here,
+    /// which barred a merely-restarted holder for the download's
+    /// lifetime.) What the unbacked case does instead is retract the
+    /// stale Ready that got us solicited: Missing stops the CRDT naming
+    /// us a source.
     #[tokio::test]
-    async fn unheld_solicitation_answers_cannot_serve() {
+    async fn an_unheld_solicitation_retracts_the_stale_ready_not_cannot_serve() {
         let mut rig = spawn_rig(
             Storage::open_in_memory().unwrap(),
             vec![],
@@ -5717,16 +5935,79 @@ mod tests {
             })
             .await
             .unwrap();
-        match tokio::time::timeout(Duration::from_secs(1), next_output(&mut rig)).await {
-            Ok(FileOutput::SendPeer { to, message }) => {
-                assert_eq!(to, PeerId::new("peer7"));
-                match *message {
-                    PeerMessage::CannotServe { file: f } => assert_eq!(f, file),
-                    other => panic!("expected CannotServe, got: {other:?}"),
-                }
+        match next_output(&mut rig).await {
+            FileOutput::Availability {
+                file: f,
+                availability,
+            } => {
+                assert_eq!(f, file);
+                assert_eq!(availability, FileAvailability::Missing);
             }
-            Ok(other) => panic!("unexpected output: {other:?}"),
-            Err(_) => panic!("unheld solicitation went unanswered (silent bail)"),
+            FileOutput::SendPeer { message, .. } => {
+                panic!("expected silence + a Ready retraction, but sent: {message:?}")
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        // And nothing goes on the wire — the requester's snub path covers
+        // the interim until the retraction propagates.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), rig.outputs.recv())
+                .await
+                .is_err(),
+            "expected no further output"
+        );
+    }
+
+    /// Regression (2026-08-20 review): a solicitation for a file we hold
+    /// in the library but haven't *registered* this session must be
+    /// served, not refused. Ready is durable CRDT state while the
+    /// servable set is rebuilt lazily per session — the post-restart
+    /// resolve window, and watched entries are never resolved at all —
+    /// so an unregistered file with a live index row is the normal state
+    /// of a genuine holder, and answering CannotServe latched a
+    /// permanent denial on the requester. The index knows the copy:
+    /// adopt it and serve.
+    #[tokio::test]
+    async fn a_solicited_unregistered_file_is_served_from_the_index() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = b"a watched episode nobody re-resolved".as_slice();
+        let path = write(root.path(), "ep.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        let storage = Storage::open_in_memory().unwrap();
+        // The durable index row a previous session's scan left behind.
+        storage.upsert_hash_cache(&path, mtime, &hashed, 1).unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![root.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: PeerId::new("peer7"),
+                message: Box::new(PeerMessage::BlockHashRequest { file: hashed.root }),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::SendPeer { message, .. } => match *message {
+                    PeerMessage::BlockHashes { file, hashes } => {
+                        assert_eq!(file, hashed.root);
+                        assert_eq!(hashes, hashed.blocks);
+                        break;
+                    }
+                    PeerMessage::CannotServe { .. } => panic!(
+                        "an unregistered-but-indexed file answered CannotServe \
+                         (a permanent denial on the requester)"
+                    ),
+                    other => panic!("unexpected peer message: {other:?}"),
+                },
+                // Adoption may (re)assert our availability first.
+                FileOutput::Availability { .. } => continue,
+                other => panic!("unexpected output: {other:?}"),
+            }
         }
     }
 
@@ -6558,10 +6839,11 @@ mod tests {
     }
 
     /// Regression: an eviction pass must drop the evicted file from the
-    /// in-memory servable set (local_files), not just the DB and hash cache.
-    /// Before the fix local_files still pointed at the deleted path, so a
-    /// peer's block-hash request for the evicted file found it "held", hit
-    /// the now-missing path, and re-emitted a spurious Missing.
+    /// in-memory servable set (local_files), not just the DB and hash
+    /// cache — a later solicitation must find nothing on disk backing the
+    /// file and answer with silence plus a Missing retraction, never a
+    /// serve of deleted content and never a `CannotServe` (which the
+    /// requester latches as a permanent denial; 2026-08-20 review).
     #[tokio::test]
     async fn eviction_drops_the_file_from_the_servable_set() {
         let cache = tempfile::tempdir().unwrap();
@@ -6614,9 +6896,11 @@ mod tests {
         }
         assert!(!cached_path.exists());
 
-        // A peer solicits the evicted file: we no longer hold it, so the
-        // answer is a definitive CannotServe (Phase 31) — not the pre-fix
-        // spurious Missing re-emitted off the stale servable entry.
+        // A peer solicits the evicted file: nothing on disk backs it
+        // (eviction pruned the copy, its cache row, and its index row), so
+        // the answer is silence plus a Missing retraction — *not*
+        // CannotServe, which the requester latches as a permanent denial
+        // reserved for identity mismatches (2026-08-20 review).
         rig.commands
             .send(FileCommand::PeerMessage {
                 from: PeerId::new("peer7"),
@@ -6625,10 +6909,13 @@ mod tests {
             .await
             .unwrap();
         match next_output(&mut rig).await {
-            FileOutput::SendPeer { message, .. } => match *message {
-                PeerMessage::CannotServe { file } => assert_eq!(file, hashed.root),
-                other => panic!("expected CannotServe for the evicted file, got: {other:?}"),
-            },
+            FileOutput::Availability { file, availability } => {
+                assert_eq!(file, hashed.root);
+                assert_eq!(availability, FileAvailability::Missing);
+            }
+            FileOutput::SendPeer { message, .. } => {
+                panic!("expected silence + a Missing retraction, but sent: {message:?}")
+            }
             other => panic!("evicted file still in the servable set: {other:?}"),
         }
     }

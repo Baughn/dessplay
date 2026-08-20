@@ -1896,7 +1896,11 @@ When a playlist item is added (or an entry re-resolves):
    equals the entry's hash is a match: store its path, the entry is Ready.
    Rows under a vanished root don't count (see
    [Media Library Scanning](#media-library-scanning)); a row whose
-   `(mtime, size)` no longer agrees with the disk is stale, not evidence.
+   `(mtime, size)` no longer agrees with the disk is stale, not evidence;
+   and the row must be **visible** — inside a current media root, the
+   download cache, or a manual-mapping path. A removed root's rows are
+   retained through the seven-day grace only so a re-add is cheap; they
+   are hidden from matching (and serving) the moment the root is removed.
 2. **If the index holds no match**, search the media roots for a file with
    the entry's exact basename and hash it now. This is the
    freshly-arrived-file fast path — a copy dropped in moments ago that no
@@ -1957,6 +1961,19 @@ happen mid-session rather than between runs: a player load failure
 (file gone under us) and a serve-time absence (a peer asks for a file we no
 longer hold) both drop the local copy, prune its bookkeeping, and flip the
 file to Missing so it re-resolves.
+
+The serve-time answer distinguishes circumstance from identity. A
+solicitation for a file the session merely hasn't *registered* yet — the
+normal post-restart state, since Ready is durable synced state while the
+servable set is rebuilt lazily — is recovered from the library index: a
+live, visible row bearing the hash is a genuine copy, adopted and served
+on the spot. Only when nothing on disk backs the advert does the holder
+answer **nothing** and retract its own Ready (Missing), letting the
+requester's source refresh drop it and re-add it if a copy later
+re-resolves. `CannotServe` is reserved for a definitive identity mismatch
+(e.g. a manual mapping to a different encode): the requester treats it as
+a denial that lasts as long as the advert that earned it stands, so a
+transient "not right now" must never be answered with it.
 
 **Retention** (`cache_retention`, per client): a cached file becomes
 *evictable* once it is no longer needed — either it has been watched (85%

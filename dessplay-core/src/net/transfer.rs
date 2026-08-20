@@ -204,10 +204,15 @@ pub enum PeerMessage {
     /// [`BlockHashRequest`] from a holder whose local copy is *known* to
     /// differ from the requested identity (a manual mapping to a
     /// different encode: playable locally by design, unservable under
-    /// this hash). The requester drops the sender as a source for this
-    /// download and does not re-solicit it, instead of re-asking a
-    /// permanently-silent holder forever. Only sent on a definitive
-    /// mismatch; a holder still hashing stays silent (transient).
+    /// this hash). The requester drops the sender as a source and does
+    /// not re-solicit it for as long as the advert that earned the denial
+    /// stands (a retracted-then-fresh Ready is a fresh claim), instead of
+    /// re-asking a permanently-silent holder forever. Only sent on a
+    /// definitive mismatch; a holder still hashing stays silent, and a
+    /// holder that merely hasn't registered the file this session either
+    /// serves it from its library index or stays silent and retracts its
+    /// stale Ready — never CannotServe (transient circumstance is not
+    /// identity; 2026-08-20 review).
     CannotServe {
         /// The file.
         file: Ed2kHash,

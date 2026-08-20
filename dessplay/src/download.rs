@@ -244,10 +244,16 @@ struct Download {
     /// Peers that answered a solicitation with [`PeerMessage::CannotServe`]:
     /// they advertise the file but *know* they can never serve it under
     /// this identity (a manual mapping to a different encode). Excluded
-    /// from `set_sources` re-adds for this download's lifetime — the
-    /// session re-offers every synced-Ready holder on each refresh, and
-    /// without this the denied holder would be re-added and re-solicited
-    /// forever.
+    /// from `set_sources` re-adds for as long as the advert that earned
+    /// the denial persists — the session re-offers every synced-Ready
+    /// holder on each refresh, and without this the denied holder would
+    /// be re-added and re-solicited forever. The denial is *not* for the
+    /// download's lifetime: a peer that drops out of the offered set had
+    /// its Ready retracted (or left), and its next offer is a fresh
+    /// claim — `set_sources` forgives it then (2026-08-20 review: a
+    /// lifetime denial latched onto holders that merely hadn't
+    /// re-registered their files yet, gating the group when the denied
+    /// peer was the only holder).
     denied: HashSet<PeerId>,
     /// Chunk index playback is at (sequential-window anchor).
     play_chunk: u32,
@@ -400,6 +406,15 @@ impl Downloads {
         // Drop sources no longer present (their in-flight chunks become
         // needed again — no Cancel: they're gone).
         d.sources.retain(|peer, _| keep.contains(peer));
+        // A denial lives exactly as long as the advert that earned it:
+        // the offer set is "Present + Ready", so a denied peer missing
+        // from it has had its Ready retracted (or has left) — the next
+        // offer is a fresh claim (a re-resolved copy), not the stale
+        // advert we denied. Forgive it; if the fresh claim is still wrong
+        // the peer answers CannotServe again and is re-denied (one
+        // round-trip per reappearance, self-limiting). While the advert
+        // persists unbroken, the denial holds — the case it exists for.
+        d.denied.retain(|peer| keep.contains(peer));
         // Add new sources with an empty bitfield (they'll advertise);
         // arm their snub clock now. A denied peer (replied CannotServe)
         // is never re-added.
@@ -2489,6 +2504,51 @@ mod tests {
                 "denied source resurfaced at t={t}: {actions:?}"
             );
         }
+    }
+
+    /// Regression (2026-08-20 review): the denial a `CannotServe` earns
+    /// lives exactly as long as the advert that earned it. A denied
+    /// source that drops out of the offered set (the session offers
+    /// Present + Ready holders, so a missing peer's Ready was retracted,
+    /// or it left) is forgiven — and a later re-offer is a *fresh* Ready,
+    /// a fresh claim (the peer re-resolved a genuine copy): it must be
+    /// re-added and re-solicited. Without the escape hatch a single
+    /// CannotServe — including one sent for a merely-not-yet-registered
+    /// file — barred the peer for the download's lifetime, gating the
+    /// group when it was the only holder.
+    #[test]
+    fn a_denied_source_re_offered_after_a_gap_is_solicitable_again() {
+        let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, DownloadConfig::default());
+        let actions = r.downloads.start(
+            r.file,
+            r.hash.size_bytes,
+            r.hash.root,
+            r.path.clone(),
+            vec![peer("holder")],
+            0,
+            1000,
+        );
+        assert_eq!(block_hash_requests(&actions), vec!["holder".to_string()]);
+
+        r.downloads.on_peer_message(
+            peer("holder"),
+            PeerMessage::CannotServe { file: r.file },
+            1100,
+        );
+
+        // The holder retracts its Ready: the session stops offering it.
+        let actions = r.downloads.set_sources(r.file, vec![], 0, 1200);
+        assert!(block_hash_requests(&actions).is_empty());
+
+        // It re-resolves a genuine copy and advertises Ready afresh.
+        let actions = r
+            .downloads
+            .set_sources(r.file, vec![peer("holder")], 0, 1300);
+        assert_eq!(
+            block_hash_requests(&actions),
+            vec!["holder".to_string()],
+            "a fresh Ready after a retraction must be solicitable again: {actions:?}"
+        );
     }
 
     /// A source solicited *after* block hashes are already `Have` (an empty
