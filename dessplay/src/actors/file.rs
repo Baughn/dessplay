@@ -951,8 +951,31 @@ impl Actor {
             .collect();
         let manual: HashMap<Ed2kHash, PathBuf> =
             config.storage.manual_mappings()?.into_iter().collect();
-        // Manual mappings are servable local copies too.
-        let mut local_files = manual.clone();
+        // Manual mappings are servable local copies too — but only when
+        // the mapped file is actually present. A dead mapping (the file
+        // moved or deleted, an offline mount) seeded as a servable
+        // registration wedged resolution: the stale-resolve guard took
+        // the phantom entry for a held copy and swallowed the honest
+        // NotFound forever (2026-08-20 review). The mapping row itself
+        // is kept: `resolve` falls through to the matcher while it is
+        // dead, and it comes back to life if the path returns (e.g. a
+        // re-mounted drive); `lost_local_file` prunes it when a loss is
+        // actively observed mid-session.
+        let mut local_files: HashMap<Ed2kHash, PathBuf> = manual
+            .iter()
+            .filter(|(hash, path)| {
+                let live = path.is_file();
+                if !live {
+                    tracing::warn!(
+                        %hash,
+                        path = %path.display(),
+                        "manual mapping's file is absent; not registering it as servable"
+                    );
+                }
+                live
+            })
+            .map(|(hash, path)| (*hash, path.clone()))
+            .collect();
         // Reconcile the download cache against the filesystem: the DB is
         // an index, the disk is the truth. A row whose file the user
         // deleted or truncated is pruned (so the entry re-resolves to
@@ -1764,6 +1787,11 @@ impl Actor {
     ) {
         tracing::info!(%file, path = %path.display(), "download complete");
         self.wanted.remove(&file);
+        // Not through the adopt_local_copy seam: its cancel arm is inert
+        // here anyway (the scheduler already retired the download, and
+        // `path` is the download path itself), and routing through it
+        // would make the completion future recursive (adopt → cancel →
+        // run_download_actions → complete).
         self.local_files.insert(file, path.clone());
         self.drop_download_streams(file);
         self.last_progress_at.remove(&file);
@@ -1808,10 +1836,18 @@ impl Actor {
 
     /// A complete, verified local copy of `file` exists at `path`: the
     /// single seam every "a local copy turned up" channel goes through —
-    /// the resolve path, the library-scan adoption, and the browse-import
-    /// completion — so no path can skip cancelling the now-redundant
-    /// peer download again (the 2026-08-12 review found the browse
-    /// import had regressed exactly that). The cancel deletes the
+    /// the resolve path, the library-scan adoption, the browse-import
+    /// completion, the hash-add (`adopt_hash_added`), and the manual
+    /// mapping once `Done::ManualHashed` confirms its content — so no
+    /// path can skip
+    /// cancelling the now-redundant peer download again (the 2026-08-12
+    /// review found the browse import had regressed exactly that; the
+    /// 2026-08-20 review found the manual-mapping channel had too). A
+    /// manual mapping's *filename-trusted* registration is the one
+    /// deliberate exception: `set_manual_mapping` writes `local_files`
+    /// directly and defers this seam to content confirmation, because an
+    /// unverified mapping must never cancel a good download. The cancel
+    /// deletes the
     /// partial at `<cache>/<hash>` and drops its streams, so a caller
     /// that then places a copy at that same path must call this
     /// *before* placing (see `on_nyaa_import_hashed`). The genuine
@@ -2174,6 +2210,23 @@ impl Actor {
             // A torrent seeding this payload has lost its file too.
             self.drop_torrent(file);
         }
+        // A manual mapping whose file is gone is a dead durable row: left
+        // in place it re-seeds a phantom servable registration at every
+        // start (2026-08-20 review). Prune it, memory and storage. A
+        // mapping still naming a live file survives — the loss was some
+        // other copy (e.g. an evicted cache file).
+        if self.manual.get(&file).is_some_and(|path| !path.is_file())
+            && let Some(mapped) = self.manual.remove(&file)
+        {
+            tracing::warn!(
+                path = %mapped.display(),
+                %file,
+                "manual mapping's file is gone; pruning the durable row"
+            );
+            if let Err(e) = self.storage.remove_manual_mapping(file) {
+                tracing::error!("pruning manual mapping: {e}");
+            }
+        }
         let _ = self
             .out
             .send(FileOutput::Availability {
@@ -2420,13 +2473,30 @@ impl Actor {
                 // map): the walk's answer is stale — we hold the file.
                 // Drop it rather than re-marking a held file wanted and
                 // re-emitting Missing (Phase 31 stale-resolve race).
+                // "We hold the file" requires a copy live on disk: a
+                // dead registration (the file deleted under us) must
+                // never swallow the honest answer — a swallowed answer
+                // latched the session's `pending_resolve` forever, so
+                // the entry never resolved, never flipped Missing,
+                // never downloaded (2026-08-20 review). Drop the dead
+                // registration instead and let the answer through.
                 if matches!(
                     resolution,
                     Resolution::NotFound | Resolution::HashMismatch(_)
-                ) && self.local_files.contains_key(&file)
-                {
-                    tracing::debug!(%file, "stale resolve landed after a local copy was adopted; dropping");
-                    return;
+                ) {
+                    match self.local_files.get(&file) {
+                        Some(path) if path.is_file() => {
+                            tracing::debug!(%file, "stale resolve landed after a local copy was adopted; dropping");
+                            return;
+                        }
+                        Some(_) => {
+                            // Emits Missing and prunes the bookkeeping;
+                            // the honest resolution below still reaches
+                            // the session.
+                            self.lost_local_file(file).await;
+                        }
+                        None => {}
+                    }
                 }
                 // Track unmet resolves so the library walk can spot their
                 // files arriving through another channel; a verified copy
@@ -2515,7 +2585,33 @@ impl Actor {
                 (Ok(hashed), Some(mtime)) if hashed.root == file => {
                     // Content matches the mapped hash: cache it so we can
                     // serve block hashes to peers.
-                    self.commit_fresh_hashes(vec![(path, mtime, hashed)]);
+                    self.commit_fresh_hashes(vec![(path.clone(), mtime, hashed)]);
+                    // ...and only now — on *content* confirmation, never
+                    // on the filename-trusted mapping itself — adopt the
+                    // copy through the seam, cancelling any in-flight
+                    // peer download of the same file (2026-08-20 review:
+                    // the mapping channel skipped the cancel, so the
+                    // orphaned download's Progress flapped Ready ↔
+                    // Downloading and its Abandon could write Missing
+                    // over a held file). Guard on the mapping still
+                    // being current: a re-map or a forget may have raced
+                    // the hash.
+                    if self.manual.get(&file) == Some(&path) {
+                        let cancelling =
+                            self.downloads.is_active(&file) && path != self.download_path(file);
+                        self.adopt_local_copy(file, path).await;
+                        if cancelling {
+                            // Re-assert Ready over whatever Downloading
+                            // progress the now-cancelled orphan wrote.
+                            let _ = self
+                                .out
+                                .send(FileOutput::Availability {
+                                    file,
+                                    availability: FileAvailability::Ready,
+                                })
+                                .await;
+                        }
+                    }
                 }
                 (Ok(hashed), _) => {
                     // The user mapped a file whose content differs from the
@@ -2934,7 +3030,7 @@ impl Actor {
         if let Some(path) = self.manual.get(&file) {
             if path.is_file() {
                 let path = path.clone();
-                self.hash_manual_mapping(file, path.clone());
+                self.hash_manual_mapping(file, path.clone()).await;
                 let _ = self
                     .out
                     .send(FileOutput::Resolved {
@@ -3067,8 +3163,17 @@ impl Actor {
         }
         tracing::info!(path = %path.display(), "manual mapping set");
         self.manual.insert(file, path.clone());
+        // Register the copy as servable right away — the session flips
+        // the file Ready off the Resolved below, and every Ready must be
+        // backed by a registration (Phase 31); actually serving content
+        // stays hash-guarded in `serve_block_hashes`. What is *deferred*
+        // is the adoption seam — cancelling an in-flight peer download of
+        // the same file happens in `Done::ManualHashed`, only once the
+        // mapped file's content is confirmed to match: a mapping is
+        // filename-trusted, and a different encode must never cancel a
+        // good download (2026-08-20 review).
         self.local_files.insert(file, path.clone());
-        self.hash_manual_mapping(file, path.clone());
+        self.hash_manual_mapping(file, path.clone()).await;
         let _ = self
             .out
             .send(FileOutput::Resolved {
@@ -3086,12 +3191,17 @@ impl Actor {
     /// downloader that picks us as a source (design.md File Matching 4a: a
     /// manual map is a servable local copy). The hash is committed (in
     /// `Done::ManualHashed`) only if it actually matches the mapped hash,
-    /// so a different encode is never served under this file's identity.
-    fn hash_manual_mapping(&self, file: Ed2kHash, path: PathBuf) {
-        // Already cached with matching content? Nothing to do.
+    /// so a different encode is never served under this file's identity —
+    /// and confirmation is also what routes the copy through the
+    /// [`Self::adopt_local_copy`] seam, cancelling a now-redundant peer
+    /// download. When the cache already confirms the content, adopt
+    /// immediately instead of spawning a redundant hash.
+    async fn hash_manual_mapping(&mut self, file: Ed2kHash, path: PathBuf) {
+        // Already cached with matching content? Adopt without re-hashing.
         if let Some((_, hashed)) = self.hash_cache.get(&path)
             && hashed.root == file
         {
+            self.adopt_local_copy(file, path).await;
             return;
         }
         let done_tx = self.done_tx.clone();
@@ -5724,6 +5834,336 @@ mod tests {
             }
         }
         assert!(served, "manual mapping never became servable to peers");
+    }
+
+    /// Regression (2026-08-20 review, HIGH): a manual mapping whose file no
+    /// longer exists was seeded into `local_files` unconditionally at
+    /// startup, and the Phase 31 stale-resolve guard then swallowed the
+    /// honest NotFound — the session's `pending_resolve` latched forever:
+    /// the entry never resolved, never flipped Missing, never downloaded. A
+    /// resolve that finds nothing must report NotFound (design.md, File
+    /// Matching step 3).
+    #[tokio::test]
+    async fn resolving_a_dead_manual_mapping_reports_not_found() {
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        let file = hash(7);
+        storage
+            .set_manual_mapping(file, Path::new("/nonexistent/relocated.mkv"), 1)
+            .unwrap();
+
+        let mut rig = spawn_rig(storage, vec![], CacheRetention::default());
+        rig.commands
+            .send(FileCommand::Resolve {
+                file,
+                filename: "relocated.mkv".into(),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved {
+                    file: f,
+                    resolution,
+                } if f == file => {
+                    assert!(
+                        matches!(resolution, Resolution::NotFound),
+                        "a dead manual mapping must resolve NotFound, got: {resolution:?}"
+                    );
+                    break;
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// Regression (2026-08-20 review, HIGH): a manual mapping whose file
+    /// vanishes mid-session left a stale `local_files` registration that
+    /// swallowed the honest NotFound of the next resolve — and the dead
+    /// durable row was never pruned, so every restart re-seeded the wedge.
+    /// The re-resolve must answer NotFound and drop the dead row.
+    #[tokio::test]
+    async fn a_vanished_manual_mapping_re_resolves_not_found_and_prunes_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"held bytes".as_slice();
+        let path = write(dir.path(), "held.mkv", contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let file = hashed.root;
+
+        let db = tempfile::tempdir().unwrap();
+        let db_path = db.path().join("test.db");
+        let storage = Storage::open(&db_path).unwrap();
+        storage.set_manual_mapping(file, &path, 1).unwrap();
+        // The mapping's content is already confirmed in the hash cache,
+        // so resolving it never spawns a background hash — the test stays
+        // free of hash-completion races.
+        storage.upsert_hash_cache(&path, 1, &hashed, 1).unwrap();
+
+        let mut rig = spawn_rig(storage, vec![], CacheRetention::default());
+        // A first resolve proves the live mapping is registered.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file,
+                filename: "held.mkv".into(),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved {
+                    file: f,
+                    resolution,
+                } if f == file => {
+                    assert_eq!(resolution, Resolution::Verified(path.clone()));
+                    break;
+                }
+                _ => continue,
+            }
+        }
+
+        // The user deletes the file under us.
+        std::fs::remove_file(&path).unwrap();
+
+        rig.commands
+            .send(FileCommand::Resolve {
+                file,
+                filename: "held.mkv".into(),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved {
+                    file: f,
+                    resolution,
+                } if f == file => {
+                    assert!(
+                        matches!(resolution, Resolution::NotFound),
+                        "a vanished mapping must resolve NotFound, got: {resolution:?}"
+                    );
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        // The dead durable row is pruned — it must not re-seed a phantom
+        // registration at the next start.
+        let check = Storage::open(&db_path).unwrap();
+        assert_eq!(
+            check.manual_mapping(file).unwrap(),
+            None,
+            "the dead manual-mapping row must be pruned"
+        );
+    }
+
+    /// Regression (2026-08-20 review): `set_manual_mapping` never cancelled
+    /// an in-flight peer download of the same hash — the orphaned download's
+    /// Progress kept overwriting Ready (Ready↔Downloading flapping) and its
+    /// late chunks "completed" it over the held file. The decided semantics:
+    /// the download keeps running until `Done::ManualHashed` confirms the
+    /// mapped file's *content* matches, then the copy is adopted through
+    /// `adopt_local_copy`, which cancels the redundant download.
+    #[tokio::test]
+    async fn manual_mapping_of_matching_content_cancels_the_redundant_peer_download() {
+        let chunk = dessplay_core::net::CHUNK_SIZE as usize;
+        let contents: Vec<u8> = (0..chunk + 16).map(|i| (i % 251) as u8).collect();
+        let hashed = ed2k_hash_bytes(&contents);
+        let file = hashed.root;
+        let peer = PeerId::new("seeder");
+        let mut rig = spawn_rig(
+            Storage::open_in_memory().unwrap(),
+            vec![],
+            CacheRetention::default(),
+        );
+
+        // An active peer download of the same file, far enough along to
+        // have chunk requests in flight.
+        rig.commands
+            .send(FileCommand::StartDownload {
+                file,
+                size_bytes: contents.len() as u64,
+                sources: vec![peer.clone()],
+                play_chunk: 0,
+            })
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::SendPeer { message, .. } => {
+                assert!(matches!(*message, PeerMessage::BlockHashRequest { .. }));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: peer.clone(),
+                message: Box::new(PeerMessage::BlockHashes {
+                    file,
+                    hashes: hashed.blocks.clone(),
+                }),
+            })
+            .await
+            .unwrap();
+        let chunks = dessplay_core::net::chunk_count(contents.len() as u64);
+        let mut bitfield = dessplay_core::net::Bitfield::new(chunks);
+        for index in 0..chunks {
+            bitfield.set(index);
+        }
+        rig.commands
+            .send(FileCommand::PeerMessage {
+                from: peer.clone(),
+                message: Box::new(PeerMessage::FileAvailability { file, bitfield }),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::OpenTransfer { file: f, .. } if f == file => break,
+                _ => continue,
+            }
+        }
+
+        // The user maps the entry to an out-of-root copy with the *same*
+        // content.
+        let dir = tempfile::tempdir().unwrap();
+        let mapped = write(dir.path(), "same-bytes.mkv", &contents);
+        rig.commands
+            .send(FileCommand::SetManualMapping {
+                file,
+                path: mapped.clone(),
+                series: None,
+            })
+            .await
+            .unwrap();
+        // The mapping resolves Verified immediately (filename-trusted)...
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Resolved {
+                    file: f,
+                    resolution,
+                } if f == file => {
+                    assert_eq!(resolution, Resolution::Verified(mapped.clone()));
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        // ...and once the background hash confirms the content, the copy is
+        // adopted: the redundant download is cancelled and Ready re-asserted
+        // over any Downloading progress the orphan wrote.
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Availability {
+                    file: f,
+                    availability: FileAvailability::Ready,
+                } if f == file => break,
+                FileOutput::DownloadComplete { file: f, .. } if f == file => {
+                    panic!("the redundant peer download completed instead of being cancelled")
+                }
+                _ => continue,
+            }
+        }
+
+        // The source's late chunks arrive; the cancelled download must
+        // ignore them — no second completion, no Downloading overwrite.
+        for index in 0..chunks {
+            let start = index as usize * chunk;
+            let end = (start + chunk).min(contents.len());
+            rig.commands
+                .send(FileCommand::PeerMessage {
+                    from: peer.clone(),
+                    message: Box::new(PeerMessage::ChunkData {
+                        file,
+                        index,
+                        data: contents[start..end].to_vec(),
+                    }),
+                })
+                .await
+                .unwrap();
+        }
+        // Sentinel: an unrelated resolve flushes the pipeline.
+        rig.commands
+            .send(FileCommand::Resolve {
+                file: hash(42),
+                filename: "zz.mkv".into(),
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_output(&mut rig).await {
+                FileOutput::Availability {
+                    file: f,
+                    availability,
+                } if f == file => {
+                    panic!(
+                        "no availability write may follow the adoption's Ready: {availability:?}"
+                    )
+                }
+                FileOutput::DownloadComplete { file: f, .. } if f == file => {
+                    panic!("the cancelled peer download completed from late chunks")
+                }
+                FileOutput::Resolved { file: f, .. } if f == hash(42) => break,
+                _ => continue,
+            }
+        }
+    }
+
+    /// The other half of adopt-on-confirmation: a manual mapping whose
+    /// content does NOT match the entry (a different encode) must never
+    /// cancel the good peer download — the real bytes are still wanted.
+    #[tokio::test]
+    async fn manual_mapping_of_mismatched_content_keeps_the_peer_download() {
+        let db = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&db.path().join("test.db")).unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let (out_tx, _out_rx) = mpsc::channel(1024);
+        let (done_tx, _done_rx) = mpsc::channel(1024);
+        let (stream_tx, _stream_rx) = mpsc::channel(64);
+        let mut actor = Actor::new(
+            FileConfig {
+                storage,
+                media_roots: vec![],
+                retention: CacheRetention::default(),
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: None,
+                nyaa: None,
+            },
+            out_tx,
+            done_tx,
+            stream_tx,
+        )
+        .unwrap();
+
+        let file = hash(3);
+        actor
+            .start_peer_download(file, 1024, vec![PeerId::new("seeder")], 0)
+            .await;
+        assert!(actor.downloads.is_active(&file));
+
+        // The user maps the entry to a different encode; the background
+        // hash comes back with a different root.
+        let dir = tempfile::tempdir().unwrap();
+        let mapped = write(dir.path(), "other-encode.mkv", b"different bytes");
+        actor.set_manual_mapping(file, mapped.clone(), None).await;
+        let other = ed2k_hash_bytes(b"different bytes");
+        assert_ne!(other.root, file);
+        actor
+            .on_done(Done::ManualHashed {
+                file,
+                path: mapped,
+                mtime: Some(1),
+                result: Ok(other),
+            })
+            .await;
+        assert!(
+            actor.downloads.is_active(&file),
+            "a mismatched mapping must never cancel the peer download"
+        );
     }
 
     /// Regression: block hashes must never be served under a file's identity

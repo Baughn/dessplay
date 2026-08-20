@@ -230,7 +230,11 @@ struct LoadedFile {
 pub struct PlayerWiring {
     me: UserId,
     resolved: HashMap<Ed2kHash, Resolution>,
-    pending_resolve: HashSet<Ed2kHash>,
+    /// Resolves requested but not yet answered, with the number of
+    /// snapshots each has waited. An entry that outlives
+    /// [`RESOLVE_RETRY_SNAPSHOTS`] is re-requested: a lost answer must
+    /// never wedge an entry for the process lifetime (2026-08-20 review).
+    pending_resolve: HashMap<Ed2kHash, u32>,
     /// What we've told the player to load.
     loaded: Option<LoadedFile>,
     /// Last authority sample forwarded as SyncTo (dedup).
@@ -315,6 +319,15 @@ pub struct PlayerWiring {
 /// Fraction of a file's duration that counts as "watched" (design.md,
 /// Watch Tracking).
 const WATCHED_FRACTION: f64 = 0.85;
+
+/// Snapshots (~1/s) an entry may sit in `pending_resolve` unanswered
+/// before its resolve is re-requested. Belt-and-braces against a lost
+/// `Resolved` answer wedging the entry for the process lifetime
+/// (2026-08-20 review: a swallowed answer meant never-Missing,
+/// never-downloaded, forever). Generous, because a legitimate resolve
+/// can ed2k-hash a multi-gigabyte file before answering — a premature
+/// re-request just duplicates that work.
+const RESOLVE_RETRY_SNAPSHOTS: u32 = 600;
 
 /// How close (millis) a partial's last known position must be to the
 /// entry's duration for its EOF report to be believed. A sparse partial
@@ -647,7 +660,7 @@ impl PlayerWiring {
         PlayerWiring {
             me,
             resolved: HashMap::new(),
-            pending_resolve: HashSet::new(),
+            pending_resolve: HashMap::new(),
             loaded: None,
             last_synced: None,
             chat_seen: None,
@@ -1570,13 +1583,30 @@ impl PlayerWiring {
         for entry in &view.playlist {
             let watched = view.watched.get(&entry.hash) == Some(&true)
                 && Some(entry.hash) != view.now_playing;
-            if watched
-                || self.resolved.contains_key(&entry.hash)
-                || self.pending_resolve.contains(&entry.hash)
-            {
+            if watched || self.resolved.contains_key(&entry.hash) {
                 continue;
             }
-            self.pending_resolve.insert(entry.hash);
+            match self.pending_resolve.entry(entry.hash) {
+                std::collections::hash_map::Entry::Occupied(mut pending) => {
+                    // Requested, unanswered. Count the wait; past the
+                    // retry window, ask again — a lost answer must not
+                    // wedge the entry forever (belt-and-braces; the file
+                    // actor is not supposed to lose answers).
+                    let age = pending.get_mut();
+                    *age += 1;
+                    if *age < RESOLVE_RETRY_SNAPSHOTS {
+                        continue;
+                    }
+                    tracing::warn!(
+                        file = %entry.hash,
+                        "resolve unanswered for {RESOLVE_RETRY_SNAPSHOTS} snapshots; re-requesting"
+                    );
+                    *age = 0;
+                }
+                std::collections::hash_map::Entry::Vacant(pending) => {
+                    pending.insert(0);
+                }
+            }
             out.push(Directive::Resolve {
                 file: entry.hash,
                 filename: entry.state.filename.clone(),
@@ -1822,7 +1852,7 @@ impl PlayerWiring {
         view: &StateView,
         peers: &[PeerInfo],
     ) -> Vec<Directive> {
-        let was_pending = self.pending_resolve.remove(&file);
+        let was_pending = self.pending_resolve.remove(&file).is_some();
         // A downgrade with no outstanding request is stale when we already
         // verified a copy ourselves: `note_local_file` cleared the pending
         // flag when the user's own add (or a completed download) verified
@@ -2205,7 +2235,7 @@ impl PlayerWiring {
                     }),
                 ];
                 if let Some(entry) = view.playlist.iter().find(|entry| entry.hash == file) {
-                    self.pending_resolve.insert(file);
+                    self.pending_resolve.insert(file, 0);
                     out.push(Directive::Resolve {
                         file,
                         filename: entry.state.filename.clone(),
@@ -4115,6 +4145,36 @@ mod tests {
                 .any(|d| matches!(d, Directive::Resolve { .. })),
             "resolve must not be re-issued while pending"
         );
+    }
+
+    /// Belt-and-braces for the 2026-08-20 review's pending-resolve wedge:
+    /// even if a `Resolved` answer is lost (a bug, a dropped channel), the
+    /// entry must not stay pending for the process lifetime — after the
+    /// retry window the resolve is re-requested.
+    #[test]
+    fn an_unanswered_resolve_is_re_requested_after_the_retry_window() {
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        let first = wiring.on_state(&view, &[peer("kim")]);
+        assert_eq!(resolve_files(&first), vec![hash(1)]);
+        // The answer never arrives. Within the window: no re-request.
+        for _ in 0..RESOLVE_RETRY_SNAPSHOTS - 1 {
+            let out = wiring.on_state(&view, &[peer("kim")]);
+            assert!(
+                resolve_files(&out).is_empty(),
+                "resolve re-requested before the retry window elapsed"
+            );
+        }
+        // The window elapses: re-requested, exactly once.
+        let out = wiring.on_state(&view, &[peer("kim")]);
+        assert_eq!(
+            resolve_files(&out),
+            vec![hash(1)],
+            "an unanswered resolve must be re-requested after the retry window"
+        );
+        // ...and the clock restarts: not again on the very next snapshot.
+        let out = wiring.on_state(&view, &[peer("kim")]);
+        assert!(resolve_files(&out).is_empty());
     }
 
     #[test]

@@ -253,7 +253,9 @@ is no use for posting a file *path* to chat). The path may arrive in
 any of the shapes terminals actually produce on drag — bare,
 shell-escaped (`My\ Show/ep.mkv`), quoted, or a percent-encoded
 `file://` URL — each reading is tried and the first that names an
-existing file wins. The file may live anywhere, including outside
+existing file wins, canonicalized so a relative or symlinked form
+never becomes a cwd-dependent registration. The file may live
+anywhere, including outside
 every media root: an out-of-root add is registered **in place** as a
 manual-mapping row (no copy into the cache), which also makes it
 servable across restarts — moving the file afterwards breaks it
@@ -302,6 +304,13 @@ When someone adds a file, everyone needs to find their local copy:
      browser is requested; unknown series open at the media roots)
    - Files are sorted by edit distance to the target filename by default;
      `Tab` switches to newest-mtime-first
+   - The chosen path is canonicalized at the boundary (as is a dragged-in
+     path), so the durable mapping row never depends on the working
+     directory. A mapping whose file has vanished falls back to normal
+     matching — the entry honestly resolves Missing rather than wedging on
+     a phantom copy. A loss observed mid-session (a failed serve or load)
+     prunes the durable row; a mapping merely absent at startup (e.g. an
+     offline mount) is kept, unregistered, and revives if the path returns
 4b. You can manually set yourself to "not watching" on a file that's Missing
    (e.g. a known series but you don't have this episode yet). This clears the
    "missing from known series" block
@@ -1995,9 +2004,15 @@ in-flight chunk requests; the partial cache file is deleted) and the entry
 resolves Ready at the local path. The scan also adopts by **hash**: a
 matching file under a *different* filename, invisible to the name-based
 walk trigger, is adopted when its scan hash comes in. Every "a local
-copy turned up" channel — resolve, scan adoption, and a completed
-[browse import](#bittorrent-downloads) — funnels through one adoption
-seam, so none can skip the cancel. A browse import cancels the peer
+copy turned up" channel — resolve, scan adoption, a completed
+[browse import](#bittorrent-downloads), and a manual mapping — funnels
+through one adoption seam, so none can skip the cancel. The manual
+mapping joins the seam **on content confirmation**: the mapping is
+filename-trusted for the user's own playback and resolves Ready
+immediately, but only once its background hash proves the content
+matches the entry is the copy adopted and the redundant download
+cancelled — a different-encode mapping never cancels a good download,
+which keeps running for the real bytes. A browse import cancels the peer
 download *before* placing its payload in the cache (both share the
 hash-addressed cache path), and an import of a file **already held
 under a media root** finishes against the library copy instead of

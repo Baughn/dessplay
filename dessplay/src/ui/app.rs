@@ -1676,7 +1676,9 @@ impl Ui {
                 self.sync_focus_attr();
                 Some(UserAction::MapFile {
                     file,
-                    path,
+                    // A mapping is a durable row; never persist a
+                    // cwd-dependent path.
+                    path: canonical_or_original(path),
                     series: self.series_key_of(file),
                 })
             }
@@ -1723,7 +1725,10 @@ impl Ui {
                 // `None` (from [Add New]) appends.
                 let after =
                     after.or_else(|| self.snapshot.view.playlist.last().map(|entry| entry.hash));
-                Some(UserAction::HashAndAdd { path, after })
+                Some(UserAction::HashAndAdd {
+                    path: canonical_or_original(path),
+                    after,
+                })
             }
             Msg::EpisodeChosen { hash } => {
                 self.pop_modal();
@@ -2411,6 +2416,17 @@ fn pasted_file_path(text: &str) -> Option<PathBuf> {
         .into_iter()
         .map(PathBuf::from)
         .find(|p| p.is_file())
+        .map(canonical_or_original)
+}
+
+/// Canonicalize a user-supplied file path at the boundary. Paths picked
+/// or pasted here can become *durable* registrations (an out-of-root add
+/// persists a manual mapping), so a relative path accepted verbatim
+/// turns into a permanent cwd-dependent row that names nothing after any
+/// cwd change (2026-08-20 review). Canonicalization failure (the file
+/// vanished between the check and here) falls back to the original.
+fn canonical_or_original(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -4460,10 +4476,13 @@ mod tests {
     // ---- pasted_file_path: the drag-in normalization (Phase 31).
 
     /// A temp dir holding `My Show/ep 1.mkv` — a path with spaces, the
-    /// case every terminal escapes or quotes on drag.
+    /// case every terminal escapes or quotes on drag. The base is
+    /// canonicalized so the expected path survives the boundary's own
+    /// canonicalization (e.g. a symlinked system temp dir).
     fn spaced_file() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("My Show");
+        let base = dir.path().canonicalize().unwrap();
+        let sub = base.join("My Show");
         std::fs::create_dir(&sub).unwrap();
         let path = sub.join("ep 1.mkv");
         std::fs::write(&path, b"x").unwrap();
@@ -4533,6 +4552,41 @@ mod tests {
         );
         assert_eq!(pasted_file_path("no-such-file.mkv"), None);
         assert_eq!(pasted_file_path(""), None);
+    }
+
+    /// Regression (2026-08-20 review): a pasted *relative* path was
+    /// accepted verbatim and flowed all the way into a durable manual
+    /// mapping — a permanent cwd-dependent registration that names
+    /// nothing after any cwd change (exactly the dead-mapping input that
+    /// wedged resolution). The boundary must canonicalize.
+    #[test]
+    fn pasted_relative_path_comes_back_absolute() {
+        let (_dir, path) = spaced_file();
+        // Build a relative path from the cwd to the temp file.
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let mut relative = PathBuf::new();
+        for _ in cwd.components().filter(|c| {
+            matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        }) {
+            relative.push("..");
+        }
+        for component in path.components().skip(1) {
+            relative.push(component);
+        }
+        assert!(relative.is_relative());
+        assert!(relative.is_file(), "test setup: relative path must exist");
+
+        let accepted = pasted_file_path(&relative.display().to_string())
+            .expect("an existing relative path must be accepted");
+        assert!(
+            accepted.is_absolute(),
+            "a pasted relative path must come back absolute, got: {}",
+            accepted.display()
+        );
+        assert_eq!(accepted, path);
     }
 
     // ---- Chat drag-selection hold timer (design.md, Mouse support) ----

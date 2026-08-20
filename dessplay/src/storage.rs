@@ -931,6 +931,17 @@ impl Storage {
         Ok(())
     }
 
+    /// Drop a manual mapping whose file is gone for good (the file actor
+    /// prunes dead rows when it observes the loss; a row left behind
+    /// would re-seed a phantom servable registration at every start).
+    pub fn remove_manual_mapping(&self, hash: Ed2kHash) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM manual_mappings WHERE hash = ?1",
+            params![hash.0.as_slice()],
+        )?;
+        Ok(())
+    }
+
     /// Look up a manual mapping.
     pub fn manual_mapping(&self, hash: Ed2kHash) -> Result<Option<PathBuf>> {
         Ok(self
