@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-08-17
+Last updated: 2026-08-20
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -396,7 +396,12 @@ correctly) without needing the old entries' original per-actor dot
 structure -- safe because `ActorId`s are session-scoped (Phase 4), so no
 live session's dot clock depends on a restart-time migration reproducing
 it. (The chain itself has since been retired -- see
-[Snapshot Storage](#snapshot-storage).)
+[Snapshot Storage](#snapshot-storage). Note added 2026-08-20: this
+reasoning covered live sessions but missed migrated-replica-vs-
+migrated-replica merges -- a single constant migration actor double-
+spends dots across replicas holding different key sets, and the merge
+destroys entries. Migration-time rebuilds must dot entries under a
+**key-derived** actor; see Decoding and Migration below.)
 
 **Re-keying `AniDbSeriesId` -> `ListEntryId` (Series Identity work) is a
 key-*type* change**, not a value-shape change, so it needs the same
@@ -896,11 +901,30 @@ for storage because *blobs outlive deployments*; connections don't.
   `series_relations` holds the frozen `SeriesRelationsV10`) covers all
   four; the upgrade rebuilds that one map value-by-value, carrying each
   entry's LWW timestamp over unchanged (so later writes win or lose
-  exactly as against the original) under a dedicated migration actor —
-  deliberately not `ActorId::SERVER`, whose per-origin dedup dots must
-  never be forged. Map-level clocks are rebuilt from scratch, which is
-  safe for the same reason daily compaction may rebuild every map from
-  its resolved view. The v7–v9 fixture blobs pin this arm now (their
+  exactly as against the original) under a **key-derived** migration
+  actor (`snapshot_migration_actor(series)`) — deliberately not
+  `ActorId::SERVER`, whose per-origin dedup dots must never be forged.
+  The key-derived actor is load-bearing: migration is **not** like
+  compaction. A compacted state is broadcast with an epoch bump and
+  replaces state on every replica, so compaction may rebuild map clocks
+  freely; a migrated state is produced *independently on each replica*
+  (server and every client decode their own blobs) and the results meet
+  in an ordinary same-epoch **merge**, which is dot-based. The first
+  version of this rebuild used one constant actor with
+  position-derived counters, so replicas holding different key sets
+  spent the same dots on different keys, and the reconnect merge
+  silently destroyed entries on both sides — convergently, so no
+  divergence alarm fired (2026-08-20 audit). With one actor per key
+  and counter 1, every replica dots the same key identically and the
+  merge degenerates to the per-key LWW union. Pinned by
+  `independently_migrated_relations_merge_to_the_union` and the
+  property `migration_commutes_with_relations_merge`
+  (dessplay-core/tests/migration.rs): migration must be a merge
+  homomorphism. Belt-and-braces, the **server also bumps the epoch on
+  any migrated load** (`ServerStorage::load_state`), so clients — whose
+  own local blobs may have been migrated by an *older* build with the
+  unsafe rebuild — adopt the server's migrated snapshot wholesale
+  instead of merging into it. The v7–v9 fixture blobs pin this arm now (their
   decode test moved with them); v10's fixture was captured **at the
   v11 bump** — the last moment the current encoder still produced its
   bytes — which is the standing rule for any future frozen version:

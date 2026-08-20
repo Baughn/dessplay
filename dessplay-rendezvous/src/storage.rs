@@ -280,6 +280,9 @@ impl ServerStorage {
     /// requires deploying, so this will happen again). A backup failure
     /// is an error: proceeding without one is exactly the silent
     /// state-loss the server's refuse-to-start posture exists to prevent.
+    /// A migrated load also bumps the epoch (see the comment at the bump
+    /// site): migrated state must be *adopted* by clients, never merged
+    /// with their own independently-migrated copies.
     pub fn load_state(&self) -> Result<Option<StateSnapshot>> {
         let started = std::time::Instant::now();
         let row: Option<(i64, Vec<u8>)> = self
@@ -295,19 +298,33 @@ impl ServerStorage {
             return Ok(None);
         };
         let (state, migrated) = CrdtState::decode_snapshot_flagged(&blob)?;
+        let mut epoch = Epoch(epoch as u64);
         if migrated {
             self.backup_pre_migration()?;
+            // A migrated snapshot is a wholesale rebuild, like
+            // compaction's — and like compaction it must bump the epoch,
+            // so clients (which migrated their own local state
+            // independently) adopt this snapshot on reconnect instead of
+            // merging into it. Without the bump, a same-epoch reconnect
+            // merges two independently-migrated states — historically the
+            // path that destroyed `series_relations` entries (2026-08-20
+            // audit; docs/sync-state.md, Decoding and Migration).
+            // Deterministic across a crash-loop: re-loading the old blob
+            // re-migrates and re-bumps to the same value, and save_state
+            // persists epoch and state together.
+            epoch = Epoch(epoch.0 + 1);
+            tracing::info!(
+                epoch = epoch.0,
+                "snapshot migrated; epoch bumped so clients resync wholesale"
+            );
         }
         tracing::debug!(
-            epoch,
+            epoch = epoch.0,
             bytes = blob.len(),
             elapsed_ms = started.elapsed().as_millis() as u64,
             "state snapshot loaded"
         );
-        Ok(Some(StateSnapshot {
-            epoch: Epoch(epoch as u64),
-            state,
-        }))
+        Ok(Some(StateSnapshot { epoch, state }))
     }
 
     /// Copy the database to `<db>.pre-v{PROTOCOL_VERSION}.bak` (via
@@ -1009,7 +1026,10 @@ mod tests {
     /// requires deploying, so mid-development layouts will keep reaching
     /// the server). The legacy blob is a faithful **untagged v6** (the
     /// pre-envelope on-disk shape), fabricated via dessplay-core's
-    /// test-support fixture encoder.
+    /// test-support fixture encoder. A migrated load also bumps the
+    /// epoch, so clients adopt the migrated snapshot wholesale on
+    /// reconnect instead of merging their own independently-migrated
+    /// state into it (2026-08-20 audit).
     #[test]
     fn migrated_load_backs_up_the_database_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -1035,7 +1055,11 @@ mod tests {
             .unwrap();
 
         let loaded = storage.load_state().unwrap().unwrap();
-        assert_eq!(loaded.epoch, Epoch(7));
+        assert_eq!(
+            loaded.epoch,
+            Epoch(8),
+            "a migrated load bumps the stored epoch (7) by one"
+        );
         assert_eq!(loaded.state.view(), cluster.server.view());
 
         // The backup exists and still holds the *old-layout* blob.

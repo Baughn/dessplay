@@ -643,3 +643,124 @@ proptest! {
         prop_assert_ne!(v6[0], SNAPSHOT_MAGIC[0]);
     }
 }
+
+/// A minimal state whose `series_relations` holds exactly the given
+/// entries (empty `short_titles`, as the v6 encoding requires — the
+/// legacy layout predates the field and drops it).
+fn state_with_relations(actor: ActorId, entries: &[(u32, u64, &str)]) -> CrdtState {
+    let mut state = CrdtState::new();
+    for &(series, stamp, title) in entries {
+        state.set_series_relations(
+            actor,
+            ts(stamp),
+            AniDbSeriesId(series),
+            SeriesRelations {
+                title: title.into(),
+                year: None,
+                episode_count: None,
+                relations: BTreeSet::new(),
+                short_titles: vec![],
+            },
+        );
+    }
+    state
+}
+
+/// Round-trip a state through the untagged-v6 layout and the migration
+/// decode, as every pre-envelope database does at startup.
+fn migrate_via_v6(state: &CrdtState) -> CrdtState {
+    let blob = state.encode_untagged_v6_for_tests().unwrap();
+    let (migrated, flagged) = CrdtState::decode_snapshot_flagged(&blob).unwrap();
+    assert!(flagged, "the v6 fallback must report the migration");
+    migrated
+}
+
+/// REGRESSION (2026-08-20 audit): two replicas that migrate the same
+/// frozen layout independently must not destroy each other's
+/// `series_relations` entries when they later merge — which is how a
+/// migrated snapshot is actually used: the server migrates its blob,
+/// each client migrates its own, and the ordinary same-epoch reconnect
+/// merges them. The old rebuild dotted every entry under one constant
+/// actor with position-derived counters, so replicas holding different
+/// key sets spent the same dots on different keys and the dot-based
+/// merge dropped entries — silently, and convergently on both sides,
+/// so no divergence alarm ever fired.
+#[test]
+fn independently_migrated_relations_merge_to_the_union() {
+    // The same replicated history seen at two points in time: the
+    // server holds three entries, a client holds the first-two-sync's
+    // worth. Common entries are identical (same stamps and values).
+    let server = state_with_relations(A, &[(100, 10, "a"), (200, 11, "b"), (300, 12, "c")]);
+    let client = state_with_relations(A, &[(200, 11, "b"), (300, 12, "c")]);
+
+    let migrated_server = migrate_via_v6(&server);
+    let migrated_client = migrate_via_v6(&client);
+
+    let mut server_merged = migrated_server.clone();
+    server_merged.merge(migrated_client.clone());
+    let mut client_merged = migrated_client;
+    client_merged.merge(migrated_server);
+
+    let expected: Vec<AniDbSeriesId> = [100, 200, 300].map(AniDbSeriesId).to_vec();
+    assert_eq!(
+        server_merged
+            .view()
+            .series_relations
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        expected,
+        "the server↔client merge of two migrated replicas must keep the union"
+    );
+    assert_eq!(
+        client_merged.view().series_relations,
+        server_merged.view().series_relations,
+        "both merge directions must converge on the same map"
+    );
+}
+
+proptest! {
+    /// Migration must be a merge homomorphism:
+    /// `migrate(a).merge(migrate(b))` resolves to the same
+    /// `series_relations` view as `a.merge(b)` — for arbitrary
+    /// overlapping-but-unequal key sets, stamps, and values, in both
+    /// merge directions. This is the property the constant-actor
+    /// rebuild violated (see the regression test above); keyed dots
+    /// make it hold structurally.
+    #[test]
+    fn migration_commutes_with_relations_merge(
+        a_entries in proptest::collection::btree_map(
+            1u32..20, (1u64..100, "[a-z]{1,6}"), 0..6),
+        b_entries in proptest::collection::btree_map(
+            1u32..20, (1u64..100, "[a-z]{1,6}"), 0..6),
+    ) {
+        fn to_vec(m: &std::collections::BTreeMap<u32, (u64, String)>) -> Vec<(u32, u64, &str)> {
+            m.iter()
+                .map(|(&k, &(stamp, ref title))| (k, stamp, title.as_str()))
+                .collect()
+        }
+        let a = state_with_relations(A, &to_vec(&a_entries));
+        let b = state_with_relations(A2, &to_vec(&b_entries));
+
+        let mut direct = a.clone();
+        direct.merge(b.clone());
+
+        let migrated_a = migrate_via_v6(&a);
+        let migrated_b = migrate_via_v6(&b);
+        let mut ab = migrated_a.clone();
+        ab.merge(migrated_b.clone());
+        let mut ba = migrated_b;
+        ba.merge(migrated_a);
+
+        prop_assert_eq!(
+            ab.view().series_relations,
+            direct.view().series_relations,
+            "migrate-then-merge must equal merge-then-view"
+        );
+        prop_assert_eq!(
+            ba.view().series_relations,
+            ab.view().series_relations,
+            "both merge directions must converge"
+        );
+    }
+}

@@ -254,22 +254,41 @@ impl From<SeriesRelationsV10> for SeriesRelations {
     }
 }
 
-/// Actor for the map dots written while upgrading a frozen snapshot
-/// layout (the [`map_put`] rebuild in [`upgrade_relations_map`]).
+/// Actor for the map dot written while upgrading a frozen snapshot
+/// layout (the [`map_put`] rebuild in [`upgrade_relations_map`]) —
+/// **derived from the entry's key**, so every replica that migrates
+/// independently assigns the *same* dot to the same key. Migration is
+/// not like compaction: a compacted state is broadcast with an epoch
+/// bump and replaces state everywhere, but a migrated state is
+/// **merged** on the ordinary same-epoch reconnect, and `crdts::Map`'s
+/// merge is dot-based. The first version of this rebuild used a single
+/// constant actor with position-derived counters, which spent the same
+/// dots on different keys across replicas holding different key sets —
+/// crdts' documented double-spent-dot hazard — and the merge silently
+/// destroyed entries on both sides (2026-08-20 audit; regression test
+/// `independently_migrated_relations_merge_to_the_union`). With one
+/// actor per key and counter 1, the merge is a per-key LWW union:
+/// `migration_commutes_with_relations_merge` pins the homomorphism.
+///
 /// Deliberately **not** [`ActorId::SERVER`]: `Map` dedups ops per
 /// origin, so attributing migration dots to the server could make a
 /// migrated replica silently drop the real server's future writes as
-/// replays. Any other constant is safe for `series_relations` — only
-/// the server ever writes it — and a constant keeps the migration
-/// deterministic across replicas.
-const SNAPSHOT_MIGRATION_ACTOR: ActorId = ActorId(u128::MAX);
+/// replays. The high 64 bits mark a reserved migration band a session
+/// actor cannot collide with in practice, and the value never equals
+/// the retired constant (`u128::MAX`) whose dots old-code-migrated
+/// replicas may still carry.
+fn snapshot_migration_actor(series: AniDbSeriesId) -> ActorId {
+    ActorId(((u64::MAX as u128) << 64) | series.0 as u128)
+}
 
 /// Rebuild a frozen-layout `series_relations` map as the live type,
 /// carrying each entry's LWW timestamp over unchanged so later writes
 /// win or lose exactly as they would have against the original. Map-
-/// level clocks are rebuilt from scratch under
-/// [`SNAPSHOT_MIGRATION_ACTOR`] — the same view-level rebuild the daily
-/// compaction pass performs, which is what makes dropping them safe.
+/// level clocks are rebuilt from scratch under the key-derived
+/// [`snapshot_migration_actor`], which keeps the rebuild deterministic
+/// **per key** across replicas — the property the reconnect-time merge
+/// of two independently-migrated states depends on (see the actor's
+/// doc for why a single constant actor was not safe).
 fn upgrade_relations_map(
     old: &LwwMap<AniDbSeriesId, SeriesRelationsV10>,
 ) -> LwwMap<AniDbSeriesId, SeriesRelations> {
@@ -279,7 +298,7 @@ fn upgrade_relations_map(
         if let Some(lww) = reg.read() {
             map_put(
                 &mut fresh,
-                SNAPSHOT_MIGRATION_ACTOR,
+                snapshot_migration_actor(*series),
                 lww.timestamp,
                 *series,
                 SeriesRelations::from(lww.value.clone()),
@@ -304,7 +323,7 @@ fn downgrade_relations_map(
             let value = lww.value.clone();
             map_put(
                 &mut old,
-                SNAPSHOT_MIGRATION_ACTOR,
+                snapshot_migration_actor(*series),
                 lww.timestamp,
                 *series,
                 SeriesRelationsV10 {
