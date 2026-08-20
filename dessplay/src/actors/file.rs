@@ -664,10 +664,22 @@ struct Actor {
     /// Live download data streams we opened: (source, file) → write
     /// half (chunk requests / cancels) plus its reader task.
     download_streams: HashMap<(PeerId, Ed2kHash), DownloadStream>,
-    /// Messages queued for a data stream we've asked for but not yet
-    /// received; the first queued message triggers the `OpenTransfer`.
-    /// Cleared when the stream arrives (flushed) or the download ends.
-    pending_streams: HashMap<(PeerId, Ed2kHash), Vec<PeerMessage>>,
+    /// Chunk control bound for a data stream we've asked for but not
+    /// yet received, coalesced to its net effect: a queued
+    /// `ChunkControl::Request` adds chunks (deduplicated, in request
+    /// order — request order is serve order), a `Cancel` removes them
+    /// (the uploader has seen nothing yet, so a cancelled queued
+    /// request simply vanishes). Coalescing makes queue overflow
+    /// unrepresentable — the previous bounded message queue dropped its
+    /// oldest entry at the cap, losing chunks the scheduler had already
+    /// marked in-flight (2026-08-20 review; nothing re-issued them
+    /// until the 30s snub). **Entry existence is the "already asked"
+    /// latch**: an entry is created only by the request that triggers
+    /// the `OpenTransfer`, and removed only when the open is answered
+    /// (stream arrived, stream failed, link reset) or the download
+    /// ends — an entry drained empty by cancels still awaits its
+    /// answer.
+    pending_streams: HashMap<(PeerId, Ed2kHash), Vec<u32>>,
     /// Serve tasks, one per incoming data stream: (requester, file).
     /// Each owns its stream and paces itself against `upload`, so a
     /// slow downloader backpressures only its own stream. Dropping a
@@ -749,6 +761,28 @@ impl Drop for TaskGuard {
 
 /// A live download data stream: the write half (requests/cancels flow
 /// down it) and the reader task feeding its chunks into the actor.
+/// The only two messages that ride a per-transfer data stream
+/// (everything else rides the relay stream). A dedicated type rather
+/// than [`PeerMessage`], so [`Actor::queue_for_stream`]'s coalescing
+/// pending set is total over its input by construction — no other
+/// message kind can end up queued for a data stream.
+#[derive(Clone)]
+enum ChunkControl {
+    /// "Send me these chunks", most-wanted first.
+    Request(Vec<u32>),
+    /// "Drop these outstanding requests."
+    Cancel(Vec<u32>),
+}
+
+impl ChunkControl {
+    fn into_message(self, file: Ed2kHash) -> PeerMessage {
+        match self {
+            ChunkControl::Request(chunks) => PeerMessage::ChunkRequest { file, chunks },
+            ChunkControl::Cancel(chunks) => PeerMessage::Cancel { file, chunks },
+        }
+    }
+}
+
 struct DownloadStream {
     send: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
     /// Which installation this is (see [`Actor::stream_generation`]):
@@ -1626,9 +1660,13 @@ impl Actor {
                     // Chunk control rides the per-transfer data stream;
                     // everything else the relay stream.
                     match message {
-                        PeerMessage::ChunkRequest { file, .. }
-                        | PeerMessage::Cancel { file, .. } => {
-                            self.send_on_stream(to, file, message).await;
+                        PeerMessage::ChunkRequest { file, chunks } => {
+                            self.send_on_stream(to, file, ChunkControl::Request(chunks))
+                                .await;
+                        }
+                        PeerMessage::Cancel { file, chunks } => {
+                            self.send_on_stream(to, file, ChunkControl::Cancel(chunks))
+                                .await;
                         }
                         other => {
                             let _ = self
@@ -2154,11 +2192,12 @@ impl Actor {
     // queue both did).
 
     /// Send a chunk-control message toward a source, on its data stream
-    /// — opening one first if needed (messages queue until it arrives).
-    async fn send_on_stream(&mut self, to: PeerId, file: Ed2kHash, message: PeerMessage) {
+    /// — opening one first if needed (chunk control coalesces into
+    /// [`pending_streams`](Self::pending_streams) until it arrives).
+    async fn send_on_stream(&mut self, to: PeerId, file: Ed2kHash, control: ChunkControl) {
         let key = (to.clone(), file);
         if let Some(stream) = self.download_streams.get_mut(&key) {
-            let Ok(frame) = wire::encode(&message) else {
+            let Ok(frame) = wire::encode(&control.clone().into_message(file)) else {
                 return;
             };
             // Control frames are tiny; QUIC/pump buffers absorb them,
@@ -2166,31 +2205,45 @@ impl Actor {
             if let Err(e) = write_frame(&mut stream.send, &frame).await {
                 tracing::debug!(%to, %file, "data stream write failed: {e}");
                 self.download_streams.remove(&key);
-                self.queue_for_stream(to, file, message).await;
+                self.queue_for_stream(to, file, control).await;
             }
             return;
         }
-        self.queue_for_stream(to, file, message).await;
+        self.queue_for_stream(to, file, control).await;
     }
 
-    /// Queue a message for a not-yet-open data stream; the first queued
-    /// message asks the network layer to open one. The queue-emptiness
-    /// latch is sound because the network layer answers every open
-    /// (stream or [`FileCommand::TransferStreamFailed`], which clears
-    /// the queue) — the cap below is a belt-and-braces memory bound,
-    /// not the recovery mechanism.
-    async fn queue_for_stream(&mut self, to: PeerId, file: Ed2kHash, message: PeerMessage) {
-        let queue = self.pending_streams.entry((to.clone(), file)).or_default();
-        let fresh = queue.is_empty();
-        queue.push(message);
-        if queue.len() > PENDING_STREAM_MESSAGES {
-            // Stale chunk control is worthless — the scheduler re-plans
-            // everything the moment the stream (or its failure) lands.
-            tracing::debug!(%to, %file, "pending stream queue full; dropping oldest");
-            queue.remove(0);
-        }
-        if fresh {
-            let _ = self.out.send(FileOutput::OpenTransfer { to, file }).await;
+    /// Coalesce chunk control for a not-yet-open data stream; the
+    /// request that creates the entry asks the network layer to open
+    /// one. The entry-existence latch is sound because the network
+    /// layer answers every open (stream, or
+    /// [`FileCommand::TransferStreamFailed`], which removes the entry).
+    /// Coalescing to the net requested set (see
+    /// [`pending_streams`](Self::pending_streams)) means nothing can
+    /// overflow or be dropped here: the set is bounded by the
+    /// scheduler's own outstanding requests toward this source.
+    async fn queue_for_stream(&mut self, to: PeerId, file: Ed2kHash, control: ChunkControl) {
+        match control {
+            ChunkControl::Request(chunks) => {
+                let fresh = !self.pending_streams.contains_key(&(to.clone(), file));
+                let queue = self.pending_streams.entry((to.clone(), file)).or_default();
+                for chunk in chunks {
+                    if !queue.contains(&chunk) {
+                        queue.push(chunk);
+                    }
+                }
+                if fresh {
+                    let _ = self.out.send(FileOutput::OpenTransfer { to, file }).await;
+                }
+            }
+            ChunkControl::Cancel(chunks) => {
+                // Cancelling a queued request just unqueues it — the
+                // uploader has seen nothing yet. No entry (the cancel
+                // outlived a dead stream): nothing to cancel, and no
+                // reason to open a stream to say so.
+                if let Some(queue) = self.pending_streams.get_mut(&(to, file)) {
+                    queue.retain(|c| !chunks.contains(c));
+                }
+            }
         }
     }
 
@@ -2220,9 +2273,12 @@ impl Actor {
                 _reader: TaskGuard(reader),
             },
         );
-        if let Some(queue) = self.pending_streams.remove(&(peer.clone(), file)) {
-            for message in queue {
-                self.send_on_stream(peer.clone(), file, message).await;
+        if let Some(chunks) = self.pending_streams.remove(&(peer.clone(), file)) {
+            // One coalesced request; an entry drained empty by cancels
+            // has nothing left to say.
+            if !chunks.is_empty() {
+                self.send_on_stream(peer, file, ChunkControl::Request(chunks))
+                    .await;
             }
         }
     }
@@ -3240,11 +3296,6 @@ fn sanitize_component(name: &str) -> String {
 /// How often the actor runs snub/refill maintenance (a safety net; data
 /// arrival drives refill directly).
 const DOWNLOAD_TICK: std::time::Duration = std::time::Duration::from_millis(250);
-
-/// Cap on messages queued for a data stream that hasn't arrived yet
-/// (per `(peer, file)`). The answered-request contract means the queue
-/// is short-lived; this bounds memory if an answer is ever lost anyway.
-const PENDING_STREAM_MESSAGES: usize = 64;
 
 /// Read a download data stream: each `ChunkData` frame feeds the actor
 /// (the bounded stream-event channel is the disk-write backpressure);
@@ -4579,7 +4630,7 @@ mod tests {
             .await;
         while out_rx.try_recv().is_ok() {} // drain solicitation traffic
 
-        let request = |chunks: Vec<u32>| PeerMessage::ChunkRequest { file, chunks };
+        let request = |chunks: Vec<u32>| ChunkControl::Request(chunks);
         // The first chunk-control send queues and asks for a stream;
         // a second send while pending must not re-ask (the latch).
         actor
@@ -4610,6 +4661,187 @@ mod tests {
         assert!(
             matches!(out_rx.try_recv(), Ok(FileOutput::OpenTransfer { .. })),
             "a send after the reset must ask for a fresh stream"
+        );
+    }
+
+    /// A deep chunk-control backlog while a stream open is outstanding
+    /// must not lose requests (2026-08-20 review): the old bounded
+    /// `Vec<PeerMessage>` queue dropped its *oldest* message at the
+    /// cap, and the scheduler had already marked those chunks in-flight
+    /// — nothing re-issued them toward any source until the 30s snub.
+    /// Every chunk queued before the stream lands must reach it.
+    #[tokio::test]
+    async fn queued_chunk_requests_survive_a_deep_backlog() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let (out_tx, mut out_rx) = mpsc::channel(256);
+        let (done_tx, _done_rx) = mpsc::channel(64);
+        let (stream_tx, _stream_rx) = mpsc::channel(64);
+        let mut actor = Actor::new(
+            FileConfig {
+                storage: Storage::open_in_memory().unwrap(),
+                media_roots: vec![],
+                retention: CacheRetention::default(),
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: None,
+                nyaa: None,
+            },
+            out_tx,
+            done_tx,
+            stream_tx,
+        )
+        .unwrap();
+
+        let file = hash(1);
+        let seed = PeerId::new("seed");
+        actor
+            .start_peer_download(file, 1024, vec![seed.clone()], 0)
+            .await;
+        while out_rx.try_recv().is_ok() {} // drain solicitation traffic
+
+        // One more chunk than the old queue cap, one message each.
+        let backlog: Vec<u32> = (0..65).collect();
+        for &chunk in &backlog {
+            actor
+                .send_on_stream(seed.clone(), file, ChunkControl::Request(vec![chunk]))
+                .await;
+        }
+
+        // The stream lands; the whole backlog must flush onto it.
+        let (near, far) = {
+            let (a, b) = tokio::io::duplex(256 * 1024);
+            let (a_read, a_write) = tokio::io::split(a);
+            let (b_read, b_write) = tokio::io::split(b);
+            (
+                BiStream {
+                    send: Box::new(a_write),
+                    recv: Box::new(a_read),
+                },
+                BiStream {
+                    send: Box::new(b_write),
+                    recv: Box::new(b_read),
+                },
+            )
+        };
+        actor.on_download_stream(seed, file, near).await;
+
+        let BiStream { mut recv, .. } = far;
+        let mut seen = std::collections::HashSet::new();
+        while seen.len() < backlog.len() {
+            let frame =
+                match tokio::time::timeout(Duration::from_millis(500), read_frame(&mut recv)).await
+                {
+                    Ok(Ok(frame)) => frame,
+                    _ => break, // stream quiet: whatever flushed, flushed
+                };
+            if let Ok(PeerMessage::ChunkRequest { chunks, .. }) = wire::decode(&frame) {
+                seen.extend(chunks);
+            }
+        }
+        let missing: Vec<u32> = backlog
+            .iter()
+            .copied()
+            .filter(|c| !seen.contains(c))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "chunks queued while the open was outstanding never reached \
+             the stream (the scheduler holds them in-flight until the \
+             30s snub): {missing:?}"
+        );
+    }
+
+    /// The pending set coalesces to its net effect: a `Cancel` for a
+    /// queued-but-unsent request unqueues it (the uploader never saw
+    /// the request, so sending the pair would waste a round trip), and
+    /// a `Cancel` with no pending entry neither creates one nor asks
+    /// for a stream — while the entry itself, even drained empty,
+    /// keeps the "already asked" latch armed until the open is
+    /// answered.
+    #[tokio::test]
+    async fn pending_chunk_control_coalesces_to_its_net_effect() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let (out_tx, mut out_rx) = mpsc::channel(64);
+        let (done_tx, _done_rx) = mpsc::channel(64);
+        let (stream_tx, _stream_rx) = mpsc::channel(64);
+        let mut actor = Actor::new(
+            FileConfig {
+                storage: Storage::open_in_memory().unwrap(),
+                media_roots: vec![],
+                retention: CacheRetention::default(),
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: None,
+                nyaa: None,
+            },
+            out_tx,
+            done_tx,
+            stream_tx,
+        )
+        .unwrap();
+
+        let file = hash(1);
+        let seed = PeerId::new("seed");
+        actor
+            .start_peer_download(file, 1024, vec![seed.clone()], 0)
+            .await;
+        while out_rx.try_recv().is_ok() {} // drain solicitation traffic
+
+        // A lone cancel toward a source with no pending entry: nothing
+        // to cancel, no stream to open.
+        actor
+            .send_on_stream(seed.clone(), file, ChunkControl::Cancel(vec![5]))
+            .await;
+        assert!(
+            out_rx.try_recv().is_err(),
+            "a lone cancel must not ask for a stream"
+        );
+        assert!(
+            !actor.pending_streams.contains_key(&(seed.clone(), file)),
+            "a lone cancel must not create a pending entry"
+        );
+
+        // Request, then cancel part of it before the stream lands.
+        actor
+            .send_on_stream(seed.clone(), file, ChunkControl::Request(vec![0, 1, 2]))
+            .await;
+        assert!(
+            matches!(out_rx.try_recv(), Ok(FileOutput::OpenTransfer { .. })),
+            "the entry-creating request asks for a stream"
+        );
+        actor
+            .send_on_stream(seed.clone(), file, ChunkControl::Cancel(vec![1]))
+            .await;
+        assert_eq!(
+            actor.pending_streams.get(&(seed.clone(), file)),
+            Some(&vec![0, 2]),
+            "a cancelled queued chunk is unqueued, the rest stay"
+        );
+
+        // Cancelling the remainder empties the set but keeps the entry
+        // — the open is still outstanding and must still be answered.
+        actor
+            .send_on_stream(seed.clone(), file, ChunkControl::Cancel(vec![0, 2]))
+            .await;
+        assert_eq!(
+            actor.pending_streams.get(&(seed.clone(), file)),
+            Some(&vec![]),
+            "a drained entry stays latched until its open is answered"
+        );
+        actor
+            .send_on_stream(seed.clone(), file, ChunkControl::Request(vec![3]))
+            .await;
+        assert!(
+            out_rx.try_recv().is_err(),
+            "a request while the open is outstanding must not re-ask"
         );
     }
 
