@@ -25,7 +25,7 @@ use dessplay_core::types::{
 };
 
 use super::client::{AniDbApi, LookupError};
-use super::curator::{CurationInput, ShortTitleCurator};
+use super::curator::{CurateError, Curation, CurationInput, ShortTitleCurator};
 use super::protocol;
 use super::schedule::{self, Outcome};
 use super::titles::{self, TitlesSource};
@@ -84,8 +84,8 @@ pub async fn run<H: AniDbHost>(
     // Next time to consider a titles refresh; learned from storage on
     // the first pass.
     let mut titles_due: u64 = 0;
-    // Earliest next curator attempt after a failure.
-    let mut curate_backoff: u64 = 0;
+    // Curation backoff plus the in-flight (non-blocking) model call.
+    let mut curation = CurationState::default();
     loop {
         let now = host.now();
         refresh_titles_if_due(&host, &titles, now, &mut titles_due).await;
@@ -100,7 +100,7 @@ pub async fn run<H: AniDbHost>(
         seed_queues(&host, &view, now);
         populate_catalog(&host, &view).await;
         apply_series_hints(&host, &view).await;
-        curate_short_titles(&host, &view, curator.as_ref(), now, &mut curate_backoff).await;
+        curate_short_titles(&host, &view, curator.as_ref(), now, &mut curation).await;
         match step(&host, &*api, now).await {
             Ok(true) => {} // did work; the client paces the next send
             Ok(false) => {
@@ -227,96 +227,78 @@ async fn apply_series_hints<H: AniDbHost>(host: &H, view: &StateView) {
 /// How many uncurated series to send the model per pass.
 const CURATE_BATCH: usize = 20;
 /// Back off this long after a curator failure (API down, refusal,
-/// bad token) before trying again.
+/// bad token) — or a reply that answered nothing — before trying again.
 const CURATE_RETRY_MILLIS: u64 = 10 * 60 * 1000;
+/// Give up on a series after this many batches whose reply didn't
+/// answer it (model omissions, refusals, timeouts — not transport
+/// failures, which say nothing about the batch): it settles as a
+/// durable no-short-name answer, the curation analogue of the anime
+/// queue's `next_attempt = NEVER` tombstone.
+const MAX_CURATE_ATTEMPTS: u32 = 5;
+
+/// Curation-pass state carried across worker passes: the failure
+/// backoff and the in-flight model call. The call runs on its own
+/// blocking task and is only ever *polled* here, so a slow curator
+/// (the HTTP timeout is minutes) never delays [`step`]'s user-visible
+/// metadata lookups (2026-08-20 audit — the call used to be awaited
+/// inline in the drain loop).
+#[derive(Default)]
+struct CurationState {
+    /// Earliest next curator attempt after a failure or empty reply.
+    backoff: u64,
+    /// The in-flight batch, if any.
+    job: Option<CurationJob>,
+}
+
+struct CurationJob {
+    /// The series sent, in batch order — the key for the positional
+    /// answers.
+    asked: Vec<AniDbSeriesId>,
+    handle: tokio::task::JoinHandle<Result<Vec<Curation>, CurateError>>,
+}
 
 /// Reconcile replicated short titles with the AI curator's cache, and
-/// grow that cache one batch per pass. Settled `series_relations` rows
-/// are written once and never revisited by the lookup schedule, so
-/// this pass is both the backfill for rows settled before curation
+/// grow that cache one batch at a time. Settled `series_relations`
+/// rows are written once and never revisited by the lookup schedule,
+/// so this pass is both the backfill for rows settled before curation
 /// existed and the steady state for new series. Same quiescence shape
-/// as [`apply_series_hints`]: once every series in view has a cached
-/// answer and the replicated state matches it, nothing runs but cheap
-/// SQLite reads — the API is consulted once per series, ever.
+/// as [`apply_series_hints`]: once every series in view has a settled
+/// cache row and the replicated state matches it, nothing runs but one
+/// cheap bulk SQLite read — the API answers each series at most once,
+/// and a series it won't answer is retried in rotated batches until it
+/// settles as no-short-name after [`MAX_CURATE_ATTEMPTS`].
 ///
 /// The curator only runs when a token is stored
 /// ([`crate::storage::ANTHROPIC_TOKEN_KEY`], client-provisioned over
 /// the wire) and the titles table has rows to send. Series without a
-/// cached answer are left untouched — a tokenless server never
+/// settled answer are left untouched — a tokenless server never
 /// clears anything.
 async fn curate_short_titles<H: AniDbHost>(
     host: &H,
     view: &StateView,
     curator: Option<&Arc<dyn ShortTitleCurator>>,
     now: u64,
-    curate_backoff: &mut u64,
+    state: &mut CurationState,
 ) {
-    // Grow the cache: one batch of never-asked series per pass.
-    if let Some(curator) = curator
-        && now >= *curate_backoff
-        && let Some(Some(token)) = store(host, "curator token", |s| {
-            s.kv_get(crate::storage::ANTHROPIC_TOKEN_KEY)
-        })
-        && store(host, "titles presence", |s| s.titles_available()) == Some(true)
-    {
-        let mut batch = Vec::new();
-        for series in view.series_relations.keys() {
-            if batch.len() >= CURATE_BATCH {
-                break;
-            }
-            let asked = store(host, "curated cache", |s| s.curated_short_title(*series));
-            if asked != Some(None) {
-                continue; // cached already (or a storage error)
-            }
-            // The dump can lag a brand-new series; retry after refresh.
-            match store(host, "titles for series", |s| s.titles_for(*series)) {
-                Some(rows) if !rows.is_empty() => batch.push(CurationInput {
-                    series: *series,
-                    rows,
-                }),
-                _ => continue,
-            }
-        }
-        if !batch.is_empty() {
-            let asked: Vec<AniDbSeriesId> = batch.iter().map(|input| input.series).collect();
-            let curator = Arc::clone(curator);
-            let result = tokio::task::spawn_blocking(move || curator.curate(&token, &batch)).await;
-            match result {
-                Ok(Ok(answers)) => {
-                    let answered: BTreeSet<AniDbSeriesId> =
-                        answers.iter().map(|(series, _)| *series).collect();
-                    store(host, "caching curated titles", |s| {
-                        for (series, short) in &answers {
-                            s.set_curated_short_title(*series, short.as_deref(), now as i64)?;
-                        }
-                        Ok(())
-                    });
-                    for series in asked {
-                        if !answered.contains(&series) {
-                            tracing::warn!(aid = series.0, "curator reply omitted a series");
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("short-title curation failed (will retry): {e}");
-                    *curate_backoff = now + CURATE_RETRY_MILLIS;
-                }
-                Err(e) => {
-                    tracing::error!("curator task died: {e}");
-                    *curate_backoff = now + CURATE_RETRY_MILLIS;
-                }
-            }
-        }
+    // Harvest a finished model call (never block on a running one).
+    if let Some(job) = state.job.take_if(|job| job.handle.is_finished()) {
+        harvest_curation(host, job, now, state).await;
     }
 
-    // Reconcile replicated state with the cache. Uncached series are
-    // skipped, never cleared.
+    // One bulk read drives both the reconcile and the batch selection
+    // (2026-08-20 audit: this used to be two point queries per known
+    // series per pass, under the same lock save_state uses).
+    let Some(cache) = store(host, "curated cache", |s| s.curated_titles()) else {
+        return; // storageless: no cache, no curation
+    };
+
+    // Reconcile replicated state with the settled cache. Unsettled
+    // series are skipped, never cleared.
     for (series, relations) in &view.series_relations {
-        let Some(Some(cached)) = store(host, "curated cache", |s| s.curated_short_title(*series))
-        else {
+        let Some(row) = cache.get(series).filter(|row| row.settled) else {
             continue;
         };
-        let short_titles: Vec<String> = cached.into_iter().collect();
+        let short_titles: Vec<String> = row.title.clone().into_iter().collect();
         if relations.short_titles != short_titles {
             tracing::info!(
                 aid = series.0,
@@ -332,6 +314,124 @@ async fn curate_short_titles<H: AniDbHost>(
                 },
             )
             .await;
+        }
+    }
+
+    // Grow the cache: launch the next batch of unsettled series.
+    if state.job.is_none()
+        && now >= state.backoff
+        && let Some(curator) = curator
+        && let Some(Some(token)) = store(host, "curator token", |s| {
+            s.kv_get(crate::storage::ANTHROPIC_TOKEN_KEY)
+        })
+        && store(host, "titles presence", |s| s.titles_available()) == Some(true)
+    {
+        // Fewest-attempts first: series a reply already failed to
+        // answer sink behind fresh ones, so one stuck batch can't
+        // starve the rest of the catalogue (the ordering *is* the
+        // batch rotation — it needs no cursor and survives restarts).
+        let mut candidates: Vec<(u32, AniDbSeriesId)> = view
+            .series_relations
+            .keys()
+            .filter_map(|series| match cache.get(series) {
+                None => Some((0, *series)),
+                Some(row) if !row.settled => Some((row.attempts, *series)),
+                Some(_) => None, // settled — never re-asked
+            })
+            .collect();
+        candidates.sort_unstable();
+        let mut batch = Vec::new();
+        for (_, series) in candidates {
+            if batch.len() >= CURATE_BATCH {
+                break;
+            }
+            // The dump can lag a brand-new series; retry after refresh.
+            match store(host, "titles for series", |s| s.titles_for(series)) {
+                Some(rows) if !rows.is_empty() => batch.push(CurationInput { series, rows }),
+                _ => continue,
+            }
+        }
+        if !batch.is_empty() {
+            let asked: Vec<AniDbSeriesId> = batch.iter().map(|input| input.series).collect();
+            let curator = Arc::clone(curator);
+            let handle = tokio::task::spawn_blocking(move || curator.curate(&token, &batch));
+            state.job = Some(CurationJob { asked, handle });
+        }
+    }
+}
+
+/// Fold a finished curation call into the durable cache. Answers are
+/// positional against the batch we sent, so nothing outside it can be
+/// written. Series the reply left unanswered — including the whole
+/// batch on a model-side failure — accrue a durable attempt and settle
+/// as no-short-name at [`MAX_CURATE_ATTEMPTS`]; a reply that answered
+/// nothing arms the backoff, since re-sending immediately would repeat
+/// it.
+async fn harvest_curation<H: AniDbHost>(
+    host: &H,
+    job: CurationJob,
+    now: u64,
+    state: &mut CurationState,
+) {
+    let CurationJob { asked, handle } = job;
+    let unanswered: Vec<AniDbSeriesId> = match handle.await {
+        Ok(Ok(answers)) => {
+            let mut answered = Vec::new();
+            let mut unanswered = Vec::new();
+            for (index, series) in asked.iter().enumerate() {
+                match answers.get(index) {
+                    Some(Curation::Short(name)) => answered.push((*series, Some(name.clone()))),
+                    Some(Curation::NoShortName) => answered.push((*series, None)),
+                    Some(Curation::Unanswered) | None => unanswered.push(*series),
+                }
+            }
+            store(host, "caching curated titles", |s| {
+                for (series, short) in &answered {
+                    s.set_curated_short_title(*series, short.as_deref(), now as i64)?;
+                }
+                Ok(())
+            });
+            for series in &unanswered {
+                tracing::warn!(aid = series.0, "curator reply omitted a series");
+            }
+            if answered.is_empty() {
+                tracing::warn!("curator reply answered nothing; backing off");
+                state.backoff = now + CURATE_RETRY_MILLIS;
+            }
+            unanswered
+        }
+        Ok(Err(e @ CurateError::Model(_))) => {
+            // The model saw this batch and gave nothing usable:
+            // evidence against the batch, so every series accrues an
+            // attempt (a deterministic refusal must eventually settle,
+            // not re-bill forever).
+            tracing::warn!("short-title curation failed (will retry): {e}");
+            state.backoff = now + CURATE_RETRY_MILLIS;
+            asked
+        }
+        Ok(Err(e @ CurateError::Transport(_))) => {
+            // Never reached the model; says nothing about the batch.
+            tracing::warn!("short-title curation failed (will retry): {e}");
+            state.backoff = now + CURATE_RETRY_MILLIS;
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::error!("curator task died: {e}");
+            state.backoff = now + CURATE_RETRY_MILLIS;
+            Vec::new()
+        }
+    };
+    if !unanswered.is_empty()
+        && let Some(gave_up) = store(host, "recording curation attempts", |s| {
+            s.record_curation_unanswered(&unanswered, now as i64, MAX_CURATE_ATTEMPTS)
+        })
+    {
+        for series in gave_up {
+            tracing::warn!(
+                aid = series.0,
+                attempts = MAX_CURATE_ATTEMPTS,
+                "curator never answered for this series; settling as no-short-name"
+            );
         }
     }
 }
@@ -1393,11 +1493,13 @@ mod tests {
         });
     }
 
-    /// Canned curator: answers from a fixed map (missing aids are
-    /// omitted from the reply), counting calls, optionally failing.
+    /// Canned curator: positional answers from a fixed map (aids
+    /// missing from the map come back [`Curation::Unanswered`]),
+    /// recording every batch it was asked, optionally failing.
     struct MockCurator {
         answers: HashMap<u32, Option<&'static str>>,
         calls: AtomicUsize,
+        asked: Mutex<Vec<Vec<u32>>>,
         fail: std::sync::atomic::AtomicBool,
     }
 
@@ -1406,6 +1508,7 @@ mod tests {
             Arc::new(Self {
                 answers: answers.iter().copied().collect(),
                 calls: AtomicUsize::new(0),
+                asked: Mutex::new(Vec::new()),
                 fail: std::sync::atomic::AtomicBool::new(false),
             })
         }
@@ -1416,17 +1519,21 @@ mod tests {
             &self,
             _token: &str,
             batch: &[CurationInput],
-        ) -> Result<Vec<(AniDbSeriesId, Option<String>)>, String> {
+        ) -> Result<Vec<Curation>, CurateError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.asked
+                .lock()
+                .unwrap()
+                .push(batch.iter().map(|input| input.series.0).collect());
             if self.fail.load(Ordering::SeqCst) {
-                return Err("offline".into());
+                return Err(CurateError::Transport("offline".into()));
             }
             Ok(batch
                 .iter()
-                .filter_map(|input| {
-                    self.answers
-                        .get(&input.series.0)
-                        .map(|short| (input.series, short.map(str::to_string)))
+                .map(|input| match self.answers.get(&input.series.0) {
+                    Some(Some(short)) => Curation::Short(short.to_string()),
+                    Some(None) => Curation::NoShortName,
+                    None => Curation::Unanswered,
                 })
                 .collect())
         }
@@ -1443,14 +1550,26 @@ mod tests {
         });
     }
 
-    /// One curation pass with the standard fixtures.
+    /// One logical curation pass: run the function, then drive any
+    /// spawned model call to completion and harvest it, so tests see
+    /// synchronous results (production instead polls across passes).
     async fn curate_pass(
         host: &Arc<MockHost>,
         curator: &Option<Arc<dyn ShortTitleCurator>>,
-        backoff: &mut u64,
+        state: &mut CurationState,
     ) {
-        let now = host.now();
-        curate_short_titles(host, &host.view(), curator.as_ref(), now, backoff).await;
+        curate_short_titles(host, &host.view(), curator.as_ref(), host.now(), state).await;
+        for _ in 0..1000 {
+            let Some(job) = &state.job else { return };
+            if !job.handle.is_finished() {
+                // The mock runs on the blocking pool; give it a beat.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                tokio::task::yield_now().await;
+                continue;
+            }
+            curate_short_titles(host, &host.view(), curator.as_ref(), host.now(), state).await;
+        }
+        panic!("curation job never completed");
     }
 
     #[tokio::test]
@@ -1469,9 +1588,9 @@ mod tests {
         provision_token(&host);
         let mock = MockCurator::new(&[(5391, Some("GochiUsa")), (777, None)]);
         let curator = dyn_curator(&mock);
-        let mut backoff = 0;
+        let mut state = CurationState::default();
 
-        curate_pass(&host, &curator, &mut backoff).await;
+        curate_pass(&host, &curator, &mut state).await;
 
         let view = host.view();
         let gochiusa = &view.series_relations[&AniDbSeriesId(5391)];
@@ -1488,9 +1607,183 @@ mod tests {
 
         // Quiesced: a second pass asks nothing and writes nothing.
         let before = host.state.lock().unwrap().clone();
-        curate_pass(&host, &curator, &mut backoff).await;
+        curate_pass(&host, &curator, &mut state).await;
         assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
         assert_eq!(*host.state.lock().unwrap(), before);
+    }
+
+    /// Regression (2026-08-20 audit): a reply naming an aid that was
+    /// never in the batch — hallucinated or injected via title rows —
+    /// must not be cached. The fix keys answers to the batch
+    /// *positionally*, so a curator cannot name an out-of-batch series
+    /// at all (the identity filtering itself is pinned at the
+    /// `parse_reply` level in curator.rs); what remains expressible is
+    /// a reply with surplus entries beyond the batch, which must be
+    /// ignored.
+    #[tokio::test]
+    async fn curator_reply_beyond_the_batch_is_dropped() {
+        struct SurplusCurator;
+        impl ShortTitleCurator for SurplusCurator {
+            fn curate(
+                &self,
+                _token: &str,
+                batch: &[CurationInput],
+            ) -> Result<Vec<Curation>, CurateError> {
+                let mut out: Vec<Curation> = batch
+                    .iter()
+                    .map(|_| Curation::Short("GochiUsa".to_string()))
+                    .collect();
+                // Surplus entries answer nothing that was asked.
+                out.push(Curation::Short("Evil".to_string()));
+                out.push(Curation::NoShortName);
+                Ok(out)
+            }
+        }
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        host.with_storage(|s| {
+            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
+                .unwrap();
+        });
+        provision_token(&host);
+        let curator: Option<Arc<dyn ShortTitleCurator>> = Some(Arc::new(SurplusCurator));
+        let mut state = CurationState::default();
+
+        curate_pass(&host, &curator, &mut state).await;
+
+        // The asked series is answered and cached; nothing else is.
+        let cache = host.with_storage(|s| s.curated_titles().unwrap()).unwrap();
+        assert_eq!(
+            cache.keys().copied().collect::<Vec<_>>(),
+            vec![AniDbSeriesId(5391)],
+            "only the asked series may gain a cache row"
+        );
+        assert_eq!(
+            host.with_storage(|s| s.curated_short_title(AniDbSeriesId(5391)).unwrap())
+                .unwrap(),
+            Some(Some("GochiUsa".into()))
+        );
+    }
+
+    /// Regression (2026-08-20 audit): a well-formed reply that answers
+    /// nothing must arm the curator backoff — before the fix the
+    /// identical batch was re-sent at pass cadence (POLL_MIN = 5s)
+    /// forever, and every series after it was starved.
+    #[tokio::test]
+    async fn unanswered_batch_arms_the_backoff() {
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        host.with_storage(|s| {
+            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
+                .unwrap();
+        });
+        provision_token(&host);
+        // Answers for no aid at all: the reply is Ok but empty.
+        let mock = MockCurator::new(&[]);
+        let curator = dyn_curator(&mock);
+        let mut state = CurationState::default();
+
+        curate_pass(&host, &curator, &mut state).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            state.backoff > host.now(),
+            "a batch that answered nothing must arm the backoff"
+        );
+        // The asked series is not settled — it will be retried…
+        assert_eq!(
+            host.with_storage(|s| s.curated_short_title(AniDbSeriesId(5391)).unwrap())
+                .unwrap(),
+            None,
+            "an unanswered series must not look like a settled answer"
+        );
+        // …and its attempt was recorded durably.
+        let cache = host.with_storage(|s| s.curated_titles().unwrap()).unwrap();
+        let row = &cache[&AniDbSeriesId(5391)];
+        assert_eq!((row.attempts, row.settled), (1, false));
+    }
+
+    /// After [`MAX_CURATE_ATTEMPTS`] unanswered batches a series
+    /// settles as a durable no-short-name answer and is never sent
+    /// again — the "asked and settled" shape the anime queue uses.
+    #[tokio::test]
+    async fn unanswered_series_settles_after_max_attempts() {
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        host.with_storage(|s| {
+            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
+                .unwrap();
+        });
+        provision_token(&host);
+        let mock = MockCurator::new(&[]);
+        let curator = dyn_curator(&mock);
+        let mut state = CurationState::default();
+
+        for attempt in 1..=MAX_CURATE_ATTEMPTS {
+            state.backoff = 0; // the test drives past each backoff
+            curate_pass(&host, &curator, &mut state).await;
+            assert_eq!(mock.calls.load(Ordering::SeqCst) as u32, attempt);
+        }
+        // Settled: reads as a durable "no short name"…
+        assert_eq!(
+            host.with_storage(|s| s.curated_short_title(AniDbSeriesId(5391)).unwrap())
+                .unwrap(),
+            Some(None),
+            "a series the model never answers must settle as no-short-name"
+        );
+        // …and no further pass asks the model about it.
+        state.backoff = 0;
+        curate_pass(&host, &curator, &mut state).await;
+        assert_eq!(
+            mock.calls.load(Ordering::SeqCst) as u32,
+            MAX_CURATE_ATTEMPTS
+        );
+    }
+
+    /// Attempted series sink behind fresh ones in batch selection, so
+    /// one batch the model won't answer can't starve the catalogue:
+    /// with more series than one batch holds, the second batch leads
+    /// with the never-attempted series.
+    #[tokio::test]
+    async fn batch_selection_rotates_past_unanswered_series() {
+        let host = MockHost::new();
+        let count = CURATE_BATCH as u32 + 5;
+        let mut rows = Vec::new();
+        for aid in 1..=count {
+            seed_relations(&host, aid, &format!("Series {aid}"));
+            rows.push(crate::storage::TitleRow {
+                series: AniDbSeriesId(aid),
+                kind: 1,
+                lang: "x-jat".into(),
+                title: format!("Series {aid}"),
+            });
+        }
+        host.with_storage(|s| s.replace_titles(&rows).unwrap());
+        provision_token(&host);
+        let mock = MockCurator::new(&[]);
+        let curator = dyn_curator(&mock);
+        let mut state = CurationState::default();
+
+        curate_pass(&host, &curator, &mut state).await;
+        state.backoff = 0;
+        curate_pass(&host, &curator, &mut state).await;
+
+        let asked = mock.asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(
+            asked[0],
+            (1..=CURATE_BATCH as u32).collect::<Vec<_>>(),
+            "first batch: lowest aids, none attempted yet"
+        );
+        assert_eq!(
+            asked[1][..5],
+            (CURATE_BATCH as u32 + 1..=count).collect::<Vec<_>>()[..],
+            "second batch must lead with the never-attempted series"
+        );
+        assert_eq!(
+            asked[1][5..],
+            (1..=15).collect::<Vec<_>>()[..],
+            "…then wrap back to the once-attempted ones"
+        );
     }
 
     #[tokio::test]
@@ -1519,7 +1812,14 @@ mod tests {
         });
 
         // No token, no curator needed: the cache alone drives the write.
-        curate_short_titles(&host, &host.view(), None, host.now(), &mut 0).await;
+        curate_short_titles(
+            &host,
+            &host.view(),
+            None,
+            host.now(),
+            &mut CurationState::default(),
+        )
+        .await;
         assert_eq!(
             host.view().series_relations[&AniDbSeriesId(5391)].short_titles,
             ["GochiUsa"]
@@ -1540,7 +1840,7 @@ mod tests {
         let curator = dyn_curator(&mock);
         let before = host.state.lock().unwrap().clone();
 
-        curate_pass(&host, &curator, &mut 0).await;
+        curate_pass(&host, &curator, &mut CurationState::default()).await;
         assert_eq!(mock.calls.load(Ordering::SeqCst), 0, "no token, no call");
         assert_eq!(*host.state.lock().unwrap(), before);
 
@@ -1549,7 +1849,7 @@ mod tests {
         let fresh = MockHost::new();
         seed_relations(&fresh, 5391, "Gochuumon wa Usagi Desu ka?");
         provision_token(&fresh);
-        curate_pass(&fresh, &curator, &mut 0).await;
+        curate_pass(&fresh, &curator, &mut CurationState::default()).await;
         assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
     }
 
@@ -1565,31 +1865,76 @@ mod tests {
         let mock = MockCurator::new(&[(5391, Some("GochiUsa"))]);
         mock.fail.store(true, Ordering::SeqCst);
         let curator = dyn_curator(&mock);
-        let mut backoff = 0;
+        let mut state = CurationState::default();
 
-        curate_pass(&host, &curator, &mut backoff).await;
+        curate_pass(&host, &curator, &mut state).await;
         assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
-        assert!(backoff > host.now(), "failure arms the backoff");
+        assert!(state.backoff > host.now(), "failure arms the backoff");
         assert_eq!(
             host.with_storage(|s| s.curated_short_title(AniDbSeriesId(5391)).unwrap())
                 .unwrap(),
             None,
             "a failed batch caches nothing"
         );
+        // A transport failure says nothing about the batch: no durable
+        // attempt accrues (contrast the unanswered-reply tests).
+        assert!(
+            host.with_storage(|s| s.curated_titles().unwrap())
+                .unwrap()
+                .is_empty(),
+            "a transport failure must not count against the batch"
+        );
 
         // Within the backoff window: no further call, even though the
         // series is still uncurated.
-        curate_pass(&host, &curator, &mut backoff).await;
+        curate_pass(&host, &curator, &mut state).await;
         assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
 
         // Past the backoff and healthy again: answered and cached.
         mock.fail.store(false, Ordering::SeqCst);
-        backoff = 0;
-        curate_pass(&host, &curator, &mut backoff).await;
+        state.backoff = 0;
+        curate_pass(&host, &curator, &mut state).await;
         assert_eq!(mock.calls.load(Ordering::SeqCst), 2);
         assert_eq!(
             host.view().series_relations[&AniDbSeriesId(5391)].short_titles,
             ["GochiUsa"]
+        );
+    }
+
+    /// A model-side failure (refusal, truncation, timeout) is evidence
+    /// against the batch: every series in it accrues a durable attempt,
+    /// so a deterministic refusal eventually settles instead of
+    /// re-billing forever.
+    #[tokio::test]
+    async fn model_failures_count_against_the_whole_batch() {
+        struct RefusingCurator;
+        impl ShortTitleCurator for RefusingCurator {
+            fn curate(
+                &self,
+                _token: &str,
+                _batch: &[CurationInput],
+            ) -> Result<Vec<Curation>, CurateError> {
+                Err(CurateError::Model("model refused".into()))
+            }
+        }
+        let host = MockHost::new();
+        seed_relations(&host, 5391, "Gochuumon wa Usagi Desu ka?");
+        host.with_storage(|s| {
+            s.replace_titles(&titles::parse_dump(GOCHIUSA_DUMP))
+                .unwrap();
+        });
+        provision_token(&host);
+        let curator: Option<Arc<dyn ShortTitleCurator>> = Some(Arc::new(RefusingCurator));
+        let mut state = CurationState::default();
+
+        curate_pass(&host, &curator, &mut state).await;
+        assert!(state.backoff > host.now(), "refusal arms the backoff");
+        let cache = host.with_storage(|s| s.curated_titles().unwrap()).unwrap();
+        let row = &cache[&AniDbSeriesId(5391)];
+        assert_eq!(
+            (row.attempts, row.settled),
+            (1, false),
+            "a refusal must count as an unanswered attempt"
         );
     }
 

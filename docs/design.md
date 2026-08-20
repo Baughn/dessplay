@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1269,11 +1269,14 @@ case): a name a human typed or edited always wins (user decision
 The short titles are **AI-curated**, not read raw from the titles dump:
 the dump's kind-3 rows are lowercase search tags ("gochiusa s2", "s;g",
 "HnNKn") and only a quarter of series have one, so the server's worker
-sends each series' full title rows to an Anthropic model once
+sends each series' full title rows to an Anthropic model
 (trusting the answer as returned — the human-name precedence above is
-the backstop) and caches the answer forever in its SQLite; the
-reconcile pass then keeps the replicated `short_titles` in step with
-that cache. The API token is **client-provisioned**: it lives in one
+the backstop — though only for series actually in the batch: an answer
+for any other series is dropped) and caches the answer forever in its
+SQLite; a series the model repeatedly declines to answer settles after
+a few attempts as a durable "no short name", so no series is billed
+indefinitely. The reconcile pass then keeps the replicated
+`short_titles` in step with that cache. The API token is **client-provisioned**: it lives in one
 client's settings (the same `anthropic_token` the commentary engine
 uses), is pushed to the server over the encrypted control connection on
 connect and on any settings edit that changes it

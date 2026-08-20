@@ -151,11 +151,38 @@ const MIGRATIONS: &[&str] = &[
         fetched_at INTEGER NOT NULL    -- shared-clock millis
     ) STRICT;
     ",
+    // v7 (2026-08-20 audit): curation attempt tracking. A row now also
+    // exists for a series that was *asked but never answered* —
+    // `settled = 0` — so a batch the model keeps omitting accrues
+    // attempts durably instead of being re-sent forever, and after
+    // enough attempts the worker settles it as a durable no-short-name
+    // answer. Existing rows are all real answers, hence DEFAULT 1.
+    "
+    ALTER TABLE ai_short_titles ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE ai_short_titles ADD COLUMN asked_at INTEGER;
+    ALTER TABLE ai_short_titles ADD COLUMN settled INTEGER NOT NULL DEFAULT 1;
+    ",
 ];
 
 /// `next_attempt` sentinel for queue entries that are settled and must
 /// never be retried (kept as tombstones so re-discovery is a no-op).
 pub const NEVER: i64 = i64::MAX;
+
+/// Best-effort owner-only permissions on unix; a no-op elsewhere. The
+/// database can hold a live API credential, so it should never be
+/// world-readable — but a chmod failure (exotic filesystem) must not
+/// keep the server from starting.
+fn restrict_permissions(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+            tracing::warn!(path = %path.display(), mode, "could not restrict permissions: {e}");
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+}
 
 /// Apply any unapplied migrations (slice parameter for upgrade tests).
 fn migrate(conn: &Connection, migrations: &[&str]) -> Result<()> {
@@ -213,13 +240,24 @@ pub struct ServerStorage {
 
 impl ServerStorage {
     /// Open (creating and migrating as needed) the database at `path`.
+    ///
+    /// On unix the data directory is restricted to 0700 and the
+    /// database file to 0600: the kv table can hold a live Anthropic
+    /// API key ([`ANTHROPIC_TOKEN_KEY`]), so default modes would leak
+    /// it to other local accounts on manual (non-systemd-DynamicUser)
+    /// runs. Same idiom as the TOFU key in dessplay-core's tofu.rs.
+    /// Restricting the database before the first pragma also covers
+    /// the WAL/journal sidecars, which SQLite creates with the
+    /// database file's permissions.
     pub fn open(path: &Path) -> Result<Self> {
         tracing::debug!(path = %path.display(), "opening server database");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| StorageError::Corrupt(format!("creating {parent:?}: {e}")))?;
+            restrict_permissions(parent, 0o700);
         }
         let conn = Connection::open(path)?;
+        restrict_permissions(path, 0o600);
         Self::init(conn, Some(path.to_path_buf()))
     }
 
@@ -355,6 +393,9 @@ impl ServerStorage {
                 StorageError::Corrupt(format!("backup path not UTF-8: {target:?}"))
             })?],
         )?;
+        // The backup carries everything the live database does —
+        // including the Anthropic token — so it gets the same mode.
+        restrict_permissions(&target, 0o600);
         tracing::info!(target = %target.display(),
             "old-layout snapshot detected; database backed up before migration");
         Ok(())
@@ -839,13 +880,15 @@ impl ServerStorage {
             .map_err(Into::into)
     }
 
-    /// The curator's cached answer for one series. Outer `None` =
-    /// never asked; `Some(None)` = asked, no community short name
-    /// exists (durable — never re-asked).
+    /// The curator's settled answer for one series. Outer `None` =
+    /// no answer yet (never asked, or asked-but-unanswered);
+    /// `Some(None)` = settled, no community short name exists
+    /// (durable — never re-asked). Pending (`settled = 0`) rows are
+    /// invisible here: an attempt is not an answer.
     pub fn curated_short_title(&self, series: AniDbSeriesId) -> Result<Option<Option<String>>> {
         self.conn
             .query_row(
-                "SELECT title FROM ai_short_titles WHERE aid = ?1",
+                "SELECT title FROM ai_short_titles WHERE aid = ?1 AND settled = 1",
                 params![series.0 as i64],
                 |row| row.get::<_, Option<String>>(0),
             )
@@ -853,8 +896,33 @@ impl ServerStorage {
             .map_err(Into::into)
     }
 
+    /// The whole curation cache in one read — one row per series ever
+    /// asked, settled or not. Drives both halves of the worker's
+    /// curation pass (batch selection and reconcile), which used to be
+    /// two point queries per known series per pass under this same
+    /// lock (2026-08-20 audit).
+    pub fn curated_titles(
+        &self,
+    ) -> Result<std::collections::BTreeMap<AniDbSeriesId, CurationCacheRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT aid, title, attempts, settled FROM ai_short_titles")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                AniDbSeriesId(row.get::<_, i64>(0)? as u32),
+                CurationCacheRow {
+                    title: row.get(1)?,
+                    attempts: row.get::<_, i64>(2)? as u32,
+                    settled: row.get::<_, i64>(3)? != 0,
+                },
+            ))
+        })?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(Into::into)
+    }
+
     /// Record the curator's answer for one series (overwriting any
-    /// earlier one).
+    /// earlier one, and settling a pending asked-but-unanswered row).
     pub fn set_curated_short_title(
         &self,
         series: AniDbSeriesId,
@@ -862,12 +930,52 @@ impl ServerStorage {
         now: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO ai_short_titles (aid, title, fetched_at) VALUES (?1, ?2, ?3)
+            "INSERT INTO ai_short_titles (aid, title, fetched_at, settled)
+             VALUES (?1, ?2, ?3, 1)
              ON CONFLICT (aid) DO UPDATE SET title = excluded.title,
-                                             fetched_at = excluded.fetched_at",
+                                             fetched_at = excluded.fetched_at,
+                                             settled = 1",
             params![series.0 as i64, title, now],
         )?;
         Ok(())
+    }
+
+    /// Record that `series` was asked and the model gave no usable
+    /// answer: bump its durable attempt count (creating the pending
+    /// row on first ask). A row that reaches `max_attempts` settles as
+    /// a durable no-short-name answer — the curation analogue of the
+    /// anime queue's `next_attempt = NEVER` tombstone — so one series
+    /// the model never answers can't be re-billed forever. Returns the
+    /// series that settled this call, for the caller's warn. Already
+    /// settled rows are never touched.
+    pub fn record_curation_unanswered(
+        &mut self,
+        series: &[AniDbSeriesId],
+        now: i64,
+        max_attempts: u32,
+    ) -> Result<Vec<AniDbSeriesId>> {
+        let tx = self.conn.transaction()?;
+        let mut gave_up = Vec::new();
+        for &aid in series {
+            tx.execute(
+                "INSERT INTO ai_short_titles (aid, title, fetched_at, attempts, asked_at, settled)
+                 VALUES (?1, NULL, ?2, 1, ?2, 0)
+                 ON CONFLICT (aid) DO UPDATE
+                 SET attempts = attempts + 1, asked_at = excluded.asked_at
+                 WHERE settled = 0",
+                params![aid.0 as i64, now],
+            )?;
+            let settled_now = tx.execute(
+                "UPDATE ai_short_titles SET settled = 1, fetched_at = ?2
+                 WHERE aid = ?1 AND settled = 0 AND attempts >= ?3",
+                params![aid.0 as i64, now, max_attempts as i64],
+            )?;
+            if settled_now > 0 {
+                gave_up.push(aid);
+            }
+        }
+        tx.commit()?;
+        Ok(gave_up)
     }
 
     /// Whether the titles table holds any rows at all. False until the
@@ -945,6 +1053,18 @@ pub struct AnimeQueueEntry {
     pub next_attempt: i64,
     /// How many attempts so far.
     pub attempts: u32,
+}
+
+/// One curation-cache row, as read in bulk by [`ServerStorage::curated_titles`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CurationCacheRow {
+    /// The settled answer (`None` = no community short name) — only
+    /// meaningful when `settled`.
+    pub title: Option<String>,
+    /// How many batches this series has been sent in without an answer.
+    pub attempts: u32,
+    /// Whether the row is a durable answer (vs. asked-but-unanswered).
+    pub settled: bool,
 }
 
 /// One row of the anime-titles dump.
@@ -1552,6 +1672,130 @@ mod tests {
             storage.curated_short_title(AniDbSeriesId(1)).unwrap(),
             Some(None)
         );
+    }
+
+    /// The v7 upgrade must leave pre-existing curation rows settled:
+    /// every row written before attempt tracking existed was a real
+    /// answer, and turning one into "pending" would re-ask the model.
+    #[test]
+    fn migration_v7_keeps_existing_curation_answers_settled() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn, &MIGRATIONS[..6]).unwrap();
+        conn.execute(
+            "INSERT INTO ai_short_titles (aid, title, fetched_at) VALUES (5391, 'GochiUsa', 1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ai_short_titles (aid, title, fetched_at) VALUES (777, NULL, 1000)",
+            [],
+        )
+        .unwrap();
+        migrate(&conn, MIGRATIONS).unwrap();
+
+        let storage = ServerStorage { conn, path: None };
+        assert_eq!(
+            storage.curated_short_title(AniDbSeriesId(5391)).unwrap(),
+            Some(Some("GochiUsa".into()))
+        );
+        assert_eq!(
+            storage.curated_short_title(AniDbSeriesId(777)).unwrap(),
+            Some(None),
+            "a pre-v7 no-short-name answer must stay a settled answer"
+        );
+        let cache = storage.curated_titles().unwrap();
+        assert!(cache.values().all(|row| row.settled && row.attempts == 0));
+    }
+
+    /// The asked-but-unanswered lifecycle: attempts accrue durably and
+    /// invisibly to `curated_short_title`, a real answer settles the
+    /// row keeping its history, and a row that hits the cap settles as
+    /// a durable no-short-name tombstone.
+    #[test]
+    fn curation_attempts_accrue_and_settle_at_the_cap() {
+        let mut storage = ServerStorage::open_in_memory().unwrap();
+        let series = AniDbSeriesId(5391);
+
+        // Two unanswered batches: pending, not an answer.
+        for attempt in 1..=2u32 {
+            let gave_up = storage
+                .record_curation_unanswered(&[series], 1000 + attempt as i64, 3)
+                .unwrap();
+            assert!(gave_up.is_empty(), "below the cap nothing settles");
+            assert_eq!(storage.curated_short_title(series).unwrap(), None);
+            let row = &storage.curated_titles().unwrap()[&series];
+            assert_eq!((row.attempts, row.settled), (attempt, false));
+        }
+
+        // A real answer settles the pending row.
+        storage
+            .set_curated_short_title(series, Some("GochiUsa"), 2000)
+            .unwrap();
+        assert_eq!(
+            storage.curated_short_title(series).unwrap(),
+            Some(Some("GochiUsa".into()))
+        );
+        // Settled rows are never touched by further attempt recording.
+        let gave_up = storage
+            .record_curation_unanswered(&[series], 3000, 3)
+            .unwrap();
+        assert!(gave_up.is_empty());
+        assert_eq!(
+            storage.curated_short_title(series).unwrap(),
+            Some(Some("GochiUsa".into()))
+        );
+
+        // A different series that hits the cap settles as None.
+        let stuck = AniDbSeriesId(777);
+        for _ in 0..2 {
+            assert!(
+                storage
+                    .record_curation_unanswered(&[stuck], 4000, 3)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            storage
+                .record_curation_unanswered(&[stuck], 5000, 3)
+                .unwrap(),
+            vec![stuck],
+            "the capping attempt reports the settle"
+        );
+        assert_eq!(
+            storage.curated_short_title(stuck).unwrap(),
+            Some(None),
+            "a capped row is a durable no-short-name answer"
+        );
+    }
+
+    /// The database can hold a live Anthropic API key, so the data
+    /// directory, the database, and the pre-migration backup must not
+    /// be group/world readable (2026-08-20 audit; production is
+    /// shielded by systemd DynamicUser, but manual runs and the
+    /// default path aren't).
+    #[cfg(unix)]
+    #[test]
+    fn database_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("dessplay-rendezvous");
+        let db_path = data_dir.join("rendezvous.db");
+        let storage = ServerStorage::open(&db_path).unwrap();
+        assert_eq!(mode(&data_dir), 0o700, "data dir must be owner-only");
+        assert_eq!(mode(&db_path), 0o600, "database must be owner-only");
+
+        // The pre-migration backup copies the whole database — token
+        // included — and must be equally restricted.
+        storage.backup_pre_migration().unwrap();
+        let backup = data_dir.join(format!(
+            "rendezvous.db.pre-v{}.bak",
+            dessplay_core::net::message::PROTOCOL_VERSION
+        ));
+        assert_eq!(mode(&backup), 0o600, "backup must be owner-only");
     }
 
     #[test]

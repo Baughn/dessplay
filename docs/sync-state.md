@@ -603,20 +603,34 @@ caching results in its SQLite.
 Short titles come from the curator (`anidb/curator.rs`), not the ANIME
 reply and not raw from the titles dump (whose kind-3 rows are lowercase
 search tags, useless for display): the worker's `curate_short_titles`
-pass batches series never asked before to an Anthropic model — the
-dump's full title rows as grounding context, the answer trusted as
-returned — and caches each answer durably in the `ai_short_titles`
-table, including the "no short name exists" answer, so the API is
-consulted **once per series, ever**. The same pass reconciles the
-replicated `short_titles` with that cache and quiesces; uncached series
-are never touched (a tokenless server clears nothing). Curation runs
+pass batches unsettled series to an Anthropic model — the dump's full
+title rows as grounding context, fenced in the prompt as untrusted
+data — and caches each answer durably in the `ai_short_titles` table,
+including the "no short name exists" answer, so the API **answers each
+series at most once**. Answers are keyed positionally to the batch
+that was sent: a reply naming a series outside it (hallucinated, or
+injected through the title rows) is unrepresentable past the parse
+layer and is dropped with a warning; within the batch the answer is
+trusted as returned. A series the model *doesn't* answer accrues a
+durable attempt count (`attempts`/`settled` columns, schema v7) —
+model-side failures like refusals, truncation, and timeouts count
+against every series in the batch, transport failures against none —
+and after five unanswered attempts it settles as a durable
+no-short-name answer, mirroring the anime queue's `next_attempt =
+NEVER` tombstone. Batch selection orders by fewest attempts first, so
+an unanswerable batch rotates to the back instead of starving the
+catalogue. The model call runs on its own task and is only polled by
+the worker loop — a slow curator never delays metadata lookups. The
+same pass reconciles the replicated `short_titles` with the settled
+cache (one bulk read per pass) and quiesces; unsettled series are
+never touched (a tokenless server clears nothing). Curation runs
 only while an API token is stored in the kv table — client-provisioned
 over the wire via `SetAnthropicToken` (protocol v12), pushed by the
 token-holding client on connect and on settings edits, so it can
-appear, rotate, or vanish without a server restart. Failures back off
-ten minutes and cache nothing. Clients compute franchise groupings
-(connected components over sequel/prequel/side-story edges) locally
-from this map.
+appear, rotate, or vanish without a server restart. Failures and
+answerless replies back off ten minutes and cache no answer. Clients
+compute franchise groupings (connected components over
+sequel/prequel/side-story edges) locally from this map.
 
 ### The List
 

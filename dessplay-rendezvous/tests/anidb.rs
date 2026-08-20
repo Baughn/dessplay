@@ -18,7 +18,9 @@ use dessplay_core::types::{
     SeriesListEntry,
 };
 use dessplay_rendezvous::anidb::client::{AniDbApi, BoxFuture, LookupError};
-use dessplay_rendezvous::anidb::curator::{CurationInput, ShortTitleCurator};
+use dessplay_rendezvous::anidb::curator::{
+    CurateError, Curation, CurationInput, ShortTitleCurator,
+};
 use dessplay_rendezvous::anidb::protocol::{AnimeResult, FileResult};
 use dessplay_rendezvous::anidb::titles::TitlesSource;
 use dessplay_rendezvous::server::{AniDbConfig, ServerConfig};
@@ -64,16 +66,15 @@ const FRIEREN: AniDbSeriesId = AniDbSeriesId(8692);
 struct CannedCurator;
 
 impl ShortTitleCurator for CannedCurator {
-    fn curate(
-        &self,
-        _token: &str,
-        batch: &[CurationInput],
-    ) -> Result<Vec<(AniDbSeriesId, Option<String>)>, String> {
+    fn curate(&self, _token: &str, batch: &[CurationInput]) -> Result<Vec<Curation>, CurateError> {
         Ok(batch
             .iter()
             .map(|input| {
-                let short = (input.series == FRIEREN).then(|| "Frieren".to_string());
-                (input.series, short)
+                if input.series == FRIEREN {
+                    Curation::Short("Frieren".to_string())
+                } else {
+                    Curation::NoShortName
+                }
             })
             .collect())
     }
