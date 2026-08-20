@@ -109,6 +109,24 @@ struct NetState {
     max_datagram: usize,
 }
 
+impl NetState {
+    /// Drop one direction's per-connection bookkeeping: its inbox
+    /// sender, its reliable-delivery pump (dropping the pump's sender
+    /// lets the task drain its backlog and exit), and its bandwidth
+    /// watermark. `ConnId` is monotonic — an entry not pruned at
+    /// teardown leaks for the life of the network. Returns the inbox
+    /// sender so a teardown can push a final `Closed` into it.
+    fn prune_direction(
+        &mut self,
+        conn: ConnId,
+        endpoint: &EndpointId,
+    ) -> Option<mpsc::UnboundedSender<TransportEvent>> {
+        self.pumps.remove(&(conn, endpoint.clone()));
+        self.clear_at.remove(&(conn, endpoint.clone()));
+        self.senders.remove(&(conn, endpoint.clone()))
+    }
+}
+
 /// Handle to the simulated network. Cheap to clone.
 #[derive(Clone)]
 pub struct SimNetwork {
@@ -187,6 +205,14 @@ impl SimNetwork {
         self.lock().max_datagram = max;
     }
 
+    /// Live reliable-delivery pump entries (one per connection direction
+    /// that has carried a reliable frame). Test hook: teardown must not
+    /// leak pumps — `ConnId` is monotonic, so a leaked entry (a task
+    /// plus its unbounded channel) lives for the rest of the process.
+    pub fn pump_count(&self) -> usize {
+        self.lock().pumps.len()
+    }
+
     /// Kill every connection between two endpoints: both ends receive a
     /// `Closed` event immediately (think middlebox reset, not silence —
     /// for silence, partition instead). Reconnecting afterward works.
@@ -204,11 +230,19 @@ impl SimNetwork {
             .collect();
         for conn in conns {
             for endpoint in [a, b] {
-                if let Some(tx) = state.senders.remove(&(conn, endpoint.clone())) {
+                // Kill semantics, deliberately asymmetric with `close`:
+                // the `Closed` is injected directly into each inbox,
+                // *overtaking* reliable frames still queued in the
+                // delivery pumps — a middlebox reset loses in-flight
+                // data. A graceful [`SimTransport::close`] instead
+                // routes its `Closed` through the pump, behind
+                // everything already sent.
+                if let Some(tx) = state.prune_direction(conn, endpoint) {
                     let _ = tx.send(TransportEvent::Closed {
                         reason: "connection killed".into(),
                     });
                 }
+                state.pending.remove(&(conn, endpoint.clone()));
             }
         }
     }
@@ -435,6 +469,12 @@ impl Transport for SimTransport {
             Some(event) => {
                 if matches!(event, TransportEvent::Closed { .. }) {
                     self.closed.store(true, Ordering::SeqCst);
+                    // The connection is over: release this direction's
+                    // bookkeeping. The closing (or killing) side prunes
+                    // its own; without this, the side that merely
+                    // *observes* the `Closed` would leak its pump and
+                    // sender forever.
+                    self.net.lock().prune_direction(self.conn, &self.local);
                 }
                 Ok(event)
             }
@@ -459,7 +499,14 @@ impl Transport for SimTransport {
             false,
         );
         let mut state = self.net.lock();
-        if let Some(tx) = state.senders.remove(&(self.conn, self.local.clone())) {
+        // Our direction's bookkeeping dies here: no further send passes
+        // `check_open`, and dropping the pump's sender lets its task
+        // deliver the backlog (the peer's `Closed` above last, in
+        // order) and exit. The peer's direction is pruned when *it*
+        // closes or observes our `Closed` in `recv()`; a transport
+        // dropped without either leaks its entries by design — silent
+        // death.
+        if let Some(tx) = state.prune_direction(self.conn, &self.local) {
             let _ = tx.send(TransportEvent::Closed {
                 reason: format!("locally closed: {reason}"),
             });

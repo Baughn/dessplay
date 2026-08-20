@@ -290,3 +290,65 @@ async fn dropping_a_transport_is_silent() {
     // The peer hears nothing — that's what presence timeouts are for.
     assert!(try_recv(&server).await.is_none());
 }
+
+/// Teardown must release the per-direction reliable-delivery pumps
+/// (2026-08-20 review): `ConnId` is monotonic, so a leaked pump — one
+/// task plus an unbounded channel per connection direction — lives for
+/// the rest of the process, growing linearly across a long test or
+/// perf run. Both teardown paths must prune: a graceful `close` (each
+/// side as it closes or observes the peer's `Closed`) and an abrupt
+/// `disconnect` kill.
+#[tokio::test(start_paused = true)]
+async fn connection_teardown_releases_the_delivery_pumps() {
+    let net = SimNetwork::new(11);
+    let (client_id, server_id) = ids();
+    let listener = net.listener(&server_id);
+    let connector = net.connector(&client_id, &server_id);
+
+    // Graceful close.
+    let client = connector.connect().await.expect("connect");
+    let (server, _addr) = listener.accept().await.expect("accept");
+    client.send_control(b"ping").await.unwrap();
+    server.send_control(b"pong").await.unwrap();
+    assert!(matches!(
+        server.recv().await.unwrap(),
+        TransportEvent::Control(_)
+    ));
+    assert!(matches!(
+        client.recv().await.unwrap(),
+        TransportEvent::Control(_)
+    ));
+    assert_eq!(net.pump_count(), 2, "one pump per live direction");
+    client.close("done").await;
+    assert!(matches!(
+        server.recv().await.unwrap(),
+        TransportEvent::Closed { .. }
+    ));
+    server.close("done").await;
+    assert_eq!(
+        net.pump_count(),
+        0,
+        "a closed connection must release both directions' pumps"
+    );
+
+    // Abrupt kill.
+    let client = connector.connect().await.expect("connect");
+    let (server, _addr) = listener.accept().await.expect("accept");
+    client.send_control(b"ping").await.unwrap();
+    server.send_control(b"pong").await.unwrap();
+    assert!(matches!(
+        server.recv().await.unwrap(),
+        TransportEvent::Control(_)
+    ));
+    assert!(matches!(
+        client.recv().await.unwrap(),
+        TransportEvent::Control(_)
+    ));
+    net.disconnect(&client_id, &server_id);
+    assert_eq!(
+        net.pump_count(),
+        0,
+        "a killed connection must release both directions' pumps"
+    );
+    drop((client, server));
+}
