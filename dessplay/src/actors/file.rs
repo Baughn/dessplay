@@ -214,6 +214,11 @@ pub enum FileCommand {
     SetDownloadPriority {
         /// Wanted files, highest priority first.
         order: Vec<Ed2kHash>,
+        /// The file the ranking is anchored at — the one with a
+        /// playback deadline, so the only one eligible for the
+        /// scheduler's window-age urgency. `None` when nothing is
+        /// playing (always, for a seeder).
+        now_playing: Option<Ed2kHash>,
     },
     /// A file-transfer message relayed from a peer (download or serve).
     PeerMessage {
@@ -1214,7 +1219,9 @@ impl Actor {
                 self.start_peer_download(file, size_bytes, sources, play_chunk)
                     .await;
             }
-            FileCommand::SetDownloadPriority { order } => self.downloads.set_priority(order),
+            FileCommand::SetDownloadPriority { order, now_playing } => {
+                self.downloads.set_priority(order, now_playing)
+            }
             FileCommand::PeerMessage { from, message } => {
                 self.on_peer_message(from, *message).await;
             }

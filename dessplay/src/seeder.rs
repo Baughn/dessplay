@@ -100,9 +100,15 @@ impl SeederTransfer {
         let order: Vec<Ed2kHash> = ordered.iter().map(|e| e.hash).collect();
         if order != self.last_priority {
             self.last_priority = order.clone();
+            // `now_playing: None`: the seeder plays nothing, so none of
+            // its downloads has a playback deadline — endgame urgency
+            // still applies, window-age urgency never does.
             let _ = self
                 .file
-                .send(FileCommand::SetDownloadPriority { order })
+                .send(FileCommand::SetDownloadPriority {
+                    order,
+                    now_playing: None,
+                })
                 .await;
         }
         for entry in ordered {

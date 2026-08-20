@@ -169,6 +169,11 @@ pub enum Directive {
     SetDownloadPriority {
         /// Wanted files, highest priority first.
         order: Vec<Ed2kHash>,
+        /// The now-playing file the ranking is anchored at — the one
+        /// file with a playback deadline, so the only one the
+        /// scheduler grants window-age urgency (`None` while nothing
+        /// is playing).
+        now_playing: Option<Ed2kHash>,
     },
     /// Run a cache-eviction pass (design.md, Download Cache: passes run at
     /// startup and on EOF-advance). `protected` = now-playing + unwatched
@@ -277,11 +282,12 @@ pub struct PlayerWiring {
     /// "why isn't this downloading?" diagnostics are emitted on change,
     /// not every snapshot. Pruned to the current want-set.
     awaiting_source: HashSet<Ed2kHash>,
-    /// The download fill order last sent to the file actor, so
-    /// `Directive::SetDownloadPriority` goes out only when the anchored
-    /// ranking actually changes (now-playing moved, playlist edited),
-    /// not on every snapshot.
-    last_priority_sent: Vec<Ed2kHash>,
+    /// The download fill order (and the now-playing anchor riding
+    /// with it) last sent to the file actor, so
+    /// `Directive::SetDownloadPriority` goes out only when either
+    /// actually changes (now-playing moved, playlist edited, playback
+    /// stopped), not on every snapshot.
+    last_priority_sent: (Vec<Ed2kHash>, Option<Ed2kHash>),
     /// The chat narrator's previous snapshot slice. `None` until the
     /// first state arrives (the initial view is a baseline, not news).
     narrator: Option<NarratorState>,
@@ -675,7 +681,7 @@ impl PlayerWiring {
             last_now_playing: None,
             prefetching: HashSet::new(),
             awaiting_source: HashSet::new(),
-            last_priority_sent: Vec::new(),
+            last_priority_sent: (Vec::new(), None),
             narrator: None,
             auto_download: true,
             drift_high_snapshots: 0,
@@ -1034,9 +1040,15 @@ impl PlayerWiring {
         // harmless). Sent ahead of the StartDownload batch, and only
         // when it changes.
         let order: Vec<Ed2kHash> = wanted.iter().map(|(h, _)| *h).collect();
-        if order != self.last_priority_sent {
-            self.last_priority_sent = order.clone();
-            out.push(Directive::SetDownloadPriority { order });
+        let now_playing = view.now_playing;
+        if (order.as_slice(), now_playing)
+            != (
+                self.last_priority_sent.0.as_slice(),
+                self.last_priority_sent.1,
+            )
+        {
+            self.last_priority_sent = (order.clone(), now_playing);
+            out.push(Directive::SetDownloadPriority { order, now_playing });
         }
         let awaiting_before = self.awaiting_source.len();
         for (file, size_bytes) in wanted {
@@ -2711,10 +2723,10 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         })
                         .await;
                 }
-                Directive::SetDownloadPriority { order } => {
+                Directive::SetDownloadPriority { order, now_playing } => {
                     let _ = self
                         .file
-                        .send(FileCommand::SetDownloadPriority { order })
+                        .send(FileCommand::SetDownloadPriority { order, now_playing })
                         .await;
                 }
                 Directive::RunEviction {
@@ -6237,7 +6249,7 @@ mod tests {
         directives
             .iter()
             .filter_map(|d| match d {
-                Directive::SetDownloadPriority { order } => Some(order.clone()),
+                Directive::SetDownloadPriority { order, .. } => Some(order.clone()),
                 _ => None,
             })
             .collect()

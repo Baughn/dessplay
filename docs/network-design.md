@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-08-16
+Last updated: 2026-08-20
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -734,7 +734,16 @@ chunks whose absence gates a deadline:
   the concurrency cap; whichever arrives first wins and the losers are
   `Cancel`led — so neither playback nor the tail is stuck behind one
   slow source. The age runs from the chunk's *first* request
-  precisely so requeue-and-reassign cycles cannot reset it.
+  precisely so requeue-and-reassign cycles cannot reset it. The
+  window-age rule applies only to the **now-playing file** (delivered
+  to the scheduler with the fill order): only that file's window has
+  a playback deadline, and without the gate a skipped-away file's
+  stale anchor plus its never-cleared first-request stamps turned its
+  whole requeued window "urgent" on any stream reset or source flap —
+  an extra pipeline per source spent on an episode nobody was
+  watching, at the expense of the file gating the group (2026-08-20
+  review). Endgame urgency is unconditional: every active download
+  has a completion deadline.
 - Block hashes are fetched and validated against the file's ed2k root
   before any chunk can verify; an invalid list is rejected and re-asked
   from another source.

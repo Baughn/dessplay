@@ -62,8 +62,10 @@ enum Event {
     /// and a re-start over the partially-written backing file.
     Cancel { file: u8, restart: bool },
     /// Churn the cross-file fill order: any subset/order of the two
-    /// files, optionally salted with a hash the manager doesn't hold.
-    SetPriority { perm: u8, bogus: bool },
+    /// files, optionally salted with a hash the manager doesn't hold —
+    /// plus an arbitrary now-playing anchor (either file, none, or a
+    /// hash the manager doesn't hold), which gates window-age urgency.
+    SetPriority { perm: u8, bogus: bool, now_playing: u8 },
 }
 
 struct FileFx {
@@ -222,7 +224,11 @@ fuzz_target!(|events: Vec<Event>| {
                     );
                 }
             }
-            Event::SetPriority { perm, bogus } => {
+            Event::SetPriority {
+                perm,
+                bogus,
+                now_playing,
+            } => {
                 let mut order: Vec<dessplay_core::types::Ed2kHash> = match perm % 5 {
                     0 => vec![files[0].hash.root, files[1].hash.root],
                     1 => vec![files[1].hash.root, files[0].hash.root],
@@ -233,7 +239,13 @@ fuzz_target!(|events: Vec<Event>| {
                 if bogus {
                     order.push(dessplay_core::types::Ed2kHash([0xEE; 16]));
                 }
-                downloads.set_priority(order);
+                let now_playing = match now_playing % 4 {
+                    0 => Some(files[0].hash.root),
+                    1 => Some(files[1].hash.root),
+                    2 => Some(dessplay_core::types::Ed2kHash([0xEE; 16])),
+                    _ => None,
+                };
+                downloads.set_priority(order, now_playing);
             }
         }
     }

@@ -31,9 +31,11 @@
 //!   playable window: a slow-but-delivering source never trips it, and
 //!   one whose stream keeps dying re-arms its clock on every requeue.
 //! - **Urgent set**: a chunk whose absence gates a deadline — a playable
-//!   -window chunk older than `urgent_age` since its *first* request, or
-//!   any chunk once the remainder fits in one pipeline (endgame, the
-//!   special case where the completion deadline gates everything left) —
+//!   -window chunk of the **now-playing file** (the one file with a
+//!   playback deadline; see [`Downloads::set_priority`]) older than
+//!   `urgent_age` since its *first* request, or any chunk of any file
+//!   once its remainder fits in one pipeline (endgame, the special case
+//!   where the completion deadline gates everything left) —
 //!   may be requested from *several* sources at once; whichever arrives
 //!   first wins and the losers are `Cancel`led, so neither playback nor
 //!   the tail is stuck behind one slow source.
@@ -62,9 +64,11 @@ pub struct DownloadConfig {
     pub max_sources: u32,
     /// Drop a source that sends nothing for this long (millis).
     pub snub_timeout_millis: u64,
-    /// How long a playable-window chunk may sit requested-but-undelivered
-    /// before it turns *urgent* and gets endgame semantics — duplicated
-    /// to other sources, first delivery wins (see `plan_requests`). Aged
+    /// How long a playable-window chunk of the now-playing file may sit
+    /// requested-but-undelivered before it turns *urgent* and gets
+    /// endgame semantics — duplicated to other sources, first delivery
+    /// wins (see `plan_requests`; only the now-playing file's window
+    /// has a playback deadline, so only it ages into urgency). Aged
     /// from the chunk's **first** request, not its latest: a source whose
     /// stream keeps dying requeues and re-grabs its chunks with a fresh
     /// request each cycle, and an age measured from the latest request
@@ -265,7 +269,11 @@ struct Download {
     /// cleared while the download lives — for a delivered chunk the
     /// stamp is moot, and for a chunk re-needed after a block-hash
     /// mismatch the stale stamp means a playable-window re-fetch goes
-    /// urgent immediately, which is the priority it deserves.
+    /// urgent immediately, which is the priority it deserves. Stale
+    /// stamps on a file nobody is watching are harmless: window-age
+    /// urgency applies only to the now-playing file
+    /// ([`Downloads::now_playing`]), so a skipped-away file's aged
+    /// stamps never resurrect its window as urgent.
     first_requested: HashMap<u32, u64>,
     stats: TransferStats,
     last_progress_bps: u16,
@@ -283,6 +291,15 @@ pub struct Downloads {
     /// [`Downloads::set_priority`]. Files not in the map rank last, by
     /// hash — deterministic even before the first priority arrives.
     priority: HashMap<Ed2kHash, usize>,
+    /// The file the group is positioned in (from
+    /// [`Downloads::set_priority`], alongside the ranking it anchors):
+    /// the one file with a playback deadline, and therefore the only
+    /// file whose playable-window chunks may turn *urgent* by age (see
+    /// `plan_requests`). Endgame urgency is unconditional — every file
+    /// has a completion deadline once its remainder fits one pipeline.
+    /// `None` while nothing is playing (and always for a seeder, which
+    /// plays nothing): no window has a deadline then.
+    now_playing: Option<Ed2kHash>,
 }
 
 /// Sequential window ahead of playback: the chunk store's playable
@@ -301,17 +318,22 @@ impl Downloads {
             config,
             files: HashMap::new(),
             priority: HashMap::new(),
+            now_playing: None,
         }
     }
 
     /// Set the cross-file fill order (the session's anchored playlist
-    /// ranking; hashes the manager doesn't hold are harmless). Takes
+    /// ranking; hashes the manager doesn't hold are harmless) and the
+    /// now-playing file the ranking is anchored at — the one file whose
+    /// playable window has a deadline, so the only one eligible for
+    /// window-age urgency (`None` when nothing is playing). Takes
     /// effect on the next refill — deliberately no replan and no
     /// cancels here: the ≤250ms tick (or the next chunk event)
     /// re-targets the budget toward the new front, and at most one
     /// pipeline per source of stale requests drains out.
-    pub fn set_priority(&mut self, order: Vec<Ed2kHash>) {
+    pub fn set_priority(&mut self, order: Vec<Ed2kHash>, now_playing: Option<Ed2kHash>) {
         self.priority = order.into_iter().enumerate().map(|(i, h)| (h, i)).collect();
+        self.now_playing = now_playing;
     }
 
     /// Active downloads in fill order: `(rank, hash)`, unranked files
@@ -331,6 +353,29 @@ impl Downloads {
     /// Transfer counters for `file` (tests / progress display).
     pub fn stats(&self, file: &Ed2kHash) -> Option<TransferStats> {
         self.files.get(file).map(|d| d.stats)
+    }
+
+    /// Diagnostic snapshot of per-source in-flight chunks for `file`,
+    /// sorted for stable output. Read-only; exists so the property
+    /// harness (`tests/download_props.rs`) can print the scheduler's
+    /// side of a budget-bound violation next to its own mirror —
+    /// telling a real overshoot apart from a harness desync is
+    /// otherwise guesswork.
+    pub fn debug_in_flight(&self, file: &Ed2kHash) -> Vec<(String, Vec<u32>)> {
+        let Some(d) = self.files.get(file) else {
+            return vec![];
+        };
+        let mut out: Vec<(String, Vec<u32>)> = d
+            .sources
+            .iter()
+            .map(|(p, s)| {
+                let mut v: Vec<u32> = s.in_flight.iter().copied().collect();
+                v.sort_unstable();
+                (p.to_string(), v)
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// Begin downloading `file` (size + root from the playlist entry)
@@ -896,6 +941,11 @@ impl Downloads {
         }
         let mut actions = Vec::new();
         for file in self.priority_ordered_files() {
+            // Window-age urgency belongs to the one file with a
+            // playback deadline (see `Downloads::now_playing`); a
+            // skipped-away file's stale anchor and never-cleared
+            // stamps must not resurrect its window as "urgent".
+            let window_urgent = self.now_playing == Some(file);
             let Some(d) = self.files.get_mut(&file) else {
                 continue;
             };
@@ -910,17 +960,25 @@ impl Downloads {
                 if !urgent_sweep {
                     continue;
                 }
-                // Urgency is possible only if some chunk has aged since
-                // its first request, or the remainder is endgame-sized
-                // (the needed-count scan is why this branch is
-                // tick-only). Otherwise the file is parked: skip.
-                let urgency_possible =
-                    !d.first_requested.is_empty() || d.store.needed_chunks().len() <= depth;
+                // Urgency is possible only if the now-playing file has
+                // a chunk aged since its first request, or the
+                // remainder is endgame-sized (the needed-count scan is
+                // why this branch is tick-only). Otherwise the file is
+                // parked: skip.
+                let urgency_possible = (window_urgent && !d.first_requested.is_empty())
+                    || d.store.needed_chunks().len() <= depth;
                 if !urgency_possible {
                     continue;
                 }
             }
-            actions.extend(plan_requests(d, &self.config, file, now, &mut budget));
+            actions.extend(plan_requests(
+                d,
+                &self.config,
+                file,
+                window_urgent,
+                now,
+                &mut budget,
+            ));
         }
         actions
     }
@@ -941,11 +999,14 @@ fn drain_in_flight(src: &mut Source, stats: &mut TransferStats) -> Vec<u32> {
 ///
 /// A needed chunk is **urgent** when its absence gates a deadline:
 ///
-/// - it lies in the playable window and was first committed to a source
-///   more than `urgent_age_millis` ago without landing (a stalled or
+/// - `window_urgent` (this is the now-playing file — the only file
+///   whose playable window has a deadline) and it lies in the playable
+///   window and was first committed to a source more than
+///   `urgent_age_millis` ago without landing (a stalled or
 ///   repeatedly-failing source is sitting on it), or
 /// - the whole remaining set fits in one pipeline — endgame, the special
-///   case where the completion deadline gates everything left.
+///   case where the completion deadline gates everything left, for any
+///   file.
 ///
 /// Urgent chunks may be requested from several sources at once (the
 /// `assigned` reservation, the `max_sources` cap, and the cross-file
@@ -966,6 +1027,7 @@ fn plan_requests(
     d: &mut Download,
     config: &DownloadConfig,
     file: Ed2kHash,
+    window_urgent: bool,
     now: u64,
     budget: &mut HashMap<PeerId, usize>,
 ) -> Vec<DownloadAction> {
@@ -999,7 +1061,8 @@ fn plan_requests(
         .copied()
         .filter(|&c| {
             endgame
-                || (in_window(c)
+                || (window_urgent
+                    && in_window(c)
                     && d.first_requested
                         .get(&c)
                         .is_some_and(|&t0| now.saturating_sub(t0) >= config.urgent_age_millis))
@@ -1449,7 +1512,7 @@ mod tests {
         let b = fixture(&dir, "b.bin", 2 * ED2K_BLOCK_SIZE as usize, 1);
         let seed = peer("seed");
         let mut downloads = Downloads::new(config);
-        downloads.set_priority(vec![a.file, b.file]);
+        downloads.set_priority(vec![a.file, b.file], Some(a.file));
         a.start(&mut downloads, vec![seed.clone()], 1000);
         b.start(&mut downloads, vec![seed.clone()], 1000);
         let actions = a.serve_hashes(&mut downloads, &seed, 1001);
@@ -1490,7 +1553,7 @@ mod tests {
         };
         let (mut downloads, a, b, seed, _dir) = duo_with_a_filled(config);
         b.serve_hashes(&mut downloads, &seed, 1002);
-        downloads.set_priority(vec![b.file, a.file]);
+        downloads.set_priority(vec![b.file, a.file], Some(b.file));
         // One of A's chunks lands: the freed slot goes to B, nothing is
         // re-requested for A, and nothing is cancelled.
         let actions = a.deliver(&mut downloads, &seed, 0, 1003);
@@ -1516,7 +1579,7 @@ mod tests {
         let b = fixture(&dir, "b.bin", 4 * 256_000, 1);
         let seed = peer("seed");
         let mut downloads = Downloads::new(config);
-        downloads.set_priority(vec![a.file, b.file]);
+        downloads.set_priority(vec![a.file, b.file], Some(a.file));
         a.start(&mut downloads, vec![seed.clone()], 1000);
         b.start(&mut downloads, vec![seed.clone()], 1000);
         a.serve_hashes(&mut downloads, &seed, 1001);
@@ -1542,12 +1605,87 @@ mod tests {
         };
         let (mut downloads, a, b, seed, _dir) = duo_with_a_filled(config);
         b.serve_hashes(&mut downloads, &seed, 1002);
-        downloads.set_priority(vec![b.file, a.file]);
+        downloads.set_priority(vec![b.file, a.file], Some(b.file));
         let actions = downloads.on_source_stream_lost(a.file, &seed, 1003);
         assert!(requests_for(&actions, a.file).is_empty());
         let b_reqs = requests_for(&actions, b.file);
         assert_eq!(b_reqs.len(), 1);
         assert_eq!(b_reqs[0].1.len(), 8, "B takes the whole freed window");
+    }
+
+    /// A file the user skipped away from (demoted in priority; nobody
+    /// is playing it) must NOT have its requeued window chunks turn
+    /// urgent: window-age urgency exists to protect a playback
+    /// deadline, and only the now-playing file has one. Pre-fix,
+    /// `in_window` used the file's own (frozen) anchor and
+    /// `first_requested` stamps are never cleared, so the moment a
+    /// demoted file's window chunks requeued (stream reset, snub,
+    /// source flap) they were all older than `urgent_age` and the
+    /// tick's urgent sweep issued up to a full extra pipeline per
+    /// source for an episode nobody was watching — bypassing the
+    /// shared budget and halving the throughput of the file actually
+    /// gating the group (2026-08-20 review).
+    #[test]
+    fn a_demoted_files_stale_window_stamps_do_not_go_urgent() {
+        let config = DownloadConfig {
+            pipeline_depth: 8,
+            max_sources: 4,
+            // Snub out of the way: this pins the urgency rule alone.
+            snub_timeout_millis: 600_000,
+            urgent_age_millis: 5_000,
+        };
+        let (mut downloads, a, b, seed, _dir) = duo_with_a_filled(config);
+        b.serve_hashes(&mut downloads, &seed, 1002);
+        // The user skips to B: the anchored ranking re-fronts, and B is
+        // now the file with the playback deadline.
+        downloads.set_priority(vec![b.file, a.file], Some(b.file));
+        // A's data stream resets: its window chunks requeue with their
+        // original (aged-from-first-request) stamps, and the freed
+        // budget flows to B, saturating the source.
+        let actions = downloads.on_source_stream_lost(a.file, &seed, 1003);
+        assert!(requests_for(&actions, a.file).is_empty());
+        assert_eq!(requests_for(&actions, b.file).len(), 1);
+        // Well past urgent_age the urgent sweep runs. A's requeued
+        // window chunks are aged, but A has no playback deadline:
+        // nothing may be issued for it.
+        let tick = downloads.tick(20_000);
+        assert!(
+            requests_for(&tick, a.file).is_empty(),
+            "a demoted file's stale window stamps must not bypass the shared budget: {tick:?}"
+        );
+    }
+
+    /// Control for the above: the *now-playing* file's stalled window
+    /// chunks keep their urgent bypass even when a higher-ranked file
+    /// has the source's whole budget — that is the deadline the urgent
+    /// set exists for.
+    #[test]
+    fn the_now_playing_files_stale_window_stamps_still_go_urgent() {
+        let config = DownloadConfig {
+            pipeline_depth: 8,
+            max_sources: 4,
+            snub_timeout_millis: 600_000,
+            urgent_age_millis: 5_000,
+        };
+        let (mut downloads, a, b, seed, _dir) = duo_with_a_filled(config);
+        b.serve_hashes(&mut downloads, &seed, 1002);
+        // A stays now-playing, but B outranks it for the bulk budget.
+        downloads.set_priority(vec![b.file, a.file], Some(a.file));
+        let actions = downloads.on_source_stream_lost(a.file, &seed, 1003);
+        assert!(requests_for(&actions, a.file).is_empty());
+        assert_eq!(requests_for(&actions, b.file).len(), 1);
+        // The urgent sweep must rescue A's aged window chunks despite
+        // the saturated budget.
+        let tick = downloads.tick(20_000);
+        let a_reqs: HashSet<u32> = requests_for(&tick, a.file)
+            .into_iter()
+            .flat_map(|(_, c)| c)
+            .collect();
+        assert_eq!(
+            a_reqs,
+            HashSet::from([0, 1, 2, 3, 4, 5, 6, 7]),
+            "the now-playing file's aged window chunks must go urgent: {tick:?}"
+        );
     }
 
     #[test]
@@ -2095,6 +2233,9 @@ mod tests {
         };
         let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
         let mut t: u64 = 1_000;
+        // The file is being played: its window has the deadline that
+        // makes age-based urgency apply.
+        r.downloads.set_priority(vec![r.file], Some(r.file));
         let _ = r.downloads.start(
             r.file,
             r.hash.size_bytes,
@@ -2205,6 +2346,8 @@ mod tests {
         };
         let mut r = rig(2 * ED2K_BLOCK_SIZE as usize, config);
         let mut t: u64 = 1_000;
+        // The file is being played: window-age urgency applies to it.
+        r.downloads.set_priority(vec![r.file], Some(r.file));
         let mut actions = r.downloads.start(
             r.file,
             r.hash.size_bytes,
