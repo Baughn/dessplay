@@ -295,11 +295,14 @@ snapshot data to component props:
   identity. The persisted speaker-name toggle defaults off; when enabled, a
   named cue is formatted as `Name: dialogue` in both Intermixed and Separate
   modes by one shared display helper. `SpeakerColors` tracks named
-  speakers in an inclusive rolling five-minute wall-clock window, advancing
-  on subtitle arrivals, the explicit UI snapshot clock, and a one-second
-  production-shell clock tick during otherwise quiet scenes. Active slot
-  assignments are unique and stable; expired slots are recycled. Backward
-  clock corrections never rewind the window.
+  speakers in an inclusive rolling five-minute window in the shared-clock
+  domain of subtitle arrival stamps, advancing on subtitle arrivals, the
+  snapshot's shared clock, and — during otherwise quiet scenes — the
+  production shell's one-second tick, which contributes locally *elapsed*
+  millis (the tick source is monotonic, so no absolute value of it may
+  enter the shared-domain window). Active slot assignments are unique and
+  stable; expired slots are recycled. Backward clock corrections never
+  rewind the window.
 
   A true-color slot extends a cached, deterministic HSLuv palette by choosing
   the candidate with the greatest minimum CIEDE2000 distance from prior RGB8
@@ -377,9 +380,14 @@ snapshot data to component props:
   pass or a chat spoiler re-randomization tease animates, the lazy 1s
   otherwise — and the idle-redraw discipline holds: a tick repaints
   only when `advance_clock` (which also advances the speaker-color
-  window and the spoiler tease frames, all wall-millis-derived rather
-  than per-tick incremented) reports a change. Snapshots advance the
-  marquee and spoiler animations too, like the speaker window. Tests
+  window and the spoiler tease frames, all clock-derived rather than
+  per-tick incremented) reports a change. Animators run on `Ui::clock`,
+  a **monotonic** animator clock fed exclusively by the shell's
+  `Instant`-derived millis — never wall or shared time, both of which
+  can step backward (NTP corrections; ClockSync offset shrinks) and
+  would freeze every animator for the size of the step if merged in.
+  The shell freshens this clock before dispatching *every* input, so
+  snapshots advance the marquee and spoiler animations too. Tests
   drive `advance_clock` with synthetic millis; the UI thread is not on
   tokio time.
 
@@ -446,11 +454,11 @@ the handler hit-tests against them:
   clickable spoiler column ranges the wrap actually produced (the chat
   analogue of `RenderedList`; hidden runs are exactly the rows that
   emit ranges). The dispatcher's chat arm passes the click and
-  `Ui::clock` — the max-monotonic merge of wall ticks and snapshot
-  shared-clock millis; `Ui` itself never reads a system clock — into
-  the pane's state machine for the 5-second double-click window. The
-  shell freshens that clock (`advance_clock`) before dispatching each
-  input event. Clicks anywhere else in the chat column still just
+  `Ui::clock` — the monotonic animator clock fed by the shell's
+  `Instant`-derived ticks; `Ui` itself never reads a system clock —
+  into the pane's state machine for the 5-second double-click window.
+  The shell freshens that clock (`advance_clock`) before dispatching
+  each input. Clicks anywhere else in the chat column still just
   focus.
 - **Chat drag-selection** (design.md, Mouse support): a left press on a
   selectable log row arms a drag (`ChatPane::mouse_down`); drag and

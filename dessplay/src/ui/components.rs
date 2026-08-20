@@ -266,8 +266,9 @@ enum Selection {
         focus: Option<SelPoint>,
     },
     /// Released: the copy has happened, the highlight lingers until
-    /// `expires_at` (merged-clock millis) or the next unrelated input.
-    /// Identity-keyed — the 5 s hold spans many log rebuilds.
+    /// `expires_at` (animator-clock millis — the shell's monotonic
+    /// `Ui::clock` domain) or the next unrelated input. Identity-keyed —
+    /// the 5 s hold spans many log rebuilds.
     Held { range: HeldRange, expires_at: u64 },
 }
 

@@ -1759,7 +1759,11 @@ NTP-like protocol to establish shared clock:
 4. Calculate offset and round-trip time
 5. Repeat periodically to maintain sync
 
-All state timestamps use this shared clock.
+All state timestamps use this shared clock. UI animation deliberately
+does not: both the wall and shared clocks can step backward (NTP
+corrections; a later sync round shrinking the offset), so the TUI's
+animators run on a local monotonic clock and use shared/wall time only
+for display and message identity (see ui-architecture.md).
 
 ### State Sync Protocol
 

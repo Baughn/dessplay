@@ -58,9 +58,26 @@ impl SpeakerColors {
     pub fn advance(&mut self, now_millis: u64) -> bool {
         let previous_len = self.active.len();
         self.now = self.now.max(now_millis);
-        self.active
-            .retain(|_, active| self.now.saturating_sub(active.last_seen) <= SPEAKER_WINDOW_MILLIS);
+        self.expire();
         self.active.len() != previous_len
+    }
+
+    /// Move the rolling window forward by locally *elapsed* millis — the
+    /// shell's monotonic ticks. The window's absolute domain is the
+    /// shared-clock arrival stamps (see [`Self::advance`]); elapsed time
+    /// is domain-free, so quiet scenes expire leases without importing a
+    /// rewindable clock into the window (2026-08-20 review).
+    pub fn tick(&mut self, elapsed_millis: u64) -> bool {
+        let previous_len = self.active.len();
+        self.now = self.now.saturating_add(elapsed_millis);
+        self.expire();
+        self.active.len() != previous_len
+    }
+
+    fn expire(&mut self) {
+        let now = self.now;
+        self.active
+            .retain(|_, active| now.saturating_sub(active.last_seen) <= SPEAKER_WINDOW_MILLIS);
     }
 
     /// Number of speakers still active in the five-minute window.

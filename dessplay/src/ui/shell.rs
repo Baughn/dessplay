@@ -222,6 +222,14 @@ pub fn run_ui_loop<A: TerminalAdapter>(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        // Freshen the animator clock to the dequeue moment before any
+        // handler runs: animation starts (marquee passes, spoiler
+        // teases) and TTL stamps read `Ui::clock`, which would
+        // otherwise be up to one lazy tick stale — and snapshots
+        // advance running animations this way too (~10Hz during
+        // playback). The redraw hint is moot; every input is followed
+        // by a draw below anyway.
+        let _ = ui.advance_clock(now_millis());
         match input {
             UiInput::Shutdown => break,
             UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
@@ -280,13 +288,6 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                     Some(std::time::Instant::now());
             }
             UiInput::Event(event) => {
-                // Freshen the Ui clock (and any running animation) to the
-                // moment of the event: click-time state machines — the
-                // spoiler double-click window — read `Ui::clock`, which
-                // would otherwise be up to one lazy tick stale. The
-                // returned redraw hint is moot; every input is followed
-                // by a draw below anyway.
-                let _ = ui.advance_clock(now_millis());
                 for action in ui.handle(event) {
                     let quit = action == UserAction::Quit;
                     if actions.blocking_send(action).is_err() || quit {
@@ -302,13 +303,18 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     }
 }
 
-/// Wall-clock unix millis, the UI thread's only time source (the `Ui`
-/// itself never reads a clock; tests drive it with synthetic millis).
+/// Monotonic millis since the first call — the UI thread's only time
+/// source (the `Ui` itself never reads a clock; tests drive it with
+/// synthetic millis). Monotonic by construction (`Instant`): wall-clock
+/// steps (NTP corrections) must never reach `Ui::clock`, whose
+/// consumers all measure elapsed local time — a backward step would
+/// freeze every animator for the size of the step (2026-08-20 review).
 fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
 }
 
 /// Coarse event description for trace logs. Deliberately omits the

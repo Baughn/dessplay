@@ -2347,6 +2347,8 @@ fn spoiler_scrambles_then_click_twice_reveals() {
     chat_message(&mut state, 1_000, "nero", "the ||secret|| twist");
     let mut ui = ui();
     let peers = vec![peer("kim"), peer("nero")];
+    // The shell freshens the animator clock before every input.
+    ui.advance_clock(10_000);
     ui.apply_snapshot(snapshot_at(state.view(), peers.clone(), 10_000));
     let before = render(&mut ui, 100, 30);
     assert!(!before.contains("secret"), "spoiler leaked:\n{before}");
@@ -2364,7 +2366,9 @@ fn spoiler_scrambles_then_click_twice_reveals() {
     // First click: the re-randomization tease starts.
     let (col, row) = SPOILER_CLICK;
     ui.handle(click(col, row));
-    // Frames derive from the clock; snapshots carry it forward.
+    // Frames derive from the clock; the shell's pre-input freshen
+    // carries it forward at snapshot rate.
+    ui.advance_clock(10_300);
     ui.apply_snapshot(snapshot_at(state.view(), peers.clone(), 10_300));
     let teasing = render(&mut ui, 100, 30);
     assert!(!teasing.contains("secret"), "{teasing}");
@@ -2383,11 +2387,14 @@ fn lapsed_reveal_window_requires_a_fresh_double_click() {
     chat_message(&mut state, 1_000, "nero", "the ||secret|| twist");
     let mut ui = ui();
     let peers = vec![peer("kim"), peer("nero")];
+    // The shell freshens the animator clock before every input.
+    ui.advance_clock(10_000);
     ui.apply_snapshot(snapshot_at(state.view(), peers.clone(), 10_000));
     render(&mut ui, 100, 30);
     let (col, row) = SPOILER_CLICK;
     ui.handle(click(col, row));
     // The tease finishes and the 5s window lapses.
+    ui.advance_clock(20_000);
     ui.apply_snapshot(snapshot_at(state.view(), peers.clone(), 20_000));
     // This click is a fresh first click (re-tease), not a reveal…
     ui.handle(click(col, row));
