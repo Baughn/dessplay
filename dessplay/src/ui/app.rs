@@ -145,6 +145,9 @@ fn log_action(action: &UserAction) {
             };
             tracing::debug!(kind, "user action: Browse");
         }
+        // Info, not debug: a user-visible state change (the replica is
+        // discarded and re-adopted).
+        UserAction::ResetSyncedState => tracing::info!("user action: ResetSyncedState"),
         UserAction::Notice(text) => tracing::debug!(%text, "user action: Notice"),
         UserAction::Summon(absent) => {
             tracing::debug!(count = absent.len(), "user action: Summon");
@@ -1772,6 +1775,9 @@ impl Ui {
                 self.push_modal(Modal::Files(FileBrowser::for_directory()));
                 None
             }
+            // The Settings action row's path to the same reset `/resync`
+            // performs; the modal stays open (like OpenDirPicker's flow).
+            Msg::ResetSyncedState => Some(UserAction::ResetSyncedState),
             Msg::DirChosen(path) => {
                 self.pop_modal();
                 if let Some(Modal::Settings(settings)) = self.modals.last_mut() {
@@ -1939,6 +1945,18 @@ impl Ui {
             }
             // Ping absent known users on IRC (design.md #4).
             "/summon" => self.command_summon(),
+            // `/resync`: discard the local replicated state and re-adopt
+            // the server's — the manual remedy for persistent divergence
+            // (docs/sync-state.md, Divergence Alarm). No confirm modal:
+            // typing the command is the deliberate act, and the state is
+            // losslessly recoverable from the server.
+            "/resync" => vec![
+                UserAction::ResetSyncedState,
+                UserAction::Notice(
+                    "/resync: discarding local synced state and re-adopting the server's"
+                        .to_string(),
+                ),
+            ],
             other => vec![UserAction::Notice(format!(
                 "Unknown command: {other} — type / to see commands"
             ))],
@@ -2670,6 +2688,23 @@ mod tests {
             "a present committed user is not a committed-absent blocker"
         );
         assert!(matches!(actions.as_slice(), [UserAction::Notice(_)]));
+    }
+
+    /// `/resync` emits the reset action plus a local feedback notice —
+    /// no confirm modal, no mutation (the reset is not a CRDT write).
+    #[test]
+    fn resync_command_emits_reset_and_notice() {
+        let mut ui = ui_with_view(StateView::default());
+        let actions = ui.command("/resync");
+        assert!(mutations(&actions).is_empty());
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [UserAction::ResetSyncedState, UserAction::Notice(text)]
+                    if text.contains("/resync")
+            ),
+            "expected reset + feedback notice, got {actions:?}"
+        );
     }
 
     /// `/ack` with nothing playing is a local notice.

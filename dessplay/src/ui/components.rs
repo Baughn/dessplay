@@ -78,7 +78,7 @@ const CHAT_WRAP_INDENT: usize = 2;
 /// Most command suggestions shown at once in the discoverability popup.
 /// Sized to fit the whole command table on a bare `/` — bump it when a
 /// command is added (see [`super::commands::SLASH_COMMANDS`]).
-const CHAT_SUGGESTION_MAX: u16 = 12;
+const CHAT_SUGGESTION_MAX: u16 = 13;
 
 /// Frames of re-randomization a spoiler click plays before settling.
 const SPOILER_FRAMES: u32 = 6;

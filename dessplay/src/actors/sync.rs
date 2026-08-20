@@ -13,7 +13,9 @@
 //! - Buffer ops generated while disconnected (positions coalesced to
 //!   the latest), replaying them on reconnect.
 //! - Watch the server's periodic `StateHash`; two consecutive
-//!   mismatches trigger a loud log and a `RequestMerge` self-heal.
+//!   mismatches trigger a loud log and a `RequestMerge` self-heal;
+//!   three consecutive failed heals escalate to the user
+//!   ([`SyncEvent::DivergencePersisted`] → the `/resync` advisory).
 //! - Flush snapshots to SQLite periodically and at shutdown.
 
 use std::sync::Arc;
@@ -258,6 +260,11 @@ pub enum SyncCommand {
     GetView(oneshot::Sender<StateView>),
     /// Fetch the current epoch.
     GetEpoch(oneshot::Sender<Epoch>),
+    /// Discard the replicated state wholesale and re-adopt the server's
+    /// copy (`/resync`, Settings → "Reset synced state"). Safe in any
+    /// link state: connected, a `RequestMerge` fetches the curative
+    /// snapshot; down, the reconnect handshake covers it.
+    ResetState,
     /// Flush to storage and exit.
     Shutdown,
 }
@@ -269,6 +276,16 @@ pub enum SyncEvent {
     StateChanged,
     /// The divergence alarm fired (a `RequestMerge` was sent).
     Diverged,
+    /// [`HEAL_ATTEMPTS_ESCALATE`] consecutive heals failed to produce a
+    /// matching hash: auto-healing isn't working, tell the user to
+    /// `/resync`. Emitted once per escalation (the advisor's flag is
+    /// sticky; the chat line must not repeat every hash period).
+    DivergencePersisted,
+    /// A matching `StateHash` arrived after at least one failed heal or
+    /// an escalation: the divergence is over. Clears the advisor's
+    /// sticky flag — `HealthLevel::Ok` deliberately does not, because a
+    /// healthy link says nothing about replica equality.
+    DivergenceHealed,
 }
 
 /// Static sync actor configuration.
@@ -308,6 +325,13 @@ impl SyncConfig {
 /// datagram-only.
 const POSITION_RELIABLE_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Consecutive failed heals tolerated before escalating to the user.
+/// Three, not two: an op sent between our `RequestMerge` and the
+/// server's curative snapshot re-diverges the replica once through no
+/// fault of the mechanism (~one hash period to re-converge), so the
+/// second alarm can be that race rather than a real failure.
+const HEAL_ATTEMPTS_ESCALATE: u32 = 3;
+
 /// Connection lifecycle as the sync actor sees it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Link {
@@ -339,6 +363,14 @@ struct SyncActor {
     offline_position: Option<CrdtOp>,
     last_reliable_position: Option<tokio::time::Instant>,
     hash_mismatches: u32,
+    /// Consecutive divergence alarms without a matching hash between
+    /// them — the escalation ladder (docs/sync-state.md).
+    heal_attempts: u32,
+    /// `DivergencePersisted` has been emitted and no matching hash has
+    /// arrived since. Survives `ResetState` (which zeroes the counters)
+    /// so the eventual heal still announces itself and clears the
+    /// advisor's sticky flag.
+    escalated: bool,
     dirty: bool,
     net: mpsc::Sender<NetworkCommand>,
     events: mpsc::Sender<SyncEvent>,
@@ -375,6 +407,8 @@ pub async fn run(
         offline_position: None,
         last_reliable_position: None,
         hash_mismatches: 0,
+        heal_attempts: 0,
+        escalated: false,
         dirty: false,
         net,
         events,
@@ -523,6 +557,7 @@ impl SyncActor {
             SyncCommand::GetEpoch(reply) => {
                 let _ = reply.send(self.epoch());
             }
+            SyncCommand::ResetState => self.reset_state().await,
             SyncCommand::Shutdown => unreachable!("handled by the run loop"),
         }
     }
@@ -726,6 +761,56 @@ impl SyncActor {
         .await;
     }
 
+    /// `/resync`: discard the replicated state wholesale and re-adopt
+    /// the server's. The server's copy is authoritative and losslessly
+    /// recoverable, so nothing local is worth preserving — including
+    /// the offline buffer, whose ops were stamped against the discarded
+    /// state. Local-only derivations (file availability, manual
+    /// mappings) re-announce through their own paths once the fresh
+    /// state lands.
+    async fn reset_state(&mut self) {
+        tracing::info!(
+            epoch = self.epoch().0,
+            discarded_ops = self.offline_buffer.len(),
+            "resetting synced state on user request"
+        );
+        self.state = CrdtState::new();
+        self.offline_buffer.clear();
+        self.offline_position = None;
+        self.set_epoch(Epoch(0));
+        self.hash_mismatches = 0;
+        // The reset IS the remedy the escalation asked for: the
+        // failed-heal ladder starts over. `escalated` deliberately
+        // survives, so the eventual matching hash still emits
+        // DivergenceHealed and clears the advisor's sticky flag.
+        self.heal_attempts = 0;
+        // `last_issued` (the Lamport floor) deliberately survives:
+        // pre-reset stamps live on in the server's state, and a
+        // post-reset write re-issuing one of them would tie — and could
+        // lose — the LWW comparison against a value it causally
+        // supersedes.
+        self.changed();
+        // Make the reset durable now, not at the next flush tick: a
+        // crash must not resurrect the discarded state from storage.
+        self.flush_to_storage();
+        match self.link {
+            Link::Synced => {
+                // The reply is a curative StateSnapshot at the server's
+                // epoch (protocol v13), adopted wholesale by the
+                // mid-session snapshot path below.
+                self.send_out(NetworkCommand::SendReliable(Box::new(
+                    ServerControl::RequestMerge,
+                )))
+                .await;
+            }
+            // Down (or still awaiting the initial sync): nothing to
+            // send. The reconnect handshake covers adoption — our next
+            // SyncStatus reports epoch 0 plus the empty-state hash, and
+            // the server answers any mismatch with a snapshot.
+            Link::Down | Link::AwaitingSync => {}
+        }
+    }
+
     async fn remote(&mut self, msg: ServerControl, via_datagram: bool) {
         match msg {
             ServerControl::StateOp { epoch, op } => {
@@ -841,6 +926,16 @@ impl SyncActor {
                 }
                 if self.state.view_hash() == hash {
                     self.hash_mismatches = 0;
+                    if self.heal_attempts > 0 || self.escalated {
+                        tracing::info!(
+                            failed_heals = self.heal_attempts,
+                            "divergence healed: view hash matches the server again"
+                        );
+                        self.heal_attempts = 0;
+                        self.escalated = false;
+                        // Lossy for the same reason as Diverged below.
+                        let _ = self.events.try_send(SyncEvent::DivergenceHealed);
+                    }
                     return;
                 }
                 self.hash_mismatches += 1;
@@ -849,6 +944,7 @@ impl SyncActor {
                         "DIVERGENCE: view hash mismatched the server twice; requesting merge"
                     );
                     self.hash_mismatches = 0;
+                    self.heal_attempts += 1;
                     self.send_out(NetworkCommand::SendReliable(Box::new(
                         ServerControl::RequestMerge,
                     )))
@@ -860,6 +956,14 @@ impl SyncActor {
                     // network actor regardless of whether the UI observes
                     // this, so dropping it when the channel is full is safe.
                     let _ = self.events.try_send(SyncEvent::Diverged);
+                    if self.heal_attempts == HEAL_ATTEMPTS_ESCALATE {
+                        tracing::error!(
+                            attempts = self.heal_attempts,
+                            "divergence is not healing; advising a manual /resync"
+                        );
+                        self.escalated = true;
+                        let _ = self.events.try_send(SyncEvent::DivergencePersisted);
+                    }
                 }
             }
             other => {
@@ -1183,7 +1287,12 @@ mod tests {
         loop {
             match rig.events.recv().await.unwrap() {
                 SyncEvent::Diverged => break,
-                SyncEvent::StateChanged => continue,
+                other => {
+                    assert!(
+                        matches!(other, SyncEvent::StateChanged),
+                        "unexpected event before Diverged: {other:?}"
+                    );
+                }
             }
         }
     }
@@ -1554,6 +1663,364 @@ mod tests {
         assert_eq!(
             pushed, expected,
             "the upward merge must carry the replayed offline edits"
+        );
+    }
+
+    /// Drain everything currently queued on the events channel.
+    fn drained_events(rig: &mut Rig) -> Vec<SyncEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rig.events.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    fn count_persisted(events: &[SyncEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, SyncEvent::DivergencePersisted))
+            .count()
+    }
+
+    fn count_healed(events: &[SyncEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, SyncEvent::DivergenceHealed))
+            .count()
+    }
+
+    /// One failed heal cycle: two consecutive mismatching `StateHash`
+    /// frames (the alarm threshold), consuming the `RequestMerge` the
+    /// alarm sends. Waiting on the net channel also serializes with the
+    /// actor, so the events it emitted are drainable on return.
+    async fn fail_one_heal(rig: &mut Rig) {
+        let bogus = ServerControl::StateHash {
+            epoch: Epoch(0),
+            hash: [0xAB; 32],
+        };
+        for _ in 0..2 {
+            rig.commands
+                .send(SyncCommand::Server {
+                    msg: Box::new(bogus.clone()),
+                    via_datagram: false,
+                })
+                .await
+                .unwrap();
+        }
+        let cmd = rig.net.recv().await.unwrap();
+        assert!(
+            matches!(
+                &cmd,
+                NetworkCommand::SendReliable(msg)
+                    if matches!(**msg, ServerControl::RequestMerge)
+            ),
+            "expected the alarm's RequestMerge, got {cmd:?}"
+        );
+    }
+
+    /// A matching `StateHash` for an empty replica at epoch 0.
+    async fn send_honest_hash(rig: &Rig) {
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(ServerControl::StateHash {
+                    epoch: Epoch(0),
+                    hash: CrdtState::new().view_hash(),
+                }),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+        // GetView round-trips through the actor, so the hash frame has
+        // been fully handled (and its events emitted) on return.
+        let _ = view_of(rig).await;
+    }
+
+    /// The escalation ladder (docs/sync-state.md, Divergence Alarm):
+    /// the first two failed heals stay silent toward the user — the
+    /// second can be the one-cycle heal race (an op sent between
+    /// RequestMerge and the curative snapshot), not a real failure —
+    /// the third emits `DivergencePersisted`, exactly once; the honest
+    /// hash afterwards emits `DivergenceHealed`.
+    #[tokio::test(start_paused = true)]
+    async fn divergence_escalates_only_after_three_failed_heals() {
+        let mut rig = rig();
+        go_online(&mut rig).await;
+
+        for _ in 0..2 {
+            fail_one_heal(&mut rig).await;
+        }
+        let early = drained_events(&mut rig);
+        assert_eq!(
+            count_persisted(&early),
+            0,
+            "escalated before the third failed heal: {early:?}"
+        );
+
+        fail_one_heal(&mut rig).await;
+        let third = drained_events(&mut rig);
+        assert_eq!(
+            count_persisted(&third),
+            1,
+            "the third failed heal must escalate exactly once: {third:?}"
+        );
+
+        // Divergence keeps failing to heal: no re-escalation (the
+        // advisor flag is sticky; the chat line must not repeat every
+        // hash period).
+        fail_one_heal(&mut rig).await;
+        let fourth = drained_events(&mut rig);
+        assert_eq!(
+            count_persisted(&fourth),
+            0,
+            "a later failed heal must not re-escalate: {fourth:?}"
+        );
+
+        // The honest hash ends it.
+        send_honest_hash(&rig).await;
+        let after = drained_events(&mut rig);
+        assert_eq!(
+            count_healed(&after),
+            1,
+            "a matching hash after failed heals must emit DivergenceHealed: {after:?}"
+        );
+    }
+
+    /// A matching hash between failed heals resets the ladder: the
+    /// count is of *consecutive* failures, so two failures, a heal, and
+    /// two more failures never escalate — only a third consecutive one
+    /// does.
+    #[tokio::test(start_paused = true)]
+    async fn a_matching_hash_resets_the_heal_ladder() {
+        let mut rig = rig();
+        go_online(&mut rig).await;
+
+        for _ in 0..2 {
+            fail_one_heal(&mut rig).await;
+        }
+        send_honest_hash(&rig).await;
+        let healed = drained_events(&mut rig);
+        assert_eq!(
+            count_healed(&healed),
+            1,
+            "healing after failed attempts must announce itself: {healed:?}"
+        );
+
+        for _ in 0..2 {
+            fail_one_heal(&mut rig).await;
+        }
+        let events = drained_events(&mut rig);
+        assert_eq!(
+            count_persisted(&events),
+            0,
+            "the ladder must restart after a heal: {events:?}"
+        );
+        fail_one_heal(&mut rig).await;
+        let events = drained_events(&mut rig);
+        assert_eq!(count_persisted(&events), 1);
+    }
+
+    /// `ResetState` discards the replica wholesale — fresh state, epoch
+    /// 0, `RequestMerge` out for the curative snapshot — but keeps the
+    /// Lamport floor: a post-reset write must out-stamp every pre-reset
+    /// stamp we ever observed, or the server's copy of superseded state
+    /// wins LWW ties when it merges back.
+    #[tokio::test(start_paused = true)]
+    async fn reset_state_discards_state_and_keeps_the_lamport_floor() {
+        let mut rig = rig();
+        go_online(&mut rig).await;
+
+        // A remote write stamped far in our future.
+        let mut origin = CrdtState::new();
+        let op = origin.set_now_playing(ActorId::SERVER, SharedTimestamp(5_000_000), Some(hash(1)));
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(ServerControl::StateOp {
+                    epoch: Epoch(0),
+                    op,
+                }),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(view_of(&rig).await.now_playing, Some(hash(1)));
+
+        rig.commands.send(SyncCommand::ResetState).await.unwrap();
+
+        // Wholesale discard: fresh state, epoch 0, and a RequestMerge
+        // out (the reply is the server's curative snapshot).
+        assert_eq!(view_of(&rig).await.now_playing, None);
+        let (tx, rx) = oneshot::channel();
+        rig.commands.send(SyncCommand::GetEpoch(tx)).await.unwrap();
+        assert_eq!(rx.await.unwrap(), Epoch(0));
+        let cmd = rig.net.recv().await.unwrap();
+        assert!(
+            matches!(
+                &cmd,
+                NetworkCommand::SendReliable(msg)
+                    if matches!(**msg, ServerControl::RequestMerge)
+            ),
+            "expected ResetState's RequestMerge, got {cmd:?}"
+        );
+
+        // The Lamport floor survives: our post-reset write dominates the
+        // pre-reset 5_000_000 stamp when the server's state merges back.
+        rig.commands
+            .send(SyncCommand::Mutate(Box::new(Mutation::SetNowPlaying {
+                file: Some(hash(2)),
+            })))
+            .await
+            .unwrap();
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(ServerControl::StateMerge(StateSnapshot {
+                    epoch: Epoch(0),
+                    state: origin,
+                })),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            view_of(&rig).await.now_playing,
+            Some(hash(2)),
+            "post-reset write lost an LWW tie: the Lamport floor did not survive ResetState"
+        );
+    }
+
+    /// `ResetState` while the link is down sends nothing; the ordinary
+    /// reconnect handshake heals it — SyncStatus reports epoch 0 plus
+    /// the empty-state hash, the server answers with a snapshot, and
+    /// the discarded offline buffer stays discarded (the upward push
+    /// carries the adopted state only).
+    #[tokio::test(start_paused = true)]
+    async fn reset_state_while_down_is_healed_by_the_reconnect_handshake() {
+        let mut rig = rig();
+        go_online(&mut rig).await;
+        rig.commands.send(SyncCommand::Disconnected).await.unwrap();
+        // An offline edit sits in the buffer when the user resets.
+        rig.commands
+            .send(SyncCommand::Mutate(Box::new(Mutation::Chat {
+                text: "pre-reset".into(),
+            })))
+            .await
+            .unwrap();
+
+        rig.commands.send(SyncCommand::ResetState).await.unwrap();
+        assert_eq!(view_of(&rig).await.chat.len(), 0);
+        tokio::task::yield_now().await;
+        assert!(rig.net.try_recv().is_err(), "nothing sent while down");
+
+        // Reconnect: the handshake must advertise the reset (epoch 0,
+        // empty-state hash), so the server answers with a snapshot.
+        rig.commands.send(SyncCommand::Connected).await.unwrap();
+        let status = rig.net.recv().await.unwrap();
+        let NetworkCommand::SendReliable(msg) = status else {
+            panic!("expected reliable SyncStatus, got {status:?}");
+        };
+        let ServerControl::SyncStatus { epoch, state_hash } = *msg else {
+            panic!("expected SyncStatus, got {msg:?}");
+        };
+        assert_eq!(epoch, Epoch(0));
+        assert_eq!(state_hash, CrdtState::new().view_hash());
+
+        // The snapshot is adopted; the upward push carries it at the
+        // adopted epoch and does NOT resurrect the pre-reset edit.
+        let mut server = CrdtState::new();
+        server.set_now_playing(ActorId::SERVER, SharedTimestamp(10), Some(hash(2)));
+        rig.commands
+            .send(SyncCommand::Server {
+                msg: Box::new(ServerControl::StateSnapshot(StateSnapshot {
+                    epoch: Epoch(7),
+                    state: server,
+                })),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+        let push = rig.net.recv().await.unwrap();
+        let NetworkCommand::SendReliable(msg) = push else {
+            panic!("expected reliable push, got {push:?}");
+        };
+        let ServerControl::StateMerge(snapshot) = *msg else {
+            panic!("expected upward merge, got {msg:?}");
+        };
+        assert_eq!(snapshot.epoch, Epoch(7));
+        let pushed = snapshot.state.view();
+        assert_eq!(pushed.now_playing, Some(hash(2)));
+        assert_eq!(
+            pushed.chat.len(),
+            0,
+            "the pre-reset offline edit must stay discarded"
+        );
+        let view = view_of(&rig).await;
+        assert_eq!(view.now_playing, Some(hash(2)));
+        assert_eq!(view.chat.len(), 0);
+    }
+
+    /// `ResetState` also restarts the heal ladder: the reset IS the
+    /// remedy the escalation asked for, so the count of failed heals
+    /// starts over.
+    #[tokio::test(start_paused = true)]
+    async fn reset_state_resets_the_heal_ladder() {
+        let mut rig = rig();
+        go_online(&mut rig).await;
+
+        for _ in 0..2 {
+            fail_one_heal(&mut rig).await;
+        }
+        rig.commands.send(SyncCommand::ResetState).await.unwrap();
+        let cmd = rig.net.recv().await.unwrap();
+        assert!(
+            matches!(
+                &cmd,
+                NetworkCommand::SendReliable(msg)
+                    if matches!(**msg, ServerControl::RequestMerge)
+            ),
+            "expected ResetState's RequestMerge, got {cmd:?}"
+        );
+        drained_events(&mut rig);
+
+        for _ in 0..2 {
+            fail_one_heal(&mut rig).await;
+        }
+        let events = drained_events(&mut rig);
+        assert_eq!(
+            count_persisted(&events),
+            0,
+            "the reset must restart the ladder: {events:?}"
+        );
+        fail_one_heal(&mut rig).await;
+        let events = drained_events(&mut rig);
+        assert_eq!(count_persisted(&events), 1);
+    }
+
+    /// After an escalation, a reset followed by a matching hash still
+    /// emits `DivergenceHealed` — without this the advisor's sticky
+    /// "run /resync" flag would never clear after the /resync worked.
+    #[tokio::test(start_paused = true)]
+    async fn healing_after_a_reset_still_emits_divergence_healed() {
+        let mut rig = rig();
+        go_online(&mut rig).await;
+
+        for _ in 0..3 {
+            fail_one_heal(&mut rig).await;
+        }
+        let events = drained_events(&mut rig);
+        assert_eq!(count_persisted(&events), 1);
+
+        rig.commands.send(SyncCommand::ResetState).await.unwrap();
+        let _ = rig.net.recv().await.unwrap(); // the reset's RequestMerge
+        drained_events(&mut rig);
+
+        // The reset replica is empty, so the honest hash now matches:
+        // the heal must be announced even though the reset zeroed the
+        // failed-heal counter.
+        send_honest_hash(&rig).await;
+        let events = drained_events(&mut rig);
+        assert_eq!(
+            count_healed(&events),
+            1,
+            "the post-reset heal must clear the escalation: {events:?}"
         );
     }
 

@@ -821,6 +821,51 @@ a logged, self-correcting event rather than a silent one:
   transfer and (mid-session, so the offline buffer is empty) nothing
   else.
 
+### Escalation Ladder
+
+Auto-healing is silent; the user hears about it only when it stops
+working. The sync actor counts **consecutive failed heals** — alarms
+fired without a matching `StateHash` in between:
+
+- Attempts 1–2: silent (beyond the loud log). Two, not one, because of
+  the one-cycle heal race: an op sent between our `RequestMerge` and
+  the server's curative snapshot re-diverges the replica once through
+  no fault of the mechanism, and re-converges within about one hash
+  period.
+- Attempt 3: `SyncEvent::DivergencePersisted` — a one-shot chat line
+  plus a sticky advisor suggestion: *"state diverged and is not healing
+  — run /resync (or dessplay --reset-sync)"*. Emitted once per
+  escalation; it does not repeat while the divergence persists.
+- Any matching hash after a failed heal (or after an escalation) emits
+  `SyncEvent::DivergenceHealed`, which clears the sticky advisor flag.
+  A merely *healthy* link (`HealthLevel::Ok`) deliberately does not:
+  link health says nothing about replica equality.
+
+### Manual Reset (`/resync`)
+
+The remedy the escalation names — reachable as the `/resync` chat
+command or the Settings → Account "Reset synced state" action row. (The
+suggestion also names `dessplay --reset-sync`, the headless spelling;
+it lands with the client `sync.db` split.) `SyncCommand::ResetState`:
+
+- Discards the replica wholesale: fresh `CrdtState`, epoch 0, offline
+  buffer/position cleared, alarm and heal counters reset, flushed to
+  storage immediately (a crash must not resurrect the discarded state).
+- **Keeps `last_issued`**, the Lamport floor. Pre-reset stamps live on
+  in the server's state; a post-reset write re-issuing one of them
+  would tie — and could lose — the LWW comparison against a value it
+  causally supersedes.
+- Connected: sends `RequestMerge`; the reply is the curative snapshot
+  at the server's epoch, adopted wholesale. Link down: sends nothing —
+  the reconnect handshake covers adoption (`SyncStatus` reports epoch 0
+  plus the empty-state hash, and the server answers any mismatch with a
+  snapshot).
+
+No confirmation step: both entry points are deliberate acts, and the
+shared state is losslessly recoverable from the server. Local-only
+tables (watch history, hash cache, manual mappings) are untouched;
+file availability re-derives from local files and re-announces.
+
 ---
 
 ## Compaction

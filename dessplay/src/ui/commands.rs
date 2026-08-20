@@ -74,6 +74,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         help: "open settings",
     },
     SlashCommand {
+        name: "/resync",
+        args: "",
+        help: "discard local sync state and re-adopt the server's",
+    },
+    SlashCommand {
         name: "/quit",
         args: "",
         help: "quit DessPlay",

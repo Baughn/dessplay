@@ -108,6 +108,11 @@ pub struct AdvisorContext {
     /// The divergence alarm fired and has not yet been followed by a
     /// healthy sample.
     pub diverged: bool,
+    /// Divergence persisted through three failed heals
+    /// (`SyncEvent::DivergencePersisted`) and no matching hash has been
+    /// seen since. Unlike `diverged`, a healthy sample does not clear
+    /// it — only `DivergenceHealed` does.
+    pub diverged_persistent: bool,
     /// The BitTorrent setting (as currently saved).
     pub torrent_enabled: bool,
     /// The torrent engine is actually moving or holding torrents.
@@ -159,6 +164,9 @@ pub struct Advisor {
     subtitle_seq: u64,
     last_advise: Option<tokio::time::Instant>,
     diverged: bool,
+    /// Sticky counterpart of `diverged` — see
+    /// [`AdvisorContext::diverged_persistent`].
+    diverged_persistent: bool,
 }
 
 impl Default for Advisor {
@@ -180,6 +188,7 @@ impl Advisor {
             subtitle_seq: 0,
             last_advise: None,
             diverged: false,
+            diverged_persistent: false,
         }
     }
 
@@ -253,6 +262,26 @@ impl Advisor {
         self.last_advise = None;
     }
 
+    /// Three consecutive heals failed
+    /// (`SyncEvent::DivergencePersisted`): the user needs to act.
+    /// Sticky — only [`Self::on_divergence_healed`] clears it. A
+    /// `HealthLevel::Ok` sample deliberately does not: the link being
+    /// healthy says nothing about replica equality.
+    pub fn on_diverged_persistent(&mut self) {
+        self.diverged_persistent = true;
+        self.last_advise = None;
+    }
+
+    /// A matching state hash after failed heals or a `/resync`
+    /// (`SyncEvent::DivergenceHealed`): the divergence is over; retire
+    /// both flags (hash equality is stronger evidence of convergence
+    /// than the healthy sample the transient flag waits for).
+    pub fn on_divergence_healed(&mut self) {
+        self.diverged = false;
+        self.diverged_persistent = false;
+        self.last_advise = None;
+    }
+
     /// A fresh health sample (called at most 1Hz): build the full
     /// context and let every provider consider it, throttled to
     /// [`ADVISE_INTERVAL`].
@@ -322,6 +351,7 @@ impl Advisor {
             level,
             sample,
             diverged: self.diverged,
+            diverged_persistent: self.diverged_persistent,
             torrent_enabled,
             torrent_active,
             transfer_link_down,
@@ -375,6 +405,17 @@ impl RuleProvider {
             return Some(Suggestion {
                 id: "transfer-link",
                 text: "file transfer link down — is the transfer port (control port + 1) open?"
+                    .into(),
+                severity: Severity::Warning,
+            });
+        }
+        if ctx.diverged_persistent {
+            // Three failed heals: auto-healing isn't working and only a
+            // manual reset will converge this replica. `--reset-sync`
+            // is the headless spelling of the same remedy.
+            return Some(Suggestion {
+                id: "diverged-persistent",
+                text: "state diverged and is not healing — run /resync (or dessplay --reset-sync)"
                     .into(),
                 severity: Severity::Warning,
             });
@@ -651,6 +692,75 @@ mod tests {
         tokio::time::advance(Duration::from_secs(31)).await;
         rules.advise(&up, &tx);
         assert_eq!(drain(&mut rx), vec![SuggestionUpdate(None)]);
+    }
+
+    /// The persistent-divergence rule outranks the transient Info rule
+    /// and names the remedy verbatim — the text is the user's only
+    /// pointer to `/resync`.
+    #[tokio::test(start_paused = true)]
+    async fn persistent_divergence_rule_warns_with_the_remedy() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut rules = RuleProvider::default();
+        let ctx = AdvisorContext {
+            link: LinkStatus::Connected,
+            level: HealthLevel::Ok,
+            diverged: true,
+            diverged_persistent: true,
+            ..AdvisorContext::default()
+        };
+        rules.advise(&ctx, &tx);
+        let updates = drain(&mut rx);
+        assert_eq!(updates.len(), 1);
+        let suggestion = updates[0].0.clone().unwrap();
+        assert_eq!(suggestion.id, "diverged-persistent");
+        assert_eq!(suggestion.severity, Severity::Warning);
+        assert_eq!(
+            suggestion.text,
+            "state diverged and is not healing — run /resync (or dessplay --reset-sync)"
+        );
+    }
+
+    /// The sticky flag: healthy samples clear the transient diverged
+    /// flag but must NOT clear the persistent one — a healthy link says
+    /// nothing about replica equality. Only `DivergenceHealed` (via
+    /// `on_divergence_healed`) retires the suggestion.
+    #[tokio::test(start_paused = true)]
+    async fn persistent_divergence_survives_ok_samples_until_healed() {
+        let mut advisor = Advisor::with_rules();
+        let ok = |advisor: &mut Advisor| {
+            advisor.on_health(
+                &StateView::default(),
+                LinkStatus::Connected,
+                HealthLevel::Ok,
+                None,
+                false,
+                false,
+                false,
+            );
+        };
+        advisor.on_diverged_persistent();
+        ok(&mut advisor);
+        let update = advisor.suggestions.try_recv().expect("suggestion set");
+        assert_eq!(update.0.unwrap().id, "diverged-persistent");
+
+        // Ok samples keep it showing (this is where the transient Info
+        // flag would have been cleared).
+        tokio::time::advance(Duration::from_secs(6)).await;
+        ok(&mut advisor);
+        assert!(
+            advisor.suggestions.try_recv().is_err(),
+            "unchanged suggestion: neither re-emitted nor cleared by an Ok sample"
+        );
+
+        // The heal clears it — after the provider's anti-flicker hold.
+        advisor.on_divergence_healed();
+        ok(&mut advisor);
+        tokio::time::advance(Duration::from_secs(31)).await;
+        ok(&mut advisor);
+        assert_eq!(
+            advisor.suggestions.try_recv().expect("clear delivered"),
+            SuggestionUpdate(None)
+        );
     }
 
     /// The advisor throttles advise passes, dedupes the subtitle ring

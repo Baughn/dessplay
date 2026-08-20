@@ -1,6 +1,5 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 383
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -14,7 +13,7 @@ expression: screen
 │              │Password                                                 next launch│──────────────┘
 │              │Ready on startup        no                               next launch│──────────────┐
 │              │                                                                    │              │
-│              │                                                                    │              │
+│              │[Reset synced state]                  discard + re-adopt from server│              │
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │

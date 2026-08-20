@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -50,7 +50,12 @@ working copy atomically. Tabs containing a missing required value carry a
   equivalent on Windows), server (defaults to `dessplay.brage.info`), room
   password, and Ready on startup. When Ready on startup is off the user joins
   Paused; when on they join Ready. Server and password changes apply on the
-  next launch.
+  next launch. Also carries the **Reset synced state** action row — the
+  modal path to `/resync` (see docs/sync-state.md, Divergence Alarm):
+  discard the local replica and re-adopt the server's, applied
+  immediately, deliberately without a confirm step (the shared state is
+  losslessly recoverable from the server; local-only tables are
+  untouched).
 - **Playback & display**: Player, subtitle mode, subtitle speaker names,
   subtitle speaker colors, the limited-terminal color-overflow policy, and
   the commentary-marquee display mode.
@@ -785,6 +790,14 @@ different encodes/versions. See [Content Hash](#content-hash).
     screen (the keyboard path for the spoiler click flow; repeat for
     earlier ones). Posts a local notice when nothing on screen is hidden.
   - `/settings` -- open the settings screen (also `F3`)
+  - `/resync` -- discard the local synced state and re-adopt the
+    server's copy (also the Settings → Account action row). The manual
+    remedy the advisor suggests when divergence persists through three
+    failed auto-heals (docs/sync-state.md, Divergence Alarm). Posts a
+    local notice; no confirm modal -- typing the command is the
+    deliberate act, and the shared state is losslessly recoverable from
+    the server. Local-only tables (watch history, hash cache, manual
+    mappings) are untouched; availability re-derives from local files.
 
 ### IRC Bridge
 

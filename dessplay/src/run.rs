@@ -1387,6 +1387,17 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 .archive(file, series_name, filename, subdirectory)
                                 .await;
                         }
+                        Some(UserAction::ResetSyncedState) => {
+                            // `/resync` or the Settings action row: the
+                            // sync actor discards its replica and fetches
+                            // the server's curative snapshot (or, if the
+                            // link is down, the reconnect handshake
+                            // covers adoption). Refresh immediately so
+                            // the UI honestly shows the empty-until-
+                            // readopted state instead of a stale view.
+                            let _ = self.handle.sync.send(SyncCommand::ResetState).await;
+                            self.refresh_ui(&mut last_view).await;
+                        }
                         Some(UserAction::Notice(text)) => {
                             // Command feedback — stamp with the shared clock
                             // (the UI has none) and post a local chat line.
@@ -1664,6 +1675,24 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         ClientEvent::Sync(crate::actors::sync::SyncEvent::Diverged) => {
                             self.advisor.on_diverged();
+                        }
+                        ClientEvent::Sync(
+                            crate::actors::sync::SyncEvent::DivergencePersisted,
+                        ) => {
+                            // Three failed heals: one chat line (the
+                            // event fires once per escalation), plus the
+                            // sticky advisor row that carries the remedy
+                            // until DivergenceHealed.
+                            self.advisor.on_diverged_persistent();
+                            let _ = self.ui.try_send(UiInput::System {
+                                timestamp: (system_clock())(),
+                                text: "sync: state diverged and is not healing — run /resync \
+                                       (or dessplay --reset-sync)"
+                                    .to_string(),
+                            });
+                        }
+                        ClientEvent::Sync(crate::actors::sync::SyncEvent::DivergenceHealed) => {
+                            self.advisor.on_divergence_healed();
                         }
                         _ => {}
                     }

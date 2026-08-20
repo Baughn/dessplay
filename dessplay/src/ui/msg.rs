@@ -110,6 +110,9 @@ pub enum Msg {
     DirChosen(PathBuf),
     /// Settings modal wants a directory picker on top.
     OpenDirPicker,
+    /// Settings modal: the "Reset synced state" action row was
+    /// activated (the modal path to [`UserAction::ResetSyncedState`]).
+    ResetSyncedState,
     /// Settings modal: save these settings + media roots.
     SettingsSaved(Box<Settings>, Vec<PathBuf>),
     /// List edit modal: save this entry, plus the edited progress register
@@ -196,6 +199,7 @@ impl Msg {
             Msg::ToggleBrowserSort => "ToggleBrowserSort",
             Msg::DirChosen(_) => "DirChosen",
             Msg::OpenDirPicker => "OpenDirPicker",
+            Msg::ResetSyncedState => "ResetSyncedState",
             Msg::SettingsSaved(..) => "SettingsSaved",
             Msg::ListEntrySaved(..) => "ListEntrySaved",
             Msg::FocusNext => "FocusNext",
@@ -319,6 +323,15 @@ pub enum UserAction {
         /// Whether to place the file in a series-name subdirectory.
         subdirectory: bool,
     },
+    /// Discard the local replicated sync state and re-adopt the
+    /// server's copy (`/resync`, or the Settings → Account action row) —
+    /// the manual remedy for persistent divergence (docs/sync-state.md,
+    /// Divergence Alarm). The shared state is losslessly recoverable
+    /// from the server; local-only tables (watch history, hash cache,
+    /// manual mappings) are untouched, and file availability re-derives
+    /// from local files. Deliberately unconfirmed: both entry points
+    /// are deliberate acts.
+    ResetSyncedState,
     /// Post a local-only system line to the chat log (command feedback,
     /// e.g. an unknown command or a `/skip` with no series info). The
     /// main loop stamps it with the shared clock — the UI has no clock of

@@ -991,6 +991,7 @@ enum SettingId {
     MarqueeMode,
     MediaRoot(PathBuf),
     AddMediaRoot,
+    ResetSyncedState,
     CacheRetention,
     AutoDownload,
     ArchiveSubdirectory,
@@ -1141,7 +1142,14 @@ impl SettingsForm {
                 "Ready on startup",
                 self.settings.ready_on_startup,
             )
-            .annotated("next launch", theme::dim()),
+            .annotated("next launch", theme::dim())
+            .with_gap_after(),
+            // The modal path to `/resync` (docs/sync-state.md,
+            // Divergence Alarm): applies immediately, no confirm —
+            // activating the row is the deliberate act, and the state
+            // is losslessly recoverable from the server.
+            FormRow::action(SettingId::ResetSyncedState, "Reset synced state")
+                .annotated("discard + re-adopt from server", theme::dim()),
         ]
     }
 
@@ -1364,6 +1372,9 @@ impl FormModel for SettingsForm {
             }
             (SettingId::AddMediaRoot, FormEdit::Activate) => {
                 return Ok(FormEffect::Out(Msg::OpenDirPicker));
+            }
+            (SettingId::ResetSyncedState, FormEdit::Activate) => {
+                return Ok(FormEffect::Out(Msg::ResetSyncedState));
             }
             (SettingId::CacheRetention, FormEdit::Cycle) => {
                 self.settings.cache_retention = self.settings.cache_retention.next();
@@ -3610,6 +3621,16 @@ mod tests {
             modal.form.selected_row(),
             Some(SettingId::MediaRoot(PathBuf::from("/second")))
         );
+    }
+
+    /// The Account tab's "Reset synced state" action row: activating it
+    /// emits the reset message — the modal path to `/resync`
+    /// (docs/sync-state.md, Divergence Alarm). Deliberately unconfirmed.
+    #[test]
+    fn reset_synced_state_row_emits_the_reset_message() {
+        let mut modal = saveable_settings();
+        assert!(modal.form.select_row(&SettingId::ResetSyncedState));
+        assert_eq!(modal.on(&enter()), Some(Msg::ResetSyncedState));
     }
 
     #[test]
