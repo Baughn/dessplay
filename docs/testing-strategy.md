@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-08-16
+Last updated: 2026-08-20
 
 ## Table of Contents
 
@@ -683,22 +683,35 @@ so the priority machinery sees adversarial sequencing too. Must not
 panic. Liveness ("does chaos ever wedge it permanently") is
 intentionally *not* checked here — see the companion proptest below —
 this target is purely a crash-safety net against malformed peer input.
-(The proptest stays single-file; cross-file starvation and re-targeting
-are pinned by deterministic unit tests in `download.rs`, and the
-anchored ranking itself by a proptest in
+(The anchored ranking itself is pinned by a proptest in
 `dessplay-core/tests/download_order_props.rs`.)
 
 #### Download Chaos Recovery (`download_props`, proptest)
-Not a fuzz target — an in-repo proptest (`dessplay/tests/download_props.rs`)
-using the same event vocabulary as `download_scheduler`, plus a forced
-honest epilogue: after an arbitrary chaos prefix, every original source
-becomes present and truthful again, and the download must reach
-completion with the exact original bytes. This generalizes the module's
-own history of hand-found wedge regressions (a stalled block-hash source
-never re-solicited, a departed driving source, two sources
-double-assigned the same chunk, a lying source never dropped) into one
-property instead of waiting for the next one to be found by hand. It
-already caught two: a source given up on past `MAX_SOLICIT_ATTEMPTS` was
+Not a fuzz target — in-repo proptests (`dessplay/tests/download_props.rs`)
+over **three concurrent files sharing one source set** (the cross-file
+budget/priority machinery is live), asserting two properties:
+
+- **Chaos recovery / non-starvation**: the `download_scheduler` event
+  vocabulary plus priority and now-playing churn, then a forced honest
+  epilogue — after an arbitrary chaos prefix, every original source
+  becomes present and truthful again, and **every** file must reach
+  completion with the exact original bytes, under whatever priority
+  order the chaos left in place.
+- **Budget bound**: with honest-but-arbitrarily-slow sources and
+  churning presence/priority, a black-box mirror of per-peer
+  outstanding requests (reconstructed from requests, cancels, and
+  deliveries alone) never exceeds `pipeline_depth` plus the endgame
+  allowance the code actually grants (each endgame file may duplicate
+  its ≤ one-pipeline remainder past the budget). The bound is stated
+  for the nothing-playing regime; window-age urgency — now-playing
+  only — is pinned by deterministic unit tests in `download.rs`.
+
+This generalizes the module's own history of hand-found wedge
+regressions (a stalled block-hash source never re-solicited, a departed
+driving source, two sources double-assigned the same chunk, a lying
+source never dropped, a demoted file's stale window stamps bypassing
+the shared budget) into properties instead of waiting for the next one
+to be found by hand. The single-file version already caught two: a source given up on past `MAX_SOLICIT_ATTEMPTS` was
 removed permanently, with nothing but an external `set_sources`/`start`
 call (never guaranteed for a seeder-only download nobody is watching) able
 to re-add it -- fixed by backing off for a long cooldown and retrying
