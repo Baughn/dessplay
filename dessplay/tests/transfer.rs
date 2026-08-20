@@ -225,7 +225,18 @@ async fn pump_transfer(
                         })
                         .await;
                 }
-                FileOutput::DownloadComplete { path, .. } if from == leecher => {
+                FileOutput::DownloadComplete {
+                    path,
+                    assembled_in_place,
+                    ..
+                } if from == leecher => {
+                    // The scheduler's own completion assembles in place:
+                    // the very inode a player of the partial has open
+                    // (the session skips the reload on this signal).
+                    assert!(
+                        assembled_in_place,
+                        "a peer-download completion must report in-place assembly"
+                    );
                     completed_path = Some(path);
                 }
                 _ => {}

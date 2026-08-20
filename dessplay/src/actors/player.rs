@@ -135,6 +135,19 @@ pub enum PlayerCommand {
     /// departs and we become the leader, or we take seek authority) no
     /// `SyncTo` is emitted, so nothing else restores the rate.
     ReleaseSlew,
+    /// The session rejected our [`PlayerOutput::Eof`] (a sparse
+    /// partial's phantom end: unfetched regions read as zeros, and the
+    /// player gave up mid-episode). Re-arm EOF reporting — the
+    /// `eof_reported` latch otherwise clears only on a `Load` or a seek
+    /// echo, neither of which a dropped report triggers, so the genuine
+    /// end-of-file after the download completes in place would be
+    /// swallowed (2026-08-20 review) — and seek back to the last honest
+    /// position, pulling playback off the zeros.
+    RecoverFalseEof {
+        /// Where to resume: the session's last file-attributed position
+        /// sample (0 when none was seen).
+        position_millis: u64,
+    },
     /// Updated shared-clock offset (server minus local), from time sync.
     ClockOffset(i64),
     /// Append a chat message to the rolling OSD log (it stays at least
@@ -553,6 +566,15 @@ impl<F: PlayerFactory> Actor<F> {
             } => {
                 self.drift_correct(position_millis, timestamp, playing)
                     .await;
+            }
+            PlayerCommand::RecoverFalseEof { position_millis } => {
+                // Re-arm even if the seek fails (player dead / detached):
+                // a relaunch re-Loads, which re-arms anyway, and a parked
+                // live player must never keep the latch. The seek's echo
+                // also clears the latch — harmless double.
+                self.eof_reported = false;
+                tracing::info!(position_millis, "false EOF rejected; seeking back");
+                self.seek_programmatic(position_millis).await;
             }
             PlayerCommand::ReleaseSlew => {
                 // Idempotent: set_speed early-returns when already 1.0.
@@ -2236,6 +2258,41 @@ mod tests {
             .unwrap();
         tokio::time::sleep(SEEK_DEBOUNCE + Duration::from_millis(100)).await;
         while outputs.try_recv().is_ok() {}
+        control.events.send(PlayerEvent::Eof).unwrap();
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::Eof { file: FILE }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recover_false_eof_rearms_reporting_and_seeks_back() {
+        // Regression (2026-08-20 review): the session rejecting a sparse
+        // partial's phantom EOF left `eof_reported` latched — the latch
+        // only cleared on a Load or a seek echo, neither of which a
+        // dropped report triggers — so even the genuine end-of-file
+        // after the download completed was swallowed forever.
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        control.events.send(PlayerEvent::Eof).unwrap();
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::Eof { file: FILE }
+        );
+
+        // The session judged it false: recovery re-arms and seeks back.
+        commands
+            .send(PlayerCommand::RecoverFalseEof {
+                position_millis: 10_000,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Seek(10_000)
+        );
+
+        // Playback runs on to the real end: the EOF must be reported
+        // again (no seek echo arrived — the re-arm alone suffices).
         control.events.send(PlayerEvent::Eof).unwrap();
         assert_eq!(
             expect_output(&mut outputs).await,

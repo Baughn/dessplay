@@ -419,8 +419,12 @@ It can have one of three values:
   approximate — time maps to bytes proportionally; the 20% buffer exists
   precisely to absorb variable bitrate. When the window ahead of the start
   fills in, the client **loads the partial file into the player** (the
-  download assembles in place at its final cache path, so completion needs
-  no reload) and watches with the group; if playback catches up to a gap —
+  download assembles in place at its final cache path, so its own
+  completion — same inode, the player's open fd sees the full content —
+  needs no reload; a verified copy arriving through any *other* channel,
+  such as a browse import placing a fresh inode over that same path,
+  always re-issues the load — path equality never implies content
+  identity) and watches with the group; if playback catches up to a gap —
   or a seek lands past the downloaded region — the verdict flips back, the
   user gates, and the group pauses until the window refills (a seek
   re-anchors the verdict and fetch window immediately, not at the next
@@ -431,12 +435,17 @@ It can have one of three values:
   player can report a bogus end-of-file mid-episode; a partial's EOF
   report is therefore only believed when the last known position sits
   within a few seconds of the entry's duration — anything earlier is
-  dropped, and the flipped verdict gates instead. A partial the player
-  cannot open at all (an `.mp4` whose index sits in the unfetched tail)
-  is not offered again until ~10% more of the file has arrived — the
-  same bytes fail the same way, and repeated failures must not loop
-  (the player-process analogue is the crash ladder, see
-  [Player Lifecycle](#player-lifecycle)). The
+  rejected, and the flipped verdict gates instead. A rejection is a
+  deferral, never a terminal state: the client seeks the player back to
+  its last honest position and re-arms EOF reporting, so the genuine
+  end still advances the group once the download fills in. A partial
+  the player cannot open at all (an `.mp4` whose index sits in the
+  unfetched tail) is not offered again until ~10% more of the file has
+  arrived — the same bytes fail the same way, and repeated failures
+  must not loop (the player-process analogue is the crash ladder, see
+  [Player Lifecycle](#player-lifecycle)); while the retry is deferred
+  the client advertises plain `Downloading` (it holds no playable
+  video, so it gates rather than letting the group play on without it). The
   download-speed-vs-bitrate half of the original rule was **dropped**
   (2026-08-17 triage): since the anchored download policy it comes up
   rarely, and the group decides by watching how fast the download

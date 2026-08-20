@@ -240,8 +240,13 @@ pub struct PlayerWiring {
     /// The blocker-summary overlay as last sent: `(loaded file, text)`.
     /// The loaded file is part of the key so a fresh player (spawned by
     /// a Load in the same directive batch) gets the overlay re-sent —
-    /// commands before the first load land on no player.
-    blocker_overlay_sent: (Option<Ed2kHash>, Option<String>),
+    /// commands before the first load land on no player. `None` means
+    /// "whatever the key, re-send": the outer `Option` keeps the resend
+    /// sentinel distinct from every real key — `(None, None)` is the
+    /// legal no-blocker, nothing-loaded state, and using it as the
+    /// sentinel meant a dropped overlay *clear* was never resent
+    /// (2026-08-20 review; `forget_last_synced` has the same shape).
+    blocker_overlay_sent: Option<(Option<Ed2kHash>, Option<String>)>,
     /// AniDB lookups already requested this session (the request is a
     /// GSet insert; this just avoids re-sending every snapshot).
     lookups_requested: HashSet<Ed2kHash>,
@@ -646,7 +651,9 @@ impl PlayerWiring {
             loaded: None,
             last_synced: None,
             chat_seen: None,
-            blocker_overlay_sent: (None, None),
+            // A player that has never been sent an overlay shows none,
+            // so the no-blocker, nothing-loaded key starts as delivered.
+            blocker_overlay_sent: Some((None, None)),
             lookups_requested: HashSet::new(),
             watcher_prefs_written: HashSet::new(),
             watched_recorded: HashSet::new(),
@@ -684,7 +691,7 @@ impl PlayerWiring {
     /// (blocker changes are sparse, so a silent drop could otherwise
     /// leave a stale "Waiting for …" line up indefinitely).
     fn forget_blocker_overlay(&mut self) {
-        self.blocker_overlay_sent = (None, None);
+        self.blocker_overlay_sent = None;
     }
 
     /// Derive the chat log's [system messages](design.md, System
@@ -1252,18 +1259,40 @@ impl PlayerWiring {
         }]
     }
 
-    /// We just hashed and added this local file ourselves: skip the
-    /// matcher, it is verified by construction.
-    pub fn note_local_file(&mut self, file: Ed2kHash, path: PathBuf) -> Vec<Directive> {
+    /// A verified local copy of `file` exists at `path` (we hashed it
+    /// ourselves, or a download completed): skip the matcher.
+    /// `assembled_in_place` says whether the bytes at `path` are the
+    /// very inode a loaded partial's player has open (the download's
+    /// own completion) — anything else (browse import, hash-add) placed
+    /// a fresh inode, and a loaded partial at the same path is a
+    /// deleted, truncated orphan that must be reloaded: path equality
+    /// never implies content identity (2026-08-20 review; the orphan's
+    /// EOF advanced the whole group mid-episode).
+    pub fn note_local_file(
+        &mut self,
+        file: Ed2kHash,
+        path: PathBuf,
+        assembled_in_place: bool,
+    ) -> Vec<Directive> {
         self.pending_resolve.remove(&file);
-        // The download we were playing completed in place (same path):
-        // the loaded copy is the verified one now — no reload, but the
-        // partial gating (EOF epsilon) no longer applies.
         if let Some(l) = self.loaded.as_mut()
             && l.file == file
             && l.path == path
+            && l.partial
         {
-            l.partial = false;
+            if assembled_in_place {
+                // The download we were playing completed in place: the
+                // loaded copy is the verified one now — no reload, but
+                // the partial gating (EOF epsilon) no longer applies.
+                l.partial = false;
+            } else {
+                // Same path, different inode: we no longer hold the
+                // video. Dropping `loaded` closes the group-speaking
+                // gates at once (the orphan's EOF cannot advance the
+                // group) and the next snapshot's resolve branch
+                // re-issues the Load for the fresh copy.
+                self.loaded = None;
+            }
         }
         self.partial_load_failed.remove(&file);
         self.resolved.insert(file, Resolution::Verified(path));
@@ -1342,6 +1371,29 @@ impl PlayerWiring {
     /// `holds_now_playing`.) See `holds_now_playing`.
     fn speaks_for_now_playing(&self, view: &StateView, file: Ed2kHash) -> bool {
         view.now_playing == Some(file) && self.holds_now_playing(view)
+    }
+
+    /// The file actor's availability advert, corrected for what the
+    /// player actually managed: while `file` sits in
+    /// `partial_load_failed` (the player couldn't open the partial and
+    /// the retry is deferred) we hold no video, so a
+    /// `DownloadingPlayable` advert — which permits playback — would
+    /// let the group play on without this user. Downgrade it to plain
+    /// `Downloading` (which blocks) until the deferral clears; every
+    /// other advert passes through untouched (2026-08-20 review).
+    pub fn correct_availability(
+        &self,
+        file: Ed2kHash,
+        availability: FileAvailability,
+    ) -> FileAvailability {
+        match availability {
+            FileAvailability::DownloadingPlayable { progress_bps }
+                if self.partial_load_failed.contains_key(&file) =>
+            {
+                FileAvailability::Downloading { progress_bps }
+            }
+            other => other,
+        }
     }
 
     /// Our own advertised download progress for `file` in basis points
@@ -1616,12 +1668,16 @@ impl PlayerWiring {
             if self
                 .loaded
                 .as_ref()
-                .is_some_and(|l| l.file == file && l.path == *path)
+                .is_some_and(|l| l.file == file && l.path == *path && !l.partial)
             {
-                // Same copy (a download completed in place): verified now.
-                if let Some(l) = self.loaded.as_mut() {
-                    l.partial = false;
-                }
+                // The loaded verified copy — nothing to do. A loaded
+                // *partial* at the verified path never lands here: only
+                // the download's own in-place completion may flip
+                // `partial` without a reload (`note_local_file`), and it
+                // does so before this runs. Any other route to Verified
+                // may have replaced the inode behind the path, so it
+                // falls through to the reload below — path equality
+                // never implies content identity (2026-08-20 review).
             } else {
                 self.loaded = Some(LoadedFile {
                     file,
@@ -1700,11 +1756,11 @@ impl PlayerWiring {
         // the player, and commands sent before it landed on nothing.
         let summary = view.now_playing.and_then(|_| blocker_summary(view, peers));
         let key = (self.loaded.as_ref().map(|l| l.file), summary);
-        if self.blocker_overlay_sent != key {
+        if self.blocker_overlay_sent.as_ref() != Some(&key) {
             out.push(Directive::Player(PlayerCommand::SetBlockerOverlay(
                 key.1.clone(),
             )));
-            self.blocker_overlay_sent = key;
+            self.blocker_overlay_sent = Some(key);
         }
 
         // New chat messages go to the OSD. The first view's backlog is
@@ -1812,12 +1868,13 @@ impl PlayerWiring {
             if self
                 .loaded
                 .as_ref()
-                .is_some_and(|l| l.file == file && l.path == *path)
+                .is_some_and(|l| l.file == file && l.path == *path && !l.partial)
             {
-                // Same copy (a download completed in place): verified now.
-                if let Some(l) = self.loaded.as_mut() {
-                    l.partial = false;
-                }
+                // The loaded verified copy — nothing to do. A loaded
+                // *partial* falls through to the reload: a resolve can
+                // only have Verified the path if something replaced the
+                // moving sparse file behind it (see the matching branch
+                // in `on_state`).
             } else {
                 self.loaded = Some(LoadedFile {
                     file,
@@ -2075,7 +2132,22 @@ impl PlayerWiring {
                         position = ?self.last_position,
                         "ignoring EOF from a partial file away from the end"
                     );
-                    vec![]
+                    // A dropped report must not be terminal: the actor's
+                    // `eof_reported` latch only clears on a `Load` or a
+                    // seek echo, so without recovery even the *genuine*
+                    // end-of-file after the download completes in place
+                    // would be swallowed — this client would park at the
+                    // phantom end forever (2026-08-20 review). Pull the
+                    // player back to the last honest position; the
+                    // playable verdict flips and gates the group while
+                    // the window refills.
+                    let position_millis = self
+                        .last_position
+                        .filter(|(position_file, _)| *position_file == file)
+                        .map_or(0, |(_, position)| position);
+                    vec![Directive::Player(PlayerCommand::RecoverFalseEof {
+                        position_millis,
+                    })]
                 } else {
                     vec![Directive::ReportEof(file)]
                 }
@@ -2107,7 +2179,19 @@ impl PlayerWiring {
                         "player can't open the partial; deferring until more data lands"
                     );
                     self.partial_load_failed.insert(file, progress);
-                    return vec![];
+                    // We hold no video, so a standing `DownloadingPlayable`
+                    // advert would let the group play on without us
+                    // (design.md, File State — playable means "can
+                    // actually play"). Downgrade to plain `Downloading`,
+                    // which blocks; `correct_availability` keeps the file
+                    // actor's re-adverts downgraded until the deferral
+                    // clears, and the blocker overlay names us meanwhile.
+                    return vec![Directive::Mutate(Mutation::SetFileAvailability {
+                        file,
+                        availability: FileAvailability::Downloading {
+                            progress_bps: progress,
+                        },
+                    })];
                 }
                 self.resolved.remove(&file);
                 let mut out = vec![
@@ -2425,9 +2509,11 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.execute(directives).await
     }
 
-    /// We hashed and added this file ourselves.
+    /// We hashed and added this file ourselves. Not an in-place
+    /// completion of any loaded partial: the copy is the user's own
+    /// file, a different inode from anything the download assembled.
     pub async fn note_local_file(&mut self, file: Ed2kHash, path: PathBuf) -> UiLines {
-        let directives = self.wiring.note_local_file(file, path);
+        let directives = self.wiring.note_local_file(file, path, false);
         self.execute(directives).await
     }
 
@@ -2835,6 +2921,10 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 FileEffect::None
             }
             FileOutput::Availability { file, availability } => {
+                // The advert reflects the download's state; the wiring
+                // knows whether the player actually opened the partial
+                // (see `correct_availability`).
+                let availability = self.wiring.correct_availability(file, availability);
                 let _ = self
                     .sync
                     .send(crate::actors::sync::SyncCommand::Mutate(Box::new(
@@ -2843,10 +2933,14 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                     .await;
                 FileEffect::None
             }
-            FileOutput::DownloadComplete { file, path } => {
+            FileOutput::DownloadComplete {
+                file,
+                path,
+                assembled_in_place,
+            } => {
                 // A finished download is now a verified local copy:
                 // resolve it (loads now-playing if we were waiting).
-                let directives = self.wiring.note_local_file(file, path);
+                let directives = self.wiring.note_local_file(file, path, assembled_in_place);
                 self.execute(directives).await;
                 FileEffect::None
             }
@@ -4165,15 +4259,20 @@ mod tests {
 
     #[test]
     fn in_place_download_completion_does_not_reload() {
-        // The partial assembles at its final cache path, so completion
-        // at the *same* path needs no reload (design.md, File State).
+        // The partial assembles at its final cache path, so the
+        // download's own completion — same inode, the player's open fd
+        // sees the full content — needs no reload (design.md, File
+        // State). Only this genuinely-in-place case may skip the
+        // reload; a verified copy *placed over* the same path is the
+        // reload case (`import_completion_at_the_partial_path_reloads_
+        // the_player` — this test used to conflate the two).
         let mut wiring = PlayerWiring::new(me());
         let view = playing_state().view();
         wiring.on_state(&view, &[peer("kim")]);
         wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
         wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
 
-        let out = wiring.note_local_file(hash(1), "/cache/files/aa".into());
+        let out = wiring.note_local_file(hash(1), "/cache/files/aa".into(), true);
         assert!(
             !player_cmds(&out)
                 .iter()
@@ -4186,6 +4285,47 @@ mod tests {
                 .iter()
                 .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
             "later snapshots must not reload the same copy either"
+        );
+    }
+
+    #[test]
+    fn import_completion_at_the_partial_path_reloads_the_player() {
+        // Regression (2026-08-20 review): the browse import lands its
+        // verified payload at the same hash-addressed cache path the peer
+        // download was assembling into — the cancel unlinks the partial
+        // (mpv keeps its fd on the orphaned truncated inode) and the
+        // placement creates a *new* inode at the old path. Path equality
+        // then stood in for content identity: the completion flipped
+        // `partial` off without a reload, so mpv played the deleted
+        // orphan and its truncated EOF advanced the whole group.
+        let mut wiring = PlayerWiring::new(me());
+        let view = playing_state().view();
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+
+        // The import placed a fresh inode over the path (not the
+        // download's own in-place completion).
+        wiring.note_local_file(hash(1), "/cache/files/aa".into(), false);
+
+        // Until the reload lands we do not hold the video: the orphan's
+        // truncated EOF must not advance the group.
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert!(
+            !out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
+            "the deleted orphan's EOF must not advance the group: {out:?}"
+        );
+
+        // The next snapshot must re-issue the Load for the fresh copy.
+        let out = wiring.on_state(&view, &[peer("kim")]);
+        let load = player_cmds(&out).into_iter().find_map(|cmd| match cmd {
+            PlayerCommand::Load { path, .. } => Some(path.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            load,
+            Some(PathBuf::from("/cache/files/aa")),
+            "a verified copy replacing the loaded partial's inode must re-issue the Load"
         );
     }
 
@@ -4235,6 +4375,64 @@ mod tests {
         assert!(
             out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
             "a partial's EOF at the real end must be reported: {out:?}"
+        );
+    }
+
+    #[test]
+    fn rejected_partial_eof_issues_a_recovery_command() {
+        // Regression (2026-08-20 review): the partial-EOF gate was
+        // one-sided. The player actor latches `eof_reported` the moment
+        // it emits `Eof`, and the latch clears only on a `Load` or a
+        // seek echo — neither of which a silently dropped report
+        // triggers. mpv parked at the phantom end (`--keep-open`) and
+        // even the *genuine* end-of-file EOF after the download
+        // completed in place was swallowed: this client never advanced
+        // the group off the episode. Rejecting a partial's EOF must
+        // therefore issue a recovery command that re-arms the latch and
+        // pulls mpv back to the last honest position.
+        let mut wiring = PlayerWiring::new(me());
+        let view = timed_state(1_000_000).view();
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 400_000,
+            },
+            &view,
+        );
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert!(
+            !out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
+            "a partial's EOF at 40% must not be reported: {out:?}"
+        );
+        assert!(
+            player_cmds(&out).iter().any(|cmd| matches!(
+                cmd,
+                PlayerCommand::RecoverFalseEof {
+                    position_millis: 400_000
+                }
+            )),
+            "a rejected partial EOF must issue a recovery command back to \
+             the last honest position (the actor's eof latch never clears \
+             otherwise): {out:?}"
+        );
+
+        // The download completes in place; the genuine end-of-file must
+        // still advance the group.
+        wiring.note_local_file(hash(1), "/cache/files/aa".into(), true);
+        wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 999_000,
+            },
+            &view,
+        );
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert!(
+            out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
+            "the genuine EOF after completion must still be reported: {out:?}"
         );
     }
 
@@ -4321,6 +4519,95 @@ mod tests {
                 .iter()
                 .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
             "+10% more data must re-offer the partial: {out:?}"
+        );
+    }
+
+    #[test]
+    fn partial_load_failure_gates_the_group() {
+        // Regression (2026-08-20 review): after a partial `LoadFailed`
+        // the arm recorded the failure and returned *no* directives, so
+        // the client kept advertising `DownloadingPlayable` — which
+        // permits playback — while holding no video: the group unpaused
+        // and watched without them. The failure must immediately
+        // downgrade our advert to plain `Downloading` (which blocks).
+        let mut state = playing_state();
+        state.set_file_availability(
+            A,
+            ts(5),
+            me(),
+            hash(1),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 2_000,
+            },
+        );
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+
+        let out = wiring.on_player(PlayerOutput::LoadFailed { file: hash(1) }, &view);
+        assert!(
+            out.iter().any(|d| matches!(
+                d,
+                Directive::Mutate(Mutation::SetFileAvailability {
+                    availability: FileAvailability::Downloading { .. },
+                    ..
+                })
+            )),
+            "an unopenable partial must gate the group (we hold no video): {out:?}"
+        );
+
+        // The file actor keeps re-advertising the download as playable
+        // (it only knows the window is verified, not that the player
+        // failed to open it): the advert must stay downgraded while the
+        // retry is deferred…
+        assert!(
+            matches!(
+                wiring.correct_availability(
+                    hash(1),
+                    FileAvailability::DownloadingPlayable {
+                        progress_bps: 2_500
+                    }
+                ),
+                FileAvailability::Downloading {
+                    progress_bps: 2_500
+                }
+            ),
+            "re-adverts must stay downgraded while the partial is unopenable"
+        );
+
+        // …and pass through again once enough new data lands for a
+        // retry (the deferral clears with the re-offer).
+        state.set_file_availability(
+            A,
+            ts(6),
+            me(),
+            hash(1),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 3_000,
+            },
+        );
+        let view = state.view();
+        let out =
+            wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        assert!(
+            player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
+            "+10% more data must re-offer the partial: {out:?}"
+        );
+        assert!(
+            matches!(
+                wiring.correct_availability(
+                    hash(1),
+                    FileAvailability::DownloadingPlayable {
+                        progress_bps: 3_000
+                    }
+                ),
+                FileAvailability::DownloadingPlayable { .. }
+            ),
+            "a re-offered partial advertises playable again"
         );
     }
 
@@ -5336,6 +5623,45 @@ mod tests {
     }
 
     #[test]
+    fn dropped_overlay_clear_is_resent_after_forget() {
+        // Regression (2026-08-20 review): `blocker_overlay_sent`'s
+        // "nothing sent yet" sentinel `(None, None)` was also a real key
+        // — the no-blocker, nothing-loaded state. When the overlay
+        // *clear*'s `try_send` failed on a full player channel,
+        // `forget_blocker_overlay` re-armed with exactly the key that
+        // failed to deliver, so the dedup never retried and a stale
+        // "Waiting for …" line stayed on the OSD indefinitely.
+        let baughn = UserId::new("baughn");
+        let peers = [peer("kim"), peer("baughn")];
+        let mut state = playing_state();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&state.view(), &peers);
+
+        // The overlay goes up (nothing loaded, so the key's file half
+        // is None)…
+        state.set_manual_override(A, ts(10), baughn.clone(), Some(ManualState::Paused));
+        wiring.on_state(&state.view(), &peers);
+        // …and the blocker goes away: the clear is emitted…
+        state.set_manual_override(A, ts(11), baughn, None);
+        let cleared = wiring.on_state(&state.view(), &peers);
+        assert!(
+            player_cmds(&cleared)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::SetBlockerOverlay(None))),
+            "expected the overlay clear: {cleared:?}"
+        );
+        // …but dropped on a full player channel.
+        wiring.forget_blocker_overlay();
+        let out = wiring.on_state(&state.view(), &peers);
+        assert!(
+            player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::SetBlockerOverlay(None))),
+            "a dropped overlay clear must be re-sent after forget: {out:?}"
+        );
+    }
+
+    #[test]
     fn action_chat_renders_as_osd_emote() {
         let mut state = playing_state();
         let mut wiring = PlayerWiring::new(me());
@@ -6243,7 +6569,7 @@ mod tests {
     #[test]
     fn note_local_file_skips_the_matcher_and_reports_ready() {
         let mut wiring = PlayerWiring::new(me());
-        let directives = wiring.note_local_file(hash(1), "/media/ep1.mkv".into());
+        let directives = wiring.note_local_file(hash(1), "/media/ep1.mkv".into(), false);
         assert!(directives.iter().any(|d| matches!(
             d,
             Directive::Mutate(Mutation::SetFileAvailability {
@@ -6281,7 +6607,7 @@ mod tests {
         let first = wiring.on_state(&view, &[peer("kim")]);
         assert!(resolve_files(&first).contains(&hash(1)));
         // Before the walk answers, the user hash-adds the file themselves.
-        wiring.note_local_file(hash(1), "/anywhere/ep1.mkv".into());
+        wiring.note_local_file(hash(1), "/anywhere/ep1.mkv".into(), false);
         // The stale walk answer lands late: it must not retract Ready.
         let stale = wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
         assert!(

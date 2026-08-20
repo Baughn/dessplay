@@ -425,6 +425,14 @@ pub enum FileOutput {
         file: Ed2kHash,
         /// The complete file in the cache.
         path: PathBuf,
+        /// True when the bytes at `path` are the very inode the download
+        /// was assembling — a player holding the partial's fd sees the
+        /// completed content, so no reload is needed. False when a
+        /// verified copy was *placed over* the path as a fresh inode
+        /// (the browse import): a player still on the old fd is playing
+        /// a deleted, truncated orphan and must be reloaded. Path
+        /// equality never implies content identity (2026-08-20 review).
+        assembled_in_place: bool,
     },
     /// An in-flight peer download became playable: every chunk in the
     /// 20% window ahead of the playback anchor is verified. The session
@@ -1679,7 +1687,12 @@ impl Actor {
                     file,
                     path,
                     block_hashes,
-                } => self.on_download_complete(file, path, block_hashes).await,
+                } => {
+                    // The scheduler's own completion: the ChunkStore
+                    // assembled the bytes in place, same inode throughout.
+                    self.on_download_complete(file, path, block_hashes, true)
+                        .await
+                }
                 DownloadAction::Abandon { file, reason } => {
                     tracing::warn!(%file, "download abandoned: {reason}");
                     self.drop_download_streams(file);
@@ -1699,12 +1712,17 @@ impl Actor {
 
     /// A download finished: record it as a servable local copy, cache
     /// its block hashes (so we can re-serve them) and cache bookkeeping,
-    /// and surface Ready + DownloadComplete.
+    /// and surface Ready + DownloadComplete. `assembled_in_place` is
+    /// true only for the scheduler's own completion (the ChunkStore
+    /// filled in the very inode a player may have open); the browse
+    /// import places a fresh inode over the path and passes false — see
+    /// [`FileOutput::DownloadComplete`].
     async fn on_download_complete(
         &mut self,
         file: Ed2kHash,
         path: PathBuf,
         block_hashes: Vec<dessplay_core::hash::Ed2kBlockHash>,
+        assembled_in_place: bool,
     ) {
         tracing::info!(%file, path = %path.display(), "download complete");
         self.wanted.remove(&file);
@@ -1742,7 +1760,11 @@ impl Actor {
             .await;
         let _ = self
             .out
-            .send(FileOutput::DownloadComplete { file, path })
+            .send(FileOutput::DownloadComplete {
+                file,
+                path,
+                assembled_in_place,
+            })
             .await;
     }
 
@@ -1999,7 +2021,10 @@ impl Actor {
                 payload
             }
         };
-        self.on_download_complete(file, local_path.clone(), hashed.blocks.clone())
+        // The import's cancel unlinked the partial and the placement
+        // created a fresh inode at the same path: never in place — a
+        // player still holding the partial's fd must be reloaded.
+        self.on_download_complete(file, local_path.clone(), hashed.blocks.clone(), false)
             .await;
         self.finish_nyaa_import(id, Ok((hashed, local_path))).await;
     }
@@ -7179,8 +7204,24 @@ mod tests {
             },
         );
         loop {
-            if let FileOutput::NyaaImportFinished { result, .. } = next_output(rig).await {
-                return result.expect("import must finish cleanly");
+            match next_output(rig).await {
+                FileOutput::DownloadComplete {
+                    assembled_in_place, ..
+                } => {
+                    // The import places a fresh inode over the cache
+                    // path — never the download's own in-place assembly.
+                    // A player still holding a partial's fd there must
+                    // be reloaded (2026-08-20 review), so the flag must
+                    // never claim otherwise.
+                    assert!(
+                        !assembled_in_place,
+                        "an import completion must not claim in-place assembly"
+                    );
+                }
+                FileOutput::NyaaImportFinished { result, .. } => {
+                    return result.expect("import must finish cleanly");
+                }
+                _ => continue,
             }
         }
     }
