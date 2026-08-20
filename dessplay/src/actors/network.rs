@@ -61,10 +61,13 @@ pub enum NetworkCommand {
     ///
     /// **Answered-request contract:** every open is answered — with the
     /// stream, or with [`NetworkEvent::TransferStreamFailed`] — never
-    /// silently dropped. Requests arriving before the transfer link is
-    /// up (the reconnect-until-AuthOk window) are buffered and drained
-    /// on AuthOk. The file actor keys its "already asked" latch on this
-    /// contract; a lost answer would wedge that transfer until restart.
+    /// silently dropped. Requests arriving while the transfer link is
+    /// not up — pre-AuthOk on a fresh connection, *and* the whole
+    /// disconnected window (reconnect backoff + redial) — are buffered
+    /// and drained on AuthOk; past the buffer's cap they are answered
+    /// with failure instead. The file actor keys its "already asked"
+    /// latch on this contract; a lost answer would wedge that transfer
+    /// until restart.
     OpenTransferStream {
         /// The uploader.
         to: PeerId,
@@ -395,8 +398,9 @@ async fn forward_open(
 }
 
 /// How many stream-open requests buffer while the transfer link is not
-/// up yet (pre-AuthOk). Matches the link op channel's depth; past it
-/// the newest request is answered with failure instead.
+/// up (pre-AuthOk, or the whole disconnected window). Matches the link
+/// op channel's depth; past it the newest request is answered with
+/// failure instead.
 const PENDING_OPEN_BUFFER: usize = 64;
 
 /// Consecutive failed transfer-link dial/setup attempts before the
@@ -427,6 +431,15 @@ pub async fn run<C: Connector>(
     events: mpsc::Sender<NetworkEvent>,
 ) {
     let mut attempt_number: u64 = 0;
+    // Stream-open requests that arrived while the transfer link was not
+    // up: pre-AuthOk on a live connection, or anywhere in the
+    // disconnected window (backoff, redial). Buffered, not dropped —
+    // the answered-request contract must hold across the reconnect
+    // boundary too (2026-08-20 review: a disconnect clears the file
+    // actor's pending streams, its 250ms tick re-opens into the 2s
+    // backoff window, and a discarded open wedged that transfer until
+    // the *next* disconnect). Drained into the link on AuthOk.
+    let mut pending_opens: Vec<(PeerId, dessplay_core::types::Ed2kHash)> = Vec::new();
     loop {
         attempt_number += 1;
         let attempt_started = tokio::time::Instant::now();
@@ -438,20 +451,18 @@ pub async fn run<C: Connector>(
             .await;
         // A connection attempt to an unreachable host can take the full
         // handshake timeout (30s of QUIC retries) — Shutdown must
-        // interrupt it, or quitting hangs on this actor. Other commands
-        // arriving mid-attempt are discarded, like sends during the
-        // reconnect backoff (the upward merge heals the gap).
+        // interrupt it, or quitting hangs on this actor. Stream opens
+        // arriving mid-attempt buffer; other commands are discarded,
+        // like sends during the reconnect backoff (the upward merge
+        // heals the gap).
         let attempt = tokio::select! {
             attempt = connector.connect() => attempt,
             _ = async {
                 loop {
                     match commands.recv().await {
                         Some(NetworkCommand::Shutdown) | None => return,
-                        Some(discarded) => {
-                            tracing::debug!(
-                                cmd = discarded.name(),
-                                "discarding command while connecting"
-                            );
+                        Some(cmd) => {
+                            stash_open_or_discard(cmd, &mut pending_opens, &events).await;
                         }
                     }
                 }
@@ -464,8 +475,15 @@ pub async fn run<C: Connector>(
                     elapsed_ms = attempt_started.elapsed().as_millis() as u64,
                     "transport connected"
                 );
-                match run_connection(&conn, &transfer_connector, &config, &mut commands, &events)
-                    .await
+                match run_connection(
+                    &conn,
+                    &transfer_connector,
+                    &config,
+                    &mut commands,
+                    &events,
+                    &mut pending_opens,
+                )
+                .await
                 {
                     ConnectionEnd::Shutdown => {
                         conn.close("shutting down").await;
@@ -495,13 +513,53 @@ pub async fn run<C: Connector>(
                     .await;
             }
         }
-        tokio::select! {
-            _ = tokio::time::sleep(config.reconnect_backoff) => {}
-            cmd = commands.recv() => {
-                if matches!(cmd, Some(NetworkCommand::Shutdown) | None) {
-                    return;
+        // The backoff runs to completion (a command no longer cuts it
+        // short); commands arriving during it are stashed or discarded
+        // just like mid-dial ones.
+        let backoff = tokio::time::sleep(config.reconnect_backoff);
+        tokio::pin!(backoff);
+        loop {
+            tokio::select! {
+                _ = &mut backoff => break,
+                cmd = commands.recv() => match cmd {
+                    Some(NetworkCommand::Shutdown) | None => return,
+                    Some(cmd) => stash_open_or_discard(cmd, &mut pending_opens, &events).await,
                 }
             }
+        }
+    }
+}
+
+/// A command arrived while no connection exists (mid-dial or backoff).
+/// `OpenTransferStream` is buffered for the next connection's AuthOk
+/// drain — the answered-request contract survives the reconnect
+/// boundary. Duplicates collapse (after a link reset the file actor
+/// re-latches and may re-ask for a (peer, file) already buffered);
+/// past the cap the open is answered with failure, and the file actor
+/// retries on its tick. Everything else is discarded — sends heal via
+/// the upward merge, and transfer logic retries its own messages.
+async fn stash_open_or_discard(
+    cmd: NetworkCommand,
+    pending_opens: &mut Vec<(PeerId, dessplay_core::types::Ed2kHash)>,
+    events: &mpsc::Sender<NetworkEvent>,
+) {
+    match cmd {
+        NetworkCommand::OpenTransferStream { to, file } => {
+            if pending_opens.contains(&(to.clone(), file)) {
+                return;
+            }
+            if pending_opens.len() >= PENDING_OPEN_BUFFER {
+                tracing::debug!(%to, %file, "open buffer full while disconnected; answering with failure");
+                let _ = events
+                    .send(NetworkEvent::TransferStreamFailed { peer: to, file })
+                    .await;
+                return;
+            }
+            tracing::debug!(%to, %file, "buffering stream open while disconnected");
+            pending_opens.push((to, file));
+        }
+        other => {
+            tracing::debug!(cmd = other.name(), "discarding command while disconnected");
         }
     }
 }
@@ -896,6 +954,12 @@ async fn run_connection<T: Transport, C: Connector>(
     config: &NetworkConfig,
     commands: &mut mpsc::Receiver<NetworkCommand>,
     events: &mpsc::Sender<NetworkEvent>,
+    // Stream-open requests awaiting a transfer link, owned by the outer
+    // loop so the buffer survives a connection death (the
+    // answered-request contract across the reconnect boundary): opens
+    // buffered here before AuthOk — or before the connection even
+    // existed — drain into the link on AuthOk.
+    pending_opens: &mut Vec<(PeerId, dessplay_core::types::Ed2kHash)>,
 ) -> ConnectionEnd {
     let counters = Arc::new(NetCounters::default());
 
@@ -921,10 +985,6 @@ async fn run_connection<T: Transport, C: Connector>(
     // task dies with this connection (AbortOnDrop): a reconnect gets a
     // fresh token and a fresh link.
     let mut transfer: Option<TransferLink> = None;
-    // Stream-open requests that arrived before the transfer link exists
-    // (the reconnect-until-AuthOk window). Buffered, not dropped — the
-    // answered-request contract — and drained into the link on AuthOk.
-    let mut pending_opens: Vec<(PeerId, dessplay_core::types::Ed2kHash)> = Vec::new();
 
     // ---- Health bookkeeping (LinkHealth samples). All measured with
     // local monotonic Instants — never shared-clock timestamps, whose
@@ -1150,6 +1210,10 @@ async fn run_connection<T: Transport, C: Connector>(
                         // request — never a silent drop.
                         match transfer.as_ref() {
                             Some(link) => forward_open(link, to, file, events).await,
+                            None if pending_opens.contains(&(to.clone(), file)) => {
+                                // Already buffered (e.g. re-asked after
+                                // a link reset): one open, one answer.
+                            }
                             None if pending_opens.len() < PENDING_OPEN_BUFFER => {
                                 pending_opens.push((to, file));
                             }
@@ -1281,6 +1345,27 @@ mod tests {
         let Ok((conn, addr)) = listener.accept().await else {
             return;
         };
+        serve_control(conn, addr, clock, answer_probes).await;
+    }
+
+    /// Like [`fake_server`], but accepts any number of consecutive
+    /// connections — for reconnect tests.
+    async fn fake_server_forever(listener: SimListener, clock: Clock) {
+        loop {
+            let Ok((conn, addr)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(serve_control(conn, addr, clock.clone(), true));
+        }
+    }
+
+    /// One control connection's server side (see [`fake_server`]).
+    async fn serve_control(
+        conn: SimTransport,
+        addr: SocketAddr,
+        clock: Clock,
+        answer_probes: bool,
+    ) {
         loop {
             let payload = match conn.recv().await {
                 Ok(TransportEvent::Control(bytes) | TransportEvent::Datagram(bytes)) => bytes,
@@ -1741,6 +1826,90 @@ mod tests {
         })
         .await
         .expect("an open requested before AuthOk was dropped instead of buffered");
+    }
+
+    /// The answered-request contract, reconnect half (2026-08-20
+    /// review, HIGH): an `OpenTransferStream` that lands while the
+    /// control connection is being re-established (the backoff + dial
+    /// window) must still be answered once the link is back. Pre-fix
+    /// both outer-loop arms discarded it with a debug log; with the
+    /// file actor's "already asked" latch armed by that very open, the
+    /// (source, file) transfer wedged until the *next* disconnect. The
+    /// timing is the common case, not a corner: a disconnect clears the
+    /// file actor's pending streams, its 250ms download tick re-plans
+    /// and re-opens, and the 2s reconnect backoff guarantees the open
+    /// lands in the window.
+    #[tokio::test(start_paused = true)]
+    async fn an_open_during_the_reconnect_window_is_answered() {
+        let net = SimNetwork::new(41);
+        let kim = EndpointId::new("kim");
+        let server = EndpointId::new("server");
+        tokio::spawn(fake_server_forever(net.listener(&server), paused_clock()));
+        let transfer = EndpointId::new("server-transfer");
+        tokio::spawn(fake_transfer_server(net.listener(&transfer)));
+
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(4096);
+        let connector = Arc::new(net.connector(&kim, &server));
+        let transfer_connector = Arc::new(net.connector(&kim, &transfer));
+        let _actor = tokio::spawn(run(
+            connector,
+            transfer_connector,
+            config_with_clock(paused_clock()),
+            command_rx,
+            event_tx,
+        ));
+
+        // Connected once...
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let NetworkEvent::Connected { .. } = event_rx.recv().await.expect("actor alive")
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("never connected");
+
+        // ...then the control connection dies.
+        net.disconnect(&kim, &server);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let NetworkEvent::Disconnected { .. } =
+                    event_rx.recv().await.expect("actor alive")
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("never saw the disconnect");
+
+        // The open lands in the reconnect window.
+        command_tx
+            .send(NetworkCommand::OpenTransferStream {
+                to: UserId::new("nas"),
+                file: Ed2kHash([1; 16]),
+            })
+            .await
+            .unwrap();
+
+        // The contract: the reconnect succeeds and the open is answered
+        // — with the stream (buffered across the boundary) or an
+        // explicit failure (which un-latches the file actor so its tick
+        // retries). Silence is the wedge.
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                match event_rx.recv().await.expect("actor alive") {
+                    NetworkEvent::TransferStream { outbound: true, .. }
+                    | NetworkEvent::TransferStreamFailed { .. } => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("an open issued during the reconnect window was never answered");
     }
 
     /// The inline-open hazard (2026-08-12 review): at the transport's
