@@ -1109,6 +1109,14 @@ fn mask_irc_chat_seeded(text: &str, sender: &UserId, seed_base: u64) -> String {
 /// are written: PRIMARY for middle-click / Shift-Insert paste (the
 /// terminal-user reflex) and CLIPBOARD for Ctrl-V. Other platforms
 /// have a single clipboard and only the `set_text` call applies.
+///
+/// Ordering rule: CLIPBOARD is the contract — its `set_text` is the
+/// only write whose failure this function reports. PRIMARY is a
+/// convenience and is strictly best-effort: were its error propagated
+/// first, a backend without a primary selection (e.g. arboard's
+/// Wayland backend on a compositor lacking zwp_primary_selection_v1)
+/// would abort before the CLIPBOARD write and every copy would fail
+/// (2026-08-20 review).
 fn set_clipboard_text(
     clipboard: &mut arboard::Clipboard,
     text: String,
@@ -1116,10 +1124,11 @@ fn set_clipboard_text(
     #[cfg(target_os = "linux")]
     {
         use arboard::{LinuxClipboardKind, SetExtLinux};
-        clipboard
+        let _ = clipboard
             .set()
             .clipboard(LinuxClipboardKind::Primary)
-            .text(text.as_str())?;
+            .text(text.as_str())
+            .inspect_err(|error| tracing::debug!(%error, "PRIMARY selection write failed"));
     }
     clipboard.set_text(text)
 }
