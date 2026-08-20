@@ -644,6 +644,235 @@ proptest! {
     }
 }
 
+/// The three `series_relations` entries behind the multi-relations
+/// fixture blobs (2026-08-20 audit): distinct keys, distinct LWW
+/// timestamps, distinct writing actors, and one non-empty
+/// `short_titles` (with a non-ASCII title, so the UTF-8 encoding is
+/// pinned too). Every rich_sample_state fixture holds exactly ONE
+/// relations entry — the size at which the constant-actor re-dot bug
+/// was invisible — so these fixtures are the frozen-bytes pin for the
+/// multi-entry map rebuild and for the field's non-zero encoding.
+///
+/// **Do not change what this returns.** The fixture blobs freeze this
+/// function's encoding as of their capture date; a semantic change here
+/// breaks the captured fixtures, which are never regenerated. Newer
+/// fixture content belongs in yet another builder (fixtures README).
+fn multi_relations_entries() -> Vec<(ActorId, SharedTimestamp, AniDbSeriesId, SeriesRelations)> {
+    vec![
+        (
+            A,
+            ts(40),
+            AniDbSeriesId(17617),
+            SeriesRelations {
+                title: "Sousou no Frieren".into(),
+                year: Some(2023),
+                episode_count: Some(28),
+                relations: BTreeSet::from([SeriesRelation {
+                    kind: RelationKind::Sequel,
+                    target: AniDbSeriesId(18886),
+                }]),
+                short_titles: vec!["Frieren".into(), "葬送のフリーレン".into()],
+            },
+        ),
+        (
+            A,
+            ts(41),
+            AniDbSeriesId(18886),
+            SeriesRelations {
+                title: "Sousou no Frieren (2025)".into(),
+                year: Some(2026),
+                episode_count: None,
+                relations: BTreeSet::from([SeriesRelation {
+                    kind: RelationKind::Prequel,
+                    target: AniDbSeriesId(17617),
+                }]),
+                short_titles: vec![],
+            },
+        ),
+        (
+            A2,
+            ts(42),
+            AniDbSeriesId(1),
+            SeriesRelations {
+                title: "RahXephon".into(),
+                year: Some(2002),
+                episode_count: Some(26),
+                relations: BTreeSet::new(),
+                short_titles: vec![],
+            },
+        ),
+    ]
+}
+
+/// A state holding exactly the given relations entries.
+fn multi_relations_state(
+    entries: &[(ActorId, SharedTimestamp, AniDbSeriesId, SeriesRelations)],
+) -> CrdtState {
+    let mut state = CrdtState::new();
+    for (actor, stamp, series, relations) in entries {
+        state.set_series_relations(*actor, *stamp, *series, relations.clone());
+    }
+    state
+}
+
+/// The full state behind both multi-relations fixture blobs. See
+/// [`multi_relations_entries`] — do not change what this encodes.
+fn multi_relations_sample_state() -> CrdtState {
+    multi_relations_state(&multi_relations_entries())
+}
+
+/// Fixture capture for the multi-relations family, one-shot like
+/// `capture_missing_snapshot_fixtures`: writes only fixtures that do
+/// not exist yet, never rewrites. Both blobs were captured 2026-08-20
+/// (current version v12); this test stays only as the record of how.
+#[test]
+#[ignore = "writes new fixture blobs; already captured 2026-08-20, never regenerate"]
+fn capture_missing_multi_relations_fixtures() {
+    std::fs::create_dir_all(fixtures_dir()).unwrap();
+    let v6 = fixtures_dir().join("snapshot-multi-relations-untagged-v6.bin");
+    if !v6.exists() {
+        let blob = multi_relations_sample_state()
+            .encode_untagged_v6_for_tests()
+            .unwrap();
+        std::fs::write(&v6, blob).unwrap();
+        eprintln!("captured {}", v6.display());
+    }
+    let current = fixtures_dir().join("snapshot-multi-relations-v12.bin");
+    if !current.exists() {
+        assert_eq!(
+            PROTOCOL_VERSION, 12,
+            "snapshot-multi-relations-v12.bin was captured at v12; the current \
+             encoder no longer produces v12 bytes, so this arm must not run — \
+             restore the committed fixture instead"
+        );
+        let blob = multi_relations_sample_state().encode_snapshot().unwrap();
+        std::fs::write(&current, blob).unwrap();
+        eprintln!("captured {}", current.display());
+    }
+}
+
+/// The multi-entry untagged-v6 fixture decodes through the legacy
+/// fallback to the expected three-entry view. Every rich_sample_state
+/// fixture carries a ONE-entry relations map, so this blob (captured
+/// 2026-08-20, frozen like snapshot-untagged-v6.bin) is the only real
+/// frozen bytes in which the map rebuild handles multiple entries with
+/// distinct keys and stamps. The v6 layout predates `short_titles`, so
+/// the expected view clears them.
+#[test]
+fn multi_relations_untagged_v6_fixture_decodes_to_the_expected_view() {
+    let blob = read_fixture("snapshot-multi-relations-untagged-v6.bin");
+    assert_ne!(
+        blob[0], SNAPSHOT_MAGIC[0],
+        "legacy blobs must not collide with the envelope magic"
+    );
+
+    let (decoded, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap_or_else(|e| {
+        panic!(
+            "the checked-in multi-relations untagged-v6 fixture no longer \
+             decodes ({e}): the frozen v6 layout has drifted from its real \
+             bytes (do NOT regenerate the fixture; its bytes are the contract)"
+        )
+    });
+    assert!(migrated, "an untagged blob must report the fallback");
+
+    let mut expected = multi_relations_sample_state().view();
+    for relations in expected.series_relations.values_mut() {
+        relations.short_titles.clear();
+    }
+    assert_eq!(
+        decoded.view(),
+        expected,
+        "the multi-relations v6 fixture decoded, but to the WRONG view — a \
+         misaligned (silently corrupting) decode (do NOT regenerate the fixture)"
+    );
+}
+
+/// The fixture-decoded multi-entry map must merge by key with an
+/// independently migrated replica — real frozen bytes on one side of
+/// the merge the HIGH finding's regression test drives with live
+/// encodings on both. The subset replica is the same replicated
+/// history seen earlier (two of the three entries, identical stamps
+/// and values), migrated through the same v6 path; the merge must keep
+/// the union in both directions. Under the retired constant-actor
+/// rebuild the two replicas spend the same dots on different keys and
+/// the merge silently drops entries — so this passing is the
+/// frozen-bytes proof that the three entries carry three distinct
+/// key-derived dots.
+#[test]
+fn multi_relations_fixture_merges_with_an_independently_migrated_subset() {
+    let blob = read_fixture("snapshot-multi-relations-untagged-v6.bin");
+    let (full, migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap();
+    assert!(migrated, "an untagged blob must report the fallback");
+
+    let subset = migrate_via_v6(&multi_relations_state(&multi_relations_entries()[1..]));
+
+    let mut full_merged = full.clone();
+    full_merged.merge(subset.clone());
+    let mut subset_merged = subset;
+    subset_merged.merge(full.clone());
+
+    assert_eq!(
+        full_merged.view().series_relations,
+        full.view().series_relations,
+        "merging in an earlier subset of the same history must change nothing"
+    );
+    assert_eq!(
+        subset_merged.view().series_relations,
+        full.view().series_relations,
+        "both merge directions must converge on the full three-entry map"
+    );
+}
+
+/// The current-version multi-relations fixture (captured 2026-08-20 at
+/// v12): the only checked-in bytes in which `short_titles` is
+/// non-empty. Every other fixture predates the field, so without this
+/// blob the field is pinned only at its zero encoding — a future field
+/// appended inside `SeriesRelations` *after* a non-empty `short_titles`
+/// would slip past every drift pin. Today its tag equals the current
+/// version and it decodes directly; at the next `PROTOCOL_VERSION`
+/// bump it becomes the v12 handling's pin, exactly as snapshot-v10.bin
+/// did at the v11 bump.
+#[test]
+fn multi_relations_current_fixture_pins_nonempty_short_titles() {
+    let blob = read_fixture("snapshot-multi-relations-v12.bin");
+    assert_eq!(blob[..4], SNAPSHOT_MAGIC, "bad magic");
+    assert_eq!(
+        u32::from_le_bytes(blob[4..8].try_into().unwrap()),
+        12,
+        "the fixture stays tagged with its capture version"
+    );
+
+    let (decoded, _migrated) = CrdtState::decode_snapshot_flagged(&blob).unwrap_or_else(|e| {
+        panic!(
+            "the checked-in v12 multi-relations fixture no longer decodes ({e}): \
+             either v12 has not been added to a handled-versions list after a \
+             PROTOCOL_VERSION bump, or the decode path for v12 bodies has \
+             drifted from its real bytes — including the non-empty \
+             `short_titles` encoding only this fixture pins (do NOT regenerate \
+             the fixture; its bytes are the contract)"
+        )
+    });
+    assert_eq!(
+        decoded.protocol_version, PROTOCOL_VERSION,
+        "a decoded snapshot carries the running version"
+    );
+
+    let expected = multi_relations_sample_state().view();
+    assert!(
+        !expected.series_relations[&AniDbSeriesId(17617)]
+            .short_titles
+            .is_empty(),
+        "the builder must keep a non-empty short_titles — it is the whole \
+         point of this fixture"
+    );
+    assert_eq!(
+        decoded.view(),
+        expected,
+        "the v12 multi-relations fixture decoded, but to the WRONG view — a \
+         misaligned (silently corrupting) decode (do NOT regenerate the fixture)"
+    );
+}
+
 /// A minimal state whose `series_relations` holds exactly the given
 /// entries (empty `short_titles`, as the v6 encoding requires — the
 /// legacy layout predates the field and drops it).

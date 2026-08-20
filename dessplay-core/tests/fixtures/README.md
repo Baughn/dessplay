@@ -3,14 +3,18 @@
 Binary `crdt_state` snapshot blobs pinning the storage decode paths in
 `tests/migration.rs` (`layout_compatible_fixture_blobs_decode_to_the_expected_view`,
 `frozen_layout_fixture_blobs_decode_to_the_expected_view`,
-`untagged_v6_fixture_blob_decodes_via_the_legacy_fallback`). Every blob
-encodes `rich_sample_state()`.
+`untagged_v6_fixture_blob_decodes_via_the_legacy_fallback`). The
+`snapshot-v*.bin` and `snapshot-untagged-v6.bin` blobs encode
+`rich_sample_state()`; the `snapshot-multi-relations-*.bin` family
+encodes `multi_relations_sample_state()` (both in tests/migration.rs).
 
 | File | Layout |
 |------|--------|
 | `snapshot-v7.bin` … `snapshot-v10.bin` | Tagged envelope, one per entry of `FROZEN_LAYOUT_SNAPSHOT_VERSIONS` (the shared v7–v10 layout, decoded via `CrdtStateV10`) |
 | `snapshot-v11.bin` | Tagged envelope, one per entry of `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` (current layout under an older tag) |
 | `snapshot-untagged-v6.bin` | The pre-envelope untagged v6 layout (`CrdtStateUntaggedV6`) |
+| `snapshot-multi-relations-untagged-v6.bin` | Untagged v6 layout again, but with a **three-entry** `series_relations` map (distinct keys, stamps, and actors) — the map-rebuild pin (`multi_relations_untagged_v6_fixture_decodes_to_the_expected_view`, `multi_relations_fixture_merges_with_an_independently_migrated_subset`) |
+| `snapshot-multi-relations-v12.bin` | Tagged envelope at v12 (current at capture), the only blob whose `series_relations` carries a **non-empty `short_titles`** (`multi_relations_current_fixture_pins_nonempty_short_titles`) |
 
 ## Policy: written once, never regenerated
 
@@ -72,3 +76,17 @@ layout-compatibility claim made literal.
 the `SetAnthropicToken` message), when v11 entered
 `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` — the ordinary capture-test flow,
 since the current encoder still reproduces v11 bodies.
+
+The `snapshot-multi-relations-*.bin` pair was captured 2026-08-20
+(current version v12, `capture_missing_multi_relations_fixtures`),
+closing the 2026-08-20 audit's fixture gap: every `rich_sample_state`
+blob holds exactly one `series_relations` entry — the size at which the
+constant-actor migration re-dot bug was invisible — and `short_titles`
+empty, so the field was pinned only at its zero encoding. The untagged
+blob pins the frozen v6 layout with a multi-entry map (the v6 encoding
+drops `short_titles`, so its expected view clears them); the v12 blob
+pins the non-empty `short_titles` encoding. The v12 blob decodes as the
+current version today; at the next `PROTOCOL_VERSION` bump it becomes
+the drift pin for however v12 bodies are then handled — the same role
+`snapshot-v10.bin` took on at the v11 bump. Neither blob is ever
+regenerated.
