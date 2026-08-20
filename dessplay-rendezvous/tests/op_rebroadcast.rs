@@ -56,9 +56,10 @@ fn setup(seed: u64) -> (SimNetwork, EndpointId) {
     (net, server_id)
 }
 
-/// Connect a raw transport, authenticate as `name` (epoch 0, so the server
-/// replies with a snapshot), and drain that snapshot. Returns the
-/// connection and the epoch the server advertised.
+/// Connect a raw transport, authenticate as `name`, complete the v13
+/// connect handshake (SyncStatus at epoch 0 with an empty-state hash,
+/// so the server replies with a snapshot), and drain that snapshot.
+/// Returns the connection and the epoch the server advertised.
 async fn connect_authed(
     net: &SimNetwork,
     server: &EndpointId,
@@ -82,6 +83,15 @@ async fn connect_authed(
     let epoch = loop {
         match conn.recv().await.expect("recv during auth") {
             TransportEvent::Control(bytes) => match wire::decode::<WireMessage>(&bytes).unwrap() {
+                WireMessage::Control(ServerControl::AuthOk { .. }) => {
+                    let status = WireMessage::Control(ServerControl::SyncStatus {
+                        epoch: Epoch(0),
+                        state_hash: CrdtState::new().view_hash(),
+                    });
+                    conn.send_control(&wire::encode(&status).unwrap())
+                        .await
+                        .expect("send sync status");
+                }
                 WireMessage::Control(ServerControl::StateSnapshot(s)) => break s.epoch,
                 WireMessage::Control(ServerControl::StateMerge(s)) => break s.epoch,
                 _ => continue,

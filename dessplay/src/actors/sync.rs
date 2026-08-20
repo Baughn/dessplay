@@ -492,6 +492,19 @@ impl SyncActor {
                     buffered_position = self.offline_position.is_some(),
                     "link: awaiting initial sync"
                 );
+                // The connect handshake (protocol v13): report what we
+                // hold — epoch AND view hash — so the server can answer
+                // with a merge only when our replica is identical, and
+                // a snapshot otherwise. The hash is what protects a
+                // restored server from our stale union when the epoch
+                // counter collides.
+                self.send_out(NetworkCommand::SendReliable(Box::new(
+                    ServerControl::SyncStatus {
+                        epoch: self.epoch(),
+                        state_hash: self.state.view_hash(),
+                    },
+                )))
+                .await;
             }
             SyncCommand::Disconnected => {
                 self.link = Link::Down;
@@ -757,6 +770,21 @@ impl SyncActor {
                     );
                     self.set_epoch(snapshot.epoch);
                     self.state = snapshot.state;
+                } else if self.link == Link::AwaitingSync {
+                    // Belt-and-braces: a v13 server answers the connect
+                    // handshake's epoch mismatch with a snapshot, never
+                    // a merge, so this arm should be unreachable — but
+                    // if a backward-epoch merge does arrive during the
+                    // connect window, adopting wholesale beats the
+                    // pre-fix alternative (an early return that left
+                    // the link wedged in AwaitingSync forever).
+                    tracing::warn!(
+                        from = ours.0,
+                        to = snapshot.epoch.0,
+                        "backward-epoch merge during the connect window; adopting wholesale"
+                    );
+                    self.set_epoch(snapshot.epoch);
+                    self.state = snapshot.state;
                 } else {
                     tracing::warn!("ignoring stale-epoch merge ({:?})", snapshot.epoch);
                     return;
@@ -775,8 +803,25 @@ impl SyncActor {
             }
             ServerControl::StateSnapshot(snapshot) => {
                 if snapshot.epoch < self.epoch() {
-                    tracing::warn!("ignoring stale snapshot ({:?})", snapshot.epoch);
-                    return;
+                    // Mid-session, a backward snapshot is a stale frame
+                    // (e.g. a reordered datagram-era leftover): refuse.
+                    // During the connect window it is the server's
+                    // *authoritative* answer to our SyncStatus — after
+                    // a DB restore the server's epoch legitimately
+                    // rolls backwards, and refusing here is exactly the
+                    // wedge that stranded every client in the 2026-08
+                    // tsugumi incident. The server is authoritative:
+                    // adopt, loudly.
+                    if self.link != Link::AwaitingSync {
+                        tracing::warn!("ignoring stale snapshot ({:?})", snapshot.epoch);
+                        return;
+                    }
+                    tracing::warn!(
+                        from = self.epoch().0,
+                        to = snapshot.epoch.0,
+                        "server epoch went backwards (restored from backup?); \
+                         adopting its snapshot"
+                    );
                 }
                 tracing::debug!(
                     from = self.epoch().0,
@@ -868,7 +913,8 @@ mod tests {
     }
 
     /// Connected + empty same-epoch merge: the full open-gates
-    /// handshake. Consumes the client's upward merge push.
+    /// handshake. Consumes the client's outgoing SyncStatus and its
+    /// upward merge push.
     async fn go_online(rig: &mut Rig) {
         rig.commands.send(SyncCommand::Connected).await.unwrap();
         rig.commands
@@ -881,6 +927,15 @@ mod tests {
             })
             .await
             .unwrap();
+        let status = rig.net.recv().await.unwrap();
+        assert!(
+            matches!(
+                &status,
+                NetworkCommand::SendReliable(msg)
+                    if matches!(**msg, ServerControl::SyncStatus { .. })
+            ),
+            "expected the connect handshake's SyncStatus, got {status:?}"
+        );
         let push = rig.net.recv().await.unwrap();
         assert!(
             matches!(
@@ -1034,6 +1089,15 @@ mod tests {
             })
             .await
             .unwrap();
+        let status = rig.net.recv().await.unwrap();
+        assert!(
+            matches!(
+                &status,
+                NetworkCommand::SendReliable(msg)
+                    if matches!(**msg, ServerControl::SyncStatus { .. })
+            ),
+            "expected the connect handshake's SyncStatus, got {status:?}"
+        );
         let push = rig.net.recv().await.unwrap();
         let NetworkCommand::SendReliable(msg) = push else {
             panic!("expected reliable push, got {push:?}");
@@ -1311,8 +1375,19 @@ mod tests {
             .await
             .unwrap();
 
-        // The upward merge push carries the adopted server state PLUS the
-        // replayed offline edit — proof unsent ops survive the snapshot path.
+        // The connect handshake's SyncStatus goes out first...
+        let status = rig.net.recv().await.unwrap();
+        assert!(
+            matches!(
+                &status,
+                NetworkCommand::SendReliable(msg)
+                    if matches!(**msg, ServerControl::SyncStatus { .. })
+            ),
+            "expected the connect handshake's SyncStatus, got {status:?}"
+        );
+        // ...then the upward merge push carries the adopted server state
+        // PLUS the replayed offline edit — proof unsent ops survive the
+        // snapshot path.
         let push = rig.net.recv().await.unwrap();
         let NetworkCommand::SendReliable(msg) = push else {
             panic!("expected reliable push, got {push:?}");
@@ -1337,5 +1412,186 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         rig.commands.send(SyncCommand::GetEpoch(tx)).await.unwrap();
         assert_eq!(rx.await.unwrap(), Epoch(4));
+    }
+
+    /// One full connect window, from a stored state at `client_epoch`
+    /// with `offline_chats` edits buffered, against a server snapshot at
+    /// `server_epoch`. Asserts the window ALWAYS ends Synced: the upward
+    /// `StateMerge` push arrives at the *adopted* (server) epoch, and
+    /// the client's view is the server's view plus the replayed offline
+    /// edits — regardless of how the epochs compare. The backward case
+    /// (`server_epoch < client_epoch`) is the DB-restore incident: the
+    /// pre-fix actor refused the snapshot and wedged in AwaitingSync.
+    async fn connect_window_converges(
+        client_epoch: u64,
+        server_epoch: u64,
+        client_chats: usize,
+        server_chats: usize,
+        offline_chats: usize,
+    ) {
+        // Stored state from a previous session, at an arbitrary epoch.
+        let mut initial = CrdtState::new();
+        for i in 0..client_chats {
+            initial.append_chat(ChatMessage {
+                timestamp: SharedTimestamp(100 + i as u64),
+                sender: UserId::new("old-self"),
+                text: format!("stale{i}"),
+            });
+        }
+        let epoch_cell = Arc::new(AtomicU64::new(0));
+        let mut config = SyncConfig::new(
+            UserId::new("baughn"),
+            ActorId::session("baughn", 1),
+            Arc::new(|| 1_000_000),
+            Arc::clone(&epoch_cell),
+        );
+        config.initial = Some(StateSnapshot {
+            epoch: Epoch(client_epoch),
+            state: initial,
+        });
+        let (command_tx, command_rx) = mpsc::channel(64);
+        let (net_tx, mut net_rx) = mpsc::channel(64);
+        let (event_tx, _event_rx) = mpsc::channel(64);
+        tokio::spawn(run(config, command_rx, net_tx, event_tx));
+
+        // Edits made while offline: buffered, replayed after the window.
+        for i in 0..offline_chats {
+            command_tx
+                .send(SyncCommand::Mutate(Box::new(Mutation::Chat {
+                    text: format!("offline{i}"),
+                })))
+                .await
+                .unwrap();
+        }
+
+        // Connect; the server answers the handshake with a snapshot at
+        // ITS epoch — which after a DB restore can be BELOW ours.
+        command_tx.send(SyncCommand::Connected).await.unwrap();
+        let mut server_state = CrdtState::new();
+        for i in 0..server_chats {
+            server_state.append_chat(ChatMessage {
+                timestamp: SharedTimestamp(200 + i as u64),
+                sender: UserId::new("server"),
+                text: format!("srv{i}"),
+            });
+        }
+        let server_view = server_state.view();
+        command_tx
+            .send(SyncCommand::Server {
+                msg: Box::new(ServerControl::StateSnapshot(StateSnapshot {
+                    epoch: Epoch(server_epoch),
+                    state: server_state,
+                })),
+                via_datagram: false,
+            })
+            .await
+            .unwrap();
+
+        // The window must end Synced; the upward StateMerge push is the
+        // observable proof (other sends — the handshake's own status
+        // message — may precede it).
+        let push = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match net_rx.recv().await {
+                    Some(NetworkCommand::SendReliable(msg))
+                        if matches!(*msg, ServerControl::StateMerge(_)) =>
+                    {
+                        let ServerControl::StateMerge(snapshot) = *msg else {
+                            unreachable!()
+                        };
+                        break snapshot;
+                    }
+                    Some(_) => continue,
+                    None => panic!("sync actor gone"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "connect window never converged: no upward merge after the \
+                 snapshot (client epoch {client_epoch}, server epoch \
+                 {server_epoch}) — the link is wedged in AwaitingSync"
+            )
+        });
+
+        // The push rides the adopted epoch — even a backward one.
+        assert_eq!(
+            push.epoch,
+            Epoch(server_epoch),
+            "upward merge must carry the adopted (server) epoch"
+        );
+        assert_eq!(epoch_cell.load(Ordering::SeqCst), server_epoch);
+
+        // Client view == server view + replayed offline edits; the
+        // stale pre-connect chats are gone (snapshot adoption replaces
+        // wholesale). Compared as multisets: GList interleaving may
+        // order independently-authored messages either way.
+        let mut expected: Vec<String> = server_view
+            .chat
+            .iter()
+            .map(|m| m.text.clone())
+            .chain((0..offline_chats).map(|i| format!("offline{i}")))
+            .collect();
+        expected.sort();
+        let (tx, rx) = oneshot::channel();
+        command_tx.send(SyncCommand::GetView(tx)).await.unwrap();
+        let view = rx.await.unwrap();
+        let mut got: Vec<String> = view.chat.iter().map(|m| m.text.clone()).collect();
+        got.sort();
+        assert_eq!(
+            got, expected,
+            "client view must be the server view plus the replayed offline edits"
+        );
+        let mut pushed: Vec<String> = push
+            .state
+            .view()
+            .chat
+            .iter()
+            .map(|m| m.text.clone())
+            .collect();
+        pushed.sort();
+        assert_eq!(
+            pushed, expected,
+            "the upward merge must carry the replayed offline edits"
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 32,
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// The connect window always converges — whatever the epoch
+        /// relation. The name calls out the case that broke in
+        /// production (the DB-restore incident): a snapshot at an epoch
+        /// BELOW the client's, arriving while AwaitingSync, must be
+        /// adopted, the offline buffer replayed, and the upward merge
+        /// pushed at the adopted epoch.
+        #[test]
+        fn awaiting_sync_adopts_a_backward_epoch_snapshot(
+            client_epoch in 0u64..6,
+            server_epoch in 0u64..6,
+            client_chats in 0usize..4,
+            server_chats in 0usize..4,
+            offline_chats in 0usize..4,
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                tokio::time::pause();
+                connect_window_converges(
+                    client_epoch,
+                    server_epoch,
+                    client_chats,
+                    server_chats,
+                    offline_chats,
+                )
+                .await;
+            });
+        }
     }
 }

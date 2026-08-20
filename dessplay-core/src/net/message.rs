@@ -23,7 +23,10 @@ use crate::types::{AniDbSeriesId, Ed2kHash, Epoch, UserId};
 /// v11 (2026-08-17): appended `SeriesRelations::short_titles`.
 /// v12 (2026-08-18): appended `ServerControl::SetAnthropicToken`
 /// (wire-only; the persisted layout is unchanged from v11).
-pub const PROTOCOL_VERSION: u32 = 12;
+/// v13 (2026-08-21): appended `ServerControl::SyncStatus` — the client
+/// half of the connect handshake (wire-only; the persisted layout is
+/// unchanged from v11).
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Top-level wire message: only control traffic. File-transfer relay
 /// envelopes are **not** a `WireMessage` variant -- they are framed as
@@ -99,7 +102,10 @@ pub enum ServerControl {
         password: String,
         /// Interactive or seeder.
         role: Role,
-        /// Last known epoch; drives snapshot-vs-merge on the server.
+        /// Last known epoch. Informational/log-only since protocol v13:
+        /// the snapshot-vs-merge decision moved to the post-auth
+        /// [`Self::SyncStatus`] handshake, which also carries the state
+        /// hash. Kept in place — `Auth` is never reshaped (see above).
         epoch: Epoch,
         /// The client's [`PROTOCOL_VERSION`]. Deliberately the *last*
         /// field: a pre-versioning client's `Auth` is a strict prefix
@@ -265,6 +271,24 @@ pub enum ServerControl {
         /// The token, or `None` to clear the stored one.
         token: Option<String>,
     },
+
+    // ---- Connect-handshake sync status (protocol v13)
+    /// Client -> server: sent once per connection, right after `AuthOk`
+    /// reaches the sync actor. Carries what the client actually holds,
+    /// so the server can decide the initial sync *curatively*: it
+    /// answers `StateMerge` iff both the epoch AND the view hash match
+    /// its own, and `StateSnapshot` otherwise — a bare epoch match must
+    /// never buy a merge, because after a server DB restore the epoch
+    /// counter can collide while the states differ, and merging then
+    /// re-pollutes the freshly restored state with the clients' stale
+    /// unions (the 2026-08 tsugumi restore incident). Appended last
+    /// (bump policy).
+    SyncStatus {
+        /// The epoch the client's replica is at.
+        epoch: Epoch,
+        /// The client's `CrdtState::view_hash()` output.
+        state_hash: [u8; 32],
+    },
 }
 
 /// One AniDB name-search result.
@@ -303,6 +327,7 @@ impl ServerControl {
             ServerControl::MarkWatched { .. } => "MarkWatched",
             ServerControl::TransferAuth { .. } => "TransferAuth",
             ServerControl::SetAnthropicToken { .. } => "SetAnthropicToken",
+            ServerControl::SyncStatus { .. } => "SyncStatus",
         }
     }
 }

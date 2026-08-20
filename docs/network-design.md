@@ -1,6 +1,6 @@
 # Network Design
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 This document covers connection establishment, wire protocols, relay, and file
 transfer. For the replicated data types built on top of this layer, see
@@ -246,7 +246,8 @@ Client                          Rendezvous Server
   |                                     |
   |<-- PeerList { peers } -------------|
   |                                     |
-  |<-- StateSnapshot { epoch, data } --|
+  |--- SyncStatus { epoch, hash } ---->|
+  |<-- StateSnapshot / StateMerge -----|
   |                                     |
   |    (bidirectional state sync and    |
   |     periodic time sync ongoing)     |
@@ -261,7 +262,7 @@ enum ServerControl {
         username: String,
         password: String,
         role: Role,        // Interactive | Seeder
-        epoch: u64,        // last known epoch; drives snapshot-vs-merge below
+        epoch: u64,        // informational/log-only since v13 (see SyncStatus)
         /// The client's PROTOCOL_VERSION (see Protocol Versioning below).
         /// Deliberately the last field: a pre-versioning client's Auth is
         /// a strict prefix of this shape, so it fails decode cleanly and
@@ -318,7 +319,8 @@ enum ServerControl {
     /// (excluding playback positions).
     StateHash { epoch: u64, hash: [u8; 32] },
     /// Client -> server: view hashes mismatched twice in a row; please
-    /// send a StateMerge.
+    /// heal me. Answered with a StateSnapshot since v13 (curative: a
+    /// snapshot removes client-local garbage; a union cannot).
     RequestMerge,
 
     // AniDB title search (client request + server response)
@@ -343,6 +345,17 @@ enum ServerControl {
     /// connection; a dead transfer link degrades transfers, never
     /// liveness.
     TransferAuth { username: UserId, token: u64 },
+
+    /// Client -> server: store/rotate/clear the server-side Anthropic
+    /// API token for the short-title curator (v12; design.md, The List).
+    SetAnthropicToken { token: Option<String> },
+
+    /// Client -> server, once per connection right after AuthOk (v13):
+    /// what the client actually holds. Drives the initial-sync decision
+    /// -- StateMerge iff epoch AND hash match the server's, otherwise
+    /// StateSnapshot. The hash gate is the DB-restore defense: a bare
+    /// epoch match must never buy a merge (see Sync Flow).
+    SyncStatus { epoch: u64, state_hash: [u8; 32] },
 }
 
 enum Role { Interactive, Seeder }
@@ -414,8 +427,11 @@ direct peer connections ever return). On failure, the server sends
 `AuthFailed` and closes the connection.
 
 `Auth` also carries the client's username, role (seeders are excluded from
-gating and listed separately), and last known epoch (used to choose between
-`StateMerge` and `StateSnapshot` -- see State Sync Flow).
+gating and listed separately), and last known epoch. The epoch field is
+**informational/log-only** since protocol v13: the snapshot-vs-merge
+decision moved to the post-auth `SyncStatus` handshake, which also carries
+the client's state hash (see State Sync Flow). The field stays in place --
+`Auth` is never reshaped (see the bump policy below).
 
 **Duplicate usernames:** a successful `Auth` with a username that already
 has a live connection *supersedes* it -- the server closes the old
@@ -447,6 +463,13 @@ enum variants and struct fields, never reorder or remove; and never
 reshape `Auth` itself -- its stability is what keeps a future mismatched
 client distinguishable from garbage and refusable with a readable
 message.
+
+**Deployment order:** server first. The version gate refuses any
+mismatch readably in both directions, so nothing breaks silently either
+way -- but a client updated before the server is locked out until the
+server catches up, while updating the server first (v13: the
+`SyncStatus` handshake) leaves every not-yet-updated client with a clean
+`ProtocolMismatch` ("please update") and lets clients update at leisure.
 
 ---
 
@@ -526,11 +549,21 @@ causal metadata; applying or merging them keeps `max((timestamp, value))`.
 
 ### Sync Flow
 
-1. **On connect**: Client sends its epoch to the server (in `Auth`).
-2. **Epoch check**: Server compares epochs.
-   - **Same epoch**: Server sends its full CvRDT state. Client merges.
-   - **Stale epoch**: Server sends the compacted snapshot with new epoch.
-     Client replaces its local state entirely.
+1. **On connect** (protocol v13): after `AuthOk`, the client sends
+   `SyncStatus { epoch, state_hash }` -- its epoch plus its `view_hash()`.
+2. **Identity check**: the server compares both against its own.
+   - **Epoch AND hash match** (identical replica): server sends its full
+     CvRDT state as a `StateMerge`. Client merges (a no-op here).
+   - **Anything else** -- stale epoch, backward epoch (the server was
+     restored from a backup), or an epoch match with a differing hash --
+     server sends a `StateSnapshot`. The client, still in its connect
+     window, replaces its local state entirely, *regardless of epoch
+     direction*. A bare epoch match never buys a merge: after a DB
+     restore the counter can collide while the states differ, and
+     merging then would re-pollute the restored server with every
+     client's stale union (the 2026-08 incident). See sync-state.md,
+     Reconnection Sync -- including the accepted seconds-wide loss
+     window for ops undelivered when the previous connection died.
 3. **Ongoing**: CmRDT ops are sent on the control stream (reliable) and
    simultaneously pushed via datagram (best-effort, for lower latency,
    subject to the datagram size rule).
@@ -922,12 +955,13 @@ this interface without touching transfer logic.
 1. Re-establish QUIC connection
 2. Re-authenticate
 3. Re-sync time
-4. Client sends its epoch to the server
-5. Server compares epoch:
-   - **Same epoch**: server sends `StateMerge` with full CvRDT state.
-     Client calls `.merge()` on each CRDT field (idempotent).
-   - **Stale epoch**: server sends `StateSnapshot` with compacted state
-     and new epoch. Client replaces its local state entirely.
+4. Client sends `SyncStatus { epoch, state_hash }` (v13)
+5. Server compares both against its own:
+   - **Epoch and hash match** (identical replica): server sends
+     `StateMerge` with full CvRDT state. Client calls `.merge()` on each
+     CRDT field (idempotent).
+   - **Anything else**: server sends `StateSnapshot`; the client adopts
+     it wholesale, whatever the epoch direction (see Sync Flow).
 6. Resume normal CmRDT operation sync
 
 ### Transfer Resumption

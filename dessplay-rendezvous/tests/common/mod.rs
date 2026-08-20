@@ -62,6 +62,16 @@ pub struct Harness {
     /// The transfer listener's endpoint (the sim's stand-in for the
     /// control-port+1 convention).
     pub transfer_id: EndpointId,
+    /// The server task, held so [`Self::restart_server`] can abort it.
+    server_task: tokio::task::JoinHandle<Result<(), String>>,
+    /// The config the server was started with (reused on restart).
+    config: ServerConfig,
+    /// The shared-clock closure, created once so a restarted server
+    /// keeps the same wall clock (a restart never rewinds time).
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// Every endpoint a client was spawned on, so a restart can sever
+    /// their live links (making their network actors notice and redial).
+    client_ids: std::sync::Mutex<Vec<EndpointId>>,
 }
 
 impl Harness {
@@ -87,17 +97,52 @@ impl Harness {
         let transfer_id = EndpointId::new("server-transfer");
         let listener = net.listener(&server_id);
         let transfer_listener = net.listener(&transfer_id);
-        tokio::spawn(server::run(
+        let clock = sim_clock(0);
+        let server_task = tokio::spawn(server::run(
             listener,
             transfer_listener,
-            config,
-            sim_clock(0),
+            config.clone(),
+            Arc::clone(&clock),
             storage,
         ));
         Self {
             net,
             server_id,
             transfer_id,
+            server_task,
+            config,
+            clock,
+            client_ids: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Restart the server — the restore scenarios' "operator restores a
+    /// backup and restarts the service": abort the running server,
+    /// respawn it on the same endpoints (with the same config and clock)
+    /// over `storage`, and sever every client's live links so their
+    /// network actors notice the death and redial. `SimNetwork::listener`
+    /// replaces the endpoint's listener, so redials land on the new
+    /// server; the old server's orphaned background tasks only ever talk
+    /// to already-dead connections.
+    pub fn restart_server(&mut self, storage: Option<dessplay_rendezvous::storage::ServerStorage>) {
+        self.server_task.abort();
+        let listener = self.net.listener(&self.server_id);
+        let transfer_listener = self.net.listener(&self.transfer_id);
+        self.server_task = tokio::spawn(server::run(
+            listener,
+            transfer_listener,
+            self.config.clone(),
+            Arc::clone(&self.clock),
+            storage,
+        ));
+        let clients = self
+            .client_ids
+            .lock()
+            .expect("client registry poisoned")
+            .clone();
+        for client in clients {
+            self.net.disconnect(&client, &self.server_id);
+            self.net.disconnect(&client, &self.transfer_id);
         }
     }
 
@@ -112,6 +157,10 @@ impl Harness {
     }
 
     fn client_with_role(&self, name: &str, nonce: u128, role: Role) -> ClientHandle {
+        self.client_ids
+            .lock()
+            .expect("client registry poisoned")
+            .push(EndpointId::new(name));
         let connector = Arc::new(self.net.connector(&EndpointId::new(name), &self.server_id));
         let transfer_connector = Arc::new(
             self.net

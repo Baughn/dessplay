@@ -76,10 +76,20 @@ async fn connect_authed(
     conn.send_control(&wire::encode(&auth).unwrap())
         .await
         .expect("send auth");
-    // Drain replies until the initial snapshot/merge arrives.
+    // Complete the v13 connect handshake, then drain replies until the
+    // initial snapshot/merge arrives.
     let epoch = loop {
         match conn.recv().await.expect("recv during auth") {
             TransportEvent::Control(bytes) => match wire::decode::<WireMessage>(&bytes).unwrap() {
+                WireMessage::Control(ServerControl::AuthOk { .. }) => {
+                    let status = WireMessage::Control(ServerControl::SyncStatus {
+                        epoch: Epoch(0),
+                        state_hash: CrdtState::new().view_hash(),
+                    });
+                    conn.send_control(&wire::encode(&status).unwrap())
+                        .await
+                        .expect("send sync status");
+                }
                 WireMessage::Control(ServerControl::StateSnapshot(s)) => break s.epoch,
                 WireMessage::Control(ServerControl::StateMerge(s)) => break s.epoch,
                 _ => continue,

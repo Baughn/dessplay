@@ -570,9 +570,10 @@ impl CrdtState {
     /// and never regenerated; see tests/fixtures/README.md). v7–v10
     /// left this list when v11 appended `SeriesRelations::short_titles`
     /// (they decode through the frozen [`CrdtStateV10`] arm instead);
-    /// v11 → v12 appended only the `SetAnthropicToken` wire message, so
-    /// v11 bodies decode as the current layout.
-    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 1] = [11];
+    /// v11 → v12 appended only the `SetAnthropicToken` wire message, and
+    /// v12 → v13 only the `SyncStatus` wire message, so v11 and v12
+    /// bodies decode as the current layout.
+    pub const LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS: [u32; 2] = [11, 12];
 
     /// Older tagged versions decoded by an explicit **frozen-layout**
     /// decode arm in [`decode_snapshot_flagged`](Self::decode_snapshot_flagged)

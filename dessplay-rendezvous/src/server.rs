@@ -80,7 +80,9 @@ pub struct AniDbConfig {
     pub curator: Option<Arc<dyn ShortTitleCurator>>,
 }
 
-/// Server configuration.
+/// Server configuration. `Clone` so a test harness can restart the
+/// server (the restore scenarios) with the same config.
+#[derive(Clone)]
 pub struct ServerConfig {
     /// The shared room password.
     pub password: String,
@@ -967,23 +969,18 @@ async fn serve_connection<T: Transport>(
     .await;
     broadcast_peer_list(&shared).await;
 
-    // ---- Initial state sync: merge for a current epoch, snapshot for
-    // a stale one (see sync-state.md, Sync Flow).
-    let snapshot = shared.snapshot();
-    let server_epoch = snapshot.epoch;
-    let initial = if client_epoch == snapshot.epoch {
-        ServerControl::StateMerge(snapshot)
-    } else {
-        ServerControl::StateSnapshot(snapshot)
-    };
+    // ---- Initial state sync: since protocol v13 the server does NOT
+    // volunteer one here. It waits for the client's post-auth
+    // `SyncStatus` (epoch + view hash) and decides in `serve_authed` —
+    // merge iff both match, snapshot otherwise. Deciding on `Auth`'s
+    // bare epoch was the DB-restore hole: a restored backup colliding
+    // with the clients' epoch bought a merge, and the union re-polluted
+    // the freshly restored state. `client_epoch` is informational now.
     tracing::debug!(
         user = %username.0,
         client_epoch = client_epoch.0,
-        server_epoch = server_epoch.0,
-        decision = initial.variant_name(),
-        "initial sync"
+        "authenticated; awaiting SyncStatus for the initial sync"
     );
-    send_control(&*conn, &initial).await;
     tracing::info!("{username:?} connected from {remote} as {role:?}");
 
     // ---- Serve until the connection ends.
@@ -1328,6 +1325,12 @@ async fn serve_authed<T: Transport>(
     shared: &Arc<Shared<T>>,
 ) -> AuthedEnd {
     let clock = &shared.clock;
+    // Whether this connection's initial sync (the SyncStatus reply) has
+    // been sent. The client sends SyncStatus exactly once per
+    // connection; a duplicate is a protocol oddity and is ignored
+    // rather than re-answered (a second snapshot could wipe ops the
+    // now-Synced client generated after the first).
+    let mut initial_sync_sent = false;
     loop {
         let event = match conn.recv().await {
             Ok(event) => event,
@@ -1489,9 +1492,44 @@ async fn serve_authed<T: Transport>(
                     ),
                 }
             }
+            ServerControl::SyncStatus { epoch, state_hash } => {
+                // The connect handshake's server half: answer with a
+                // merge only when the client's replica is *identical*
+                // (epoch AND view hash) — anything else gets a
+                // snapshot. The hash gate is what makes a server DB
+                // restore self-healing: a restored backup colliding
+                // with the clients' epoch differs in hash, so the
+                // clients adopt it instead of merging their stale
+                // unions back in.
+                if initial_sync_sent {
+                    tracing::warn!(user = %username.0, "duplicate SyncStatus; ignoring");
+                    continue;
+                }
+                initial_sync_sent = true;
+                let snapshot = shared.snapshot();
+                let identical = epoch == snapshot.epoch && state_hash == snapshot.state.view_hash();
+                let initial = if identical {
+                    ServerControl::StateMerge(snapshot)
+                } else {
+                    ServerControl::StateSnapshot(snapshot)
+                };
+                tracing::debug!(
+                    user = %username.0,
+                    client_epoch = epoch.0,
+                    hash_match = identical,
+                    decision = initial.variant_name(),
+                    "initial sync"
+                );
+                send_control(conn, &initial).await;
+            }
             ServerControl::RequestMerge => {
-                tracing::warn!("client requested a divergence-heal merge");
-                send_control(conn, &ServerControl::StateMerge(shared.snapshot())).await;
+                // Curative by design: the requester's view hash
+                // mismatched twice, so its replica holds (or lacks)
+                // something the server's does not. A snapshot removes
+                // client-local garbage; a merge would union it back in
+                // and re-spread it.
+                tracing::warn!("client requested a divergence heal; sending a snapshot");
+                send_control(conn, &ServerControl::StateSnapshot(shared.snapshot())).await;
             }
             ServerControl::StateMerge(client_state) => {
                 // The reconnect handshake's upward half: the client

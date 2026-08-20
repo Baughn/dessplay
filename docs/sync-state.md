@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -45,9 +45,20 @@ There is no custom operation log, version vector, or gap-fill protocol. The
 ### Epochs
 
 An **epoch** is a generation counter incremented each time the rendezvous
-server compacts the state (see [Compaction](#compaction)). When a client
-connects with a stale epoch, it replaces its local state entirely with the
-server's snapshot.
+server compacts the state (see [Compaction](#compaction)). When the connect
+handshake decides on a snapshot, the client replaces its local state
+entirely with the server's.
+
+The server is **authoritative**: at connect time the client adopts the
+server's snapshot *regardless of how the epochs compare*. The counter is a
+bare u64, so it is not monotonic across operator interventions — restoring
+the server's database from a backup legitimately rolls it backwards (or
+lands it on a value clients already hold). A client that refused
+lower-epoch snapshots at connect wedged forever after exactly such a
+restore (2026-08, tsugumi); only a *mid-session* backward snapshot is
+treated as a stale frame and ignored. Because a bare epoch match proves
+nothing after a restore, the handshake also compares state hashes — see
+[Reconnection Sync](#reconnection-sync).
 
 ### Actor IDs
 
@@ -753,24 +764,38 @@ schedule keeps that window away from watch-party hours).
 
 ### Reconnection Sync
 
-When a client reconnects (or detects missed operations):
+When a client connects or reconnects (protocol v13, the `SyncStatus`
+handshake):
 
-1. Client sends its epoch to the server
-2. **Same epoch:** Server sends its full CvRDT state. Client calls `.merge()`
-   on each CRDT field. This is idempotent -- applying it multiple times or
-   with overlapping data is safe.
-3. **Stale epoch:** Server sends the compacted snapshot with the new epoch.
-   Client replaces its local state entirely.
+1. After `AuthOk`, the client sends `SyncStatus { epoch, state_hash }` —
+   its epoch plus its `view_hash()`, i.e. what it *actually* holds.
+2. **Identical replica** (epoch AND hash match the server's): the server
+   sends its full CvRDT state as a `StateMerge`. Client calls `.merge()`
+   on each CRDT field — idempotent, and a no-op on an identical replica.
+3. **Anything else** — stale epoch, *backward* epoch (server restored
+   from a backup), or an epoch match with a differing hash — the server
+   sends a `StateSnapshot`. The client, being in the connect window,
+   adopts it wholesale regardless of epoch direction (logging loudly when
+   the epoch went backwards). The hash gate is the restore defense: a
+   bare epoch match must never buy a merge, because a restored backup
+   colliding with the clients' epoch would then be re-polluted by every
+   client's stale union.
 4. **Upward merge:** the client re-applies any ops buffered while
    offline (playback positions coalesced to the latest) onto the
-   adopted state and pushes its **full state** back as a `StateMerge`.
-   The server merges it and rebroadcasts a merge to everyone. This --
-   not per-op replay -- recovers ops that were sent but undelivered when
-   the previous connection died: they exist only in the client's state,
-   and no replay queue knows about them. (Found by chaos testing;
-   without it such ops diverge permanently -- CvRDT merge is additive,
-   so even the divergence alarm cannot remove a server-side gap.)
+   adopted state and pushes its **full state** back as a `StateMerge` at
+   the adopted epoch. The server merges it and rebroadcasts a merge to
+   everyone if it changed anything.
 5. Resume normal CmRDT operation broadcast.
+
+**Accepted loss window:** ops generated while *connected* but still
+undelivered when the connection died exist only in the client's replica;
+they make the hashes differ, so the handshake answers with a snapshot and
+adoption discards them. This window is seconds wide (the gap between last
+delivery and death), the edits are low-stakes and simply redone, and the
+offline buffer — everything generated while *down* — is always preserved
+and replayed. The alternative (merging on a bare epoch match, which
+recovered those ops) is exactly what re-polluted a restored server, so
+the loss is accepted by design.
 
 No version vectors or gap-fill protocol needed. The CvRDT merge handles
 any missed operations implicitly.
@@ -788,8 +813,13 @@ a logged, self-correcting event rather than a silent one:
 - The client compares against its own view hash on receipt. A single
   mismatch is expected churn (ops in flight); **two consecutive
   mismatches** trigger a loud log line and a `RequestMerge`, to which
-  the server replies with a normal `StateMerge`. Merge is idempotent,
-  so a false alarm costs one snapshot transfer.
+  the server replies with a **`StateSnapshot`** (protocol v13; it was a
+  `StateMerge` before). The heal is curative by design: a diverged
+  replica holds — or lacks — something the server's does not, and a
+  snapshot removes client-local garbage where an additive union would
+  merge it back in and re-spread it. A false alarm costs one snapshot
+  transfer and (mid-session, so the offline buffer is empty) nothing
+  else.
 
 ---
 
@@ -839,10 +869,13 @@ debt taken on by session-scoped ActorIds). Around it, the server:
 
 ### Client Reconnection After Compaction
 
-1. Client connects, sends its last known epoch (in the `Auth` message)
-2. If epoch matches: server sends full CvRDT state, client merges
-3. If epoch is stale: server sends the compacted snapshot + new epoch.
-   Client replaces its local state entirely.
+1. Client connects; after `AuthOk` it sends `SyncStatus { epoch,
+   state_hash }` (the `Auth` message's epoch field is informational/
+   log-only since protocol v13)
+2. If epoch AND hash match: server sends full CvRDT state, client merges
+3. Otherwise (including the post-compaction stale epoch): server sends
+   the compacted snapshot + its epoch. Client replaces its local state
+   entirely.
 
 ---
 
@@ -1002,8 +1035,10 @@ needed.
 ### Client Crash / Unclean Disconnect
 
 The client persists its CRDT state to SQLite periodically. On restart, it
-loads local state, reconnects, and receives a CvRDT merge from the server
-to catch up on anything missed.
+loads local state, reconnects, and the `SyncStatus` handshake catches it
+up: a merge if its replica is identical to the server's, a snapshot
+otherwise (see [Reconnection Sync](#reconnection-sync), including the
+accepted seconds-wide loss window for ops undelivered at the crash).
 
 ### Network Partition During Compaction
 

@@ -350,6 +350,10 @@ impl ServerStorage {
             // Deterministic across a crash-loop: re-loading the old blob
             // re-migrates and re-bumps to the same value, and save_state
             // persists epoch and state together.
+            // Since protocol v13 the connect handshake's hash gate makes
+            // this bump redundant (a same-epoch, different-hash client is
+            // answered with a snapshot anyway) — kept deliberately: it is
+            // harmless, and the only defense if that gate ever weakens.
             epoch = Epoch(epoch.0 + 1);
             tracing::info!(
                 epoch = epoch.0,

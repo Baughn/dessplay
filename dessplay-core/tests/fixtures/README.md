@@ -11,7 +11,7 @@ encodes `multi_relations_sample_state()` (both in tests/migration.rs).
 | File | Layout |
 |------|--------|
 | `snapshot-v7.bin` … `snapshot-v10.bin` | Tagged envelope, one per entry of `FROZEN_LAYOUT_SNAPSHOT_VERSIONS` (the shared v7–v10 layout, decoded via `CrdtStateV10`) |
-| `snapshot-v11.bin` | Tagged envelope, one per entry of `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` (current layout under an older tag) |
+| `snapshot-v11.bin`, `snapshot-v12.bin` | Tagged envelope, one per entry of `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` (current layout under an older tag) |
 | `snapshot-untagged-v6.bin` | The pre-envelope untagged v6 layout (`CrdtStateUntaggedV6`) |
 | `snapshot-multi-relations-untagged-v6.bin` | Untagged v6 layout again, but with a **three-entry** `series_relations` map (distinct keys, stamps, and actors) — the map-rebuild pin (`multi_relations_untagged_v6_fixture_decodes_to_the_expected_view`, `multi_relations_fixture_merges_with_an_independently_migrated_subset`) |
 | `snapshot-multi-relations-v12.bin` | Tagged envelope at v12 (current at capture), the only blob whose `series_relations` carries a **non-empty `short_titles`** (`multi_relations_current_fixture_pins_nonempty_short_titles`) |
@@ -76,6 +76,10 @@ layout-compatibility claim made literal.
 the `SetAnthropicToken` message), when v11 entered
 `LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` — the ordinary capture-test flow,
 since the current encoder still reproduces v11 bodies.
+
+`snapshot-v12.bin` was captured 2026-08-21 at the v13 bump (wire-only:
+the `SyncStatus` connect-handshake message), when v12 entered
+`LAYOUT_COMPATIBLE_SNAPSHOT_VERSIONS` — the same capture-test flow.
 
 The `snapshot-multi-relations-*.bin` pair was captured 2026-08-20
 (current version v12, `capture_missing_multi_relations_fixtures`),
