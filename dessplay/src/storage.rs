@@ -1,13 +1,16 @@
 //! Client-side SQLite persistence.
 //!
 //! One database at `$XDG_DATA_HOME/dessplay/dessplay.db` holds everything
-//! the client persists: settings, media roots, the latest CRDT snapshot,
-//! personal watch history, download-cache bookkeeping, manual file
-//! mappings, and TOFU certificate fingerprints.
+//! *local* the client persists: settings, media roots, personal watch
+//! history, download-cache bookkeeping, the hash cache, manual file
+//! mappings, and TOFU certificate fingerprints. The replicated CRDT
+//! snapshot lives in a sibling database (`dessplay.sync.db`,
+//! sync_storage.rs) so that discarding sync state never costs local
+//! state — most expensively the hash cache.
 //!
 //! Design notes (see docs/design.md, Data Storage):
-//! - CRDT persistence is **snapshot-only** — there is no op log, and
-//!   unsent ops are deliberately memory-only.
+//! - CRDT persistence (in the sync database) is **snapshot-only** —
+//!   there is no op log, and unsent ops are deliberately memory-only.
 //! - All timestamps in this module are caller-supplied unix milliseconds
 //!   (`i64`); storage never reads the clock, which keeps tests
 //!   deterministic.
@@ -19,17 +22,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use dessplay_core::hash::Ed2kFileHash;
-use dessplay_core::types::{AniDbSeriesId, Ed2kHash, Epoch};
+use dessplay_core::types::{AniDbSeriesId, Ed2kHash};
 use dessplay_core::wire::WireError;
-use dessplay_core::{CrdtState, StateSnapshot};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::Settings;
 
 /// How long a contended writer waits for the write lock before giving up
 /// with SQLITE_BUSY. Generous: writes are small and infrequent, and the
-/// several same-process connections rarely collide.
-const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// several same-process connections rarely collide. Shared with the
+/// sync-state database (sync_storage.rs).
+pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Storage errors. SQLite failures, snapshot (de)serialization failures,
 /// or corrupt rows.
@@ -73,6 +76,20 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 /// The versioned schema. Each entry is one migration; `PRAGMA
 /// user_version` records how many have been applied. Append-only: never
 /// edit an existing entry once released.
+///
+/// Note on `crdt_state` (created in v1, still listed below because
+/// migrations are append-only): the synced CRDT snapshot moved to a
+/// sibling database, `dessplay.sync.db` (sync_storage.rs, 2026-08-21),
+/// so blowing away the replicated state cannot cost the hash cache. The
+/// one-time move of the legacy row is deliberately NOT a migration
+/// entry here: migrations run when this database opens, which happens
+/// *before* `SyncStorage::open` creates the sync database — a `DROP
+/// TABLE crdt_state` migration would destroy the row before it could be
+/// copied. `SyncStorage::open` owns the copy-then-drop instead
+/// (idempotent and crash-safe; see `adopt_legacy_state`). `Storage` has
+/// no `save_state`/`load_state` any more, so nothing can write the
+/// legacy table; on a fresh database the empty v1 table is dropped by
+/// the first `SyncStorage::open`.
 const MIGRATIONS: &[&str] = &[
     // v1: initial schema.
     "
@@ -240,8 +257,9 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 /// Apply any unapplied migrations. Exposed shape (a slice parameter) so
-/// tests can drive incremental upgrades.
-fn migrate(conn: &Connection, migrations: &[&str]) -> Result<()> {
+/// tests can drive incremental upgrades; crate-visible so the sync-state
+/// database (sync_storage.rs) reuses the same mechanism on its own list.
+pub(crate) fn migrate(conn: &Connection, migrations: &[&str]) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let applied = usize::try_from(version)
         .map_err(|_| StorageError::Corrupt(format!("negative user_version {version}")))?;
@@ -486,51 +504,11 @@ impl Storage {
         Ok(())
     }
 
-    // ---- CRDT snapshot.
-
-    /// Persist the latest full-state snapshot (single implicit room).
-    /// Stored in the tagged snapshot envelope (magic + version), not the
-    /// raw wire shape — see [`CrdtState::encode_snapshot`].
-    pub fn save_state(&self, snapshot: &StateSnapshot, now: i64) -> Result<()> {
-        let blob = snapshot.state.encode_snapshot()?;
-        let bytes = blob.len();
-        self.conn.execute(
-            "INSERT INTO crdt_state (room, epoch, state, saved_at)
-             VALUES ('default', ?1, ?2, ?3)
-             ON CONFLICT (room) DO UPDATE
-             SET epoch = excluded.epoch, state = excluded.state,
-                 saved_at = excluded.saved_at",
-            params![snapshot.epoch.0 as i64, blob, now],
-        )?;
-        // No timing field here: storage never reads the clock (module doc;
-        // design.md, Schema) -- `Instant::now()` is a clock read, and the
-        // invariant keeps the layer fully deterministic for tests.
-        tracing::debug!(epoch = snapshot.epoch.0, bytes, "state snapshot saved");
-        Ok(())
-    }
-
-    /// Load the stored snapshot, if any.
-    pub fn load_state(&self) -> Result<Option<StateSnapshot>> {
-        let row: Option<(i64, Vec<u8>)> = self
-            .conn
-            .query_row(
-                "SELECT epoch, state FROM crdt_state WHERE room = 'default'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let Some((epoch, blob)) = row else {
-            tracing::debug!("no stored state snapshot");
-            return Ok(None);
-        };
-        let state = CrdtState::decode_snapshot(&blob)?;
-        // No timing field here either -- see save_state.
-        tracing::debug!(epoch, bytes = blob.len(), "state snapshot loaded");
-        Ok(Some(StateSnapshot {
-            epoch: Epoch(epoch as u64),
-            state,
-        }))
-    }
+    // ---- CRDT snapshot: none. The replicated state lives in the sibling
+    // sync database (sync_storage.rs) — `SyncStorage::save_state` /
+    // `load_state`. Deliberately no method here can write (or read) the
+    // legacy `crdt_state` table, so nothing can resurrect it after
+    // `SyncStorage::open` completes the one-time move.
 
     // ---- Watch history.
 
@@ -1055,7 +1033,9 @@ impl Storage {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+    use dessplay_core::StateSnapshot;
     use dessplay_core::test_support::{ClusterEvent, ScriptOp, run_cluster};
+    use dessplay_core::types::Epoch;
 
     use super::*;
 
@@ -1110,70 +1090,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn snapshot_round_trips_through_db() {
-        let storage = Storage::open_in_memory().unwrap();
-        assert!(storage.load_state().unwrap().is_none());
-
-        // A nontrivial state via the shared cluster generator.
-        let cluster = run_cluster(&[
-            ClusterEvent::ClientOp {
-                client: 0,
-                ts: 1,
-                op: ScriptOp::AddPlaylist {
-                    file: 1,
-                    after: None,
-                },
-            },
-            ClusterEvent::ClientOp {
-                client: 1,
-                ts: 2,
-                op: ScriptOp::Chat { text: 7 },
-            },
-            ClusterEvent::ServerOp {
-                ts: 3,
-                op: ScriptOp::SetWatched {
-                    file: 1,
-                    watched: true,
-                },
-            },
-        ]);
-        let snapshot = StateSnapshot {
-            epoch: Epoch(42),
-            state: cluster.server,
-        };
-
-        storage.save_state(&snapshot, 1000).unwrap();
-        let loaded = storage.load_state().unwrap().unwrap();
-        assert_eq!(loaded, snapshot);
-        assert_eq!(loaded.state.view(), snapshot.state.view());
-
-        // Overwrite with a newer epoch.
-        let newer = StateSnapshot {
-            epoch: Epoch(43),
-            state: snapshot.state.clone(),
-        };
-        storage.save_state(&newer, 2000).unwrap();
-        assert_eq!(storage.load_state().unwrap().unwrap().epoch, Epoch(43));
-    }
-
-    #[test]
-    fn undecodable_snapshot_blob_is_a_codec_error() {
-        // A blob the current CrdtState can't decode (e.g. a CRDT schema
-        // change between versions) must surface as a Codec error, so the
-        // client's tolerant loader can drop it and re-sync rather than
-        // brick startup. We simulate it with a garbage blob.
-        let storage = Storage::open_in_memory().unwrap();
-        storage
-            .conn
-            .execute(
-                "INSERT INTO crdt_state (room, epoch, state, saved_at)
-                 VALUES ('default', 1, ?1, 0)",
-                [&b"not a valid postcard CrdtState"[..]],
-            )
-            .unwrap();
-        assert!(matches!(storage.load_state(), Err(StorageError::Codec(_))));
-    }
+    // (The CRDT snapshot round-trip and codec-error tests moved to
+    // sync_storage.rs with the state itself.)
 
     #[test]
     fn media_roots_keep_order() {
@@ -1523,7 +1441,9 @@ mod tests {
     }
 
     /// The Phase 2 milestone: CRDT state and config survive a process
-    /// restart (drop the connection, reopen the same file).
+    /// restart (drop the connections, reopen the same files). The state
+    /// half now lives in the sibling sync database (sync_storage.rs);
+    /// this exercises the full pair the way a real restart does.
     #[test]
     fn state_and_config_survive_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -1559,7 +1479,10 @@ mod tests {
             let mut storage = Storage::open(&db_path).unwrap();
             storage.save_settings(&settings).unwrap();
             storage.set_media_roots(&roots).unwrap();
-            storage.save_state(&snapshot, 1000).unwrap();
+            crate::sync_storage::SyncStorage::open(&db_path)
+                .unwrap()
+                .save_state(&snapshot, 1000)
+                .unwrap();
             storage
                 .record_watched(&WatchRecord {
                     hash: hash(1),
@@ -1574,7 +1497,11 @@ mod tests {
         let storage = Storage::open(&db_path).unwrap();
         assert_eq!(storage.load_settings().unwrap(), settings);
         assert_eq!(storage.media_roots().unwrap(), roots);
-        let loaded = storage.load_state().unwrap().unwrap();
+        let loaded = crate::sync_storage::SyncStorage::open(&db_path)
+            .unwrap()
+            .load_state()
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded, snapshot);
         assert_eq!(loaded.state.view(), snapshot.state.view());
         assert!(storage.watched(hash(1)).unwrap().is_some());

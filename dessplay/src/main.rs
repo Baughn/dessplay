@@ -4,7 +4,7 @@
 
 use clap::Parser;
 use dessplay::run::{
-    HeadlessArgs, load_dotenv, run_dump, run_headless, run_import, run_interactive,
+    HeadlessArgs, load_dotenv, run_dump, run_headless, run_import, run_interactive, run_reset_sync,
 };
 
 // glibc malloc doesn't return freed memory to the OS after a burst of
@@ -78,6 +78,14 @@ struct Cli {
     #[arg(long)]
     dump: bool,
 
+    /// Discard the replicated CRDT state (the sibling dessplay.sync.db)
+    /// and exit. Local data — settings, watch history, the hash cache —
+    /// is untouched; the next connect re-adopts the server's state.
+    /// Refused while a dessplay instance is running: use its /resync
+    /// command instead. Respects --db.
+    #[arg(long, conflicts_with = "dump")]
+    reset_sync: bool,
+
     /// Restrict `--dump` to these sections (repeatable). Valid names:
     /// settings, media_roots, playlist, watched, now_playing,
     /// seek_authority, playback_intent, series_preference,
@@ -115,7 +123,8 @@ fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     load_dotenv();
     let cli = Cli::parse();
-    let interactive = cli.command.is_none() && !cli.seeder && !cli.headless && !cli.dump;
+    let interactive =
+        cli.command.is_none() && !cli.seeder && !cli.headless && !cli.dump && !cli.reset_sync;
     // The TUI owns the screen: route logs to a file there. Without
     // this, supervisory failures (a crashed thread, a wedged shutdown)
     // are completely invisible.
@@ -145,9 +154,10 @@ fn main() -> color_eyre::Result<()> {
                 .init(),
         }
         tracing::info!("dessplay {} starting", env!("CARGO_PKG_VERSION"));
-    } else if cli.dump {
+    } else if cli.dump || cli.reset_sync {
         // `--dump` writes JSON to stdout; keep logs off it so the output
-        // is machine-parseable.
+        // is machine-parseable. `--reset-sync` prints its confirmation
+        // there too.
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)
@@ -187,6 +197,14 @@ fn main() -> color_eyre::Result<()> {
     };
     if cli.dump {
         if let Err(message) = run_dump(&args, &cli.section) {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if cli.reset_sync {
+        // Like `--dump`: a short synchronous one-shot, no tokio runtime.
+        if let Err(message) = run_reset_sync(&args) {
             eprintln!("error: {message}");
             std::process::exit(1);
         }

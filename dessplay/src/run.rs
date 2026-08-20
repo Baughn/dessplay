@@ -455,7 +455,9 @@ fn bump_port(addr_str: &str) -> Result<String, String> {
 /// authoritative server snapshot on connect — so a blob we can no longer
 /// decode (e.g. a CRDT schema change between versions) must never brick
 /// startup: drop it and re-sync. Non-codec storage errors still propagate.
-fn load_state_tolerant(storage: &Storage) -> Result<Option<dessplay_core::StateSnapshot>, String> {
+fn load_state_tolerant(
+    storage: &crate::sync_storage::SyncStorage,
+) -> Result<Option<dessplay_core::StateSnapshot>, String> {
     match storage.load_state() {
         Ok(snapshot) => Ok(snapshot),
         Err(crate::storage::StorageError::Codec(e)) => {
@@ -488,18 +490,14 @@ pub async fn run_headless(args: HeadlessArgs) -> Result<(), String> {
 
     let setup = prepare(&args).await?;
 
-    // Stored CRDT state, and a second storage handle for the sync
-    // actor (SQLite in WAL mode is fine with two connections; the sync
-    // actor owns its handle outright).
+    // Stored CRDT state, from the sibling sync database (the sync actor
+    // owns the handle outright; opening it also completes the one-time
+    // move of any legacy crdt_state row — we hold the instance lock).
     let (initial, sync_storage) = if seeder {
         (None, None)
     } else {
-        let path = match db_path {
-            Some(path) => path,
-            None => Storage::default_path().ok_or("cannot determine the data directory")?,
-        };
-        let sync_storage =
-            Storage::open(&path).map_err(|e| format!("opening {}: {e}", path.display()))?;
+        let sync_storage = crate::sync_storage::SyncStorage::open(&resolved_db)
+            .map_err(|e| format!("opening sync db for {}: {e}", resolved_db.display()))?;
         let initial = load_state_tolerant(&sync_storage)?;
         (initial, Some(sync_storage))
     };
@@ -862,8 +860,10 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     );
 
     let setup = prepare(&args).await?;
-    let sync_storage =
-        Storage::open(&db_path).map_err(|e| format!("opening {}: {e}", db_path.display()))?;
+    // The sibling sync database (opening it also completes the one-time
+    // move of any legacy crdt_state row — we hold the instance lock).
+    let sync_storage = crate::sync_storage::SyncStorage::open(&db_path)
+        .map_err(|e| format!("opening sync db for {}: {e}", db_path.display()))?;
     let initial = load_state_tolerant(&sync_storage)?;
     let handle = spawn_client(
         Arc::clone(&setup.connector),
@@ -2131,7 +2131,7 @@ pub fn run_dump(args: &HeadlessArgs, sections: &[String]) -> Result<(), String> 
         .load_settings()
         .map_err(|e| format!("loading settings: {e}"))?;
     let media_roots = storage.media_roots().map_err(|e| e.to_string())?;
-    let snapshot = load_state_tolerant(&storage)?;
+    let snapshot = load_dump_snapshot(&path)?;
     let doc = crate::dump::build(
         &path.display().to_string(),
         &settings,
@@ -2142,6 +2142,71 @@ pub fn run_dump(args: &HeadlessArgs, sections: &[String]) -> Result<(), String> 
     .map_err(|e| format!("rendering state as JSON: {e}"))?;
     let json = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     println!("{json}");
+    Ok(())
+}
+
+/// The CRDT snapshot for `--dump`, from the sibling sync database.
+///
+/// `--dump` runs without the instance lock (it is a diagnostic, usable
+/// beside a live client), so it must never mutate: it opens the sync
+/// database only if the file already exists (`SyncStorage::open_at`,
+/// which skips the one-time legacy move `SyncStorage::open` performs).
+/// Decision, documented: with no sync database yet — a fresh install, or
+/// a legacy database the split code has not run against — the dump still
+/// works, with the state-derived sections empty (`epoch`/`state` report
+/// nothing). The pre-first-run window on a legacy database is one client
+/// launch wide; after it, the moved state dumps normally.
+fn load_dump_snapshot(
+    db_path: &std::path::Path,
+) -> Result<Option<dessplay_core::StateSnapshot>, String> {
+    use crate::sync_storage::SyncStorage;
+    let sync_path = SyncStorage::derive_path(db_path);
+    if !sync_path.exists() {
+        tracing::debug!(path = %sync_path.display(), "no sync database; dumping without state");
+        return Ok(None);
+    }
+    let sync = SyncStorage::open_at(&sync_path)
+        .map_err(|e| format!("opening {}: {e}", sync_path.display()))?;
+    load_state_tolerant(&sync)
+}
+
+/// `dessplay --reset-sync`: discard the replicated CRDT state (the
+/// sibling `dessplay.sync.db`), leaving everything local — settings,
+/// watch history, and most expensively the hash cache — untouched. The
+/// headless spelling of `/resync`, for when the client isn't running.
+///
+/// Takes the instance lock: resetting under a live client would be
+/// undone by its next flush (and the open also performs the one-time
+/// legacy move, a main-DB write). While an instance runs, `/resync`
+/// inside it is the right tool. Clears via SQL rather than deleting the
+/// file, so no orphaned `-wal`/`-shm` pair is left behind.
+pub fn run_reset_sync(args: &HeadlessArgs) -> Result<(), String> {
+    let path = match &args.db_path {
+        Some(path) => path.clone(),
+        None => Storage::default_path().ok_or("cannot determine the data directory")?,
+    };
+    let _lock = crate::instance_lock::acquire(&path, None).map_err(|e| {
+        format!(
+            "cannot reset while another dessplay instance is using {}: \
+             use the /resync command inside the running client instead, \
+             or stop it and re-run --reset-sync. ({e})",
+            path.display()
+        )
+    })?;
+    // `open` (not `open_at`): a legacy pre-split crdt_state row in the
+    // main database is moved into the sync database first, so this reset
+    // clears it too instead of leaving it to resurface.
+    let sync = crate::sync_storage::SyncStorage::open(&path)
+        .map_err(|e| format!("opening sync db for {}: {e}", path.display()))?;
+    sync.clear()
+        .map_err(|e| format!("clearing synced state: {e}"))?;
+    let sync_path = crate::sync_storage::SyncStorage::derive_path(&path);
+    println!("synced state cleared: {}", sync_path.display());
+    println!(
+        "local data (settings, watch history, hash cache) in {} is untouched; \
+         the next connect re-adopts the server's state",
+        path.display()
+    );
     Ok(())
 }
 
@@ -2267,6 +2332,121 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    /// `--reset-sync` clears only the sync database: everything in the
+    /// main `dessplay.db` — settings, the hash cache — survives. This is
+    /// the point of the file split (the old remedy, deleting the client
+    /// DB, cost a TB-library's worth of re-hashing).
+    #[test]
+    fn reset_sync_clears_only_the_sync_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("dessplay.db");
+
+        // Local state in the main DB...
+        let storage = Storage::open(&db_path).unwrap();
+        storage
+            .save_settings(&crate::config::Settings {
+                username: Some("Baughn".into()),
+                password: Some("pw".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        storage
+            .upsert_hash_cache(
+                std::path::Path::new("/anime/ep1.mkv"),
+                1,
+                &dessplay_core::hash::Ed2kFileHash {
+                    root: dessplay_core::types::Ed2kHash([9; 16]),
+                    blocks: vec![dessplay_core::hash::Ed2kBlockHash([7; 16])],
+                    size_bytes: 42,
+                },
+                3,
+            )
+            .unwrap();
+        drop(storage);
+        // ...and synced state in the sync DB.
+        let sync = crate::sync_storage::SyncStorage::open(&db_path).unwrap();
+        sync.save_state(
+            &dessplay_core::StateSnapshot {
+                epoch: dessplay_core::types::Epoch(4),
+                state: dessplay_core::CrdtState::new(),
+            },
+            1000,
+        )
+        .unwrap();
+        drop(sync);
+
+        let args = HeadlessArgs {
+            db_path: Some(db_path.clone()),
+            ..Default::default()
+        };
+        run_reset_sync(&args).unwrap();
+
+        let sync = crate::sync_storage::SyncStorage::open(&db_path).unwrap();
+        assert!(
+            sync.load_state().unwrap().is_none(),
+            "the synced state must be gone"
+        );
+        let storage = Storage::open(&db_path).unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().username,
+            Some("Baughn".into()),
+            "settings must survive a reset"
+        );
+        assert_eq!(
+            storage.hash_cache().unwrap().len(),
+            1,
+            "the hash cache must survive a reset"
+        );
+    }
+
+    /// `--reset-sync` under a running instance is refused (the running
+    /// client's next flush would undo it); the error points at /resync.
+    #[test]
+    fn reset_sync_refuses_while_an_instance_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("dessplay.db");
+        let _held = crate::instance_lock::acquire(&db_path, None).unwrap();
+
+        let args = HeadlessArgs {
+            db_path: Some(db_path),
+            ..Default::default()
+        };
+        let err = run_reset_sync(&args).expect_err("must refuse while the lock is held");
+        assert!(
+            err.contains("/resync"),
+            "the refusal must point at /resync: {err}"
+        );
+    }
+
+    /// `--dump` reads the moved state (post-split), and stays working —
+    /// with empty state sections — when no sync database exists yet
+    /// (fresh install, or pre-first-run legacy: documented decision on
+    /// `load_dump_snapshot`). It must not create the file either: dump
+    /// runs unlocked beside live instances and never mutates.
+    #[test]
+    fn dump_reads_moved_state_and_tolerates_a_missing_sync_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("dessplay.db");
+
+        // No sync database at all: dump sees no state, creates nothing.
+        assert!(load_dump_snapshot(&db_path).unwrap().is_none());
+        assert!(
+            !crate::sync_storage::SyncStorage::derive_path(&db_path).exists(),
+            "--dump must not create the sync database"
+        );
+
+        // After the one-time move (a client run), dump sees the state.
+        let snapshot = dessplay_core::StateSnapshot {
+            epoch: dessplay_core::types::Epoch(11),
+            state: dessplay_core::CrdtState::new(),
+        };
+        crate::sync_storage::SyncStorage::open(&db_path)
+            .unwrap()
+            .save_state(&snapshot, 1000)
+            .unwrap();
+        assert_eq!(load_dump_snapshot(&db_path).unwrap(), Some(snapshot));
+    }
 
     #[test]
     fn irc_tap_masks_spoilers() {

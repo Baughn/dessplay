@@ -844,9 +844,10 @@ fired without a matching `StateHash` in between:
 ### Manual Reset (`/resync`)
 
 The remedy the escalation names — reachable as the `/resync` chat
-command or the Settings → Account "Reset synced state" action row. (The
-suggestion also names `dessplay --reset-sync`, the headless spelling;
-it lands with the client `sync.db` split.) `SyncCommand::ResetState`:
+command, the Settings → Account "Reset synced state" action row, or
+offline as `dessplay --reset-sync` (the headless spelling, which clears
+the client's `dessplay.sync.db` directly — see [Snapshot
+Storage](#snapshot-storage)). `SyncCommand::ResetState`:
 
 - Discards the replica wholesale: fresh `CrdtState`, epoch 0, offline
   buffer/position cleared, alarm and heal counters reset, flushed to
@@ -925,6 +926,57 @@ debt taken on by session-scoped ActorIds). Around it, the server:
 ---
 
 ## Snapshot Storage
+
+### The Client File Split (`dessplay.sync.db`)
+
+Since 2026-08-21 the client keeps the replicated snapshot in its own
+SQLite database, a sibling *derived* from the main database path
+(`dessplay.db` → `dessplay.sync.db`; `--db` keeps working because the
+sibling is derived, not configured). `SyncStorage` (sync_storage.rs)
+owns it: one `crdt_state` table, its own append-only migration list,
+`save_state`/`load_state`/`clear`. The main `Storage` has no snapshot
+API at all any more, so nothing can write the legacy table back.
+
+The point is remediation cost: everything in the sync database is a
+replica of server-authoritative state and therefore disposable, while
+the main database holds local-only data — most expensively `hash_cache`,
+the block hashes of a TB-scale library. Blowing away sync state must
+never cost hours of re-hashing (the tsugumi restore incident's operator
+remedy, "delete the client DB", did exactly that).
+
+**Remediation story**, in order of preference:
+
+1. `/resync` in a running client (or Settings → "Reset synced state").
+2. `dessplay --reset-sync` with the client stopped: takes the instance
+   lock (refused while an instance runs — its next flush would undo the
+   reset), clears via SQL `DELETE` (no orphaned `-wal`/`-shm`), and
+   leaves the main database untouched. Respects `--db`.
+3. `rm dessplay.sync.db*` with the client stopped — the documented
+   manual fallback; equivalent, just messier.
+
+**One-time move**: `SyncStorage::open` migrates the legacy row out of
+the main database, idempotently and crash-safely — copy only when the
+sync database has no row (a stale legacy row must never overwrite newer
+state), then drop the legacy table only when the copy is known-good or
+the table was empty; a crash between copy and drop re-enters via the
+skip path and completes the drop. This is deliberately *not* a main-DB
+migration entry: migrations run when the main database opens, before the
+sync database exists, so a `DROP TABLE` migration would destroy the row
+before it could be copied (comment on `storage::MIGRATIONS`). Blobs move
+verbatim, envelope and all.
+
+**Locking**: the sync database shares the main database's `<db>.lock`
+instance-lock scope — its path is derived from the locked path and every
+writer acquires that lock first — so it needs no lock file of its own
+(instance_lock.rs). `--dump` runs unlocked beside a live client and is
+therefore read-only here: it opens the sync database only if the file
+exists (never performing the move); on a fresh install — or a legacy
+database no post-split client has run against yet — the dump still
+works, with the state-derived sections empty.
+
+The **server** is deliberately not split (user decision): with
+convergent connects a server restore needs zero client coordination, and
+a single file restores as one unit.
 
 ### The Tagged Envelope
 
@@ -1040,7 +1092,8 @@ for storage because *blobs outlive deployments*; connections don't.
   (tests/fixtures/snapshot-untagged-v6.bin, same written-once policy as
   above). The fallback, its fixture, and the test-support v6 encoder
   are deletable once every deployment (the tsugumi server and every
-  client `dessplay.db`) has run a post-2026-07-25 build once and thereby
+  client — since the file split its blob lives in `dessplay.sync.db`,
+  moved verbatim) has run a post-2026-07-25 build once and thereby
   re-persisted its blob tagged -- verifiable per database by the blob's
   leading 0xFF; the condition and check live on `CrdtStateUntaggedV6`'s
   doc comment.

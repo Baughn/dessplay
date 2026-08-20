@@ -34,7 +34,7 @@ use dessplay_core::{ChatMessage, CrdtOp, CrdtState, StateSnapshot, StateView};
 use tokio::sync::{mpsc, oneshot};
 
 use super::network::{Clock, NetworkCommand};
-use crate::storage::Storage;
+use crate::sync_storage::SyncStorage;
 
 /// A state mutation requested by the UI or player layers. The sync
 /// actor supplies identity (actor, user) and timestamps.
@@ -298,8 +298,8 @@ pub struct SyncConfig {
     pub clock: Clock,
     /// Stored snapshot to start from, if any.
     pub initial: Option<StateSnapshot>,
-    /// Persistence; `None` runs stateless (tests).
-    pub storage: Option<Storage>,
+    /// Persistence (the sync database); `None` runs stateless (tests).
+    pub storage: Option<SyncStorage>,
     /// Snapshot flush cadence.
     pub flush_interval: Duration,
     /// Epoch cell shared with the network actor (drives reconnect auth).
@@ -353,7 +353,7 @@ struct SyncActor {
     epoch_cell: Arc<AtomicU64>,
     /// Mutex only to make the actor `Sync` (rusqlite connections are
     /// not); accessed solely from this task, never across an await.
-    storage: std::sync::Mutex<Option<Storage>>,
+    storage: std::sync::Mutex<Option<SyncStorage>>,
     offset_millis: i64,
     last_issued: u64,
     link: Link,

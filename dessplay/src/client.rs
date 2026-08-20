@@ -75,8 +75,8 @@ pub struct ClientConfig {
 pub struct SyncConfigExtras {
     /// Stored snapshot to start from.
     pub initial: Option<dessplay_core::StateSnapshot>,
-    /// Persistence; `None` runs stateless.
-    pub storage: Option<crate::storage::Storage>,
+    /// Persistence (the sync database); `None` runs stateless.
+    pub storage: Option<crate::sync_storage::SyncStorage>,
     /// Flush cadence override (default 30s).
     pub flush_interval: Option<std::time::Duration>,
 }

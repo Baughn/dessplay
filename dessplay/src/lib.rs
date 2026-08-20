@@ -27,6 +27,7 @@ pub mod run;
 pub mod seeder;
 pub mod session;
 pub mod storage;
+pub mod sync_storage;
 pub mod timeutil;
 pub mod torrent;
 pub mod ui;

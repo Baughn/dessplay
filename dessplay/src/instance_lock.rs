@@ -17,6 +17,13 @@
 //! Running a second, independent instance stays possible: give it its own
 //! `--db` and `--cache-dir`, and the lock paths no longer collide.
 //!
+//! The `<db>.lock` scope also covers the sibling sync database
+//! (`dessplay.sync.db`, sync_storage.rs) without a lock file of its own:
+//! its path is *derived* from the main database path, and every writer —
+//! run_interactive, run_headless, `--reset-sync` — acquires this lock on
+//! that same main path first. (`--dump` opens the sync database without
+//! the lock, but is read-only there by construction.)
+//!
 //! Implemented on std's native file locking (`File::try_lock`, stabilized in
 //! Rust 1.89) — no third-party crate needed.
 

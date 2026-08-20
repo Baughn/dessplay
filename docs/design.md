@@ -2631,9 +2631,20 @@ that happens to be a prefix or suffix of its predecessor will be collapsed
 
 Location: `$XDG_DATA_HOME/dessplay/dessplay.db` (typically `~/.local/share/dessplay/`)
 
+The client uses **two** databases (2026-08-21): local-only data lives in
+`dessplay.db`, while the replicated CRDT snapshot lives in a derived
+sibling, `dessplay.sync.db` (`--db` derives both). The sync file is
+disposable — its contents are a replica of server-authoritative state —
+so resetting wedged sync state (`dessplay --reset-sync`, `/resync`)
+never costs local data such as the hash cache. On first open the split
+code moves the legacy `crdt_state` row over and drops the old table
+(idempotent, crash-safe; details in docs/sync-state.md, Snapshot
+Storage).
+
 **Single-instance lock:** at startup a process takes an exclusive advisory
 lock (`File::try_lock`) on `<db>.lock` and `<cache>/.lock` and refuses to start
-if another instance already holds either — two processes sharing one db/cache
+if another instance already holds either — the derived `dessplay.sync.db`
+is covered by the same `<db>.lock`, needing no lock of its own — two processes sharing one db/cache
 (e.g. a client and seeder from the same home dir) corrupt each other's state.
 Run a second instance with its own `--db` and `--cache-dir`.
 
@@ -2682,13 +2693,12 @@ the whole database before first persisting a migrated blob); an
 interactive client can fall back to dropping an unreadable blob and
 re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 
-**Client** (`$XDG_DATA_HOME/dessplay/dessplay.db`):
+**Client, local** (`$XDG_DATA_HOME/dessplay/dessplay.db`):
 
 | Table | Contents |
 |-------|----------|
 | `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, marquee_mode, auto_download, archive_subdirectory, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel, anthropic_token, commentary_interval) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
-| `crdt_state` | Latest snapshot per room (epoch + version-tagged postcard blob); single `'default'` room in v1 |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned; row-less hash-named files >1 week old swept) |
 | `hash_cache` | Path → ed2k root + per-block hashes, keyed by (mtime, size), plus nullable owning media root; skips re-hashing unchanged files and doubles as the library index |
@@ -2696,6 +2706,14 @@ re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 | `manual_mappings` | Playlist hash → user-picked local path; also holds out-of-root hash-adds (paste/browse), registered in place so they stay servable across restarts |
 | `series_map_dirs` | Per-series last-used mapping directory (`anidb:<id>` / `name:<parsed>`) |
 | `tofu_fingerprints` | Pinned server cert fingerprints; write-once (replacing requires explicit forget) |
+
+**Client, synced** (`$XDG_DATA_HOME/dessplay/dessplay.sync.db`, its own
+migration list; disposable — cleared by `dessplay --reset-sync` or
+deleted outright, and rebuilt from the server on the next connect):
+
+| Table | Contents |
+|-------|----------|
+| `crdt_state` | Latest replicated snapshot per room (epoch + version-tagged postcard blob); single `'default'` room |
 
 **Server** (`$XDG_DATA_HOME/dessplay-rendezvous/rendezvous.db`,
 `--db-path` to override):
