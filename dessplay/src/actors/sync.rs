@@ -31,7 +31,7 @@ use dessplay_core::types::{
     SharedTimestamp, UserId,
 };
 use dessplay_core::{ChatMessage, CrdtOp, CrdtState, StateSnapshot, StateView};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::network::{Clock, NetworkCommand};
 use crate::sync_storage::SyncStorage;
@@ -260,11 +260,13 @@ pub enum SyncCommand {
     GetView(oneshot::Sender<StateView>),
     /// Fetch the current epoch.
     GetEpoch(oneshot::Sender<Epoch>),
-    /// Discard the replicated state wholesale and re-adopt the server's
-    /// copy (`/resync`, Settings → "Reset synced state"). Safe in any
-    /// link state: connected, a `RequestMerge` fetches the curative
-    /// snapshot; down, the reconnect handshake covers it.
-    ResetState,
+    // There is deliberately no in-place reset command. `/resync` is
+    // clear-and-re-exec (run.rs): the process tears down, clears the
+    // sync database with the `--reset-sync` routine, and exec's itself.
+    // An in-place reset kept the session `ActorId` (post-reset dots
+    // collided with the server's memory of them and replayed offline
+    // edits were silently swallowed) and published a transiently-empty
+    // replica that derived layers trusted (2026-08-21 review).
     /// Flush to storage and exit.
     Shutdown,
 }
@@ -304,6 +306,9 @@ pub struct SyncConfig {
     pub flush_interval: Duration,
     /// Epoch cell shared with the network actor (drives reconnect auth).
     pub epoch: Arc<AtomicU64>,
+    /// Publishes whether a state has been loaded from disk or adopted
+    /// from the server this session (see [`SyncConfig::subscribe_adopted`]).
+    adopted: watch::Sender<bool>,
 }
 
 impl SyncConfig {
@@ -317,7 +322,18 @@ impl SyncConfig {
             storage: None,
             flush_interval: Duration::from_secs(30),
             epoch,
+            adopted: watch::Sender::new(false),
         }
+    }
+
+    /// Subscribe to the adoption flag: `false` until a state is loaded
+    /// from disk at startup or adopted from the server (the connect
+    /// handshake's merge/snapshot), then `true` for the rest of the
+    /// session. A watch, not an event — consumers sample it (the
+    /// eviction gate reads it per snapshot), so it must never compete
+    /// with reliable events for channel capacity or be droppable.
+    pub fn subscribe_adopted(&self) -> watch::Receiver<bool> {
+        self.adopted.subscribe()
     }
 }
 
@@ -367,13 +383,16 @@ struct SyncActor {
     /// them — the escalation ladder (docs/sync-state.md).
     heal_attempts: u32,
     /// `DivergencePersisted` has been emitted and no matching hash has
-    /// arrived since. Survives `ResetState` (which zeroes the counters)
-    /// so the eventual heal still announces itself and clears the
-    /// advisor's sticky flag.
+    /// arrived since. Dies with the process on `/resync` (the reset is
+    /// a re-exec), so the advisor's sticky flag restarts clean too.
     escalated: bool,
     dirty: bool,
     net: mpsc::Sender<NetworkCommand>,
     events: mpsc::Sender<SyncEvent>,
+    /// Adoption flag published to the session layer (the eviction
+    /// gate): flipped once when a state is loaded from disk or adopted
+    /// from the server, never back. See [`SyncConfig::subscribe_adopted`].
+    adopted: watch::Sender<bool>,
 }
 
 /// Run the sync actor until shutdown.
@@ -383,11 +402,17 @@ pub async fn run(
     net: mpsc::Sender<NetworkCommand>,
     events: mpsc::Sender<SyncEvent>,
 ) {
+    let loaded_from_disk = config.initial.is_some();
     let (state, epoch) = match config.initial.take() {
         Some(snapshot) => (snapshot.state, snapshot.epoch),
         None => (CrdtState::new(), Epoch(0)),
     };
     config.epoch.store(epoch.0, Ordering::SeqCst);
+    if loaded_from_disk {
+        // A stored snapshot counts as adoption: the view it derives is
+        // the group's last known truth, not a fresh replica's emptiness.
+        let _ = config.adopted.send(true);
+    }
 
     let storage = std::sync::Mutex::new(config.storage.take());
     // Lamport floor from stored state: a restart must not re-issue
@@ -412,6 +437,7 @@ pub async fn run(
         dirty: false,
         net,
         events,
+        adopted: config.adopted,
     };
 
     let mut flush = tokio::time::interval(config.flush_interval);
@@ -557,7 +583,6 @@ impl SyncActor {
             SyncCommand::GetEpoch(reply) => {
                 let _ = reply.send(self.epoch());
             }
-            SyncCommand::ResetState => self.reset_state().await,
             SyncCommand::Shutdown => unreachable!("handled by the run loop"),
         }
     }
@@ -725,6 +750,11 @@ impl SyncActor {
     /// offline buffer just re-applied. The server broadcasts a merge to
     /// all clients if ours changed anything.
     async fn synced(&mut self) {
+        // Whatever else happens below, the caller just merged or adopted
+        // the server's state: the view is the group's truth now. Publish
+        // it before the Down guard — even the (should-be-unreachable)
+        // merge-while-down case has already applied the server's data.
+        let _ = self.adopted.send(true);
         if self.link == Link::Down {
             // A merge can also arrive from divergence healing while we
             // believe ourselves down; don't replay into a dead link.
@@ -761,55 +791,8 @@ impl SyncActor {
         .await;
     }
 
-    /// `/resync`: discard the replicated state wholesale and re-adopt
-    /// the server's. The server's copy is authoritative and losslessly
-    /// recoverable, so nothing local is worth preserving — including
-    /// the offline buffer, whose ops were stamped against the discarded
-    /// state. Local-only derivations (file availability, manual
-    /// mappings) re-announce through their own paths once the fresh
-    /// state lands.
-    async fn reset_state(&mut self) {
-        tracing::info!(
-            epoch = self.epoch().0,
-            discarded_ops = self.offline_buffer.len(),
-            "resetting synced state on user request"
-        );
-        self.state = CrdtState::new();
-        self.offline_buffer.clear();
-        self.offline_position = None;
-        self.set_epoch(Epoch(0));
-        self.hash_mismatches = 0;
-        // The reset IS the remedy the escalation asked for: the
-        // failed-heal ladder starts over. `escalated` deliberately
-        // survives, so the eventual matching hash still emits
-        // DivergenceHealed and clears the advisor's sticky flag.
-        self.heal_attempts = 0;
-        // `last_issued` (the Lamport floor) deliberately survives:
-        // pre-reset stamps live on in the server's state, and a
-        // post-reset write re-issuing one of them would tie — and could
-        // lose — the LWW comparison against a value it causally
-        // supersedes.
-        self.changed();
-        // Make the reset durable now, not at the next flush tick: a
-        // crash must not resurrect the discarded state from storage.
-        self.flush_to_storage();
-        match self.link {
-            Link::Synced => {
-                // The reply is a curative StateSnapshot at the server's
-                // epoch (protocol v13), adopted wholesale by the
-                // mid-session snapshot path below.
-                self.send_out(NetworkCommand::SendReliable(Box::new(
-                    ServerControl::RequestMerge,
-                )))
-                .await;
-            }
-            // Down (or still awaiting the initial sync): nothing to
-            // send. The reconnect handshake covers adoption — our next
-            // SyncStatus reports epoch 0 plus the empty-state hash, and
-            // the server answers any mismatch with a snapshot.
-            Link::Down | Link::AwaitingSync => {}
-        }
-    }
+    // `/resync` deliberately has no in-place reset here — it is
+    // clear-and-re-exec (see `SyncCommand`'s note and run.rs).
 
     async fn remote(&mut self, msg: ServerControl, via_datagram: bool) {
         match msg {
@@ -1819,210 +1802,11 @@ mod tests {
         assert_eq!(count_persisted(&events), 1);
     }
 
-    /// `ResetState` discards the replica wholesale — fresh state, epoch
-    /// 0, `RequestMerge` out for the curative snapshot — but keeps the
-    /// Lamport floor: a post-reset write must out-stamp every pre-reset
-    /// stamp we ever observed, or the server's copy of superseded state
-    /// wins LWW ties when it merges back.
-    #[tokio::test(start_paused = true)]
-    async fn reset_state_discards_state_and_keeps_the_lamport_floor() {
-        let mut rig = rig();
-        go_online(&mut rig).await;
-
-        // A remote write stamped far in our future.
-        let mut origin = CrdtState::new();
-        let op = origin.set_now_playing(ActorId::SERVER, SharedTimestamp(5_000_000), Some(hash(1)));
-        rig.commands
-            .send(SyncCommand::Server {
-                msg: Box::new(ServerControl::StateOp {
-                    epoch: Epoch(0),
-                    op,
-                }),
-                via_datagram: false,
-            })
-            .await
-            .unwrap();
-        assert_eq!(view_of(&rig).await.now_playing, Some(hash(1)));
-
-        rig.commands.send(SyncCommand::ResetState).await.unwrap();
-
-        // Wholesale discard: fresh state, epoch 0, and a RequestMerge
-        // out (the reply is the server's curative snapshot).
-        assert_eq!(view_of(&rig).await.now_playing, None);
-        let (tx, rx) = oneshot::channel();
-        rig.commands.send(SyncCommand::GetEpoch(tx)).await.unwrap();
-        assert_eq!(rx.await.unwrap(), Epoch(0));
-        let cmd = rig.net.recv().await.unwrap();
-        assert!(
-            matches!(
-                &cmd,
-                NetworkCommand::SendReliable(msg)
-                    if matches!(**msg, ServerControl::RequestMerge)
-            ),
-            "expected ResetState's RequestMerge, got {cmd:?}"
-        );
-
-        // The Lamport floor survives: our post-reset write dominates the
-        // pre-reset 5_000_000 stamp when the server's state merges back.
-        rig.commands
-            .send(SyncCommand::Mutate(Box::new(Mutation::SetNowPlaying {
-                file: Some(hash(2)),
-            })))
-            .await
-            .unwrap();
-        rig.commands
-            .send(SyncCommand::Server {
-                msg: Box::new(ServerControl::StateMerge(StateSnapshot {
-                    epoch: Epoch(0),
-                    state: origin,
-                })),
-                via_datagram: false,
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            view_of(&rig).await.now_playing,
-            Some(hash(2)),
-            "post-reset write lost an LWW tie: the Lamport floor did not survive ResetState"
-        );
-    }
-
-    /// `ResetState` while the link is down sends nothing; the ordinary
-    /// reconnect handshake heals it — SyncStatus reports epoch 0 plus
-    /// the empty-state hash, the server answers with a snapshot, and
-    /// the discarded offline buffer stays discarded (the upward push
-    /// carries the adopted state only).
-    #[tokio::test(start_paused = true)]
-    async fn reset_state_while_down_is_healed_by_the_reconnect_handshake() {
-        let mut rig = rig();
-        go_online(&mut rig).await;
-        rig.commands.send(SyncCommand::Disconnected).await.unwrap();
-        // An offline edit sits in the buffer when the user resets.
-        rig.commands
-            .send(SyncCommand::Mutate(Box::new(Mutation::Chat {
-                text: "pre-reset".into(),
-            })))
-            .await
-            .unwrap();
-
-        rig.commands.send(SyncCommand::ResetState).await.unwrap();
-        assert_eq!(view_of(&rig).await.chat.len(), 0);
-        tokio::task::yield_now().await;
-        assert!(rig.net.try_recv().is_err(), "nothing sent while down");
-
-        // Reconnect: the handshake must advertise the reset (epoch 0,
-        // empty-state hash), so the server answers with a snapshot.
-        rig.commands.send(SyncCommand::Connected).await.unwrap();
-        let status = rig.net.recv().await.unwrap();
-        let NetworkCommand::SendReliable(msg) = status else {
-            panic!("expected reliable SyncStatus, got {status:?}");
-        };
-        let ServerControl::SyncStatus { epoch, state_hash } = *msg else {
-            panic!("expected SyncStatus, got {msg:?}");
-        };
-        assert_eq!(epoch, Epoch(0));
-        assert_eq!(state_hash, CrdtState::new().view_hash());
-
-        // The snapshot is adopted; the upward push carries it at the
-        // adopted epoch and does NOT resurrect the pre-reset edit.
-        let mut server = CrdtState::new();
-        server.set_now_playing(ActorId::SERVER, SharedTimestamp(10), Some(hash(2)));
-        rig.commands
-            .send(SyncCommand::Server {
-                msg: Box::new(ServerControl::StateSnapshot(StateSnapshot {
-                    epoch: Epoch(7),
-                    state: server,
-                })),
-                via_datagram: false,
-            })
-            .await
-            .unwrap();
-        let push = rig.net.recv().await.unwrap();
-        let NetworkCommand::SendReliable(msg) = push else {
-            panic!("expected reliable push, got {push:?}");
-        };
-        let ServerControl::StateMerge(snapshot) = *msg else {
-            panic!("expected upward merge, got {msg:?}");
-        };
-        assert_eq!(snapshot.epoch, Epoch(7));
-        let pushed = snapshot.state.view();
-        assert_eq!(pushed.now_playing, Some(hash(2)));
-        assert_eq!(
-            pushed.chat.len(),
-            0,
-            "the pre-reset offline edit must stay discarded"
-        );
-        let view = view_of(&rig).await;
-        assert_eq!(view.now_playing, Some(hash(2)));
-        assert_eq!(view.chat.len(), 0);
-    }
-
-    /// `ResetState` also restarts the heal ladder: the reset IS the
-    /// remedy the escalation asked for, so the count of failed heals
-    /// starts over.
-    #[tokio::test(start_paused = true)]
-    async fn reset_state_resets_the_heal_ladder() {
-        let mut rig = rig();
-        go_online(&mut rig).await;
-
-        for _ in 0..2 {
-            fail_one_heal(&mut rig).await;
-        }
-        rig.commands.send(SyncCommand::ResetState).await.unwrap();
-        let cmd = rig.net.recv().await.unwrap();
-        assert!(
-            matches!(
-                &cmd,
-                NetworkCommand::SendReliable(msg)
-                    if matches!(**msg, ServerControl::RequestMerge)
-            ),
-            "expected ResetState's RequestMerge, got {cmd:?}"
-        );
-        drained_events(&mut rig);
-
-        for _ in 0..2 {
-            fail_one_heal(&mut rig).await;
-        }
-        let events = drained_events(&mut rig);
-        assert_eq!(
-            count_persisted(&events),
-            0,
-            "the reset must restart the ladder: {events:?}"
-        );
-        fail_one_heal(&mut rig).await;
-        let events = drained_events(&mut rig);
-        assert_eq!(count_persisted(&events), 1);
-    }
-
-    /// After an escalation, a reset followed by a matching hash still
-    /// emits `DivergenceHealed` — without this the advisor's sticky
-    /// "run /resync" flag would never clear after the /resync worked.
-    #[tokio::test(start_paused = true)]
-    async fn healing_after_a_reset_still_emits_divergence_healed() {
-        let mut rig = rig();
-        go_online(&mut rig).await;
-
-        for _ in 0..3 {
-            fail_one_heal(&mut rig).await;
-        }
-        let events = drained_events(&mut rig);
-        assert_eq!(count_persisted(&events), 1);
-
-        rig.commands.send(SyncCommand::ResetState).await.unwrap();
-        let _ = rig.net.recv().await.unwrap(); // the reset's RequestMerge
-        drained_events(&mut rig);
-
-        // The reset replica is empty, so the honest hash now matches:
-        // the heal must be announced even though the reset zeroed the
-        // failed-heal counter.
-        send_honest_hash(&rig).await;
-        let events = drained_events(&mut rig);
-        assert_eq!(
-            count_healed(&events),
-            1,
-            "the post-reset heal must clear the escalation: {events:?}"
-        );
-    }
+    // The in-place `ResetState` tests died with the command (2026-08-21
+    // review): `/resync` is now clear-and-re-exec, so "reset while
+    // down", the heal-ladder restart, and the Lamport-floor survival
+    // are all properties of a fresh process instead. The restart flow
+    // is pinned end-to-end in dessplay-rendezvous/tests/resync.rs.
 
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig {

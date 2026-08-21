@@ -1017,7 +1017,65 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     if done.is_err() {
         tracing::error!("actors did not shut down within 5s; exiting anyway");
     }
+    if end == SessionEnd::Resync {
+        // Clear only after the sync actor has verifiably exited: its
+        // shutdown flush must not resurrect the state we are about to
+        // discard.
+        if done.is_err() {
+            return Err(
+                "cannot clear synced state: the sync actor did not shut down; \
+                 run `dessplay --reset-sync` instead"
+                    .into(),
+            );
+        }
+        let sync_path = clear_sync_db(&session.db_path)?;
+        tracing::info!(path = %sync_path.display(), "synced state cleared; restarting");
+        // The instance lock's fd (like every fd Rust opens) is CLOEXEC,
+        // so the exec releases it atomically and the fresh process
+        // re-acquires it.
+        return exec_self();
+    }
     Ok(())
+}
+
+/// Replace this process with a fresh copy of itself, same arguments.
+/// The `/resync` restart: the fresh process mints a fresh session
+/// `ActorId` and starts from the cleared sync database, so no in-place
+/// reset state (kept actor, offline buffer, advisor latches) can
+/// survive by construction.
+fn exec_self() -> Result<(), String> {
+    let exe =
+        std::env::current_exe().map_err(|e| format!("cannot find our own executable: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe)
+            .args(std::env::args_os().skip(1))
+            .exec();
+        Err(format!("re-exec after /resync failed: {err}"))
+    }
+    #[cfg(not(unix))]
+    {
+        println!(
+            "synced state cleared; please restart dessplay ({})",
+            exe.display()
+        );
+        Ok(())
+    }
+}
+
+/// Clear the synced-state database beside `db_path` (the `--reset-sync`
+/// routine, also run by the `/resync` restart). Uses `open` (not
+/// `open_at`) deliberately: a legacy pre-split `crdt_state` row in the
+/// main database is moved into the sync database first, so the reset
+/// clears it too instead of leaving it to resurface. The caller must
+/// hold the instance lock (or be the locked instance itself).
+fn clear_sync_db(db_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let sync = crate::sync_storage::SyncStorage::open(db_path)
+        .map_err(|e| format!("opening sync db for {}: {e}", db_path.display()))?;
+    sync.clear()
+        .map_err(|e| format!("clearing synced state: {e}"))?;
+    Ok(crate::sync_storage::SyncStorage::derive_path(db_path))
 }
 
 /// A path's filename for display (full path as fallback).
@@ -1035,6 +1093,10 @@ pub enum SessionEnd {
     /// The server refused us admission (bad password, protocol version
     /// mismatch) — terminal; the message is shown to the user.
     Rejected(String),
+    /// `/resync` (or the Settings "Reset synced state" row): after the
+    /// normal teardown, clear the sync database and re-exec the process
+    /// — the one reset path shared with `--reset-sync`.
+    Resync,
 }
 
 /// Whether the IRC bridge actually needs to reconnect after a settings
@@ -1388,15 +1450,20 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 .await;
                         }
                         Some(UserAction::ResetSyncedState) => {
-                            // `/resync` or the Settings action row: the
-                            // sync actor discards its replica and fetches
-                            // the server's curative snapshot (or, if the
-                            // link is down, the reconnect handshake
-                            // covers adoption). Refresh immediately so
-                            // the UI honestly shows the empty-until-
-                            // readopted state instead of a stale view.
-                            let _ = self.handle.sync.send(SyncCommand::ResetState).await;
-                            self.refresh_ui(&mut last_view).await;
+                            // `/resync` or the Settings action row:
+                            // clear-and-re-exec. The session tears down
+                            // through the normal quit path, the sync
+                            // database is cleared *after* the sync actor
+                            // has flushed and exited, and the process
+                            // exec's itself — one reset path shared with
+                            // `--reset-sync`, and a fresh process by
+                            // construction (fresh session ActorId, no
+                            // surviving offline buffer or latches; an
+                            // in-place reset had both hazards,
+                            // 2026-08-21 review). Adoption happens on
+                            // the restart's connect handshake.
+                            tracing::info!("user requested /resync; restarting to clear synced state");
+                            return SessionEnd::Resync;
                         }
                         Some(UserAction::Notice(text)) => {
                             // Command feedback — stamp with the shared clock
@@ -1871,7 +1938,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 "first state snapshot pushed to the UI"
                             );
                         }
-                        let lines = self.shell.on_state(&snapshot.view, &snapshot.peers).await;
+                        let adopted = *self.handle.state_adopted.borrow();
+                        let lines = self
+                            .shell
+                            .on_state(&snapshot.view, &snapshot.peers, adopted)
+                            .await;
                         self.forward_lines(lines);
                         last_view = snapshot.view.clone();
                         let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
@@ -2042,7 +2113,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
     /// effect at once, independent of network-event timing.
     async fn refresh_ui(&mut self, last_view: &mut std::sync::Arc<dessplay_core::StateView>) {
         if let Some(snapshot) = self.snapshot().await {
-            let lines = self.shell.on_state(&snapshot.view, &snapshot.peers).await;
+            let adopted = *self.handle.state_adopted.borrow();
+            let lines = self
+                .shell
+                .on_state(&snapshot.view, &snapshot.peers, adopted)
+                .await;
             self.forward_lines(lines);
             *last_view = snapshot.view.clone();
             let _ = self
@@ -2193,14 +2268,7 @@ pub fn run_reset_sync(args: &HeadlessArgs) -> Result<(), String> {
             path.display()
         )
     })?;
-    // `open` (not `open_at`): a legacy pre-split crdt_state row in the
-    // main database is moved into the sync database first, so this reset
-    // clears it too instead of leaving it to resurface.
-    let sync = crate::sync_storage::SyncStorage::open(&path)
-        .map_err(|e| format!("opening sync db for {}: {e}", path.display()))?;
-    sync.clear()
-        .map_err(|e| format!("clearing synced state: {e}"))?;
-    let sync_path = crate::sync_storage::SyncStorage::derive_path(&path);
+    let sync_path = clear_sync_db(&path)?;
     println!("synced state cleared: {}", sync_path.display());
     println!(
         "local data (settings, watch history, hash cache) in {} is untouched; \

@@ -216,6 +216,7 @@ impl Harness {
         let (ui_lines_tx, ui_lines) = mpsc::unbounded_channel();
         let pump_sync = sync.clone();
         let pump_peers = peers.clone();
+        let pump_adopted = handle.state_adopted.clone();
         tokio::spawn(async move {
             // The run_interactive loop, terminal-free: every client
             // event refreshes the view and re-derives; player outputs
@@ -254,7 +255,8 @@ impl Harness {
                         }
                         let Ok(view) = rx.await else { break };
                         let peer_list = pump_peers.borrow().clone();
-                        let lines = shell.on_state(&view, &peer_list).await;
+                        let adopted = *pump_adopted.borrow();
+                        let lines = shell.on_state(&view, &peer_list, adopted).await;
                         let _ = ui_lines_tx.send(lines);
                         last_view = view;
                     }

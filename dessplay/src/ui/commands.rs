@@ -76,7 +76,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/resync",
         args: "",
-        help: "discard local sync state and re-adopt the server's",
+        help: "clear local sync state and restart (re-adopts the server's)",
     },
     SlashCommand {
         name: "/quit",

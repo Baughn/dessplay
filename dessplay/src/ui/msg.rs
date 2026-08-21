@@ -323,10 +323,13 @@ pub enum UserAction {
         /// Whether to place the file in a series-name subdirectory.
         subdirectory: bool,
     },
-    /// Discard the local replicated sync state and re-adopt the
-    /// server's copy (`/resync`, or the Settings → Account action row) —
-    /// the manual remedy for persistent divergence (docs/sync-state.md,
-    /// Divergence Alarm). The shared state is losslessly recoverable
+    /// Clear the local replicated sync state and restart the client
+    /// (`/resync`, or the Settings → Account action row) — the manual
+    /// remedy for persistent divergence (docs/sync-state.md, Manual
+    /// Reset). Clear-and-re-exec: the session tears down, the sync
+    /// database is cleared with the `--reset-sync` routine, and the
+    /// process exec's itself; the restart's connect handshake re-adopts
+    /// the server's copy. The shared state is losslessly recoverable
     /// from the server; local-only tables (watch history, hash cache,
     /// manual mappings) are untouched, and file availability re-derives
     /// from local files. Deliberately unconfirmed: both entry points

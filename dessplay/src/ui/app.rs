@@ -1945,16 +1945,17 @@ impl Ui {
             }
             // Ping absent known users on IRC (design.md #4).
             "/summon" => self.command_summon(),
-            // `/resync`: discard the local replicated state and re-adopt
-            // the server's — the manual remedy for persistent divergence
-            // (docs/sync-state.md, Divergence Alarm). No confirm modal:
-            // typing the command is the deliberate act, and the state is
-            // losslessly recoverable from the server.
+            // `/resync`: clear the local synced state and restart the
+            // client (clear-and-re-exec; the restart's connect handshake
+            // re-adopts the server's copy) — the manual remedy for
+            // persistent divergence (docs/sync-state.md, Manual Reset).
+            // No confirm modal: typing the command is the deliberate
+            // act, and the state is losslessly recoverable from the
+            // server.
             "/resync" => vec![
                 UserAction::ResetSyncedState,
                 UserAction::Notice(
-                    "/resync: discarding local synced state and re-adopting the server's"
-                        .to_string(),
+                    "/resync: clearing local synced state and restarting".to_string(),
                 ),
             ],
             other => vec![UserAction::Notice(format!(

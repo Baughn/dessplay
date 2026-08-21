@@ -320,6 +320,12 @@ pub struct PlayerWiring {
     /// sample from a previous load anchors a different file at 0 rather
     /// than somewhere bogus.
     last_position: Option<(Ed2kHash, u64)>,
+    /// Whether a synced state has been loaded from disk or adopted from
+    /// the server this session (see [`Self::note_state_adopted`]).
+    /// Until then the view is transiently empty — a fresh install, or
+    /// the window between `/resync`/`--reset-sync` and the connect
+    /// handshake — and must not drive eviction.
+    state_adopted: bool,
 }
 
 /// Fraction of a file's duration that counts as "watched" (design.md,
@@ -687,7 +693,19 @@ impl PlayerWiring {
             drift_high_snapshots: 0,
             partial_load_failed: HashMap::new(),
             last_position: None,
+            state_adopted: false,
         }
+    }
+
+    /// A synced state has been loaded from disk or adopted from the
+    /// server this session: the view is now the group's truth, not the
+    /// transient emptiness of a fresh (or just-reset) replica. Gates
+    /// eviction — a pass planned from a pre-adoption view protects
+    /// nothing and would delete cached media the real playlist still
+    /// references (2026-08-21 review). Monotonic: adoption is never
+    /// un-learned within a session.
+    pub fn note_state_adopted(&mut self) {
+        self.state_adopted = true;
     }
 
     /// Set whether automatic downloading is enabled (the `auto_download`
@@ -1580,7 +1598,15 @@ impl PlayerWiring {
         // checks timestamps); gating on the now-playing transition keeps it
         // off every snapshot. Relies only on the synced view + the file
         // actor's own cache_entries, so it is safe before resolution runs.
-        if !self.eviction_started || self.last_now_playing != view.now_playing {
+        // The adoption gate is load-bearing: until a state has been loaded
+        // from disk or adopted from the server this session, the view is
+        // the transient emptiness of a fresh replica (a first run, or the
+        // window after `--reset-sync` before the connect handshake), and a
+        // pass planned from it would protect nothing — deleting cached
+        // media the real playlist still references (2026-08-21 review).
+        if self.state_adopted
+            && (!self.eviction_started || self.last_now_playing != view.now_playing)
+        {
             self.eviction_started = true;
             self.last_now_playing = view.now_playing;
             out.push(self.plan_eviction(view));
@@ -2526,9 +2552,21 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.hashing.len()
     }
 
-    /// A fresh state view arrived. Returns local UI lines (subtitles +
-    /// the narrator's system chat lines).
-    pub async fn on_state(&mut self, view: &StateView, peers: &[PeerInfo]) -> UiLines {
+    /// A fresh state view arrived. `state_adopted` samples the sync
+    /// actor's adoption watch: whether a state has been loaded from
+    /// disk or adopted from the server this session — the gate that
+    /// keeps eviction off transiently-empty pre-adoption views.
+    /// Returns local UI lines (subtitles + the narrator's system chat
+    /// lines).
+    pub async fn on_state(
+        &mut self,
+        view: &StateView,
+        peers: &[PeerInfo],
+        state_adopted: bool,
+    ) -> UiLines {
+        if state_adopted {
+            self.wiring.note_state_adopted();
+        }
         let directives = self.wiring.on_state(view, peers);
         self.execute(directives).await
     }
@@ -4008,6 +4046,7 @@ mod tests {
         state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
         state.set_now_playing(A, ts(3), Some(hash(1)));
         let mut wiring = PlayerWiring::new(me());
+        wiring.note_state_adopted();
 
         // Startup: a pass fires.
         let first = wiring.on_state(&state.view(), &[peer("kim")]);
@@ -4023,6 +4062,39 @@ mod tests {
         state.set_now_playing(A, ts(4), Some(hash(2)));
         let third = wiring.on_state(&state.view(), &[peer("kim")]);
         assert!(has_eviction(&third));
+    }
+
+    /// Regression (2026-08-21 review): `/resync` (and `--reset-sync`)
+    /// leave the client holding an *empty* replica until the server's
+    /// state is adopted. An eviction pass planned from that transient
+    /// view sees no playlist and no now-playing, so it protects nothing
+    /// — under `cache_retention = 0` it deleted every cached file,
+    /// including the episode mpv had open. No eviction may run until a
+    /// state has been loaded from disk or adopted from the server this
+    /// session.
+    #[test]
+    fn eviction_waits_for_state_adoption() {
+        let mut wiring = PlayerWiring::new(me());
+
+        // Startup with an empty (post-reset) view: no pass, however
+        // many snapshots arrive.
+        let empty = CrdtState::new().view();
+        assert!(!has_eviction(&wiring.on_state(&empty, &[peer("kim")])));
+        assert!(!has_eviction(&wiring.on_state(&empty, &[peer("kim")])));
+
+        // The server's state lands (adoption). The first pass after it
+        // protects the playlist.
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(1, "ep1.mkv"));
+        state.push_playlist_entry(A, ts(2), entry(2, "ep2.mkv"));
+        state.set_now_playing(A, ts(3), Some(hash(1)));
+        wiring.note_state_adopted();
+        let first = wiring.on_state(&state.view(), &[peer("kim")]);
+        assert!(has_eviction(&first));
+        let (protected, _, playlist) = eviction(&first);
+        assert!(protected.contains(&hash(1)));
+        assert!(protected.contains(&hash(2)));
+        assert_eq!(playlist, &HashSet::from([hash(1), hash(2)]));
     }
 
     #[test]

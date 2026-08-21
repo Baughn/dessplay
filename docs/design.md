@@ -51,10 +51,10 @@ working copy atomically. Tabs containing a missing required value carry a
   password, and Ready on startup. When Ready on startup is off the user joins
   Paused; when on they join Ready. Server and password changes apply on the
   next launch. Also carries the **Reset synced state** action row — the
-  modal path to `/resync` (see docs/sync-state.md, Divergence Alarm):
-  discard the local replica and re-adopt the server's, applied
-  immediately, deliberately without a confirm step (the shared state is
-  losslessly recoverable from the server; local-only tables are
+  modal path to `/resync` (see docs/sync-state.md, Manual Reset): clear
+  the local replica and restart the client (the restart re-adopts the
+  server's copy), deliberately without a confirm step (the shared state
+  is losslessly recoverable from the server; local-only tables are
   untouched).
 - **Playback & display**: Player, subtitle mode, subtitle speaker names,
   subtitle speaker colors, the limited-terminal color-overflow policy, and
@@ -790,11 +790,12 @@ different encodes/versions. See [Content Hash](#content-hash).
     screen (the keyboard path for the spoiler click flow; repeat for
     earlier ones). Posts a local notice when nothing on screen is hidden.
   - `/settings` -- open the settings screen (also `F3`)
-  - `/resync` -- discard the local synced state and re-adopt the
-    server's copy (also the Settings → Account action row). The manual
-    remedy the advisor suggests when divergence persists through three
-    failed auto-heals (docs/sync-state.md, Divergence Alarm). Posts a
-    local notice; no confirm modal -- typing the command is the
+  - `/resync` -- clear the local synced state and restart the client
+    (also the Settings → Account action row); the restart re-adopts
+    the server's copy. The manual remedy the advisor suggests when
+    divergence persists through three failed auto-heals
+    (docs/sync-state.md, Manual Reset). Posts a local notice; no
+    confirm modal -- typing the command is the
     deliberate act, and the shared state is losslessly recoverable from
     the server. Local-only tables (watch history, hash cache, manual
     mappings) are untouched; availability re-derives from local files.
@@ -2015,6 +2016,13 @@ file is deleted `cache_retention` after its last access. Special values:
 
 Eviction passes run at startup and on EOF-advance. The now-playing file and
 queued unwatched playlist entries are never evicted, regardless of retention.
+Passes are additionally **gated on adoption**: no eviction runs until a
+synced state has been loaded from disk or adopted from the server this
+session (the sync actor's `adopted` watch). Before that, the view is the
+transient emptiness of a fresh replica — a first run, or the window after
+`--reset-sync`/`/resync` before the connect handshake — and a pass planned
+from it would protect nothing (2026-08-21 review: it deleted cached media
+the real playlist still referenced, including the now-playing file).
 
 **Archive**: an explicit action (`A` in the playlist pane) that moves a cached
 file under the download root (the topmost media root). The default **Archive

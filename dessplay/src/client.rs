@@ -51,6 +51,13 @@ pub struct ClientHandle {
     /// otherwise stall the router, and with it state sync, behind
     /// droppable numbers).
     pub health: watch::Receiver<Option<network::LinkHealthReport>>,
+    /// Whether a synced state has been loaded from disk or adopted from
+    /// the server this session. `false` only in the fresh-replica
+    /// window (a first run, or after `--reset-sync` before the connect
+    /// handshake), where the derived view is transiently empty and must
+    /// not drive destructive derived work (the eviction gate). A watch
+    /// — sampled per snapshot, never droppable. Borrow, don't consume.
+    pub state_adopted: watch::Receiver<bool>,
 }
 
 /// Configuration for a headless sync client.
@@ -114,6 +121,7 @@ pub fn spawn_client<C: Connector>(
     if let Some(interval) = config.sync.flush_interval {
         sync_config.flush_interval = interval;
     }
+    let state_adopted = sync_config.subscribe_adopted();
 
     let router_clock = Arc::clone(&config.clock);
     let network_config = NetworkConfig::new(
@@ -231,5 +239,6 @@ pub fn spawn_client<C: Connector>(
         peers: peers_rx,
         known_offline: known_offline_rx,
         health: health_rx,
+        state_adopted,
     }
 }

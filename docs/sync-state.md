@@ -845,22 +845,42 @@ fired without a matching `StateHash` in between:
 
 The remedy the escalation names — reachable as the `/resync` chat
 command, the Settings → Account "Reset synced state" action row, or
-offline as `dessplay --reset-sync` (the headless spelling, which clears
-the client's `dessplay.sync.db` directly — see [Snapshot
-Storage](#snapshot-storage)). `SyncCommand::ResetState`:
+offline as `dessplay --reset-sync` (the headless spelling — see
+[Snapshot Storage](#snapshot-storage)). Since the 2026-08-21 review,
+`/resync` is **clear-and-re-exec**: the session tears down through the
+normal quit path (player shutdown, terminal restored, actors flushed),
+the sync database is cleared with the *same* routine `--reset-sync`
+uses (the legacy-move-then-clear in `clear_sync_db`), and the process
+exec's itself with its original arguments. The restart's connect
+handshake re-adopts the server's state (`SyncStatus` reports epoch 0
+plus the empty-state hash; the server answers any mismatch with a
+snapshot).
 
-- Discards the replica wholesale: fresh `CrdtState`, epoch 0, offline
-  buffer/position cleared, alarm and heal counters reset, flushed to
-  storage immediately (a crash must not resurrect the discarded state).
-- **Keeps `last_issued`**, the Lamport floor. Pre-reset stamps live on
-  in the server's state; a post-reset write re-issuing one of them
-  would tie — and could lose — the LWW comparison against a value it
-  causally supersedes.
-- Connected: sends `RequestMerge`; the reply is the curative snapshot
-  at the server's epoch, adopted wholesale. Link down: sends nothing —
-  the reconnect handshake covers adoption (`SyncStatus` reports epoch 0
-  plus the empty-state hash, and the server answers any mismatch with a
-  snapshot).
+There is deliberately **no in-place reset** (`SyncCommand::ResetState`
+is gone). The in-place version had two structural hazards the re-exec
+makes unrepresentable:
+
+- **Kept session `ActorId`.** Post-reset map writes derived dots from
+  the fresh (empty) clocks, so the first write was `(A, 1)` — a dot the
+  server's memory of this actor already dominated. Replayed over the
+  adopted snapshot, `crdts::Map::apply` silently swallowed the edit. A
+  fresh process mints a fresh session nonce, so the actor rotates by
+  construction. (The Lamport floor is wall-clock-anchored, so a fresh
+  process's LWW stamps stand on the same footing as any fresh
+  install's.)
+- **Published a transiently-empty replica.** Derived layers could not
+  tell "awaiting re-adoption" from "genuinely empty"; the eviction pass
+  planned from the empty view deleted cached media the playlist still
+  referenced. The restart lands on the same startup path `--reset-sync`
+  uses, which is protected by the **adoption gate**: the sync actor
+  publishes an `adopted` watch (false until a snapshot is loaded from
+  disk or adopted from the server this session), and the session layer
+  refuses to run eviction until it flips (see design.md, Download Cache
+  and Retention).
+
+If the actors fail to shut down within the teardown bound, the clear is
+refused (a wedged sync actor's late flush must not resurrect the state
+after the clear) and the user is pointed at `dessplay --reset-sync`.
 
 No confirmation step: both entry points are deliberate acts, and the
 shared state is losslessly recoverable from the server. Local-only
