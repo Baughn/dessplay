@@ -34,9 +34,16 @@ Use `jj commit`, not `jj describe`. Don't bother to check the diff; I don't mix 
 
 This is important:
 - Feel free to add more logging and/or ask the user for assistance.
-- Default to adding a regression test *prior* to fixing the bug. Prefer
-  to do this via property or fuzz tests; a property test that happens
-  to catch the bug is superior to a unit test that only catches this particular bug.
+- Fix the class, not the report. Before implementing, enumerate the sibling
+  sites where the same condition arises — the other arms of the same match,
+  the symmetric path (install/teardown, open/close, startup/reconnect), the
+  same event arriving through another channel. Fix them too, or say in the
+  commit why they're immune. A bug report's failure scenario is the floor,
+  not the spec.
+- Default to adding a regression test *prior* to fixing the bug, executed
+  and confirmed to fail. Prefer to do this via property or fuzz tests; a
+  property test that happens to catch the bug is superior to a unit test
+  that only catches this particular bug.
 - Better than either: a fix that makes the bug class **unrepresentable**
   (in the types, or structurally). When you have one, a regression test is
   optional — use your judgment. Never skew a design to keep the bug
@@ -74,10 +81,9 @@ Test comprehensively, especially on high-risk areas (echo suppression, network c
   sleeps. Every test failure should be reproducible from the seed alone.
 - **Spec-driven**: Write tests from the specification, not the implementation.
   If the spec is unclear, clarify it before writing the test.
-- **Regression tests first**: When fixing a bug, write a test that reproduces
-  it *before* writing the fix. The tests MUST be executed and confirmed to fail.
-  Exception: a fix that makes the bug class unrepresentable may skip the test —
-  see the Bug fixing section for the judgment call.
+- **Regression tests first**: see the Bug fixing section — failing test
+  before the fix, property tests preferred, tests confirmed to fail, and the
+  unrepresentable-fix exception.
 - **High-risk areas get extra coverage**: Echo suppression, CRDT convergence,
   playlist conflict resolution, reconnection/epoch handling.
 

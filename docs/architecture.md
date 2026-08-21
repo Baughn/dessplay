@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-08-15
+Last updated: 2026-08-21
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -38,6 +38,22 @@ accumulated in the prototype.
 State flows in one direction: actors produce outputs in response to inputs.
 There are no circular dependencies between actors. The event loop coordinates
 without owning business logic.
+
+### One Seam per Lifecycle Event
+
+Every lifecycle event — a copy of a file turning up, a download stream dying,
+a connection tearing down, a replica being adopted — funnels through exactly
+one handler seam, so no channel that produces the event can skip the
+consequences. The adoption seam is the model case (design.md, Download Cache
+and Retention: every "copy turned up" channel routes through one adoption
+point, so none can miss the redundant-download cancel).
+
+The corollary is a review smell: a bug fix that adds handling *at one site*
+for an event that can arise at several is treating the symptom. The 2026-08
+audits found four instances of the same shape — a guard present on the close
+path but not the install path, a requeue on one failure channel but not its
+twin. When a fix wants a new handler, first ask whether the event deserves a
+seam; if one exists, route through it instead.
 
 ### Testability at Every Level
 
