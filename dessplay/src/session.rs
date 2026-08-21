@@ -320,6 +320,25 @@ pub struct PlayerWiring {
     /// sample from a previous load anchors a different file at 0 rather
     /// than somewhere bogus.
     last_position: Option<(Ed2kHash, u64)>,
+    /// The last position tick observed for the loaded *partial* while
+    /// our own advert in the view said `DownloadingPlayable` — a
+    /// position backed by verified data by construction (everything
+    /// behind the sequential window is ed2k-verified). The only honest
+    /// seek-back target for false-EOF recovery: `last_position` is the
+    /// very position that produced the phantom EOF (after a user seek
+    /// it IS the seek target), so seeking there spins EOF↔seek
+    /// (2026-08-21 review). File-tagged like `last_position`.
+    verified_position: Option<(Ed2kHash, u64)>,
+    /// An outstanding false-EOF recovery: the file whose EOF was
+    /// rejected, and the last seek target issued for it (`None` = only
+    /// re-armed so far — no verified position existed). Gates
+    /// re-issue: the same target is never seeked twice without
+    /// progress in between (a tick past the target clears this), so
+    /// the recovery can defer but never spin. The playable re-offer
+    /// (window refilled) and the in-place completion are the retry
+    /// paths. Cleared by any `Load` — a fresh load re-arms the actor's
+    /// latch itself and restarts the cycle honestly.
+    eof_recovery: Option<(Ed2kHash, Option<u64>)>,
     /// Whether a synced state has been loaded from disk or adopted from
     /// the server this session (see [`Self::note_state_adopted`]).
     /// Until then the view is transiently empty — a fresh install, or
@@ -693,6 +712,8 @@ impl PlayerWiring {
             drift_high_snapshots: 0,
             partial_load_failed: HashMap::new(),
             last_position: None,
+            verified_position: None,
+            eof_recovery: None,
             state_adopted: false,
         }
     }
@@ -1324,10 +1345,24 @@ impl PlayerWiring {
             && l.partial
         {
             if assembled_in_place {
-                // The download we were playing completed in place: the
-                // loaded copy is the verified one now — no reload, but
-                // the partial gating (EOF epsilon) no longer applies.
-                l.partial = false;
+                if self.eof_recovery.take_if(|(f, _)| *f == file).is_some() {
+                    // The completion landed while a rejected phantom
+                    // EOF was outstanding: mpv is (or may be) parked at
+                    // the phantom end, and with `--keep-open` and no
+                    // reload it will never produce another EOF — the
+                    // exact 2026-08-20 wedge (2026-08-21 review). Drop
+                    // `loaded` so the next snapshot's resolve branch
+                    // re-issues a proper `Load` of the now-complete
+                    // file; drift correction then walks it back to the
+                    // group position.
+                    self.loaded = None;
+                } else {
+                    // The download we were playing completed in place:
+                    // the loaded copy is the verified one now — no
+                    // reload, but the partial gating (EOF epsilon) no
+                    // longer applies.
+                    l.partial = false;
+                }
             } else {
                 // Same path, different inode: we no longer hold the
                 // video. Dropping `loaded` closes the group-speaking
@@ -1747,6 +1782,9 @@ impl PlayerWiring {
                 // falls through to the reload below — path equality
                 // never implies content identity (2026-08-20 review).
             } else {
+                // A fresh Load re-arms the actor's EOF latch; any
+                // outstanding false-EOF recovery is moot.
+                self.eof_recovery = None;
                 self.loaded = Some(LoadedFile {
                     file,
                     path: path.clone(),
@@ -1980,8 +2018,44 @@ impl PlayerWiring {
         view: &StateView,
         peers: &[PeerInfo],
     ) -> Vec<Directive> {
-        if view.now_playing != Some(file) || self.loaded.as_ref().is_some_and(|l| l.file == file) {
+        if view.now_playing != Some(file) {
             return vec![];
+        }
+        if self.loaded.as_ref().is_some_and(|l| l.file == file) {
+            // Already playing this partial — a re-offered edge is a
+            // no-op, unless a rejected-EOF recovery is outstanding: the
+            // playable flip means the window refilled, and mpv may be
+            // parked at the phantom end (a rejection re-arms but does
+            // not always seek). Retry the seek into verified data.
+            // Bounded: re-offers arrive ~1/s, and each retry either
+            // progresses (a tick past the target clears the latch) or
+            // the next phantom EOF re-arms without seeking.
+            if self.eof_recovery.is_some_and(|(f, _)| f == file) {
+                if let Some((_, target)) = self.verified_position.filter(|(f, _)| *f == file) {
+                    self.eof_recovery = Some((file, Some(target)));
+                    tracing::info!(
+                        %file,
+                        target,
+                        "window refilled; retrying false-EOF recovery seek"
+                    );
+                    return vec![Directive::Player(PlayerCommand::RecoverFalseEof {
+                        position_millis: Some(target),
+                    })];
+                }
+                // No verified position was ever observed (the phantom
+                // EOF landed right after the load): there is nothing to
+                // seek to, so reload the partial through the normal
+                // load path below — a fresh Load re-arms the actor and
+                // restarts playback honestly.
+                tracing::info!(
+                    %file,
+                    "window refilled with no verified position; reloading the partial"
+                );
+                self.eof_recovery = None;
+                self.loaded = None;
+            } else {
+                return vec![];
+            }
         }
         // A partial the player already failed to open is only re-offered
         // once meaningfully more data has landed — the same bytes fail
@@ -2001,6 +2075,9 @@ impl PlayerWiring {
             self.partial_load_failed.remove(&file);
         }
         tracing::info!(%file, "download playable; loading the partial file");
+        // A fresh Load re-arms the actor's EOF latch and restarts the
+        // recovery cycle from scratch.
+        self.eof_recovery = None;
         self.loaded = Some(LoadedFile {
             file,
             path: path.clone(),
@@ -2136,6 +2213,32 @@ impl PlayerWiring {
                     vec![]
                 } else {
                     self.last_position = Some((file, position_millis));
+                    // Progress past an outstanding false-EOF recovery
+                    // means the seek recovered (or playback resumed):
+                    // the repetition gate re-opens. A recovery that
+                    // never seeked (no target) clears on any tick — a
+                    // moving player is not parked.
+                    if self.eof_recovery.is_some_and(|(recovery_file, issued)| {
+                        recovery_file == file
+                            && issued.is_none_or(|target| position_millis > target)
+                    }) {
+                        self.eof_recovery = None;
+                    }
+                    // A tick while our own advert says the download is
+                    // playable sits inside verified data (everything
+                    // behind the sequential window is ed2k-verified) —
+                    // the only honest false-EOF seek-back target.
+                    if self
+                        .loaded
+                        .as_ref()
+                        .is_some_and(|l| l.file == file && l.partial)
+                        && matches!(
+                            view.file_availability.get(&(self.me.clone(), file)),
+                            Some(FileAvailability::DownloadingPlayable { .. })
+                        )
+                    {
+                        self.verified_position = Some((file, position_millis));
+                    }
                     let mut out = vec![Directive::Mutate(Mutation::SetPlaybackPosition {
                         position_millis,
                         file,
@@ -2195,24 +2298,46 @@ impl PlayerWiring {
                 } else if self.loaded.as_ref().is_some_and(|l| l.partial)
                     && !self.position_near_end(view, file)
                 {
-                    tracing::warn!(
-                        %file,
-                        position = ?self.last_position,
-                        "ignoring EOF from a partial file away from the end"
-                    );
                     // A dropped report must not be terminal: the actor's
                     // `eof_reported` latch only clears on a `Load` or a
                     // seek echo, so without recovery even the *genuine*
                     // end-of-file after the download completes in place
                     // would be swallowed — this client would park at the
-                    // phantom end forever (2026-08-20 review). Pull the
-                    // player back to the last honest position; the
-                    // playable verdict flips and gates the group while
-                    // the window refills.
-                    let position_millis = self
-                        .last_position
+                    // phantom end forever (2026-08-20 review). But the
+                    // seek must land in *verified* data, and never repeat
+                    // without progress: `last_position` is the very
+                    // position that produced the phantom EOF (after a
+                    // user seek it IS the seek target), so seeking there
+                    // spun EOF↔seek at IPC rate (2026-08-21 review).
+                    // Seek to the last tick observed while our advert
+                    // said playable; with no such position, or with the
+                    // same target already issued and no progress since,
+                    // re-arm the latch without seeking — the playable
+                    // re-offer (window refilled), the in-place
+                    // completion, and progress ticks are the retry
+                    // paths.
+                    let target = self
+                        .verified_position
                         .filter(|(position_file, _)| *position_file == file)
-                        .map_or(0, |(_, position)| position);
+                        .map(|(_, position)| position);
+                    let already_seeked = self
+                        .eof_recovery
+                        .filter(|(recovery_file, _)| *recovery_file == file)
+                        .and_then(|(_, issued)| issued);
+                    let position_millis = match target {
+                        Some(t) if already_seeked != Some(t) => Some(t),
+                        _ => None,
+                    };
+                    // Record the rejection, keeping the last issued seek
+                    // target when this round only re-arms (else the next
+                    // identical EOF would re-issue it — a half-rate spin).
+                    self.eof_recovery = Some((file, position_millis.or(already_seeked)));
+                    tracing::warn!(
+                        %file,
+                        position = ?self.last_position,
+                        recovery_seek = ?position_millis,
+                        "ignoring EOF from a partial file away from the end"
+                    );
                     vec![Directive::Player(PlayerCommand::RecoverFalseEof {
                         position_millis,
                     })]
@@ -4522,6 +4647,54 @@ mod tests {
         );
     }
 
+    /// `timed_state` plus our own `DownloadingPlayable` advert for
+    /// hash(1) — the availability an actually-playing mid-download
+    /// session has in view (the file actor's verdict, round-tripped
+    /// through the sync state). Ticks recorded against this view count
+    /// as verified positions for false-EOF recovery.
+    fn playable_state(duration_millis: u64) -> CrdtState {
+        let mut state = timed_state(duration_millis);
+        state.set_file_availability(
+            A,
+            ts(10),
+            me(),
+            hash(1),
+            FileAvailability::DownloadingPlayable {
+                progress_bps: 4_000,
+            },
+        );
+        state
+    }
+
+    /// The recovery seek targets in a directive list (None = a re-arm
+    /// with no seek).
+    fn recovery_seeks(directives: &[Directive]) -> Vec<Option<u64>> {
+        player_cmds(directives)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                PlayerCommand::RecoverFalseEof { position_millis } => Some(*position_millis),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A wiring playing the now-playing entry as a partial, with one
+    /// verified tick at `position` already observed.
+    fn partial_playback_at(view: &StateView, position: u64) -> PlayerWiring {
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), view, &[peer("kim")]);
+        wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: position,
+            },
+            view,
+        );
+        wiring
+    }
+
     #[test]
     fn rejected_partial_eof_issues_a_recovery_command() {
         // Regression (2026-08-20 review): the partial-EOF gate was
@@ -4533,39 +4706,38 @@ mod tests {
         // completed in place was swallowed: this client never advanced
         // the group off the episode. Rejecting a partial's EOF must
         // therefore issue a recovery command that re-arms the latch and
-        // pulls mpv back to the last honest position.
-        let mut wiring = PlayerWiring::new(me());
-        let view = timed_state(1_000_000).view();
-        wiring.on_state(&view, &[peer("kim")]);
-        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
-        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
-        wiring.on_player(
-            PlayerOutput::PositionTick {
-                file: hash(1),
-                position_millis: 400_000,
-            },
-            &view,
-        );
+        // seeks back into verified data.
+        let view = playable_state(1_000_000).view();
+        let mut wiring = partial_playback_at(&view, 400_000);
         let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
         assert!(
             !out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
             "a partial's EOF at 40% must not be reported: {out:?}"
         );
-        assert!(
-            player_cmds(&out).iter().any(|cmd| matches!(
-                cmd,
-                PlayerCommand::RecoverFalseEof {
-                    position_millis: 400_000
-                }
-            )),
-            "a rejected partial EOF must issue a recovery command back to \
-             the last honest position (the actor's eof latch never clears \
-             otherwise): {out:?}"
+        assert_eq!(
+            recovery_seeks(&out),
+            vec![Some(400_000)],
+            "a rejected partial EOF must issue a recovery seek back to \
+             the last verified position: {out:?}"
         );
 
-        // The download completes in place; the genuine end-of-file must
-        // still advance the group.
+        // The download completes in place while the recovery is
+        // outstanding: mpv may be parked at the phantom end with no
+        // further EOF ever coming (`--keep-open`, no reload), so the
+        // wiring must reload the now-complete file through the normal
+        // resolve path (2026-08-21 review).
         wiring.note_local_file(hash(1), "/cache/files/aa".into(), true);
+        let out = wiring.on_state(&view, &[peer("kim")]);
+        assert!(
+            player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::Load { file, .. } if *file == hash(1))),
+            "an in-place completion with a rejected EOF outstanding must \
+             re-issue the Load: {out:?}"
+        );
+
+        // The reloaded file plays to its real end: the genuine EOF must
+        // still advance the group.
         wiring.on_player(
             PlayerOutput::PositionTick {
                 file: hash(1),
@@ -4577,6 +4749,131 @@ mod tests {
         assert!(
             out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
             "the genuine EOF after completion must still be reported: {out:?}"
+        );
+    }
+
+    #[test]
+    fn eof_recovery_never_repeats_a_seek_without_progress() {
+        // Regression (2026-08-21 review): the recovery seek target was
+        // `last_position` — the very position that produced the phantom
+        // EOF — so mpv re-walked into the same zeros and the pair spun
+        // EOF↔seek at IPC rate. A repeated rejection without progress
+        // in between must re-arm without seeking; a tick past the
+        // target re-opens the gate.
+        let view = playable_state(1_000_000).view();
+        let mut wiring = partial_playback_at(&view, 400_000);
+
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert_eq!(recovery_seeks(&out), vec![Some(400_000)]);
+
+        // The seek lands in the same data-less spot: EOF again, twice.
+        // No further seeks — re-arm only.
+        for _ in 0..2 {
+            let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+            assert_eq!(
+                recovery_seeks(&out),
+                vec![None],
+                "a repeated rejection without progress must not re-seek: {out:?}"
+            );
+        }
+
+        // Real progress (a tick past the target) re-opens the gate: the
+        // next rejection may seek again, to the new verified position.
+        wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 450_000,
+            },
+            &view,
+        );
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert_eq!(recovery_seeks(&out), vec![Some(450_000)]);
+    }
+
+    #[test]
+    fn eof_recovery_with_no_position_for_the_file_rearms_without_seeking() {
+        // Regression (2026-08-21 review): with no position attributed
+        // to the file, the recovery seeked to `map_or(0, ..)` = 0 —
+        // rewinding the episode and, with seek authority, publishing
+        // position 0 to the whole group. "No honest position" must be
+        // a re-arm, never an invented seek.
+        let view = playable_state(1_000_000).view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_state(&view, &[peer("kim")]);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &[peer("kim")]);
+        wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        // No tick ever attributed to the file: EOF right after load.
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert!(
+            !out.iter().any(|d| matches!(d, Directive::ReportEof(_))),
+            "the phantom EOF must still be rejected: {out:?}"
+        );
+        assert_eq!(
+            recovery_seeks(&out),
+            vec![None],
+            "no honest position ⇒ re-arm without a seek: {out:?}"
+        );
+    }
+
+    #[test]
+    fn eof_recovery_ignores_the_unverified_user_seek_target() {
+        // A user seek past the fetched window updates `last_position`
+        // to the seek target — a provably data-less position (it is
+        // what produced the phantom EOF). The recovery must seek to the
+        // last *verified* position instead (2026-08-21 review).
+        let view = playable_state(1_000_000).view();
+        let mut wiring = partial_playback_at(&view, 400_000);
+        wiring.on_player(
+            PlayerOutput::UserSeeked {
+                from_millis: 400_000,
+                to_millis: 900_000,
+            },
+            &view,
+        );
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert_eq!(
+            recovery_seeks(&out),
+            vec![Some(400_000)],
+            "the recovery must target verified data, not the user's \
+             data-less seek target: {out:?}"
+        );
+    }
+
+    #[test]
+    fn refilled_window_retries_the_recovery_seek() {
+        // While a recovery is outstanding and mpv is parked (re-armed
+        // but not seeked), the file actor's playable re-offer is the
+        // retry signal: the window refilled, so the seek into verified
+        // data is issued again (~1/s at most — the re-offer cadence).
+        let view = playable_state(1_000_000).view();
+        let mut wiring = partial_playback_at(&view, 400_000);
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert_eq!(recovery_seeks(&out), vec![Some(400_000)]);
+        let out = wiring.on_player(PlayerOutput::Eof { file: hash(1) }, &view);
+        assert_eq!(recovery_seeks(&out), vec![None], "parked, no re-seek");
+
+        let out =
+            wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        assert_eq!(
+            recovery_seeks(&out),
+            vec![Some(400_000)],
+            "the playable re-offer must retry the recovery seek: {out:?}"
+        );
+
+        // Without an outstanding recovery the re-offer stays a no-op.
+        wiring.on_player(
+            PlayerOutput::PositionTick {
+                file: hash(1),
+                position_millis: 450_000,
+            },
+            &view,
+        );
+        let out =
+            wiring.on_download_playable(hash(1), "/cache/files/aa".into(), &view, &[peer("kim")]);
+        assert!(
+            out.is_empty(),
+            "a re-offered playable edge for a healthy loaded file must \
+             stay a no-op: {out:?}"
         );
     }
 

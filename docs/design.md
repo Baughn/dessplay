@@ -450,9 +450,20 @@ It can have one of three values:
   report is therefore only believed when the last known position sits
   within a few seconds of the entry's duration — anything earlier is
   rejected, and the flipped verdict gates instead. A rejection is a
-  deferral, never a terminal state: the client seeks the player back to
-  its last honest position and re-arms EOF reporting, so the genuine
-  end still advances the group once the download fills in. A partial
+  deferral, never a terminal state — and never a spin (2026-08-21
+  review): the client re-arms EOF reporting and seeks the player back
+  to the last position observed **while the file was advertised
+  playable** (verified data by construction; the raw last position is
+  the very offset that produced the phantom EOF, and after a user seek
+  it is the data-less seek target itself). The same target is never
+  seeked twice without a position tick past it in between; when no
+  verified position exists the rejection only re-arms. The retry paths
+  are the playable re-offer (window refilled ⇒ re-seek, or reload when
+  no verified position was ever seen) and the in-place completion
+  (which re-issues the Load when a rejected EOF is outstanding — mpv
+  parked at a phantom end under `--keep-open` never fires another EOF
+  on its own), so the genuine end still advances the group once the
+  download fills in. A partial
   the player cannot open at all (an `.mp4` whose index sits in the
   unfetched tail) is not offered again until ~10% more of the file has
   arrived — the same bytes fail the same way, and repeated failures

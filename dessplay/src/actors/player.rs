@@ -141,12 +141,17 @@ pub enum PlayerCommand {
     /// `eof_reported` latch otherwise clears only on a `Load` or a seek
     /// echo, neither of which a dropped report triggers, so the genuine
     /// end-of-file after the download completes in place would be
-    /// swallowed (2026-08-20 review) — and seek back to the last honest
-    /// position, pulling playback off the zeros.
+    /// swallowed (2026-08-20 review) — and, when the session has a
+    /// target inside verified data, seek there to pull playback off the
+    /// zeros.
     RecoverFalseEof {
-        /// Where to resume: the session's last file-attributed position
-        /// sample (0 when none was seen).
-        position_millis: u64,
+        /// Where to resume: the session's last position observed while
+        /// the file was advertised playable (verified data by
+        /// construction). `None` means the session has no honest
+        /// target — re-arm only, never seek: the old 0 fallback rewound
+        /// the episode and published position 0 to the whole group
+        /// (2026-08-21 review).
+        position_millis: Option<u64>,
     },
     /// Updated shared-clock offset (server minus local), from time sync.
     ClockOffset(i64),
@@ -573,8 +578,23 @@ impl<F: PlayerFactory> Actor<F> {
                 // live player must never keep the latch. The seek's echo
                 // also clears the latch — harmless double.
                 self.eof_reported = false;
-                tracing::info!(position_millis, "false EOF rejected; seeking back");
-                self.seek_programmatic(position_millis).await;
+                match position_millis {
+                    Some(target) => {
+                        tracing::info!(
+                            target,
+                            "false EOF rejected; seeking back into verified data"
+                        );
+                        self.seek_programmatic(target).await;
+                    }
+                    // No honest target: re-arm only. Never invent one —
+                    // seeking to 0 rewound the episode and published
+                    // position 0 to the group (2026-08-21 review).
+                    None => {
+                        tracing::info!(
+                            "false EOF rejected; re-armed EOF reporting (no seek target)"
+                        );
+                    }
+                }
             }
             PlayerCommand::ReleaseSlew => {
                 // Idempotent: set_speed early-returns when already 1.0.
@@ -2282,7 +2302,7 @@ mod tests {
         // The session judged it false: recovery re-arms and seeks back.
         commands
             .send(PlayerCommand::RecoverFalseEof {
-                position_millis: 10_000,
+                position_millis: Some(10_000),
             })
             .await
             .unwrap();
@@ -2293,6 +2313,40 @@ mod tests {
 
         // Playback runs on to the real end: the EOF must be reported
         // again (no seek echo arrived — the re-arm alone suffices).
+        control.events.send(PlayerEvent::Eof).unwrap();
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::Eof { file: FILE }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recover_false_eof_without_a_target_rearms_without_seeking() {
+        // Regression (2026-08-21 review): with no position attributed
+        // to the file, the recovery used to seek to 0 — rewinding the
+        // episode and (with seek authority) publishing position 0 to
+        // the whole group. `None` must re-arm the latch and touch
+        // nothing else.
+        let (commands, mut outputs, mut control) = loaded_rig().await;
+        control.events.send(PlayerEvent::Eof).unwrap();
+        assert_eq!(
+            expect_output(&mut outputs).await,
+            PlayerOutput::Eof { file: FILE }
+        );
+
+        commands
+            .send(PlayerCommand::RecoverFalseEof {
+                position_millis: None,
+            })
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            control.drain_commands().is_empty(),
+            "a target-less recovery must not command the player"
+        );
+
+        // But the latch is re-armed: the next EOF is reported again.
         control.events.send(PlayerEvent::Eof).unwrap();
         assert_eq!(
             expect_output(&mut outputs).await,
