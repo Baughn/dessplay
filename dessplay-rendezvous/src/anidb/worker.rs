@@ -487,6 +487,23 @@ fn reconcile_settled_lookups<H: AniDbHost>(host: &H) {
             tracing::info!(aid = series.0, "re-arming orphaned relations lookup");
         }
     }
+
+    // Curation rows the settling ladder gave up on are not real
+    // answers: re-arm them so they re-enter batch rotation with a
+    // fresh ladder (at most one ladder of attempts per server start;
+    // see `ServerStorage::rearm_curation_give_ups`).
+    if let Some(rearmed) = store(host, "reconcile curation give-ups", |s| {
+        s.rearm_curation_give_ups()
+    }) && !rearmed.is_empty()
+    {
+        tracing::warn!(
+            count = rearmed.len(),
+            "re-armed curation rows the settling ladder had given up on"
+        );
+        for series in rearmed {
+            tracing::info!(aid = series.0, "re-arming given-up curation");
+        }
+    }
 }
 
 /// Series ids referenced anywhere that don't have relations yet.

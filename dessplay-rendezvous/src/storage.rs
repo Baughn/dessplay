@@ -162,6 +162,13 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE ai_short_titles ADD COLUMN asked_at INTEGER;
     ALTER TABLE ai_short_titles ADD COLUMN settled INTEGER NOT NULL DEFAULT 1;
     ",
+    // v8 (2026-08-21 audit): why a row settled. A row settled because
+    // the ladder *gave up* (`gave_up = 1`) is not a real answer — it is
+    // re-armed at the next server start ([`ServerStorage::
+    // rearm_curation_give_ups`]), so a batch settled during e.g. a
+    // network outage is not durably un-named forever. A row settled by
+    // an actual model answer keeps `gave_up = 0` and is never re-asked.
+    "ALTER TABLE ai_short_titles ADD COLUMN gave_up INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// `next_attempt` sentinel for queue entries that are settled and must
@@ -934,11 +941,12 @@ impl ServerStorage {
         now: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO ai_short_titles (aid, title, fetched_at, settled)
-             VALUES (?1, ?2, ?3, 1)
+            "INSERT INTO ai_short_titles (aid, title, fetched_at, settled, gave_up)
+             VALUES (?1, ?2, ?3, 1, 0)
              ON CONFLICT (aid) DO UPDATE SET title = excluded.title,
                                              fetched_at = excluded.fetched_at,
-                                             settled = 1",
+                                             settled = 1,
+                                             gave_up = 0",
             params![series.0 as i64, title, now],
         )?;
         Ok(())
@@ -970,7 +978,10 @@ impl ServerStorage {
                 params![aid.0 as i64, now],
             )?;
             let settled_now = tx.execute(
-                "UPDATE ai_short_titles SET settled = 1, fetched_at = ?2
+                // `gave_up = 1`: this settle is the ladder giving up,
+                // not an answer — recoverable via
+                // [`Self::rearm_curation_give_ups`] at the next start.
+                "UPDATE ai_short_titles SET settled = 1, fetched_at = ?2, gave_up = 1
                  WHERE aid = ?1 AND settled = 0 AND attempts >= ?3",
                 params![aid.0 as i64, now, max_attempts as i64],
             )?;
@@ -980,6 +991,28 @@ impl ServerStorage {
         }
         tx.commit()?;
         Ok(gave_up)
+    }
+
+    /// Re-arm curation rows that settled because the ladder gave up
+    /// (`gave_up = 1`) rather than because the model answered: back to
+    /// `settled = 0`, `attempts = 0`, so they re-enter batch rotation
+    /// with a fresh ladder. Called once at server start, the curation
+    /// analogue of [`Self::rearm_settled_without_metadata`] — without
+    /// it a give-up settle (e.g. a batch that exhausted its attempts
+    /// during a network outage, pre the 2026-08-21 timeout-
+    /// classification fix) was durable forever, repairable only by
+    /// hand-editing this table. Bounded: a series the model genuinely
+    /// never answers costs at most one ladder of attempts per server
+    /// start. Returns the re-armed series.
+    pub fn rearm_curation_give_ups(&self) -> Result<Vec<AniDbSeriesId>> {
+        let mut stmt = self.conn.prepare(
+            "UPDATE ai_short_titles SET settled = 0, attempts = 0, gave_up = 0
+             WHERE settled = 1 AND gave_up = 1
+             RETURNING aid",
+        )?;
+        let rows = stmt.query_map([], |row| Ok(AniDbSeriesId(row.get::<_, i64>(0)? as u32)))?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(Into::into)
     }
 
     /// Whether the titles table holds any rows at all. False until the
@@ -1771,6 +1804,60 @@ mod tests {
             Some(None),
             "a capped row is a durable no-short-name answer"
         );
+    }
+
+    /// Regression (2026-08-21 audit): a give-up settle used to be
+    /// indistinguishable from a real no-short-name answer, so a batch
+    /// that exhausted its ladder (e.g. every timeout of a network
+    /// outage misclassified as a model failure) was durably un-named
+    /// with no repair path short of hand-editing the table. Give-up
+    /// settles re-arm at startup; real answers — including a genuine
+    /// "no short name" — never do.
+    #[test]
+    fn give_up_settles_rearm_but_real_answers_do_not() {
+        let mut storage = ServerStorage::open_in_memory().unwrap();
+
+        // gave-up: three unanswered ladders cap out.
+        let starved = AniDbSeriesId(777);
+        for _ in 0..3 {
+            storage
+                .record_curation_unanswered(&[starved], 1000, 3)
+                .unwrap();
+        }
+        assert_eq!(storage.curated_short_title(starved).unwrap(), Some(None));
+
+        // Real answers, both kinds.
+        let named = AniDbSeriesId(5391);
+        storage
+            .set_curated_short_title(named, Some("GochiUsa"), 2000)
+            .unwrap();
+        let unnamed = AniDbSeriesId(9310);
+        storage
+            .set_curated_short_title(unnamed, None, 2000)
+            .unwrap();
+
+        let rearmed = storage.rearm_curation_give_ups().unwrap();
+        assert_eq!(rearmed, vec![starved], "only the give-up re-arms");
+        // The re-armed row is pending again with a fresh ladder: it
+        // re-enters batch rotation (unsettled, attempts 0) and no
+        // longer reads as an answer.
+        assert_eq!(storage.curated_short_title(starved).unwrap(), None);
+        let row = &storage.curated_titles().unwrap()[&starved];
+        assert_eq!((row.attempts, row.settled), (0, false));
+        // Real answers stand.
+        assert_eq!(
+            storage.curated_short_title(named).unwrap(),
+            Some(Some("GochiUsa".into()))
+        );
+        assert_eq!(storage.curated_short_title(unnamed).unwrap(), Some(None));
+
+        // An answer that later arrives for a re-armed series settles it
+        // as a real answer — not re-armed again.
+        storage
+            .set_curated_short_title(starved, None, 3000)
+            .unwrap();
+        assert!(storage.rearm_curation_give_ups().unwrap().is_empty());
+        assert_eq!(storage.curated_short_title(starved).unwrap(), Some(None));
     }
 
     /// The database can hold a live Anthropic API key, so the data

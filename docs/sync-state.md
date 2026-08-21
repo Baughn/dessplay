@@ -624,11 +624,21 @@ injected through the title rows) is unrepresentable past the parse
 layer and is dropped with a warning; within the batch the answer is
 trusted as returned. A series the model *doesn't* answer accrues a
 durable attempt count (`attempts`/`settled` columns, schema v7) —
-model-side failures like refusals, truncation, and timeouts count
-against every series in the batch, transport failures against none —
-and after five unanswered attempts it settles as a durable
-no-short-name answer, mirroring the anime queue's `next_attempt =
-NEVER` tombstone. Batch selection orders by fewest attempts first, so
+model-side failures count against every series in the batch, transport
+failures against none. The split is evidence-based (2026-08-21 review):
+refusals, truncation, and **receive-phase** timeouts are model-side —
+the model saw the batch — while resolve/connect/TLS/send stalls, which
+`ureq` also surfaces as timeouts, are transport (the agent sets
+explicit pre-response phase timeouts well under the 600 s global
+window, so a global timeout can only be reached after the request went
+out and safely counts as model-side). After five unanswered attempts
+the series settles as a no-short-name answer, mirroring the anime
+queue's `next_attempt = NEVER` tombstone — but a settle the ladder
+*gave up* into is marked `gave_up` (schema v8) and re-armed with a
+fresh ladder at the next server start, so it is not durably un-named
+forever (a genuinely unanswerable series costs at most one ladder per
+restart; a real answer, including a real "no short name", is never
+re-asked). Batch selection orders by fewest attempts first, so
 an unanswerable batch rotates to the back instead of starving the
 catalogue. The model call runs on its own task and is only polled by
 the worker loop — a slow curator never delays metadata lookups. The

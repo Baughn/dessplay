@@ -47,6 +47,13 @@ const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// (2026-08-20 audit: at 120 s a systematically slightly-too-slow
 /// batch timed out, backed off, and re-billed forever).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(600);
+/// Per-phase timeout for everything before the response: DNS resolve,
+/// connect (TLS included), and sending the request. Generous for any
+/// healthy network, and far below [`HTTP_TIMEOUT`] — which is what
+/// makes a `Global` timeout unambiguous evidence the request was fully
+/// sent (i.e. the model was generating), so `classify_send_error` may
+/// count it against the batch (2026-08-21 review).
+const PRE_RESPONSE_PHASE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Output cap. Thinking tokens count against it on this model; the
 /// visible JSON is tiny.
 const MAX_TOKENS: u32 = 16_000;
@@ -134,6 +141,14 @@ impl AnthropicCurator {
             agent: ureq::Agent::from(
                 ureq::config::Config::builder()
                     .timeout_global(Some(HTTP_TIMEOUT))
+                    // Explicit pre-response phase timeouts, so a stall
+                    // before the model saw the batch surfaces with its
+                    // own phase (classified Transport) instead of
+                    // eventually hitting the ambiguous global window.
+                    .timeout_resolve(Some(PRE_RESPONSE_PHASE_TIMEOUT))
+                    .timeout_connect(Some(PRE_RESPONSE_PHASE_TIMEOUT))
+                    .timeout_send_request(Some(PRE_RESPONSE_PHASE_TIMEOUT))
+                    .timeout_send_body(Some(PRE_RESPONSE_PHASE_TIMEOUT))
                     // 4xx bodies name the offending field; surface them.
                     .http_status_as_error(false)
                     .build(),
@@ -153,12 +168,7 @@ impl ShortTitleCurator for AnthropicCurator {
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .send(&body[..])
-            .map_err(|e| match e {
-                // A timeout means the model was generating and ran out
-                // of window: evidence against the batch, not the wire.
-                ureq::Error::Timeout(_) => CurateError::Model(format!("http timeout: {e}")),
-                other => CurateError::Transport(format!("http: {other}")),
-            })?;
+            .map_err(classify_send_error)?;
         let status = response.status();
         let bytes = response
             .into_body()
@@ -184,6 +194,36 @@ impl ShortTitleCurator for AnthropicCurator {
         );
         let asked: Vec<AniDbSeriesId> = batch.iter().map(|input| input.series).collect();
         parse_reply(&reply, &asked)
+    }
+}
+
+/// Classify a failed send. The Transport/Model split drives the
+/// settling ladder (a `Model` error burns a durable attempt for every
+/// series in the batch), so it must be evidence-based: only a timeout
+/// in a phase where the model had already received the request counts
+/// against the batch.
+fn classify_send_error(e: ureq::Error) -> CurateError {
+    match e {
+        // Regression (2026-08-21 review): the old wildcard classified
+        // *every* timeout as Model — including resolve/connect/TLS/send
+        // stalls where the model never saw the batch — so a network
+        // outage walked the whole catalogue into durable no-short-name
+        // settles. Only receive-phase timeouts are evidence the model
+        // was generating. Global/PerCall count too, but solely because
+        // the agent sets explicit resolve/connect/send timeouts far
+        // below the global window, so the global deadline is only ever
+        // reached after the body went out (see [`AnthropicCurator::new`]).
+        ureq::Error::Timeout(
+            phase @ (ureq::Timeout::RecvResponse
+            | ureq::Timeout::RecvBody
+            | ureq::Timeout::Global
+            | ureq::Timeout::PerCall),
+        ) => CurateError::Model(format!("http timeout ({phase:?})")),
+        // Resolve, Connect, SendRequest, SendBody, Await100, and any
+        // future phase: the request never (fully) reached the model —
+        // says nothing about the batch, costs it nothing.
+        e @ ureq::Error::Timeout(_) => CurateError::Transport(format!("http timeout: {e}")),
+        other => CurateError::Transport(format!("http: {other}")),
     }
 }
 
@@ -460,6 +500,64 @@ mod tests {
         assert!(matches!(
             parse_reply(&garbage, &asked(&[1])),
             Err(CurateError::Model(_))
+        ));
+    }
+
+    /// Regression (2026-08-21 review): every `ureq` timeout — DNS,
+    /// connect, TLS, send included — was classified `Model`, so a few
+    /// hours of blackholed egress burned the settling ladder for the
+    /// whole catalogue and durably settled series as no-short-name.
+    /// Only a timeout in a phase where the model had already received
+    /// the request is evidence against the batch.
+    #[test]
+    fn timeouts_before_the_model_saw_the_batch_are_transport() {
+        for phase in [
+            ureq::Timeout::Resolve,
+            ureq::Timeout::Connect,
+            ureq::Timeout::SendRequest,
+            ureq::Timeout::SendBody,
+        ] {
+            assert!(
+                matches!(
+                    classify_send_error(ureq::Error::Timeout(phase)),
+                    CurateError::Transport(_)
+                ),
+                "a {phase:?} timeout happens before the model saw anything \
+                 — it must cost the batch nothing"
+            );
+        }
+    }
+
+    /// Receive-phase timeouts (and the global window, which with the
+    /// explicit per-phase timeouts can only be reached after the body
+    /// was sent) mean the model was generating: evidence against the
+    /// batch.
+    #[test]
+    fn timeouts_after_the_body_was_sent_are_model_errors() {
+        for phase in [
+            ureq::Timeout::RecvResponse,
+            ureq::Timeout::RecvBody,
+            ureq::Timeout::Global,
+            ureq::Timeout::PerCall,
+        ] {
+            assert!(
+                matches!(
+                    classify_send_error(ureq::Error::Timeout(phase)),
+                    CurateError::Model(_)
+                ),
+                "a {phase:?} timeout means the model was generating — it \
+                 must count against the batch"
+            );
+        }
+    }
+
+    /// Non-timeout errors (refused connection, TLS failure, ...) stay
+    /// Transport.
+    #[test]
+    fn non_timeout_send_errors_are_transport() {
+        assert!(matches!(
+            classify_send_error(ureq::Error::HostNotFound),
+            CurateError::Transport(_)
         ));
     }
 
