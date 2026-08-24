@@ -989,7 +989,10 @@ fn all_series_sort_toggle_persists() {
 #[test]
 fn add_file_via_browser_produces_hash_and_add() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("ep1.mkv"), b"video bytes").unwrap();
+    // Canonicalized: macOS $TMPDIR is a symlink into /private/var and the
+    // add/map boundary canonicalizes.
+    let dir_path = dir.path().canonicalize().unwrap();
+    std::fs::write(dir_path.join("ep1.mkv"), b"video bytes").unwrap();
     let mut ui = Ui::new(
         UserId::new("kim"),
         Settings {
@@ -997,7 +1000,7 @@ fn add_file_via_browser_produces_hash_and_add() {
             password: Some("x".into()),
             ..Settings::default()
         },
-        vec![dir.path().to_path_buf()],
+        vec![dir_path.to_path_buf()],
     );
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
     for _ in 0..3 {
@@ -1024,7 +1027,7 @@ fn add_file_via_browser_produces_hash_and_add() {
     assert_eq!(
         actions,
         vec![UserAction::HashAndAdd {
-            path: dir.path().join("ep1.mkv"),
+            path: dir_path.join("ep1.mkv"),
             after: None,
         }]
     );
@@ -1037,7 +1040,10 @@ fn add_file_via_browser_produces_hash_and_add() {
 #[test]
 fn file_browser_sort_toggle_persists() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("ep1.mkv"), b"video bytes").unwrap();
+    // Canonicalized: macOS $TMPDIR is a symlink into /private/var and the
+    // add/map boundary canonicalizes.
+    let dir_path = dir.path().canonicalize().unwrap();
+    std::fs::write(dir_path.join("ep1.mkv"), b"video bytes").unwrap();
     let mut ui = Ui::new(
         UserId::new("kim"),
         Settings {
@@ -1045,7 +1051,7 @@ fn file_browser_sort_toggle_persists() {
             password: Some("x".into()),
             ..Settings::default()
         },
-        vec![dir.path().to_path_buf()],
+        vec![dir_path.to_path_buf()],
     );
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
     ui.open_file_browser(
@@ -1075,7 +1081,10 @@ fn file_browser_sort_toggle_persists() {
 #[test]
 fn paste_existing_file_path_on_playlist_focus_adds_it() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("ep1.mkv");
+    // Canonicalized: macOS $TMPDIR is a symlink into /private/var and the
+    // add/map boundary canonicalizes.
+    let dir_path = dir.path().canonicalize().unwrap();
+    let file = dir_path.join("ep1.mkv");
     std::fs::write(&file, b"video bytes").unwrap();
     let mut ui = ui();
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
@@ -1100,7 +1109,10 @@ fn paste_existing_file_path_on_playlist_focus_adds_it() {
 #[test]
 fn paste_existing_file_path_adds_from_any_pane() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("ep1.mkv");
+    // Canonicalized: macOS $TMPDIR is a symlink into /private/var and the
+    // add/map boundary canonicalizes.
+    let dir_path = dir.path().canonicalize().unwrap();
+    let file = dir_path.join("ep1.mkv");
     std::fs::write(&file, b"video bytes").unwrap();
     let mut ui = ui();
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
@@ -1121,7 +1133,10 @@ fn paste_existing_file_path_adds_from_any_pane() {
 #[test]
 fn paste_escaped_path_normalizes_and_adds() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("ep 1.mkv");
+    // Canonicalized: macOS $TMPDIR is a symlink into /private/var and the
+    // add/map boundary canonicalizes.
+    let dir_path = dir.path().canonicalize().unwrap();
+    let file = dir_path.join("ep 1.mkv");
     std::fs::write(&file, b"video bytes").unwrap();
     let mut ui = ui();
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
@@ -1181,7 +1196,10 @@ fn paste_nonexistent_path_on_playlist_focus_lands_in_chat_input() {
 #[test]
 fn add_browser_opens_at_the_selected_entry() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("Anime");
+    // Canonicalized: macOS $TMPDIR is a symlink into /private/var and the
+    // add/map boundary canonicalizes.
+    let dir_path = dir.path().canonicalize().unwrap();
+    let root = dir_path.join("Anime");
     std::fs::create_dir_all(root.join("Frieren")).unwrap();
     for name in ["ep1.mkv", "ep2.mkv"] {
         std::fs::write(root.join("Frieren").join(name), b"x").unwrap();
@@ -1239,7 +1257,10 @@ fn add_browser_opens_at_the_selected_entry() {
 #[test]
 fn add_browser_type_to_search_finds_deep_directories() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("Anime");
+    // Canonicalized: macOS $TMPDIR is a symlink into /private/var and the
+    // add/map boundary canonicalizes.
+    let dir_path = dir.path().canonicalize().unwrap();
+    let root = dir_path.join("Anime");
     let deep = root.join("Purgatory").join("Haibane Renmei");
     std::fs::create_dir_all(&deep).unwrap();
     std::fs::write(deep.join("ep1.mkv"), b"x").unwrap();
@@ -1418,8 +1439,11 @@ fn map_file_opens_browser_ranked_by_edit_distance_and_maps() {
     // distance "ep2.mkv" (one substitution) ranks above the long
     // unrelated name, so it lands at row 0.
     let dir = tempfile::tempdir().unwrap();
+    // Canonicalized: macOS $TMPDIR is a symlink into /private/var and the
+    // add/map boundary canonicalizes.
+    let dir_path = dir.path().canonicalize().unwrap();
     for name in ["a-completely-unrelated-movie.avi", "ep2.mkv"] {
-        std::fs::write(dir.path().join(name), b"x").unwrap();
+        std::fs::write(dir_path.join(name), b"x").unwrap();
     }
     let mut state = CrdtState::new();
     // A missing entry linked to series metadata (so the mapping carries
@@ -1443,7 +1467,7 @@ fn map_file_opens_browser_ranked_by_edit_distance_and_maps() {
             password: Some("x".into()),
             ..Settings::default()
         },
-        vec![dir.path().to_path_buf()],
+        vec![dir_path.to_path_buf()],
     );
     ui.apply_snapshot(snapshot(state.view(), vec![peer("kim")]));
     for _ in 0..3 {
@@ -1483,7 +1507,7 @@ fn map_file_opens_browser_ranked_by_edit_distance_and_maps() {
         actions,
         vec![UserAction::MapFile {
             file: hash(1),
-            path: dir.path().join("ep2.mkv"),
+            path: dir_path.join("ep2.mkv"),
             series: Some(dessplay::storage::SeriesKey::AniDb(
                 dessplay_core::types::AniDbSeriesId(42)
             )),
