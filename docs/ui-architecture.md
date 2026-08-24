@@ -486,7 +486,12 @@ the handler hit-tests against them:
   already focused** — the chat scrolls its log a few lines per tick,
   list panes move their cursor like Up/Down. Over an unfocused pane it
   is ignored: touchpads emit wheel events by accident, and the tick
-  must neither move an invisible cursor nor steal focus.
+  must neither move an invisible cursor nor steal focus. The separate
+  subtitle pane is the exception: unfocusable, so `PaneRects::subs`
+  (zero-sized unless drawn, overlapping the chat column and hit-tested
+  first) takes the wheel regardless of focus and moves
+  `Ui::subtitle_scroll` — entries back from newest, clamped at render,
+  reset to live whenever the pane is hidden. Mouse-only by design.
 - **Modals**: while any modal is open, mouse events are ignored entirely
   (modals capture all input, and none of them speak mouse yet).
 

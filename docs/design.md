@@ -1651,6 +1651,11 @@ pane under the pointer only when that pane is **already focused** (the
 chat scrolls its log, list panes move their selection like Up/Down);
 over an unfocused pane it is ignored — touchpads emit wheel events by
 accident, so a graze must neither scroll invisibly nor steal focus.
+The one exception is the separate [subtitle pane](#subtitle-display):
+it is not focusable, so the wheel scrolls it back through the subtitle
+log whenever the pointer is over it (its title shows the offset, e.g.
+`Subtitles (-6)`); this is deliberately mouse-only — keyboard users
+scroll subtitles in Intermixed mode, where they share the chat log.
 Clicking never activates a row (no double-click Enter); the one
 click-driven action is the chat [spoiler](#chat) reveal, whose key
 equivalent is `/reveal`. Mouse events are ignored while a modal is

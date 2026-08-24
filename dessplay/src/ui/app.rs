@@ -174,10 +174,13 @@ enum Focus {
 /// hit-testing. Zero-sized until the first draw, so every click misses
 /// — no `Option` dance needed. `chat` spans the whole left column
 /// (log, input, progress line, and the subtitle pane when shown): a
-/// click anywhere in it means "the chat side".
+/// click anywhere in it means "the chat side". `subs` overlaps it and
+/// only matters for the wheel, which is hit-tested against it first.
 #[derive(Clone, Copy, Default)]
 struct PaneRects {
     chat: Rect,
+    /// The separate subtitle pane; zero-sized unless it was drawn.
+    subs: Rect,
     series: Rect,
     users: Rect,
     playlist: Rect,
@@ -307,6 +310,10 @@ pub struct Ui {
     /// Rolling log of the local player's subtitle lines (with in-video
     /// and arrival timestamps). Local only — never synced.
     subtitles: std::collections::VecDeque<SubtitleEntry>,
+    /// How many entries back from the newest the separate subtitle
+    /// pane is scrolled (0 = live). Mouse-only: the pane is not
+    /// focusable. Clamped at render, reset whenever the pane is hidden.
+    subtitle_scroll: usize,
     /// Named speakers active within the last five wall-clock minutes.
     speaker_colors: SpeakerColors,
     /// The scrolling state of the synced marquee line, keyed by its LWW
@@ -407,6 +414,7 @@ impl Ui {
             subtitle_mode: settings.subtitle_mode,
             color_depth: ColorDepth::Limited,
             subtitles: std::collections::VecDeque::new(),
+            subtitle_scroll: 0,
             speaker_colors: SpeakerColors::default(),
             marquee: None,
             startup_shared_millis: None,
@@ -618,6 +626,19 @@ impl Ui {
             self.irc_log.remove(0);
         }
         self.refresh_chat();
+    }
+
+    /// Mouse wheel over the separate subtitle pane: scroll back through
+    /// the log (up = older). Render clamps to the oldest entry, so
+    /// over-scrolling is safe.
+    fn scroll_subtitles(&mut self, up: bool) {
+        const STEP: usize = 3;
+        if up {
+            self.subtitle_scroll += STEP;
+        } else {
+            self.subtitle_scroll = self.subtitle_scroll.saturating_sub(STEP);
+        }
+        tracing::debug!(offset = self.subtitle_scroll, "subtitle pane scrolled");
     }
 
     /// Cycle the subtitle mode (Off -> Intermixed -> Separate -> Off),
@@ -1092,6 +1113,18 @@ impl Ui {
             self.chat.clear_selection();
         }
         let position = Position::new(mouse.column, mouse.row);
+        // The separate subtitle pane is not focusable, so the wheel
+        // works over it regardless of focus (its scroll is visible, so
+        // the accidental-graze objection doesn't apply). Checked before
+        // the chat column, which it overlaps.
+        if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) && self.panes.subs.contains(position)
+        {
+            self.scroll_subtitles(mouse.kind == MouseEventKind::ScrollUp);
+            return Vec::new();
+        }
         let target = [
             (self.panes.chat, Focus::Chat),
             (self.panes.series, Focus::Series),
@@ -2189,6 +2222,7 @@ impl Ui {
         // Remember where the panes landed for mouse hit-testing.
         self.panes = PaneRects {
             chat: left,
+            subs: Rect::default(),
             series: series_area,
             users: users_area,
             playlist: playlist_area,
@@ -2198,9 +2232,12 @@ impl Ui {
             let [chat_area, subs_area] =
                 Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
                     .areas(left);
+            self.panes.subs = subs_area;
             self.chat.view(frame, chat_area);
             // The newest lines that fit, newest first (top) — the input box
             // sits just below, so the freshest line is closest to the eye.
+            // A wheel scroll-back skips `subtitle_scroll` newest entries,
+            // clamped so the oldest entry never rises above the bottom.
             // Each line: a dim in-video timestamp, then text colored by its
             // ASS speaker. Limited terminals preserve the existing name hash
             // into the app palette; RGB terminals use the stable
@@ -2209,6 +2246,9 @@ impl Ui {
             // same helper used for Intermixed mode.
             use tuirealm::ratatui::text::{Line, Span};
             let visible = (subs_area.height as usize).saturating_sub(2);
+            self.subtitle_scroll = self
+                .subtitle_scroll
+                .min(self.subtitles.len().saturating_sub(visible));
             let limited_palette_overflow = self.color_depth == ColorDepth::Limited
                 && self.speaker_colors.len() > super::theme::LIMITED_SPEAKER_CAPACITY;
             let speaker_colors_enabled = self.settings.subtitle_speaker_colors
@@ -2219,6 +2259,7 @@ impl Ui {
                 .subtitles
                 .iter()
                 .rev()
+                .skip(self.subtitle_scroll)
                 .take(visible)
                 .map(|entry| {
                     let text = props::subtitle_text(
@@ -2253,11 +2294,17 @@ impl Ui {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(super::theme::dim())
-                        .title("Subtitles"),
+                        .title(if self.subtitle_scroll == 0 {
+                            "Subtitles".to_string()
+                        } else {
+                            format!("Subtitles (-{})", self.subtitle_scroll)
+                        }),
                 ),
                 subs_area,
             );
         } else {
+            // Hidden pane: forget any scroll-back so it comes back live.
+            self.subtitle_scroll = 0;
             // Off and Intermixed both use the full-height chat pane
             // (Intermixed shows subtitles inside the chat log).
             self.chat.view(frame, left);
@@ -2794,6 +2841,67 @@ mod tests {
     }
 
     #[test]
+    fn subtitle_pane_scrolls_back_with_wheel_only_over_it() {
+        // Separate pane, more lines than fit. Wheel-up over the pane
+        // reveals older lines (mouse-only: the pane is unfocusable);
+        // wheel-down returns to live; over-scroll clamps at the oldest.
+        let mut ui = ui_with_view(StateView::default());
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        for i in 0..40u64 {
+            ui.push_subtitle(1_000 * i, i, format!("line{i:02}"), None);
+        }
+        let buffer = render_test_buffer(&mut ui);
+        let subs = ui.panes.subs;
+        assert!(subs.height > 2, "pane was drawn");
+        assert!(buffer_contains(&buffer, "line39"), "live view shows newest");
+        let wheel = |kind, column, row| {
+            Event::Mouse(MouseEvent {
+                kind,
+                modifiers: KeyModifiers::NONE,
+                column,
+                row,
+            })
+        };
+        // Wheel over the chat column above the pane: chat's business,
+        // the subtitle pane stays live.
+        ui.handle(wheel(
+            MouseEventKind::ScrollUp,
+            subs.x + 2,
+            ui.panes.chat.y + 1,
+        ));
+        assert_eq!(ui.subtitle_scroll, 0);
+        // Wheel over the pane: scrolls back regardless of focus.
+        ui.handle(wheel(MouseEventKind::ScrollUp, subs.x + 2, subs.y + 1));
+        let buffer = render_test_buffer(&mut ui);
+        assert!(!buffer_contains(&buffer, "line39"), "newest scrolled off");
+        assert!(buffer_contains(&buffer, "line36"), "older line revealed");
+        assert!(
+            buffer_contains(&buffer, "Subtitles (-3)"),
+            "title shows offset"
+        );
+        // Over-scroll clamps to the oldest entry.
+        for _ in 0..100 {
+            ui.handle(wheel(MouseEventKind::ScrollUp, subs.x + 2, subs.y + 1));
+        }
+        let buffer = render_test_buffer(&mut ui);
+        assert!(buffer_contains(&buffer, "line00"), "oldest reachable");
+        let visible = subs.height as usize - 2;
+        assert_eq!(ui.subtitle_scroll, 40 - visible);
+        // Wheel-down all the way returns to live.
+        for _ in 0..100 {
+            ui.handle(wheel(MouseEventKind::ScrollDown, subs.x + 2, subs.y + 1));
+        }
+        let buffer = render_test_buffer(&mut ui);
+        assert!(buffer_contains(&buffer, "line39"));
+        assert_eq!(ui.subtitle_scroll, 0);
+        // Hiding the pane forgets the scroll-back.
+        ui.handle(wheel(MouseEventKind::ScrollUp, subs.x + 2, subs.y + 1));
+        ui.subtitle_mode = SubtitleMode::Off;
+        render_test_buffer(&mut ui);
+        assert_eq!(ui.subtitle_scroll, 0);
+    }
+
+    #[test]
     fn subtitle_empty_line_is_skipped() {
         let mut ui = intermixed_ui();
         ui.push_subtitle(1000, 5, String::new(), None);
@@ -3033,6 +3141,16 @@ mod tests {
             shared_now: now,
             ..UiSnapshot::default()
         }
+    }
+
+    /// Does any row of the rendered buffer contain `needle`?
+    fn buffer_contains(buffer: &tuirealm::ratatui::buffer::Buffer, needle: &str) -> bool {
+        (0..buffer.area.height).any(|y| {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            row.contains(needle)
+        })
     }
 
     fn bottom_row(buffer: &tuirealm::ratatui::buffer::Buffer) -> String {
