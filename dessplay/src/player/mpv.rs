@@ -1,8 +1,10 @@
 //! mpv over JSON IPC (design.md, Player Integration).
 //!
 //! An mpv process is spawned with `--input-ipc-server` pointing at a
-//! fresh Unix socket and `--idle --keep-open`, so one instance persists
-//! across the whole session; files are swapped with `loadfile`. A
+//! fresh Unix socket and `--idle --keep-open=always`, so one instance
+//! persists across the whole session and every file parks at EOF no
+//! matter what else a user script has stuffed into the playlist; files
+//! are swapped with `loadfile`. A
 //! reader task translates mpv's event stream into [`PlayerEvent`]s:
 //!
 //! - `pause` property changes → [`PlayerEvent::PauseChanged`] — except
@@ -95,7 +97,14 @@ impl MpvPlayer {
         let _ = std::fs::remove_file(&socket);
         let mut child = Command::new(binary)
             .arg("--idle=yes")
-            .arg("--keep-open=yes")
+            // `always`, not `yes`: user scripts (autoload.lua) pad mpv's
+            // playlist with sibling files, and `yes` only parks at EOF on
+            // the *last* entry — otherwise mpv auto-advances to a file we
+            // never asked for and the EOF model below never sees its park.
+            .arg("--keep-open=always")
+            // Belt and braces: autoload.lua honours this, and an empty
+            // playlist leaves nothing for stray playlist-next keys to hit.
+            .arg("--script-opts=autoload-disabled=yes")
             .arg("--force-window=yes")
             .arg("--no-terminal")
             .arg(format!("--input-ipc-server={}", socket.display()))

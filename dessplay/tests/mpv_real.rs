@@ -175,7 +175,7 @@ async fn attach_to_external_mpv_and_leave_it_running() {
     // (idle + keep-open), exactly as the --attach-mpv help instructs.
     let mut external = tokio::process::Command::new("mpv")
         .arg("--idle=yes")
-        .arg("--keep-open=yes")
+        .arg("--keep-open=always")
         .arg("--vo=null")
         .arg("--ao=null")
         .arg("--no-terminal")

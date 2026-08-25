@@ -67,8 +67,8 @@ struct Cli {
     /// Attach to an mpv you launched yourself at this IPC socket instead
     /// of spawning one — a dev/headless aid for working without a desktop.
     /// Launch mpv with, e.g.,
-    /// `mpv --idle=yes --keep-open=yes --vo=tct --input-ipc-server=<socket>`
-    /// (the `--idle --keep-open` matter; `--vo=tct` shows video in the
+    /// `mpv --idle=yes --keep-open=always --vo=tct --input-ipc-server=<socket>`
+    /// (the `--idle --keep-open=always` matter; `--vo=tct` shows video in the
     /// terminal). dessplay leaves that mpv running on exit.
     #[arg(long, value_name = "SOCKET")]
     attach_mpv: Option<std::path::PathBuf>,

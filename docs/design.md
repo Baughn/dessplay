@@ -2436,8 +2436,14 @@ Player choice is per-user configuration.
 ### Player Lifecycle
 
 1. **Launch**: One persistent mpv instance per session (`--idle
-   --keep-open`), spawned when the first file loads; later files are
-   swapped in with `loadfile`. Files always open paused; the derived
+   --keep-open=always --script-opts=autoload-disabled=yes`), spawned when
+   the first file loads; later files are swapped in with `loadfile`.
+   `always` (not `yes`) so EOF parks the file regardless of playlist
+   length — user scripts such as autoload.lua pad mpv's playlist with
+   sibling files, and `yes` would auto-advance into one. The script-opt
+   additionally switches autoload off so stray playlist-next keys typed
+   into the mpv window find nothing. The user's mpv.conf is otherwise
+   honoured (no `--no-config`). Files always open paused; the derived
    playback state then decides.
 2. **Control**: Send play/pause/seek commands via IPC
 3. **Monitor**: Read current position, playback state
@@ -2470,8 +2476,8 @@ Player choice is per-user configuration.
 without a desktop (e.g. over ssh): instead of spawning mpv, dessplay
 *attaches* to one the user already launched at a given `--input-ipc-server`
 socket. The user runs mpv in a separate terminal (e.g. a tmux pane) with
-`mpv --idle=yes --keep-open=yes --vo=tct --input-ipc-server=<socket>` — the
-`--idle --keep-open` are required (the EOF/load mechanics depend on them) and
+`mpv --idle=yes --keep-open=always --vo=tct --input-ipc-server=<socket>` — the
+`--idle --keep-open=always` are required (the EOF/load mechanics depend on them) and
 `--vo=tct` renders video as terminal cells. mpv accepts multiple simultaneous
 IPC clients, so dessplay drives loads/seeks/observation while the user's
 keyboard in that terminal still pauses and scrubs directly. A manual pause
