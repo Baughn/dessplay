@@ -573,6 +573,22 @@ impl Storage {
         Ok(hashes)
     }
 
+    /// Every personally-watched file with its watch time (unix millis).
+    /// The episode browser mutes these and, for a multi-copy episode,
+    /// follows the copy most recently actually played.
+    pub fn watched_times(&self) -> Result<std::collections::BTreeMap<Ed2kHash, i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT hash, watched_at FROM watch_history")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get(1)?)))?;
+        let mut times = std::collections::BTreeMap::new();
+        for row in rows {
+            let (blob, watched_at) = row?;
+            times.insert(hash_from_blob(blob)?, watched_at);
+        }
+        Ok(times)
+    }
+
     /// "Known series": has any file from this series ever been watched?
     pub fn series_known(&self, key: &SeriesKey) -> Result<bool> {
         let count: i64 = match key {

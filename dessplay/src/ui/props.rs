@@ -1520,7 +1520,7 @@ pub fn ready_holders(view: &StateView, hash: Ed2kHash) -> Vec<UserId> {
 pub fn episode_rows(
     view: &StateView,
     hashes: &[Ed2kHash],
-    personally_watched: &BTreeSet<Ed2kHash>,
+    personally_watched: &BTreeMap<Ed2kHash, i64>,
 ) -> Vec<EpisodeRow> {
     struct Entry {
         hash: Ed2kHash,
@@ -1584,7 +1584,7 @@ pub fn episode_rows(
         filename: entry.label.clone(),
         holders: ready_holders(view, entry.hash),
         watched: view.watched.get(&entry.hash) == Some(&true)
-            || personally_watched.contains(&entry.hash),
+            || personally_watched.contains_key(&entry.hash),
     };
 
     groups
@@ -1632,6 +1632,94 @@ pub fn first_unwatched(rows: &[EpisodeRow]) -> Option<usize> {
         EpisodeRow::Child(copy) => !header_watched && !copy.watched,
         EpisodeRow::Single { copy, .. } => !copy.watched,
     })
+}
+
+/// The row the browser's cursor opens on: the first unwatched row
+/// ([`first_unwatched`]; row 0 when everything is watched or nothing is
+/// known), refined for a multi-copy episode. A `Header` names several
+/// files and can't be chosen with Enter, so when the previous episode
+/// was actually played from a known copy, the cursor lands on the child
+/// whose filename is nearest (Levenshtein) to that copy's — the same
+/// release group, resolution and subtitle track the group has been
+/// following. "Actually played" is the personal watch history (85%
+/// rule, `personal_watched`, newest record wins) or, failing that, the
+/// copy sitting in the group playlist — never a bare watched *flag*,
+/// which `w` can set on any copy. No such evidence: the header, and
+/// the user picks.
+pub fn opening_row(
+    rows: &[EpisodeRow],
+    personal_watched: &BTreeMap<Ed2kHash, i64>,
+    view: &StateView,
+) -> usize {
+    let Some(first) = first_unwatched(rows) else {
+        return 0;
+    };
+    if !matches!(rows[first], EpisodeRow::Header { .. }) {
+        return first;
+    }
+    let Some(reference) = previous_episode_copies(rows, first)
+        .into_iter()
+        .filter_map(|copy| {
+            // Personal history outranks playlist presence outright; the
+            // playlist tie-breaks among unrecorded copies by hash only,
+            // so the choice is deterministic across redraws.
+            let rank = match personal_watched.get(&copy.hash) {
+                Some(at) => (1, *at),
+                None if view.playlist.iter().any(|entry| entry.hash == copy.hash) => (0, 0),
+                None => return None,
+            };
+            Some((rank, copy))
+        })
+        .max_by_key(|(rank, copy)| (*rank, std::cmp::Reverse(copy.hash)))
+        .map(|(_, copy)| copy)
+    else {
+        return first;
+    };
+    rows[first + 1..]
+        .iter()
+        .take_while(|row| matches!(row, EpisodeRow::Child(_)))
+        .enumerate()
+        .filter_map(|(offset, row)| match row {
+            EpisodeRow::Child(copy) => Some((
+                strsim::levenshtein(&copy.filename, &reference.filename),
+                first + 1 + offset,
+            )),
+            _ => None,
+        })
+        .min()
+        .map_or(first, |(_, index)| index)
+}
+
+/// The copies of the episode immediately preceding row `index` (which
+/// must start an episode: a `Header` or a `Single`): a `Single` on its
+/// own, or the child run under the previous `Header`. Empty at the top
+/// of the list.
+fn previous_episode_copies(rows: &[EpisodeRow], index: usize) -> Vec<&EpisodeCopy> {
+    match rows[..index].last() {
+        Some(EpisodeRow::Single { copy, .. }) => vec![copy],
+        Some(EpisodeRow::Child(_)) => rows[..index]
+            .iter()
+            .rev()
+            .map_while(|row| match row {
+                EpisodeRow::Child(copy) => Some(copy),
+                _ => None,
+            })
+            .collect(),
+        Some(EpisodeRow::Header { .. }) | None => vec![],
+    }
+}
+
+/// The row starting the episode after the one containing row `index`:
+/// the next `Header` or `Single` past the current episode's copies.
+/// `None` when `index` is in the last episode. Where the cursor lands
+/// after `w` marks an episode watched (the natural next thing to mark,
+/// or to choose).
+pub fn next_episode_row(rows: &[EpisodeRow], index: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .skip(index + 1)
+        .find(|(_, row)| !matches!(row, EpisodeRow::Child(_)))
+        .map(|(i, _)| i)
 }
 
 /// How far (Levenshtein distance) a file's derived series name may sit
@@ -1795,7 +1883,7 @@ fn next_ep_display(view: &StateView, entry: &SeriesListEntry, next_ep: &str) -> 
 /// enough for the per-snapshot refresh.
 fn entries_with_unwatched_files(
     view: &StateView,
-    watched_hashes: &BTreeSet<Ed2kHash>,
+    watched_hashes: &BTreeMap<Ed2kHash, i64>,
 ) -> BTreeSet<ListEntryId> {
     // Episode identities watched through *any* copy: a duplicate
     // encoding of an episode the group has seen is not "something to
@@ -1806,7 +1894,7 @@ fn entries_with_unwatched_files(
         .iter()
         .filter(|(_, watched)| **watched)
         .map(|(hash, _)| hash)
-        .chain(watched_hashes.iter())
+        .chain(watched_hashes.keys())
         .filter_map(|hash| {
             let metadata = view.anidb_metadata.get(hash)?.as_ref()?;
             Some((metadata.series_id?, metadata.episode_number.as_deref()?))
@@ -1835,7 +1923,7 @@ fn entries_with_unwatched_files(
     let index = series_identity::SeriesEntryIndex::new(view);
     held.into_iter()
         .filter(|hash| !view.watched.get(hash).copied().unwrap_or(false))
-        .filter(|hash| !watched_hashes.contains(hash))
+        .filter(|hash| !watched_hashes.contains_key(hash))
         .filter(|hash| !episode_watched(hash))
         .filter_map(|hash| index.resolve(view, hash))
         .collect()
@@ -1857,7 +1945,7 @@ pub fn list_groups(
     users: &[UserId],
     sort: ListSort,
     recency: &BTreeMap<SeriesKey, u64>,
-    watched_hashes: &BTreeSet<Ed2kHash>,
+    watched_hashes: &BTreeMap<Ed2kHash, i64>,
 ) -> Vec<ListGroup> {
     // Live commitment: who has each entry as Watching, from the resolved
     // series_preference map (absent = Maybe, which never groups).
@@ -2064,7 +2152,7 @@ impl ListGroupsCache {
         users: &[UserId],
         sort: ListSort,
         recency: &BTreeMap<SeriesKey, u64>,
-        watched_hashes: &BTreeSet<Ed2kHash>,
+        watched_hashes: &BTreeMap<Ed2kHash, i64>,
     ) -> &[ListGroup] {
         let key = list_inputs_fingerprint(view, me, users, sort, recency, watched_hashes);
         if self.key != Some(key) {
@@ -2099,7 +2187,7 @@ fn list_inputs_fingerprint(
     users: &[UserId],
     sort: ListSort,
     recency: &BTreeMap<SeriesKey, u64>,
-    watched_hashes: &BTreeSet<Ed2kHash>,
+    watched_hashes: &BTreeMap<Ed2kHash, i64>,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = rustc_hash::FxHasher::default();
@@ -2995,7 +3083,7 @@ mod tests {
             ],
             sort,
             &BTreeMap::new(),
-            &BTreeSet::new(),
+            &BTreeMap::new(),
         )
     }
 
@@ -3263,7 +3351,7 @@ mod tests {
             &[UserId::new("kim")],
             ListSort::Recency,
             &recency,
-            &BTreeSet::new(),
+            &BTreeMap::new(),
         );
         assert_eq!(headings(&groups), vec!["Watching — kim"]);
         let names: Vec<&str> = groups[0].rows.iter().map(|r| r.name.as_str()).collect();
@@ -3409,7 +3497,8 @@ mod tests {
             FileAvailability::Ready,
         );
 
-        let personally_watched: BTreeSet<Ed2kHash> = [Ed2kHash([1; 16])].into_iter().collect();
+        let personally_watched: BTreeMap<Ed2kHash, i64> =
+            [(Ed2kHash([1; 16]), 1)].into_iter().collect();
         let groups = list_groups(
             &state.view(),
             &UserId::new("kim"),
@@ -3555,7 +3644,7 @@ mod tests {
                     ],
                     ListSort::Recency,
                     &BTreeMap::new(),
-                    &BTreeSet::new(),
+                    &BTreeMap::new(),
                 )
                 .to_vec()
         };
@@ -3622,7 +3711,7 @@ mod tests {
             users: Vec<UserId>,
             sort: ListSort,
             recency: BTreeMap<SeriesKey, u64>,
-            watched_hashes: BTreeSet<Ed2kHash>,
+            watched_hashes: BTreeMap<Ed2kHash, i64>,
         }
         let base = |state: &CrdtState| Step {
             name: "",
@@ -3630,7 +3719,7 @@ mod tests {
             users: users.clone(),
             sort: ListSort::Recency,
             recency: BTreeMap::new(),
-            watched_hashes: BTreeSet::new(),
+            watched_hashes: BTreeMap::new(),
         };
 
         let mut steps = Vec::new();
@@ -3667,7 +3756,7 @@ mod tests {
         // Personal watch history: the same file watched only locally.
         let mut personal = base(&state);
         personal.name = "personal watch history";
-        personal.watched_hashes.insert(Ed2kHash([1; 16]));
+        personal.watched_hashes.insert(Ed2kHash([1; 16]), 1);
         steps.push(personal);
         // Recency floats the more recently watched of the two dimmed
         // rows within its partition.
@@ -3725,7 +3814,7 @@ mod tests {
                     &users,
                     ListSort::Recency,
                     &BTreeMap::new(),
-                    &BTreeSet::new(),
+                    &BTreeMap::new(),
                 )
                 .to_vec();
             let after = cache
@@ -4011,7 +4100,7 @@ mod tests {
         }
         let view = state.view();
         let hashes: Vec<Ed2kHash> = (1..=3).map(hash).collect();
-        let rows = episode_rows(&view, &hashes, &BTreeSet::new());
+        let rows = episode_rows(&view, &hashes, &BTreeMap::new());
         let filenames: Vec<&str> = rows
             .iter()
             .filter_map(|row| match row {
@@ -4349,6 +4438,114 @@ mod tests {
         );
     }
 
+    /// Hand-built browser rows for the cursor-placement helpers: the
+    /// grouping itself is `episode_rows`'s business (tested above).
+    fn copy(i: u8, filename: &str, watched: bool) -> EpisodeCopy {
+        EpisodeCopy {
+            hash: hash(i),
+            filename: filename.into(),
+            holders: vec![],
+            watched,
+        }
+    }
+
+    fn single_row(i: u8, filename: &str, watched: bool) -> EpisodeRow {
+        EpisodeRow::Single {
+            episode: None,
+            copy: copy(i, filename, watched),
+        }
+    }
+
+    fn header_row(watched: bool) -> EpisodeRow {
+        EpisodeRow::Header {
+            episode: "Episode".into(),
+            watched,
+        }
+    }
+
+    #[test]
+    fn opening_row_is_the_first_unwatched_row_for_single_copies() {
+        let empty = BTreeMap::new();
+        let view = CrdtState::new().view();
+        // Nothing watched: the top of the list.
+        let rows = vec![single_row(1, "ep1", false), single_row(2, "ep2", false)];
+        assert_eq!(opening_row(&rows, &empty, &view), 0);
+        // Episode 1 seen: episode 2.
+        let rows = vec![single_row(1, "ep1", true), single_row(2, "ep2", false)];
+        assert_eq!(opening_row(&rows, &empty, &view), 1);
+        // Everything seen: the top again (nothing to continue to).
+        let rows = vec![single_row(1, "ep1", true), single_row(2, "ep2", true)];
+        assert_eq!(opening_row(&rows, &empty, &view), 0);
+        assert_eq!(opening_row(&[], &empty, &view), 0);
+    }
+
+    #[test]
+    fn opening_row_picks_the_copy_nearest_the_previously_played_file() {
+        // Episode 1 was actually played (personal history) from group A's
+        // 1080p release; episode 2 has a B/720p copy listed first and an
+        // A/1080p copy second. The cursor skips the header for the A copy.
+        let rows = vec![
+            single_row(1, "[A] Show - 01 [1080p].mkv", true),
+            header_row(false),
+            EpisodeRow::Child(copy(2, "[B] Show - 02 [720p].mkv", false)),
+            EpisodeRow::Child(copy(3, "[A] Show - 02 [1080p].mkv", false)),
+        ];
+        let view = CrdtState::new().view();
+        let personal: BTreeMap<Ed2kHash, i64> = [(hash(1), 10)].into_iter().collect();
+        assert_eq!(opening_row(&rows, &personal, &view), 3);
+        // A watched *flag* alone is not evidence of which file played:
+        // the header, and the user chooses.
+        assert_eq!(opening_row(&rows, &BTreeMap::new(), &view), 1);
+        // At the top of the list there is no previous episode at all.
+        assert_eq!(opening_row(&rows[1..], &personal, &view), 0);
+    }
+
+    #[test]
+    fn opening_row_reference_prefers_personal_history_then_the_playlist() {
+        // Episode 1 has two copies; episode 2 has two copies mirroring
+        // them by name. Which copy of episode 2 the cursor opens on must
+        // follow the copy of episode 1 that was actually played.
+        let rows = vec![
+            header_row(true),
+            EpisodeRow::Child(copy(1, "[A] Show - 01.mkv", true)),
+            EpisodeRow::Child(copy(2, "[B] Show - 01.mkv", true)),
+            header_row(false),
+            EpisodeRow::Child(copy(3, "[A] Show - 02.mkv", false)),
+            EpisodeRow::Child(copy(4, "[B] Show - 02.mkv", false)),
+        ];
+        let empty = BTreeMap::new();
+        // Both flagged, neither played anywhere we can see: header.
+        assert_eq!(opening_row(&rows, &empty, &CrdtState::new().view()), 3);
+        // The B copy sits in the group playlist: follow B.
+        let mut state = CrdtState::new();
+        state.push_playlist_entry(A, ts(1), entry(2, "[B] Show - 01.mkv"));
+        let view = state.view();
+        assert_eq!(opening_row(&rows, &empty, &view), 5);
+        // But a personal record for A outranks playlist presence...
+        let personal: BTreeMap<Ed2kHash, i64> = [(hash(1), 10)].into_iter().collect();
+        assert_eq!(opening_row(&rows, &personal, &view), 4);
+        // ...and between two personal records, the newest wins.
+        let personal: BTreeMap<Ed2kHash, i64> =
+            [(hash(1), 10), (hash(2), 20)].into_iter().collect();
+        assert_eq!(opening_row(&rows, &personal, &view), 5);
+    }
+
+    #[test]
+    fn next_episode_row_skips_the_current_episodes_copies() {
+        let rows = vec![
+            single_row(1, "ep1", false),
+            header_row(false),
+            EpisodeRow::Child(copy(2, "a", false)),
+            EpisodeRow::Child(copy(3, "b", false)),
+            single_row(4, "ep3", false),
+        ];
+        assert_eq!(next_episode_row(&rows, 0), Some(1));
+        assert_eq!(next_episode_row(&rows, 1), Some(4));
+        assert_eq!(next_episode_row(&rows, 2), Some(4));
+        assert_eq!(next_episode_row(&rows, 3), Some(4));
+        assert_eq!(next_episode_row(&rows, 4), None);
+    }
+
     #[test]
     fn episode_rows_single_copy_per_episode() {
         // Two distinct AniDB episodes, one file each: two Single rows, in
@@ -4358,7 +4555,7 @@ mod tests {
         state.set_anidb_metadata(A, ts(1), hash(2), Some(metadata(series, "2")));
         state.set_anidb_metadata(A, ts(2), hash(1), Some(metadata(series, "1")));
         let view = state.view();
-        let rows = episode_rows(&view, &[hash(2), hash(1)], &BTreeSet::new());
+        let rows = episode_rows(&view, &[hash(2), hash(1)], &BTreeMap::new());
         let hashes: Vec<Ed2kHash> = rows.iter().filter_map(EpisodeRow::hash).collect();
         assert_eq!(hashes, vec![hash(1), hash(2)]);
         assert!(
@@ -4392,7 +4589,7 @@ mod tests {
             FileAvailability::Ready,
         );
         let view = state.view();
-        let rows = episode_rows(&view, &[hash(1), hash(2)], &BTreeSet::new());
+        let rows = episode_rows(&view, &[hash(1), hash(2)], &BTreeMap::new());
         assert_eq!(rows.len(), 3);
         assert!(
             matches!(&rows[0], EpisodeRow::Header { episode, watched: false } if episode == "Episode 3")
@@ -4421,7 +4618,7 @@ mod tests {
             text: "irrelevant".into(),
         });
         let view = state.view();
-        let rows = episode_rows(&view, &[hash(1), hash(2)], &BTreeSet::new());
+        let rows = episode_rows(&view, &[hash(1), hash(2)], &BTreeMap::new());
         assert_eq!(rows.len(), 2);
         assert!(
             rows.iter()
@@ -4436,7 +4633,7 @@ mod tests {
         state.set_anidb_metadata(A, ts(1), hash(1), Some(metadata(series, "1")));
         state.set_anidb_metadata(A, ts(2), hash(2), Some(metadata(series, "2")));
         state.set_watched(A, ts(3), hash(1), true); // group flag
-        let personally_watched: BTreeSet<Ed2kHash> = [hash(2)].into_iter().collect(); // personal history
+        let personally_watched: BTreeMap<Ed2kHash, i64> = [(hash(2), 1)].into_iter().collect(); // personal history
         let view = state.view();
         let rows = episode_rows(&view, &[hash(1), hash(2)], &personally_watched);
         assert!(rows.iter().all(EpisodeRow::watched));
@@ -4464,7 +4661,7 @@ mod tests {
         state.set_anidb_metadata(A, ts(3), hash(3), Some(metadata(series, "2")));
         state.set_watched(A, ts(4), hash(1), true);
         let view = state.view();
-        let rows = episode_rows(&view, &[hash(1), hash(2), hash(3)], &BTreeSet::new());
+        let rows = episode_rows(&view, &[hash(1), hash(2), hash(3)], &BTreeMap::new());
         let EpisodeRow::Header { watched, .. } = &rows[0] else {
             panic!("expected a Header row")
         };

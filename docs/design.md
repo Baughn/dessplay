@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-21
+Last updated: 2026-08-25
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1717,8 +1717,8 @@ the last copy. A motionless click never touches the clipboard.
 | `e` | Series (List mode) | Edit entry (modal) |
 | `n` | Series (List mode) | Edit the entry's `nero_name` (minimal single-field editor; empty clears) |
 | `l` | Series (List mode) | Link entry to AniDB (search modal) |
-| `Enter` | Episode Browser | Select season (cursor on its first unwatched row) / choose an episode or copy; no-op on a header row |
-| `w` | Episode Browser | Cycle the group watched flag: the selected file, or every copy of the episode on a header row; no-op in the season list |
+| `Enter` | Episode Browser | Select season (cursor on its first unwatched row — for a multi-copy episode, on the copy whose name is nearest the file actually played for the previous episode, else its header) / choose an episode or copy; no-op on a header row |
+| `w` | Episode Browser | Cycle the group watched flag: the selected file, or every copy of the episode on a header row; marking moves the cursor to the next episode; no-op in the season list |
 | `PgUp` / `PgDn` | Episode Browser | Move the selection by a page |
 | `Esc` / `Backspace` | Episode Browser | Go back (episodes -> seasons -> close) |
 | `Enter` | File Browser | Open directory / choose file (add or map) |
@@ -2399,6 +2399,10 @@ eviction):
 - Used for:
   - Sorting "Recent Series" (most recently watched on top)
   - Filtering "unwatched files" in series browser
+  - Choosing among copies of an episode: the episode browser opens on
+    the copy nearest by name to the copy of the previous episode this
+    client actually played (newest record; falling back to a copy in the
+    group playlist; a bare watched flag is no evidence of *which* file)
   - **Known series detection**: a series is "known" if you have previously
     watched any file from it. This affects missing file behavior -- see
     [File Matching](#file-matching)

@@ -2153,7 +2153,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             .into_iter()
             .map(|entry| entry.hash)
             .collect();
-        let watched_hashes = self.storage.watched_hashes().unwrap_or_default();
+        let personal_watched = self.storage.watched_times().unwrap_or_default();
         let peers = self.handle.peers.borrow().clone();
         // Context for the health row's sync display: with company during
         // playback the wire should be chatty, so the "worth showing" bar
@@ -2178,7 +2178,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
             shared_now,
             recency,
             cache_hashes,
-            watched_hashes,
+            personal_watched,
             link: self.link,
             health: crate::ui::props::HealthProps {
                 link: self.link,

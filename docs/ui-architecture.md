@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-08-20
+Last updated: 2026-08-25
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -542,10 +542,19 @@ Modal types:
   action so the file actor receives a complete destination policy.
 - **EpisodeBrowser**: Browse franchise seasons/episodes. Row structure
   is built at open time, but the volatile per-copy state — watched
-  marks, holder lists, the first-unwatched `<` marker — is refreshed in
-  place from every `UiSnapshot` (`EpisodeBrowser::refresh`, called by
-  `apply_snapshot` for every browser in the modal stack), so `w`'s
-  round-trip and other clients' toggles show without reopening
+  marks, holder lists, the first-unwatched `<` marker, the opening
+  row — is refreshed in place from every `UiSnapshot`
+  (`EpisodeBrowser::refresh`, called by `apply_snapshot` for every
+  browser in the modal stack), so `w`'s round-trip and other clients'
+  toggles show without reopening. A season's opening cursor
+  (`Season::opening_row`, from the pure `props::opening_row`) is the
+  first unwatched row, except that a multi-copy header is skipped for
+  the child nearest (Levenshtein on filename) to the copy actually
+  played for the previous episode — evidence being the personal watch
+  history's timestamps (`UiSnapshot::personal_watched`, hash →
+  watched-at) or presence in the group playlist; without it the cursor
+  stays on the header. `w` on an unwatched row also moves the cursor to
+  the next episode (`props::next_episode_row`)
 - **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)
 - **AniDbSearch**: Link a List entry to an AniDB series (`l` in List
   mode). Pre-searches for the entry's name; the search runs server-side

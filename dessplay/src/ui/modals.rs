@@ -1528,8 +1528,32 @@ pub struct Season {
     /// identity (design.md #31: single copy vs. header + children).
     pub episodes: Vec<EpisodeRow>,
     /// Index of the first not-fully-watched row (design.md #11): where
-    /// the `<` marker sits and where the cursor opens.
+    /// the `<` marker sits.
     pub first_unwatched: Option<usize>,
+    /// Where the cursor opens: `first_unwatched`, refined to the copy
+    /// nearest the one actually played for the previous episode
+    /// (`props::opening_row`).
+    pub opening_row: usize,
+}
+
+impl Season {
+    /// Build a season from its rows, deriving the marker and opening
+    /// cursor from the group view and personal watch history.
+    pub fn new(
+        title: String,
+        episodes: Vec<EpisodeRow>,
+        personal_watched: &std::collections::BTreeMap<Ed2kHash, i64>,
+        view: &dessplay_core::StateView,
+    ) -> Self {
+        let first_unwatched = props::first_unwatched(&episodes);
+        let opening_row = props::opening_row(&episodes, personal_watched, view);
+        Self {
+            title,
+            episodes,
+            first_unwatched,
+            opening_row,
+        }
+    }
 }
 
 /// Browse a franchise's seasons and known episodes.
@@ -1550,7 +1574,7 @@ impl EpisodeBrowser {
     }
 
     /// Re-derive the volatile per-copy state — watched marks, holder
-    /// lists, the first-unwatched `<` marker — from a fresh snapshot,
+    /// lists, the first-unwatched `<` marker, the opening row — from a fresh snapshot,
     /// in place. The dispatcher calls this on every snapshot, so `w`'s
     /// round-trip (and other clients' toggles and downloads) shows
     /// without reopening the browser. Row *structure* stays as built at
@@ -1559,7 +1583,7 @@ impl EpisodeBrowser {
     pub(crate) fn refresh(
         &mut self,
         view: &dessplay_core::StateView,
-        personally_watched: &std::collections::BTreeSet<Ed2kHash>,
+        personally_watched: &std::collections::BTreeMap<Ed2kHash, i64>,
     ) {
         // One pass over the availability map, not one scan per copy.
         let mut holders_by_hash: std::collections::BTreeMap<Ed2kHash, Vec<_>> =
@@ -1577,7 +1601,7 @@ impl EpisodeBrowser {
                 // The muting rule, same as `props::episode_rows`: the
                 // group flag or personal history — either counts.
                 copy.watched = view.watched.get(&copy.hash) == Some(&true)
-                    || personally_watched.contains(&copy.hash);
+                    || personally_watched.contains_key(&copy.hash);
                 copy.holders = holders_by_hash.get(&copy.hash).cloned().unwrap_or_default();
             }
             // A header mutes when *any* copy under it (the contiguous
@@ -1595,17 +1619,18 @@ impl EpisodeBrowser {
                 }
             }
             season.first_unwatched = props::first_unwatched(&season.episodes);
+            season.opening_row = props::opening_row(&season.episodes, personally_watched, view);
         }
     }
 
     /// Open on a franchise. With exactly one season, jump straight to
     /// the episode list (the design's single-season shortcut), cursor on
-    /// its first unwatched row.
+    /// its opening row.
     pub fn new(title: String, seasons: Vec<Season>) -> Self {
         let open = (seasons.len() == 1).then_some(0);
         let mut cursor = ListCursor::default();
         if let Some(0) = open {
-            cursor.set(seasons[0].first_unwatched.unwrap_or(0));
+            cursor.set(seasons[0].opening_row);
         }
         Self {
             title,
@@ -1620,8 +1645,9 @@ impl EpisodeBrowser {
         EPISODES_KEYMAP.bar()
     }
 
-    /// Enter: open the selected season (cursor on its first unwatched
-    /// row), or choose the selected episode (added to the playlist by
+    /// Enter: open the selected season (cursor on its opening row: the
+    /// first unwatched episode, or the copy of it matching what was
+    /// played last), or choose the selected episode (added to the playlist by
     /// hash — if we hold the file it resolves Ready; if not, it's added
     /// from the file catalog and downloads). A `Header` row (ambiguous
     /// multi-copy episode) has no single hash to choose and declines.
@@ -1630,8 +1656,7 @@ impl EpisodeBrowser {
             None => {
                 if !self.seasons.is_empty() {
                     let index = self.cursor.index();
-                    self.cursor
-                        .set(self.seasons[index].first_unwatched.unwrap_or(0));
+                    self.cursor.set(self.seasons[index].opening_row);
                     self.open = Some(index);
                 }
                 Some(Msg::None)
@@ -1665,18 +1690,37 @@ impl EpisodeBrowser {
     /// selected file, or, on a `Header` row, for every copy of that
     /// episode at once (the episode is watched when *any* copy is, so
     /// the toggle acts on the set). No-op in the season list.
+    ///
+    /// Marking (the row shows unwatched) also moves the cursor to the
+    /// next episode's header/single row — catching up on a run of
+    /// episodes is `w w w`, and the next Enter is the natural choice.
+    /// Unmarking stays put: the direction is decided by the dispatcher
+    /// from the group flags, and a row shown watched only through
+    /// personal history is the one edge where "shows watched" and "the
+    /// toggle will unmark" disagree — then the cursor stays, which is
+    /// the harmless side.
     fn act_toggle_watched(&mut self) -> Option<Msg> {
         let index = self.open?;
         let episodes = &self.seasons[index].episodes;
-        let hashes: Vec<Ed2kHash> = match episodes.get(self.cursor.index())? {
+        let at = self.cursor.index();
+        let row = episodes.get(at)?;
+        let hashes: Vec<Ed2kHash> = match row {
             EpisodeRow::Single { copy, .. } | EpisodeRow::Child(copy) => vec![copy.hash],
-            EpisodeRow::Header { .. } => episodes[self.cursor.index() + 1..]
+            EpisodeRow::Header { .. } => episodes[at + 1..]
                 .iter()
                 .take_while(|row| matches!(row, EpisodeRow::Child(_)))
                 .filter_map(EpisodeRow::hash)
                 .collect(),
         };
-        (!hashes.is_empty()).then_some(Msg::ToggleEpisodeWatched { hashes })
+        if hashes.is_empty() {
+            return None;
+        }
+        if !row.watched()
+            && let Some(next) = props::next_episode_row(episodes, at)
+        {
+            self.cursor.set(next);
+        }
+        Some(Msg::ToggleEpisodeWatched { hashes })
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -2721,12 +2765,12 @@ mod tests {
     }
 
     fn season(title: &str, episodes: Vec<EpisodeRow>) -> Season {
-        let first_unwatched = props::first_unwatched(&episodes);
-        Season {
-            title: title.into(),
+        Season::new(
+            title.into(),
             episodes,
-            first_unwatched,
-        }
+            &std::collections::BTreeMap::new(),
+            &dessplay_core::CrdtState::new().view(),
+        )
     }
 
     #[test]
@@ -3213,7 +3257,7 @@ mod tests {
             hash(2),
             FileAvailability::Ready,
         );
-        let personal = [hash(2)].into_iter().collect();
+        let personal = [(hash(2), 1)].into_iter().collect();
         browser.refresh(&state.view(), &personal);
 
         let season = &browser.seasons()[0];
@@ -3273,6 +3317,97 @@ mod tests {
             Some(Msg::ToggleEpisodeWatched {
                 hashes: vec![hash(1)]
             })
+        );
+    }
+
+    /// Marking an episode watched moves the cursor to the next
+    /// episode's row (`w w w` catches up; Enter then queues the next
+    /// one). The last episode has nowhere to go; unmarking stays put.
+    #[test]
+    fn w_key_moves_the_cursor_to_the_next_episode_when_marking() {
+        let mut episodes =
+            header_and_children("Episode 3", &[(hash(1), "a.mkv"), (hash(2), "b.mkv")]);
+        episodes.push(single(hash(3), "ep4"));
+        let mut browser = EpisodeBrowser::new("Frieren".into(), vec![season("S1", episodes)]);
+        // On the header of episode 3: `w` marks both copies and lands on
+        // episode 4 — the next Enter chooses it.
+        assert_eq!(
+            browser.on(&char_key('w')),
+            Some(Msg::ToggleEpisodeWatched {
+                hashes: vec![hash(1), hash(2)]
+            })
+        );
+        assert_eq!(browser.cursor.index(), 3);
+        assert_eq!(
+            browser.on(&enter()),
+            Some(Msg::EpisodeChosen { hash: hash(3) })
+        );
+        // Last episode: nowhere further to jump.
+        browser.on(&char_key('w'));
+        assert_eq!(browser.cursor.index(), 3);
+        // From a copy under a header, the jump is past the whole
+        // episode, not to its sibling copy.
+        browser.cursor.set(1);
+        browser.on(&char_key('w'));
+        assert_eq!(browser.cursor.index(), 3);
+
+        // A row shown watched: `w` unmarks, and the cursor stays.
+        let watched = EpisodeRow::Single {
+            episode: None,
+            copy: EpisodeCopy {
+                hash: hash(1),
+                filename: "ep1".into(),
+                holders: vec![],
+                watched: true,
+            },
+        };
+        let mut browser = EpisodeBrowser::new(
+            "Frieren".into(),
+            vec![season("S1", vec![watched, single(hash(2), "ep2")])],
+        );
+        browser.cursor.set(0);
+        assert!(browser.on(&char_key('w')).is_some());
+        assert_eq!(browser.cursor.index(), 0);
+    }
+
+    /// Opening a season from the season list uses the season's opening
+    /// row: the copy of the first unwatched episode nearest the file
+    /// actually played for the previous one (`props::opening_row`).
+    #[test]
+    fn opening_a_season_lands_on_the_copy_matching_the_last_played_file() {
+        use dessplay_core::CrdtState;
+        let mut episodes = vec![EpisodeRow::Single {
+            episode: Some("Episode 1".into()),
+            copy: EpisodeCopy {
+                hash: hash(1),
+                filename: "[A] Show - 01.mkv".into(),
+                holders: vec![],
+                watched: true,
+            },
+        }];
+        episodes.extend(header_and_children(
+            "Episode 2",
+            &[
+                (hash(2), "[B] Show - 02.mkv"),
+                (hash(3), "[A] Show - 02.mkv"),
+            ],
+        ));
+        let personal = [(hash(1), 5)].into_iter().collect();
+        let view = CrdtState::new().view();
+        let s2 = Season::new("S2".into(), episodes, &personal, &view);
+        assert_eq!(
+            s2.first_unwatched,
+            Some(1),
+            "the `<` marker stays on the header"
+        );
+        assert_eq!(s2.opening_row, 3);
+        let s1 = Season::new("S1".into(), vec![single(hash(9), "x")], &personal, &view);
+        let mut browser = EpisodeBrowser::new("Show".into(), vec![s1, s2]);
+        browser.on(&down());
+        browser.on(&enter()); // open S2
+        assert_eq!(
+            browser.on(&enter()),
+            Some(Msg::EpisodeChosen { hash: hash(3) })
         );
     }
 

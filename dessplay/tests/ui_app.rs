@@ -155,7 +155,7 @@ fn snapshot(view: StateView, peers: Vec<PeerInfo>) -> UiSnapshot {
         shared_now: 0,
         recency: BTreeMap::new(),
         cache_hashes: Default::default(),
-        watched_hashes: Default::default(),
+        personal_watched: Default::default(),
         link: dessplay::ui::props::LinkStatus::Connected,
         health: dessplay::ui::props::HealthProps {
             link: dessplay::ui::props::LinkStatus::Connected,
@@ -173,7 +173,7 @@ fn snapshot_with_cache(view: StateView, peers: Vec<PeerInfo>, cache: &[Ed2kHash]
         shared_now: 0,
         recency: BTreeMap::new(),
         cache_hashes: cache.iter().copied().collect(),
-        watched_hashes: Default::default(),
+        personal_watched: Default::default(),
         link: dessplay::ui::props::LinkStatus::Connected,
         health: Default::default(),
     }

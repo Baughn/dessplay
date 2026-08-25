@@ -73,10 +73,12 @@ pub struct UiSnapshot {
     /// root). These render a dim "temporary" marker and are the only
     /// rows the archive action operates on. Local, not synced.
     pub cache_hashes: BTreeSet<Ed2kHash>,
-    /// Personal watch history (85% rule), by hash — feeds the episode
-    /// browser's muting alongside the group watched flag (design.md
-    /// #11). Local, not synced.
-    pub watched_hashes: BTreeSet<Ed2kHash>,
+    /// Personal watch history (85% rule): hash -> watched-at millis.
+    /// Feeds the episode browser's muting alongside the group watched
+    /// flag (design.md #11), and — via the timestamps — which copy of a
+    /// multi-copy episode the group has actually been playing
+    /// (`props::opening_row`). Local, not synced.
+    pub personal_watched: BTreeMap<Ed2kHash, i64>,
     /// Server-link state, from the network actor's connect lifecycle.
     /// The status bar shows it whenever it isn't `Connected`.
     pub link: props::LinkStatus,
@@ -941,7 +943,7 @@ impl Ui {
         // completions — shows immediately instead of on reopen.
         for modal in &mut self.modals {
             if let Modal::Episodes(browser) = modal {
-                browser.refresh(&self.snapshot.view, &self.snapshot.watched_hashes);
+                browser.refresh(&self.snapshot.view, &self.snapshot.personal_watched);
             }
         }
     }
@@ -977,7 +979,7 @@ impl Ui {
                     &users,
                     self.series.list_sort(),
                     &self.snapshot.recency,
-                    &self.snapshot.watched_hashes,
+                    &self.snapshot.personal_watched,
                 );
                 self.series.set_groups(groups);
                 return;
@@ -1634,6 +1636,7 @@ impl Ui {
                     // Row 0 is always the synthetic Header; the best-ranked
                     // candidate (index 1) is where the cursor should open.
                     first_unwatched: Some(1),
+                    opening_row: 1,
                     episodes: rows,
                 };
                 self.push_modal(Modal::Episodes(EpisodeBrowser::new(
@@ -2148,15 +2151,10 @@ impl Ui {
         // sorted and grouped by AniDB episode identity, muted by group
         // flag or personal history, with the browser's opening cursor on
         // the first unwatched row.
-        let watched_hashes = &self.snapshot.watched_hashes;
+        let personal_watched = &self.snapshot.personal_watched;
         let build_season = |title: String, hashes: Vec<Ed2kHash>| -> Season {
-            let episodes = props::episode_rows(view, &hashes, watched_hashes);
-            let first_unwatched = props::first_unwatched(&episodes);
-            Season {
-                title,
-                episodes,
-                first_unwatched,
-            }
+            let episodes = props::episode_rows(view, &hashes, personal_watched);
+            Season::new(title, episodes, personal_watched, view)
         };
         let seasons: Vec<Season> = if franchise.series.is_empty() {
             vec![build_season(
