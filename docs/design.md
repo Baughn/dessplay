@@ -1658,7 +1658,14 @@ log whenever the pointer is over it (its title shows the offset, e.g.
 scroll subtitles in Intermixed mode, where they share the chat log.
 Clicking never activates a row (no double-click Enter); the one
 click-driven action is the chat [spoiler](#chat) reveal, whose key
-equivalent is `/reveal`. Mouse events are ignored while a modal is
+equivalent is `/reveal`. **Resizable panes:** the four pane boundaries
+(chat | right column, Series/Users, Users/Playlist, and chat/subtitle
+pane when shown) are splitters — press on the shared border cells and
+drag. Each pane keeps a minimum 10% share, the Series/Users splitter
+trades rows between those two only (the playlist boundary stays put),
+and the layout is persisted on release (`pane_layout`, whole percents)
+as a local display preference. No key equivalent — resizing is rare
+and not something keyboard speed matters for. Mouse events are ignored while a modal is
 open. Keyboard-only terminals lose nothing — every mouse action has a
 key equivalent, with one deliberate exception: chat text selection
 (below) is mouse-native, and uncommon enough to need no keyboard path.

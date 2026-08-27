@@ -460,6 +460,18 @@ the handler hit-tests against them:
   The shell freshens that clock (`advance_clock`) before dispatching
   each input. Clicks anywhere else in the chat column still just
   focus.
+- **Splitter drag** (design.md, Mouse support: resizable panes): a
+  left press on the two border cells where two panes meet
+  (`PaneRects::splitter_at`, checked *before* the pane hit-test since
+  the strips overlap the borders) arms `Ui::splitter_drag`, which also
+  remembers the layout at the press. Drag events then route by grab,
+  like the chat selection, through `PaneRects::layout_for_drag`: the
+  pointer's offset into the divided region becomes a whole-percent
+  share in `Settings::pane_layout` (`config::PaneLayout`), clamped so
+  no pane drops below `PaneLayout::MIN`. Release emits `SaveSettings`
+  iff the layout changed. `draw` reads the shares from settings each
+  frame, so the resize is visible on the next redraw and the defaults
+  reproduce the original 50/50 and 34/33/33 split.
 - **Chat drag-selection** (design.md, Mouse support): a left press on a
   selectable log row arms a drag (`ChatPane::mouse_down`); drag and
   release events then route to the chat by **grab, not position**, so

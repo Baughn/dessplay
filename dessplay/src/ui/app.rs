@@ -35,7 +35,7 @@ use super::props;
 use super::speaker_colors::SpeakerColors;
 use super::theme::ColorDepth;
 use crate::actors::sync::Mutation;
-use crate::config::{MarqueeMode, Settings, SubtitleMode, SubtitleSpeakerOverflow};
+use crate::config::{MarqueeMode, PaneLayout, Settings, SubtitleMode, SubtitleSpeakerOverflow};
 use crate::player::SpeakerName;
 
 /// Everything the UI renders from, refreshed on every state/peer
@@ -180,12 +180,134 @@ enum Focus {
 /// only matters for the wheel, which is hit-tested against it first.
 #[derive(Clone, Copy, Default)]
 struct PaneRects {
+    /// The whole region the panes divide (everything above the
+    /// progress line) — the denominator for the column splitter.
+    area: Rect,
     chat: Rect,
     /// The separate subtitle pane; zero-sized unless it was drawn.
     subs: Rect,
     series: Rect,
     users: Rect,
     playlist: Rect,
+}
+
+/// The four draggable pane boundaries (design.md, Mouse support:
+/// resizable panes). Each is the pair of adjacent border cells the two
+/// panes draw against each other — two cells wide, so the grab is
+/// forgiving — and each maps to exactly one `PaneLayout` field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Splitter {
+    /// Between the chat column and the right column.
+    Column,
+    /// Between the chat log and the separate subtitle pane.
+    ChatSubs,
+    /// Between the Series and Users panes.
+    SeriesUsers,
+    /// Between the Users and Playlist panes.
+    UsersPlaylist,
+}
+
+impl PaneRects {
+    /// Which splitter, if any, the pointer is over. Checked before the
+    /// pane hit-test, since the strips overlap the panes' border cells.
+    fn splitter_at(&self, position: Position) -> Option<Splitter> {
+        // The two border columns/rows that meet at the boundary.
+        let vertical_strip = |left: Rect, right: Rect| {
+            Rect::new(
+                right.x.saturating_sub(1),
+                left.y,
+                2,
+                left.height.max(right.height),
+            )
+        };
+        let horizontal_strip = |top: Rect, bottom: Rect| {
+            Rect::new(
+                top.x,
+                bottom.y.saturating_sub(1),
+                top.width.max(bottom.width),
+                2,
+            )
+        };
+        let candidates = [
+            (Splitter::Column, vertical_strip(self.chat, self.series)),
+            (
+                Splitter::SeriesUsers,
+                horizontal_strip(self.series, self.users),
+            ),
+            (
+                Splitter::UsersPlaylist,
+                horizontal_strip(self.users, self.playlist),
+            ),
+            (
+                Splitter::ChatSubs,
+                // Zero-sized (never hit) while the subtitle pane is hidden.
+                if self.subs.height == 0 {
+                    Rect::default()
+                } else {
+                    Rect::new(
+                        self.chat.x,
+                        self.subs.y.saturating_sub(1),
+                        self.chat.width,
+                        2,
+                    )
+                },
+            ),
+        ];
+        candidates
+            .into_iter()
+            .find_map(|(splitter, rect)| rect.contains(position).then_some(splitter))
+    }
+
+    /// The layout that puts `splitter` under the pointer: the pointer's
+    /// offset into the divided region, as a whole percentage of it.
+    /// Out-of-range results are clamped by `PaneLayout::clamped`, so a
+    /// drag past the edge just pins the pane at its minimum.
+    fn layout_for_drag(
+        &self,
+        splitter: Splitter,
+        position: Position,
+        mut layout: PaneLayout,
+    ) -> PaneLayout {
+        fn percent(offset: u16, extent: u16) -> u8 {
+            if extent == 0 {
+                return 0;
+            }
+            (u32::from(offset) * 100 / u32::from(extent)).min(100) as u8
+        }
+        let right = Rect::new(
+            self.series.x,
+            self.series.y,
+            self.series.width,
+            self.series.height + self.users.height + self.playlist.height,
+        );
+        match splitter {
+            Splitter::Column => {
+                layout.chat_width =
+                    percent(position.x.saturating_sub(self.area.x), self.area.width);
+            }
+            Splitter::ChatSubs => {
+                // The subtitle pane is the *bottom* share of the column.
+                let from_bottom = self.chat.bottom().saturating_sub(position.y);
+                layout.subtitle_height = percent(from_bottom, self.chat.height);
+            }
+            Splitter::SeriesUsers => {
+                // Keep the users/playlist boundary where it is: moving
+                // this splitter trades rows between series and users
+                // only, so the series share is clamped against that
+                // boundary here (not by `clamped`, which would move it).
+                let users_end = layout.series_height.saturating_add(layout.users_height);
+                let series = percent(position.y.saturating_sub(right.y), right.height)
+                    .clamp(PaneLayout::MIN, users_end.saturating_sub(PaneLayout::MIN));
+                layout.series_height = series;
+                layout.users_height = users_end - series;
+            }
+            Splitter::UsersPlaylist => {
+                let users_end = percent(position.y.saturating_sub(right.y), right.height);
+                layout.users_height = users_end.saturating_sub(layout.series_height);
+            }
+        }
+        layout.clamped()
+    }
 }
 
 impl Focus {
@@ -305,6 +427,11 @@ pub struct Ui {
     focus: Focus,
     /// Where the panes landed in the last draw (mouse hit-testing).
     panes: PaneRects,
+    /// A pane splitter being dragged, with the layout as it was at the
+    /// press — released unchanged means nothing to persist. Like the
+    /// chat's selection drag, drag/release events route here by grab,
+    /// not position.
+    splitter_drag: Option<(Splitter, PaneLayout)>,
     subtitle_mode: SubtitleMode,
     /// Terminal color capability, detected by the production shell and
     /// injected by rendering tests. Limited is the deterministic default.
@@ -413,6 +540,7 @@ impl Ui {
             modals: Vec::new(),
             focus: Focus::Chat,
             panes: PaneRects::default(),
+            splitter_drag: None,
             subtitle_mode: settings.subtitle_mode,
             color_depth: ColorDepth::Limited,
             subtitles: std::collections::VecDeque::new(),
@@ -1090,17 +1218,33 @@ impl Ui {
         if !self.modals.is_empty() {
             return Vec::new();
         }
-        // Selection drag/release route to the in-progress chat drag
-        // wherever the pointer is — a grab — so leaving the pane
-        // mid-drag keeps selecting (clamped) instead of going dead.
+        let position = Position::new(mouse.column, mouse.row);
+        // Drag/release route to whichever drag is in progress — a
+        // splitter resize or a chat selection — wherever the pointer
+        // is: a grab, so leaving the pane mid-drag keeps going
+        // (clamped) instead of going dead.
         match mouse.kind {
             MouseEventKind::Drag(MouseButton::Left) => {
-                if self.chat.dragging() {
+                if let Some((splitter, _)) = self.splitter_drag {
+                    self.settings.pane_layout =
+                        self.panes
+                            .layout_for_drag(splitter, position, self.settings.pane_layout);
+                } else if self.chat.dragging() {
                     self.chat.mouse_drag(mouse.column, mouse.row);
                 }
                 return Vec::new();
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                if let Some((splitter, at_press)) = self.splitter_drag.take() {
+                    if self.settings.pane_layout == at_press {
+                        return Vec::new();
+                    }
+                    tracing::info!(?splitter, layout = %self.settings.pane_layout.as_string(), "panes resized");
+                    return vec![UserAction::SaveSettings(
+                        Box::new(self.settings.clone()),
+                        self.media_roots.clone(),
+                    )];
+                }
                 if let Some(text) = self.chat.mouse_up(self.clock) {
                     tracing::info!(chars = text.chars().count(), "chat selection copied");
                     return vec![UserAction::CopyToClipboard(text)];
@@ -1113,8 +1257,20 @@ impl Ui {
         // when it lands outside the chat (same rule as unrelated keys).
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             self.chat.clear_selection();
+            // A press on a pane boundary arms a resize drag instead of
+            // a click: the border cells are misses for every pane's
+            // own click handling anyway, so nothing is shadowed.
+            if let Some(splitter) = self.panes.splitter_at(position) {
+                tracing::debug!(
+                    ?splitter,
+                    column = mouse.column,
+                    row = mouse.row,
+                    "splitter grabbed"
+                );
+                self.splitter_drag = Some((splitter, self.settings.pane_layout));
+                return Vec::new();
+            }
         }
-        let position = Position::new(mouse.column, mouse.row);
         // The separate subtitle pane is not focusable, so the wheel
         // works over it regardless of focus (its scroll is visible, so
         // the accidental-graze objection doesn't apply). Checked before
@@ -2208,17 +2364,23 @@ impl Ui {
         // the playlist's bottom border level with the chat input's.
         let [panes_area, bottom_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(main);
-        let [left, right] =
-            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .areas(panes_area);
+        // Splitter shares come from settings (mouse-draggable, persisted);
+        // the defaults reproduce the original 50/50 and 34/33/33 split.
+        let layout = self.settings.pane_layout.clamped();
+        let [left, right] = Layout::horizontal([
+            Constraint::Percentage(layout.chat_width.into()),
+            Constraint::Percentage((100 - layout.chat_width).into()),
+        ])
+        .areas(panes_area);
         let [series_area, users_area, playlist_area] = Layout::vertical([
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
+            Constraint::Percentage(layout.series_height.into()),
+            Constraint::Percentage(layout.users_height.into()),
+            Constraint::Percentage(layout.playlist_height().into()),
         ])
         .areas(right);
         // Remember where the panes landed for mouse hit-testing.
         self.panes = PaneRects {
+            area: panes_area,
             chat: left,
             subs: Rect::default(),
             series: series_area,
@@ -2227,9 +2389,11 @@ impl Ui {
         };
 
         if self.subtitle_mode == SubtitleMode::SeparatePane {
-            let [chat_area, subs_area] =
-                Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
-                    .areas(left);
+            let [chat_area, subs_area] = Layout::vertical([
+                Constraint::Percentage((100 - layout.subtitle_height).into()),
+                Constraint::Percentage(layout.subtitle_height.into()),
+            ])
+            .areas(left);
             self.panes.subs = subs_area;
             self.chat.view(frame, chat_area);
             // The newest lines that fit, newest first (top) — the input box
@@ -4839,6 +5003,136 @@ mod tests {
         buffer[(x, y)]
             .modifier
             .contains(tuirealm::ratatui::style::Modifier::REVERSED)
+    }
+
+    fn mouse_at(kind: MouseEventKind, column: u16, row: u16) -> Event<NoUserEvent> {
+        Event::Mouse(MouseEvent {
+            kind,
+            modifiers: KeyModifiers::NONE,
+            column,
+            row,
+        })
+    }
+
+    /// Dragging the column splitter moves the chat/right boundary to
+    /// the pointer, the release persists the new layout, and the next
+    /// draw lays the panes out accordingly (design.md, Mouse support:
+    /// resizable panes).
+    #[test]
+    fn dragging_the_column_splitter_resizes_and_persists() {
+        let mut ui = ui_with_view(StateView::default());
+        render_test_buffer(&mut ui); // 100x30: chat is columns 0..50
+        assert_eq!(ui.panes.chat.width, 50);
+        let boundary = ui.panes.series.x; // 50; strip is columns 49..=50
+        let row = ui.panes.chat.y + 2;
+        assert!(
+            ui.handle(mouse_at(
+                MouseEventKind::Down(MouseButton::Left),
+                boundary,
+                row
+            ))
+            .is_empty()
+        );
+        assert!(
+            ui.handle(mouse_at(MouseEventKind::Drag(MouseButton::Left), 70, row))
+                .is_empty(),
+            "a drag in progress emits nothing"
+        );
+        assert_eq!(ui.settings.pane_layout.chat_width, 70);
+        let actions = ui.handle(mouse_at(MouseEventKind::Up(MouseButton::Left), 70, row));
+        assert!(
+            matches!(&actions[..], [UserAction::SaveSettings(s, _)] if s.pane_layout.chat_width == 70),
+            "release persists the layout: {actions:?}"
+        );
+        render_test_buffer(&mut ui);
+        assert_eq!(ui.panes.chat.width, 70);
+        assert_eq!(ui.panes.series.x, 70);
+        // A grab-and-release without movement has nothing to save.
+        ui.handle(mouse_at(MouseEventKind::Down(MouseButton::Left), 70, row));
+        assert!(
+            ui.handle(mouse_at(MouseEventKind::Up(MouseButton::Left), 70, row))
+                .is_empty()
+        );
+    }
+
+    /// A drag past the edge pins the pane at its minimum share rather
+    /// than collapsing it; the next splitter down keeps its place.
+    #[test]
+    fn splitter_drags_clamp_to_minimum_pane_sizes() {
+        let mut ui = ui_with_view(StateView::default());
+        render_test_buffer(&mut ui);
+        // Series/Users boundary: drag it to the top of the screen.
+        let column = ui.panes.series.x + 5;
+        let boundary = ui.panes.users.y;
+        let users_end_before = ui.panes.playlist.y;
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            boundary,
+        ));
+        ui.handle(mouse_at(MouseEventKind::Drag(MouseButton::Left), column, 0));
+        ui.handle(mouse_at(MouseEventKind::Up(MouseButton::Left), column, 0));
+        let layout = ui.settings.pane_layout;
+        assert_eq!(layout.series_height, PaneLayout::MIN);
+        assert_eq!(
+            layout.series_height + layout.users_height,
+            34 + 33,
+            "users end held"
+        );
+        render_test_buffer(&mut ui);
+        assert_eq!(ui.panes.playlist.y, users_end_before);
+        // Column splitter dragged off the right edge: chat pinned at MAX.
+        let row = ui.panes.chat.y + 2;
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            ui.panes.series.x,
+            row,
+        ));
+        ui.handle(mouse_at(MouseEventKind::Drag(MouseButton::Left), 99, row));
+        ui.handle(mouse_at(MouseEventKind::Up(MouseButton::Left), 99, row));
+        assert_eq!(ui.settings.pane_layout.chat_width, PaneLayout::MAX);
+        render_test_buffer(&mut ui);
+        assert!(
+            ui.panes.playlist.height >= 3,
+            "every pane keeps a usable height"
+        );
+    }
+
+    /// The subtitle splitter only exists while the pane is shown; a
+    /// press where it would be is an ordinary chat click otherwise.
+    #[test]
+    fn subtitle_splitter_only_exists_in_separate_pane_mode() {
+        let mut ui = ui_with_view(StateView::default());
+        render_test_buffer(&mut ui);
+        assert!(ui.panes.splitter_at(Position::new(5, 20)).is_none());
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        render_test_buffer(&mut ui);
+        let boundary = ui.panes.subs.y;
+        assert_eq!(
+            ui.panes.splitter_at(Position::new(5, boundary)),
+            Some(Splitter::ChatSubs)
+        );
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            boundary,
+        ));
+        ui.handle(mouse_at(
+            MouseEventKind::Drag(MouseButton::Left),
+            5,
+            boundary - 5,
+        ));
+        assert!(
+            ui.settings.pane_layout.subtitle_height > 30,
+            "dragging up grows the pane"
+        );
+        ui.handle(mouse_at(
+            MouseEventKind::Up(MouseButton::Left),
+            5,
+            boundary - 5,
+        ));
+        render_test_buffer(&mut ui);
+        assert_eq!(ui.panes.subs.y, boundary - 5);
     }
 
     /// The held highlight expires SELECTION_TTL_MS (5s) after the

@@ -181,6 +181,7 @@ fn settings_json(s: &Settings) -> Value {
         "irc_server": s.irc_server,
         "irc_tls": s.irc_tls,
         "irc_channel": s.irc_channel,
+        "pane_layout": s.pane_layout.as_string(),
     })
 }
 

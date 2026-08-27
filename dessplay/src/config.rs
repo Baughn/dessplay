@@ -521,6 +521,8 @@ pub struct Settings {
     pub anthropic_token: Option<String>,
     /// How often the commentary engine speaks. Off disables it.
     pub commentary_interval: CommentaryInterval,
+    /// Pane splitter positions (dragged with the mouse). Local-only.
+    pub pane_layout: PaneLayout,
 }
 
 impl Default for Settings {
@@ -550,7 +552,98 @@ impl Default for Settings {
             irc_channel: "#dess".into(),
             anthropic_token: None,
             commentary_interval: CommentaryInterval::default(),
+            pane_layout: PaneLayout::default(),
         }
+    }
+}
+
+/// Where the pane splitters sit, as whole percentages of the region
+/// they divide (design.md, Mouse support: resizable panes). Integer
+/// percent rather than a float: a terminal cell is the finest
+/// resolution anyway, it keeps `Settings: Eq`, and it survives a text
+/// round-trip exactly. Every field is clamped into [`PaneLayout::MIN`,
+/// `PaneLayout::MAX`] by `clamped`, and the right column's series +
+/// users share is capped so the playlist keeps its minimum too, so a
+/// stored layout can never squeeze a pane out of existence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneLayout {
+    /// Width of the chat column, as a percentage of the pane area.
+    pub chat_width: u8,
+    /// Height of the separate subtitle pane, as a percentage of the
+    /// chat column (only used in `SubtitleMode::SeparatePane`).
+    pub subtitle_height: u8,
+    /// Height of the Series pane, as a percentage of the right column.
+    pub series_height: u8,
+    /// Height of the Users pane, as a percentage of the right column;
+    /// the playlist takes the remainder.
+    pub users_height: u8,
+}
+
+impl Default for PaneLayout {
+    fn default() -> Self {
+        Self {
+            chat_width: 50,
+            subtitle_height: 30,
+            series_height: 34,
+            users_height: 33,
+        }
+    }
+}
+
+impl PaneLayout {
+    /// Smallest share any pane may be dragged to.
+    pub const MIN: u8 = 10;
+    /// Largest share any single pane may be dragged to.
+    pub const MAX: u8 = 90;
+
+    /// The same layout with every share forced into range. The users
+    /// pane is clamped *after* series so the invariant `series + users
+    /// <= 100 - MIN` always holds, whichever field moved.
+    pub fn clamped(self) -> Self {
+        let chat_width = self.chat_width.clamp(Self::MIN, Self::MAX);
+        let subtitle_height = self.subtitle_height.clamp(Self::MIN, Self::MAX);
+        let series_height = self.series_height.clamp(Self::MIN, 100 - 2 * Self::MIN);
+        let users_height = self
+            .users_height
+            .clamp(Self::MIN, 100 - Self::MIN - series_height);
+        Self {
+            chat_width,
+            subtitle_height,
+            series_height,
+            users_height,
+        }
+    }
+
+    /// The playlist's share of the right column.
+    pub fn playlist_height(self) -> u8 {
+        100 - self.series_height - self.users_height
+    }
+
+    /// `chat,subtitle,series,users` — the persisted form.
+    pub fn as_string(self) -> String {
+        format!(
+            "{},{},{},{}",
+            self.chat_width, self.subtitle_height, self.series_height, self.users_height
+        )
+    }
+
+    /// Parse the persisted form. Values are clamped rather than
+    /// rejected — an out-of-range share is a stale layout, not
+    /// corruption — but a malformed string is.
+    pub fn parse(value: &str) -> Result<Self> {
+        let corrupt = || StorageError::Corrupt(format!("bad pane_layout {value:?}"));
+        let mut parts = value.split(',').map(|part| part.trim().parse::<u8>());
+        let mut next = || parts.next().ok_or_else(corrupt)?.map_err(|_| corrupt());
+        let layout = Self {
+            chat_width: next()?,
+            subtitle_height: next()?,
+            series_height: next()?,
+            users_height: next()?,
+        };
+        if parts.next().is_some() {
+            return Err(corrupt());
+        }
+        Ok(layout.clamped())
     }
 }
 
@@ -682,6 +775,11 @@ impl Settings {
                 .map(|value| CommentaryInterval::parse(&value))
                 .transpose()?
                 .unwrap_or(defaults.commentary_interval),
+            pane_layout: storage
+                .setting("pane_layout")?
+                .map(|value| PaneLayout::parse(&value))
+                .transpose()?
+                .unwrap_or(defaults.pane_layout),
         })
     }
 
@@ -760,6 +858,7 @@ impl Settings {
             "commentary_interval",
             Some(&self.commentary_interval.as_string()),
         )?;
+        storage.set_setting("pane_layout", Some(&self.pane_layout.as_string()))?;
         Ok(())
     }
 }
@@ -808,6 +907,12 @@ mod tests {
             irc_channel: "#watchparty".into(),
             anthropic_token: Some("sk-ant-test".into()),
             commentary_interval: CommentaryInterval::Every(Duration::from_secs(300)),
+            pane_layout: PaneLayout {
+                chat_width: 60,
+                subtitle_height: 25,
+                series_height: 20,
+                users_height: 50,
+            },
         };
         storage.save_settings(&settings).unwrap();
         let loaded = storage.load_settings().unwrap();
@@ -928,6 +1033,27 @@ mod tests {
     }
 
     proptest::proptest! {
+        /// Any four bytes clamp to a layout whose every pane keeps at
+        /// least its minimum share, and that layout survives the text
+        /// round-trip unchanged.
+        #[test]
+        fn pane_layout_clamp_invariants_and_round_trip(
+            chat_width in proptest::num::u8::ANY,
+            subtitle_height in proptest::num::u8::ANY,
+            series_height in proptest::num::u8::ANY,
+            users_height in proptest::num::u8::ANY,
+        ) {
+            let layout = PaneLayout { chat_width, subtitle_height, series_height, users_height }.clamped();
+            let range = PaneLayout::MIN..=PaneLayout::MAX;
+            proptest::prop_assert!(range.contains(&layout.chat_width));
+            proptest::prop_assert!(range.contains(&layout.subtitle_height));
+            proptest::prop_assert!(range.contains(&layout.series_height));
+            proptest::prop_assert!(range.contains(&layout.users_height));
+            proptest::prop_assert!(layout.playlist_height() >= PaneLayout::MIN);
+            proptest::prop_assert_eq!(layout.clamped(), layout, "clamping is idempotent");
+            proptest::prop_assert_eq!(PaneLayout::parse(&layout.as_string()).unwrap(), layout);
+        }
+
         #[test]
         fn upload_limit_format_parse_round_trip(limit in proptest::option::of(proptest::num::u64::ANY)) {
             proptest::prop_assert_eq!(parse_upload_limit(&format_upload_limit(limit)), Ok(limit));
