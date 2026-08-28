@@ -108,7 +108,7 @@ impl MpvPlayer {
             .arg("--keep-open=always")
             // Belt and braces: autoload.lua honours this, and an empty
             // playlist leaves nothing for stray playlist-next keys to hit.
-            .arg("--script-opts=autoload-disabled=yes")
+            .arg("--script-opts-add=autoload-disabled=yes")
             // A user mpv.conf with `reset-on-next-file=pause` makes mpv
             // silently unpause on every file load. The pause property does
             // flip, but it flips *during* load, where the filter below

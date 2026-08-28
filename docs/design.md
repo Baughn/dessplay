@@ -2482,7 +2482,7 @@ Player choice is per-user configuration.
 ### Player Lifecycle
 
 1. **Launch**: One persistent mpv instance per session (`--idle
-   --keep-open=always --script-opts=autoload-disabled=yes`), spawned when
+   --keep-open=always --script-opts-add=autoload-disabled=yes`), spawned when
    the first file loads; later files are swapped in with `loadfile`.
    `always` (not `yes`) so EOF parks the file regardless of playlist
    length — user scripts such as autoload.lua pad mpv's playlist with
