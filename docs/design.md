@@ -169,9 +169,12 @@ sync state with each other. See [network-design.md](network-design.md).
      (OVAs AniDB chains as Sequel/Prequel stay inline -- that is how the
      group watched them), side branches (SideStory / Summary /
      AlternativeVersion members, or a whole chain of them) indented under
-     the season they branch from. A season with nothing unwatched-and-held
-     renders dim; the cursor opens on the first season that has something
-     to watch. Select a season to see its episodes.
+     the season they branch from, placed **chronologically** (after the last
+     main-line season that aired no later than the branch). A season whose
+     every known file is watched renders dim -- watched-ness, not The
+     List's held-copy rule: a season nobody advertises right now is not
+     done; the cursor opens on the first season with an unwatched file.
+     Select a season to see its episodes.
 5. In the Episode Browser, press `Enter` on an episode to add it to the
    playlist. If you have the file locally it resolves Ready; if you don't, it
    is added anyway (using the file catalog's identity) and downloads like any

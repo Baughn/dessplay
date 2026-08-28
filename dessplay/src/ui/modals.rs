@@ -1537,9 +1537,12 @@ pub struct Season {
     /// Tree depth in the season list (`props::season_tree`): 0 on the
     /// main line, 1 for a side branch indented under its parent.
     pub depth: u8,
-    /// Something to watch: an unwatched copy some client holds — the
-    /// List row rule (design.md, The List). Renders dim otherwise, and
-    /// the browser opens on the first season where this is set.
+    /// Something to watch: a known file nobody has marked watched (group
+    /// flag or personal history). Deliberately *not* The List's
+    /// held-copy rule: a season row answers "have we seen this?", and a
+    /// season whose files merely aren't advertised right now is not
+    /// done (user report 2026-08-29). Renders dim otherwise, and the
+    /// browser opens on the first season where this is set.
     pub watchable: bool,
 }
 
@@ -1571,14 +1574,11 @@ impl Season {
         self
     }
 
-    /// An unwatched copy that somebody actually holds.
+    /// A known file that nobody has watched.
     fn any_watchable(episodes: &[EpisodeRow]) -> bool {
-        episodes.iter().any(|row| match row {
-            EpisodeRow::Single { copy, .. } | EpisodeRow::Child(copy) => {
-                !copy.watched && !copy.holders.is_empty()
-            }
-            EpisodeRow::Header { .. } => false,
-        })
+        episodes
+            .iter()
+            .any(|row| row.hash().is_some() && !row.watched())
     }
 
     /// Every known file of the season (what `w` on the season row acts on).
@@ -3612,27 +3612,36 @@ mod tests {
     }
 
     /// The season list opens on the first season with something to
-    /// watch — an unwatched copy somebody holds — not on row 0
-    /// (proposal 2026-08-28).
+    /// watch — a known file nobody has watched, whether or not anyone
+    /// advertises a copy right now — not on row 0 (proposal 2026-08-28).
     #[test]
     fn season_list_opens_on_the_first_watchable_season() {
-        let held = |h: u8, name: &str| {
+        let done = |h: u8, name: &str| {
             let mut row = single(hash(h), name);
             if let EpisodeRow::Single { copy, .. } = &mut row {
-                copy.holders = vec![dessplay_core::types::UserId::new("kim")];
+                copy.watched = true;
             }
             row
         };
-        let mut done = held(1, "ep1");
-        if let EpisodeRow::Single { copy, .. } = &mut done {
-            copy.watched = true;
+        let mut held = single(hash(3), "ep3");
+        if let EpisodeRow::Single { copy, .. } = &mut held {
+            copy.holders = vec![dessplay_core::types::UserId::new("kim")];
         }
         let seasons = vec![
-            season("S1", vec![done]),
-            // Known but held by nobody: nothing to watch.
-            season("S2", vec![single(hash(2), "ep2")]),
-            season("S3", vec![held(3, "ep3")]),
-            season("S4", vec![held(4, "ep4")]),
+            season("S1", vec![done(1, "ep1")]),
+            season(
+                "S2",
+                vec![
+                    done(2, "ep2"),
+                    EpisodeRow::Header {
+                        episode: "Episode 3".into(),
+                        watched: true,
+                    },
+                ],
+            ),
+            // Unwatched but held by nobody right now: still something to watch.
+            season("S3", vec![held]),
+            season("S4", vec![single(hash(4), "ep4")]),
         ];
         let watchable: Vec<bool> = seasons.iter().map(|s| s.watchable).collect();
         assert_eq!(watchable, vec![false, false, true, true]);

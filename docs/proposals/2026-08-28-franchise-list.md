@@ -92,9 +92,13 @@ Members AniDB chains as Sequel/Prequel — including OVAs like Nachuyachumi —
 stay inline; that is how the group watched them. A true drawn DAG was
 rejected as more work than a TUI can pay back.
 
-A season with nothing unwatched-and-held renders dim (same rule as List
-rows). Opening a franchise places the cursor on the **first season with
-something to watch**, mirroring the episode level's first-unwatched rule.
+A season whose every known file is watched renders dim (watched-ness only —
+*not* The List's held-copy rule: after the first cut, seasons nobody
+happened to advertise looked "done"; user report 2026-08-29). Branches
+sit chronologically after the last main-line season that aired no later
+than them (Oomuro-ke, 2024, at the bottom rather than under season one).
+Opening a franchise places the cursor on the **first season with an
+unwatched file**, mirroring the episode level's first-unwatched rule.
 
 ### 5. `w` on a season row
 

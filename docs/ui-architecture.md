@@ -573,7 +573,7 @@ Modal types:
   the next episode (`props::next_episode_row`). The season list is a
   tree (`props::season_tree`: prequel chain as the main line, side
   branches indented one level under their parent via `Season::depth`);
-  `Season::watchable` (an unwatched copy somebody holds) dims a season
+  `Season::watchable` (a known file nobody has watched) dims a season
   and picks the opening cursor. `w` on a season row emits
   `Msg::Confirm { prompt, then: SetEpisodesWatched {..} }`
 - **Confirm**: A yes/no question over the current modal, carrying the
