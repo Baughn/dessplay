@@ -1293,14 +1293,16 @@ unlinked entry, into the candidate-ranked disambiguation view described
 above. Either way queueing tonight's episode is a couple of keypresses.
 
 Within each group, `s` toggles the sort (persisted across sessions, like
-All Series' sort): **Recency** (the default) floats watchable entries --
-the weekly `available` flag set, or a **held** unwatched file: some client
-advertises a copy (the availability map) that neither the group watched
-flag nor personal watch history records as seen (the episode browser's
-muting rule), resolving to the entry by the Series Identity order. A bare
-metadata row is not enough -- metadata persists forever, files don't --
-and a duplicate encoding of an episode the group watched through *any*
-other copy doesn't count either (the same any-copy rule, by AniDB
+All Series' sort): **Recency** (the default). A row is *watchable* when
+the weekly `available` flag is set, or a **known** file -- any library
+metadata row -- is unwatched by both the group watched flag and personal
+watch history (the episode browser's muting rule), resolving to the entry
+by the Series Identity order. Whether anyone currently advertises a copy
+is deliberately not a condition (user decision 2026-08-29, matching the
+episode browser's season rows): the library index is the durable record
+of what exists, and a show nobody happens to be seeding tonight is not
+"nothing to watch". A duplicate encoding of an episode the group watched
+through *any* other copy doesn't count (the any-copy rule, by AniDB
 episode identity).
 Rows sort most recently watched first (from local watch history, the same
 source as Recent Series -- the newest watch of *any season in the

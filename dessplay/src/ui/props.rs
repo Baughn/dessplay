@@ -1955,20 +1955,17 @@ fn next_ep_display(view: &StateView, entry: &SeriesListEntry, next_ep: &str) -> 
     format!("S{}E{episode:02}", franchise::season_ordinal(view, series))
 }
 
-/// Entries with something to watch tonight: a file some client still
-/// advertises (Ready or downloading — the availability map, which
-/// survives compaction) that is unwatched by **both** durable records —
-/// the group watched flag *and* personal watch history — the episode
-/// browser's muting rule (design.md #11). The group flag alone is not
-/// enough: compaction drops flags for files off the playlist while
-/// metadata rows persist forever, which would resurrect every
-/// long-finished episode as "unwatched". Files are resolved to entries
-/// by the canonical Series Identity order
-/// ([`series_identity::resolve_series_entry_for_file`]).
-///
-/// Iterating held files (a few hundred availability rows) rather than
-/// the whole metadata map (tens of thousands) also keeps this cheap
-/// enough for the per-snapshot refresh.
+/// Entries with something to watch: a known file (any metadata row)
+/// that is unwatched by **both** durable records — the group watched
+/// flag *and* personal watch history — the episode browser's muting rule
+/// (design.md #11). Whether anyone currently *advertises* a copy is
+/// deliberately not a condition (user decision 2026-08-29, matching the
+/// season rows): a series nobody happens to be seeding right now is not
+/// "nothing to watch", and the group's library index is the durable
+/// record of what exists. Files are resolved to entries by the canonical
+/// Series Identity order ([`series_identity::resolve_series_entry_for_file`]),
+/// once per AniDB series rather than per file — the map is tens of
+/// thousands of rows, and every file of a season resolves alike.
 fn entries_with_unwatched_files(
     view: &StateView,
     watched_hashes: &BTreeMap<Ed2kHash, i64>,
@@ -2000,20 +1997,24 @@ fn entries_with_unwatched_files(
         watched_episodes.contains(&(series, episode))
     };
 
-    let held: BTreeSet<Ed2kHash> = view
-        .file_availability
-        .iter()
-        .filter(|(_, availability)| !matches!(availability, FileAvailability::Missing))
-        .map(|((_, hash), _)| *hash)
-        .collect();
-    // One resolution index for the whole walk: resolving each held file
-    // by the scanning resolver would make this O(held × entries).
+    // One resolution index for the whole walk, memoized per series:
+    // resolving each file by the scanning resolver would make this
+    // O(files × entries), and the franchise walk per file adds up over
+    // tens of thousands of rows.
     let index = series_identity::SeriesEntryIndex::new(view);
-    held.into_iter()
-        .filter(|hash| !view.watched.get(hash).copied().unwrap_or(false))
-        .filter(|hash| !watched_hashes.contains_key(hash))
-        .filter(|hash| !episode_watched(hash))
-        .filter_map(|hash| index.resolve(view, hash))
+    let mut by_series: BTreeMap<AniDbSeriesId, Option<ListEntryId>> = BTreeMap::new();
+    view.anidb_metadata
+        .iter()
+        .filter_map(|(hash, metadata)| metadata.as_ref().map(|m| (*hash, m)))
+        .filter(|(hash, _)| !view.watched.get(hash).copied().unwrap_or(false))
+        .filter(|(hash, _)| !watched_hashes.contains_key(hash))
+        .filter(|(hash, _)| !episode_watched(hash))
+        .filter_map(|(hash, metadata)| match metadata.series_id {
+            Some(series) => *by_series
+                .entry(series)
+                .or_insert_with(|| index.resolve(view, hash)),
+            None => index.resolve(view, hash),
+        })
         .collect()
 }
 
@@ -2305,16 +2306,15 @@ impl ListGroupsCache {
 /// the List maps (`list_entries`, `list_next_ep`), `series_preference`
 /// (live commitment), the group `watched` flags, the metadata/relations
 /// maps (file→entry resolution, `SnEnn`/short-title display — the same
-/// fingerprint the franchise cache uses), which files are *held*, the
+/// fingerprint the franchise cache uses), the
 /// local watch history (`recency` + `watched_hashes`), the user set,
 /// and the sort. Resolved values, not LWW clocks, so a no-op rewrite
 /// doesn't recompute; FxHasher for the same profiling reason as
 /// [`franchise::metadata_relations_fingerprint`].
 ///
-/// `file_availability` is deliberately reduced to the *held set* (any
-/// non-Missing advert per file) before hashing: that bit is all the
-/// derivation reads, and hashing the raw values would recompute on
-/// every `Downloading` progress tick.
+/// `file_availability` is not an input at all: The List reads the
+/// library index, not who advertises what, so download progress ticks
+/// never recompute it.
 fn list_inputs_fingerprint(
     view: &StateView,
     me: &UserId,
@@ -2330,13 +2330,6 @@ fn list_inputs_fingerprint(
     view.list_next_ep.hash(&mut hasher);
     view.series_preference.hash(&mut hasher);
     view.watched.hash(&mut hasher);
-    let held: BTreeSet<Ed2kHash> = view
-        .file_availability
-        .iter()
-        .filter(|(_, availability)| !matches!(availability, FileAvailability::Missing))
-        .map(|((_, hash), _)| *hash)
-        .collect();
-    held.hash(&mut hasher);
     recency.hash(&mut hasher);
     watched_hashes.hash(&mut hasher);
     me.hash(&mut hasher);
@@ -3770,13 +3763,12 @@ mod tests {
     /// files" must mean *held and unwatched by the durable record*.
     /// Compaction drops group watched flags for files off the playlist
     /// while their metadata rows live forever, so the group flag alone
-    /// resurrects every long-finished episode as "unwatched"; and a
-    /// metadata row whose file nobody holds anymore isn't watchable
-    /// tonight either. A file counts only when some client advertises a
-    /// copy and it is unwatched by both the group flag and personal
-    /// watch history (the episode browser's muting rule, design.md #11).
+    /// would resurrect every long-finished episode as "unwatched":
+    /// personal watch history counts too. Whether anyone advertises a
+    /// copy does not matter (user decision 2026-08-29): a known file
+    /// unwatched by both records lights the entry up.
     #[test]
-    fn unwatched_needs_a_held_copy_and_survives_compacted_flags() {
+    fn unwatched_means_a_known_file_nobody_watched() {
         let mut state = CrdtState::new();
         let mut put = |id: u128, name: &str| {
             let mut entry = list_entry(name, ListStatus::Active);
@@ -3836,7 +3828,7 @@ mod tests {
             dimmed,
             [
                 ("Finished long ago", true),
-                ("Metadata ghost", true),
+                ("Metadata ghost", false),
                 ("Fresh episode", false)
             ]
             .into_iter()
@@ -3987,7 +3979,9 @@ mod tests {
                 file: Ed2kHash([1; 16]),
             },
         );
-        // Nor is download *progress* on a file that stays held.
+        // Nor is availability at all — who advertises what, or download
+        // progress: The List reads the library index (user decision
+        // 2026-08-29).
         state.set_file_availability(
             A,
             ts(101),
@@ -3996,7 +3990,6 @@ mod tests {
             FileAvailability::Downloading { progress_bps: 1000 },
         );
         via_cache(&mut cache, &state);
-        assert_eq!(cache.recomputes, 2, "a new held file must recompute");
         state.set_file_availability(
             A,
             ts(102),
@@ -4006,8 +3999,8 @@ mod tests {
         );
         via_cache(&mut cache, &state);
         assert_eq!(
-            cache.recomputes, 2,
-            "progress ticks on a held file must hit the cache"
+            cache.recomputes, 1,
+            "availability changes must hit the cache"
         );
     }
 
@@ -4061,17 +4054,6 @@ mod tests {
             .state
             .set_watched(A, ts(50), Ed2kHash([1; 16]), true);
         steps.push(watched);
-        // Availability flips to Missing: same effect, different input.
-        let mut availability = base(&state);
-        availability.name = "availability flip";
-        availability.state.set_file_availability(
-            A,
-            ts(50),
-            UserId::new("kim"),
-            Ed2kHash([1; 16]),
-            FileAvailability::Missing,
-        );
-        steps.push(availability);
         // Sort toggle reorders within groups.
         let mut sort = base(&state);
         sort.name = "sort toggle";

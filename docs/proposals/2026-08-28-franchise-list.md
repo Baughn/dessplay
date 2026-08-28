@@ -73,7 +73,8 @@ Aggregation over members and the component's series:
 
 - `watchers`: union of live commitments.
 - `available`: any member.
-- `dimmed`: no member has an unwatched held file and none is `available`.
+- `dimmed`: no member has an unwatched known file and none is `available`
+  (follow-up 2026-08-29: "known", not "held" — same as the season rows).
 - recency: max over every member entry's keys **and every series id in the
   component** — the "most recent episode is in season three" case.
 - `status`/`next_ep`/name: the canonical entry's.
