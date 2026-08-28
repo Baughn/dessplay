@@ -84,10 +84,31 @@ pub fn series_watch_for_file(
     let Some(entry) = crate::series_identity::resolve_series_entry_for_file(view, file) else {
         return SeriesWatchState::Maybe;
     };
-    view.series_preference
-        .get(&(user.clone(), entry))
+    // Fold over every entry in the franchise (proposal 2026-08-28): legacy
+    // per-season entries may each carry a preference, and a commitment
+    // made on any season is a commitment to the show. Watching >
+    // NotWatching > Maybe — Maybe is the neutral state and never
+    // overrides an explicit choice; Watching wins the (unlikely) conflict
+    // because silently un-committing someone is the worse failure.
+    let siblings = view
+        .list_entries
+        .get(&entry)
+        .and_then(|e| e.anidb_series_id)
+        .map(|series| crate::series_identity::entries_claiming_series(view, series))
+        .unwrap_or_else(|| vec![entry]);
+    siblings
+        .into_iter()
+        .filter_map(|entry| view.series_preference.get(&(user.clone(), entry)))
         .map(|pref| pref.state)
-        .unwrap_or(SeriesWatchState::Maybe)
+        .fold(SeriesWatchState::Maybe, |acc, state| match (acc, state) {
+            (SeriesWatchState::Watching, _) | (_, SeriesWatchState::Watching) => {
+                SeriesWatchState::Watching
+            }
+            (SeriesWatchState::NotWatching, _) | (_, SeriesWatchState::NotWatching) => {
+                SeriesWatchState::NotWatching
+            }
+            (SeriesWatchState::Maybe, SeriesWatchState::Maybe) => SeriesWatchState::Maybe,
+        })
 }
 
 /// Playlist entries in download-priority order, anchored at `anchor`
@@ -351,6 +372,97 @@ mod tests {
             },
         );
         id
+    }
+
+    /// Preference folding across a franchise (proposal 2026-08-28): with
+    /// legacy per-season entries, a user's commitment to a file is the fold
+    /// of their preference on *every* entry in the franchise — Watching >
+    /// NotWatching > Maybe — so a commitment made on season one still
+    /// gates season three.
+    #[test]
+    fn series_watch_folds_preferences_across_the_franchise() {
+        use crate::types::{RelationKind, SeriesRelation, SeriesRelations, SeriesWatchState};
+        let mut state = CrdtState::new();
+        let relations = |title: &str, kind: RelationKind, target: u32| SeriesRelations {
+            title: title.into(),
+            year: None,
+            episode_count: None,
+            relations: [SeriesRelation {
+                kind,
+                target: AniDbSeriesId(target),
+            }]
+            .into_iter()
+            .collect(),
+            short_titles: vec![],
+        };
+        state.set_series_relations(
+            SERVER,
+            ts(1),
+            AniDbSeriesId(1),
+            relations("S1", RelationKind::Sequel, 2),
+        );
+        state.set_series_relations(
+            SERVER,
+            ts(1),
+            AniDbSeriesId(2),
+            relations("S2", RelationKind::Prequel, 1),
+        );
+        state.set_anidb_metadata(
+            SERVER,
+            ts(1),
+            hash(2),
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: "S2".into(),
+                series_id: Some(AniDbSeriesId(2)),
+                episode_number: Some("1".into()),
+            }),
+        );
+        let s1 = link_series(&mut state, ts(2), AniDbSeriesId(1));
+        let s2 = link_series(&mut state, ts(2), AniDbSeriesId(2));
+        let alice = UserId::new("alice");
+        let watch = |view: &StateView| series_watch_for_file(view, &alice, hash(2));
+
+        assert_eq!(watch(&state.view()), SeriesWatchState::Maybe);
+        state.set_series_preference(
+            SERVER,
+            ts(3),
+            alice.clone(),
+            s1,
+            SeriesWatchState::NotWatching,
+            None,
+        );
+        assert_eq!(
+            watch(&state.view()),
+            SeriesWatchState::NotWatching,
+            "an explicit choice on any season counts"
+        );
+        state.set_series_preference(
+            SERVER,
+            ts(4),
+            alice.clone(),
+            s2,
+            SeriesWatchState::Maybe,
+            None,
+        );
+        assert_eq!(
+            watch(&state.view()),
+            SeriesWatchState::NotWatching,
+            "Maybe is neutral, never overrides"
+        );
+        state.set_series_preference(
+            SERVER,
+            ts(5),
+            alice.clone(),
+            s2,
+            SeriesWatchState::Watching,
+            None,
+        );
+        assert_eq!(
+            watch(&state.view()),
+            SeriesWatchState::Watching,
+            "Watching wins a conflict"
+        );
     }
 
     fn peer(name: &str, role: Role, presence: Presence) -> PeerInfo {

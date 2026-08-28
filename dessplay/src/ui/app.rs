@@ -27,8 +27,8 @@ use super::components::{
     ChatPane, HealthLine, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
 };
 use super::modals::{
-    AniDbSearchModal, BrowserLibrary, EpisodeBrowser, FileBrowser, ListEditModal, NeroNameModal,
-    NyaaActiveImport, NyaaSearchModal, Season, SettingsModal,
+    AniDbSearchModal, BrowserLibrary, ConfirmModal, EpisodeBrowser, FileBrowser, ListEditModal,
+    NeroNameModal, NyaaActiveImport, NyaaSearchModal, Season, SettingsModal,
 };
 use super::msg::{BrowseRequest, Msg, UserAction};
 use super::props;
@@ -330,6 +330,7 @@ enum Modal {
     NeroName(NeroNameModal),
     AniDbSearch(AniDbSearchModal),
     NyaaSearch(NyaaSearchModal),
+    Confirm(ConfirmModal),
 }
 
 impl Modal {
@@ -342,6 +343,7 @@ impl Modal {
             Modal::NeroName(modal) => modal,
             Modal::AniDbSearch(modal) => modal,
             Modal::NyaaSearch(modal) => modal,
+            Modal::Confirm(modal) => modal,
         }
     }
 
@@ -354,6 +356,7 @@ impl Modal {
             Modal::NeroName(modal) => modal.keybindings(),
             Modal::AniDbSearch(modal) => modal.keybindings(),
             Modal::NyaaSearch(modal) => modal.keybindings(),
+            Modal::Confirm(modal) => modal.keybindings(),
         }
     }
 
@@ -367,6 +370,7 @@ impl Modal {
             Modal::NeroName(_) => "NeroName",
             Modal::AniDbSearch(_) => "AniDbSearch",
             Modal::NyaaSearch(_) => "NyaaSearch",
+            Modal::Confirm(_) => "Confirm",
         }
     }
 }
@@ -1464,6 +1468,19 @@ impl Ui {
         if let Some(msg) = &msg {
             tracing::trace!(msg = msg.name(), "msg produced");
         }
+        // A confirmed question: close the confirm modal and route the
+        // wrapped message exactly as if its originating component had
+        // just produced it (it may be one of the multi-action ones
+        // below).
+        let msg = match msg {
+            Some(Msg::Confirmed(inner)) => {
+                tracing::debug!(msg = inner.name(), "user action: confirmed");
+                self.pop_modal();
+                self.sync_focus_attr();
+                Some(*inner)
+            }
+            other => other,
+        };
         // A couple of messages yield several actions; route them straight
         // to their handlers (like the Ctrl-R global above) rather than
         // through the single-action `update()`.
@@ -1526,6 +1543,14 @@ impl Ui {
                 self.refresh_keybar();
                 return actions;
             }
+            Some(Msg::SetEpisodesWatched { hashes, watched }) => {
+                let actions = self.set_episodes_watched(hashes, *watched);
+                for action in &actions {
+                    log_action(action);
+                }
+                self.refresh_keybar();
+                return actions;
+            }
             _ => {}
         }
         let action = msg.and_then(|msg| self.update(msg));
@@ -1545,6 +1570,14 @@ impl Ui {
     fn toggle_episode_watched(&self, hashes: &[Ed2kHash]) -> Vec<UserAction> {
         let flagged = |hash: &Ed2kHash| self.snapshot.view.watched.get(hash) == Some(&true);
         let watched = !hashes.iter().any(flagged);
+        self.set_episodes_watched(hashes, watched)
+    }
+
+    /// Set the group watched flag on every file in `hashes` to `watched`,
+    /// writing only the ones that actually change (the season-row `w`,
+    /// and the direction-resolved half of the episode toggle).
+    fn set_episodes_watched(&self, hashes: &[Ed2kHash], watched: bool) -> Vec<UserAction> {
+        let flagged = |hash: &Ed2kHash| self.snapshot.view.watched.get(hash) == Some(&true);
         hashes
             .iter()
             .filter(|hash| flagged(hash) != watched)
@@ -1686,7 +1719,14 @@ impl Ui {
             | Msg::ListEntrySaved(..)
             | Msg::CycleSeriesWatch(_)
             | Msg::SetNotWatching(_)
-            | Msg::ToggleEpisodeWatched { .. } => None,
+            | Msg::ToggleEpisodeWatched { .. }
+            | Msg::SetEpisodesWatched { .. }
+            | Msg::Confirmed(_) => None,
+            Msg::Confirm { prompt, then } => {
+                self.push_modal(Modal::Confirm(ConfirmModal::new(prompt, *then)));
+                self.sync_focus_attr();
+                None
+            }
             Msg::CycleSeriesMode | Msg::SeriesFilterChanged => {
                 self.refresh_series();
                 None
@@ -1794,6 +1834,8 @@ impl Ui {
                     first_unwatched: Some(1),
                     opening_row: 1,
                     episodes: rows,
+                    depth: 0,
+                    watchable: true,
                 };
                 self.push_modal(Modal::Episodes(EpisodeBrowser::new(
                     entry.name,
@@ -2318,13 +2360,14 @@ impl Ui {
                 franchise.files.clone(),
             )]
         } else {
-            franchise
-                .series
-                .iter()
-                .map(|series| {
+            // Prequel-chain order with side branches indented under
+            // their parent (proposal 2026-08-28).
+            props::season_tree(view, &franchise)
+                .into_iter()
+                .map(|(series, depth)| {
                     let title = view
                         .series_relations
-                        .get(series)
+                        .get(&series)
                         .map(|relations| relations.title.clone())
                         .unwrap_or_else(|| format!("anidb:{}", series.0));
                     let hashes = view
@@ -2332,10 +2375,10 @@ impl Ui {
                         .iter()
                         .filter_map(|(hash, metadata)| {
                             let metadata = metadata.as_ref()?;
-                            (metadata.series_id == Some(*series)).then_some(*hash)
+                            (metadata.series_id == Some(series)).then_some(*hash)
                         })
                         .collect();
-                    build_season(title, hashes)
+                    build_season(title, hashes).at_depth(depth)
                 })
                 .collect()
         };

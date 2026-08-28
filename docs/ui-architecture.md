@@ -321,7 +321,11 @@ snapshot data to component props:
   string (held in the component, applied in `props::franchise_rows`) narrows
   by title and lifts the watched-only default. snapshot.list_entries +
   snapshot.list_next_ep + series preferences/availability/watched flags +
-  local watch history -> grouped List entries (List mode, the default).
+  local watch history -> grouped List rows (List mode, the default), one
+  row per franchise: `franchise::series_components` groups linked
+  entries, `series_identity::canonical_first` picks the entry a row
+  speaks for, and commitment/availability/recency aggregate over the
+  members and every season in the component.
   Both groupings are memoized on the inputs they actually read
   (`franchise::FranchiseCache`, `props::ListGroupsCache`): snapshots
   arrive at ~10 Hz during playback and position ticks change none of
@@ -329,7 +333,7 @@ snapshot data to component props:
   uncached franchise rebuild was ~1/3 of normal-play CPU; the List
   derivation is O(held files × entries)). The List group order is
   volatile by design (per-user groups come and go with peers; Recency
-  resorts on availability/watched flips), so the pane's cursor re-anchors
+  resorts as watch history lands), so the pane's cursor re-anchors
   by identity across `set_groups` rather than keeping its bare row index —
   `n`/`e`/`l`/Enter act on what the user aimed at. Both caches are guarded
   by the perf rig (dessplay-rendezvous/tests/perf.rs), which seeds a
@@ -566,7 +570,17 @@ Modal types:
   history's timestamps (`UiSnapshot::personal_watched`, hash →
   watched-at) or presence in the group playlist; without it the cursor
   stays on the header. `w` on an unwatched row also moves the cursor to
-  the next episode (`props::next_episode_row`)
+  the next episode (`props::next_episode_row`). The season list is a
+  tree (`props::season_tree`: prequel chain as the main line, side
+  branches indented one level under their parent via `Season::depth`);
+  `Season::watchable` (an unwatched copy somebody holds) dims a season
+  and picks the opening cursor. `w` on a season row emits
+  `Msg::Confirm { prompt, then: SetEpisodesWatched {..} }`
+- **Confirm**: A yes/no question over the current modal, carrying the
+  `Msg` a yes dispatches. `y`/Enter -> `Msg::Confirmed(then)`, which the
+  dispatcher unwraps *before* its multi-action routing (so the wrapped
+  message is handled exactly as if the originating component had produced
+  it); `n`/Esc closes; other keys are ignored
 - **ListEntryEdit**: Edit a List entry's fields (status, notes, next_ep, ...)
 - **AniDbSearch**: Link a List entry to an AniDB series (`l` in List
   mode). Pre-searches for the entry's name; the search runs server-side

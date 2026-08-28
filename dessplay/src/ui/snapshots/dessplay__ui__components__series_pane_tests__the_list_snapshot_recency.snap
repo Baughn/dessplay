@@ -4,8 +4,8 @@ expression: render_list_pane(&mut p)
 ---
 ┌The List──────────────────────────────────────────────────┐
 │▾ Watching — kim (2)                                      │
-│  Frieren 2                        S2E05     ✓  KN        │
 │  Akira                            movie?       K         │
+│  Frieren 2                        S2E05     ✓  KN        │
 │▾ Watching — nero (1)                                     │
 │  Frieren 2                        S2E05     ✓  KN        │
 │▾ Watching (1)                                            │

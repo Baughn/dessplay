@@ -9,6 +9,7 @@
 - Implementation plan: docs/plan.md
 - Implemented settings-screen proposal: docs/proposals/2026-07-12-settings-screen.md
 - Implemented transfer flow-control overhaul (BBR, per-transfer streams, DSCP): docs/proposals/2026-07-28-transfer-flow-control.md
+- Implemented franchise-granularity List (one row per franchise, franchise commitment, season tree): docs/proposals/2026-08-28-franchise-list.md
 
 Read the design docs before any planning phase. Update the docs after any design change, and update CLAUDE.md if a document is added.
 

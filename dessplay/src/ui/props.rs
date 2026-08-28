@@ -1826,35 +1826,123 @@ pub fn candidate_rows(
         .collect()
 }
 
-/// The season ordinal of a linked series: 1 + the number of prequel
-/// steps walkable from it along the replicated relations graph. Best
-/// effort by design — the graph fills in slowly (Phase 8's rate-limited
-/// lookups), so a chain broken by a series with no relations entry yet
-/// counts only the prefix it can see, and converges as lookups land.
-/// Cycle-guarded: AniDB data does contain mutual-prequel mistakes, and a
-/// display derivation must never hang on them. Several prequels from one
-/// node (splits, movies) follow the lowest-id edge, for determinism.
-fn season_ordinal(view: &StateView, series: AniDbSeriesId) -> u32 {
-    let mut seen = BTreeSet::from([series]);
-    let mut current = series;
-    let mut ordinal: u32 = 1;
-    while let Some(relations) = view.series_relations.get(&current) {
-        let Some(prequel) = relations
-            .relations
-            .iter()
-            .filter(|r| r.kind == dessplay_core::types::RelationKind::Prequel)
-            .map(|r| r.target)
-            .min()
-        else {
-            break;
-        };
-        if !seen.insert(prequel) {
-            break;
+/// The episode browser's season order for a franchise (proposal
+/// 2026-08-28): the main line in prequel-chain order, with each side
+/// branch — a member attached to a main-line season by a non-chain
+/// structural edge (SideStory / Summary / AlternativeVersion, or the
+/// reverse ParentStory / FullStory) — indented one level directly under
+/// the season it attaches to. A branch that is itself a chain (shorts
+/// with their own seasons) stays together, in its own chain order.
+/// Members AniDB chains as Sequel/Prequel — OVAs included — are main
+/// line: that is how the group watched them. Only `franchise.series`
+/// (members with known files) are placed.
+///
+/// Returns `(series, depth)` with depth 0 for the main line, 1 for a
+/// branch. Deterministic: chains order by their root's year then id,
+/// then season ordinal; branches under one parent by ordinal then id.
+pub fn season_tree(view: &StateView, franchise: &franchise::Franchise) -> Vec<(AniDbSeriesId, u8)> {
+    use dessplay_core::types::RelationKind;
+    let members: BTreeSet<AniDbSeriesId> = franchise.series.iter().copied().collect();
+    // Walk to the prequel-chain root (lowest-id prequel each step,
+    // cycle-guarded — the same walk as `season_ordinal`).
+    let chain_root = |series: AniDbSeriesId| {
+        let mut seen = BTreeSet::from([series]);
+        let mut current = series;
+        while let Some(relations) = view.series_relations.get(&current) {
+            let Some(prequel) = relations
+                .relations
+                .iter()
+                .filter(|r| r.kind == RelationKind::Prequel)
+                .map(|r| r.target)
+                .min()
+            else {
+                break;
+            };
+            if !seen.insert(prequel) {
+                break;
+            }
+            current = prequel;
         }
-        ordinal = ordinal.saturating_add(1);
-        current = prequel;
+        current
+    };
+    // The main-line member a chain root hangs off, if any: the root
+    // names a parent (ParentStory/FullStory), or a member names the
+    // root as its SideStory/Summary/AlternativeVersion.
+    let attach_parent = |root: AniDbSeriesId| -> Option<AniDbSeriesId> {
+        let up = view
+            .series_relations
+            .get(&root)
+            .into_iter()
+            .flat_map(|r| r.relations.iter())
+            .filter(|r| matches!(r.kind, RelationKind::ParentStory | RelationKind::FullStory))
+            .map(|r| r.target);
+        let down = members.iter().copied().filter(|member| {
+            view.series_relations.get(member).is_some_and(|r| {
+                r.relations.iter().any(|r| {
+                    r.target == root
+                        && matches!(
+                            r.kind,
+                            RelationKind::SideStory
+                                | RelationKind::Summary
+                                | RelationKind::AlternativeVersion
+                        )
+                })
+            })
+        });
+        up.chain(down)
+            .filter(|parent| *parent != root && members.contains(parent))
+            .min()
+    };
+    let year = |series: AniDbSeriesId| {
+        view.series_relations
+            .get(&series)
+            .and_then(|r| r.year)
+            .unwrap_or(u16::MAX)
+    };
+
+    // (parent-or-none, chain root, ordinal, id) per member.
+    let mut main: Vec<(u16, AniDbSeriesId, u32, AniDbSeriesId)> = Vec::new();
+    let mut branches: BTreeMap<AniDbSeriesId, Vec<(u32, AniDbSeriesId)>> = BTreeMap::new();
+    for member in &members {
+        let root = chain_root(*member);
+        let ordinal = franchise::season_ordinal(view, *member);
+        match attach_parent(root) {
+            // A branch under a parent that is itself a branch would
+            // need a third level; flatten it under the same parent.
+            Some(parent) if parent != *member => {
+                branches.entry(parent).or_default().push((ordinal, *member));
+            }
+            _ => main.push((year(root), root, ordinal, *member)),
+        }
     }
-    ordinal
+    // A branch whose parent turned out to be a branch itself (its own
+    // root attached elsewhere) still needs a main-line anchor: promote
+    // it to the main line rather than lose it.
+    let main_ids: BTreeSet<AniDbSeriesId> = main.iter().map(|(.., id)| *id).collect();
+    for (parent, children) in std::mem::take(&mut branches) {
+        if main_ids.contains(&parent) {
+            branches.insert(parent, children);
+        } else {
+            for (ordinal, member) in children {
+                main.push((
+                    year(chain_root(member)),
+                    chain_root(member),
+                    ordinal,
+                    member,
+                ));
+            }
+        }
+    }
+    main.sort();
+    let mut out = Vec::with_capacity(members.len());
+    for (.., member) in main {
+        out.push((member, 0));
+        if let Some(mut children) = branches.remove(&member) {
+            children.sort();
+            out.extend(children.into_iter().map(|(_, child)| (child, 1)));
+        }
+    }
+    out
 }
 
 /// The `next_ep` display text: `SnEnn` for a linked entry whose free
@@ -1864,7 +1952,7 @@ fn next_ep_display(view: &StateView, entry: &SeriesListEntry, next_ep: &str) -> 
     let (Some(series), Ok(episode)) = (entry.anidb_series_id, next_ep.trim().parse::<u32>()) else {
         return next_ep.to_string();
     };
-    format!("S{}E{episode:02}", season_ordinal(view, series))
+    format!("S{}E{episode:02}", franchise::season_ordinal(view, series))
 }
 
 /// Entries with something to watch tonight: a file some client still
@@ -1957,6 +2045,31 @@ pub fn list_groups(
     }
     let unwatched = entries_with_unwatched_files(view, watched_hashes);
 
+    // One row per franchise (proposal 2026-08-28): linked entries group by
+    // their franchise component, unlinked entries stand alone. The
+    // *canonical* entry (`series_identity::canonical_first`) speaks for
+    // the row — name, status, next_ep, the edit/Enter target — while
+    // commitment, availability and recency aggregate over every member
+    // entry and every season in the component.
+    let components = franchise::series_components(view);
+    let mut seasons_by_root: BTreeMap<AniDbSeriesId, Vec<AniDbSeriesId>> = BTreeMap::new();
+    for (series, root) in &components {
+        seasons_by_root.entry(*root).or_default().push(*series);
+    }
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum RowKey {
+        Franchise(AniDbSeriesId),
+        Entry(ListEntryId),
+    }
+    let mut rows_by_key: BTreeMap<RowKey, Vec<ListEntryId>> = BTreeMap::new();
+    for (id, entry) in &view.list_entries {
+        let key = match entry.anidb_series_id {
+            Some(series) => RowKey::Franchise(components.get(&series).copied().unwrap_or(series)),
+            None => RowKey::Entry(*id),
+        };
+        rows_by_key.entry(key).or_default().push(*id);
+    }
+
     // `me` first, the rest alphabetically, deduped.
     let mut ordered_users: Vec<&UserId> = vec![me];
     let mut rest: Vec<&UserId> = users.iter().filter(|user| *user != me).collect();
@@ -2005,27 +2118,51 @@ pub fn list_groups(
     // Watching-tier group, for entries no per-user group claimed.
     let residual = ordered_users.len();
 
-    // Sort keys computed alongside each row: (dimmed, newest-watch)
-    // drive the Recency order but don't belong in the rendered row.
+    // Sort keys computed alongside each row: the newest watch drives the
+    // Recency order but doesn't belong in the rendered row.
     let mut keyed: Vec<Vec<(Option<u64>, usize)>> = vec![Vec::new(); groups.len()];
     let mut rows: Vec<ListRow> = Vec::new();
-    for (id, entry) in &view.list_entries {
-        let next = view.list_next_ep.get(id);
-        let available = next.is_some_and(|n| n.available);
-        let dimmed = !available && !unwatched.contains(id);
-        let last_watched = entry
-            .anidb_series_id
-            .map(SeriesKey::AniDb)
-            .into_iter()
-            .chain(std::iter::once(SeriesKey::Name(entry.name.clone())))
-            .chain(
+    for (key, mut members) in rows_by_key {
+        series_identity::canonical_first(view, &mut members);
+        let id = members[0];
+        let entry = &view.list_entries[&id];
+        let next = view.list_next_ep.get(&id);
+        let available = members
+            .iter()
+            .any(|member| view.list_next_ep.get(member).is_some_and(|n| n.available));
+        let dimmed = !available && !members.iter().any(|member| unwatched.contains(member));
+        // Recency: the newest local watch of any member entry's identity
+        // — or of *any season in the franchise*, linked entry or not, so
+        // "the latest episode is in season three" floats the row.
+        let seasons = match key {
+            RowKey::Franchise(root) => seasons_by_root.get(&root).cloned().unwrap_or_default(),
+            RowKey::Entry(_) => Vec::new(),
+        };
+        let last_watched = members
+            .iter()
+            .map(|member| &view.list_entries[member])
+            .flat_map(|entry| {
                 entry
-                    .local_aliases
-                    .iter()
-                    .map(|alias| SeriesKey::Name(alias.clone())),
-            )
+                    .anidb_series_id
+                    .map(SeriesKey::AniDb)
+                    .into_iter()
+                    .chain(std::iter::once(SeriesKey::Name(entry.name.clone())))
+                    .chain(
+                        entry
+                            .local_aliases
+                            .iter()
+                            .map(|alias| SeriesKey::Name(alias.clone())),
+                    )
+            })
+            .chain(seasons.iter().copied().map(SeriesKey::AniDb))
             .filter_map(|key| recency.get(&key).copied())
             .max();
+        let watchers: BTreeSet<&UserId> = members
+            .iter()
+            .filter_map(|member| committed.get(member))
+            .flatten()
+            .copied()
+            .collect();
         // A linked entry with a curated community short title displays
         // (and alphabetizes) under it — "GochiUsa", not "Gochuumon wa
         // Usagi Desu ka??" (design.md, The List). Only over the
@@ -2042,17 +2179,15 @@ pub fn list_groups(
             .cloned()
             .unwrap_or_else(|| entry.name.clone());
         let row = ListRow {
-            id: *id,
+            id,
             name: display_name,
             nero_name: entry.nero_name.clone(),
             next_ep: next
                 .and_then(|n| n.next_ep.as_deref())
                 .map(|text| next_ep_display(view, entry, text)),
             available,
-            watchers: committed
-                .get(id)
-                .into_iter()
-                .flatten()
+            watchers: watchers
+                .iter()
                 .filter_map(|user| user.0.chars().next())
                 .map(|c| c.to_ascii_uppercase())
                 .collect(),
@@ -2069,15 +2204,16 @@ pub fn list_groups(
                 continue;
             }
             match user {
-                // Per-user group: needs that user's live commitment. An
-                // entry lands in every group whose user is committed.
+                // Per-user group: needs that user's live commitment to any
+                // member. A row lands in every group whose user is
+                // committed.
                 Some(user) => {
-                    if committed.get(id).is_some_and(|set| set.contains(*user)) {
+                    if watchers.contains(*user) {
                         keyed[g].push((last_watched, row_index));
                         placed = true;
                     }
                 }
-                // Shared status groups take every entry of their status;
+                // Shared status groups take every row of their status;
                 // the residual Watching group only what nobody claimed
                 // (below), so nothing vanishes — a commitment by a user
                 // outside `users` still isn't a rendered group.
@@ -2098,14 +2234,12 @@ pub fn list_groups(
             ListSort::Alphabetical => {
                 members.sort_by(|(_, a), (_, b)| rows[*a].name.cmp(&rows[*b].name));
             }
-            // Watchable first, most recently watched first within each
-            // partition (never-watched last), name as the tiebreak.
+            // Most recently watched first (never-watched last), name as
+            // the tiebreak. Dimming is purely visual and never reorders
+            // (proposal 2026-08-28): a predictable order beats a
+            // partition that shuffles rows as files come and go.
             ListSort::Recency => members.sort_by(|(ra, a), (rb, b)| {
-                let (a, b) = (&rows[*a], &rows[*b]);
-                a.dimmed
-                    .cmp(&b.dimmed)
-                    .then_with(|| rb.cmp(ra))
-                    .then_with(|| a.name.cmp(&b.name))
+                rb.cmp(ra).then_with(|| rows[*a].name.cmp(&rows[*b].name))
             }),
         }
         group.rows = members
@@ -3289,12 +3423,197 @@ mod tests {
         assert_eq!(groups[0].rows[0].watchers, "K");
     }
 
-    /// Recency order: watchable entries (weekly `available`, or an
-    /// unwatched library file) first, most recently watched first within
-    /// each partition (never-watched last), names as the tiebreak — and
-    /// the bottom partition is exactly the dimmed set.
+    /// The season tree (proposal 2026-08-28): the prequel chain is the
+    /// main line; side stories — and a whole chain of them — indent
+    /// under the season they branch from, in their own chain order.
     #[test]
-    fn recency_sort_partitions_watchable_first() {
+    fn season_tree_indents_branches_under_their_parent() {
+        use dessplay_core::types::{RelationKind, SeriesRelation, SeriesRelations};
+        let mut state = CrdtState::new();
+        let mut relations = |id: u32, title: &str, year: u16, edges: &[(RelationKind, u32)]| {
+            state.set_series_relations(
+                A,
+                ts(1),
+                AniDbSeriesId(id),
+                SeriesRelations {
+                    title: title.into(),
+                    year: Some(year),
+                    episode_count: None,
+                    relations: edges
+                        .iter()
+                        .map(|(kind, target)| SeriesRelation {
+                            kind: *kind,
+                            target: AniDbSeriesId(*target),
+                        })
+                        .collect(),
+                    short_titles: vec![],
+                },
+            );
+        };
+        use RelationKind::*;
+        relations(
+            1,
+            "GuP",
+            2012,
+            &[(Sequel, 3), (SideStory, 2), (SideStory, 10)],
+        );
+        relations(2, "GuP: Anzio OVA", 2014, &[(ParentStory, 1)]);
+        relations(3, "GuP der Film", 2015, &[(Prequel, 1)]);
+        relations(10, "GuP shorts", 2013, &[(ParentStory, 1), (Sequel, 11)]);
+        relations(11, "GuP shorts 2", 2014, &[(Prequel, 10)]);
+        for id in [1u32, 2, 3, 10, 11] {
+            state.set_anidb_metadata(
+                A,
+                ts(2),
+                Ed2kHash([id as u8; 16]),
+                Some(AniDbMetadata {
+                    source: MetadataSource::AniDb,
+                    series_name: format!("s{id}"),
+                    series_id: Some(AniDbSeriesId(id)),
+                    episode_number: Some("1".into()),
+                }),
+            );
+        }
+        let view = state.view();
+        let franchises = franchise::franchises(&view);
+        assert_eq!(franchises.len(), 1);
+        let tree: Vec<(u32, u8)> = season_tree(&view, &franchises[0])
+            .into_iter()
+            .map(|(series, depth)| (series.0, depth))
+            .collect();
+        assert_eq!(tree, vec![(1, 0), (2, 1), (10, 1), (11, 1), (3, 0)]);
+    }
+
+    /// One row per franchise (proposal 2026-08-28): entries linked to
+    /// different seasons of one show collapse into a single row — the
+    /// canonical entry's name and `next_ep`, the union of the members'
+    /// commitments, and a recency taken from *any* season of the
+    /// franchise (here a season with no entry of its own at all).
+    #[test]
+    fn linked_seasons_of_one_franchise_render_as_one_row() {
+        use dessplay_core::types::{RelationKind, SeriesRelation, SeriesRelations};
+        let mut state = CrdtState::new();
+        let relations = |title: &str, edges: &[(RelationKind, u32)]| SeriesRelations {
+            title: title.into(),
+            year: None,
+            episode_count: None,
+            relations: edges
+                .iter()
+                .map(|(kind, target)| SeriesRelation {
+                    kind: *kind,
+                    target: AniDbSeriesId(*target),
+                })
+                .collect(),
+            short_titles: vec![],
+        };
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(1),
+            relations("Yuru Yuri", &[(RelationKind::Sequel, 2)]),
+        );
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(2),
+            relations(
+                "Yuru Yuri 2",
+                &[(RelationKind::Prequel, 1), (RelationKind::Sequel, 3)],
+            ),
+        );
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(3),
+            relations("Yuru Yuri San Hai!", &[(RelationKind::Prequel, 2)]),
+        );
+        state.set_series_relations(A, ts(1), AniDbSeriesId(9), relations("Unrelated", &[]));
+        let mut put = |id: u128, name: &str, series: u32| {
+            let mut entry = list_entry(name, ListStatus::Active);
+            entry.anidb_series_id = Some(AniDbSeriesId(series));
+            state.put_list_entry(A, ts(id as u64), ListEntryId(id), entry);
+        };
+        put(1, "Yuru Yuri", 1);
+        put(2, "Yuru Yuri 2", 2);
+        put(9, "Unrelated", 9);
+        // kim committed on season one, nero on season two: both watch
+        // the franchise. Season two carries the live next_ep.
+        commit(&mut state, 20, "kim", 1);
+        commit(&mut state, 21, "nero", 2);
+        state.set_next_ep(
+            A,
+            ts(30),
+            ListEntryId(2),
+            NextEpState {
+                next_ep: Some("7".into()),
+                available: false,
+            },
+        );
+        // The group last watched season *three*, which has no entry.
+        let recency: BTreeMap<SeriesKey, u64> = [
+            (SeriesKey::AniDb(AniDbSeriesId(3)), 900),
+            (SeriesKey::AniDb(AniDbSeriesId(9)), 100),
+        ]
+        .into_iter()
+        .collect();
+
+        let groups = list_groups(
+            &state.view(),
+            &UserId::new("kim"),
+            &[UserId::new("kim"), UserId::new("nero")],
+            ListSort::Recency,
+            &recency,
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            headings(&groups),
+            vec!["Watching — kim", "Watching — nero", "Watching"]
+        );
+        let kim = &groups[0];
+        assert_eq!(
+            kim.rows.len(),
+            1,
+            "one row for the franchise: {:?}",
+            kim.rows
+        );
+        let row = &kim.rows[0];
+        // Both entries are human-created (random ids); season two is
+        // deeper along the prequel chain, so it is canonical.
+        assert_eq!(row.id, ListEntryId(2));
+        assert_eq!(row.name, "Yuru Yuri 2");
+        assert_eq!(row.next_ep.as_deref(), Some("S2E07"));
+        assert_eq!(row.watchers, "KN");
+        assert_eq!(
+            groups[1].rows[0].id,
+            ListEntryId(2),
+            "nero's group sees the same row"
+        );
+        // The residual group holds only the unrelated show; Recency in
+        // kim's group is unaffected, but across the shared view the
+        // franchise (watched at 900 via season three) outranks it.
+        assert_eq!(
+            groups[2].rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![ListEntryId(9)]
+        );
+        let all = list_groups(
+            &state.view(),
+            &UserId::new("x"),
+            &[],
+            ListSort::Recency,
+            &recency,
+            &BTreeMap::new(),
+        );
+        let names: Vec<&str> = all[0].rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["Yuru Yuri 2", "Unrelated"]);
+    }
+
+    /// Recency order: most recently watched first, never-watched last,
+    /// names as the tiebreak. Having nothing to watch (no weekly
+    /// `available`, no unwatched library file) *dims* a row but never
+    /// moves it (proposal 2026-08-28): order stays predictable as files
+    /// come and go.
+    #[test]
+    fn recency_sort_orders_by_last_watch_and_dims_without_reordering() {
         let mut state = CrdtState::new();
         let mut put = |id: u128, name: &str| {
             let mut entry = list_entry(name, ListStatus::CurrentSeason);
@@ -3358,14 +3677,14 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "Available, fresh",        // watchable, watched at 900
-                "Available, stale",        // watchable, watched at 100
-                "Unwatched file held",     // watchable, never watched
-                "Nothing to watch, fresh"  // not watchable, despite 950
+                "Nothing to watch, fresh", // watched at 950 (dim, but not demoted)
+                "Available, fresh",        // watched at 900
+                "Available, stale",        // watched at 100
+                "Unwatched file held",     // never watched
             ]
         );
         let dimmed: Vec<bool> = groups[0].rows.iter().map(|r| r.dimmed).collect();
-        assert_eq!(dimmed, vec![false, false, false, true]);
+        assert_eq!(dimmed, vec![true, false, false, false]);
 
         // Alphabetical ignores all of that.
         let groups = groups_of(&state, ListSort::Alphabetical);
@@ -3523,8 +3842,13 @@ mod tests {
             .into_iter()
             .collect()
         );
-        // And the Recency partition follows: the fresh entry on top.
-        assert_eq!(watching.rows[0].name, "Fresh episode");
+        // Dimming never reorders: with no watch history the Recency
+        // order is plain name order (proposal 2026-08-28).
+        let names: Vec<&str> = watching.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Finished long ago", "Fresh episode", "Metadata ghost"]
+        );
     }
 
     /// A held duplicate copy of an episode the group already watched
@@ -3713,12 +4037,18 @@ mod tests {
             recency: BTreeMap<SeriesKey, u64>,
             watched_hashes: BTreeMap<Ed2kHash, i64>,
         }
+        // A base watch history, so Recency and Alphabetical differ (with
+        // no history the two orders coincide — dimming no longer
+        // partitions, proposal 2026-08-28).
+        let base_recency: BTreeMap<SeriesKey, u64> = [(SeriesKey::Name("Zeta Bright".into()), 300)]
+            .into_iter()
+            .collect();
         let base = |state: &CrdtState| Step {
             name: "",
             state: state.clone(),
             users: users.clone(),
             sort: ListSort::Recency,
-            recency: BTreeMap::new(),
+            recency: base_recency.clone(),
             watched_hashes: BTreeMap::new(),
         };
 
@@ -3758,8 +4088,7 @@ mod tests {
         personal.name = "personal watch history";
         personal.watched_hashes.insert(Ed2kHash([1; 16]), 1);
         steps.push(personal);
-        // Recency floats the more recently watched of the two dimmed
-        // rows within its partition.
+        // Recency floats the most recently watched row.
         let mut recency = base(&state);
         recency.name = "recency";
         recency
@@ -3813,7 +4142,7 @@ mod tests {
                     &me,
                     &users,
                     ListSort::Recency,
-                    &BTreeMap::new(),
+                    &base_recency,
                     &BTreeMap::new(),
                 )
                 .to_vec();
@@ -3880,6 +4209,8 @@ mod tests {
         // 50's prequel (49) has no relations entry yet: the walk counts
         // the one visible step and stops.
         state.set_series_relations(A, ts(6), AniDbSeriesId(50), relations("Broken", Some(49)));
+        // A standalone first season.
+        state.set_series_relations(A, ts(7), AniDbSeriesId(60), relations("Solo", None));
 
         // (entry id, name, linked series, next_ep free text, expected display)
         type Case = (
@@ -3890,15 +4221,17 @@ mod tests {
             Option<&'static str>,
         );
         let cases: &[Case] = &[
+            // One franchise per case: entries linked into the same chain
+            // would collapse into one row (proposal 2026-08-28).
             (1, "Third season", Some(30), "5", Some("S3E05")),
-            (2, "First season", Some(10), "12", Some("S1E12")),
+            (2, "First season", Some(60), "12", Some("S1E12")),
             (3, "Cycle", Some(41), "3", Some("S2E03")),
             (4, "Broken chain", Some(50), "7", Some("S2E07")),
             // No relations entry at all: a plain S1.
             (5, "Unknown", Some(99), "9", Some("S1E09")),
-            (6, "Free text", Some(30), "movie 5?", Some("movie 5?")),
+            (6, "Free text", Some(70), "movie 5?", Some("movie 5?")),
             (7, "Unlinked", None, "8", Some("8")),
-            (8, "No next ep", Some(30), "", None),
+            (8, "No next ep", Some(80), "", None),
         ];
         for (id, name, series, next, _) in cases {
             let mut entry = list_entry(name, ListStatus::Active);

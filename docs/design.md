@@ -165,7 +165,13 @@ sync state with each other. See [network-design.md](network-design.md).
    - **Single-season franchise**: opens the file browser in the series directory,
      cursor on the next unwatched episode
    - **Multi-season franchise**: opens the **Episode Browser** modal showing
-     seasons (franchise members). Select a season to see its episodes.
+     seasons (franchise members) as a **tree**: the prequel chain in order
+     (OVAs AniDB chains as Sequel/Prequel stay inline -- that is how the
+     group watched them), side branches (SideStory / Summary /
+     AlternativeVersion members, or a whole chain of them) indented under
+     the season they branch from. A season with nothing unwatched-and-held
+     renders dim; the cursor opens on the first season that has something
+     to watch. Select a season to see its episodes.
 5. In the Episode Browser, press `Enter` on an episode to add it to the
    playlist. If you have the file locally it resolves Ready; if you don't, it
    is added anyway (using the file catalog's identity) and downloads like any
@@ -1195,8 +1201,19 @@ this):
 key, the Users-pane `n` action, and `watchers`-set wiring, given the
 now-playing (or selected) file:
 
-1. The file has an AniDB series id, and some List entry is linked to it:
-   that entry.
+1. The file has an AniDB series id, and some List entry is linked into
+   its **franchise** -- any season in the structural-relations component
+   (`franchise::reachable_component`, plus a one-hop check from each linked
+   season's own relations row, for a brand-new season whose row hasn't
+   landed yet): that entry. Commitment is per franchise, not per season
+   (proposal 2026-08-28): `/watch` on season three commits to the show,
+   and a new season never mints a second entry. With several entries
+   linked into one franchise (legacy per-season duplicates) the
+   **canonical** one answers -- human-created over auto-created, then
+   deepest along the prequel chain, then lowest id
+   (`series_identity::canonical_first`) -- and a user's commitment is the
+   fold of their preference over *all* of them: Watching > NotWatching >
+   Maybe (`derive::series_watch_for_file`).
 2. The file's hash is in some entry's `manual_files`: that entry.
 3. The file's derived name matches some entry's `name` or `local_aliases`:
    that entry.
@@ -1257,7 +1274,16 @@ every applicable group -- with a residual shared **Watching** group for
 Watching-tier entries no rendered group claims (no committed watcher, or
 one the client can't name), so nothing vanishes. Below that the shared
 status groups: ShortList, Planned, Waiting, Hiatus, with Finished/Dropped
-collapsed at the bottom. Pressing `Enter` on an
+collapsed at the bottom.
+
+Rows are **one per franchise** (proposal 2026-08-28): entries linked into
+the same relations component collapse into one row -- the canonical
+entry's name, status and `next_ep`, the union of the members' commitment
+initials, `available` if any member is, dim only if no member has
+anything to watch -- and unlinked entries stand alone. `e`/`n`/`l`/Enter
+act on the canonical entry.
+
+Pressing `Enter` on an
 Active/CurrentSeason entry jumps toward `next_ep`: for a linked entry, into
 the episode browser with the cursor on that episode if anyone has it; for an
 unlinked entry, into the candidate-ranked disambiguation view described
@@ -1273,11 +1299,14 @@ metadata row is not enough -- metadata persists forever, files don't --
 and a duplicate encoding of an episode the group watched through *any*
 other copy doesn't count either (the same any-copy rule, by AniDB
 episode identity).
-Watchable entries sort above those with nothing to watch, most recently
-watched first within each partition (from local watch history, the same
-source as Recent Series); **Alphabetical** is plain name order. Entries
-with nothing to watch render dim in either sort -- the dim set is exactly
-Recency's bottom partition.
+Rows sort most recently watched first (from local watch history, the same
+source as Recent Series -- the newest watch of *any season in the
+franchise*, entry or not, so "the latest episode is in season three" still
+floats the row), never-watched last, name as the tiebreak;
+**Alphabetical** is plain name order. Rows with nothing to watch render
+dim in either sort but are **never reordered** by it (proposal
+2026-08-28): a predictable order beats a partition that shuffles as files
+come and go.
 
 Entries display name, nero_name, next_ep, and **live commitment initials**:
 the users whose `series_preference` is Watching, not the import-time
@@ -1725,7 +1754,8 @@ the last copy. A motionless click never touches the clipboard.
 | `n` | Series (List mode) | Edit the entry's `nero_name` (minimal single-field editor; empty clears) |
 | `l` | Series (List mode) | Link entry to AniDB (search modal) |
 | `Enter` | Episode Browser | Select season (cursor on its first unwatched row — for a multi-copy episode, on the copy whose name is nearest the file actually played for the previous episode, else its header) / choose an episode or copy; no-op on a header row |
-| `w` | Episode Browser | Cycle the group watched flag: the selected file, or every copy of the episode on a header row; marking moves the cursor to the next episode; no-op in the season list |
+| `w` | Episode Browser | Cycle the group watched flag: the selected file, or every copy of the episode on a header row; marking moves the cursor to the next episode. On a season row: mark every known file of the season (unmark, if all already show watched), behind a y/n confirmation |
+| `y` / `Enter`, `n` / `Esc` | Confirm | Answer a confirmation (other keys are ignored) |
 | `PgUp` / `PgDn` | Episode Browser | Move the selection by a page |
 | `Esc` / `Backspace` | Episode Browser | Go back (episodes -> seasons -> close) |
 | `Enter` | File Browser | Open directory / choose file (add or map) |

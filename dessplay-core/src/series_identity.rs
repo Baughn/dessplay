@@ -11,57 +11,72 @@ use crate::state::StateView;
 use crate::types::{AniDbSeriesId, Ed2kHash, ListEntryId, ListStatus, SeriesListEntry};
 
 /// Resolve a file to the List entry that claims it, read-only. Resolution
-/// order (design.md, Series Identity): an entry linked to the file's AniDB
-/// series id, else an entry with the file's hash in `manual_files`, else
-/// an entry whose `name`/`local_aliases` matches the file's derived series
-/// name. `None` means nothing claims the file yet -- callers that need a
-/// definite entry (committing via `/watch` etc.) auto-create one; this
-/// function never does, since it also backs read-only gating derivation
+/// order (design.md, Series Identity): an entry linked into the file's
+/// AniDB *franchise* (any season — see [`entries_claiming_series`]), else
+/// an entry with the file's hash in `manual_files`, else an entry whose
+/// `name`/`local_aliases` matches the file's derived series name. `None`
+/// means nothing claims the file yet -- callers that need a definite entry
+/// (committing via `/watch` etc.) auto-create one; this function never
+/// does, since it also backs read-only gating derivation
 /// (`derive::series_watch_for_file`), which must stay a pure query.
+///
+/// One implementation: this builds a [`SeriesEntryIndex`] (O(entries), the
+/// same cost as the old three-scan resolution) and asks it, so the bulk
+/// and single-file paths cannot drift apart.
 pub fn resolve_series_entry_for_file(view: &StateView, file: Ed2kHash) -> Option<ListEntryId> {
-    // Steps 1 and 3 need metadata (a series id / a derived name); step 2
-    // is a pure hash-membership test and must work without any — a
-    // manually-attached file is committed the moment it's attached, not
-    // once the server's fallback metadata lands.
-    let metadata = view.anidb_metadata.get(&file).and_then(|m| m.as_ref());
+    SeriesEntryIndex::new(view).resolve(view, file)
+}
 
-    if let Some(series_id) = metadata.and_then(|m| m.series_id)
-        && let Some((id, _)) = view
+/// Every List entry linked into `series`' franchise, canonical first
+/// (proposal 2026-08-28, "The List at franchise granularity"). A linked
+/// entry claims `series` when its own season is in the component reachable
+/// from `series` ([`franchise::reachable_component`]), *or* its season's
+/// relations row names `series` directly — the one-hop backstop for a
+/// brand-new season whose own relations row hasn't landed yet, which is
+/// exactly the window in which a duplicate entry would otherwise be
+/// auto-created. Empty when nothing claims the franchise.
+///
+/// Canonical order (only matters for legacy per-season duplicates): a
+/// human-created entry (one whose id is not the auto-create hash of its
+/// link, [`derive_entry_id`]) beats an auto-created one — a fresh season
+/// entry auto-created in that window must never hide the entry carrying
+/// the notes; then the entry linked deepest along the prequel chain (it
+/// holds the live `next_ep`); then the lowest id.
+pub fn entries_claiming_series(view: &StateView, series: AniDbSeriesId) -> Vec<ListEntryId> {
+    SeriesEntryIndex::new(view).claimants(view, series)
+}
+
+/// Order List entries canonical-first (see [`entries_claiming_series`]):
+/// human-created before auto-created, then deepest along the prequel
+/// chain, then lowest id. Dedups. The one definition of "which of these
+/// entries speaks for the franchise", shared by file resolution and The
+/// List's one-row-per-franchise rendering.
+pub fn canonical_first(view: &StateView, ids: &mut Vec<ListEntryId>) {
+    ids.sort_unstable();
+    ids.dedup();
+    // `sort_by_key` is stable over the ascending-id order.
+    ids.sort_by_key(|id| {
+        let link = view
             .list_entries
-            .iter()
-            .find(|(_, entry)| entry.anidb_series_id == Some(series_id))
-    {
-        return Some(*id);
-    }
-
-    if let Some((id, _)) = view
-        .list_entries
-        .iter()
-        .find(|(_, entry)| entry.manual_files.contains(&file))
-    {
-        return Some(*id);
-    }
-
-    let metadata = metadata?;
-    view.list_entries
-        .iter()
-        .find(|(_, entry)| {
-            entry.name == metadata.series_name
-                || entry.local_aliases.contains(&metadata.series_name)
-        })
-        .map(|(id, _)| *id)
+            .get(id)
+            .and_then(|entry| entry.anidb_series_id);
+        let auto_created = link.is_some_and(|series| derive_entry_id(Some(series), "") == *id);
+        let ordinal = link.map_or(0, |series| crate::franchise::season_ordinal(view, series));
+        (auto_created, std::cmp::Reverse(ordinal))
+    });
 }
 
 /// A prebuilt index over [`StateView::list_entries`] for resolving many
-/// files in one pass: the same claims, the same order, as
-/// [`resolve_series_entry_for_file`] (the `index_resolution_matches_the_scan`
-/// proptest pins the equivalence), but a bulk caller pays O(entries) once
-/// to build it instead of up to three linear entry scans per file. Built
-/// per call from a view — it holds borrows and no freshness logic, so a
-/// stale index is unrepresentable rather than merely avoided.
+/// files in one pass: a bulk caller pays O(entries) once to build it
+/// instead of up to three linear entry scans per file. Built per call
+/// from a view — it holds borrows and no freshness logic, so a stale index
+/// is unrepresentable rather than merely avoided.
 pub struct SeriesEntryIndex<'a> {
-    /// First (lowest-id) entry linked to each AniDB series.
-    by_series: std::collections::BTreeMap<AniDbSeriesId, ListEntryId>,
+    /// Entries linked to each AniDB series, ascending id.
+    by_series: std::collections::BTreeMap<AniDbSeriesId, Vec<ListEntryId>>,
+    /// Series named by a structural edge *from* a linked entry's season ->
+    /// those entries (the one-hop backstop, see [`entries_claiming_series`]).
+    by_neighbour: std::collections::BTreeMap<AniDbSeriesId, Vec<ListEntryId>>,
     /// First entry claiming each file via `manual_files`.
     by_manual: std::collections::BTreeMap<Ed2kHash, ListEntryId>,
     /// First entry claiming each name via `name` *or* `local_aliases`
@@ -71,16 +86,25 @@ pub struct SeriesEntryIndex<'a> {
 }
 
 impl<'a> SeriesEntryIndex<'a> {
-    /// Index `view.list_entries` (one pass, ascending id order — the
-    /// same order the scan visits, so every "first match wins" tie
-    /// breaks identically).
+    /// Index `view.list_entries` (one pass, ascending id order, so every
+    /// "first match wins" tie breaks identically).
     pub fn new(view: &'a StateView) -> Self {
-        let mut by_series = std::collections::BTreeMap::new();
+        let mut by_series: std::collections::BTreeMap<AniDbSeriesId, Vec<ListEntryId>> =
+            std::collections::BTreeMap::new();
+        let mut by_neighbour: std::collections::BTreeMap<AniDbSeriesId, Vec<ListEntryId>> =
+            std::collections::BTreeMap::new();
         let mut by_manual = std::collections::BTreeMap::new();
         let mut by_name = std::collections::BTreeMap::new();
         for (id, entry) in &view.list_entries {
             if let Some(series) = entry.anidb_series_id {
-                by_series.entry(series).or_insert(*id);
+                by_series.entry(series).or_default().push(*id);
+                if let Some(relations) = view.series_relations.get(&series) {
+                    for relation in &relations.relations {
+                        if relation.kind.groups_franchise() {
+                            by_neighbour.entry(relation.target).or_default().push(*id);
+                        }
+                    }
+                }
             }
             for file in &entry.manual_files {
                 by_manual.entry(*file).or_insert(*id);
@@ -92,19 +116,36 @@ impl<'a> SeriesEntryIndex<'a> {
         }
         Self {
             by_series,
+            by_neighbour,
             by_manual,
             by_name,
         }
+    }
+
+    /// [`entries_claiming_series`], through the index.
+    pub fn claimants(&self, view: &StateView, series: AniDbSeriesId) -> Vec<ListEntryId> {
+        let mut ids: Vec<ListEntryId> = crate::franchise::reachable_component(view, series)
+            .iter()
+            .filter_map(|member| self.by_series.get(member))
+            .flatten()
+            .chain(self.by_neighbour.get(&series).into_iter().flatten())
+            .copied()
+            .collect();
+        canonical_first(view, &mut ids);
+        ids
     }
 
     /// [`resolve_series_entry_for_file`], through the index.
     pub fn resolve(&self, view: &StateView, file: Ed2kHash) -> Option<ListEntryId> {
         let metadata = view.anidb_metadata.get(&file).and_then(|m| m.as_ref());
         if let Some(series) = metadata.and_then(|m| m.series_id)
-            && let Some(id) = self.by_series.get(&series)
+            && let Some(id) = self.claimants(view, series).first()
         {
             return Some(*id);
         }
+        // Step 2 is a pure hash-membership test and must work without any
+        // metadata — a manually-attached file is committed the moment it's
+        // attached, not once the server's fallback metadata lands.
         if let Some(id) = self.by_manual.get(&file) {
             return Some(*id);
         }
@@ -198,7 +239,10 @@ mod tests {
 
     use super::*;
     use crate::state::CrdtState;
-    use crate::types::{ActorId, AniDbMetadata, MetadataSource, SharedTimestamp};
+    use crate::types::{
+        ActorId, AniDbMetadata, MetadataSource, RelationKind, SeriesRelation, SeriesRelations,
+        SharedTimestamp,
+    };
 
     const A: ActorId = ActorId::SERVER;
 
@@ -308,6 +352,180 @@ mod tests {
         assert_eq!(first, second);
     }
 
+    /// A relations row: `title`, with structural edges to `targets`.
+    fn relations(title: &str, targets: &[(RelationKind, u32)]) -> SeriesRelations {
+        SeriesRelations {
+            title: title.into(),
+            year: None,
+            episode_count: Some(12),
+            relations: targets
+                .iter()
+                .map(|(kind, id)| SeriesRelation {
+                    kind: *kind,
+                    target: AniDbSeriesId(*id),
+                })
+                .collect(),
+            short_titles: vec![],
+        }
+    }
+
+    fn linked_metadata(state: &mut CrdtState, file: Ed2kHash, series: u32) {
+        state.set_anidb_metadata(
+            A,
+            ts(1),
+            file,
+            Some(AniDbMetadata {
+                source: MetadataSource::AniDb,
+                series_name: format!("series {series}"),
+                series_id: Some(AniDbSeriesId(series)),
+                episode_number: Some("1".into()),
+            }),
+        );
+    }
+
+    fn linked_entry(name: &str, series: u32) -> SeriesListEntry {
+        let mut e = entry(name);
+        e.anidb_series_id = Some(AniDbSeriesId(series));
+        e
+    }
+
+    /// The franchise rule (proposal 2026-08-28): a file from a *sequel*
+    /// season resolves to the entry linked to the prequel — one entry per
+    /// franchise, so `/watch` on season three commits to the show, and
+    /// `resolve_or_build_entry` must not mint a second, per-season entry.
+    #[test]
+    fn sequel_file_resolves_to_the_entry_linked_to_its_prequel() {
+        let mut state = CrdtState::new();
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(1),
+            relations("S1", &[(RelationKind::Sequel, 2)]),
+        );
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(2),
+            relations("S2", &[(RelationKind::Prequel, 1)]),
+        );
+        linked_metadata(&mut state, hash(2), 2);
+        state.put_list_entry(A, ts(2), ListEntryId(7), linked_entry("Show", 1));
+        let view = state.view();
+        assert_eq!(
+            resolve_series_entry_for_file(&view, hash(2)),
+            Some(ListEntryId(7))
+        );
+        assert_eq!(
+            resolve_or_build_entry(&view, hash(2)),
+            Some((ListEntryId(7), None))
+        );
+    }
+
+    /// The new-season window: the file's own season has no relations row
+    /// yet (the ANIME lookup is still queued), but the linked season's row
+    /// already names it as a Sequel. It must still resolve — this is
+    /// exactly when a duplicate entry would otherwise be auto-created.
+    #[test]
+    fn unfetched_sequel_resolves_through_the_linked_seasons_edge() {
+        let mut state = CrdtState::new();
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(1),
+            relations("S1", &[(RelationKind::Sequel, 2)]),
+        );
+        linked_metadata(&mut state, hash(2), 2);
+        state.put_list_entry(A, ts(2), ListEntryId(7), linked_entry("Show", 1));
+        assert_eq!(
+            resolve_series_entry_for_file(&state.view(), hash(2)),
+            Some(ListEntryId(7))
+        );
+    }
+
+    /// Crossover edges don't group (Isekai Quartet is not Overlord): a file
+    /// from a series reachable only through a non-structural edge stays
+    /// unclaimed.
+    #[test]
+    fn a_crossover_neighbour_does_not_claim_the_file() {
+        let mut state = CrdtState::new();
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(1),
+            relations("A", &[(RelationKind::Character, 2)]),
+        );
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(2),
+            relations("B", &[(RelationKind::Character, 1)]),
+        );
+        linked_metadata(&mut state, hash(2), 2);
+        state.put_list_entry(A, ts(2), ListEntryId(7), linked_entry("A", 1));
+        assert_eq!(resolve_series_entry_for_file(&state.view(), hash(2)), None);
+    }
+
+    /// Legacy duplicates (several entries linked into one franchise): the
+    /// canonical entry is a human-created one over an auto-created one,
+    /// then the one linked deepest along the prequel chain (it holds the
+    /// live `next_ep`), then the lowest id — and every season's file
+    /// resolves to that same entry.
+    #[test]
+    fn canonical_entry_prefers_human_created_then_deepest_season() {
+        let mut state = CrdtState::new();
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(1),
+            relations("S1", &[(RelationKind::Sequel, 2)]),
+        );
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(2),
+            relations(
+                "S2",
+                &[(RelationKind::Prequel, 1), (RelationKind::Sequel, 3)],
+            ),
+        );
+        state.set_series_relations(
+            A,
+            ts(1),
+            AniDbSeriesId(3),
+            relations("S3", &[(RelationKind::Prequel, 2)]),
+        );
+        for series in 1..=3 {
+            linked_metadata(&mut state, hash(series as u8), series);
+        }
+        let auto = |series: u32| derive_entry_id(Some(AniDbSeriesId(series)), "");
+        state.put_list_entry(A, ts(2), auto(1), linked_entry("S1", 1));
+        state.put_list_entry(A, ts(2), auto(2), linked_entry("S2", 2));
+        let view = state.view();
+        for file in 1..=3u8 {
+            assert_eq!(
+                resolve_series_entry_for_file(&view, hash(file)),
+                Some(auto(2)),
+                "file {file}"
+            );
+        }
+        assert_eq!(
+            entries_claiming_series(&view, AniDbSeriesId(3)),
+            vec![auto(2), auto(1)]
+        );
+
+        // A human-created entry (random id) linked to the *first* season
+        // still wins over the auto-created deeper one.
+        state.put_list_entry(A, ts(3), ListEntryId(99), linked_entry("Show", 1));
+        let view = state.view();
+        for file in 1..=3u8 {
+            assert_eq!(
+                resolve_series_entry_for_file(&view, hash(file)),
+                Some(ListEntryId(99)),
+                "file {file}"
+            );
+        }
+    }
+
     proptest! {
         /// The design's whole resolution contract in one generated test:
         /// linked entry > manual file > name match > deterministic
@@ -381,59 +599,66 @@ mod tests {
             );
         }
 
-        /// [`SeriesEntryIndex`] resolves exactly like the per-file scan
-        /// for every file, over arbitrary entry mixtures. The tiny
-        /// alphabets are deliberate: they force shared names, shared
-        /// series links, and competing manual claims, so the scan's
-        /// first-entry-wins tie-breaks are exercised, not dodged.
+        /// The franchise invariant: over a fully-fetched season chain
+        /// (symmetric Sequel/Prequel rows) with any mixture of linked
+        /// entries, *every* season's file resolves to the *same* entry
+        /// (design.md, Series Identity: commitment is per franchise), that
+        /// entry is the canonical claimant, and a human-created entry is
+        /// canonical whenever one exists. Also pins the bulk index against
+        /// the single-file path.
         #[test]
-        fn index_resolution_matches_the_scan(
-            entries in proptest::collection::vec(
-                (
-                    proptest::option::of(0u32..4),                       // anidb link
-                    "[a-d]{1,2}",                                        // name
-                    proptest::collection::btree_set("[a-d]{1,2}", 0..3), // aliases
-                    proptest::collection::btree_set(0u8..6, 0..3),       // manual files
-                ),
-                0..6,
-            ),
-            files in proptest::collection::vec(
-                (
-                    0u8..6,                                              // hash
-                    proptest::option::of((proptest::option::of(0u32..4), "[a-d]{1,2}")),
-                ),
-                0..8,
-            ),
+        fn every_season_of_a_franchise_resolves_to_one_canonical_entry(
+            seasons in 1usize..6,
+            // Per season: no entry / auto-created entry / human entry.
+            links in proptest::collection::vec(0u8..3, 6),
         ) {
             let mut state = CrdtState::new();
-            for (i, (series, name, aliases, manual)) in entries.into_iter().enumerate() {
-                let mut e = entry(&name);
-                e.anidb_series_id = series.map(AniDbSeriesId);
-                e.local_aliases = aliases;
-                e.manual_files = manual.into_iter().map(hash).collect();
-                state.put_list_entry(A, ts(i as u64 + 1), ListEntryId(i as u128), e);
-            }
-            for (i, (file, metadata)) in files.into_iter().enumerate() {
-                state.set_anidb_metadata(
+            for season in 1..=seasons {
+                let mut edges = Vec::new();
+                if season > 1 {
+                    edges.push((RelationKind::Prequel, season as u32 - 1));
+                }
+                if season < seasons {
+                    edges.push((RelationKind::Sequel, season as u32 + 1));
+                }
+                state.set_series_relations(
                     A,
-                    ts(100 + i as u64),
-                    hash(file),
-                    metadata.map(|(series, name)| AniDbMetadata {
-                        source: MetadataSource::FilenameDerived,
-                        series_name: name,
-                        series_id: series.map(AniDbSeriesId),
-                        episode_number: None,
-                    }),
+                    ts(1),
+                    AniDbSeriesId(season as u32),
+                    relations(&format!("S{season}"), &edges),
                 );
+                linked_metadata(&mut state, hash(season as u8), season as u32);
+                let id = match links[season - 1] {
+                    0 => continue,
+                    1 => derive_entry_id(Some(AniDbSeriesId(season as u32)), ""),
+                    _ => ListEntryId(1000 + season as u128),
+                };
+                state.put_list_entry(A, ts(2), id, linked_entry(&format!("S{season}"), season as u32));
             }
             let view = state.view();
             let index = SeriesEntryIndex::new(&view);
-            for file in (0u8..6).map(hash) {
+            let any_linked = links[..seasons].iter().any(|l| *l != 0);
+            let any_human = links[..seasons].contains(&2);
+            let resolved: BTreeSet<Option<ListEntryId>> = (1..=seasons)
+                .map(|season| resolve_series_entry_for_file(&view, hash(season as u8)))
+                .collect();
+            prop_assert_eq!(resolved.len(), 1, "every season must resolve alike: {:?}", resolved);
+            let resolved = resolved.into_iter().next().unwrap();
+            prop_assert_eq!(resolved.is_some(), any_linked);
+            for season in 1..=seasons {
+                let file = hash(season as u8);
+                prop_assert_eq!(index.resolve(&view, file), resolved);
+                let claimants = entries_claiming_series(&view, AniDbSeriesId(season as u32));
+                prop_assert_eq!(claimants.first().copied(), resolved);
                 prop_assert_eq!(
-                    index.resolve(&view, file),
-                    resolve_series_entry_for_file(&view, file),
-                    "index and scan disagree on {:?}", file,
+                    claimants.len(),
+                    links[..seasons].iter().filter(|l| **l != 0).count(),
                 );
+            }
+            if let Some(id) = resolved {
+                let human = view.list_entries[&id].anidb_series_id
+                    .is_some_and(|s| derive_entry_id(Some(s), "") != id);
+                prop_assert_eq!(human, any_human, "a human-created entry must be canonical");
             }
         }
     }

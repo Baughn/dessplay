@@ -79,6 +79,16 @@ pub enum Msg {
         /// The copies to flip together (one entry for a single file).
         hashes: Vec<Ed2kHash>,
     },
+    /// Episode browser (`w` on a *season* row, after confirmation): set
+    /// the group watched flag for every known file of the season in one
+    /// direction — the fast path for restoring order to a database whose
+    /// history predates dessplay (proposal 2026-08-28).
+    SetEpisodesWatched {
+        /// Every known file of the season.
+        hashes: Vec<Ed2kHash>,
+        /// The value to set.
+        watched: bool,
+    },
     /// Move the selected entry after its successor (down).
     MoveDown(Ed2kHash),
     /// Move the selected entry before its predecessor (up).
@@ -96,6 +106,18 @@ pub enum Msg {
     // Modals
     /// Close the topmost modal.
     CloseModal,
+    /// Open a yes/no confirmation over the current modal; `then` is
+    /// dispatched (exactly as if the originating component had produced
+    /// it) only if the user confirms.
+    Confirm {
+        /// The question, e.g. "Mark all 12 episodes of S1 watched?".
+        prompt: String,
+        /// What a yes dispatches.
+        then: Box<Msg>,
+    },
+    /// Confirm modal: yes — the dispatcher closes the modal and routes
+    /// the wrapped message.
+    Confirmed(Box<Msg>),
     /// File browser: a file was chosen (to hash + add to playlist).
     FileChosen {
         /// The chosen file.
@@ -183,6 +205,7 @@ impl Msg {
             Msg::OpenNyaa(_) => "OpenNyaa",
             Msg::EpisodeChosen { .. } => "EpisodeChosen",
             Msg::ToggleEpisodeWatched { .. } => "ToggleEpisodeWatched",
+            Msg::SetEpisodesWatched { .. } => "SetEpisodesWatched",
             Msg::MoveDown(_) => "MoveDown",
             Msg::MoveUp(_) => "MoveUp",
             Msg::RemoveEntry(_) => "RemoveEntry",
@@ -195,6 +218,8 @@ impl Msg {
             Msg::CancelNyaaImport(_) => "CancelNyaaImport",
             Msg::NewNyaaSearch => "NewNyaaSearch",
             Msg::CloseModal => "CloseModal",
+            Msg::Confirm { .. } => "Confirm",
+            Msg::Confirmed(_) => "Confirmed",
             Msg::FileChosen { .. } => "FileChosen",
             Msg::ToggleBrowserSort => "ToggleBrowserSort",
             Msg::DirChosen(_) => "DirChosen",

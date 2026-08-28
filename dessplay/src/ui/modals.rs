@@ -1534,11 +1534,18 @@ pub struct Season {
     /// nearest the one actually played for the previous episode
     /// (`props::opening_row`).
     pub opening_row: usize,
+    /// Tree depth in the season list (`props::season_tree`): 0 on the
+    /// main line, 1 for a side branch indented under its parent.
+    pub depth: u8,
+    /// Something to watch: an unwatched copy some client holds — the
+    /// List row rule (design.md, The List). Renders dim otherwise, and
+    /// the browser opens on the first season where this is set.
+    pub watchable: bool,
 }
 
 impl Season {
-    /// Build a season from its rows, deriving the marker and opening
-    /// cursor from the group view and personal watch history.
+    /// Build a main-line season from its rows, deriving the marker and
+    /// opening cursor from the group view and personal watch history.
     pub fn new(
         title: String,
         episodes: Vec<EpisodeRow>,
@@ -1547,12 +1554,44 @@ impl Season {
     ) -> Self {
         let first_unwatched = props::first_unwatched(&episodes);
         let opening_row = props::opening_row(&episodes, personal_watched, view);
+        let watchable = Self::any_watchable(&episodes);
         Self {
             title,
             episodes,
             first_unwatched,
             opening_row,
+            depth: 0,
+            watchable,
         }
+    }
+
+    /// Place the season at `depth` in the tree.
+    pub fn at_depth(mut self, depth: u8) -> Self {
+        self.depth = depth;
+        self
+    }
+
+    /// An unwatched copy that somebody actually holds.
+    fn any_watchable(episodes: &[EpisodeRow]) -> bool {
+        episodes.iter().any(|row| match row {
+            EpisodeRow::Single { copy, .. } | EpisodeRow::Child(copy) => {
+                !copy.watched && !copy.holders.is_empty()
+            }
+            EpisodeRow::Header { .. } => false,
+        })
+    }
+
+    /// Every known file of the season (what `w` on the season row acts on).
+    fn hashes(&self) -> Vec<Ed2kHash> {
+        self.episodes.iter().filter_map(EpisodeRow::hash).collect()
+    }
+
+    /// Every file-bearing row shows watched.
+    fn all_watched(&self) -> bool {
+        self.episodes
+            .iter()
+            .filter(|row| row.hash().is_some())
+            .all(EpisodeRow::watched)
     }
 }
 
@@ -1620,17 +1659,26 @@ impl EpisodeBrowser {
             }
             season.first_unwatched = props::first_unwatched(&season.episodes);
             season.opening_row = props::opening_row(&season.episodes, personally_watched, view);
+            season.watchable = Season::any_watchable(&season.episodes);
         }
     }
 
     /// Open on a franchise. With exactly one season, jump straight to
     /// the episode list (the design's single-season shortcut), cursor on
-    /// its opening row.
+    /// its opening row. Otherwise the season list, cursor on the first
+    /// season with something to watch (proposal 2026-08-28) — the
+    /// season-level twin of the episode list's first-unwatched rule.
     pub fn new(title: String, seasons: Vec<Season>) -> Self {
         let open = (seasons.len() == 1).then_some(0);
         let mut cursor = ListCursor::default();
-        if let Some(0) = open {
-            cursor.set(seasons[0].opening_row);
+        match open {
+            Some(0) => cursor.set(seasons[0].opening_row),
+            _ => cursor.set(
+                seasons
+                    .iter()
+                    .position(|season| season.watchable)
+                    .unwrap_or(0),
+            ),
         }
         Self {
             title,
@@ -1689,7 +1737,12 @@ impl EpisodeBrowser {
     /// `w`: cycle the group watched flag (design.md #10) — for the
     /// selected file, or, on a `Header` row, for every copy of that
     /// episode at once (the episode is watched when *any* copy is, so
-    /// the toggle acts on the set). No-op in the season list.
+    /// the toggle acts on the set).
+    ///
+    /// On a *season* row, every known file of the season at once, behind
+    /// a confirmation (proposal 2026-08-28): marks unless every row
+    /// already shows watched, in which case it unmarks — a toggle either
+    /// way, just a big one.
     ///
     /// Marking (the row shows unwatched) also moves the cursor to the
     /// next episode's header/single row — catching up on a run of
@@ -1700,7 +1753,23 @@ impl EpisodeBrowser {
     /// toggle will unmark" disagree — then the cursor stays, which is
     /// the harmless side.
     fn act_toggle_watched(&mut self) -> Option<Msg> {
-        let index = self.open?;
+        let Some(index) = self.open else {
+            let season = self.seasons.get(self.cursor.index())?;
+            let hashes = season.hashes();
+            if hashes.is_empty() {
+                return None;
+            }
+            let watched = !season.all_watched();
+            let verb = if watched { "Mark" } else { "Unmark" };
+            return Some(Msg::Confirm {
+                prompt: format!(
+                    "{verb} all {} known files of {} as watched?",
+                    hashes.len(),
+                    season.title
+                ),
+                then: Box::new(Msg::SetEpisodesWatched { hashes, watched }),
+            });
+        };
         let episodes = &self.seasons[index].episodes;
         let at = self.cursor.index();
         let row = episodes.get(at)?;
@@ -1735,7 +1804,18 @@ impl EpisodeBrowser {
                             .iter()
                             .filter(|row| row.hash().is_some())
                             .count();
-                        ListItem::new(format!("{} ({known} known files)", season.title))
+                        // Branches indent under their parent (a tree,
+                        // not a drawn DAG — proposal 2026-08-28); a
+                        // season with nothing to watch renders dim.
+                        let gutter = if season.depth > 0 { "  └ " } else { "" };
+                        ListItem::new(Span::styled(
+                            format!("{gutter}{} ({known} known files)", season.title),
+                            theme::tone_style(if season.watchable {
+                                props::Tone::Normal
+                            } else {
+                                props::Tone::Muted
+                            }),
+                        ))
                     })
                     .collect(),
             ),
@@ -1859,6 +1939,69 @@ static EPISODES_KEYMAP: Keymap<EpisodeBrowser, Msg> = Keymap(&[
         action: EpisodeBrowser::act_close,
     },
 ]);
+
+// ---- Confirmation ------------------------------------------------------
+
+/// A yes/no question over the current modal, carrying the message a yes
+/// dispatches. `y`/Enter confirms, `n`/Esc cancels; nothing else is
+/// bound, so a stray keystroke can't answer it.
+pub struct ConfirmModal {
+    prompt: String,
+    then: Msg,
+}
+
+impl ConfirmModal {
+    /// Ask `prompt`; a yes yields `Msg::Confirmed(then)`.
+    pub fn new(prompt: String, then: Msg) -> Self {
+        Self { prompt, then }
+    }
+
+    /// Keys for the keybinding bar.
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("y/Enter", "Yes"), ("n/Esc", "No")]
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
+        let modal = overlay(area, 60, 20);
+        frame.render_widget(Clear, modal);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_style(true))
+                .title("Confirm"),
+            modal,
+        );
+        let inner = Rect {
+            x: modal.x + 2,
+            y: modal.y + 1,
+            width: modal.width.saturating_sub(4),
+            height: modal.height.saturating_sub(2),
+        };
+        frame.render_widget(
+            tuirealm::ratatui::widgets::Paragraph::new(vec![
+                Line::from(self.prompt.clone()),
+                Line::from(""),
+                Line::from(Span::styled("y / Enter: yes    n / Esc: no", theme::dim())),
+            ])
+            .wrap(tuirealm::ratatui::widgets::Wrap { trim: false }),
+            inner,
+        );
+    }
+}
+
+passive_modal!(ConfirmModal);
+
+impl AppComponent<Msg, NoUserEvent> for ConfirmModal {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        match plain(ev)? {
+            Key::Char('y') | Key::Char('Y') | Key::Enter => {
+                Some(Msg::Confirmed(Box::new(self.then.clone())))
+            }
+            Key::Char('n') | Key::Char('N') | Key::Esc => Some(Msg::CloseModal),
+            _ => Some(Msg::None),
+        }
+    }
+}
 
 // ---- List entry editor -------------------------------------------------
 
@@ -3411,16 +3554,125 @@ mod tests {
         );
     }
 
+    /// `w` on a season row asks before marking every known file of the
+    /// season (proposal 2026-08-28); the wrapped message sets the flag in
+    /// one direction — mark, since not every row shows watched.
     #[test]
-    fn w_key_is_a_noop_in_the_season_list() {
+    fn w_on_a_season_row_asks_to_mark_all_of_it() {
         let seasons = vec![
-            season("S1", vec![single(hash(1), "ep1")]),
-            season("S2", vec![single(hash(2), "ep2")]),
+            season("S1", vec![single(hash(1), "ep1"), single(hash(2), "ep2")]),
+            season("S2", vec![single(hash(3), "ep3")]),
         ];
         let mut browser = EpisodeBrowser::new("Frieren".into(), seasons);
-        // Two seasons: starts on the season list; the binding declines
-        // (`self.open?` fails).
-        assert_eq!(browser.on(&char_key('w')), None);
+        let Some(Msg::Confirm { prompt, then }) = browser.on(&char_key('w')) else {
+            panic!("expected a confirmation");
+        };
+        assert_eq!(prompt, "Mark all 2 known files of S1 as watched?");
+        assert_eq!(
+            *then,
+            Msg::SetEpisodesWatched {
+                hashes: vec![hash(1), hash(2)],
+                watched: true,
+            }
+        );
+        // The confirm modal: `n` declines, `y` yields the wrapped message.
+        let mut confirm = ConfirmModal::new(prompt.clone(), (*then).clone());
+        assert_eq!(confirm.on(&char_key('n')), Some(Msg::CloseModal));
+        assert_eq!(confirm.on(&char_key('x')), Some(Msg::None));
+        assert_eq!(
+            confirm.on(&char_key('y')),
+            Some(Msg::Confirmed(then.clone()))
+        );
+        assert_eq!(confirm.on(&enter()), Some(Msg::Confirmed(then)));
+    }
+
+    /// A season whose every file shows watched unmarks instead — and a
+    /// season with no files at all declines.
+    #[test]
+    fn w_on_a_fully_watched_season_offers_to_unmark() {
+        let mut watched = single(hash(1), "ep1");
+        if let EpisodeRow::Single { copy, .. } = &mut watched {
+            copy.watched = true;
+        }
+        let seasons = vec![season("S1", vec![watched]), season("S2", vec![])];
+        let mut browser = EpisodeBrowser::new("Frieren".into(), seasons);
+        let Some(Msg::Confirm { prompt, then }) = browser.on(&char_key('w')) else {
+            panic!("expected a confirmation");
+        };
+        assert_eq!(prompt, "Unmark all 1 known files of S1 as watched?");
+        assert_eq!(
+            *then,
+            Msg::SetEpisodesWatched {
+                hashes: vec![hash(1)],
+                watched: false,
+            }
+        );
+        browser.on(&down());
+        assert_eq!(browser.on(&char_key('w')), None, "nothing to mark");
+    }
+
+    /// The season list opens on the first season with something to
+    /// watch — an unwatched copy somebody holds — not on row 0
+    /// (proposal 2026-08-28).
+    #[test]
+    fn season_list_opens_on_the_first_watchable_season() {
+        let held = |h: u8, name: &str| {
+            let mut row = single(hash(h), name);
+            if let EpisodeRow::Single { copy, .. } = &mut row {
+                copy.holders = vec![dessplay_core::types::UserId::new("kim")];
+            }
+            row
+        };
+        let mut done = held(1, "ep1");
+        if let EpisodeRow::Single { copy, .. } = &mut done {
+            copy.watched = true;
+        }
+        let seasons = vec![
+            season("S1", vec![done]),
+            // Known but held by nobody: nothing to watch.
+            season("S2", vec![single(hash(2), "ep2")]),
+            season("S3", vec![held(3, "ep3")]),
+            season("S4", vec![held(4, "ep4")]),
+        ];
+        let watchable: Vec<bool> = seasons.iter().map(|s| s.watchable).collect();
+        assert_eq!(watchable, vec![false, false, true, true]);
+        let mut browser = EpisodeBrowser::new("Frieren".into(), seasons);
+        assert_eq!(browser.cursor.index(), 2);
+        browser.on(&enter());
+        assert_eq!(
+            browser.on(&enter()),
+            Some(Msg::EpisodeChosen { hash: hash(3) })
+        );
+    }
+
+    /// The season list as a tree: branches indent under their parent and
+    /// seasons with nothing to watch render dim.
+    #[test]
+    fn season_tree_snapshot() {
+        use tuirealm::ratatui::Terminal;
+        use tuirealm::ratatui::backend::TestBackend;
+        let held = |h: u8, name: &str| {
+            let mut row = single(hash(h), name);
+            if let EpisodeRow::Single { copy, .. } = &mut row {
+                copy.holders = vec![dessplay_core::types::UserId::new("kim")];
+            }
+            row
+        };
+        let seasons = vec![
+            season("Girls und Panzer", vec![single(hash(1), "ep1")]),
+            season(
+                "Girls und Panzer: Kore ga Hontou no Anzio-sen desu!",
+                vec![held(2, "ova")],
+            )
+            .at_depth(1),
+            season("Girls und Panzer der Film", vec![held(3, "film")]),
+        ];
+        let mut browser = EpisodeBrowser::new("Girls und Panzer".into(), seasons);
+        let mut terminal = Terminal::new(TestBackend::new(70, 9)).unwrap();
+        terminal
+            .draw(|frame| browser.render(frame, frame.area()))
+            .unwrap();
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]

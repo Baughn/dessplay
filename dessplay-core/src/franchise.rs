@@ -49,8 +49,18 @@ pub struct Franchise {
     pub files: Vec<Ed2kHash>,
 }
 
-/// Group everything the state knows about into franchises.
-pub fn franchises(view: &StateView) -> Vec<Franchise> {
+/// Every series the relations graph or file metadata knows, mapped to its
+/// franchise component root (the smallest series id in the component).
+/// Components are the connected components over the structural
+/// ([`RelationKind::groups_franchise`](crate::types::RelationKind::groups_franchise))
+/// relation edges, treated as undirected; a series with no edges is its
+/// own root. This is *the* franchise grouping — [`franchises`] is built on
+/// it, and the List's one-row-per-franchise grouping reads it directly
+/// (design.md, The List: UI Integration).
+///
+/// A full pass over the relations map (thousands of rows), so per-file
+/// resolution uses the local [`reachable_component`] walk instead.
+pub fn series_components(view: &StateView) -> BTreeMap<AniDbSeriesId, AniDbSeriesId> {
     // Union-find over series ids: every relation edge connects.
     let mut parent: BTreeMap<AniDbSeriesId, AniDbSeriesId> = BTreeMap::new();
     fn find(
@@ -97,13 +107,80 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
             find(&mut parent, series);
         }
     }
+    let ids: Vec<AniDbSeriesId> = parent.keys().copied().collect();
+    for id in ids {
+        find(&mut parent, id);
+    }
+    parent
+}
+
+/// The part of `series`' franchise reachable by walking structural
+/// relation edges *outward* from it — `series` itself included. AniDB
+/// relations are symmetric (Sequel/Prequel, SideStory/ParentStory, ...),
+/// so once every member has its relations row this is the whole
+/// component, at the cost of one small graph walk rather than the full
+/// union-find pass of [`series_components`] (the per-file resolution
+/// path runs per playlist row per snapshot). While the graph is still
+/// filling in, a member whose own row hasn't landed is reached as a leaf
+/// through its neighbours' rows but reaches nothing itself; callers that
+/// must not miss it in that window pair this with a one-hop check from
+/// the other side (`series_identity::SeriesEntryIndex`). Cycle-safe.
+pub fn reachable_component(view: &StateView, series: AniDbSeriesId) -> BTreeSet<AniDbSeriesId> {
+    let mut seen = BTreeSet::from([series]);
+    let mut frontier = vec![series];
+    while let Some(current) = frontier.pop() {
+        let Some(relations) = view.series_relations.get(&current) else {
+            continue;
+        };
+        for relation in &relations.relations {
+            if relation.kind.groups_franchise() && seen.insert(relation.target) {
+                frontier.push(relation.target);
+            }
+        }
+    }
+    seen
+}
+
+/// The season ordinal of a series: 1 + the number of prequel steps
+/// walkable from it along the replicated relations graph. Best effort
+/// by design — the graph fills in slowly (Phase 8's rate-limited
+/// lookups), so a chain broken by a series with no relations entry yet
+/// counts only the prefix it can see, and converges as lookups land.
+/// Cycle-guarded: AniDB data does contain mutual-prequel mistakes, and a
+/// derivation must never hang on them. Several prequels from one node
+/// (splits, movies) follow the lowest-id edge, for determinism.
+pub fn season_ordinal(view: &StateView, series: AniDbSeriesId) -> u32 {
+    let mut seen = BTreeSet::from([series]);
+    let mut current = series;
+    let mut ordinal: u32 = 1;
+    while let Some(relations) = view.series_relations.get(&current) {
+        let Some(prequel) = relations
+            .relations
+            .iter()
+            .filter(|r| r.kind == crate::types::RelationKind::Prequel)
+            .map(|r| r.target)
+            .min()
+        else {
+            break;
+        };
+        if !seen.insert(prequel) {
+            break;
+        }
+        ordinal = ordinal.saturating_add(1);
+        current = prequel;
+    }
+    ordinal
+}
+
+/// Group everything the state knows about into franchises.
+pub fn franchises(view: &StateView) -> Vec<Franchise> {
+    let parent = series_components(view);
+    let find = |id: AniDbSeriesId| parent.get(&id).copied().unwrap_or(id);
 
     // Collect components.
-    let ids: Vec<AniDbSeriesId> = parent.keys().copied().collect();
     let mut components: BTreeMap<AniDbSeriesId, BTreeSet<AniDbSeriesId>> = BTreeMap::new();
-    for id in ids {
-        let root = find(&mut parent, id);
-        components.entry(root).or_default().insert(id);
+    for (id, root) in &parent {
+        components.entry(*root).or_default().insert(*id);
     }
 
     // Attribute every file-bearing series to its component root in a
@@ -132,7 +209,7 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
             continue;
         };
         series_with_files.insert(series);
-        let root = find(&mut parent, series);
+        let root = find(series);
         files_by_root.entry(root).or_default().push(*hash);
         name_by_root
             .entry(root)
@@ -147,7 +224,7 @@ pub fn franchises(view: &StateView) -> Vec<Franchise> {
     let mut best_by_root: BTreeMap<AniDbSeriesId, (String, Option<u16>)> = BTreeMap::new();
     let mut year_min_by_root: BTreeMap<AniDbSeriesId, Option<u16>> = BTreeMap::new();
     for (series, relations) in &view.series_relations {
-        let root = find(&mut parent, *series);
+        let root = find(*series);
         let year = relations.year;
         let entry = year_min_by_root.entry(root).or_insert(None);
         *entry = match (*entry, year) {
