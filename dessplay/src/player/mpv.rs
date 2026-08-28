@@ -96,6 +96,10 @@ impl MpvPlayer {
         // succeed against nothing.
         let _ = std::fs::remove_file(&socket);
         let mut child = Command::new(binary)
+            // Users can tune mpv for dessplay in a `[dessplay]` mpv.conf
+            // profile. First, so the flags below override it; an unknown
+            // profile is a warning, not an error.
+            .arg("--profile=dessplay")
             .arg("--idle=yes")
             // `always`, not `yes`: user scripts (autoload.lua) pad mpv's
             // playlist with sibling files, and `yes` only parks at EOF on
