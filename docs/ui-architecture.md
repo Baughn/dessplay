@@ -331,7 +331,7 @@ snapshot data to component props:
   arrive at ~10 Hz during playback and position ticks change none of
   those inputs, so recomputing per snapshot was measurable CPU (the
   uncached franchise rebuild was ~1/3 of normal-play CPU; the List
-  derivation is O(held files × entries)). The List group order is
+  derivation walks the whole metadata map, resolving once per series). The List group order is
   volatile by design (per-user groups come and go with peers; Recency
   resorts as watch history lands), so the pane's cursor re-anchors
   by identity across `set_groups` rather than keeping its bare row index —
