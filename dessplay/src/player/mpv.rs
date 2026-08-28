@@ -105,6 +105,13 @@ impl MpvPlayer {
             // Belt and braces: autoload.lua honours this, and an empty
             // playlist leaves nothing for stray playlist-next keys to hit.
             .arg("--script-opts=autoload-disabled=yes")
+            // A user mpv.conf with `reset-on-next-file=pause` makes mpv
+            // silently unpause on every file load. The pause property does
+            // flip, but it flips *during* load, where the filter below
+            // discards pause changes as load mechanics — so the server never
+            // hears it and the group desyncs. Pause is ours to own; clear
+            // the list (command-line flags override mpv.conf).
+            .arg("--reset-on-next-file=")
             .arg("--force-window=yes")
             .arg("--no-terminal")
             .arg(format!("--input-ipc-server={}", socket.display()))
