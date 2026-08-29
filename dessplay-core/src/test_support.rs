@@ -30,6 +30,7 @@ use crate::types::{
     PlaybackPosition, SeriesListEntry, SeriesRelation, SeriesRelations, SeriesWatchState,
     SharedTimestamp, UserId,
 };
+use std::num::NonZeroU64;
 
 /// Number of distinct actors scripts draw from.
 pub const ACTORS: u8 = 4;
@@ -256,7 +257,7 @@ pub fn apply_step(state: &mut CrdtState, step: &ScriptStep) -> (u8, CrdtOp) {
                     added_by: user(actor_index),
                     filename: format!("file{}.mkv", f % FILES),
                     size_bytes: 1_000_000 + (*f as u64),
-                    duration_millis: Some(1_440_000),
+                    duration_millis: NonZeroU64::new(1_440_000),
                 },
             )
         }

@@ -223,8 +223,11 @@ not a `Map::rm` — see the API notes above.
 - `added_by: UserId` -- who added this file
 - `filename: String` -- original filename for display and matching
 - `size_bytes: u64` -- filled by the adder; downloaders need it for chunk counts
-- `duration_millis: Option<u64>` -- filled by the adder; drives the bitrate
-  unpause rule and watched thresholds for files still downloading
+- `duration_millis: Option<NonZeroU64>` -- filled by the adder; drives the
+  bitrate unpause rule and watched thresholds for files still downloading.
+  Zero is unrepresentable: a player reports 0 for a file it couldn't open,
+  and a persisted zero used to block the backfill forever (2026-08-30). The
+  wire encoding is still `Option<u64>`; a zero decodes as `None`.
 
 **Watched flags live in a separate map** (`Map<Ed2kHash, LwwCell<bool>>`,
 server-only writes at EOF) rather than inside `PlaylistFileState`. Keeping
@@ -555,7 +558,7 @@ from the group's collective library rather than only locally-present ones.
 struct FileCatalogEntry {
     filename: String,             // from the lookup request
     size_bytes: u64,              // from the lookup request
-    duration_millis: Option<u64>, // None until an owner reports it / it downloads
+    duration_millis: Option<NonZeroU64>, // None until an owner reports it / it downloads
 }
 ```
 

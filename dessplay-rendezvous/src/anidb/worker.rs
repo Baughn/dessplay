@@ -753,6 +753,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use std::collections::HashMap;
+    use std::num::NonZeroU64;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1116,7 +1117,7 @@ mod tests {
                 FileCatalogEntry {
                     filename: "Frieren - 01.mkv".into(),
                     size_bytes: 1001,
-                    duration_millis: Some(1_440_000),
+                    duration_millis: NonZeroU64::new(1_440_000),
                 },
             );
         });
@@ -1124,7 +1125,7 @@ mod tests {
         request(&host, 1, "Frieren - 01.mkv");
         populate_catalog(&host, &host.view()).await;
         let entry = host.view().file_catalog.get(&hash(1)).cloned().unwrap();
-        assert_eq!(entry.duration_millis, Some(1_440_000));
+        assert_eq!(entry.duration_millis, NonZeroU64::new(1_440_000));
     }
 
     #[tokio::test(start_paused = true)]

@@ -18,6 +18,7 @@
 //!   ([`SyncEvent::DivergencePersisted`] → the `/resync` advisory).
 //! - Flush snapshots to SQLite periodically and at shutdown.
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -185,7 +186,7 @@ pub enum Mutation {
         /// The entry.
         hash: Ed2kHash,
         /// Probed duration, milliseconds.
-        duration_millis: u64,
+        duration_millis: NonZeroU64,
     },
     /// Acknowledge a committed-but-absent user for a file: a per-file
     /// one-shot that lets the group play past them (see

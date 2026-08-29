@@ -15,6 +15,7 @@ pub mod mock;
 pub mod mpv;
 
 use std::future::Future;
+use std::num::NonZeroU64;
 use std::path::Path;
 
 /// Player-layer errors.
@@ -86,8 +87,9 @@ pub enum PlayerEvent {
     },
     /// The file's duration became known after a load.
     DurationKnown {
-        /// Total duration, milliseconds.
-        duration_millis: u64,
+        /// Total duration, milliseconds. Non-zero by construction: a
+        /// player that reports zero does not know the duration.
+        duration_millis: NonZeroU64,
     },
     /// A loaded file finished opening and can be controlled.
     Loaded,

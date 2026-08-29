@@ -15,6 +15,7 @@
 //!   order), so scenario tests don't have to hand-echo every command.
 
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use tokio::sync::{Mutex, mpsc};
@@ -22,7 +23,7 @@ use tokio::sync::{Mutex, mpsc};
 use super::{Player, PlayerError, PlayerEvent, PlayerFactory};
 
 /// Duration auto-acked for every load: 24 minutes, a typical episode.
-pub const AUTO_DURATION_MILLIS: u64 = 24 * 60 * 1000;
+pub const AUTO_DURATION_MILLIS: NonZeroU64 = NonZeroU64::new(24 * 60 * 1000).unwrap();
 
 /// A command the actor sent to the mock, verbatim.
 #[derive(Clone, Debug, PartialEq)]

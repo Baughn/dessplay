@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 
 use dessplay::actors::sync::Mutation;
 use dessplay::config::Settings;
@@ -185,7 +186,7 @@ fn entry(i: u8, name: &str) -> NewPlaylistEntry {
         added_by: UserId::new("kim"),
         filename: name.into(),
         size_bytes: 1,
-        duration_millis: Some(1_440_000),
+        duration_millis: NonZeroU64::new(1_440_000),
     }
 }
 

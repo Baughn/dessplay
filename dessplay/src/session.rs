@@ -1162,12 +1162,11 @@ impl PlayerWiring {
             .playlist
             .iter()
             .find(|e| e.hash == file)
-            .and_then(|e| e.state.duration_millis)
-            .filter(|&d| d > 0);
+            .and_then(|e| e.state.duration_millis);
         let Some(duration) = duration else {
             return 0;
         };
-        let frac = (position_millis as f64 / duration as f64).clamp(0.0, 1.0);
+        let frac = (position_millis as f64 / duration.get() as f64).clamp(0.0, 1.0);
         let byte = (frac * size_bytes as f64) as u64;
         (byte / dessplay_core::net::CHUNK_SIZE) as u32
     }
@@ -1310,7 +1309,7 @@ impl PlayerWiring {
         let Some(duration) = entry.state.duration_millis else {
             return vec![]; // can't judge the threshold without a duration
         };
-        if duration == 0 || (position_millis as f64) < WATCHED_FRACTION * duration as f64 {
+        if (position_millis as f64) < WATCHED_FRACTION * duration.get() as f64 {
             return vec![];
         }
         self.watched_recorded.insert(file);
@@ -1504,11 +1503,10 @@ impl PlayerWiring {
             .iter()
             .find(|e| e.hash == file)
             .and_then(|e| e.state.duration_millis)
-            .filter(|&d| d > 0)
         else {
             return false;
         };
-        position_millis.saturating_add(PARTIAL_EOF_EPSILON_MILLIS) >= duration
+        position_millis.saturating_add(PARTIAL_EOF_EPSILON_MILLIS) >= duration.get()
     }
 
     /// The position reference this client slaves to for drift correction,
@@ -3356,6 +3354,7 @@ mod tests {
     use dessplay_core::playlist::NewPlaylistEntry;
     use dessplay_core::state::CrdtState;
     use dessplay_core::types::{ActorId, PlaybackPosition, SeriesWatchState, SharedTimestamp};
+    use std::num::NonZeroU64;
 
     use super::*;
 
@@ -5070,7 +5069,7 @@ mod tests {
                 added_by: UserId::new("baughn"),
                 filename: "ep1.mkv".into(),
                 size_bytes: 1000 * chunk,
-                duration_millis: Some(1_000_000),
+                duration_millis: NonZeroU64::new(1_000_000),
             },
         );
         state.set_now_playing(A, ts(2), Some(hash(1)));
@@ -5115,7 +5114,7 @@ mod tests {
                 added_by: UserId::new("baughn"),
                 filename: "ep1.mkv".into(),
                 size_bytes: 1000 * chunk,
-                duration_millis: Some(1_000_000),
+                duration_millis: NonZeroU64::new(1_000_000),
             },
         );
         state.set_now_playing(A, ts(2), Some(hash(1)));
@@ -6217,7 +6216,7 @@ mod tests {
         let directives = wiring.on_player(
             PlayerOutput::DurationKnown {
                 file: hash(1),
-                duration_millis: 1_440_000,
+                duration_millis: NonZeroU64::new(1_440_000).unwrap(),
             },
             &view,
         );
@@ -6230,12 +6229,12 @@ mod tests {
         // Entry already has a duration: nothing to do.
         let mut state = CrdtState::new();
         let mut with_duration = entry(1, "ep1.mkv");
-        with_duration.duration_millis = Some(1_440_000);
+        with_duration.duration_millis = NonZeroU64::new(1_440_000);
         state.push_playlist_entry(A, ts(1), with_duration);
         let directives = wiring.on_player(
             PlayerOutput::DurationKnown {
                 file: hash(1),
-                duration_millis: 999,
+                duration_millis: NonZeroU64::new(999).unwrap(),
             },
             &state.view(),
         );
@@ -6257,7 +6256,7 @@ mod tests {
     fn timed_state(duration_millis: u64) -> CrdtState {
         let mut state = CrdtState::new();
         let mut e = entry(1, "ep1.mkv");
-        e.duration_millis = Some(duration_millis);
+        e.duration_millis = NonZeroU64::new(duration_millis);
         state.push_playlist_entry(A, ts(1), e);
         state.set_now_playing(A, ts(2), Some(hash(1)));
         state.set_playback_intent(A, ts(3), dessplay_core::types::PlaybackIntent::Playing);

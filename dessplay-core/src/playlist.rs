@@ -11,6 +11,8 @@
 //! and is exercised by the playlist property/fuzz suites, but it is not
 //! the live compaction path.
 
+use std::num::NonZeroU64;
+
 use crdts::Identifier;
 
 use crate::state::{CrdtOp, CrdtState};
@@ -36,8 +38,8 @@ pub struct NewPlaylistEntry {
     pub filename: String,
     /// File size in bytes.
     pub size_bytes: u64,
-    /// Duration if known.
-    pub duration_millis: Option<u64>,
+    /// Duration if known (never zero — see [`PlaylistEntryState`]).
+    pub duration_millis: Option<NonZeroU64>,
 }
 
 impl CrdtState {
@@ -194,7 +196,7 @@ mod tests {
             added_by: UserId::new("baughn"),
             filename: format!("ep{i}.mkv"),
             size_bytes: 1_000 * i as u64,
-            duration_millis: Some(1_440_000),
+            duration_millis: NonZeroU64::new(1_440_000),
         }
     }
 

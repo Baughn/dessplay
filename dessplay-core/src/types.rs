@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crdts::Identifier;
+use std::num::NonZeroU64;
+
 use serde::{Deserialize, Serialize};
 
 /// The ed2k root hash of a file's contents — DessPlay's `FileId`.
@@ -201,8 +203,12 @@ pub struct PlaylistFileState {
     /// Filled by the adder; downloaders need it for chunk counts.
     pub size_bytes: u64,
     /// Filled by the adder; drives the bitrate unpause rule and watched
-    /// thresholds for files still downloading. `None` if unknown.
-    pub duration_millis: Option<u64>,
+    /// thresholds for files still downloading. `None` if unknown. A zero
+    /// is not a duration — it is what a player reports for a file it
+    /// could not open — so it is unrepresentable here: an old zero on
+    /// the wire or on disk reads back as `None` and gets backfilled.
+    #[serde(with = "zero_is_none")]
+    pub duration_millis: Option<NonZeroU64>,
 }
 
 /// Per-user, per-series watch preference: a user's commitment to a series.
@@ -386,7 +392,8 @@ pub struct FileCatalogEntry {
     /// `None` until an owner reports it or it downloads; the playlist entry's
     /// own duration backfill on first load is what currently drives the
     /// bitrate unpause rule, so this stays reserved for now.
-    pub duration_millis: Option<u64>,
+    #[serde(with = "zero_is_none")]
+    pub duration_millis: Option<NonZeroU64>,
 }
 
 /// AniDB relation edge types (see the UDP API's ANIME relation codes).
@@ -659,4 +666,69 @@ pub struct PlaybackPosition {
     /// `SharedTimestamp` comparison, which would be unsound (see
     /// docs/sync-state.md, playback-position).
     pub file: Ed2kHash,
+}
+
+/// Serde shim for `Option<NonZeroU64>` fields that were once
+/// `Option<u64>`: the wire/disk encoding stays `Option<u64>` (postcard
+/// varint — byte-identical for every non-zero value), and a stored zero
+/// deserializes as `None` instead of failing the whole message.
+pub mod zero_is_none {
+    use std::num::NonZeroU64;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// Serialize as a plain `Option<u64>`.
+    pub fn serialize<S: Serializer>(v: &Option<NonZeroU64>, s: S) -> Result<S::Ok, S::Error> {
+        v.map(NonZeroU64::get).serialize(s)
+    }
+
+    /// Deserialize a plain `Option<u64>`, folding zero into `None`.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<NonZeroU64>, D::Error> {
+        Ok(Option::<u64>::deserialize(d)?.and_then(NonZeroU64::new))
+    }
+}
+
+#[cfg(test)]
+mod zero_is_none_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::num::NonZeroU64;
+
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Old {
+        duration_millis: Option<u64>,
+    }
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct New {
+        #[serde(with = "super::zero_is_none")]
+        duration_millis: Option<NonZeroU64>,
+    }
+
+    /// A persisted/peer-sent zero (the 2026-08-30 Nanoha entry) reads
+    /// back as unknown; real values and `None` are byte-identical to
+    /// the old encoding in both directions.
+    #[test]
+    fn old_encoding_roundtrips_and_zero_folds_to_none() {
+        for (old, new) in [
+            (None, None),
+            (Some(0), None),
+            (Some(1_440_000), NonZeroU64::new(1_440_000)),
+        ] {
+            let bytes = postcard::to_allocvec(&Old {
+                duration_millis: old,
+            })
+            .unwrap();
+            let decoded: New = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(decoded.duration_millis, new, "old={old:?}");
+            if old != Some(0) {
+                assert_eq!(
+                    postcard::to_allocvec(&decoded).unwrap(),
+                    bytes,
+                    "old={old:?}"
+                );
+            }
+        }
+    }
 }

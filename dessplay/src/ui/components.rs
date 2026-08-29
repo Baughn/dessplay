@@ -2857,7 +2857,8 @@ impl StatusBar {
     /// bottom line), so this returns text instead of rendering.
     pub(crate) fn progress_text(&self) -> String {
         match (self.props.position_millis, self.props.duration_millis) {
-            (Some(pos), Some(dur)) if dur > 0 => {
+            (Some(pos), Some(dur)) => {
+                let dur = dur.get();
                 let width = 30usize;
                 let filled = ((pos as f64 / dur as f64) * width as f64) as usize;
                 format!(

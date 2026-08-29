@@ -2737,6 +2737,7 @@ mod tests {
     use dessplay_core::types::{
         ActorId, AniDbMetadata, AniDbSeriesId, ListStatus, MetadataSource, SharedTimestamp,
     };
+    use std::num::NonZeroU64;
 
     const A: ActorId = ActorId::SERVER;
 
@@ -3558,7 +3559,7 @@ mod tests {
                 added_by: UserId::new("baughn"),
                 filename: "ep1.mkv".into(),
                 size_bytes: 1,
-                duration_millis: Some(1_440_000),
+                duration_millis: NonZeroU64::new(1_440_000),
             },
         );
         state.set_now_playing(A, SharedTimestamp(2), Some(hash));

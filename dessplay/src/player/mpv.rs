@@ -31,6 +31,7 @@
 //! commands' echoes from user input. This layer only hides mpv's
 //! internal mechanics (load pauses, keep-open pauses).
 
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -586,11 +587,12 @@ pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Ve
                     })
                     .into_iter()
                     .collect(),
+                // A non-positive duration is mpv not knowing (a file it
+                // could not really open), not a duration; say nothing.
                 Some(OBS_DURATION) => data
                     .and_then(Value::as_f64)
-                    .map(|seconds| PlayerEvent::DurationKnown {
-                        duration_millis: (seconds * 1000.0).max(0.0) as u64,
-                    })
+                    .and_then(|seconds| NonZeroU64::new((seconds * 1000.0).max(0.0) as u64))
+                    .map(|duration_millis| PlayerEvent::DurationKnown { duration_millis })
                     .into_iter()
                     .collect(),
                 Some(OBS_SUB_TEXT) => {
@@ -1101,9 +1103,32 @@ mod tests {
                 false
             ),
             vec![PlayerEvent::DurationKnown {
-                duration_millis: 1_440_000
+                duration_millis: NonZeroU64::new(1_440_000).unwrap()
             }]
         );
+    }
+
+    /// mpv reports `duration` as 0 (or negative) for a file it could not
+    /// really open — a sparse partial, a truncated header. That is "not
+    /// known", not a duration: forwarding it would persist a zero on the
+    /// playlist entry that the backfill then never repairs (the 2026-08-30
+    /// missing progress bar).
+    #[test]
+    fn non_positive_duration_is_not_known() {
+        let mut state = Translate::default();
+        for data in ["0", "0.0", "-1.5", "null"] {
+            assert_eq!(
+                ev(
+                    &format!(
+                        r#"{{"event":"property-change","id":3,"name":"duration","data":{data}}}"#
+                    ),
+                    &mut state,
+                    false
+                ),
+                vec![],
+                "data={data}"
+            );
+        }
     }
 
     #[test]

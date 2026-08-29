@@ -277,8 +277,9 @@ re-attach probe with capped backoff.
   1500ms (scrubbing coalesces; automatic seeks never emit it)
 - `PositionTick { position }` -- current position (100ms playing, 1s
   paused; extrapolated between player reports)
-- `DurationKnown { file, duration }` -- probed duration (backfills the
-  playlist entry when the adder didn't supply one)
+- `DurationKnown { file, duration }` -- probed duration, `NonZeroU64`
+  (backfills the playlist entry when the adder didn't supply one; mpv's
+  zero-duration report for a file it couldn't open is dropped, not sent)
 - `SubtitleLine { text, speaker }` -- observed `sub-text/ass-full` change
   (feeds subtitle pane; `speaker` is the parsed ASS `Name`/actor field)
 - `PathObserved { path }` -- the user loaded a file directly into the

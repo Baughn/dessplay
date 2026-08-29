@@ -12,6 +12,7 @@
 
 #![allow(dead_code)] // each test binary uses a subset
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -513,7 +514,7 @@ pub fn file_entry(file: &MediaFile, added_by: &str) -> NewPlaylistEntry {
         added_by: UserId::new(added_by),
         filename: file.filename.clone(),
         size_bytes: file.contents.len() as u64,
-        duration_millis: Some(1_440_000),
+        duration_millis: NonZeroU64::new(1_440_000),
     }
 }
 
@@ -695,7 +696,7 @@ pub fn entry(i: u8) -> NewPlaylistEntry {
         added_by: UserId::new("whoever"),
         filename: format!("ep{i}.mkv"),
         size_bytes: 1_000_000,
-        duration_millis: Some(1_440_000),
+        duration_millis: NonZeroU64::new(1_440_000),
     }
 }
 

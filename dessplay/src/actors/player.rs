@@ -48,6 +48,7 @@
 //!   player.
 
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -200,7 +201,7 @@ pub enum PlayerOutput {
         /// Which file.
         file: Ed2kHash,
         /// Duration, milliseconds.
-        duration_millis: u64,
+        duration_millis: NonZeroU64,
     },
     /// The player's displayed subtitle line changed.
     SubtitleLine {
@@ -2711,14 +2712,14 @@ mod tests {
         control
             .events
             .send(PlayerEvent::DurationKnown {
-                duration_millis: 1_440_000,
+                duration_millis: NonZeroU64::new(1_440_000).unwrap(),
             })
             .unwrap();
         assert_eq!(
             expect_output(&mut outputs).await,
             PlayerOutput::DurationKnown {
                 file: FILE,
-                duration_millis: 1_440_000
+                duration_millis: NonZeroU64::new(1_440_000).unwrap()
             }
         );
         control

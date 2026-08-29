@@ -4,6 +4,7 @@
 //! without a terminal (ui-architecture.md, State to Props Mapping).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU64;
 
 use dessplay_core::derive::{self, DerivedUserState};
 use dessplay_core::net::{PeerInfo, Presence, Role};
@@ -590,7 +591,7 @@ pub struct StatusProps {
     /// Our playback position in millis, if known.
     pub position_millis: Option<u64>,
     /// The file's duration in millis, if known.
-    pub duration_millis: Option<u64>,
+    pub duration_millis: Option<NonZeroU64>,
 }
 
 /// Build the status bar.
@@ -2769,7 +2770,7 @@ mod tests {
             added_by: UserId::new("kim"),
             filename: name.into(),
             size_bytes: 1,
-            duration_millis: Some(1_440_000),
+            duration_millis: NonZeroU64::new(1_440_000),
         }
     }
 
@@ -3162,7 +3163,7 @@ mod tests {
         assert_eq!(props.title.as_deref(), Some("ep1.mkv"));
         assert!(!props.playing);
         assert_eq!(props.blockers, vec!["kim (paused)"]);
-        assert_eq!(props.duration_millis, Some(1_440_000));
+        assert_eq!(props.duration_millis, NonZeroU64::new(1_440_000));
     }
 
     // ---- The List ----------------------------------------------------

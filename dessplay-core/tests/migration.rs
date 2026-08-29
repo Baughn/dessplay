@@ -24,6 +24,7 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use common::arb_step;
@@ -95,7 +96,7 @@ fn rich_sample_state() -> CrdtState {
             added_by: baughn(),
             filename: "[Judas] Sousou no Frieren - 03.mkv".into(),
             size_bytes: 730_000_000,
-            duration_millis: Some(1_420_000),
+            duration_millis: NonZeroU64::new(1_420_000),
         },
     );
     state.push_playlist_entry(
