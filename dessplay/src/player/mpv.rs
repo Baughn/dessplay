@@ -96,10 +96,6 @@ impl MpvPlayer {
         // succeed against nothing.
         let _ = std::fs::remove_file(&socket);
         let mut child = Command::new(binary)
-            // Users can tune mpv for dessplay in a `[dessplay]` mpv.conf
-            // profile. First, so the flags below override it; an unknown
-            // profile is a warning, not an error.
-            .arg("--profile=dessplay")
             .arg("--idle=yes")
             // `always`, not `yes`: user scripts (autoload.lua) pad mpv's
             // playlist with sibling files, and `yes` only parks at EOF on
@@ -184,6 +180,20 @@ impl MpvPlayer {
             kill: kill_tx,
             attached,
         };
+        // Users can tune mpv for dessplay in a `[dessplay]` mpv.conf
+        // profile. Applied here rather than as `--profile=dessplay`: mpv
+        // exits with status 1 on an unknown command-line profile, while
+        // the IPC command merely fails. The profile may override anything
+        // — so re-assert the options our EOF/pause model depends on.
+        if let Err(e) = player.command(json!(["apply-profile", "dessplay"])).await {
+            tracing::debug!(error = %e, "no dessplay mpv profile applied");
+        }
+        for (name, value) in [
+            ("keep-open", json!("always")),
+            ("reset-on-next-file", json!("")),
+        ] {
+            player.command(json!(["set_property", name, value])).await?;
+        }
         for (id, name) in [
             (OBS_PAUSE, "pause"),
             (OBS_TIME_POS, "time-pos"),
