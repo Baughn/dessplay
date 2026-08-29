@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-25
+Last updated: 2026-08-30
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -683,6 +683,20 @@ never hides it and it survives player relaunches.
    trustworthy at its source because the player actor attributes positions
    to a file only after mpv's own path echo confirms that file is loaded --
    see [Events from Player](#events-from-player).)
+
+   **Resumption.** Drift correction follows only *present* peers, so it
+   cannot restart a session that ended mid-episode: with everyone gone
+   there is no leader, and a fresh client would sit at zero under Server
+   authority. Positions, though, are replicated CRDT state that outlives
+   the users who wrote them. So every `Load` of the real now-playing video
+   carries a **resume point**: the furthest position any user -- present or
+   not -- has persisted *for this file* (the same file-tag guard as above,
+   so the previous episode's samples never resume the next one mid-way).
+   The actor seeks there on load through the crash-restore path
+   (programmatic, echo-suppressed, never a `UserSeek`). Furthest-ahead
+   matches the leader rule, so whoever loads later converges on the same
+   point; anyone loading while peers are present is then pulled the rest of
+   the way by ordinary drift correction.
 6. Seeks are debounced (1500ms) -- only broadcast after the user stops scrubbing
 7. **EOF** advances the synced now-playing pointer to the next playlist entry.
    The server initiates this (it is the authoritative entity for "file ended"):

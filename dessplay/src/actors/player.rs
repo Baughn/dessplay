@@ -114,6 +114,13 @@ pub enum PlayerCommand {
         /// Display title override. Cache files are hash-named on disk, so
         /// this carries the real filename for mpv to show.
         title: Option<String>,
+        /// Where to resume once the file is up, if not the start: the
+        /// group's furthest persisted position on this file (session
+        /// resumption after everyone quit mid-episode, a reload of the
+        /// same file). Applied on `Loaded` through the same programmatic
+        /// seek a crash relaunch restores through — echo-suppressed,
+        /// never a `UserSeek`.
+        resume_millis: Option<u64>,
     },
     /// The derived group playback state: should video be running?
     /// Sent on every re-derivation; the actor dedups against what the
@@ -516,12 +523,19 @@ impl<F: PlayerFactory> Actor<F> {
 
     async fn handle_command(&mut self, cmd: PlayerCommand) {
         match cmd {
-            PlayerCommand::Load { file, path, title } => {
-                tracing::info!(path = %path.display(), "loading file");
+            PlayerCommand::Load {
+                file,
+                path,
+                title,
+                resume_millis,
+            } => {
+                tracing::info!(path = %path.display(), resume_millis, "loading file");
                 let different = self.current.as_ref().map(|(f, ..)| *f) != Some(file);
                 self.current = Some((file, path.clone(), title.clone()));
                 self.eof_reported = false;
-                self.restore_millis = None;
+                // A crash-restore point for the previous file is moot; the
+                // session's resume point for this one takes its place.
+                self.restore_millis = resume_millis;
                 self.pending_user_seek = None;
                 // A loadfile replaces the file/position, so any pause/seek
                 // echoes still awaited from the previous file'''s commands are
@@ -1313,6 +1327,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -1385,6 +1400,7 @@ mod tests {
                 file: FILE,
                 path: "/gone/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -1723,6 +1739,7 @@ mod tests {
                 file: FILE2,
                 path: "/media/ep2.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -1794,6 +1811,7 @@ mod tests {
                 file: FILE2,
                 path: "/media/ep2.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2355,6 +2373,40 @@ mod tests {
         );
     }
 
+    /// A `Load` carrying a resume point seeks there once the file is up
+    /// — the same restore path a crash relaunch uses, so the seek is
+    /// programmatic (echo-suppressed, never a `UserSeek`).
+    #[tokio::test(start_paused = true)]
+    async fn a_load_with_a_resume_point_seeks_there_on_loaded() {
+        let (player, mut control) = MockPlayer::pair();
+        let (commands, _outputs) = start(vec![player], fixed_clock(0));
+        commands
+            .send(PlayerCommand::Load {
+                file: FILE,
+                path: "/media/ep1.mkv".into(),
+                title: None,
+                resume_millis: Some(3_000_000),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Load("/media/ep1.mkv".into(), None)
+        );
+        control
+            .events
+            .send(PlayerEvent::PathChanged {
+                path: "/media/ep1.mkv".into(),
+            })
+            .unwrap();
+        control.events.send(PlayerEvent::Loaded).unwrap();
+        assert_eq!(
+            expect_command(&mut control).await,
+            MockCommand::Seek(3_000_000),
+            "a load with a resume point must seek there"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn crash_relaunches_and_restores_file_position_and_pause() {
         let (p1, mut c1) = MockPlayer::pair();
@@ -2365,6 +2417,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2426,6 +2479,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2460,6 +2514,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2493,6 +2548,7 @@ mod tests {
                 file: FILE2,
                 path: "/media/ep2.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2514,6 +2570,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2550,6 +2607,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2599,6 +2657,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2638,6 +2697,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2680,6 +2740,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();
@@ -2826,6 +2887,7 @@ mod tests {
                 file: FILE,
                 path: "/media/ep1.mkv".into(),
                 title: None,
+                resume_millis: None,
             })
             .await
             .unwrap();

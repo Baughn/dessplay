@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-08-21
+Last updated: 2026-08-30
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -317,6 +317,12 @@ ignore it -- you already performed the seek.
 **File change:** When now-playing changes, the server becomes seek authority.
 Everyone resets to position 0. The server's authority prevents spurious seeks
 during the transition.
+
+**Resumption:** a `Load` of the now-playing file seeks to the furthest
+`PlaybackPosition` any user (present or not) holds *tagged with that file*, so
+a session that ended mid-episode resumes where it stopped instead of at zero
+(the file tag keeps a previous episode's sample from resuming the next one).
+This is an automatic seek — no `UserSeek`. See design.md, Playback Rules.
 
 **Authority departure:** if the current seek authority becomes Departed
 (see presence in [network-design.md](network-design.md)), the server takes
