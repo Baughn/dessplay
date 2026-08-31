@@ -1797,7 +1797,7 @@ the last copy. A motionless click never touches the clipboard.
 | `n` | Playlist | Search Nyaa for a single-file anime torrent; reopen to manage/cancel active imports |
 | Paste | Playlist | Add a pasted existing-file path (insert after selected entry); any other paste goes to the chat input instead |
 | `d` | Playlist | Remove selected entry |
-| `w` | Playlist | Cycle the selected entry's series watch state: Watching -> Maybe -> NotWatching |
+| `w` | Playlist | Cycle the selected entry's series watch state: Maybe -> Watching -> NotWatching (commit first: the common press happens mid-show) |
 | `J` / `K` (or `j` / `k`) | Playlist | Move selected entry down/up (cursor follows the entry) |
 | `A` | Playlist | Archive selected cached file into the download root |
 | `M` | Playlist | Manually map selected entry to a local file |

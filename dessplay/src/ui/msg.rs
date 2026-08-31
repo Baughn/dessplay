@@ -99,7 +99,7 @@ pub enum Msg {
     MapFile(Ed2kHash),
     /// Archive the selected cached file into the library (`A`).
     ArchiveFile(Ed2kHash),
-    /// Cycle this entry's series watch state (`w`): Watching -> Maybe ->
+    /// Cycle this entry's series watch state (`w`): Maybe -> Watching ->
     /// NotWatching -> ...
     CycleSeriesWatch(Ed2kHash),
 

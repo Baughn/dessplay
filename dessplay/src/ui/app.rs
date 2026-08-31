@@ -2288,8 +2288,10 @@ impl Ui {
         }
     }
 
-    /// Playlist `w`: cycle the given file's watch state Watching -> Maybe
-    /// -> NotWatching -> Watching (absent = Maybe). Auto-creates a List
+    /// Playlist `w`: cycle the given file's watch state Maybe -> Watching
+    /// -> NotWatching -> Maybe (absent = Maybe). Commit comes first: the
+    /// common press happens mid-show, so the first `w` from the default
+    /// must mean "I'm watching this", not skip it. Auto-creates a List
     /// entry (design.md, Series Identity) if nothing claims the file yet,
     /// so this works even for a series AniDB doesn't know about -- unlike
     /// `update()`'s single-action return, this can yield the create *and*
@@ -2309,9 +2311,9 @@ impl Ui {
             .map(|pref| pref.state)
             .unwrap_or(SeriesWatchState::Maybe);
         let next = match current {
-            SeriesWatchState::Watching => SeriesWatchState::Maybe,
-            SeriesWatchState::Maybe => SeriesWatchState::NotWatching,
-            SeriesWatchState::NotWatching => SeriesWatchState::Watching,
+            SeriesWatchState::Maybe => SeriesWatchState::Watching,
+            SeriesWatchState::Watching => SeriesWatchState::NotWatching,
+            SeriesWatchState::NotWatching => SeriesWatchState::Maybe,
         };
         actions.push(UserAction::Mutate(Mutation::SetSeriesPreference {
             user: self.me.clone(),
@@ -2845,9 +2847,9 @@ mod tests {
             .collect()
     }
 
-    /// A now-playing file whose series (id 7) the given user marked
-    /// NotWatching — the auto-set state with no other UI escape hatch.
-    fn not_watching_state(user: &UserId) -> StateView {
+    /// A now-playing file (series 7) with the given explicit series
+    /// preference for `user`, or none (absent = the Maybe default).
+    fn now_playing_state_with_pref(user: &UserId, pref: Option<SeriesWatchState>) -> StateView {
         let mut state = CrdtState::new();
         state.push_playlist_entry(
             A,
@@ -2874,55 +2876,22 @@ mod tests {
             }),
         );
         let entry = link_series(&mut state, SharedTimestamp(4), AniDbSeriesId(7));
-        state.set_series_preference(
-            A,
-            SharedTimestamp(5),
-            user.clone(),
-            entry,
-            SeriesWatchState::NotWatching,
-            None,
-        );
+        if let Some(pref) = pref {
+            state.set_series_preference(A, SharedTimestamp(5), user.clone(), entry, pref, None);
+        }
         state.view()
+    }
+
+    /// A now-playing file whose series (id 7) the given user marked
+    /// NotWatching — the auto-set state with no other UI escape hatch.
+    fn not_watching_state(user: &UserId) -> StateView {
+        now_playing_state_with_pref(user, Some(SeriesWatchState::NotWatching))
     }
 
     /// A now-playing file (series 7) that `user` is **committed** (Watching)
     /// to — so an absent `user` is a committed-absent blocker of it.
     fn committed_now_playing_state(user: &UserId) -> StateView {
-        let mut state = CrdtState::new();
-        state.push_playlist_entry(
-            A,
-            SharedTimestamp(1),
-            dessplay_core::playlist::NewPlaylistEntry {
-                hash: Ed2kHash([1; 16]),
-                added_by: UserId::new("baughn"),
-                filename: "ep1.mkv".into(),
-                size_bytes: 1,
-                duration_millis: None,
-            },
-        );
-        state.set_now_playing(A, SharedTimestamp(2), Some(Ed2kHash([1; 16])));
-        state.set_playback_intent(A, SharedTimestamp(3), PlaybackIntent::Paused);
-        state.set_anidb_metadata(
-            A,
-            SharedTimestamp(4),
-            Ed2kHash([1; 16]),
-            Some(AniDbMetadata {
-                source: MetadataSource::AniDb,
-                series_name: "Show".into(),
-                series_id: Some(AniDbSeriesId(7)),
-                episode_number: Some("1".into()),
-            }),
-        );
-        let entry = link_series(&mut state, SharedTimestamp(4), AniDbSeriesId(7));
-        state.set_series_preference(
-            A,
-            SharedTimestamp(5),
-            user.clone(),
-            entry,
-            SeriesWatchState::Watching,
-            None,
-        );
-        state.view()
+        now_playing_state_with_pref(user, Some(SeriesWatchState::Watching))
     }
 
     fn peer_info(name: &str, presence: dessplay_core::net::Presence) -> PeerInfo {
@@ -4892,6 +4861,33 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    /// Playlist `w` cycles Maybe -> Watching -> NotWatching -> Maybe. The
+    /// order matters: the common first press (from the absent/Maybe
+    /// default) happens mid-show and must commit the user, not skip the
+    /// series (the old Maybe -> NotWatching order did exactly that).
+    #[test]
+    fn w_cycle_commits_first_from_the_maybe_default() {
+        for (current, expected) in [
+            (None, SeriesWatchState::Watching),
+            (
+                Some(SeriesWatchState::Watching),
+                SeriesWatchState::NotWatching,
+            ),
+            (Some(SeriesWatchState::NotWatching), SeriesWatchState::Maybe),
+        ] {
+            let ui = ui_with_view(now_playing_state_with_pref(&me(), current));
+            let actions = ui.cycle_series_watch(Ed2kHash([1; 16]));
+            let muts = mutations(&actions);
+            assert!(
+                muts.iter().any(|m| matches!(
+                    m,
+                    Mutation::SetSeriesPreference { pref, .. } if *pref == expected
+                )),
+                "from {current:?}: expected a write of {expected:?}, got {muts:?}"
+            );
+        }
     }
 
     #[test]

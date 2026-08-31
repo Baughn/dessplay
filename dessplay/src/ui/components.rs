@@ -1955,7 +1955,7 @@ impl PlaylistPane {
         self.selected_hash().map(Msg::RemoveEntry)
     }
 
-    /// `w`: cycle the entry's series watch state: Watching -> Maybe ->
+    /// `w`: cycle the entry's series watch state: Maybe -> Watching ->
     /// NotWatching -> ...
     fn act_watch(&mut self) -> Option<Msg> {
         self.selected_hash().map(Msg::CycleSeriesWatch)
