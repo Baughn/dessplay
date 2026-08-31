@@ -9,7 +9,7 @@ mod common;
 
 use common::arb_step;
 use dessplay_core::compact::rebuild;
-use dessplay_core::test_support::run_script;
+use dessplay_core::test_support::{proptest_cases, run_script};
 use dessplay_core::types::{ActorId, SharedTimestamp};
 use dessplay_core::{CrdtState, StateView};
 use proptest::prelude::*;
@@ -57,7 +57,7 @@ fn assert_views_match(rebuilt: &StateView, expected: &StateView) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases(256)))]
 
     /// Rebuild preserves the resolved view (modulo reductions).
     #[test]

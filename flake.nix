@@ -70,6 +70,7 @@
           rustToolchain
           cargo-edit
           cargo-insta
+          cargo-nextest
           cargo-outdated
           cargo-audit
           cargo-machete
@@ -83,7 +84,12 @@
       {
         packages.default = dessplay;
 
-        # Dev shell keeps mold + clang for fast incremental local builds.
+        # No mold: measured 2026-08-31, mold 2.41 (via clang --ld-path,
+        # any thread cap) is 2.5-3x *slower* than GNU ld for this
+        # workspace's incremental test builds — ~50 large debug test
+        # binaries link in parallel, where mold's single-link wins
+        # invert. The linker is also fingerprinted by cargo, so flipping
+        # it rebuilds the world. Details: docs/testing-strategy.md.
         devShells.default = pkgs.mkShell.override {
 	  #stdenv = if stdenv.targetPlatform.isDarwin then pkgs.clangStdenv else pkgs.stdenvAdapters.useMoldLinker pkgs.clangStdenv;
         } {
@@ -93,7 +99,6 @@
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
           RUST_BACKTRACE = 1;
           RUST_LOG = "dessplay=debug";
-
           shellHook = ''
             echo "Ganbot Rust development environment"
             echo "Rust version: $(rustc --version)"

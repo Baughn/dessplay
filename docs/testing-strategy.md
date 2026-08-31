@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-08-20
+Last updated: 2026-08-31
 
 ## Table of Contents
 
@@ -139,6 +139,48 @@ ending seeding, and the startup sweep of the torrents dir. One
 `#[ignore]`d smoke test starts a real librqbit session. Whole-app UI
 tests cover the disabled-setting notice, `n` routing, the progress
 overlay, reopening active imports, and `d` cancellation.
+
+---
+
+## Running the Suite
+
+The stop hook and the dev loop run tests under **cargo-nextest** (in the
+dev shell; the hook falls back to plain `cargo test` when nextest is not
+on PATH). Nextest runs tests from all ~50 test binaries in parallel —
+plain `cargo test` runs the binaries serially, which cost ~24s wall on a
+warm cache vs ~4s under nextest (measured 2026-08-31, 32 cores).
+
+`.config/nextest.toml` defines two profiles:
+
+- **default** (the gate): excludes the `perf.rs` wall-clock regression
+  tests via `default-filter` (they only assert in release builds — in a
+  debug gate they cost ~4s and verify nothing) and flags any test slower
+  than 30s as SLOW, killing it at 60s. A SLOW flag usually means an
+  accidental real (non-paused) sleep.
+- **full**: everything, for release perf runs:
+  `cargo nextest run --profile full --release`.
+
+Nextest does not run doctests; the workspace has none — add a
+`cargo test --doc` step to the hook if that changes.
+
+**Proptest case counts**: `PROPTEST_CASES` only overrides
+`ProptestConfig::default()` — it does *not* affect hardcoded
+`with_cases(N)` sites. Suites that pin a non-default count use
+`dessplay_core::test_support::proptest_cases(N)` (default N, env
+override wins) so the stop hook can run a reduced-case fast gate
+(`PROPTEST_CASES=32`) while CI and manual `cargo test` / `cargo nextest
+run` get the full pinned counts. New proptest suites: use the default
+config (env-aware already) or `proptest_cases(N)` — never a bare
+`with_cases(N)`.
+
+Linking: measured 2026-08-31 and **rejected** — mold 2.41 (via
+`clang --ld-path`, default and thread-capped) is 2.5–3x *slower* than
+GNU ld for this suite's incremental builds (~38–43s vs ~15s per
+core-crate touch). ~50 large debug test binaries link concurrently,
+where mold's single-link advantages invert; cargo also fingerprints the
+linker, so switching it rebuilds the workspace. Don't re-add mold
+without re-measuring `touch dessplay-core/src/lib.rs && time cargo test
+--no-run` both ways.
 
 ---
 

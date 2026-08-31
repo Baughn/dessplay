@@ -169,7 +169,9 @@ fn chaos_strategy() -> impl Strategy<Value = Chaos> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(150))]
+    #![proptest_config(ProptestConfig::with_cases(
+        dessplay_core::test_support::proptest_cases(150)
+    ))]
 
     /// After any chaos prefix, once every source is honest and present,
     /// **every** file completes with its exact bytes — under whatever
@@ -580,7 +582,9 @@ impl BudgetHarness {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(150))]
+    #![proptest_config(ProptestConfig::with_cases(
+        dessplay_core::test_support::proptest_cases(150)
+    ))]
 
     /// The shared per-source budget holds at every step: with three
     /// files over one source set, honest-but-arbitrarily-slow sources,

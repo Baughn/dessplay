@@ -32,6 +32,21 @@ use crate::types::{
 };
 use std::num::NonZeroU64;
 
+/// Proptest case count for suites that pin a non-default count.
+///
+/// `PROPTEST_CASES` only overrides `ProptestConfig::default()` — a
+/// hardcoded `with_cases(N)` ignores it entirely (verified against
+/// proptest 1.10). Suites that want a pinned default *and* env
+/// override (the stop hook runs a reduced-case fast gate; CI and
+/// manual runs get the full pinned count) call this instead:
+/// `with_cases(proptest_cases(N))`.
+pub fn proptest_cases(default: u32) -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 /// Number of distinct actors scripts draw from.
 pub const ACTORS: u8 = 4;
 /// Number of distinct files scripts draw from.

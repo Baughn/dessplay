@@ -72,6 +72,16 @@ Other events and logging can be added as you see fit; these rules are flexible.
 
 Full details in docs/testing-strategy.md. This section covers the practical essentials.
 
+## Running tests
+
+The gate is `cargo nextest run` (parallel across binaries; the stop hook
+uses it with `PROPTEST_CASES=32` for a fast gate). The `perf.rs`
+wall-clock tests are excluded by the default nextest profile — run them
+with `cargo nextest run --profile full --release`. `PROPTEST_CASES` does
+not override hardcoded `with_cases(N)`: pinned counts must go through
+`dessplay_core::test_support::proptest_cases(N)`. Details in
+docs/testing-strategy.md ("Running the Suite").
+
 ## Philosophy
 
 Test comprehensively, especially on high-risk areas (echo suppression, network convergence). Prefer deterministic, reproducible tests — seeded RNG, paused tokio time, no flaky sleeps. Read docs/testing-strategy.md before writing any plan.

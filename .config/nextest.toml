@@ -1,0 +1,18 @@
+# Nextest configuration. The default profile is the stop-hook / dev gate;
+# `--profile full` (or --ignore-default-filter) runs everything.
+
+[profile.default]
+# The perf.rs wall-clock regression tests sample real CPU/latency over 3s+
+# windows and only *assert* in release builds (debug just prints) — in the
+# debug gate they cost ~4s and verify nothing. Run them explicitly with:
+#   cargo nextest run --profile full [--release]
+default-filter = "not binary(perf)"
+# No test legitimately takes >30s (paused-time tokio; worst real-time test
+# ~4s): flag anything slower as SLOW — usually an accidental real sleep —
+# and kill it at 60s so the blocking gate is bounded.
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.full]
+# Everything, including the perf regression tests.
+default-filter = "all()"
+slow-timeout = { period = "60s", terminate-after = 2 }
