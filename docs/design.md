@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -311,6 +311,12 @@ When someone adds a file, everyone needs to find their local copy:
      not-watching action (4b) is the escape hatch. The "known series"
      detection itself uses the series id when present and the series name
      otherwise.
+4a'. With **auto-download disabled**, a missing now-playing file with
+   plausible local copies (same AniDB episode, or a near-identical
+   filename with no episode identity) proactively opens the
+   **local-copy offer** modal — picking one writes the same manual
+   mapping as 4a (see [BitTorrent Downloads](#bittorrent-downloads),
+   the auto-download setting, for the full rules).
 4a. You can manually map to a different file:
    - Select the red entry, press `M` to open browser
    - Browser opens to the directory most recently used for files from that
@@ -2235,6 +2241,33 @@ then stays Missing (obtain it via a media root or manual map); a missing
 file from an **unknown** series resolves to **NotWatching** immediately
 rather than waiting on a download that will never arrive. Seeders are
 unaffected (they persist no settings and must seed the whole playlist).
+
+**The local-copy offer** (proposal 2026-08-31-local-copy-offer) softens
+this corner: when now-playing resolves locally Missing (NotFound *or* a
+hash mismatch — two valid encodes under one filename are the motivating
+case) for a client with auto-download off, and the user hasn't marked
+the series NotWatching, the client offers a modal list of plausible
+local copies. Candidates come in two evidence classes, strong first:
+**same episode** — the candidate's synced metadata carries the same
+`(series id, parsed episode number)` as the entry's (the episode
+browser's copy-grouping equivalence; there is no AniDB eid in the
+schema) — and **name match** — a file with *no* episode identity whose
+filename is within a small edit distance of the entry's after
+normalization (lowercased, spaces coerced to underscores), guarded by
+the filename episode parse: when both names parse an episode number
+they must agree, because raw Levenshtein rates `- 01` vs `- 02` at
+distance 1. A file whose metadata names a *different* episode is never
+offered. Selecting a candidate writes an ordinary **manual mapping**
+(filename-trusted, never served — see
+[Manual File Mapping](#manual-file-mapping)); dismissing keeps the
+behavior above. The trigger is derived from state, not hooked on the
+advance event, so every arrival channel lands on it — EOF advance,
+manual select, startup with the file already missing, a mapping pruned
+mid-session — once per file per session (re-armed if the file resolves
+and later goes missing again). While the offer is open, the
+unknown-series auto-NotWatching write is **deferred** and replayed on
+dismissal, so the user is never marked NotWatching under a dialog
+asking whether they want to watch their own copy.
 
 ### Parsing files to series/season/episode
 

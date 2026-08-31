@@ -79,6 +79,20 @@ pub struct UiLines {
     pub subtitles: Vec<SubtitleLine>,
     /// System chat lines from the narrator.
     pub system: Vec<SystemNotice>,
+    /// Local-copy offer requests (auto-download off, now-playing missing):
+    /// the run loop joins each with the library index and opens the offer
+    /// modal when candidates exist. Only `on_state` batches produce these.
+    pub copy_offers: Vec<CopyOfferRequest>,
+}
+
+/// One pending "offer local copies" request leaving the session toward
+/// the run loop (which holds the storage the candidate ranking needs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyOfferRequest {
+    /// The missing now-playing file.
+    pub file: Ed2kHash,
+    /// Its playlist filename.
+    pub filename: String,
 }
 
 /// One instruction to the async shell around the wiring.
@@ -142,6 +156,18 @@ pub enum Directive {
         series_id: Option<dessplay_core::types::AniDbSeriesId>,
         /// Series name, for the history-by-name lookup.
         series_name: String,
+    },
+    /// Offer local copies for a missing now-playing file (proposal
+    /// 2026-08-31-local-copy-offer): with auto-download off, the shell
+    /// answers by ranking the library's plausible same-episode /
+    /// near-name files and opening the offer modal when any exist.
+    /// Emitted once per file per session (re-armed if the file later
+    /// resolves Verified).
+    OfferLocalCopies {
+        /// The missing now-playing file.
+        file: Ed2kHash,
+        /// Its playlist filename (the modal title and the match target).
+        filename: String,
     },
     /// Render the not-watching placeholder PNG for `file`.
     RenderPlaceholder {
@@ -267,6 +293,24 @@ pub struct PlayerWiring {
     /// Missing now-playing files we've already asked known-series about
     /// (the round trip fires once per file).
     series_known_checked: HashSet<Ed2kHash>,
+    /// Missing now-playing files a local-copy offer was already emitted
+    /// for (auto-download off; proposal 2026-08-31-local-copy-offer).
+    /// Once per file per session — but re-armed when the file resolves
+    /// Verified, so a copy that later *vanishes* (a pruned mapping, a
+    /// deleted file) may offer again: that is a fresh incident, not a
+    /// dismissal re-raise.
+    copy_offer_checked: HashSet<Ed2kHash>,
+    /// Files whose offer modal is on screen right now (set when the run
+    /// loop found candidates and opened it, cleared when it closes or
+    /// the file resolves Verified). While pending, the unknown-series
+    /// auto-NotWatching decision is deferred — the user must not be
+    /// marked NotWatching under a dialog asking whether they want to
+    /// watch their own copy.
+    copy_offer_pending: HashSet<Ed2kHash>,
+    /// The known-series answers deferred by a pending offer: replayed
+    /// through [`Self::on_series_known`] when the offer closes without a
+    /// mapping, dropped when the file resolves Verified.
+    deferred_series_known: HashMap<Ed2kHash, (Option<dessplay_core::types::AniDbSeriesId>, bool)>,
     /// Whether the startup eviction pass has run.
     eviction_started: bool,
     /// The now-playing file at the last eviction pass; a change is the
@@ -723,6 +767,9 @@ impl PlayerWiring {
             watcher_prefs_written: HashSet::new(),
             watched_recorded: HashSet::new(),
             series_known_checked: HashSet::new(),
+            copy_offer_checked: HashSet::new(),
+            copy_offer_pending: HashSet::new(),
+            deferred_series_known: HashMap::new(),
             eviction_started: false,
             last_now_playing: None,
             prefetching: HashSet::new(),
@@ -1017,6 +1064,76 @@ impl PlayerWiring {
         }]
     }
 
+    /// With auto-download off, a missing now-playing file has no automatic
+    /// path to Ready — offer the user their own plausible local copies
+    /// (proposal 2026-08-31-local-copy-offer). Derived from state rather
+    /// than hooked on the advance event, so every arrival channel — EOF
+    /// advance, manual select, startup with the file already missing, a
+    /// mapping pruned mid-session — lands here. Gated like
+    /// [`Self::maybe_check_series_known`] on metadata having arrived (the
+    /// same-episode branch needs the target's identity; the register
+    /// always becomes `Some` once the server answers, real hit or
+    /// filename fallback), and skipped for a series the user opted out
+    /// of — a NotWatching user isn't blocking and doesn't want a dialog.
+    fn maybe_offer_local_copies(&mut self, view: &StateView) -> Vec<Directive> {
+        if self.auto_download {
+            return vec![];
+        }
+        let Some(file) = view.now_playing else {
+            return vec![];
+        };
+        let missing = matches!(
+            self.resolved.get(&file),
+            Some(Resolution::NotFound) | Some(Resolution::HashMismatch(_))
+        );
+        if !missing || self.copy_offer_checked.contains(&file) {
+            return vec![];
+        }
+        if !matches!(view.anidb_metadata.get(&file), Some(Some(_))) {
+            return vec![];
+        }
+        if derive::series_watch_for_file(view, &self.me, file)
+            == dessplay_core::types::SeriesWatchState::NotWatching
+        {
+            return vec![];
+        }
+        let Some(entry) = view.playlist.iter().find(|e| e.hash == file) else {
+            return vec![];
+        };
+        self.copy_offer_checked.insert(file);
+        tracing::info!(%file, "missing now-playing with auto-download off; looking for local copies to offer");
+        vec![Directive::OfferLocalCopies {
+            file,
+            filename: entry.state.filename.clone(),
+        }]
+    }
+
+    /// The run loop found candidates and opened the offer modal: while it
+    /// is on screen, the unknown-series auto-NotWatching decision defers
+    /// (see [`Self::on_series_known`]).
+    pub fn note_copy_offer_shown(&mut self, file: Ed2kHash) {
+        self.copy_offer_pending.insert(file);
+    }
+
+    /// The offer ended without a mapping — dismissed by the user, or
+    /// never shown because no candidate qualified. Replays any deferred
+    /// known-series answer, restoring today's behavior (a known series
+    /// stays Missing; an unknown one auto-marks NotWatching with the
+    /// placeholder). A mapping instead resolves the file Verified, which
+    /// drops the deferral in [`Self::on_resolved`].
+    pub fn on_copy_offer_closed(
+        &mut self,
+        file: Ed2kHash,
+        view: &StateView,
+        peers: &[PeerInfo],
+    ) -> Vec<Directive> {
+        self.copy_offer_pending.remove(&file);
+        match self.deferred_series_known.remove(&file) {
+            Some((series, known)) => self.on_series_known(file, series, known, view, peers),
+            None => vec![],
+        }
+    }
+
     /// Start/refresh downloads for missing files we want: the now-playing
     /// file plus a small **prefetch** window of queued entries ahead of
     /// it (design.md, Pre-fetching), so next episodes arrive before they
@@ -1239,6 +1356,18 @@ impl PlayerWiring {
         view: &StateView,
         peers: &[PeerInfo],
     ) -> Vec<Directive> {
+        // A local-copy offer is on screen for this file: defer the whole
+        // decision (the NotWatching write *and* its placeholder) until
+        // the offer closes — the user must not be auto-marked NotWatching
+        // under a dialog asking whether they want to watch their own copy
+        // (proposal 2026-08-31-local-copy-offer). Replayed by
+        // [`Self::on_copy_offer_closed`]; dropped if a chosen mapping
+        // resolves the file Verified first.
+        if self.copy_offer_pending.contains(&file) {
+            tracing::debug!(%file, "known-series answer deferred behind the local-copy offer");
+            self.deferred_series_known.insert(file, (series, known));
+            return vec![];
+        }
         if known {
             return vec![];
         }
@@ -1771,6 +1900,10 @@ impl PlayerWiring {
         // series is personally known (drives the missing-file branch).
         out.extend(self.maybe_check_series_known(view));
 
+        // With auto-download off, additionally offer plausible local
+        // copies (same episode, or a near-identical name) for mapping.
+        out.extend(self.maybe_offer_local_copies(view));
+
         // Retrieve a missing now-playing file from peers (design.md:
         // downloading is the default). The file actor's download start
         // is idempotent, so re-emitting on each snapshot just refreshes
@@ -1968,6 +2101,14 @@ impl PlayerWiring {
         let availability = match &resolution {
             Resolution::Verified(_) => {
                 self.partial_load_failed.remove(&file);
+                // A verified copy settles any local-copy offer: drop the
+                // deferred known-series decision (the user has the file;
+                // auto-NotWatching would be wrong now) and re-arm the
+                // once-per-file latch — if this copy later vanishes,
+                // that's a fresh incident worth a fresh offer.
+                self.copy_offer_checked.remove(&file);
+                self.copy_offer_pending.remove(&file);
+                self.deferred_series_known.remove(&file);
                 FileAvailability::Ready
             }
             Resolution::HashMismatch(path) => {
@@ -2736,6 +2877,25 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
         self.execute(directives).await
     }
 
+    /// The run loop found candidates for a local-copy offer and opened
+    /// the modal (see [`PlayerWiring::note_copy_offer_shown`]).
+    pub fn note_copy_offer_shown(&mut self, file: Ed2kHash) {
+        self.wiring.note_copy_offer_shown(file);
+    }
+
+    /// A local-copy offer ended without a mapping — the user dismissed
+    /// the modal, or no candidate qualified. Replays the deferred
+    /// known-series decision (see [`PlayerWiring::on_copy_offer_closed`]).
+    pub async fn on_copy_offer_closed(
+        &mut self,
+        file: Ed2kHash,
+        view: &StateView,
+        peers: &[PeerInfo],
+    ) -> UiLines {
+        let directives = self.wiring.on_copy_offer_closed(file, view, peers);
+        self.execute(directives).await
+    }
+
     /// We hashed and added this file ourselves. Not an in-place
     /// completion of any loaded partial: the copy is the user's own
     /// file, a different inode from anything the download assembled.
@@ -2878,6 +3038,11 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                         .file
                         .send(FileCommand::RenderPlaceholder { file, lines })
                         .await;
+                }
+                Directive::OfferLocalCopies { file, filename } => {
+                    // Answered by the run loop, which holds the storage
+                    // the candidate ranking joins against.
+                    lines.copy_offers.push(CopyOfferRequest { file, filename });
                 }
                 Directive::ForgetLocalFile { file } => {
                     let _ = self.file.send(FileCommand::ForgetLocalFile { file }).await;
@@ -7015,6 +7180,170 @@ mod tests {
             "auto_download off: an unobtainable unknown-series file must flip to NotWatching"
         );
         assert!(has_placeholder(&directives));
+    }
+
+    fn offer_files(directives: &[Directive]) -> Vec<Ed2kHash> {
+        directives
+            .iter()
+            .filter_map(|d| match d {
+                Directive::OfferLocalCopies { file, .. } => Some(*file),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn copy_offer_fires_once_per_missing_now_playing_with_auto_download_off() {
+        // Proposal 2026-08-31-local-copy-offer: derived from state, so
+        // any arrival channel (here: a NotFound resolution while
+        // now-playing) raises it — once per file per session.
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let view = state.view();
+        let peers = [peer("kim")];
+        let mut wiring = PlayerWiring::new(me());
+        wiring.auto_download = false;
+        // Unresolved yet: no offer (the file may turn out to be local).
+        assert!(offer_files(&wiring.on_state(&view, &peers)).is_empty());
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        assert_eq!(offer_files(&wiring.on_state(&view, &peers)), vec![hash(1)]);
+        assert!(
+            offer_files(&wiring.on_state(&view, &peers)).is_empty(),
+            "once per file per session"
+        );
+    }
+
+    #[test]
+    fn copy_offer_fires_on_hash_mismatch_too() {
+        // A name-matched file with the wrong hash IS the motivating case
+        // (two valid encodes under one filename) — it must offer exactly
+        // like NotFound.
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let view = state.view();
+        let peers = [peer("kim")];
+        let mut wiring = PlayerWiring::new(me());
+        wiring.auto_download = false;
+        wiring.on_resolved(
+            hash(1),
+            Resolution::HashMismatch("/media/ep1.mkv".into()),
+            &view,
+            &peers,
+        );
+        assert_eq!(offer_files(&wiring.on_state(&view, &peers)), vec![hash(1)]);
+    }
+
+    #[test]
+    fn copy_offer_needs_auto_download_off_and_metadata() {
+        let peers = [peer("kim")];
+        // auto_download on: the download resolves it; never offer.
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        assert!(offer_files(&wiring.on_state(&view, &peers)).is_empty());
+
+        // No metadata yet: wait for it (the same gate as the
+        // known-series check); it fires once the register fills.
+        let state = playing_state();
+        let view = state.view();
+        let mut wiring = PlayerWiring::new(me());
+        wiring.auto_download = false;
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        assert!(offer_files(&wiring.on_state(&view, &peers)).is_empty());
+    }
+
+    #[test]
+    fn copy_offer_skips_a_not_watching_series() {
+        // A NotWatching user isn't blocking and doesn't want a dialog.
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let entry = link_series(&mut state, ts(4), 7);
+        state.set_series_preference(A, ts(5), me(), entry, SeriesWatchState::NotWatching, None);
+        let view = state.view();
+        let peers = [peer("kim")];
+        let mut wiring = PlayerWiring::new(me());
+        wiring.auto_download = false;
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        assert!(offer_files(&wiring.on_state(&view, &peers)).is_empty());
+    }
+
+    #[test]
+    fn pending_copy_offer_defers_auto_not_watching_until_dismissal() {
+        // While the offer modal is open, the unknown-series
+        // auto-NotWatching decision must wait — the user must not be
+        // marked NotWatching under a dialog asking whether they want to
+        // watch their own copy. Dismissal replays it.
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let view = state.view();
+        let peers = [peer("kim")];
+        let mut wiring = PlayerWiring::new(me());
+        wiring.auto_download = false;
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        assert_eq!(offer_files(&wiring.on_state(&view, &peers)), vec![hash(1)]);
+        wiring.note_copy_offer_shown(hash(1));
+
+        let directives = wiring.on_series_known(
+            hash(1),
+            Some(dessplay_core::types::AniDbSeriesId(7)),
+            false, // unknown
+            &view,
+            &peers,
+        );
+        assert!(
+            directives.is_empty(),
+            "the known-series answer must defer behind the open offer: {directives:?}"
+        );
+
+        let directives = wiring.on_copy_offer_closed(hash(1), &view, &peers);
+        let writes = series_pref_writes(&directives);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].1, SeriesWatchState::NotWatching);
+        assert!(has_placeholder(&directives));
+    }
+
+    #[test]
+    fn verified_copy_drops_the_deferred_decision_and_rearms_the_offer() {
+        // Choosing a candidate maps it; the mapping resolves Verified,
+        // which settles the offer: no NotWatching write on close, and
+        // the once-per-file latch re-arms (a copy that later vanishes is
+        // a fresh incident, not a dismissal re-raise).
+        let mut state = playing_state();
+        with_metadata(&mut state, hash(1), Some(7));
+        let view = state.view();
+        let peers = [peer("kim")];
+        let mut wiring = PlayerWiring::new(me());
+        wiring.auto_download = false;
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        assert_eq!(offer_files(&wiring.on_state(&view, &peers)), vec![hash(1)]);
+        wiring.note_copy_offer_shown(hash(1));
+        wiring.on_series_known(
+            hash(1),
+            Some(dessplay_core::types::AniDbSeriesId(7)),
+            false,
+            &view,
+            &peers,
+        );
+
+        wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/media/other-encode.mkv".into()),
+            &view,
+            &peers,
+        );
+        let directives = wiring.on_copy_offer_closed(hash(1), &view, &peers);
+        assert!(
+            series_pref_writes(&directives).is_empty(),
+            "a verified copy must drop the deferred NotWatching: {directives:?}"
+        );
+
+        // The copy vanishes later (a re-requested resolve answers
+        // NotFound): a fresh offer is allowed.
+        wiring.pending_resolve.insert(hash(1), 0);
+        wiring.on_resolved(hash(1), Resolution::NotFound, &view, &peers);
+        assert_eq!(offer_files(&wiring.on_state(&view, &peers)), vec![hash(1)]);
     }
 
     #[test]

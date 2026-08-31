@@ -78,6 +78,18 @@ pub enum UiInput {
         /// Mapping browser: the series' last-used directory.
         start: Option<std::path::PathBuf>,
     },
+    /// Open the local-copy offer modal: the missing now-playing file and
+    /// the ranked plausible local copies (proposal
+    /// 2026-08-31-local-copy-offer). Sent by the main loop when the
+    /// session requests an offer and candidates exist.
+    LocalCopyOffer {
+        /// The missing now-playing file.
+        file: dessplay_core::types::Ed2kHash,
+        /// Its playlist filename (the modal title).
+        filename: String,
+        /// Ranked candidates, strong evidence first.
+        candidates: Vec<dessplay_core::local_copy::CopyCandidate>,
+    },
     /// AniDB name-search results (delivered to the search modal).
     SearchResults {
         /// The query these results answer.
@@ -258,6 +270,11 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 watched,
                 start,
             } => ui.open_file_browser(request, files, watched, start),
+            UiInput::LocalCopyOffer {
+                file,
+                filename,
+                candidates,
+            } => ui.offer_local_copies(file, filename, candidates),
             UiInput::SearchResults { query, results } => {
                 for action in ui.set_search_results(&query, results) {
                     if actions.blocking_send(action).is_err() {

@@ -1439,6 +1439,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         Some(UserAction::MapFile { file, path, series }) => {
                             self.shell.set_manual_mapping(file, path, series).await;
                         }
+                        Some(UserAction::LocalCopyOfferDismissed { file }) => {
+                            // The offer modal closed without a mapping:
+                            // replay the deferred missing-file decision
+                            // (a known series stays Missing; an unknown
+                            // one auto-marks NotWatching).
+                            let peers = self.handle.peers.borrow().clone();
+                            let lines =
+                                self.shell.on_copy_offer_closed(file, &last_view, &peers).await;
+                            forward_ui_lines(&self.ui, lines);
+                        }
                         Some(UserAction::Archive {
                             file,
                             series_name,
@@ -1943,7 +1953,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             .shell
                             .on_state(&snapshot.view, &snapshot.peers, adopted)
                             .await;
-                        self.forward_lines(lines);
+                        self.forward_lines(lines, &snapshot.view).await;
                         last_view = snapshot.view.clone();
                         let _ = self.ui.try_send(UiInput::Snapshot(Box::new(snapshot)));
                     }
@@ -1988,7 +1998,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 output = self.shell.player_outputs.recv() => {
                     let Some(output) = output else { continue };
                     let lines = self.shell.on_player_output(output, &last_view).await;
-                    self.forward_lines(lines);
+                    self.forward_lines(lines, &last_view).await;
                 }
                 output = self.shell.file_outputs.recv() => {
                     let Some(output) = output else { continue };
@@ -2118,7 +2128,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 .shell
                 .on_state(&snapshot.view, &snapshot.peers, adopted)
                 .await;
-            self.forward_lines(lines);
+            self.forward_lines(lines, &snapshot.view).await;
             *last_view = snapshot.view.clone();
             let _ = self
                 .ui
@@ -2128,10 +2138,59 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
 
     /// Forward session-produced lines to the UI, feeding subtitles into
     /// the advisor's context ring on the way (the future commentary
-    /// provider's "last fifty subtitles").
-    fn forward_lines(&mut self, lines: crate::session::UiLines) {
+    /// provider's "last fifty subtitles"), and answering any local-copy
+    /// offer requests (they need this loop's storage handle).
+    async fn forward_lines(
+        &mut self,
+        mut lines: crate::session::UiLines,
+        view: &dessplay_core::StateView,
+    ) {
+        for offer in std::mem::take(&mut lines.copy_offers) {
+            self.handle_copy_offer(offer, view).await;
+        }
         self.advisor.observe_subtitles(&lines.subtitles);
         forward_ui_lines(&self.ui, lines);
+    }
+
+    /// Answer one local-copy offer request (proposal
+    /// 2026-08-31-local-copy-offer): join it with the library index and
+    /// open the offer modal when candidates exist; otherwise close the
+    /// offer at once so the deferred missing-file decision proceeds.
+    async fn handle_copy_offer(
+        &mut self,
+        offer: crate::session::CopyOfferRequest,
+        view: &dessplay_core::StateView,
+    ) {
+        let library = self.storage.library_paths().unwrap_or_default();
+        let candidates =
+            dessplay_core::local_copy::local_copy_candidates(view, offer.file, &library);
+        let shown = !candidates.is_empty()
+            && self
+                .ui
+                .try_send(crate::ui::shell::UiInput::LocalCopyOffer {
+                    file: offer.file,
+                    filename: offer.filename.clone(),
+                    candidates: candidates.clone(),
+                })
+                .is_ok();
+        if shown {
+            tracing::info!(
+                file = %offer.file,
+                candidates = candidates.len(),
+                "local-copy offer: opening the modal"
+            );
+            self.shell.note_copy_offer_shown(offer.file);
+        } else {
+            tracing::info!(file = %offer.file, "local-copy offer: no candidates");
+            let peers = self.handle.peers.borrow().clone();
+            let lines = self
+                .shell
+                .on_copy_offer_closed(offer.file, view, &peers)
+                .await;
+            // Offer-closed directives never emit further offers, so the
+            // plain forward suffices (no recursion).
+            forward_ui_lines(&self.ui, lines);
+        }
     }
 
     async fn snapshot(&mut self) -> Option<crate::ui::app::UiSnapshot> {

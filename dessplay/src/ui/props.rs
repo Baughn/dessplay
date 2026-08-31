@@ -1366,34 +1366,10 @@ pub struct EpisodeSortKey {
 }
 
 /// Parse an AniDB `episode_number` string ("03", "S1", "C1", ...) into its
-/// `(category, number)` ordering/grouping identity. `None` when
-/// unparseable: no digits, or a numeric-leading string with a
-/// non-alphabetic prefix.
+/// `(category, number)` ordering/grouping identity. Shared with the
+/// local-copy offer's same-episode match, so it lives in core.
 fn parse_episode_number(episode_number: Option<&str>) -> Option<(u8, u64)> {
-    let epno = episode_number?.trim();
-    let digits_at = epno.find(|c: char| c.is_ascii_digit())?;
-    let (prefix, digits) = epno.split_at(digits_at);
-    // Only an alphabetic (or empty) prefix is a recognised episode form;
-    // a leading digit means prefix is empty (regular episode).
-    if !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
-        return None;
-    }
-    let number: u64 = digits
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .filter_map(|c| c.to_digit(10))
-        .fold(0u64, |n, d| {
-            n.saturating_mul(10).saturating_add(u64::from(d))
-        });
-    let category = match prefix.to_ascii_uppercase().as_str() {
-        "" => 0,
-        "S" => 1,
-        "C" => 2,
-        "T" => 3,
-        "P" => 4,
-        _ => 5,
-    };
-    Some((category, number))
+    dessplay_core::episode_parse::parse_anidb_epno(episode_number)
 }
 
 /// Sort key for ordering episodes within a season.

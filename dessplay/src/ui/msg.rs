@@ -154,6 +154,9 @@ pub enum Msg {
         /// The chosen local file.
         path: PathBuf,
     },
+    /// Local-copy offer modal: dismissed without picking a file (Esc).
+    /// A pick goes through [`Msg::FileMapped`] like the mapping browser.
+    LocalCopyOfferDismissed(Ed2kHash),
     /// Nyaa modal: execute the current query.
     NyaaSearchRequested(String),
     /// Nyaa modal: download the selected inspected result.
@@ -213,6 +216,7 @@ impl Msg {
             Msg::ArchiveFile(_) => "ArchiveFile",
             Msg::CycleSeriesWatch(_) => "CycleSeriesWatch",
             Msg::FileMapped { .. } => "FileMapped",
+            Msg::LocalCopyOfferDismissed(_) => "LocalCopyOfferDismissed",
             Msg::NyaaSearchRequested(_) => "NyaaSearchRequested",
             Msg::NyaaResultChosen { .. } => "NyaaResultChosen",
             Msg::CancelNyaaImport(_) => "CancelNyaaImport",
@@ -336,6 +340,13 @@ pub enum UserAction {
         /// Series key for remembering this directory; `None` when the
         /// entry has no metadata yet.
         series: Option<crate::storage::SeriesKey>,
+    },
+    /// The local-copy offer modal closed without a mapping: the session
+    /// replays the deferred missing-file decision (proposal
+    /// 2026-08-31-local-copy-offer).
+    LocalCopyOfferDismissed {
+        /// The missing now-playing file the offer was for.
+        file: Ed2kHash,
     },
     /// Archive a cached file into the library under the download root.
     Archive {

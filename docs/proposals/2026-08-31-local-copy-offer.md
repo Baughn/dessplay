@@ -1,6 +1,6 @@
 # Proposal: Offer local copies when now-playing is missing (auto-download off)
 
-Status: **ACCEPTED 2026-08-31, not yet implemented.** Decisions: "same
+Status: **ACCEPTED and implemented, 2026-08-31.** Decisions: "same
 episode" is keyed on `(series_id, parsed episode number)` — the Episode
 Browser's existing copy-grouping equivalence — not a new AniDB eid field;
 the filename branch uses an episode-number guard plus normalized

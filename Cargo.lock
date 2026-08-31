@@ -895,6 +895,7 @@ dependencies = [
  "serde",
  "sha2",
  "socket2",
+ "strsim",
  "tempfile",
  "tokio",
  "tracing",

@@ -28,7 +28,7 @@ use super::components::{
 };
 use super::modals::{
     AniDbSearchModal, BrowserLibrary, ConfirmModal, EpisodeBrowser, FileBrowser, ListEditModal,
-    NeroNameModal, NyaaActiveImport, NyaaSearchModal, Season, SettingsModal,
+    LocalCopyOfferModal, NeroNameModal, NyaaActiveImport, NyaaSearchModal, Season, SettingsModal,
 };
 use super::msg::{BrowseRequest, Msg, UserAction};
 use super::props;
@@ -136,6 +136,9 @@ fn log_action(action: &UserAction) {
         }
         UserAction::MapFile { path, .. } => {
             tracing::debug!(path = %path.display(), "user action: MapFile");
+        }
+        UserAction::LocalCopyOfferDismissed { file } => {
+            tracing::debug!(%file, "user action: LocalCopyOfferDismissed");
         }
         UserAction::Archive { filename, .. } => {
             tracing::debug!(%filename, "user action: Archive");
@@ -330,6 +333,7 @@ enum Modal {
     NeroName(NeroNameModal),
     AniDbSearch(AniDbSearchModal),
     NyaaSearch(NyaaSearchModal),
+    LocalCopyOffer(LocalCopyOfferModal),
     Confirm(ConfirmModal),
 }
 
@@ -343,6 +347,7 @@ impl Modal {
             Modal::NeroName(modal) => modal,
             Modal::AniDbSearch(modal) => modal,
             Modal::NyaaSearch(modal) => modal,
+            Modal::LocalCopyOffer(modal) => modal,
             Modal::Confirm(modal) => modal,
         }
     }
@@ -356,6 +361,7 @@ impl Modal {
             Modal::NeroName(modal) => modal.keybindings(),
             Modal::AniDbSearch(modal) => modal.keybindings(),
             Modal::NyaaSearch(modal) => modal.keybindings(),
+            Modal::LocalCopyOffer(modal) => modal.keybindings(),
             Modal::Confirm(modal) => modal.keybindings(),
         }
     }
@@ -370,6 +376,7 @@ impl Modal {
             Modal::NeroName(_) => "NeroName",
             Modal::AniDbSearch(_) => "AniDbSearch",
             Modal::NyaaSearch(_) => "NyaaSearch",
+            Modal::LocalCopyOffer(_) => "LocalCopyOffer",
             Modal::Confirm(_) => "Confirm",
         }
     }
@@ -980,6 +987,31 @@ impl Ui {
             self.pop_modal();
         }
         self.push_modal(Modal::Files(browser));
+    }
+
+    /// Open the local-copy offer modal (proposal
+    /// 2026-08-31-local-copy-offer): the main loop found plausible local
+    /// copies for a missing now-playing file. Pushed on top of whatever
+    /// is open — the group may be waiting on this user, so the offer must
+    /// not sit hidden behind e.g. the settings screen. A duplicate for a
+    /// file already offered anywhere on the stack is dropped.
+    pub fn offer_local_copies(
+        &mut self,
+        file: Ed2kHash,
+        filename: String,
+        candidates: Vec<dessplay_core::local_copy::CopyCandidate>,
+    ) {
+        if self
+            .modals
+            .iter()
+            .any(|modal| matches!(modal, Modal::LocalCopyOffer(offer) if offer.file == file))
+        {
+            return;
+        }
+        self.push_modal(Modal::LocalCopyOffer(LocalCopyOfferModal::new(
+            file, filename, candidates,
+        )));
+        self.sync_focus_attr();
     }
 
     /// Replace the snapshot and recompute every pane's props.
@@ -1946,6 +1978,11 @@ impl Ui {
                     path: canonical_or_original(path),
                     series: self.series_key_of(file),
                 })
+            }
+            Msg::LocalCopyOfferDismissed(file) => {
+                self.pop_modal();
+                self.sync_focus_attr();
+                Some(UserAction::LocalCopyOfferDismissed { file })
             }
             Msg::NyaaSearchRequested(query) => Some(UserAction::SearchNyaa { query }),
             Msg::NyaaResultChosen { result, after } => {

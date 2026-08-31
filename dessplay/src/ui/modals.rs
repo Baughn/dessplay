@@ -2422,6 +2422,138 @@ static SEARCH_KEYMAP: Keymap<AniDbSearchModal, Msg> = Keymap(&[
     },
 ]);
 
+/// Offer plausible local copies for a missing now-playing file (proposal
+/// 2026-08-31-local-copy-offer): with auto-download off there is no
+/// automatic path to Ready, so when the playlist lands on a file this
+/// client doesn't hold, the ranked same-episode / near-name library
+/// files are offered for mapping. Enter maps the selected file exactly
+/// like the `M` browser ([`Msg::FileMapped`] — filename-trusted, never
+/// served); Esc dismisses and keeps today's behavior.
+pub struct LocalCopyOfferModal {
+    /// The missing now-playing playlist entry.
+    pub file: Ed2kHash,
+    /// The entry's filename (the match target, shown as the title).
+    filename: String,
+    /// Ranked candidates, strong evidence first.
+    candidates: Vec<dessplay_core::local_copy::CopyCandidate>,
+    cursor: ListCursor,
+}
+
+impl LocalCopyOfferModal {
+    /// Open for a missing entry with its ranked candidates (never empty:
+    /// the main loop only opens the modal when candidates exist).
+    pub fn new(
+        file: Ed2kHash,
+        filename: String,
+        candidates: Vec<dessplay_core::local_copy::CopyCandidate>,
+    ) -> Self {
+        Self {
+            file,
+            filename,
+            candidates,
+            cursor: ListCursor::default(),
+        }
+    }
+
+    /// Keys for the keybinding bar.
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        let mut items = OFFER_KEYMAP.bar();
+        items.insert(1, ("↑↓", "Pick"));
+        items
+    }
+
+    fn act_enter(&mut self) -> Option<Msg> {
+        let candidate = self.candidates.get(self.cursor.index())?;
+        Some(Msg::FileMapped {
+            file: self.file,
+            path: candidate.path.clone(),
+        })
+    }
+
+    fn act_close(&mut self) -> Option<Msg> {
+        Some(Msg::LocalCopyOfferDismissed(self.file))
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
+        let modal = overlay(area, 70, 60);
+        frame.render_widget(Clear, modal);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_style(true))
+                .title("You don't have this file"),
+            modal,
+        );
+        let inner = Rect {
+            x: modal.x + 2,
+            y: modal.y + 1,
+            width: modal.width.saturating_sub(4),
+            height: modal.height.saturating_sub(2),
+        };
+        let header = tuirealm::ratatui::widgets::Paragraph::new(vec![
+            Line::from(Span::raw(self.filename.clone())),
+            Line::from(Span::styled(
+                "You may already have a copy — pick one to play it instead:",
+                theme::dim(),
+            )),
+        ]);
+        let header_area = Rect {
+            height: 3.min(inner.height),
+            ..inner
+        };
+        frame.render_widget(header, header_area);
+        let list_area = Rect {
+            y: inner.y + 3,
+            height: inner.height.saturating_sub(3),
+            ..inner
+        };
+        let items: Vec<ListItem> = self
+            .candidates
+            .iter()
+            .map(|candidate| {
+                let evidence = match candidate.evidence {
+                    dessplay_core::local_copy::CopyEvidence::SameEpisode => "same episode",
+                    dessplay_core::local_copy::CopyEvidence::NameMatch => "name match",
+                };
+                ListItem::new(Line::from(vec![
+                    Span::raw(candidate.filename.clone()),
+                    Span::styled(format!("  {evidence}"), theme::dim()),
+                ]))
+            })
+            .collect();
+        let selected = (!self.candidates.is_empty()).then(|| self.cursor.index());
+        render_list_body(frame, list_area, items, selected, selected);
+    }
+}
+
+passive_modal!(LocalCopyOfferModal);
+
+impl AppComponent<Msg, NoUserEvent> for LocalCopyOfferModal {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        if let Some(key) = plain(ev)
+            && self.cursor.nav(key, self.candidates.len())
+        {
+            return Some(Msg::None);
+        }
+        OFFER_KEYMAP.dispatch(self, ev).or(Some(Msg::None))
+    }
+}
+
+/// Local-copy offer bindings: pick or dismiss, nothing else — a stray
+/// key must not answer a modal that opens under the user's hands.
+static OFFER_KEYMAP: Keymap<LocalCopyOfferModal, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "Use file")),
+        action: LocalCopyOfferModal::act_enter,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Dismiss")),
+        action: LocalCopyOfferModal::act_close,
+    },
+]);
+
 /// Fast path for the group's renaming culture (design.md, The List): a
 /// minimal single-field editor for a List entry's `nero_name`, opened
 /// with `n` in the Series pane's List mode. Two keystrokes to a rename;

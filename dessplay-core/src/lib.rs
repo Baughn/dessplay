@@ -16,6 +16,7 @@ pub mod derive;
 pub mod episode_parse;
 pub mod franchise;
 pub mod hash;
+pub mod local_copy;
 pub mod lww;
 pub mod net;
 pub mod playlist;

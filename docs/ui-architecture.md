@@ -591,6 +591,20 @@ Modal types:
   torrents, while reopening during background imports defaults to an active
   list with `d` cancel and `s` new search. Selection closes the modal so the
   rest of the TUI remains usable during the download.
+- **LocalCopyOffer**: Pushed by the session, not a keypress (proposal
+  2026-08-31-local-copy-offer): with auto-download off, a missing
+  now-playing file triggers a `Directive::OfferLocalCopies`; the main
+  loop joins it with the library index
+  (`dessplay_core::local_copy::local_copy_candidates`) and answers with
+  `UiInput::LocalCopyOffer` only when candidates exist. Rows carry an
+  evidence tag (`same episode` / `name match`); Enter emits the mapping
+  browser's own `Msg::FileMapped` (so selection *is* a manual map),
+  Esc emits `Msg::LocalCopyOfferDismissed`, which the main loop routes
+  back to the session to replay the deferred missing-file decision.
+  Only Enter/Esc/navigation are bound — the modal opens under the
+  user's hands, so a stray key must not answer it. Pushed on top of
+  whatever is open (the group may be waiting on this user); a
+  duplicate for a file already on the stack is dropped.
 
 Unlike the prototype (which used blocking sub-loops for modals), the main
 event loop continues running while modals are open. Network messages, player
