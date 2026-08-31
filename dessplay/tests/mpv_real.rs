@@ -94,7 +94,7 @@ async fn full_journey_against_real_mpv() {
     })
     .await;
     let duration = expect_event(&player, BUDGET, |e| match e {
-        PlayerEvent::DurationKnown { duration_millis } => Some(*duration_millis),
+        PlayerEvent::DurationKnown { duration_millis } => Some(duration_millis.get()),
         _ => None,
     })
     .await;
