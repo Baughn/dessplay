@@ -155,9 +155,9 @@ pub enum FileCommand {
         lines: Vec<String>,
     },
     /// Move a cached download into the library under the download root
-    /// (the first media root). The actor builds the destination, optionally
-    /// including a series-name subdirectory, since it owns the media roots
-    /// (design.md, Archive).
+    /// (the first media root). The actor builds the destination from its
+    /// [`ArchivePolicy`], since it owns both the media roots and the
+    /// policy (design.md, Archive).
     Archive {
         /// The cached file.
         file: Ed2kHash,
@@ -166,9 +166,10 @@ pub enum FileCommand {
         series_name: Option<String>,
         /// Original filename to archive under.
         filename: String,
-        /// Whether to place the file in a series-name subdirectory.
-        subdirectory: bool,
     },
+    /// The archive policy changed (settings save). Applies to the next
+    /// archive, manual or automatic.
+    SetArchivePolicy(ArchivePolicy),
     /// Eviction pass (startup and EOF-advance).
     RunEviction {
         /// Never evicted: now-playing and queued unwatched entries.
@@ -453,6 +454,30 @@ pub enum FileOutput {
     },
 }
 
+/// How archives are laid out and when they happen (design.md, Archive).
+/// Owned by the file actor so the manual `A` action and the automatic
+/// watched-trigger cannot disagree about the destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchivePolicy {
+    /// Place archives under a sanitized series-name subdirectory of the
+    /// download root; when false, directly in the root.
+    pub subdirectory: bool,
+    /// Archive a cached file as soon as it is personally watched (the
+    /// 85% rule), or — for a file watched off a partial — when its
+    /// download completes. Default off: archiving is otherwise the
+    /// deliberate, manual "keep this" decision.
+    pub auto_on_watched: bool,
+}
+
+impl Default for ArchivePolicy {
+    fn default() -> Self {
+        Self {
+            subdirectory: true,
+            auto_on_watched: false,
+        }
+    }
+}
+
 /// Everything the actor needs at spawn.
 pub struct FileConfig {
     /// Bookkeeping storage (hash cache, watch history, cache entries,
@@ -462,6 +487,8 @@ pub struct FileConfig {
     pub media_roots: Vec<PathBuf>,
     /// Download-cache retention policy.
     pub retention: CacheRetention,
+    /// Where archives land, and whether watching triggers one.
+    pub archive: ArchivePolicy,
     /// Download cache directory (placeholder PNG home; 9B downloads).
     pub cache_dir: PathBuf,
     /// Unix-millis clock (timestamps for bookkeeping rows).
@@ -490,8 +517,25 @@ pub struct FileConfig {
 /// Production default for [`FileConfig::scan_transfer_quiet`].
 pub const SCAN_TRANSFER_QUIET_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// What [`Actor::archive_start`] did with the file.
+enum ArchiveStep {
+    /// Renamed in place; bookkeeping can finish now.
+    Done { source: PathBuf, dest: PathBuf },
+    /// A cross-device copy is running; [`Done::Archived`] finishes it.
+    Copying,
+}
+
 /// Completions from blocking subtasks.
 enum Done {
+    /// A cross-device archive copy finished (the source is still in
+    /// place; `archive_finish` deletes it after re-pointing bookkeeping).
+    Archived {
+        file: Ed2kHash,
+        /// The cache path copied from.
+        source: PathBuf,
+        /// The library path copied to, or why not.
+        result: Result<PathBuf, String>,
+    },
     Resolved {
         file: Ed2kHash,
         /// The filename that was searched for — kept so a mismatch can
@@ -639,6 +683,10 @@ struct Actor {
     storage: Storage,
     media_roots: Vec<PathBuf>,
     retention: CacheRetention,
+    archive: ArchivePolicy,
+    /// Files whose cross-device archive copy is in flight (see
+    /// [`Done::Archived`]); the eviction pass leaves them alone.
+    archiving: HashSet<Ed2kHash>,
     cache_dir: PathBuf,
     clock: Clock,
     /// In-memory hash cache, shared with blocking subtasks as an
@@ -1068,6 +1116,8 @@ impl Actor {
             storage: config.storage,
             media_roots: config.media_roots,
             retention: config.retention,
+            archive: config.archive,
+            archiving: HashSet::new(),
             cache_dir: config.cache_dir,
             clock: config.clock,
             hash_cache: Arc::new(hash_cache),
@@ -1129,6 +1179,7 @@ impl Actor {
                 // Prompt a fresh UI snapshot so Recent Series re-reads
                 // watch history and reflects the new recency at once.
                 let _ = self.out.send(FileOutput::WatchRecorded).await;
+                self.maybe_auto_archive(record.hash).await;
             }
             FileCommand::CheckSeriesKnown { file, series, key } => {
                 let known = self.storage.series_known(&key).unwrap_or_else(|e| {
@@ -1158,11 +1209,8 @@ impl Actor {
                 file,
                 series_name,
                 filename,
-                subdirectory,
-            } => {
-                self.archive(file, series_name, filename, subdirectory)
-                    .await
-            }
+            } => self.archive(file, series_name, filename).await,
+            FileCommand::SetArchivePolicy(policy) => self.archive = policy,
             FileCommand::RunEviction {
                 protected,
                 group_watched,
@@ -1839,6 +1887,9 @@ impl Actor {
                 assembled_in_place,
             })
             .await;
+        // Watched off the partial (the 85% rule fired before the last
+        // chunks landed): the file only became archivable now.
+        self.maybe_auto_archive(file).await;
     }
 
     /// A complete, verified local copy of `file` exists at `path`: the
@@ -2695,6 +2746,25 @@ impl Actor {
                 payload,
                 result,
             } => self.on_nyaa_import_hashed(id, payload, result).await,
+            Done::Archived {
+                file,
+                source,
+                result,
+            } => {
+                self.archiving.remove(&file);
+                match result {
+                    Ok(dest) => self.archive_finish(file, source, dest, true).await,
+                    Err(error) => {
+                        let _ = self
+                            .out
+                            .send(FileOutput::Archived {
+                                file,
+                                result: Err(error),
+                            })
+                            .await;
+                    }
+                }
+            }
             Done::Placeholder { file, result } => match result {
                 Ok(path) => {
                     let _ = self
@@ -3289,33 +3359,45 @@ impl Actor {
         });
     }
 
-    async fn archive(
-        &mut self,
-        file: Ed2kHash,
-        series_name: Option<String>,
-        filename: String,
-        subdirectory: bool,
-    ) {
-        let result = self.archive_inner(file, series_name, &filename, subdirectory);
-        if let Ok(new_path) = &result {
-            tracing::info!(path = %new_path.display(), "archived cached file into the library");
+    async fn archive(&mut self, file: Ed2kHash, series_name: Option<String>, filename: String) {
+        match self.archive_start(file, series_name, &filename) {
+            Ok(ArchiveStep::Done { source, dest }) => {
+                self.archive_finish(file, source, dest, false).await
+            }
+            Ok(ArchiveStep::Copying) => {}
+            Err(error) => {
+                let _ = self
+                    .out
+                    .send(FileOutput::Archived {
+                        file,
+                        result: Err(error),
+                    })
+                    .await;
+            }
         }
-        let _ = self.out.send(FileOutput::Archived { file, result }).await;
     }
 
-    fn archive_inner(
+    /// Begin an archive: resolve the destination from the policy and
+    /// move the cached file there. A same-filesystem rename completes
+    /// inline; a cross-device move copies in the background — a
+    /// multi-gigabyte copy must not stall serving and downloads (auto
+    /// archive fires mid-session), and the source stays servable until
+    /// [`Actor::archive_finish`] re-points `local_files` at the copy.
+    fn archive_start(
         &mut self,
         file: Ed2kHash,
         series_name: Option<String>,
         filename: &str,
-        subdirectory: bool,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<ArchiveStep, String> {
+        if self.archiving.contains(&file) {
+            return Err("archive already in progress".into());
+        }
         let download_root = self
             .media_roots
             .first()
             .ok_or("no download root configured")?;
         let filename = sanitize_component(filename);
-        let dest = if subdirectory {
+        let dest = if self.archive.subdirectory {
             // AniDB models each season as its own anime, so a single series
             // name is effectively one season's folder.
             let folder = sanitize_component(series_name.as_deref().unwrap_or("Unsorted"));
@@ -3323,22 +3405,64 @@ impl Actor {
         } else {
             download_root.join(filename)
         };
-        let entries = self.storage.cache_entries().map_err(|e| e.to_string())?;
-        let entry = entries
-            .iter()
-            .find(|entry| entry.hash == file)
-            .ok_or("not a cached download")?;
+        let source = self.cache_entry_path(file)?;
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
         }
-        move_file(&entry.path, &dest).map_err(|e| e.to_string())?;
-        self.storage
-            .remove_cache_entry(file)
-            .map_err(|e| e.to_string())?;
+        match std::fs::rename(&source, &dest) {
+            Ok(()) => Ok(ArchiveStep::Done { source, dest }),
+            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+                tracing::debug!(
+                    from = %source.display(),
+                    to = %dest.display(),
+                    "archive crosses filesystems; copying in the background"
+                );
+                self.archiving.insert(file);
+                let done_tx = self.done_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = std::fs::copy(&source, &dest)
+                        .map(|_| dest)
+                        .map_err(|e| e.to_string());
+                    let _ = done_tx.blocking_send(Done::Archived {
+                        file,
+                        source,
+                        result,
+                    });
+                });
+                Ok(ArchiveStep::Copying)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// The cache path of `file`, or why it cannot be archived.
+    fn cache_entry_path(&self, file: Ed2kHash) -> Result<PathBuf, String> {
+        let entries = self.storage.cache_entries().map_err(|e| e.to_string())?;
+        entries
+            .into_iter()
+            .find(|entry| entry.hash == file)
+            .map(|entry| entry.path)
+            .ok_or_else(|| "not a cached download".into())
+    }
+
+    /// The bytes are at `dest`: re-key the bookkeeping from `source`,
+    /// then — for a cross-device copy (`copied`) — delete the source,
+    /// after `local_files` points at the copy so no serve request ever
+    /// reads a dead path.
+    async fn archive_finish(
+        &mut self,
+        file: Ed2kHash,
+        source: PathBuf,
+        dest: PathBuf,
+        copied: bool,
+    ) {
+        if let Err(e) = self.storage.remove_cache_entry(file) {
+            tracing::error!("cache bookkeeping after archive: {e}");
+        }
         // The hash is content-derived and unchanged; re-key the cache
         // row to the new path (mtime may differ after a cross-device
         // copy).
-        if let Err(e) = self.storage.remove_hash_cache(&entry.path) {
+        if let Err(e) = self.storage.remove_hash_cache(&source) {
             tracing::error!("hash-cache cleanup after archive: {e}");
         }
         // The archived file is still a held, servable copy -- only its
@@ -3346,9 +3470,9 @@ impl Actor {
         // lockstep with the hash_cache re-key below; leaving `local_files`
         // on the now-deleted cache path makes the serve path read a dead
         // file and flip us to Missing for a file we still hold.
-        self.local_files.insert(file, dest.to_path_buf());
+        self.local_files.insert(file, dest.clone());
         let mut cache = (*self.hash_cache).clone();
-        if let Some((_, hash)) = cache.remove(&entry.path) {
+        if let Some((_, hash)) = cache.remove(&source) {
             let now = (self.clock)() as i64;
             if let Ok(metadata) = std::fs::metadata(&dest)
                 && let Some(mtime) = mtime_millis(&metadata)
@@ -3356,11 +3480,50 @@ impl Actor {
                 if let Err(e) = self.storage.upsert_hash_cache(&dest, mtime, &hash, now) {
                     tracing::error!("hash-cache re-key after archive: {e}");
                 }
-                cache.insert(dest.to_path_buf(), (mtime, hash));
+                cache.insert(dest.clone(), (mtime, hash));
             }
         }
         self.hash_cache = Arc::new(cache);
-        Ok(dest.to_path_buf())
+        if copied
+            && let Err(e) = std::fs::remove_file(&source)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::error!(path = %source.display(), "removing archived cache copy: {e}");
+        }
+        tracing::info!(path = %dest.display(), "archived cached file into the library");
+        let _ = self
+            .out
+            .send(FileOutput::Archived {
+                file,
+                result: Ok(dest),
+            })
+            .await;
+    }
+
+    /// Auto-archive (`ArchivePolicy::auto_on_watched`): a cached file
+    /// that is personally watched moves into the library. Called from
+    /// both places that condition can newly hold — the watch record
+    /// landing (the 85% rule) and a download completing for a file
+    /// already watched off its partial. A file that is not cache-only
+    /// (never downloaded, or already archived) is silently left alone.
+    async fn maybe_auto_archive(&mut self, file: Ed2kHash) {
+        if !self.archive.auto_on_watched {
+            return;
+        }
+        let record = match self.storage.watched(file) {
+            Ok(Some(record)) => record,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::error!("watch history lookup before auto-archive: {e}");
+                return;
+            }
+        };
+        if self.cache_entry_path(file).is_err() {
+            return;
+        }
+        tracing::info!(filename = %record.filename, "auto-archiving watched cached file");
+        self.archive(file, record.series_name, record.filename)
+            .await;
     }
 
     async fn run_eviction(
@@ -3379,6 +3542,11 @@ impl Actor {
         };
         let mut evicted = Vec::new();
         for entry in entries {
+            // A cross-device archive copy is reading this file; it
+            // leaves the cache when the copy lands, not before.
+            if self.archiving.contains(&entry.hash) {
+                continue;
+            }
             let watched = group_watched.contains(&entry.hash)
                 || matches!(self.storage.watched(entry.hash), Ok(Some(_)));
             if !evictable(
@@ -3746,19 +3914,6 @@ fn read_range(path: &Path, range: std::ops::Range<u64>) -> std::io::Result<Vec<u
     let mut buf = vec![0u8; (range.end - range.start) as usize];
     file.read_exact(&mut buf)?;
     Ok(buf)
-}
-
-/// Move a file, falling back to copy+delete across filesystems (the
-/// cache dir and the download root are often different mounts).
-fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    match std::fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
-            std::fs::copy(from, to)?;
-            std::fs::remove_file(from)
-        }
-        Err(e) => Err(e),
-    }
 }
 
 /// A live, visible index row bearing `expected` — the by-hash step of
@@ -4699,6 +4854,7 @@ mod tests {
                 storage,
                 media_roots: roots,
                 retention,
+                archive: ArchivePolicy::default(),
                 cache_dir,
                 clock,
                 download: DownloadConfig::default(),
@@ -4765,6 +4921,7 @@ mod tests {
                 storage,
                 media_roots: vec![],
                 retention: CacheRetention::default(),
+                archive: ArchivePolicy::default(),
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock: test_clock(),
                 download: DownloadConfig::default(),
@@ -4940,6 +5097,7 @@ mod tests {
                 storage: Storage::open_in_memory().unwrap(),
                 media_roots: vec![],
                 retention: CacheRetention::default(),
+                archive: ArchivePolicy::default(),
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock: test_clock(),
                 download: DownloadConfig::default(),
@@ -5013,6 +5171,7 @@ mod tests {
                 storage: Storage::open_in_memory().unwrap(),
                 media_roots: vec![],
                 retention: CacheRetention::default(),
+                archive: ArchivePolicy::default(),
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock: test_clock(),
                 download: DownloadConfig::default(),
@@ -5105,6 +5264,7 @@ mod tests {
                 storage: Storage::open_in_memory().unwrap(),
                 media_roots: vec![],
                 retention: CacheRetention::default(),
+                archive: ArchivePolicy::default(),
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock: test_clock(),
                 download: DownloadConfig::default(),
@@ -5197,6 +5357,7 @@ mod tests {
                 storage: Storage::open_in_memory().unwrap(),
                 media_roots: vec![],
                 retention: CacheRetention::default(),
+                archive: ArchivePolicy::default(),
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock: test_clock(),
                 download: DownloadConfig::default(),
@@ -6412,6 +6573,7 @@ mod tests {
                 storage,
                 media_roots: vec![],
                 retention: CacheRetention::default(),
+                archive: ArchivePolicy::default(),
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock: test_clock(),
                 download: DownloadConfig::default(),
@@ -6549,6 +6711,220 @@ mod tests {
         assert_eq!(record.watched_at, 42);
     }
 
+    /// A cached file plus a rig whose download root is `library`.
+    fn cached_rig(
+        cache: &Path,
+        library: &Path,
+        name: &str,
+        contents: &[u8],
+        policy: ArchivePolicy,
+    ) -> (Rig, Ed2kFileHash, PathBuf) {
+        let cached_path = write(cache, name, contents);
+        let hashed = ed2k_hash_bytes(contents);
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .upsert_cache_entry(&CacheEntry {
+                hash: hashed.root,
+                path: cached_path.clone(),
+                size_bytes: contents.len() as u64,
+                last_access: 1,
+            })
+            .unwrap();
+        let rig = spawn_rig(
+            storage,
+            vec![library.to_path_buf()],
+            CacheRetention::default(),
+        );
+        rig.commands
+            .try_send(FileCommand::SetArchivePolicy(policy))
+            .unwrap();
+        (rig, hashed, cached_path)
+    }
+
+    fn watched(hash: Ed2kHash, filename: &str) -> WatchRecord {
+        WatchRecord {
+            hash,
+            series_id: Some(AniDbSeriesId(5)),
+            series_name: Some("Frieren".into()),
+            filename: filename.into(),
+            watched_at: 42,
+        }
+    }
+
+    /// Spec (design.md, Archive): with **Auto-archive watched** on, the
+    /// personal watch record (the 85% rule) moves a cached file into
+    /// the library exactly as `A` would, using the record's series
+    /// name and filename for the destination.
+    #[tokio::test]
+    async fn personal_watch_record_auto_archives_the_cached_file() {
+        let cache = tempfile::tempdir().unwrap();
+        let library = tempfile::tempdir().unwrap();
+        let (mut rig, hashed, cached_path) = cached_rig(
+            cache.path(),
+            library.path(),
+            "ep1.mkv",
+            b"a watched cached episode",
+            ArchivePolicy {
+                subdirectory: true,
+                auto_on_watched: true,
+            },
+        );
+        rig.commands
+            .send(FileCommand::RecordWatched(watched(hashed.root, "ep1.mkv")))
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::WatchRecorded => {}
+            other => panic!("unexpected output: {other:?}"),
+        }
+        let dest = library.path().join("Frieren/ep1.mkv");
+        match next_output(&mut rig).await {
+            FileOutput::Archived { file, result } => {
+                assert_eq!(file, hashed.root);
+                assert_eq!(result.unwrap(), dest);
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+        assert!(dest.is_file());
+        assert!(!cached_path.exists());
+    }
+
+    /// The default policy (auto off) leaves a watched cached file where
+    /// it is — archiving stays the manual decision.
+    #[tokio::test]
+    async fn watch_record_leaves_cached_file_alone_by_default() {
+        let cache = tempfile::tempdir().unwrap();
+        let library = tempfile::tempdir().unwrap();
+        let (mut rig, hashed, cached_path) = cached_rig(
+            cache.path(),
+            library.path(),
+            "ep1.mkv",
+            b"a watched cached episode",
+            ArchivePolicy::default(),
+        );
+        rig.commands
+            .send(FileCommand::RecordWatched(watched(hashed.root, "ep1.mkv")))
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::WatchRecorded => {}
+            other => panic!("unexpected output: {other:?}"),
+        }
+        // Nothing else follows: a further command's output is next.
+        rig.commands
+            .send(FileCommand::RecordWatched(watched(hash(7), "other.mkv")))
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::WatchRecorded => {}
+            other => panic!("unexpected output: {other:?}"),
+        }
+        assert!(cached_path.is_file());
+        assert!(!library.path().join("Frieren/ep1.mkv").exists());
+    }
+
+    /// The symmetric trigger: a file watched off its partial (the 85%
+    /// rule fired before the download finished) becomes archivable only
+    /// when the download completes — so completion must consult watch
+    /// history, or such a file would silently stay in the cache.
+    #[tokio::test]
+    async fn download_completion_auto_archives_an_already_watched_file() {
+        let db = tempfile::tempdir().unwrap();
+        let storage = Storage::open(&db.path().join("test.db")).unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let library = tempfile::tempdir().unwrap();
+        let contents = b"watched off the partial".as_slice();
+        let hashed = ed2k_hash_bytes(contents);
+        storage
+            .record_watched(&watched(hashed.root, "ep3.mkv"))
+            .unwrap();
+        let (out_tx, mut out_rx) = mpsc::channel(64);
+        let (done_tx, _done_rx) = mpsc::channel(64);
+        let (stream_tx, _stream_rx) = mpsc::channel(64);
+        let mut actor = Actor::new(
+            FileConfig {
+                storage,
+                media_roots: vec![library.path().to_path_buf()],
+                retention: CacheRetention::default(),
+                archive: ArchivePolicy {
+                    subdirectory: true,
+                    auto_on_watched: true,
+                },
+                cache_dir: cache_dir.path().to_path_buf(),
+                clock: test_clock(),
+                download: DownloadConfig::default(),
+                upload_limit: None,
+                scan_interval: None,
+                scan_transfer_quiet: Duration::from_secs(2),
+                torrent: None,
+                nyaa: None,
+            },
+            out_tx,
+            done_tx,
+            stream_tx,
+        )
+        .unwrap();
+        let path = actor.download_path(hashed.root);
+        std::fs::write(&path, contents).unwrap();
+
+        actor
+            .on_download_complete(hashed.root, path.clone(), hashed.blocks.clone(), true)
+            .await;
+
+        let dest = library.path().join("Frieren/ep3.mkv");
+        let mut archived = None;
+        while let Ok(output) = out_rx.try_recv() {
+            if let FileOutput::Archived { file, result } = output {
+                assert_eq!(file, hashed.root);
+                archived = Some(result);
+            }
+        }
+        assert_eq!(
+            archived.expect("completion archived the file").unwrap(),
+            dest
+        );
+        assert!(dest.is_file());
+        assert!(!path.exists());
+        assert_eq!(actor.local_files.get(&hashed.root), Some(&dest));
+    }
+
+    /// A watch record for a file that is not cache-only (a library file,
+    /// or one already archived) is not an archive candidate: no
+    /// "Archive failed" noise.
+    #[tokio::test]
+    async fn auto_archive_skips_files_not_in_the_cache() {
+        let library = tempfile::tempdir().unwrap();
+        let storage = Storage::open_in_memory().unwrap();
+        let mut rig = spawn_rig(
+            storage,
+            vec![library.path().to_path_buf()],
+            CacheRetention::default(),
+        );
+        rig.commands
+            .send(FileCommand::SetArchivePolicy(ArchivePolicy {
+                subdirectory: true,
+                auto_on_watched: true,
+            }))
+            .await
+            .unwrap();
+        rig.commands
+            .send(FileCommand::RecordWatched(watched(hash(9), "ep1.mkv")))
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::WatchRecorded => {}
+            other => panic!("unexpected output: {other:?}"),
+        }
+        rig.commands
+            .send(FileCommand::RecordWatched(watched(hash(8), "ep2.mkv")))
+            .await
+            .unwrap();
+        match next_output(&mut rig).await {
+            FileOutput::WatchRecorded => {}
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn series_known_consults_watch_history() {
         let storage = Storage::open_in_memory().unwrap();
@@ -6627,7 +7003,6 @@ mod tests {
                 file: hashed.root,
                 series_name: Some("Frieren".into()),
                 filename: "ep1.mkv".into(),
-                subdirectory: true,
             })
             .await
             .unwrap();
@@ -6650,7 +7025,6 @@ mod tests {
                 file: hash(7),
                 series_name: None,
                 filename: "nope.mkv".into(),
-                subdirectory: true,
             })
             .await
             .unwrap();
@@ -6685,11 +7059,17 @@ mod tests {
             CacheRetention::default(),
         );
         rig.commands
+            .send(FileCommand::SetArchivePolicy(ArchivePolicy {
+                subdirectory: false,
+                auto_on_watched: false,
+            }))
+            .await
+            .unwrap();
+        rig.commands
             .send(FileCommand::Archive {
                 file: hashed.root,
                 series_name: Some("Frieren".into()),
                 filename: "ep2.mkv".into(),
-                subdirectory: false,
             })
             .await
             .unwrap();
@@ -6748,7 +7128,6 @@ mod tests {
                 file: hashed.root,
                 series_name: Some("Frieren".into()),
                 filename: "ep1.mkv".into(),
-                subdirectory: true,
             })
             .await
             .unwrap();
@@ -8092,6 +8471,7 @@ mod tests {
                 storage,
                 media_roots: roots,
                 retention: CacheRetention::AfterWatch,
+                archive: ArchivePolicy::default(),
                 cache_dir: cache_dir.path().to_path_buf(),
                 clock,
                 download: DownloadConfig::default(),

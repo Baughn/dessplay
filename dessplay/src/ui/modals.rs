@@ -995,6 +995,7 @@ enum SettingId {
     CacheRetention,
     AutoDownload,
     ArchiveSubdirectory,
+    AutoArchive,
     TorrentEnabled,
     UploadLimit,
     IrcEnabled,
@@ -1243,6 +1244,11 @@ impl SettingsForm {
                 self.settings.archive_subdirectory,
             ),
             FormRow::toggle(
+                SettingId::AutoArchive,
+                "Auto-archive watched",
+                self.settings.auto_archive,
+            ),
+            FormRow::toggle(
                 SettingId::TorrentEnabled,
                 "BitTorrent downloads",
                 self.settings.torrent_enabled,
@@ -1384,6 +1390,9 @@ impl FormModel for SettingsForm {
             }
             (SettingId::ArchiveSubdirectory, FormEdit::SetBool(value)) => {
                 self.settings.archive_subdirectory = value;
+            }
+            (SettingId::AutoArchive, FormEdit::SetBool(value)) => {
+                self.settings.auto_archive = value;
             }
             (SettingId::TorrentEnabled, FormEdit::SetBool(value)) => {
                 self.settings.torrent_enabled = value;
@@ -3094,6 +3103,23 @@ mod tests {
             panic!("expected settings save");
         };
         assert!(!settings.archive_subdirectory);
+    }
+
+    #[test]
+    fn auto_archive_toggle_defaults_off_and_is_saved() {
+        let mut modal = saveable_settings();
+        modal.switch_category(true);
+        modal.switch_category(true);
+        assert!(modal.form.select_row(&SettingId::AutoArchive));
+        assert!(!modal.form.model.settings.auto_archive);
+        modal.on(&enter());
+        assert!(modal.form.model.settings.auto_archive);
+        let Some(Msg::SettingsSaved(settings, _)) =
+            modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))
+        else {
+            panic!("expected settings save");
+        };
+        assert!(settings.auto_archive);
     }
 
     #[test]

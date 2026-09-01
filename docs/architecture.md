@@ -461,14 +461,17 @@ resolve or an eviction pass (the bridge loop's liveness rule again).
   return instantly; misses stream progress for the overlay)
 - `SetManualMapping { file, path, series }` -- persist a user-picked file
   (and the series' last-used directory) and resolve it Verified
-- `RecordWatched(record)` -- personal watch history (the 85% rule)
+- `RecordWatched(record)` -- personal watch history (the 85% rule); with
+  the auto-archive policy on, also archives the file if it is cache-only
 - `CheckSeriesKnown { file, series, key }` -- is the series in watch
   history? (drives the missing-file branch)
 - `RenderPlaceholder { file, lines }` -- render the not-watching PNG
-- `Archive { file, series_name, filename, subdirectory }` -- move a cached
-  download to `<download root>/<series>/<filename>` or directly to
-  `<download root>/<filename>` according to the saved archive policy carried
-  with the command
+- `Archive { file, series_name, filename }` -- move a cached download to
+  `<download root>/<series>/<filename>` or directly to
+  `<download root>/<filename>` according to the actor's archive policy
+- `SetArchivePolicy(policy)` -- subdirectory layout and the auto-on-watched
+  trigger (settings save); the same policy drives the manual `A` and the
+  automatic archive, and a completed download of an already-watched file
 - `RunEviction { protected, group_watched }` -- eviction pass (startup and
   EOF-advance; never evicts now-playing/queued/protected)
 - `SetMediaRoots` / `SetRetention` -- settings changes

@@ -86,7 +86,11 @@ working copy atomically. Tabs containing a missing required value carry a
   Cache retention accepts `0` (delete watched downloads at session end) through
   `infinite`; auto-download defaults on. **Archive subdirectory** defaults
   on: `A` moves a cached file under a sanitized series-name subdirectory; when
-  off it moves the file directly into the download root. BitTorrent defaults
+  off it moves the file directly into the download root. **Auto-archive
+  watched** defaults off: when on, a cached file is archived the moment it
+  counts as personally watched (see [Archive](#download-cache-and-retention)),
+  so nothing the user actually sat through is left to retention. Both archive
+  settings apply live. BitTorrent defaults
   off; **disabling applies immediately** (seeding torrents are removed and
   pending imports cancelled — the mid-session escape hatch for a
   saturated uplink, see [BitTorrent Downloads](#bittorrent-downloads)), while
@@ -2112,6 +2116,32 @@ level: AniDB models each season as its own anime (a franchise member), so a
 single series name is already one season's folder. Both the series-name and
 filename components are sanitized.
 
+**Auto-archive** (the **Auto-archive watched** setting, default off) makes
+the personal watch record the archive trigger: the moment a cached file
+crosses the 85% rule (see [Watch Tracking](#watch-tracking)) it is archived
+exactly as `A` would, with the same series-name/filename destination. The
+symmetric case is covered too — a file watched off a still-downloading
+partial is archived when its download completes, since it only becomes a
+cached download then. Only cache-only files qualify; a library file or an
+already-archived one is silently skipped, and the group's watched flag (the
+`w` key, EOF-advance) is *not* a trigger — that is the group's history, not
+this user's viewing. Because the record fires at 85%, auto-archive always
+precedes the EOF-advance eviction pass, so `cache_retention: 0` and
+auto-archive compose: watched files are moved, never deleted. The archive
+policy — subdirectory layout and the auto trigger — is owned by the file
+actor and pushed on settings save, so the manual and automatic paths cannot
+disagree about the destination.
+
+An archive moves a file the player may have open. A same-filesystem rename
+completes inline and the open handle follows; a cross-device move copies in
+a background task (a multi-gigabyte copy must not stall serving mid-session)
+with the cache copy left servable until the copy lands, then re-keys the
+bookkeeping and deletes the source. The eviction pass skips a file whose
+copy is in flight. The session follows the move in its own bookkeeping —
+resolution and loaded path — **without reloading** the player: a reload at
+85% would be a visible hiccup, and a stale resolution would send a rewatch
+to the vanished cache path.
+
 Cache-only files (those with a download-cache row, i.e. not yet in a media
 root) are flagged in the playlist pane with a dim **`temp`** marker in its
 own table column (reserved only while some row is cache-only; the playlist
@@ -2495,6 +2525,8 @@ eviction):
   - **Known series detection**: a series is "known" if you have previously
     watched any file from it. This affects missing file behavior -- see
     [File Matching](#file-matching)
+  - **Auto-archive**: with the setting on, the record moves a cached file
+    into the library -- see [Archive](#download-cache-and-retention)
 
 **Group** (synced state):
 - The server sets the playlist **watched flag** at EOF, and auto-advances the
@@ -2783,7 +2815,7 @@ crashes should be rare enough not to matter, and an edit that *caused* a
 crash should not be replayed into the next session.
 
 **Settings** (username, server, password, media roots, player choice, cache
-retention, archive subdirectory policy, upload limit, subtitle mode, subtitle speaker names, subtitle
+retention, archive subdirectory policy, auto-archive, upload limit, subtitle mode, subtitle speaker names, subtitle
 speaker colors, the limited-terminal speaker-color overflow policy, the
 commentary-marquee display mode, auto-download, BitTorrent
 downloads, IRC bridge settings -- enabled, server, TLS, channel -- and the
@@ -2820,7 +2852,7 @@ re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, marquee_mode, auto_download, archive_subdirectory, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel, anthropic_token, commentary_interval) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, marquee_mode, auto_download, archive_subdirectory, auto_archive, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel, anthropic_token, commentary_interval) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned; row-less hash-named files >1 week old swept) |

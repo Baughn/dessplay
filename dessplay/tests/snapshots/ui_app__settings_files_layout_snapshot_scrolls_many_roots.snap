@@ -1,6 +1,6 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 426
+assertion_line: 489
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -9,21 +9,21 @@ expression: screen
 │                                                ││                                                │
 │              ┌Settings — Files & transfers────────────────────────────────────────┐              │
 │              │[Account] [Playback] [Files] [IRC] [AI]                             │              │
-│              │Media root              …ng-library-root-name-that-needs-clipping/10│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/11│              │
-│              │Media root              …ng-library-root-name-that-needs-clipping/12│──────────────┘
-│              │Media root              …ng-library-root-name-that-needs-clipping/13│──────────────┐
-│              │Media root              …ng-library-root-name-that-needs-clipping/14│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/12│              │
+│              │Media root              …ng-library-root-name-that-needs-clipping/13│──────────────┘
+│              │Media root              …ng-library-root-name-that-needs-clipping/14│──────────────┐
 │              │Media root              …ng-library-root-name-that-needs-clipping/15│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/16│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/17│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/18│              │
 │              │Media root              …ng-library-root-name-that-needs-clipping/19│              │
-│              │[Add media root]                                                    │──────────────┘
-│              │                                                                    │──────────────┐
-│              │Cache retention         7 days                                      │              │
+│              │[Add media root]                                                    │              │
+│              │                                                                    │──────────────┘
+│              │Cache retention         7 days                                      │──────────────┐
 │              │Auto-download           yes                                         │              │
 │              │Archive subdirectory    yes                                         │              │
+│              │Auto-archive watched    no                                          │              │
 └──────────────│BitTorrent downloads    no          off: immediate · on: next launch│              │
 ┌──────────────│Upload limit            unlimited                        next launch│              │
 │say something…│[Save]                                                              │              │

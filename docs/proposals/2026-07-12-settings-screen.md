@@ -154,6 +154,7 @@ annotation and make it a normal `next restart` control.
 - Cache retention
 - Auto-download
 - Archive subdirectory
+- Auto-archive watched (default off; added 2026-09-01)
 - BitTorrent downloads (`next restart`)
 - Upload limit (`next restart`)
 

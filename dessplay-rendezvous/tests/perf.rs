@@ -151,6 +151,7 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
             storage: Storage::open_in_memory().expect("in-memory storage"),
             media_roots: vec![media_root.clone()],
             retention: dessplay::config::CacheRetention::default(),
+            archive: dessplay::actors::file::ArchivePolicy::default(),
             cache_dir,
             clock: sim_clock(0),
             download: dessplay::download::DownloadConfig::default(),

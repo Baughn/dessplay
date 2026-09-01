@@ -2162,6 +2162,23 @@ impl PlayerWiring {
         out
     }
 
+    /// `file` was archived: the verified copy now lives at `path`. Re-key
+    /// the resolution — and the loaded record, if the player has this
+    /// file open — *without* a reload: the player's open handle follows
+    /// the moved file, and auto-archive fires at 85% of playback, where
+    /// a reload would be a visible hiccup. Without the loaded re-key the
+    /// next snapshot's path comparison (`on_state`) would reload; without
+    /// the resolution re-key a rewatch would load the vanished cache path.
+    pub fn on_archived(&mut self, file: Ed2kHash, path: PathBuf) {
+        self.resolved
+            .insert(file, Resolution::Verified(path.clone()));
+        if let Some(loaded) = self.loaded.as_mut()
+            && loaded.file == file
+        {
+            loaded.path = path;
+        }
+    }
+
     /// An in-flight peer download of `file` became playable (the 20%
     /// window ahead of our playback anchor is verified): load the partial
     /// file into the player if it is the now-playing file and nothing is
@@ -2815,23 +2832,22 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
             .await;
     }
 
-    /// Archive a cached file into the library under the download root.
-    pub async fn archive(
-        &self,
-        file: Ed2kHash,
-        series_name: Option<String>,
-        filename: String,
-        subdirectory: bool,
-    ) {
+    /// Archive a cached file into the library under the download root
+    /// (the file actor applies the archive policy).
+    pub async fn archive(&self, file: Ed2kHash, series_name: Option<String>, filename: String) {
         let _ = self
             .file
             .send(FileCommand::Archive {
                 file,
                 series_name,
                 filename,
-                subdirectory,
             })
             .await;
+    }
+
+    /// Tell the file actor the archive policy changed (settings save).
+    pub async fn set_archive_policy(&self, policy: crate::actors::file::ArchivePolicy) {
+        let _ = self.file.send(FileCommand::SetArchivePolicy(policy)).await;
     }
 
     /// How many playlist-add hashes are still running (logged at quit —
@@ -3350,6 +3366,9 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 // Either way, tell the user via a local chat notice; on
                 // success the bridge also refreshes the snapshot so the
                 // "temporary" marker clears.
+                if let Ok(path) = &result {
+                    self.wiring.on_archived(file, path.clone());
+                }
                 FileEffect::Archived {
                     timestamp: (self.clock)(),
                     text: archive_notice(view, file, &result),
@@ -4247,6 +4266,45 @@ mod tests {
             peer("f"),
         ];
         assert!(narrate_diff(&view, &before, &view, &after).is_empty());
+    }
+
+    /// An archive (manual or automatic) moves the now-playing file while
+    /// the player has it open. The wiring must follow the move in its
+    /// bookkeeping — resolution *and* loaded path — without reloading:
+    /// auto-archive fires at 85% of playback, where a reload is a
+    /// visible hiccup, and a stale resolution would send a rewatch to
+    /// the vanished cache path.
+    #[test]
+    fn archived_now_playing_re_keys_bookkeeping_without_reload() {
+        let view = playing_state().view();
+        let peers = [peer("kim")];
+        let mut wiring = PlayerWiring::new(me());
+        let out = wiring.on_resolved(
+            hash(1),
+            Resolution::Verified("/cache/files/aa".into()),
+            &view,
+            &peers,
+        );
+        assert!(
+            player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
+            "the verified copy loads: {out:?}"
+        );
+
+        wiring.on_archived(hash(1), "/media/Frieren/ep1.mkv".into());
+        let out = wiring.on_state(&view, &peers);
+        assert!(
+            !player_cmds(&out)
+                .iter()
+                .any(|cmd| matches!(cmd, PlayerCommand::Load { .. })),
+            "an archive must not reload the playing file: {out:?}"
+        );
+        assert_eq!(
+            wiring.resolved.get(&hash(1)),
+            Some(&Resolution::Verified("/media/Frieren/ep1.mkv".into())),
+            "a rewatch must load the library copy"
+        );
     }
 
     #[test]

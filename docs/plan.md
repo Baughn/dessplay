@@ -1777,3 +1777,25 @@ titles in the List.
 ### Milestone
 "GochiUsa" instead of "Gochuumon wa Usagi Desu ka??", and Nero's names
 entered in two keystrokes.
+
+---
+
+## Phase 34: Auto-Archive Watched Downloads
+
+**Status: complete (2026-09-01).**
+
+The Files & transfers tab has a persisted **Auto-archive watched** toggle,
+default off. When on, the personal watch record (the 85% rule) archives a
+cache-only file exactly as `A` would; a file watched off a partial is
+archived when its download completes. The archive policy (subdirectory
+layout + auto trigger) moved into the file actor as `ArchivePolicy`, pushed
+on settings save — the `A` action no longer carries the subdirectory flag,
+so the manual and automatic paths share one destination rule. Cross-device
+archive copies now run off the actor thread (the eviction pass skips a file
+mid-copy), and the session re-keys its resolution and loaded path on
+`Archived` without reloading the player.
+
+Coverage: the default and persistence round trip, the Files row toggle/save,
+the watch-record trigger (on, off, and a non-cached file), the
+download-completion trigger, and the no-reload re-key at the wiring
+boundary.

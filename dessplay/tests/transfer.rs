@@ -52,6 +52,7 @@ fn spawn_actor(name: &str, media_files: &[(&str, &[u8])]) -> Actor {
             storage: Storage::open_in_memory().unwrap(),
             media_roots: vec![media.path().to_path_buf()],
             retention: CacheRetention::default(),
+            archive: dessplay::actors::file::ArchivePolicy::default(),
             cache_dir: cache.path().to_path_buf(),
             clock: clock(),
             download: DownloadConfig::default(),

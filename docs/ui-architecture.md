@@ -554,8 +554,9 @@ Modal types:
   no application cap. All other lifecycle hints reflect the current
   session-loop behavior. Header, category notes, and Save stay fixed while
   large media-root lists scroll. Files includes the default-on **Archive
-  subdirectory** toggle; the UI carries its current value in each archive
-  action so the file actor receives a complete destination policy.
+  subdirectory** and default-off **Auto-archive watched** toggles; both
+  reach the file actor as its archive policy on save, so an archive
+  action carries only the file, series name and filename.
 - **EpisodeBrowser**: Browse franchise seasons/episodes. Row structure
   is built at open time, but the volatile per-copy state — watched
   marks, holder lists, the first-unwatched `<` marker, the opening

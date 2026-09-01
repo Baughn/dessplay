@@ -497,6 +497,11 @@ pub struct Settings {
     /// the download root. When false, archive directly into the root.
     /// Default true, preserving the original archive layout.
     pub archive_subdirectory: bool,
+    /// Archive a cached download automatically once it is personally
+    /// watched (the 85% rule), instead of waiting for an explicit `A`.
+    /// Default false: archiving stays the deliberate "keep this in the
+    /// library" decision (design.md, Archive).
+    pub auto_archive: bool,
     /// Enable the Playlist pane's explicit Nyaa browse import
     /// (design.md, BitTorrent Downloads). When off at startup the
     /// torrent engine is never started. **Disabling applies
@@ -545,6 +550,7 @@ impl Default for Settings {
             file_browser_sort: BrowserSort::default(),
             auto_download: true,
             archive_subdirectory: true,
+            auto_archive: false,
             torrent_enabled: false,
             irc_enabled: true,
             irc_server: "irc.rizon.net".into(),
@@ -748,6 +754,11 @@ impl Settings {
                 .map(|value| parse_bool("archive_subdirectory", &value))
                 .transpose()?
                 .unwrap_or(defaults.archive_subdirectory),
+            auto_archive: storage
+                .setting("auto_archive")?
+                .map(|value| parse_bool("auto_archive", &value))
+                .transpose()?
+                .unwrap_or(defaults.auto_archive),
             torrent_enabled: storage
                 .setting("torrent_enabled")?
                 .map(|value| parse_bool("torrent_enabled", &value))
@@ -839,6 +850,10 @@ impl Settings {
             }),
         )?;
         storage.set_setting(
+            "auto_archive",
+            Some(if self.auto_archive { "true" } else { "false" }),
+        )?;
+        storage.set_setting(
             "torrent_enabled",
             Some(if self.torrent_enabled {
                 "true"
@@ -877,6 +892,7 @@ mod tests {
         assert!(settings.needs_setup());
         assert_eq!(settings.server, "dessplay.brage.info");
         assert!(settings.archive_subdirectory);
+        assert!(!settings.auto_archive);
     }
 
     #[test]
@@ -900,6 +916,7 @@ mod tests {
             file_browser_sort: BrowserSort::Newest,
             auto_download: false,
             archive_subdirectory: false,
+            auto_archive: true,
             torrent_enabled: true,
             irc_enabled: false,
             irc_server: "irc.example.org".into(),

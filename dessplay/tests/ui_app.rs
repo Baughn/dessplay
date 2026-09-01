@@ -1337,7 +1337,6 @@ fn archive_action_emits_archive_with_series_and_filename() {
             file: hash(1),
             series_name: Some("Frieren".into()),
             filename: "ep1.mkv".into(),
-            subdirectory: true,
         }]
     );
 }

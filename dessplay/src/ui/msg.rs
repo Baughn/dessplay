@@ -356,8 +356,6 @@ pub enum UserAction {
         series_name: Option<String>,
         /// Original filename.
         filename: String,
-        /// Whether to place the file in a series-name subdirectory.
-        subdirectory: bool,
     },
     /// Clear the local replicated sync state and restart the client
     /// (`/resync`, or the Settings → Account action row) — the manual

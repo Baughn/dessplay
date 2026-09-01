@@ -176,6 +176,7 @@ fn settings_json(s: &Settings) -> Value {
         "series_sort": format!("{:?}", s.series_sort),
         "auto_download": s.auto_download,
         "archive_subdirectory": s.archive_subdirectory,
+        "auto_archive": s.auto_archive,
         "torrent_enabled": s.torrent_enabled,
         "irc_enabled": s.irc_enabled,
         "irc_server": s.irc_server,

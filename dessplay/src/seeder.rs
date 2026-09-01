@@ -305,6 +305,9 @@ pub fn seeder_file_config(
         storage,
         media_roots,
         retention: crate::config::CacheRetention::Infinite,
+        // A seeder records no watches, so auto-archive never fires;
+        // "should this be archived?" stays a human decision (design.md).
+        archive: crate::actors::file::ArchivePolicy::default(),
         cache_dir,
         clock,
         download,

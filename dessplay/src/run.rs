@@ -170,6 +170,14 @@ struct RuntimeMediaRoots {
     persistable: Vec<PathBuf>,
 }
 
+/// The file actor's archive policy from the persisted settings.
+fn archive_policy(settings: &crate::config::Settings) -> crate::actors::file::ArchivePolicy {
+    crate::actors::file::ArchivePolicy {
+        subdirectory: settings.archive_subdirectory,
+        auto_on_watched: settings.auto_archive,
+    }
+}
+
 /// The peer-download tuning shared by every mode that downloads.
 ///
 /// The request window is **not a throttle** since protocol v9: chunk
@@ -929,6 +937,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             storage: file_storage,
             media_roots: file_media_roots,
             retention: settings.cache_retention,
+            archive: archive_policy(&settings),
             cache_dir,
             clock: system_clock(),
             download: download_config(&args),
@@ -1453,11 +1462,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             file,
                             series_name,
                             filename,
-                            subdirectory,
                         }) => {
-                            self.shell
-                                .archive(file, series_name, filename, subdirectory)
-                                .await;
+                            self.shell.archive(file, series_name, filename).await;
                         }
                         Some(UserAction::ResetSyncedState) => {
                             // `/resync` or the Settings action row:
@@ -1551,6 +1557,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 self.media_roots = roots;
                             }
                             self.shell.set_retention(saved.cache_retention).await;
+                            self.shell.set_archive_policy(archive_policy(&saved)).await;
                             self.shell.set_auto_download(saved.auto_download);
                             // The BitTorrent toggle applies live in the
                             // disable direction (design.md: removes active
