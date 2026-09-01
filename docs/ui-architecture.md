@@ -274,7 +274,9 @@ snapshot data to component props:
   is tried in the dispatcher's global `Tab` handler before pane-cycling --
   `ChatPane::try_tab_complete` returns whether it consumed the key (it does
   only when the trailing word is a prefix of some username), so `Tab` still
-  cycles panes whenever completion doesn't apply.
+  cycles panes whenever completion doesn't apply. `Shift-Tab` (crossterm's
+  `BackTab`, with or without the SHIFT modifier) cycles panes in the
+  reverse order and never attempts completion.
 
   The pane also owns the **spoiler state** (design.md, Chat): a
   per-client `SpoilerKey -> {animating, armed, revealed}` map keyed by
@@ -429,7 +431,7 @@ in play.
 
 Each pane (and modal) exposes `keybindings()`; the dispatcher rebuilds
 the `KeyBar` items from the focused component (or topmost modal) plus
-global bindings (Tab, Ctrl-C) after every event. When focus changes or a
+global bindings (Tab / Shift-Tab, Ctrl-C) after every event. When focus changes or a
 modal opens, the bar updates automatically.
 
 ---

@@ -314,12 +314,23 @@ impl PaneRects {
 }
 
 impl Focus {
+    /// Clockwise: Chat -> Series -> Users -> Playlist -> Chat.
     fn next(self) -> Self {
         match self {
             Focus::Chat => Focus::Series,
             Focus::Series => Focus::Users,
             Focus::Users => Focus::Playlist,
             Focus::Playlist => Focus::Chat,
+        }
+    }
+
+    /// The inverse of `next` (Shift-Tab).
+    fn prev(self) -> Self {
+        match self {
+            Focus::Chat => Focus::Playlist,
+            Focus::Series => Focus::Chat,
+            Focus::Users => Focus::Series,
+            Focus::Playlist => Focus::Users,
         }
     }
 }
@@ -1458,6 +1469,22 @@ impl Ui {
         }
 
         if self.modals.is_empty() {
+            // Shift-Tab cycles panes backwards. Crossterm reports it as
+            // `BackTab`, normally with the SHIFT modifier attached but on
+            // some terminals bare; either way it is the same key, and
+            // (unlike Tab) it never tries username completion.
+            if let Event::Keyboard(KeyEvent {
+                code: Key::BackTab,
+                modifiers,
+            }) = &ev
+                && (*modifiers == KeyModifiers::NONE || *modifiers == KeyModifiers::SHIFT)
+            {
+                self.focus = self.focus.prev();
+                tracing::debug!(focus = ?self.focus, "focus changed (reverse)");
+                self.sync_focus_attr();
+                self.refresh_keybar();
+                return Vec::new();
+            }
             match super::components::plain(&ev) {
                 Some(Key::Tab) => {
                     // In the chat pane, Tab first tries to complete a username

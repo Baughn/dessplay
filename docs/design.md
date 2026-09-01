@@ -1758,6 +1758,7 @@ the last copy. A motionless click never touches the clipboard.
 | `Ctrl-R` | Any | Toggle your own ready/unready (clears a manual pause; flips the now-playing series from NotWatching back to Maybe -- does **not** commit to Watching) |
 | `Tab` | Any | Cycle focus: Chat -> Series -> Users -> Playlist -> Chat |
 | `Tab` | Chat | Complete a username if the end of the input is a prefix of one (see below); otherwise cycle focus |
+| `Shift-Tab` | Any | Cycle focus in reverse: Chat -> Playlist -> Users -> Series -> Chat (never username-completes) |
 | `F2` | Any | Cycle subtitle mode: Off -> Intermixed -> Separate pane (persisted) |
 | `F3` | Any | Open the settings screen (also `/settings`) |
 | `Enter` | Chat | Send message (or execute `/command`) |

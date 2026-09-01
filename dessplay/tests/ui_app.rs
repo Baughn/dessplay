@@ -695,6 +695,53 @@ fn tab_cycles_focus_and_keybar_follows() {
     assert!(render(&mut ui, 100, 30).contains("Send"));
 }
 
+/// Shift-Tab as crossterm reports it: `BackTab` with the SHIFT modifier
+/// set (some terminals send it with no modifier; both are accepted).
+fn back_tab() -> Event<NoUserEvent> {
+    Event::Keyboard(KeyEvent {
+        code: Key::BackTab,
+        modifiers: KeyModifiers::SHIFT,
+    })
+}
+
+#[test]
+fn shift_tab_cycles_focus_in_reverse() {
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    assert!(render(&mut ui, 100, 30).contains("Send"));
+
+    // Chat -> Playlist (wraps backwards).
+    ui.handle(back_tab());
+    let playlist_bar = render(&mut ui, 100, 30);
+    assert!(playlist_bar.contains("Remove"), "{playlist_bar}");
+
+    // Playlist -> Users.
+    ui.handle(back_tab());
+    let users_bar = render(&mut ui, 100, 30);
+    assert!(users_bar.contains("Mark away"), "{users_bar}");
+
+    // Users -> Series -> Chat.
+    ui.handle(back_tab());
+    ui.handle(back_tab());
+    assert!(render(&mut ui, 100, 30).contains("Send"));
+
+    // Modifier-less BackTab is the same key.
+    ui.handle(key(Key::BackTab));
+    assert!(render(&mut ui, 100, 30).contains("Remove"));
+
+    // Tab and Shift-Tab are inverses from every pane (both orders).
+    for _ in 0..4 {
+        let before = render(&mut ui, 100, 30);
+        ui.handle(key(Key::Tab));
+        ui.handle(back_tab());
+        assert_eq!(render(&mut ui, 100, 30), before);
+        ui.handle(back_tab());
+        ui.handle(key(Key::Tab));
+        assert_eq!(render(&mut ui, 100, 30), before);
+        ui.handle(key(Key::Tab));
+    }
+}
+
 #[test]
 fn playlist_actions() {
     let mut state = CrdtState::new();
