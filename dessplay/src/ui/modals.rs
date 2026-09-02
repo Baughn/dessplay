@@ -2667,8 +2667,15 @@ impl ChangelogModal {
             width: modal.width.saturating_sub(4),
             height: modal.height.saturating_sub(2),
         };
-        let rows = self.rows(inner.width as usize);
-        let visible = inner.height as usize;
+        // The bottom row is the [ OK ] button — the modal's one control,
+        // so it renders highlighted (the Form save-row convention): the
+        // dismiss affordance must be visible, not guessed.
+        let body = Rect {
+            height: inner.height.saturating_sub(2),
+            ..inner
+        };
+        let rows = self.rows(body.width as usize);
+        let visible = body.height as usize;
         // Clamp so the view can never scroll past the last row.
         self.scroll = self.scroll.min(rows.len().saturating_sub(visible));
         let end = (self.scroll + visible).min(rows.len());
@@ -2677,7 +2684,20 @@ impl ChangelogModal {
             .cloned()
             .map(ListItem::new)
             .collect();
-        frame.render_widget(tuirealm::ratatui::widgets::List::new(items), inner);
+        frame.render_widget(tuirealm::ratatui::widgets::List::new(items), body);
+        if inner.height >= 2 {
+            let button_area = Rect {
+                y: inner.y + inner.height - 1,
+                height: 1,
+                ..inner
+            };
+            let button = tuirealm::ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+                "[ OK ]",
+                theme::highlight_style(),
+            )))
+            .centered();
+            frame.render_widget(button, button_area);
+        }
     }
 }
 
@@ -2699,13 +2719,22 @@ impl AppComponent<Msg, NoUserEvent> for ChangelogModal {
     }
 }
 
-/// Changelog bindings: dismiss, nothing else — the startup push opens
-/// under the user's hands, so a stray key must not answer it.
-static CHANGELOG_KEYMAP: Keymap<ChangelogModal, Msg> = Keymap(&[Binding {
-    pattern: KeyPattern::Plain(Key::Esc),
-    bar: Some(("Esc", "Close")),
-    action: ChangelogModal::act_close,
-}]);
+/// Changelog bindings: dismiss (Enter is the [ OK ] button, Esc the
+/// conventional close), nothing else — the startup push opens under the
+/// user's hands, so a stray key must not answer it. Both keys do the
+/// same harmless thing, so an accidental Enter costs nothing.
+static CHANGELOG_KEYMAP: Keymap<ChangelogModal, Msg> = Keymap(&[
+    Binding {
+        pattern: KeyPattern::Plain(Key::Enter),
+        bar: Some(("Enter", "OK")),
+        action: ChangelogModal::act_close,
+    },
+    Binding {
+        pattern: KeyPattern::Plain(Key::Esc),
+        bar: Some(("Esc", "Close")),
+        action: ChangelogModal::act_close,
+    },
+]);
 
 /// Fast path for the group's renaming culture (design.md, The List): a
 /// minimal single-field editor for a List entry's `nero_name`, opened
@@ -4470,12 +4499,15 @@ mod tests {
     }
 
     #[test]
-    fn changelog_esc_dismisses_with_the_marker() {
-        let mut modal = ChangelogModal::new(changelog_days(), changelog_marker(), true);
-        assert_eq!(
-            modal.on(&key(Key::Esc, KeyModifiers::NONE)),
-            Some(Msg::ChangelogDismissed(changelog_marker()))
-        );
+    fn changelog_esc_and_enter_dismiss_with_the_marker() {
+        // Enter is the visible [ OK ] button; Esc the conventional close.
+        for ev in [key(Key::Esc, KeyModifiers::NONE), enter()] {
+            let mut modal = ChangelogModal::new(changelog_days(), changelog_marker(), true);
+            assert_eq!(
+                modal.on(&ev),
+                Some(Msg::ChangelogDismissed(changelog_marker()))
+            );
+        }
     }
 
     #[test]
@@ -4484,8 +4516,8 @@ mod tests {
         // (a pane keybinding, half a chat message) must do nothing.
         let mut modal = ChangelogModal::new(changelog_days(), changelog_marker(), true);
         assert_eq!(modal.on(&char_key('w')), Some(Msg::None));
-        assert_eq!(modal.on(&enter()), Some(Msg::None));
         assert_eq!(modal.on(&char_key('q')), Some(Msg::None));
+        assert_eq!(modal.on(&tab()), Some(Msg::None));
     }
 
     #[test]

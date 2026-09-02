@@ -599,7 +599,8 @@ Modal types:
   thread's start — when unseen entries exist ("What's new", unseen days
   only), or opened whole via `/changelog`. Read-only: `↑`/`↓`/`PgUp`/
   `PgDn` scroll wrapped rows (the chat log's clamp-on-render idiom, so
-  over-scroll is safe), `Esc` dismisses and emits
+  over-scroll is safe), `Enter` (the rendered `[ OK ]` button row) or
+  `Esc` dismisses and emits
   `Msg::ChangelogDismissed(marker)` → `UserAction::ChangelogSeen`, which
   run.rs persists to the `changelog_seen` settings key. Every other key
   is swallowed — the startup push lands under the user's hands. The

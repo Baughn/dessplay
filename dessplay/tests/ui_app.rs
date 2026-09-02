@@ -2786,8 +2786,8 @@ fn changelog_days() -> Vec<dessplay::changelog::ChangelogDay> {
 }
 
 /// The startup "What's new" modal sits on top, swallows pane keys (it
-/// opens under the user's hands), and Esc dismisses it with the marker
-/// the opener supplied.
+/// opens under the user's hands), shows its [ OK ] button, and Esc
+/// dismisses it with the marker the opener supplied.
 #[test]
 fn whats_new_modal_swallows_keys_and_esc_persists_marker() {
     let days = changelog_days();
@@ -2800,10 +2800,11 @@ fn whats_new_modal_swallows_keys_and_esc_persists_marker() {
     assert!(screen.contains("What's new"), "modal missing:\n{screen}");
     assert!(screen.contains("a brand new changelog"), "{screen}");
     assert!(screen.contains("an old bug"), "{screen}");
+    // The dismiss affordance is visible, not guessed.
+    assert!(screen.contains("[ OK ]"), "OK button missing:\n{screen}");
 
     // Pane keys and typing must not leak through or answer the modal.
     assert_eq!(ui.handle(key(Key::Char('w'))), vec![]);
-    assert_eq!(ui.handle(key(Key::Enter)), vec![]);
     assert_eq!(ui.handle(key(Key::Tab)), vec![]);
 
     // Esc closes it and persists how far the user has read.
@@ -2815,8 +2816,9 @@ fn whats_new_modal_swallows_keys_and_esc_persists_marker() {
     assert!(!screen.contains("What's new"), "modal stuck:\n{screen}");
 }
 
-/// `/changelog` opens the full-history viewer any time; closing it
-/// re-persists the (identical) marker — one path, no special cases.
+/// `/changelog` opens the full-history viewer any time; Enter (the
+/// [ OK ] button) closes it and re-persists the (identical) marker —
+/// one path, no special cases.
 #[test]
 fn slash_changelog_opens_full_view() {
     let mut ui = ui();
@@ -2832,7 +2834,7 @@ fn slash_changelog_opens_full_view() {
 
     let marker = dessplay::changelog::latest_marker(dessplay::changelog::entries()).unwrap();
     assert_eq!(
-        ui.handle(key(Key::Esc)),
+        ui.handle(key(Key::Enter)),
         vec![UserAction::ChangelogSeen { marker }]
     );
 }

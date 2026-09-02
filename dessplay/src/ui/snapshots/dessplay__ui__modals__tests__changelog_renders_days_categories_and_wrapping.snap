@@ -14,6 +14,6 @@ expression: "changelog_render(&mut modal, 60, 18)"
          │ - plain entry without a category       │
          │                                        │
          │ 2026-09-01                             │
-         │ - Fixed: something small               │
          │                                        │
+         │                 [ OK ]                 │
          └────────────────────────────────────────┘

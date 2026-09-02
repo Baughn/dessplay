@@ -1007,9 +1007,11 @@ entry fails the suite rather than the user; at runtime a bad file
 degrades to an empty changelog.
 
 At startup, entries newer than the persisted **seen marker** open a
-**"What's new" modal** (scroll with `↑`/`↓`/`PgUp`/`PgDn`; `Esc`
-dismisses; every other key is swallowed — the modal opens under the
-user's hands). Dismissing persists the marker; quitting without
+**"What's new" modal** (scroll with `↑`/`↓`/`PgUp`/`PgDn`; `Enter` — the
+visible `[ OK ]` button on its bottom row — or `Esc` dismisses; every
+other key is swallowed — the modal opens under the user's hands, and
+both dismiss keys do the same harmless thing, so an accidental Enter
+costs nothing). Dismissing persists the marker; quitting without
 dismissing shows the same entries again next launch. `/changelog` opens
 the full history any time. The first run skips the modal (the user is in
 the settings screen, and the whole history is trivially "unseen") and
