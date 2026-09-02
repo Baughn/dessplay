@@ -74,6 +74,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         help: "open settings",
     },
     SlashCommand {
+        name: "/changelog",
+        args: "",
+        help: "show what's new (the full changelog)",
+    },
+    SlashCommand {
         name: "/resync",
         args: "",
         help: "clear local sync state and restart (re-adopts the server's)",

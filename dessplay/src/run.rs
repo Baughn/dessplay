@@ -815,12 +815,48 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     // unrelated F2 subtitle cycle) carries it back, so a one-off
     // `--media-root` can never be written to the DB. The runtime override
     // drives the file actor instead (see `file_media_roots` below).
-    let ui = Ui::with_setup(
+    let mut ui = Ui::with_setup(
         UserId::new(runtime_username.clone().unwrap_or_default()),
         settings.clone(),
         media_roots.persistable.clone(),
         needs_setup,
     );
+    // What's-new gate (design.md, Changelog): entries newer than the
+    // persisted `changelog_seen` marker open the changelog modal before
+    // the UI thread starts. First run skips it — the user is in the
+    // settings screen and the whole history is trivially "unseen" — and
+    // records everything seen instead, so the second launch starts clean.
+    // The marker key is read/written directly (never via the typed
+    // `Settings` round-trip, which an unrelated save would clobber).
+    {
+        let stored = setup_storage
+            .setting("changelog_seen")
+            .map_err(|e| format!("loading changelog marker: {e}"))?;
+        let marker = stored.as_deref().and_then(|raw| {
+            raw.parse::<crate::changelog::SeenMarker>()
+                .map_err(|e| tracing::warn!("stored changelog marker: {e}"))
+                .ok()
+        });
+        let days = crate::changelog::entries();
+        if needs_setup {
+            if let Some(latest) = crate::changelog::latest_marker(days) {
+                setup_storage
+                    .set_setting("changelog_seen", Some(&latest.to_string()))
+                    .map_err(|e| format!("saving changelog marker: {e}"))?;
+            }
+        } else {
+            let unseen = crate::changelog::unseen(days, marker);
+            if let Some(latest) = crate::changelog::latest_marker(days)
+                && !unseen.is_empty()
+            {
+                tracing::info!(
+                    days = unseen.len(),
+                    "unseen changelog entries; showing What's new"
+                );
+                ui.show_changelog(unseen, latest);
+            }
+        }
+    }
     let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
     let (action_tx, mut action_rx) = mpsc::channel::<UserAction>(64);
     let ui_thread = std::thread::spawn(move || run_ui_thread(ui, input_rx, action_tx));
@@ -1464,6 +1500,19 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             filename,
                         }) => {
                             self.shell.archive(file, series_name, filename).await;
+                        }
+                        Some(UserAction::ChangelogSeen { marker }) => {
+                            // The changelog modal closed: persist how far
+                            // the user has read. Written directly — the
+                            // key is deliberately not a `Settings` field,
+                            // so a whole-struct settings save can never
+                            // clobber it (design.md, Changelog).
+                            if let Err(e) = self
+                                .storage
+                                .set_setting("changelog_seen", Some(&marker.to_string()))
+                            {
+                                tracing::error!("saving changelog marker: {e}");
+                            }
                         }
                         Some(UserAction::ResetSyncedState) => {
                             // `/resync` or the Settings action row:

@@ -2563,6 +2563,150 @@ static OFFER_KEYMAP: Keymap<LocalCopyOfferModal, Msg> = Keymap(&[
     },
 ]);
 
+/// The changelog viewer (design.md, Changelog): pushed at startup with
+/// the unseen days ("What's new"), or opened whole via `/changelog`.
+/// Read-only — scroll and dismiss are the only verbs, and every other
+/// key is swallowed (the startup push lands under the user's hands).
+pub struct ChangelogModal {
+    days: Vec<crate::changelog::ChangelogDay>,
+    /// Persisted when the modal closes. Computed by the opener from the
+    /// **full** changelog — never derived from `days`, whose first day
+    /// may be the partially-unseen tail of a day already started.
+    marker: crate::changelog::SeenMarker,
+    /// Startup mode ("What's new") vs the full `/changelog` view.
+    whats_new: bool,
+    /// Wrapped rows scrolled off the top; clamped at render (the chat
+    /// log's idiom), so over-scrolling is safe.
+    scroll: usize,
+}
+
+impl ChangelogModal {
+    /// Open over `days` (newest first, never empty — openers guard).
+    pub fn new(
+        days: Vec<crate::changelog::ChangelogDay>,
+        marker: crate::changelog::SeenMarker,
+        whats_new: bool,
+    ) -> Self {
+        Self {
+            days,
+            marker,
+            whats_new,
+            scroll: 0,
+        }
+    }
+
+    /// Keys for the keybinding bar.
+    pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        let mut items = CHANGELOG_KEYMAP.bar();
+        items.insert(0, ("↑↓", "Scroll"));
+        items
+    }
+
+    fn act_close(&mut self) -> Option<Msg> {
+        Some(Msg::ChangelogDismissed(self.marker))
+    }
+
+    /// One wrapped display line per row: day headers bold, `- ` bullets
+    /// with a dim category prefix, continuations indented under the text.
+    fn rows(&self, width: usize) -> Vec<Line<'static>> {
+        let mut rows = Vec::new();
+        for (idx, day) in self.days.iter().enumerate() {
+            if idx > 0 {
+                rows.push(Line::default());
+            }
+            rows.push(Line::from(Span::styled(
+                day.date.format("%Y-%m-%d").to_string(),
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            for entry in &day.entries {
+                let prefix = entry
+                    .category
+                    .as_ref()
+                    .map(|category| format!("{category}: "))
+                    .unwrap_or_default();
+                let body_width = width.saturating_sub(2).max(1);
+                let chunks = super::components::wrap_body(
+                    &entry.text,
+                    body_width.saturating_sub(prefix.width()).max(1),
+                    body_width,
+                );
+                for (line_idx, (chunk, _)) in chunks.into_iter().enumerate() {
+                    rows.push(if line_idx == 0 {
+                        Line::from(vec![
+                            Span::raw("- "),
+                            Span::styled(prefix.clone(), theme::dim()),
+                            Span::raw(chunk),
+                        ])
+                    } else {
+                        Line::from(vec![Span::raw("  "), Span::raw(chunk)])
+                    });
+                }
+            }
+        }
+        rows
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
+        let modal = overlay(area, 70, 70);
+        frame.render_widget(Clear, modal);
+        let title = if self.whats_new {
+            "What's new"
+        } else {
+            "Changelog"
+        };
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_style(true))
+                .title(title),
+            modal,
+        );
+        let inner = Rect {
+            x: modal.x + 2,
+            y: modal.y + 1,
+            width: modal.width.saturating_sub(4),
+            height: modal.height.saturating_sub(2),
+        };
+        let rows = self.rows(inner.width as usize);
+        let visible = inner.height as usize;
+        // Clamp so the view can never scroll past the last row.
+        self.scroll = self.scroll.min(rows.len().saturating_sub(visible));
+        let end = (self.scroll + visible).min(rows.len());
+        let items: Vec<ListItem> = rows[self.scroll..end]
+            .iter()
+            .cloned()
+            .map(ListItem::new)
+            .collect();
+        frame.render_widget(tuirealm::ratatui::widgets::List::new(items), inner);
+    }
+}
+
+passive_modal!(ChangelogModal);
+
+impl AppComponent<Msg, NoUserEvent> for ChangelogModal {
+    fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        // Offset-based scroll, not a selection — `ListCursor` doesn't
+        // fit. Over-scroll clamps at render.
+        const PAGE: usize = 10;
+        match plain(ev) {
+            Some(Key::Up) => self.scroll = self.scroll.saturating_sub(1),
+            Some(Key::Down) => self.scroll = self.scroll.saturating_add(1),
+            Some(Key::PageUp) => self.scroll = self.scroll.saturating_sub(PAGE),
+            Some(Key::PageDown) => self.scroll = self.scroll.saturating_add(PAGE),
+            _ => return CHANGELOG_KEYMAP.dispatch(self, ev).or(Some(Msg::None)),
+        }
+        Some(Msg::None)
+    }
+}
+
+/// Changelog bindings: dismiss, nothing else — the startup push opens
+/// under the user's hands, so a stray key must not answer it.
+static CHANGELOG_KEYMAP: Keymap<ChangelogModal, Msg> = Keymap(&[Binding {
+    pattern: KeyPattern::Plain(Key::Esc),
+    bar: Some(("Esc", "Close")),
+    action: ChangelogModal::act_close,
+}]);
+
 /// Fast path for the group's renaming culture (design.md, The List): a
 /// minimal single-field editor for a List entry's `nero_name`, opened
 /// with `n` in the Series pane's List mode. Two keystrokes to a rename;
@@ -4288,5 +4432,77 @@ mod tests {
         assert_eq!(modal.on(&enter()), Some(Msg::None));
         assert!(modal.form.is_editing());
         assert_eq!(modal.form.model.settings.upload_limit, None);
+    }
+
+    // ---- Changelog ----------------------------------------------------
+
+    fn changelog_days() -> Vec<crate::changelog::ChangelogDay> {
+        crate::changelog::parse(
+            "## 2026-09-02\n\
+             - Added: a changelog, with entries long enough that this one \
+             has to wrap onto a continuation row in a narrow modal\n\
+             - plain entry without a category\n\
+             ## 2026-09-01\n\
+             - Fixed: something small\n",
+        )
+        .unwrap()
+    }
+
+    fn changelog_marker() -> crate::changelog::SeenMarker {
+        crate::changelog::latest_marker(&changelog_days()).unwrap()
+    }
+
+    fn changelog_render(modal: &mut ChangelogModal, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        buffer_to_string(
+            &terminal
+                .draw(|frame| modal.render(frame, frame.area()))
+                .unwrap()
+                .buffer
+                .clone(),
+        )
+    }
+
+    #[test]
+    fn changelog_renders_days_categories_and_wrapping() {
+        let mut modal = ChangelogModal::new(changelog_days(), changelog_marker(), true);
+        insta::assert_snapshot!(changelog_render(&mut modal, 60, 18));
+    }
+
+    #[test]
+    fn changelog_esc_dismisses_with_the_marker() {
+        let mut modal = ChangelogModal::new(changelog_days(), changelog_marker(), true);
+        assert_eq!(
+            modal.on(&key(Key::Esc, KeyModifiers::NONE)),
+            Some(Msg::ChangelogDismissed(changelog_marker()))
+        );
+    }
+
+    #[test]
+    fn changelog_swallows_stray_keys() {
+        // The startup push lands under the user's hands: a stray letter
+        // (a pane keybinding, half a chat message) must do nothing.
+        let mut modal = ChangelogModal::new(changelog_days(), changelog_marker(), true);
+        assert_eq!(modal.on(&char_key('w')), Some(Msg::None));
+        assert_eq!(modal.on(&enter()), Some(Msg::None));
+        assert_eq!(modal.on(&char_key('q')), Some(Msg::None));
+    }
+
+    #[test]
+    fn changelog_scroll_clamps_at_both_ends() {
+        let mut modal = ChangelogModal::new(changelog_days(), changelog_marker(), false);
+        // Over-scroll far past the end, then render: the clamp brings the
+        // offset back within the content.
+        for _ in 0..30 {
+            modal.on(&down());
+        }
+        let screen = changelog_render(&mut modal, 60, 18);
+        assert!(screen.contains("2026-09-01"), "clamped view:\n{screen}");
+        // And back up past the top: saturates at zero.
+        for _ in 0..40 {
+            modal.on(&key(Key::Up, KeyModifiers::NONE));
+        }
+        let screen = changelog_render(&mut modal, 60, 18);
+        assert!(screen.contains("2026-09-02"), "top view:\n{screen}");
     }
 }

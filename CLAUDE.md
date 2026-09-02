@@ -24,6 +24,18 @@ A `.env` file (gitignored) contains `DESSPLAY_PASSWORD` for the default rendezvo
 
 The rendezvous server and the primary seeder run on **tsugumi.local** as systemd services **`dessplay-rendezvous`** and **`dessplay-seeder`**. Their NixOS configuration lives in `~/nixos/machines/tsugumi`.
 
+# Changelog
+
+Every **user-visible** change (a new feature, a fix a user would notice, a
+changed default) adds an entry to `CHANGELOG.md` under today's date, in the
+same commit. Word it for the player experience, not the implementation
+("Added: Shift-Tab cycles panes in reverse", not "refactor focus ring").
+Internal refactors, test work, and docs need no entry. The format is
+validated by `changelog::tests::embedded_changelog_parses` — day headers
+`## YYYY-MM-DD` newest-first, `- Category: text` bullets, continuations
+indented two spaces. The client shows unseen entries at startup
+(design.md, Changelog), so this file is how users discover new features.
+
 # Revision Control
 
 This project uses **jujutsu** (`jj`) for revision control, not raw git. Use `jj` commands for commits, branches, and history operations.

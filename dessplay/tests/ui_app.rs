@@ -2775,3 +2775,64 @@ fn whole_line_copy_skips_day_separators() {
         vec![UserAction::CopyToClipboard(expected)]
     );
 }
+
+// ---- Changelog (design.md, Changelog) ----------------------------------
+
+fn changelog_days() -> Vec<dessplay::changelog::ChangelogDay> {
+    dessplay::changelog::parse(
+        "## 2026-09-02\n- Added: a brand new changelog\n## 2026-09-01\n- Fixed: an old bug\n",
+    )
+    .unwrap()
+}
+
+/// The startup "What's new" modal sits on top, swallows pane keys (it
+/// opens under the user's hands), and Esc dismisses it with the marker
+/// the opener supplied.
+#[test]
+fn whats_new_modal_swallows_keys_and_esc_persists_marker() {
+    let days = changelog_days();
+    let marker = dessplay::changelog::latest_marker(&days).unwrap();
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    ui.show_changelog(days, marker);
+
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("What's new"), "modal missing:\n{screen}");
+    assert!(screen.contains("a brand new changelog"), "{screen}");
+    assert!(screen.contains("an old bug"), "{screen}");
+
+    // Pane keys and typing must not leak through or answer the modal.
+    assert_eq!(ui.handle(key(Key::Char('w'))), vec![]);
+    assert_eq!(ui.handle(key(Key::Enter)), vec![]);
+    assert_eq!(ui.handle(key(Key::Tab)), vec![]);
+
+    // Esc closes it and persists how far the user has read.
+    assert_eq!(
+        ui.handle(key(Key::Esc)),
+        vec![UserAction::ChangelogSeen { marker }]
+    );
+    let screen = render(&mut ui, 100, 30);
+    assert!(!screen.contains("What's new"), "modal stuck:\n{screen}");
+}
+
+/// `/changelog` opens the full-history viewer any time; closing it
+/// re-persists the (identical) marker — one path, no special cases.
+#[test]
+fn slash_changelog_opens_full_view() {
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    assert_eq!(type_str(&mut ui, "/changelog"), vec![]);
+    assert_eq!(ui.handle(key(Key::Enter)), vec![]);
+
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Changelog"), "modal missing:\n{screen}");
+    // The embedded changelog's newest day is on screen.
+    let newest = dessplay::changelog::entries()[0].date.to_string();
+    assert!(screen.contains(&newest), "{screen}");
+
+    let marker = dessplay::changelog::latest_marker(dessplay::changelog::entries()).unwrap();
+    assert_eq!(
+        ui.handle(key(Key::Esc)),
+        vec![UserAction::ChangelogSeen { marker }]
+    );
+}

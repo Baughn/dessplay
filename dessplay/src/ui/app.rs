@@ -27,8 +27,9 @@ use super::components::{
     ChatPane, HealthLine, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
 };
 use super::modals::{
-    AniDbSearchModal, BrowserLibrary, ConfirmModal, EpisodeBrowser, FileBrowser, ListEditModal,
-    LocalCopyOfferModal, NeroNameModal, NyaaActiveImport, NyaaSearchModal, Season, SettingsModal,
+    AniDbSearchModal, BrowserLibrary, ChangelogModal, ConfirmModal, EpisodeBrowser, FileBrowser,
+    ListEditModal, LocalCopyOfferModal, NeroNameModal, NyaaActiveImport, NyaaSearchModal, Season,
+    SettingsModal,
 };
 use super::msg::{BrowseRequest, Msg, UserAction};
 use super::props;
@@ -139,6 +140,9 @@ fn log_action(action: &UserAction) {
         }
         UserAction::LocalCopyOfferDismissed { file } => {
             tracing::debug!(%file, "user action: LocalCopyOfferDismissed");
+        }
+        UserAction::ChangelogSeen { marker } => {
+            tracing::debug!(%marker, "user action: ChangelogSeen");
         }
         UserAction::Archive { filename, .. } => {
             tracing::debug!(%filename, "user action: Archive");
@@ -345,6 +349,7 @@ enum Modal {
     AniDbSearch(AniDbSearchModal),
     NyaaSearch(NyaaSearchModal),
     LocalCopyOffer(LocalCopyOfferModal),
+    Changelog(ChangelogModal),
     Confirm(ConfirmModal),
 }
 
@@ -359,6 +364,7 @@ impl Modal {
             Modal::AniDbSearch(modal) => modal,
             Modal::NyaaSearch(modal) => modal,
             Modal::LocalCopyOffer(modal) => modal,
+            Modal::Changelog(modal) => modal,
             Modal::Confirm(modal) => modal,
         }
     }
@@ -373,6 +379,7 @@ impl Modal {
             Modal::AniDbSearch(modal) => modal.keybindings(),
             Modal::NyaaSearch(modal) => modal.keybindings(),
             Modal::LocalCopyOffer(modal) => modal.keybindings(),
+            Modal::Changelog(modal) => modal.keybindings(),
             Modal::Confirm(modal) => modal.keybindings(),
         }
     }
@@ -388,6 +395,7 @@ impl Modal {
             Modal::AniDbSearch(_) => "AniDbSearch",
             Modal::NyaaSearch(_) => "NyaaSearch",
             Modal::LocalCopyOffer(_) => "LocalCopyOffer",
+            Modal::Changelog(_) => "Changelog",
             Modal::Confirm(_) => "Confirm",
         }
     }
@@ -1023,6 +1031,42 @@ impl Ui {
             file, filename, candidates,
         )));
         self.sync_focus_attr();
+    }
+
+    /// Push the "What's new" changelog modal (design.md, Changelog).
+    /// Called by run.rs between construction and the UI thread's start,
+    /// when unseen entries exist and this is not the first run; `marker`
+    /// records the **whole** embedded changelog as seen and is persisted
+    /// when the user dismisses the modal.
+    pub fn show_changelog(
+        &mut self,
+        days: Vec<crate::changelog::ChangelogDay>,
+        marker: crate::changelog::SeenMarker,
+    ) {
+        if days.is_empty() {
+            return;
+        }
+        self.push_modal(Modal::Changelog(ChangelogModal::new(days, marker, true)));
+        self.sync_focus_attr();
+        self.refresh_keybar();
+    }
+
+    /// Open the full changelog viewer (`/changelog`).
+    fn open_changelog(&mut self) -> Vec<UserAction> {
+        let days = crate::changelog::entries();
+        let Some(marker) = crate::changelog::latest_marker(days) else {
+            // Unreachable in a build that passed the test suite (the
+            // embedded changelog is validated non-empty), but degrade
+            // honestly rather than open an empty modal.
+            return vec![UserAction::Notice("/changelog: no entries".to_string())];
+        };
+        self.push_modal(Modal::Changelog(ChangelogModal::new(
+            days.to_vec(),
+            marker,
+            false,
+        )));
+        self.sync_focus_attr();
+        Vec::new()
     }
 
     /// Replace the snapshot and recompute every pane's props.
@@ -2011,6 +2055,11 @@ impl Ui {
                 self.sync_focus_attr();
                 Some(UserAction::LocalCopyOfferDismissed { file })
             }
+            Msg::ChangelogDismissed(marker) => {
+                self.pop_modal();
+                self.sync_focus_attr();
+                Some(UserAction::ChangelogSeen { marker })
+            }
             Msg::NyaaSearchRequested(query) => Some(UserAction::SearchNyaa { query }),
             Msg::NyaaResultChosen { result, after } => {
                 self.pop_modal();
@@ -2179,6 +2228,7 @@ impl Ui {
                 self.open_settings();
                 Vec::new()
             }
+            "/changelog" => self.open_changelog(),
             "/ready" => self.become_ready(),
             "/pause" => self.become_unready(),
             // `/me <action>` emotes an IRC-style action. It is an ordinary

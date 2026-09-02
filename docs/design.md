@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-08-31
+Last updated: 2026-09-02
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -834,6 +834,8 @@ different encodes/versions. See [Content Hash](#content-hash).
     screen (the keyboard path for the spoiler click flow; repeat for
     earlier ones). Posts a local notice when nothing on screen is hidden.
   - `/settings` -- open the settings screen (also `F3`)
+  - `/changelog` -- open the full changelog viewer (see
+    [Changelog](#changelog))
   - `/resync` -- clear the local synced state and restart the client
     (also the Settings → Account action row); the restart re-adopts
     the server's copy. The manual remedy the advisor suggests when
@@ -991,6 +993,39 @@ differs. Because it is recomputed from the (persisted) chat timestamps, a
 late joiner sees the separators too, and days with no messages produce no
 separator. The boundary is local-time and per-client by design -- it is a
 reading aid, never synced.
+
+### Changelog
+
+Users never read the commit log, so new features and fixes are surfaced
+in-app. `CHANGELOG.md` at the repo root — Factorio-inspired, without the
+rigidity — is **compiled into the binary** and grouped by **calendar
+day**: `## YYYY-MM-DD` headers in strictly descending order, `- ` bullets
+with an optional one-word `Category: ` prefix (rendered dim),
+continuation lines indented two spaces. The format is validated by a
+test (`changelog::tests::embedded_changelog_parses`), so a malformed
+entry fails the suite rather than the user; at runtime a bad file
+degrades to an empty changelog.
+
+At startup, entries newer than the persisted **seen marker** open a
+**"What's new" modal** (scroll with `↑`/`↓`/`PgUp`/`PgDn`; `Esc`
+dismisses; every other key is swallowed — the modal opens under the
+user's hands). Dismissing persists the marker; quitting without
+dismissing shows the same entries again next launch. `/changelog` opens
+the full history any time. The first run skips the modal (the user is in
+the settings screen, and the whole history is trivially "unseen") and
+records everything as seen.
+
+The marker is the local `changelog_seen` settings key,
+`YYYY-MM-DD:count` — the count of entries seen on the newest seen day,
+so entries appended to a day the user already saw are still surfaced
+later. It is deliberately **not** a field of the typed `Settings` struct:
+settings saves round-trip the whole struct from the UI's copy, and a
+marker field would be clobbered by any unrelated save. Purely local,
+never synced; seeders (headless, no settings) are unaffected.
+
+**Workflow rule:** every user-visible change adds a `CHANGELOG.md` entry
+under today's date at commit time, worded for the player experience, not
+the implementation (see CLAUDE.md).
 
 ### Watching a Series
 
@@ -2853,7 +2888,7 @@ re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
 
 | Table | Contents |
 |-------|----------|
-| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, marquee_mode, auto_download, archive_subdirectory, auto_archive, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel, anthropic_token, commentary_interval) |
+| `settings` | Key-value settings (username, server, password, player, ready_on_startup, cache_retention, upload_limit, subtitle_mode, subtitle_speaker_names, subtitle_speaker_colors, subtitle_speaker_overflow, marquee_mode, auto_download, archive_subdirectory, auto_archive, torrent_enabled, irc_enabled, irc_server, irc_tls, irc_channel, anthropic_token, commentary_interval); also `changelog_seen`, read/written directly rather than through the typed `Settings` round-trip (see [Changelog](#changelog)) |
 | `media_roots` | Ordered media roots; position 0 is the download target |
 | `watch_history` | Personal watched files: hash → series id/name, filename, watched_at |
 | `cache_entries` | Download-cache bookkeeping: hash → path, size, last_access; an index, reconciled against disk at startup (stale rows pruned; row-less hash-named files >1 week old swept) |

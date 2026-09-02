@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-08-25
+Last updated: 2026-09-02
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -594,6 +594,17 @@ Modal types:
   torrents, while reopening during background imports defaults to an active
   list with `d` cancel and `s` new search. Selection closes the modal so the
   rest of the TUI remains usable during the download.
+- **Changelog**: The compiled-in changelog viewer (design.md, Changelog).
+  Pushed by run.rs at startup — between `Ui` construction and the UI
+  thread's start — when unseen entries exist ("What's new", unseen days
+  only), or opened whole via `/changelog`. Read-only: `↑`/`↓`/`PgUp`/
+  `PgDn` scroll wrapped rows (the chat log's clamp-on-render idiom, so
+  over-scroll is safe), `Esc` dismisses and emits
+  `Msg::ChangelogDismissed(marker)` → `UserAction::ChangelogSeen`, which
+  run.rs persists to the `changelog_seen` settings key. Every other key
+  is swallowed — the startup push lands under the user's hands. The
+  marker is computed by the opener from the **full** changelog, never
+  from the displayed days (whose first day may be a partial tail).
 - **LocalCopyOffer**: Pushed by the session, not a keypress (proposal
   2026-08-31-local-copy-offer): with auto-download off, a missing
   now-playing file triggers a `Directive::OfferLocalCopies`; the main

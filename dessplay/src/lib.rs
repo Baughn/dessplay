@@ -12,6 +12,7 @@
 
 pub mod actors;
 pub mod advisor;
+pub mod changelog;
 pub mod chunkstore;
 pub mod client;
 pub mod commentary;

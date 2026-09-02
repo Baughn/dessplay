@@ -1,0 +1,19 @@
+---
+source: dessplay/src/ui/modals.rs
+expression: "changelog_render(&mut modal, 60, 18)"
+---
+
+
+
+         ┌What's new──────────────────────────────┐
+         │ 2026-09-02                             │
+         │ - Added: a changelog, with entries     │
+         │   long enough that this one has to     │
+         │   wrap onto a continuation row in a    │
+         │   narrow modal                         │
+         │ - plain entry without a category       │
+         │                                        │
+         │ 2026-09-01                             │
+         │ - Fixed: something small               │
+         │                                        │
+         └────────────────────────────────────────┘

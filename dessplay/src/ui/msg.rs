@@ -157,6 +157,10 @@ pub enum Msg {
     /// Local-copy offer modal: dismissed without picking a file (Esc).
     /// A pick goes through [`Msg::FileMapped`] like the mapping browser.
     LocalCopyOfferDismissed(Ed2kHash),
+    /// Changelog modal: closed. Carries the marker recording the whole
+    /// embedded changelog as seen (computed by the opener; persisting it
+    /// on a full-view close too is harmless and keeps one path).
+    ChangelogDismissed(crate::changelog::SeenMarker),
     /// Nyaa modal: execute the current query.
     NyaaSearchRequested(String),
     /// Nyaa modal: download the selected inspected result.
@@ -217,6 +221,7 @@ impl Msg {
             Msg::CycleSeriesWatch(_) => "CycleSeriesWatch",
             Msg::FileMapped { .. } => "FileMapped",
             Msg::LocalCopyOfferDismissed(_) => "LocalCopyOfferDismissed",
+            Msg::ChangelogDismissed(_) => "ChangelogDismissed",
             Msg::NyaaSearchRequested(_) => "NyaaSearchRequested",
             Msg::NyaaResultChosen { .. } => "NyaaResultChosen",
             Msg::CancelNyaaImport(_) => "CancelNyaaImport",
@@ -347,6 +352,14 @@ pub enum UserAction {
     LocalCopyOfferDismissed {
         /// The missing now-playing file the offer was for.
         file: Ed2kHash,
+    },
+    /// The changelog modal closed: persist how far the user has read
+    /// (the `changelog_seen` settings key — written directly, never via
+    /// the whole-struct settings save, so an unrelated save can't
+    /// clobber it).
+    ChangelogSeen {
+        /// The whole embedded changelog, as of this build.
+        marker: crate::changelog::SeenMarker,
     },
     /// Archive a cached file into the library under the download root.
     Archive {
