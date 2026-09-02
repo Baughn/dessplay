@@ -1,6 +1,7 @@
 # Docs
 
-- Overall design: docs/design.md
+- Overall design: docs/design.md (rules only, stated plainly)
+- Decision log (the *why* behind each rule; dates, rejected alternatives, post-mortems): docs/decisions.md
 - Architecture (actors, message flow, workspace): docs/architecture.md
 - Sync state (CRDTs via `crdts` crate, compaction): docs/sync-state.md
 - Network design (QUIC, hub-and-spoke, file transfer): docs/network-design.md
@@ -12,7 +13,7 @@
 - Implemented franchise-granularity List (one row per franchise, franchise commitment, season tree): docs/proposals/2026-08-28-franchise-list.md
 - Implemented local-copy offer modal (missing now-playing with auto-download off offers same-episode / near-name local files for mapping): docs/proposals/2026-08-31-local-copy-offer.md
 
-Read the design docs before any planning phase. Update the docs after any design change, and update CLAUDE.md if a document is added.
+Read the design docs before any planning phase. Update the docs after any design change (the rule in design.md, the reason in decisions.md), and update CLAUDE.md if a document is added.
 
 If anything is unclear, ALWAYS ask the user to clarify.
 

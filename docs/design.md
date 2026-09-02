@@ -21,6 +21,7 @@ file transfer between peers.
 11. [Key Definitions](#key-definitions)
 
 For internal architecture (actors, message flow), see [architecture.md](architecture.md).
+The reasoning behind individual rules lives in [decisions.md](decisions.md).
 
 ---
 
@@ -50,26 +51,25 @@ working copy atomically. Tabs containing a missing required value carry a
   equivalent on Windows), server (defaults to `dessplay.brage.info`), room
   password, and Ready on startup. When Ready on startup is off the user joins
   Paused; when on they join Ready. Server and password changes apply on the
-  next launch. Also carries the **Reset synced state** action row — the
-  modal path to `/resync` (see docs/sync-state.md, Manual Reset): clear
-  the local replica and restart the client (the restart re-adopts the
-  server's copy), deliberately without a confirm step (the shared state
-  is losslessly recoverable from the server; local-only tables are
-  untouched).
+  next launch. Also carries the **Reset synced state** action row, the
+  modal path to `/resync` (see docs/sync-state.md, Manual Reset): it clears
+  the local replica and restarts the client, and the restart re-adopts the
+  server's copy. There is no confirm step; local-only tables are untouched
+  (why: [decisions](decisions.md#reset-synced-state-has-no-confirmation)).
 - **Playback & display**: Player, subtitle mode, subtitle speaker names,
   subtitle speaker colors, the limited-terminal color-overflow policy, and
   the commentary-marquee display mode.
   Player cycles between mpv and VLC and is persisted, but is explicitly
   marked **WIP -- not applied**: the client still starts mpv regardless of
   this placeholder value. Subtitle mode is off / intermixed / separate pane
-  (default off; also cycled live with `F2`). Speaker names default off to
-  preserve the spoiler-safe behavior; when enabled, named ASS cues render as
+  (default off; also cycled live with `F2`). Speaker names default off
+  (character names can be spoilers); when enabled, named ASS cues render as
   `Name: dialogue` in both Intermixed and separate-pane modes. Speaker colors
-  default on and affect only separate-pane lines; Intermixed is uniformly dim. **Color
-  overflow** applies only when the terminal lacks true-color and more than
-  ten speakers have been active in the rolling five-minute window: **Reuse
-  colors** (the default) preserves the previous deterministic name hashing
-  into the fixed palette, while **Disable colors** renders every speaker
+  default on and affect only separate-pane lines; Intermixed is uniformly dim.
+  **Color overflow** applies only when the terminal lacks true-color and more
+  than ten speakers have been active in the rolling five-minute window:
+  **Reuse colors** (the default) keeps the deterministic name hashing into
+  the fixed palette, while **Disable colors** renders every speaker
   uniformly dim until the active count returns to ten or fewer.
   **Commentary marquee** chooses how this client shows the synced
   [marquee](#ai-commentary-the-marquee) line: **Marquee** (the default;
@@ -90,13 +90,12 @@ working copy atomically. Tabs containing a missing required value carry a
   watched** defaults off: when on, a cached file is archived the moment it
   counts as personally watched (see [Archive](#download-cache-and-retention)),
   so nothing the user actually sat through is left to retention. Both archive
-  settings apply live. BitTorrent defaults
-  off; **disabling applies immediately** (seeding torrents are removed and
-  pending imports cancelled — the mid-session escape hatch for a
-  saturated uplink, see [BitTorrent Downloads](#bittorrent-downloads)), while
-  enabling requires a restart when the engine was off at startup. Upload limit
-  accepts human-readable byte rates
-  such as `500 KiB/s` and `2 MiB/s`, or `unlimited`, and applies at restart.
+  settings apply live. BitTorrent defaults off; **disabling applies
+  immediately** (seeding torrents are removed and pending imports cancelled;
+  see [BitTorrent Downloads](#bittorrent-downloads)), while enabling requires
+  a restart when the engine was off at startup. Upload limit accepts
+  human-readable byte rates such as `500 KiB/s` and `2 MiB/s`, or
+  `unlimited`, and applies at restart.
 - **IRC bridge**: Enabled (default on), server (default `irc.rizon.net`), TLS
   (default on, selecting port 6697 rather than 6667), and channel (default
   `#dess`). The subordinate values stay editable while disabled. A dim hint
@@ -109,9 +108,10 @@ working copy atomically. Tabs containing a missing required value carry a
   exists). The token does double duty: it is also pushed to the server
   (on connect, and on any edit — clearing included) as the credential
   for the AI short-title curator, so this field is the whole lifecycle
-  interface for that server-side token too (see The List). The middle preset is 4:00 rather than 5:00 so a jittered
-  request reliably lands inside the Anthropic prompt cache's 5-minute
-  ephemeral TTL. Both apply live. The tab's note says plainly that
+  interface for that server-side token too (see The List). The middle
+  preset is 4:00 rather than 5:00
+  (why: [decisions](decisions.md#commentary-prompt-caching-by-interval-preset)).
+  Both apply live. The tab's note says plainly that
   recent subtitles and a player screenshot are sent to Anthropic. See
   [AI Commentary](#ai-commentary-the-marquee).
 
@@ -121,9 +121,9 @@ Rows whose values do not apply immediately carry a dim lifecycle annotation
 roots, cache retention, auto-download, BitTorrent-off, and the AI
 commentary settings reconfigure their owning actor live.
 
-Bare `J`/`K` are used for root reordering rather than Ctrl-J/Ctrl-K, which
-collide with control codes (Ctrl-J == LF) in terminals without the enhanced
-keyboard protocol, consistent with the playlist pane.
+Bare `J`/`K` are used for root reordering rather than Ctrl-J/Ctrl-K,
+consistent with the playlist pane
+(why: [decisions](decisions.md#bare-letter-keys-instead-of-ctrl-modified-letters)).
 
 Seeder-specific configuration (role, retention) is provided via
 command-line flags / environment only -- seeders are headless, never show
@@ -146,18 +146,15 @@ sync state with each other. See [network-design.md](network-design.md).
 **From the Series pane:**
 1. Press `Tab` to focus the **Series** pane (top-right)
 2. The pane has three modes, cycled with `m` (`Recent Series -> All Series ->
-   The List`, wrapping around), and **opens on The List by default** -- the
-   spreadsheet view is the day-to-day "what are we watching" surface, so it's
-   what you see first:
+   The List`, wrapping around), and **opens on The List by default**
+   (why: [decisions](decisions.md#series-pane-opens-on-the-list)):
    - **The List** (default): see [The List](#the-list-series-tracker).
    - **Recent Series**: only franchises the user has *watched*, most
      recently watched first (then title). Unwatched series are hidden. Press
      `/` to filter by title substring (case-insensitive); the filter *removes*
      the watched-only restriction, so any series can be found. `Esc` clears the
-     filter. (Filtering is gated behind `/` so the bare `m` / `s` keys stay
-     live — and reliable: Ctrl-modified letters collide with control codes,
-     e.g. Ctrl-M == Enter, in terminals lacking the enhanced keyboard
-     protocol.)
+     filter. Filtering is gated behind `/`, so the bare `m` / `s` keys stay
+     live (why: [decisions](decisions.md#bare-letter-keys-instead-of-ctrl-modified-letters)).
    - **All Series**: every franchise, sorted by title or year (toggle with
      `s`). `/` filters the same way.
 3. Related anime are grouped into **franchises** using AniDB's relations graph
@@ -170,14 +167,14 @@ sync state with each other. See [network-design.md](network-design.md).
      cursor on the next unwatched episode
    - **Multi-season franchise**: opens the **Episode Browser** modal showing
      seasons (franchise members) as a **tree**: the prequel chain in order
-     (OVAs AniDB chains as Sequel/Prequel stay inline -- that is how the
-     group watched them), side branches (SideStory / Summary /
-     AlternativeVersion members, or a whole chain of them) indented under
-     the season they branch from, placed **chronologically** (after the last
-     main-line season that aired no later than the branch). A season whose
-     every known file is watched renders dim -- watched-ness, not The
-     List's held-copy rule: a season nobody advertises right now is not
-     done; the cursor opens on the first season with an unwatched file.
+     (OVAs that AniDB chains as Sequel/Prequel stay inline), side branches
+     (SideStory / Summary / AlternativeVersion members, or a whole chain of
+     them) indented under the season they branch from, placed
+     **chronologically** (after the last main-line season that aired no
+     later than the branch). A season whose every known file is watched
+     renders dim; this is watched-ness, not The List's held-copy rule. The
+     cursor opens on the first season with an unwatched file
+     (why: [decisions](decisions.md#episode-browser-season-tree-shape-and-dimming)).
      Select a season to see its episodes.
 5. In the Episode Browser, press `Enter` on an episode to add it to the
    playlist. If you have the file locally it resolves Ready; if you don't, it
@@ -191,14 +188,14 @@ sync state with each other. See [network-design.md](network-design.md).
      with its own holders. Holders are the users currently advertising
      that file `Ready`, right-aligned and dim, so "pick the file you
      already have" is a glance away. A file with no parseable episode
-     number never merges with another just because it's adjacent --
-     there's no evidence they're the same episode.
+     number never merges with another just because it's adjacent
+     (why: [decisions](decisions.md#episode-grouping-and-the-any-copy-watched-rule)).
    - Episodes watched personally (85% history) or by the group (the
      watched flag) render muted, matching the playlist pane's convention.
-     A multi-copy episode is watched when **any** copy is — the group
-     saw the episode, whichever encoding carried it — so its header
+     A multi-copy episode is watched when **any** copy is: its header
      mutes on any watched copy while the copies keep their own per-file
-     marks. A `<` marker sits on the first unwatched row (skipping
+     marks (why: [decisions](decisions.md#episode-grouping-and-the-any-copy-watched-rule)).
+     A `<` marker sits on the first unwatched row (skipping
      unwatched duplicates of already-watched episodes), and the browser
      opens (and a season, once selected) with the cursor already there.
    - `w` cycles the group watched flag directly (a `MarkWatched`
@@ -216,9 +213,8 @@ sync state with each other. See [network-design.md](network-design.md).
 1. Press `Tab` to focus the **Playlist** pane (bottom-right)
 2. Press `a` to add a file
 3. The browser opens **on the selected entry's local file** when it has
-   one (pressing `a` on the just-watched episode is the common way to
-   queue the next one, which then sits a keypress away); otherwise it
-   opens at the media roots
+   one; otherwise it opens at the media roots
+   (why: [decisions](decisions.md#add-browser-opens-on-the-selected-entrys-file))
 4. Navigate your media root directories — directories are colorized,
    and files you (or the group) have watched are greyed out, matching
    the playlist's muting
@@ -254,40 +250,35 @@ sync state with each other. See [network-design.md](network-design.md).
 
 **Sort order:** `Tab` toggles the add/map browser between
 alphabetical (the default) and newest-mtime-first, both in a plain
-directory listing and in search results — so files that just landed float
-to the top. Newest mtime comes from the **library index** when the file
-is already hashed, or a live stat for one that isn't yet; directories
-always stay alphabetical (no single meaningful mtime). Not available in
+directory listing and in search results. Newest mtime comes from the
+**library index** when the file is already hashed, or a live stat for one
+that isn't yet; directories always stay alphabetical. Not available in
 the media-root directory picker (no library index there). The mapping
 browser's own edit-distance-to-target ranking is what "alphabetical" means
 for it -- `Tab` still switches it to newest-mtime-first. The choice is
-persisted, like the All Series sort.
+persisted, like the All Series sort
+(why: [decisions](decisions.md#browser-sort-by-newest-mtime)).
 
 **Or paste it in:** pasting (terminal paste, bracketed) a single path
 to a file that exists adds it — same as picking it in the browser,
 anchored after the playlist's currently selected entry, whichever pane
-is focused (a drag lands wherever the cursor happens to be, and there
-is no use for posting a file *path* to chat). The path may arrive in
-any of the shapes terminals actually produce on drag — bare,
-shell-escaped (`My\ Show/ep.mkv`), quoted, or a percent-encoded
-`file://` URL — each reading is tried and the first that names an
-existing file wins, canonicalized so a relative or symlinked form
-never becomes a cwd-dependent registration. The file may live
-anywhere, including outside
-every media root: an out-of-root add is registered **in place** as a
-manual-mapping row (no copy into the cache), which also makes it
-servable across restarts — moving the file afterwards breaks it
-exactly like a moved manual mapping. Any other paste (multiple lines,
-nothing that names a real file) is treated as ordinary text and lands
-in the chat input instead, exactly as if typed.
+is focused. The path may arrive in any of the shapes terminals produce
+on drag — bare, shell-escaped (`My\ Show/ep.mkv`), quoted, or a
+percent-encoded `file://` URL — each reading is tried and the first that
+names an existing file wins. The path is canonicalized, so a relative or
+symlinked form never becomes a cwd-dependent registration. The file may
+live anywhere, including outside every media root: an out-of-root add is
+registered **in place** as a manual-mapping row (no copy into the cache),
+which also makes it servable across restarts. Moving the file afterwards
+breaks it exactly like a moved manual mapping. Any other paste (multiple
+lines, nothing that names a real file) is treated as ordinary text and
+lands in the chat input instead, exactly as if typed
+(why: [decisions](decisions.md#paste-to-add-anchoring-and-in-place-registration)).
 While a modal is open, a paste goes to its active text editor (e.g. the
 settings screen's token field) as if typed. Either way control
-characters are dropped — typing can never produce one, so a copied
-value's trailing newline never lands invisibly in a field (nor in a
-chat message, whose bytes would sync to every peer's terminal).
-Defensively, the chat display strips control characters from inbound
-synced and IRC-bridged lines too, so a hostile or malformed remote
-message cannot write raw escape bytes into the terminal.
+characters are dropped. The chat display also strips control characters
+from inbound synced and IRC-bridged lines
+(why: [decisions](decisions.md#control-characters-are-stripped-from-pastes-and-inbound-chat)).
 
 **Reordering:**
 1. Focus the **Playlist** pane
@@ -305,8 +296,8 @@ When someone adds a file, everyone needs to find their local copy:
    - **Known series** (the file's AniDB series ID matches something in your
      watch history; before metadata arrives, falls back to "you've watched a
      file whose name matches the same series-name parse"): the file is marked
-     **Missing** — this blocks playback, because you probably should have
-     this file
+     **Missing** — this blocks playback
+     (why: [decisions](decisions.md#a-missing-file-from-a-known-series-blocks))
    - **Unknown series** (no watch history for that series): you are set to
      **Not Watching** — a generated placeholder PNG is loaded into your player
      showing the current state. *Limitation:* the automatic Not-Watching set
@@ -331,10 +322,11 @@ When someone adds a file, everyone needs to find their local copy:
    - The chosen path is canonicalized at the boundary (as is a dragged-in
      path), so the durable mapping row never depends on the working
      directory. A mapping whose file has vanished falls back to normal
-     matching — the entry honestly resolves Missing rather than wedging on
-     a phantom copy. A loss observed mid-session (a failed serve or load)
-     prunes the durable row; a mapping merely absent at startup (e.g. an
-     offline mount) is kept, unregistered, and revives if the path returns
+     matching: the entry resolves Missing. A loss observed mid-session (a
+     failed serve or load) prunes the durable row; a mapping merely absent
+     at startup (e.g. an offline mount) is kept, unregistered, and revives
+     if the path returns
+     (why: [decisions](decisions.md#manual-mapping-path-canonicalization-and-loss-handling))
 4b. You can manually set yourself to "not watching" on a file that's Missing
    (e.g. a known series but you don't have this episode yet). This clears the
    "missing from known series" block
@@ -346,7 +338,6 @@ When someone adds a file, everyone needs to find their local copy:
     [Series name]/[Original filename]; the Files setting can instead
     place [Original filename] directly in the root. See
     [Download Cache](#download-cache-and-retention).
-
 ### User States
 
 Each user has a state describing their readiness. The default value for this
@@ -358,13 +349,14 @@ This state is **derived** from two independent sources:
    `SeriesPreference { state: SeriesWatchState, set_by: Option<UserId> }`):
    a user's commitment to a specific series, keyed by its
    [List](#the-list-series-tracker) entry rather than by AniDB series id.
-   AniDB linking is enrichment only (episode metadata, franchise grouping) --
-   never a prerequisite for commitment, because a real number of series the
-   group watches have no AniDB entry at all. Resolving the now-playing file
-   to a `ListEntryId` (for `/watch`/`/maybe`/`/skip`, the watch-cycle key, and
-   the Users-pane `n` action) auto-creates an entry on first use if none
-   already claims the file -- see [Series Identity](#series-identity) for
-   the resolution order. With **three** `state` values:
+   AniDB linking is enrichment only (episode metadata, franchise grouping)
+   and is never a prerequisite for commitment
+   (why: [decisions](decisions.md#commitment-keyed-by-list-entry-not-anidb-id)).
+   Resolving the now-playing file to a `ListEntryId` (for
+   `/watch`/`/maybe`/`/skip`, the watch-cycle key, and the Users-pane `n`
+   action) auto-creates an entry on first use if none already claims the
+   file -- see [Series Identity](#series-identity) for the resolution
+   order. With **three** `state` values:
 
    - **Watching** (committed): "I am definitely watching this series." The
      group waits for this user even when they are **absent** -- Lost,
@@ -390,8 +382,8 @@ This state is **derived** from two independent sources:
    action (`/watch`, or the watch-cycle key in the playlist/series pane).
    Both write the `(UserId, ListEntryId)` preference directly; neither needs
    an AniDB link. `Ctrl-R` / "mark ready" does **not** commit: it clears a
-   pause or an auto-`NotWatching` back to **Maybe**, never to Watching, so
-   the block-across-absence commitment is always opt-in.
+   pause or an auto-`NotWatching` back to **Maybe**, never to Watching
+   (why: [decisions](decisions.md#ctrl-r-never-commits-to-watching)).
 
 2. **Manual override** (`LwwCell<Option<ManualState>>`): The user can manually
    pause (stepping away), which overrides the series-based state. The override
@@ -400,28 +392,27 @@ This state is **derived** from two independent sources:
 
 **Away**: any user can mark *another* user as Away (`/afk <name>` or `/away
 <name>` in chat, or `a` on a user in the Users pane), and a user can mark
-*themselves* away (`/away` with no name) -- for when someone walks off without
-quitting and would otherwise block playback forever. Away behaves like Not
-Watching for playback gating, and is displayed with attribution ("away, set by
-Baughn"). It is cleared by a deliberate "I'm here" action from the marked
-user's client -- **attempting to unpause the player, or pressing Enter to send
-a chat message** -- back to normal. Merely *typing* a chat line (without
-sending it) does not clear it, so you can compose a message while still marked
-away. With five trusted friends, no permission system is needed.
+*themselves* away (`/away` with no name). Away behaves like Not Watching for
+playback gating, and is displayed with attribution ("away, set by Baughn").
+It is cleared by a deliberate "I'm here" action from the marked user's
+client -- **attempting to unpause the player, or pressing Enter to send a
+chat message** -- back to normal. Merely *typing* a chat line (without
+sending it) does not clear it. There is no permission system: any user may
+mark any other
+(why: [decisions](decisions.md#away-is-cleared-by-activity-not-by-typing)).
 
 **Marking others not-watching**: any user can set *another* user's series
 preference to NotWatching -- `n` on a user in the Users pane (the now-playing
-series), or `/skip <name>` in chat -- the "Kim tool": rule on someone's
-commitment to a show without waiting for them to show up, or acknowledging
-them file-by-file. Unlike [Acknowledge](#playback-rules) (a per-file
-one-shot, re-needed every episode) this is a durable preference change, so
-playback stays unblocked for the whole series until the subject's own later
-write overrides it (plain LWW -- no special-casing, unlike Away's
-clear-by-the-marked-user's-activity rule). The write is attributed to the
-setter (`set_by: Some(actor)`), and the narrator names them ("Baughn set Kim
-to not-watching Frieren (by Baughn)"); `a`/`n` on the Users pane also work on
-a [known-but-offline](#presence) user who hasn't connected yet today, not just
-a currently-listed one.
+series), or `/skip <name>` in chat. Unlike [Acknowledge](#playback-rules) (a
+per-file one-shot, re-needed every episode) this is a durable preference
+change: playback stays unblocked for the whole series until the subject's
+own later write overrides it. The value is plain LWW; there is no
+special-casing, unlike Away's clear-by-the-marked-user's-activity rule
+(why: [decisions](decisions.md#marking-others-not-watching-is-plain-lww)).
+The write is attributed to the setter (`set_by: Some(actor)`), and the
+narrator names them ("Baughn set Kim to not-watching Frieren (by Baughn)").
+`a`/`n` on the Users pane also work on a [known-but-offline](#presence)
+user who hasn't connected yet today, not just a currently-listed one.
 
 Derived states (manual override wins; otherwise the now-playing series'
 commitment decides):
@@ -442,58 +433,54 @@ It can have one of three values:
 - **Missing**: The file doesn't exist, or the hash is mismatched, and none of the
   step 4 options from file matching have been performed.
 - **Downloading**: The user's client is actively retrieving the file from
-  peers. Playback gates on the holder's **playable verdict**: the
-  downloading client — the only party holding both the chunk bitmap and its
-  own player position — checks whether any chunk is missing within the
-  **20% window ahead of its current playback position** (position 0 before
-  the file loads) and advertises the result as its availability variant
-  (`Downloading` blocks; `DownloadingPlayable` doesn't), so every client
-  derives the same gate with no arithmetic. The window is deliberately
-  approximate — time maps to bytes proportionally; the 20% buffer exists
-  precisely to absorb variable bitrate. When the window ahead of the start
-  fills in, the client **loads the partial file into the player** (the
-  download assembles in place at its final cache path, so its own
-  completion — same inode, the player's open fd sees the full content —
-  needs no reload; a verified copy arriving through any *other* channel,
-  such as a browse import placing a fresh inode over that same path,
-  always re-issues the load — path equality never implies content
-  identity) and watches with the group; if playback catches up to a gap —
-  or a seek lands past the downloaded region — the verdict flips back, the
-  user gates, and the group pauses until the window refills (a seek
-  re-anchors the verdict and fetch window immediately, not at the next
-  position sample). The playback
-  position also re-anchors the download's sequential fetch window, so the
-  scheduler always fetches exactly the range whose absence would gate.
-  Because the partial is sparse (unfetched regions read as zeros), the
-  player can report a bogus end-of-file mid-episode; a partial's EOF
-  report is therefore only believed when the last known position sits
-  within a few seconds of the entry's duration — anything earlier is
-  rejected, and the flipped verdict gates instead. A rejection is a
-  deferral, never a terminal state — and never a spin (2026-08-21
-  review): the client re-arms EOF reporting and seeks the player back
-  to the last position observed **while the file was advertised
-  playable** (verified data by construction; the raw last position is
-  the very offset that produced the phantom EOF, and after a user seek
-  it is the data-less seek target itself). The same target is never
-  seeked twice without a position tick past it in between; when no
-  verified position exists the rejection only re-arms. The retry paths
-  are the playable re-offer (window refilled ⇒ re-seek, or reload when
-  no verified position was ever seen) and the in-place completion
-  (which re-issues the Load when a rejected EOF is outstanding — mpv
-  parked at a phantom end under `--keep-open` never fires another EOF
-  on its own), so the genuine end still advances the group once the
-  download fills in. A partial
-  the player cannot open at all (an `.mp4` whose index sits in the
-  unfetched tail) is not offered again until ~10% more of the file has
-  arrived — the same bytes fail the same way, and repeated failures
-  must not loop (the player-process analogue is the crash ladder, see
-  [Player Lifecycle](#player-lifecycle)); while the retry is deferred
-  the client advertises plain `Downloading` (it holds no playable
-  video, so it gates rather than letting the group play on without it). The
-  download-speed-vs-bitrate half of the original rule was **dropped**
-  (2026-08-17 triage): since the anchored download policy it comes up
-  rarely, and the group decides by watching how fast the download
-  percentage moves.
+  peers. Playback gates on the holder's **playable verdict**. The
+  downloading client checks whether any chunk is missing within the **20%
+  window ahead of its current playback position** (position 0 before the
+  file loads) and advertises the result as its availability variant:
+  `Downloading` blocks; `DownloadingPlayable` doesn't. Every other client
+  reads the variant; none recomputes the gate
+  (why: [decisions](decisions.md#playable-verdict-is-computed-by-the-downloader)).
+  The window is approximate: time maps to bytes proportionally, and the
+  20% buffer absorbs variable bitrate.
+
+  When the window ahead of the start fills in, the client **loads the
+  partial file into the player** and watches with the group. The download
+  assembles in place at its final cache path, so its own completion needs
+  no reload. A verified copy arriving through any *other* channel (such as
+  a browse import placing a fresh inode over that same path) always
+  re-issues the load
+  (why: [decisions](decisions.md#in-place-completion-needs-no-reload-other-channels-always-reload)).
+  If playback catches up to a gap, or a seek lands past the downloaded
+  region, the verdict flips back, the user gates, and the group pauses
+  until the window refills. A seek re-anchors the verdict and fetch window
+  immediately, not at the next position sample. The playback position also
+  re-anchors the download's sequential fetch window, so the scheduler
+  always fetches exactly the range whose absence would gate.
+
+  The partial is sparse (unfetched regions read as zeros), so the player
+  can report a bogus end-of-file mid-episode. A partial's EOF report is
+  therefore only believed when the last known position sits within a few
+  seconds of the entry's duration; anything earlier is rejected, and the
+  flipped verdict gates instead. A rejection is a deferral, never a
+  terminal state, and never a spin: the client re-arms EOF reporting and
+  seeks the player back to the last position observed **while the file was
+  advertised playable**. The same target is never seeked twice without a
+  position tick past it in between; when no verified position exists the
+  rejection only re-arms. The retry paths are the playable re-offer (window
+  refilled ⇒ re-seek, or reload when no verified position was ever seen)
+  and the in-place completion, which re-issues the Load when a rejected
+  EOF is outstanding, so the genuine end still advances the group once the
+  download fills in
+  (why: [decisions](decisions.md#phantom-eof-on-a-sparse-partial-2026-08-21)).
+
+  A partial the player cannot open at all (an `.mp4` whose index sits in
+  the unfetched tail) is not offered again until ~10% more of the file has
+  arrived. While the retry is deferred the client advertises plain
+  `Downloading`, so it gates rather than letting the group play on without
+  it (why: [decisions](decisions.md#unopenable-partial-retry-gap)). There
+  is no download-speed-vs-bitrate rule; the group judges a download by
+  watching how fast its percentage moves
+  (why: [decisions](decisions.md#bitrate-vs-download-speed-unpause-rule-dropped-2026-08-17)).
 
 ### Ready States (UI Display)
 
@@ -511,17 +498,16 @@ Their ready state is decided by a combination of the above; this only exists in 
 | Downloading | Blue | Ready & Downloading [still fetching] |
 | Downloading | Red | Paused / Away / Not watching & Downloading |
 
-A present **Maybe** user displays exactly like Ready (the per-series
-distinction lives in the playlist's right-aligned watch tag, not the
-Users-pane colour) -- both gate on their file state while present.
+A present **Maybe** user displays exactly like Ready; both gate on their
+file state while present. The per-series distinction lives in the
+playlist's right-aligned watch tag, not the Users-pane colour.
 
 An in-progress download is **always** shown: a peer actively downloading
 the now-playing file reads as Downloading even if their derived state is
-Paused, Away, or Not Watching -- it must never be shadowed by those
-labels. The colour carries the rest of the story: green once it can play
-and they are Ready, blue while a Ready peer is still fetching, and red
-otherwise (the download is visible; the red says they still won't be
-watching right now).
+Paused, Away, or Not Watching. The colour carries the rest: green once it
+can play and they are Ready, blue while a Ready peer is still fetching, and
+red otherwise
+(why: [decisions](decisions.md#downloads-are-never-shadowed-in-the-users-pane)).
 
 Departed users (see [Presence](#presence)) are shown on the dim, italic
 known-offline line -- **except** a committed (Watching) absent user, who
@@ -533,11 +519,11 @@ them. Seeders are not listed as users; they appear on a separate dim
 The video player carries a persistent **"Waiting for …" OSD overlay**
 whenever someone blocks playback of the now-playing file: every blocker
 with a short reason ("Waiting for Kim (downloading 34%), Nero (paused)"),
-derived from the same gating derivation as the Users pane so the two can
-never disagree. It is shown to **everyone** — including the blockers
-themselves — and cleared the moment nobody blocks. Implemented as an mpv
-`osd-overlay` (top-right), independent of the chat OSD, so chat traffic
-never hides it and it survives player relaunches.
+derived from the same gating derivation as the Users pane. It is shown to
+**everyone** — including the blockers themselves — and cleared the moment
+nobody blocks. It is an mpv `osd-overlay` (top-right), independent of the
+chat OSD, and survives player relaunches
+(why: [decisions](decisions.md#waiting-for-osd-shares-the-gating-derivation)).
 
 **How states change:**
 
@@ -545,27 +531,27 @@ never hides it and it survives player relaunches.
   setting); File State depends on whether the file was found locally
 - **Missing file (unknown series)**: User State -> Not Watching; File State -> Missing;
   placeholder text loaded into player. *Suppressed when the file is
-  obtainable* -- if a present peer (typically the seeder) advertises the
-  file Ready, it downloads instead of writing a sticky Not Watching, and
-  the placeholder shows while it arrives. (A residual race -- the source's
-  Ready not yet synced when the decision fires -- can still set Not
-  Watching once; the Downloading display masks it and Ctrl-R clears it.)
+  obtainable*: if a present peer (typically the seeder) advertises the
+  file Ready, it downloads instead of writing Not Watching, and the
+  placeholder shows while it arrives. A residual race (the source's Ready
+  not yet synced when the decision fires) can still set Not Watching once;
+  the Downloading display masks it and Ctrl-R clears it
+  (why: [decisions](decisions.md#auto-notwatching-suppressed-when-the-file-is-obtainable)).
 - **Missing file (known series)**: File State -> Missing (blocks playback)
 - **Missing file (downloading enabled)**: File State -> Downloading; the
   placeholder shows while the first 20% window verifies, then the partial
   file loads into the player and plays with the group (see
   [File State](#file-state)). Every playlist entry the client is
-  downloading also shows its percentage in the Playlist pane — downloads
-  mostly happen in the background (prefetch), so progress must be visible
-  without selecting the file
+  downloading also shows its percentage in the Playlist pane
+  (why: [decisions](decisions.md#download-progress-visible-without-selection))
 - **Manual pause** (in player): Manual override -> Paused
 - **Attempt unpause** (in player): Manual override -> None; unpauses if all users permit
 - **Mark ready / unready** (`Ctrl-R`, global): toggles your own readiness
   without touching the Users pane. Marking ready clears your manual
   override, latches playback intent Playing, **and** flips the
   now-playing series back to **Maybe** if it was marked Not Watching --
-  the path to undo an auto- (or self-) Not Watching. (It does **not**
-  commit you to Watching; that is a deliberate act -- see below.) Marking
+  the path to undo an auto- (or self-) Not Watching. It does **not**
+  commit you to Watching; that is a deliberate act (see below). Marking
   unready pauses (manual override Paused, intent Paused).
 - **Marked Away** (by another user, or yourself via `/away`): Manual override
   -> Away; cleared when the marked user's client unpauses the player or sends a
@@ -592,9 +578,8 @@ never hides it and it survives player relaunches.
      [acknowledge](#playback-rules) writes.
    - **Maybe** (the default): blocks only while **present** and not
      ready-to-play (a Missing/insufficiently-downloaded file, or a manual
-     Paused). An **absent** (Lost/Departed) Maybe user does **not** block --
-     we don't hold up the night for someone who isn't here and only *maybe*
-     wanted this.
+     Paused). An **absent** (Lost/Departed) Maybe user does **not** block
+     (why: [decisions](decisions.md#absent-maybe-users-do-not-block)).
    - **Watching** (committed): blocks whenever they are not ready-to-play,
      **including while absent** (Lost or Departed) -- "wait for me even if
      I've been gone a week." A committed-absent user blocks until they
@@ -602,29 +587,26 @@ never hides it and it survives player relaunches.
      them for the current file.
 
    The intent is a synced register (`LwwCell<PlaybackIntent>`,
-   `Playing | Paused`) written by users (play/pause actions) and the server
-   (forced to Paused on Lost, on graceful quit during playback, and on
-   EOF-advance) -- it is the latch that keeps playback paused after a
-   blocker leaves, instead of silently auto-resuming. (The server forces
-   this Paused on **any** Lost, committed or not; gating then decides
+   `Playing | Paused`) written by users (play/pause actions) and the server.
+   The server forces it to Paused on **any** Lost (committed or not), on
+   graceful quit during playback, and on EOF-advance; gating then decides
    whether pressing play resumes -- for an absent Maybe user it does, for a
-   committed one it does not until acknowledged.) The **timeout-ladder**
-   Lost->Departed promotion does *not* re-force Paused: the peer was already
-   paused at its Lost transition 30s earlier, and re-pausing would clobber a
-   resume the present users legitimately made during the Lost window (an
-   absent Maybe user is non-blocking). Only the graceful-quit *immediate*
-   departure (which skips Lost) force-pauses.
+   committed one it does not until acknowledged
+   (why: [decisions](decisions.md#playback-intent-is-a-latch)). The
+   **timeout-ladder** Lost->Departed promotion does *not* re-force Paused.
+   Only the graceful-quit *immediate* departure (which skips Lost)
+   force-pauses
+   (why: [decisions](decisions.md#lost-to-departed-promotion-does-not-re-pause)).
 
    **Acknowledging a committed-absent blocker** is a deliberate per-file
    one-shot: it records `(now-playing file, absent user)` in a synced set
    (`acknowledged_absent`), which suppresses that user's committed-absent
    block *for that file only*. Advancing now-playing (EOF or manual select)
    leaves the old entry behind, so the block re-raises on the next episode
-   and is re-acknowledged consciously. The per-file scoping is why this is a
-   dedicated set rather than a reuse of the per-user **Away** override (an
-   Away would persist across episodes until the user returned). The set is
-   grow-only and cleared at compaction, like other ephemeral session state
-   (see [sync-state.md](sync-state.md#acknowledged-absent)).
+   and is re-acknowledged consciously. The set is grow-only and cleared at
+   compaction, like other ephemeral session state (see
+   [sync-state.md](sync-state.md#acknowledged-absent))
+   (why: [decisions](decisions.md#acknowledge-is-a-per-file-set-not-an-away)).
 2. If you press play in your player but someone is Paused or has a Missing file:
    - Your player is immediately re-paused
    - You are marked Ready, and intent is set to Playing (you tried!) --
@@ -642,25 +624,22 @@ never hides it and it survives player relaunches.
      property, pitch-corrected), until the gap is under **25ms**
    - **> 3s** sustained: hard seek
 
-   The engage (150ms) and release (25ms) thresholds are deliberately far
-   apart, and mid-correction speed updates are quantized and rate-limited
-   (~1/s): a sustained pitch-corrected 2% slew is inaudible, but each speed
-   *transition* is a broadband click, so corrections must be few and long
-   rather than frequent and brief.
+   The engage (150ms) and release (25ms) thresholds are far apart, and
+   mid-correction speed updates are quantized and rate-limited (~1/s)
+   (why: [decisions](decisions.md#drift-correction-hysteresis-and-rate-limiting)).
 
    The position reference is the **seek authority's** position when a *user*
-   holds authority -- **but only when that user is a valid same-file source**
-   (present and advertising the now-playing file `Ready` — or
-   `DownloadingPlayable`, a downloader playing the verified window; their
-   partial is the real video, and when the whole group is downloading a
-   fresh episode they are the only valid sources there are). A user can hold seek authority without being on the real video --
-   e.g. a not-watching client whose player shows a placeholder, which still
-   reports a position -- and following it would freeze the whole group on
-   its bogus position. So an invalid user authority is treated exactly like
-   Server authority below; it is never followed. (Symmetrically, a client
-   that does not hold the real now-playing video never *takes* seek authority or
-   publishes a position from its placeholder in the first place -- see the
-   `holds_now_playing` gate in [Player Integration](#player-integration).)
+   holds authority -- **but only when that user is a valid same-file source**:
+   present and advertising the now-playing file `Ready` or
+   `DownloadingPlayable` (a downloader playing the verified window counts;
+   when the whole group is downloading a fresh episode they are the only
+   valid sources there are). An invalid user authority is treated exactly
+   like Server authority below; it is never followed
+   (why: [decisions](decisions.md#invalid-user-authority-is-never-followed)).
+   Symmetrically, a client that does not hold the real now-playing video
+   never *takes* seek authority or publishes a position from its
+   placeholder in the first place -- see the `holds_now_playing` gate in
+   [Player Integration](#player-integration).
 
    The authority is the **Server** for most of an episode -- it is set to
    `Server` on every EOF-advance and manual now-playing change, and only a
@@ -670,43 +649,33 @@ never hides it and it survives player relaunches.
    now-playing file loaded** (advertises `FileAvailability::Ready` for it):
    the "leader". Following the leader makes laggards catch up *forward* (no
    group rewind); the leader, and anyone tied with or ahead of it, follows no
-   one, so the group converges on the front. Without this fallback the player
-   would run open-loop under Server authority: any initial offset (a
-   late-starting player, a brief decode stall) would sit uncorrected for the
-   whole episode.
+   one, so the group converges on the front
+   (why: [decisions](decisions.md#leader-fallback-under-server-authority)).
 
    Eligibility -- for both the leader election and validating a user
    authority -- is restricted to peers whose position is **for this file**.
    Two gates, both required: the peer advertises now-playing as
    `FileAvailability::Ready` (or `DownloadingPlayable`), **and** their
-   `PlaybackPosition` carries a `file` tag equal to now-playing. The file tag is the load-bearing one: `Ready` alone
-   is *not* sufficient because it is set on **prefetch** (a peer advertises
-   Ready for next week's episode long before it plays it), so right after a
-   now-playing transition a peer can be Ready for the new file while its
-   position register still holds the *previous* file's sample -- and
-   forward-only leader election would latch the group onto that stale value
-   instead of starting the new file at T=0. The tag is a clock-free identity
-   check; it deliberately excludes absent users, users on a different file,
-   and users watching a placeholder (file missing / still downloading / not
-   watching) -- their position is stale or for another file and must never
-   elect a bogus leader or be followed as authority. (The tag itself is
-   trustworthy at its source because the player actor attributes positions
-   to a file only after mpv's own path echo confirms that file is loaded --
-   see [Events from Player](#events-from-player).)
+   `PlaybackPosition` carries a `file` tag equal to now-playing. The file
+   tag is the load-bearing one; `Ready` alone is *not* sufficient because
+   it is set on **prefetch**. The tag is a clock-free identity check; it
+   excludes absent users, users on a different file, and users watching a
+   placeholder (file missing / still downloading / not watching). The tag
+   is trustworthy at its source because the player actor attributes
+   positions to a file only after mpv's own path echo confirms that file
+   is loaded -- see [Events from Player](#events-from-player)
+   (why: [decisions](decisions.md#position-file-tag-gates-leader-eligibility)).
 
-   **Resumption.** Drift correction follows only *present* peers, so it
-   cannot restart a session that ended mid-episode: with everyone gone
-   there is no leader, and a fresh client would sit at zero under Server
-   authority. Positions, though, are replicated CRDT state that outlives
-   the users who wrote them. So every `Load` of the real now-playing video
-   carries a **resume point**: the furthest position any user -- present or
-   not -- has persisted *for this file* (the same file-tag guard as above,
-   so the previous episode's samples never resume the next one mid-way).
-   The actor seeks there on load through the crash-restore path
-   (programmatic, echo-suppressed, never a `UserSeek`). Furthest-ahead
-   matches the leader rule, so whoever loads later converges on the same
-   point; anyone loading while peers are present is then pulled the rest of
-   the way by ordinary drift correction.
+   **Resumption.** Every `Load` of the real now-playing video carries a
+   **resume point**: the furthest position any user -- present or not --
+   has persisted *for this file* (the same file-tag guard as above, so the
+   previous episode's samples never resume the next one mid-way). The
+   actor seeks there on load through the crash-restore path (programmatic,
+   echo-suppressed, never a `UserSeek`). Furthest-ahead matches the leader
+   rule, so whoever loads later converges on the same point; anyone
+   loading while peers are present is then pulled the rest of the way by
+   ordinary drift correction
+   (why: [decisions](decisions.md#resume-point-on-load)).
 6. Seeks are debounced (1500ms) -- only broadcast after the user stops scrubbing
 7. **EOF** advances the synced now-playing pointer to the next playlist entry.
    The server initiates this (it is the authoritative entity for "file ended"):
@@ -726,10 +695,11 @@ never hides it and it survives player relaunches.
    **paused at the start** -- the client writes playback intent Paused
    alongside the now-playing change, and the server resets seek authority to
    Server on the now-playing op -- so the group presses play when ready, just
-   like an EOF advance. It deliberately does **not** mark the abandoned file
-   watched or advance The List (selecting a different file abandons the
-   current one rather than finishing it). Re-selecting the entry that is
-   already now-playing is not a transition and does not pause.
+   like an EOF advance. It does **not** mark the abandoned file watched or
+   advance The List
+   (why: [decisions](decisions.md#manual-select-does-not-mark-watched)).
+   Re-selecting the entry that is already now-playing is not a transition
+   and does not pause.
 
 ### Before Playback Starts
 
@@ -737,16 +707,15 @@ Before unpausing is allowed, DessPlay verifies file contents match: the
 local file's ed2k hash is compared across all Ready users, and a mismatch
 blocks unpause (File State -> Missing). This prevents sync issues from
 different encodes/versions. See [Content Hash](#content-hash).
-
 ### Chat
 
 - Type in the chat input (always visible at bottom of chat pane)
 - Press Enter to send
 - Messages appear in the chat pane AND as OSD in the video player — a
   rolling overlay (top-left, mpv `osd-overlay`) holding the recent
-  messages: each line stays a minimum of 8 seconds and expires
-  individually, so a burst never erases an unread line. Your **own**
-  messages are not echoed to your OSD
+  messages. Each line stays a minimum of 8 seconds and expires
+  individually (why: [decisions](decisions.md#osd-chat-lines-expire-individually)).
+  Your **own** messages are not echoed to your OSD
 - **Username tab-completion**: pressing `Tab` completes the word at the end
   of the input when it is a non-empty, case-insensitive prefix of an online
   username (present or lost interactive peers; seeders and departed users
@@ -754,43 +723,44 @@ different encodes/versions. See [Content Hash](#content-hash).
   appends `": "` (the IRC "Baughn: " address form); mid-sentence it just
   fills in the name. If several names match, repeated `Tab` (without an
   intervening edit) cycles through them. When the trailing word matches no
-  username, `Tab` keeps its normal job of cycling panes -- so completion is
-  invisible until it's useful.
+  username, `Tab` keeps its normal job of cycling panes
+  (why: [decisions](decisions.md#tab-completion-yields-to-pane-cycling)).
 - **Mention highlighting**: in the chat log, any word matching an online
   username is drawn in that user's [palette color](#subtitle-display) + bold
   (trailing punctuation like `:` or `,` is matched-through but stays plain).
   Mentions of *your own* username are additionally reversed, so a ping stands
   out at a glance.
-- **Spoiler tags**: `||spoiler||` (Discord's syntax, for familiarity)
-  hides part of a message. Spoilers are a **display concern** — the raw
-  `||...||` text is what syncs and archives (the CTCP-action rule: only
-  the display sites decode) — and every display surface hides the run:
-  the chat log renders it as deterministically scrambled letters
-  (everything except whitespace and plain ASCII punctuation replaced
-  class-for-class — letters and digits keep their class; CJK, emoji,
-  arrows, and other symbols become letters — so nothing leaks) under
-  sparse combining marks ("low-grade zalgo"); the player OSD
-  substitutes the same static scramble, and the **outbound IRC bridge**
-  a static scramble of its own (seeded per message, never from the
-  text — see IRC Bridge, Outbound), bars dropped. In the chat pane, **clicking** the scrambled
-  run plays a ~600ms re-randomization tease; a **second click within 5
-  seconds** reveals the original (bars dropped) for the rest of the
-  session, per client. A click after the window lapses re-teases with
-  fresh letters. `/reveal` is the keyboard equivalent. The OSD and IRC
-  deliberately have no reveal — IRC is public, logged, and one group
-  member's primary chat surface. The sender sees their own spoilers
-  scrambled too; inbound IRC and `/me` bodies parse spoilers like any
-  chat text, while system, subtitle, and narrator lines never do. The
-  scramble is seeded by message identity (no RNG): stable across
-  repaints, identical between the chat pane and the OSD.
+- **Spoiler tags**: `||spoiler||` (Discord's syntax) hides part of a
+  message. Spoilers are a **display concern**: the raw `||...||` text is
+  what syncs and archives, and only the display sites decode it. Every
+  display surface hides the run:
+  - The chat log renders it as deterministically scrambled letters under
+    sparse combining marks ("low-grade zalgo"). Everything except
+    whitespace and plain ASCII punctuation is replaced class-for-class:
+    letters and digits keep their class; CJK, emoji, arrows, and other
+    symbols become letters.
+  - The player OSD substitutes the same static scramble.
+  - The **outbound IRC bridge** sends a static scramble of its own, seeded
+    per message and never from the text, bars dropped (see IRC Bridge,
+    Outbound).
+
+  In the chat pane, **clicking** the scrambled run plays a ~600ms
+  re-randomization tease; a **second click within 5 seconds** reveals the
+  original (bars dropped) for the rest of the session, per client. A click
+  after the window lapses re-teases with fresh letters. `/reveal` is the
+  keyboard equivalent. The OSD and IRC have no reveal. The sender sees
+  their own spoilers scrambled too. Inbound IRC and `/me` bodies parse
+  spoilers like any chat text; system, subtitle, and narrator lines never
+  do. The scramble is seeded by message identity (no RNG): stable across
+  repaints, identical between the chat pane and the OSD
+  (why: [decisions](decisions.md#spoilers-are-a-display-concern)).
 - System messages (joins, disconnects, state changes) appear in chat --
   see [System Messages](#system-messages)
 - Text commands start with `/`. Typing `/` shows a grey, filtered list of
-  the available commands at the bottom of the chat pane (discoverability);
-  it narrows as more of the command is typed and disappears once the input
-  no longer matches one. An unknown command (or one that can't run, e.g.
-  `/skip` with no series info yet) posts a local-only system line. The
-  commands:
+  the available commands at the bottom of the chat pane; it narrows as
+  more of the command is typed and disappears once the input no longer
+  matches one. An unknown command (or one that can't run, e.g. `/skip`
+  with no series info yet) posts a local-only system line. The commands:
   - `/quit` (aliases `/exit`, `/q`; also Ctrl-C) -- quit DessPlay
   - `/ready` -- mark yourself ready (same as the "become ready" half of
     `Ctrl-R`: clears your manual override, latches Playing, and flips the
@@ -812,24 +782,23 @@ different encodes/versions. See [Content Hash](#content-hash).
     one-shot that lets the group play past a committed (Watching) user who is
     Lost/Departed, and latches intent Playing. Re-needed on the next episode.
   - `/summon` -- ping everyone [known but offline](#presence) on IRC in one
-    PRIVMSG, with the mandatory Dess-girl link. Deciding "IRC bridge
-    disabled" or "everyone's here" needs no round trip (both are already
-    known client-side); matching each absent username to a live channel
-    nick (by edit-distance similarity, e.g. `Nero` -> `Nero200`, excluding
-    `*Dess` bridge echoes) happens in the IRC actor, which tracks channel
-    membership from NAMES/JOIN/PART/QUIT/NICK. A local system line reports
-    who was pinged (by the nick actually addressed) and who had no
-    plausible nick.
+    PRIVMSG, with the mandatory Dess-girl link. The client decides "IRC
+    bridge disabled" and "everyone's here" itself, with no round trip.
+    The IRC actor matches each absent username to a live channel nick by
+    edit-distance similarity (e.g. `Nero` -> `Nero200`, excluding `*Dess`
+    bridge echoes); it tracks channel membership from
+    NAMES/JOIN/PART/QUIT/NICK. A local system line reports who was pinged
+    (by the nick actually addressed) and who had no plausible nick
+    (why: [decisions](decisions.md#summon-decides-client-side-and-matches-nicks-in-the-irc-actor)).
   - `/me <action>` -- send an IRC-style action ("* Baughn waves"). Unlike
     the other commands this is a real, **synced** chat message (it reaches
     everyone, persists, and shows on the player OSD as "* Baughn waves");
     sending one also clears your own Away. The action is carried inline in
     the message text using the CTCP `ACTION` convention
-    (`"\x01ACTION waves\x01"`), so no separate message type or schema change
-    is needed -- only the display sites decode it. In the chat log the
-    action phrase renders **grey** (terminals have no italics, so colour
-    marks the emote); the sender keeps its palette colour and mentions
-    still highlight through it.
+    (`"\x01ACTION waves\x01"`); only the display sites decode it. In the
+    chat log the action phrase renders **grey**; the sender keeps its
+    palette colour and mentions still highlight through it
+    (why: [decisions](decisions.md#me-actions-ride-inline-as-ctcp-action)).
   - `/reveal` -- reveal the newest still-hidden [spoiler](#chat) on
     screen (the keyboard path for the spoiler click flow; repeat for
     earlier ones). Posts a local notice when nothing on screen is hidden.
@@ -838,65 +807,53 @@ different encodes/versions. See [Content Hash](#content-hash).
     [Changelog](#changelog))
   - `/resync` -- clear the local synced state and restart the client
     (also the Settings → Account action row); the restart re-adopts
-    the server's copy. The manual remedy the advisor suggests when
+    the server's copy. This is the manual remedy the advisor suggests when
     divergence persists through three failed auto-heals
-    (docs/sync-state.md, Manual Reset). Posts a local notice; no
-    confirm modal -- typing the command is the
-    deliberate act, and the shared state is losslessly recoverable from
-    the server. Local-only tables (watch history, hash cache, manual
-    mappings) are untouched; availability re-derives from local files.
+    (docs/sync-state.md, Manual Reset). Posts a local notice; no confirm
+    modal (why: [decisions](decisions.md#resync-needs-no-confirmation)).
+    Local-only tables (watch history, hash cache, manual mappings) are
+    untouched; availability re-derives from local files.
 
 ### IRC Bridge
 
-DessPlay logs are unavailable when the program isn't running, so the
-chat is gone the moment you close the app. The IRC bridge fixes that:
-each interactive client (never a seeder -- they have no chat) optionally
+Each interactive client (never a seeder -- they have no chat) optionally
 mirrors **its own** chat into a shared IRC channel that others can keep
 open or log, and surfaces messages from plain-IRC users back into the
-chat pane. It is **on by default**; defaults are `irc.rizon.net`, TLS
-(port 6697), channel `#dess`.
+chat pane (why: [decisions](decisions.md#irc-bridge-motivation)). It is
+**on by default**; defaults are `irc.rizon.net`, TLS (port 6697),
+channel `#dess`.
 
 - **Identity.** The client connects as `[Username]Dess` (e.g.
   `BaughnDess`). The username is sanitized to a legal IRC nick (illegal
   characters dropped, a letter forced to lead, length capped) while the
   `Dess` suffix is always preserved. On a nick collision (433) the client
   retries with a disambiguator that **keeps `Dess` terminal**
-  (`Baughn2Dess`), because the suffix is how *other* bridges recognize
-  and de-duplicate it.
-- **Outbound.** Only the local user's own chat messages are sent --
-  tapped at the same `Mutation::Chat` site that feeds the synced chat, so
-  events, subtitles, and narrator/system lines are never forwarded. A
-  `/me` action goes out as a real IRC CTCP ACTION (the wire form is
-  identical to DessPlay's inline `"\x01ACTION …\x01"`, so it forwards
-  verbatim). **`||spoiler||` runs are masked at the tap** with a
-  static scramble (bars dropped, CTCP framing preserved): the channel is
-  public and logged, one group member reads chat *only* there, and IRC
-  has no reveal affordance -- raw bars would hand the spoiler to exactly
-  the people the sender hid it from (see [Chat](#chat), Spoiler tags).
-  The mask is seeded from a per-process message counter, never from the
-  message text -- a plaintext-derived mask would let a channel lurker
-  confirm a guessed spoiler by recomputing it -- so its letters differ
-  from the chat/OSD rendering of the same message (which nobody
-  cross-checks).
+  (`Baughn2Dess`) (why: [decisions](decisions.md#dess-suffix-stays-terminal)).
+- **Outbound.** Only the local user's own chat messages are sent. They
+  are tapped at the same `Mutation::Chat` site that feeds the synced
+  chat, so events, subtitles, and narrator/system lines are never
+  forwarded. A `/me` action goes out as a real IRC CTCP ACTION (the wire
+  form is identical to DessPlay's inline `"\x01ACTION …\x01"`, so it
+  forwards verbatim). **`||spoiler||` runs are masked at the tap** with a
+  static scramble (bars dropped, CTCP framing preserved). The mask is
+  seeded from a per-process message counter, never from the message
+  text, so its letters differ from the chat/OSD rendering of the same
+  message (why: [decisions](decisions.md#irc-spoiler-mask-seeding)).
   Long plain lines are split to fit IRC's 512-byte limit; newlines
-  become separate messages. A `/me` **CTCP action is never split** -- chunking
-  it would break the `\x01` framing or emit several separate emotes for one
-  action, so an over-long emote is left to the server's 512-byte truncation
-  (the conventional client behavior); intentional. `/summon`'s ping is the
-  one other outbound message and is **not** tapped from `Mutation::Chat`
-  (it addresses specific nicks, not a broadcast to the group) -- it goes
-  out directly as a PRIVMSG and is never mirrored into the local chat log
-  or synced; only the summon *outcome* (who was pinged) becomes a local
-  system line.
+  become separate messages. A `/me` **CTCP action is never split**; an
+  over-long emote is left to the server's 512-byte truncation
+  (why: [decisions](decisions.md#ctcp-actions-are-never-split)).
+  `/summon`'s ping is the one other outbound message and is **not**
+  tapped from `Mutation::Chat`: it goes out directly as a PRIVMSG and is
+  never mirrored into the local chat log or synced; only the summon
+  *outcome* (who was pinged) becomes a local system line.
 - **Inbound.** Messages from IRC nicks that do **not** end in `Dess` are
   shown locally, rendered like normal chat (per-nick color, mention
   highlight) but with a dim `irc` tag so they aren't mistaken for
-  DessPlay peers. These lines are **local-only, never synced** -- each
-  client runs its own bridge, so syncing them would duplicate. Messages
-  from `*Dess` nicks are dropped: those are other bridges echoing DessPlay
-  users who are already present via CRDT sync. (Heuristic cost: a genuine
-  IRC user whose nick ends in "dess", e.g. `Goddess`, is also dropped --
-  accepted, since the actor deliberately doesn't hold the roster.)
+  DessPlay peers. These lines are **local-only, never synced**. Messages
+  from `*Dess` nicks are dropped. Known cost: a genuine IRC user whose
+  nick ends in "dess", e.g. `Goddess`, is also dropped
+  (why: [decisions](decisions.md#inbound-irc-lines-are-local-and-dess-nicks-are-dropped)).
 - **Lifecycle.** A dedicated [IRC actor](architecture.md#ircactor) owns
   the TLS connection, reconnects with capped backoff, answers PING, and
   is reconfigured live when the IRC settings change (disabling it makes
@@ -908,24 +865,18 @@ chat pane. It is **on by default**; defaults are `irc.rizon.net`, TLS
 ### System Messages
 
 The chat log narrates what the group is doing -- who joined, who paused,
-what got put on -- so a glance at the chat is a glance at the session.
-These lines are **derived, not synced**: the underlying facts already live
-in the synced CRDT state or in the server's `PeerList` (presence). A small
+what got put on. These lines are **derived, not synced**: a small
 synchronous **chat narrator** in the session layer diffs each new (state
 view, peer list) against the previous one and emits a local system line
-for each change. Because every client diffs the *same* synced inputs,
-every client narrates the *same* lines -- consistent without any extra
-wire traffic.
+for each change. Every client narrates the same lines, because every
+client diffs the same synced inputs
+(why: [decisions](decisions.md#system-messages-are-derived-not-synced)).
 
-The cost of deriving rather than syncing is that **a late joiner does not
-see past events**: a transition like "Baughn paused" cannot be
-reconstructed from a snapshot that holds only the *current* value. That is
-acceptable -- system lines are a real-time "what's happening now" cue, and
-the durable answers live elsewhere (the Users pane shows who is present
-now; the playlist pane shows the full play history in muted colors). The
-two things that *do* reach late joiners are called out below: the player
-crash (a real synced chat message) and the day separators (recomputed
-from the persisted chat timestamps).
+**A late joiner does not see past events**: a transition like "Baughn
+paused" cannot be reconstructed from a snapshot that holds only the
+*current* value. Two things *do* reach late joiners, called out below:
+the player crash (a real synced chat message) and the day separators
+(recomputed from the persisted chat timestamps).
 
 System lines render like the existing local-only lines: dim, no sender,
 interleaved into the chat by shared-clock arrival time (the same
@@ -950,80 +901,75 @@ mechanism that already posts command feedback and archive results).
 | **Maybe** | series-preference map -> Maybe (now-playing series) | "Kim set Frieren to maybe (by Kim)" | Local |
 | **Acknowledged absent** | `acknowledged_absent` gains `(now-playing, user)` | "Playing past Baughn (committed, away)" | Local |
 
-**Attribution.** The resolved `StateView` does not record *who* wrote a
-register, so attribution comes from the data, not the writer. The subject
-of a per-user / per-`(user, series)` change is the map *key*; Away carries
-its setter in the value (`ManualState::Away { set_by }`), so it can name
-both when one user marks another ("Baughn marked Kim away"). The
-**now-playing** writer is *not* recoverable (manual selection takes no
-seek authority), so new-file lines are un-attributed; EOF-advance is told
-apart by the prior file's watched flag flipping true. Watch-preference
-lines are scoped to the **now-playing series** (the `/watch` / `/maybe` /
-`/skip` / Ctrl-R surface), which keeps the List's bulk auto-writes for
-other series out of the chat; the series-preference value itself carries a
-`set_by: Option<UserId>` (mirroring `ManualState::Away`) for exactly this
-reason -- `None` for every self-directed write and system auto-write
-(rendered as the subject, "(by Kim)"), `Some(actor)` for a write targeting
-*another* user (`n` on the Users pane, `/skip <name>` -- see
-[User States](#user-states)), rendered as the real setter ("(by Baughn)").
+**Attribution.** Attribution comes from the data, not the writer. The
+subject of a per-user / per-`(user, series)` change is the map *key*.
+Away carries its setter in the value (`ManualState::Away { set_by }`),
+so the line can name both when one user marks another ("Baughn marked
+Kim away"). New-file lines are un-attributed; EOF-advance is told apart
+from a manual selection by the prior file's watched flag flipping true.
+Watch-preference lines are scoped to the **now-playing series** (the
+`/watch` / `/maybe` / `/skip` / Ctrl-R surface). The series-preference
+value carries `set_by: Option<UserId>` (mirroring `ManualState::Away`):
+`None` for every self-directed write and system auto-write (rendered as
+the subject, "(by Kim)"), `Some(actor)` for a write targeting *another*
+user (`n` on the Users pane, `/skip <name>` -- see
+[User States](#user-states)), rendered as the real setter ("(by Baughn)")
+(why: [decisions](decisions.md#narrator-attribution-comes-from-the-data)).
 
-**No cascade spam.** A single user-meaningful action often writes several
-registers at once -- pressing play clears the manual override *and* sets
-intent to Playing; an EOF advance moves now-playing, forces intent to
-Paused, *and* sets the watched flag. The narrator emits **one** line per
-action, not one per register. In particular, the server-forced intent ->
-Paused on Lost / departure / EOF is never narrated as a bare "paused" --
-it is already explained by the corresponding lost / left / new-file line.
-Brief presence glitches under 30s never reach Lost, so they stay silent.
-Drift-correction slews and automatic hard seeks never create a `UserSeek`, so
-they never produce a "skipped to" line. The 1500ms debounce captures the
-scrub's initial and final positions and coalesces it into one authority write.
-Continuous `PlaybackPosition` samples are never interpreted as seek events.
+**One line per action.** A single user-meaningful action often writes
+several registers at once (pressing play clears the manual override
+*and* sets intent to Playing; an EOF advance moves now-playing, forces
+intent to Paused, *and* sets the watched flag). The narrator emits
+**one** line per action, not one per register. In particular, the
+server-forced intent -> Paused on Lost / departure / EOF is never
+narrated as a bare "paused". Brief presence glitches under 30s never
+reach Lost, so they stay silent. Drift-correction slews and automatic
+hard seeks never create a `UserSeek`, so they never produce a "skipped
+to" line. The 1500ms debounce captures the scrub's initial and final
+positions and coalesces it into one authority write. Continuous
+`PlaybackPosition` samples are never interpreted as seek events
+(why: [decisions](decisions.md#one-narrator-line-per-action)).
 
 **Seeders** are excluded from every presence-derived line, exactly as they
 are excluded from the Users pane and playback gating.
 
-**Day separators.** Watch parties straddle midnight, so the log marks each
-new day -- but on a **biblical day boundary at 09:00 local time**, not
-literal midnight (the small hours still belong to last night's session).
-This is purely a **view concern**, not an event and not stored anywhere:
-when rendering the chat, a separator ("──── Thursday, June 18 ────") is
-inserted between two adjacent lines whose 09:00-anchored local date
-differs. Because it is recomputed from the (persisted) chat timestamps, a
-late joiner sees the separators too, and days with no messages produce no
-separator. The boundary is local-time and per-client by design -- it is a
-reading aid, never synced.
+**Day separators.** The log marks each new day on a **biblical day boundary at
+09:00 local time**, not literal midnight. This is purely a **view
+concern**, not an event and not stored anywhere: when rendering the
+chat, a separator ("──── Thursday, June 18 ────") is inserted between
+two adjacent lines whose 09:00-anchored local date differs. It is
+recomputed from the (persisted) chat timestamps, so a late joiner sees
+the separators too, and days with no messages produce no separator. The
+boundary is local-time and per-client; it is never synced
+(why: [decisions](decisions.md#day-boundary-at-0900)).
 
 ### Changelog
 
-Users never read the commit log, so new features and fixes are surfaced
-in-app. `CHANGELOG.md` at the repo root — Factorio-inspired, without the
-rigidity — is **compiled into the binary** and grouped by **calendar
-day**: `## YYYY-MM-DD` headers in strictly descending order, `- ` bullets
-with an optional one-word `Category: ` prefix (rendered dim),
-continuation lines indented two spaces. The format is validated by a
-test (`changelog::tests::embedded_changelog_parses`), so a malformed
-entry fails the suite rather than the user; at runtime a bad file
-degrades to an empty changelog.
+New features and fixes are surfaced in-app. `CHANGELOG.md` at the repo
+root is **compiled into the binary** and grouped by **calendar day**:
+`## YYYY-MM-DD` headers in strictly descending order, `- ` bullets with
+an optional one-word `Category: ` prefix (rendered dim), continuation
+lines indented two spaces. The format is validated by a test
+(`changelog::tests::embedded_changelog_parses`); at runtime a bad file
+degrades to an empty changelog
+(why: [decisions](decisions.md#changelog-is-compiled-in-and-day-grouped)).
 
 At startup, entries newer than the persisted **seen marker** open a
-**"What's new" modal** (scroll with `↑`/`↓`/`PgUp`/`PgDn`; `Enter` — the
-visible `[ OK ]` button on its bottom row — or `Esc` dismisses; every
-other key is swallowed — the modal opens under the user's hands, and
-both dismiss keys do the same harmless thing, so an accidental Enter
-costs nothing). Dismissing persists the marker; quitting without
-dismissing shows the same entries again next launch. `/changelog` opens
-the full history any time. The first run skips the modal (the user is in
-the settings screen, and the whole history is trivially "unseen") and
-records everything as seen.
+**"What's new" modal**. Scroll with `↑`/`↓`/`PgUp`/`PgDn`; `Enter` (the
+visible `[ OK ]` button on its bottom row) or `Esc` dismisses; every
+other key is swallowed
+(why: [decisions](decisions.md#whats-new-modal-swallows-other-keys)).
+Dismissing persists the marker; quitting without dismissing shows the
+same entries again next launch. `/changelog` opens the full history any
+time. The first run skips the modal and records everything as seen.
 
 The marker is the local `changelog_seen` settings key,
 `YYYY-MM-DD:count` — the count of entries seen on the newest seen day,
 so entries appended to a day the user already saw are still surfaced
-later. It is deliberately **not** a field of the typed `Settings` struct:
-settings saves round-trip the whole struct from the UI's copy, and a
-marker field would be clobbered by any unrelated save. Purely local,
-never synced; seeders (headless, no settings) are unaffected.
+later. It is **not** a field of the typed `Settings` struct
+(why: [decisions](decisions.md#changelog-seen-marker-lives-outside-the-settings-struct)).
+Purely local, never synced; seeders (headless, no settings) are
+unaffected.
 
 **Workflow rule:** every user-visible change adds a `CHANGELOG.md` entry
 under today's date at commit time, worded for the player experience, not
@@ -1045,7 +991,6 @@ Typical evening flow:
 8. Repeat until bedtime
 
 ---
-
 ## Client Roles
 
 A client runs in one of two roles, selected via `--seeder`:
@@ -1063,30 +1008,29 @@ which clients are seeders.
   the ready-state display, and presence-based pause rules. The Users pane
   shows them on a separate dim line ("seeders: nas").
 - **Auto-fetches everything.** A seeder downloads every playlist entry as it
-  is added (unwatched entries first, anchored at now-playing exactly like an
-  interactive client's pre-fetch order; watched back-catalog last), making it
-  the durable seed for the group: whoever adds a file can go offline once the
-  seeder has it. The primary seeder is colocated with the rendezvous server, so serving
-  a file costs one trip over the NAS uplink per recipient -- the relay-only
-  transfer design depends on this arrangement being the common case.
+  is added: unwatched entries first, anchored at now-playing exactly like an
+  interactive client's pre-fetch order, watched back-catalog last. It is the
+  durable seed for the group: whoever adds a file can go offline once the
+  seeder has it. The primary seeder is colocated with the rendezvous server
+  (why: [decisions](decisions.md#primary-seeder-is-colocated-with-the-rendezvous-server)).
 - **Indexes its library daily.** Like every client the seeder maintains a hash
   index of its media roots (see [Media Library Scanning](#media-library-scanning))
   and feeds new hashes into the `lookup_requests` set, contributing its (often
-  large) collection to the group's browsable library. Because its store is big
-  and stable it rescans once a day, not once a minute.
+  large) collection to the group's browsable library. It rescans once a day,
+  not once a minute.
 - **Storage** follows the same cache-retention setting as interactive clients
   (see [Download Cache](#download-cache-and-retention)). A NAS seeder sets
-  retention to `infinite`; "should this be archived into the media library?"
+  retention to `infinite`. "Should this be archived into the media library?"
   remains a manual, human decision via the archive action on any interactive
   client that shares the filesystem -- or simply by moving the file.
   A seeder persists no *settings* (it is configured by flags/env), but it
   **does** persist operational state — the hash cache and cache
-  bookkeeping — in a database: a seeder may hold terabytes, so re-hashing
-  its store on every startup is a nonstarter. On restart it re-discovers
-  everything it already has (cache-hit, no re-hash) via the same
-  **download-cache reconciliation** every client runs (see [Download
+  bookkeeping — in a database. On restart it re-discovers everything it
+  already has (cache-hit, no re-hash) via the same **download-cache
+  reconciliation** every client runs (see [Download
   Cache](#download-cache-and-retention)): the cache is hash-addressed, so
-  prior downloads are resolved by hash, not by a media-root filename scan.
+  prior downloads are resolved by hash, not by a media-root filename scan
+  (why: [decisions](decisions.md#seeders-persist-a-hash-cache-but-no-settings)).
 
 Multiple seeders are fine; they are ordinary peers in the file transfer
 protocol. There is no special pairing between a seeder and its owner.
@@ -1113,18 +1057,15 @@ Additional rules:
 - **Brief glitches (< 30s) are invisible.** Everyone keeps watching; the
   shared clock keeps players aligned, and slew correction absorbs small drift
   on recovery.
-- **Graceful quit** (`/quit`, Ctrl-C): an *immediate departure* -- the
-  user goes straight to **Departed** (skipping the 30s Lost / 60s ladder),
-  but stays listed exactly like a peer that timed out: shown on the dim
+- **Graceful quit** (`/quit`, Ctrl-C): an *immediate departure*. The user
+  goes straight to **Departed**, skipping the 30s Lost / 60s ladder, but
+  stays listed exactly like a peer that timed out: shown on the dim
   known-offline line, and -- if **committed** (Watching) to the now-playing
-  series -- still gating until the group acknowledges past them. Skipping
-  the Lost stage is the *only* thing a clean quit buys over a silent
-  disconnect; it does not waive a commitment (design's User States: the
-  group waits for a committed user even when absent, "Lost, Departed, or
-  quit"). If playback was running, it pauses (server sets intent to
-  Paused) -- leaving mid-episode should not be silent -- and the server
-  reclaims seek authority at once (a clean quit is final, unlike a Lost
-  that may recover). At session end this is a no-op.
+  series -- still gating until the group acknowledges past them. A clean
+  quit does not waive a commitment. If playback was running, it pauses
+  (server sets intent to Paused), and the server reclaims seek authority at
+  once. At session end this is a no-op
+  (why: [decisions](decisions.md#graceful-quit-skips-lost-but-keeps-the-commitment)).
 - **Return**: a reconnecting user re-enters as Present, syncs state, and is
   gated normally again. Playback does not auto-resume (intent is still
   Paused from when they were Lost).
@@ -1133,39 +1074,32 @@ Additional rules:
 - Departed users' CRDT state (manual override, file availability) persists
   but is ignored by gating until they return.
 
-**Known but offline.** The above stages only cover peers the server's
-in-memory registry has seen *this process lifetime* -- a user who hasn't
+**Known but offline.** The stages above only cover peers the server's
+in-memory registry has seen *this process lifetime*. A user who hasn't
 connected since the last server restart (or hasn't launched yet today) is
 invisible to it. The server also persists a small `known_users` table
 (username, last-seen millis), updated on every connect and disconnect, and
 pushes it alongside `PeerList` as `known_offline: Vec<KnownUser>` (everyone
 known who isn't currently Present, within a 30-day window). The Users pane
 renders this as a single dim + italic list, showing "Kim (last seen 3d
-ago)" for both a user who left
-minutes ago and one who hasn't shown up today, unified because both are
-equally valid `n` / `/skip <name>` targets (the point: rule on
-someone's commitment without waiting for them to reconnect). A committed
-(Watching) absent user is excluded from this list and shown instead as the
-red "committed, away" blocker row, exactly as before.
+ago)" for both a user who left minutes ago and one who hasn't shown up
+today. Both are valid `n` / `/skip <name>` targets
+(why: [decisions](decisions.md#known-offline-users-are-one-list-and-valid-skip-targets)).
+A committed (Watching) absent user is excluded from this list and shown
+instead as the red "committed, away" blocker row.
 
-**Known-offline users gate too (for a week).** Playback gating quantifies
-over peer entries, and the server's registry spans only its own process
-lifetime -- so a server restart would silently waive every absent user's
-commitment. Clients therefore merge `known_offline` into the peer list before any
-derivation (`derive::merge_known_offline`): each known-offline user seen
-within the last **seven days** is synthesized as a Departed interactive
-entry, so a committed user blocks -- and reads as the red "committed,
-away" row -- exactly as if they had departed this session; a Maybe or
-NotWatching user's synthesized entry changes nothing (absent Maybe never
-blocks). Real peer entries are never shadowed. Past seven days the
-synthesis ages out: the horizon matches the commitment's own "wait for me
-even if I've been gone a week" phrasing, and bounds how long a stale
-username (e.g. after a naming-convention change -- commitments are keyed
-by username, and identity aliasing was deliberately rejected as a fuzzy
-heuristic in the gating path) can keep blocking. A stale blocker is
-dismissible at any time via `/skip <name>`, marking them Away, or a
-per-file `/ack`. Seeders never appear (only interactive connections are
-recorded in `known_users`).
+**Known-offline users gate too (for a week).** Clients merge
+`known_offline` into the peer list before any derivation
+(`derive::merge_known_offline`): each known-offline user seen within the
+last **seven days** is synthesized as a Departed interactive entry, so a
+committed user blocks -- and reads as the red "committed, away" row --
+exactly as if they had departed this session. A Maybe or NotWatching user's
+synthesized entry changes nothing (absent Maybe never blocks). Real peer
+entries are never shadowed. Past seven days the synthesis ages out. A stale
+blocker is dismissible at any time via `/skip <name>`, marking them Away, or
+a per-file `/ack`. Seeders never appear (only interactive connections are
+recorded in `known_users`)
+(why: [decisions](decisions.md#known-offline-users-gate-for-seven-days)).
 
 ---
 
@@ -1177,9 +1111,8 @@ finished. This is **separate from the playlist** (which holds concrete files
 for a session); List entries are series-level. `anidb_series_id` links an
 entry to AniDB for **enrichment only** -- episode metadata, franchise
 grouping, the AniDB search modal -- and is never a prerequisite for
-commitment or gating: a real number of series the group watches (obscure
-OVAs, doujin work, non-Japanese content, very new simulcasts) simply have no
-AniDB entry, and the design must not depend on them getting one. Every
+commitment or gating
+(why: [decisions](decisions.md#anidb-linking-is-enrichment-only)). Every
 series anyone commits to via `/watch`, the watch-cycle key, or a List
 entry's `watchers` set has a List entry, linked or not -- see
 [Series Identity](#series-identity).
@@ -1221,38 +1154,20 @@ struct NextEpState {
 }
 ```
 
-`next_ep` is free text by necessity -- real entries include season prefixes,
-OVA names, and guesses. See [Advancing next_ep](#advancing-next_ep) for how
-and when it auto-advances, linked or not. Otherwise `available` is
-maintained by hand; automating it (e.g. via AniDB episode air dates) is
-future work.
+`next_ep` is free text
+(why: [decisions](decisions.md#next_ep-is-free-text)). See
+[Advancing next_ep](#advancing-next_ep) for how and when it auto-advances,
+linked or not. Otherwise `available` is maintained by hand; automating it
+(e.g. via AniDB episode air dates) is future work.
 
-The List is never pruned: it is a few hundred rows of text, and the history
-is the point.
+The List is never pruned
+(why: [decisions](decisions.md#the-list-is-never-pruned)).
 
 ### Series Identity
 
-Two mechanisms already turn a file into "a series," and neither is a safe
-foundation for group **commitment** (whether the group waits for someone
-across absence):
-
-- AniDB's relations graph, for files with a series id -- structural
-  (sequel/prequel/etc.), stable, but only exists for series AniDB knows.
-- A per-file **derived name** (the AniDB-miss fallback's `series_hint`, or
-  the bare filename otherwise -- see
-  [Parsing files](#parsing-files-to-seriesseasonepisode)), used today for
-  franchise-browsing's fallback grouping and personal known-series
-  detection. This name is **not** stable enough to hang commitment on: it's
-  computed per file, from that file's own directory context, and the group
-  does not reliably keep every episode of an untracked show in one
-  dedicated directory. Two files of the same show, one hinted from
-  `Anime/ShowName/` and one sitting loose elsewhere, derive different
-  names -- silently splitting one show into two "series" for the one
-  question that most needs a single stable answer.
-
-So List entries carry their own identity data, used only for unlinked
-entries (a linked entry's AniDB series id is authoritative and skips all of
-this):
+List entries carry their own identity data, used only for unlinked entries.
+A linked entry's AniDB series id is authoritative and skips all of this
+(why: [decisions](decisions.md#unlinked-entries-carry-their-own-identity-data)).
 
 - `local_aliases`: confirmed series-name strings that resolve to this
   entry -- seeded with the derived name of whichever file first created the
@@ -1260,6 +1175,12 @@ this):
   file for the same show shows up.
 - `manual_files`: explicit file hashes attached directly to the entry, for
   outliers whose name doesn't parse into any alias at all.
+
+The **derived name** referred to below is the per-file series name: the
+AniDB-miss fallback's `series_hint`, or the bare filename otherwise (see
+[Parsing files](#parsing-files-to-seriesseasonepisode)). It is also what
+franchise-browsing's fallback grouping and personal known-series detection
+use.
 
 **Resolution order**, used by `/watch`/`/maybe`/`/skip`, the watch-cycle
 key, the Users-pane `n` action, and `watchers`-set wiring, given the
@@ -1269,15 +1190,15 @@ now-playing (or selected) file:
    its **franchise** -- any season in the structural-relations component
    (`franchise::reachable_component`, plus a one-hop check from each linked
    season's own relations row, for a brand-new season whose row hasn't
-   landed yet): that entry. Commitment is per franchise, not per season
-   (proposal 2026-08-28): `/watch` on season three commits to the show,
-   and a new season never mints a second entry. With several entries
-   linked into one franchise (legacy per-season duplicates) the
-   **canonical** one answers -- human-created over auto-created, then
-   deepest along the prequel chain, then lowest id
-   (`series_identity::canonical_first`) -- and a user's commitment is the
-   fold of their preference over *all* of them: Watching > NotWatching >
-   Maybe (`derive::series_watch_for_file`).
+   landed yet): that entry. Commitment is per franchise, not per season:
+   `/watch` on season three commits to the show, and a new season never
+   mints a second entry. With several entries linked into one franchise
+   (legacy per-season duplicates) the **canonical** one answers --
+   human-created over auto-created, then deepest along the prequel chain,
+   then lowest id (`series_identity::canonical_first`) -- and a user's
+   commitment is the fold of their preference over *all* of them:
+   Watching > NotWatching > Maybe (`derive::series_watch_for_file`)
+   (why: [decisions](decisions.md#commitment-is-per-franchise-not-per-season-2026-08-28)).
 2. The file's hash is in some entry's `manual_files`: that entry.
 3. The file's derived name matches some entry's `name` or `local_aliases`:
    that entry.
@@ -1287,43 +1208,35 @@ now-playing (or selected) file:
    derived name, so a later file with the same derived name matches without
    further setup.
 
-This is deliberately **stricter** than the existing franchise-browsing and
+This resolution is deliberately **stricter** than the franchise-browsing and
 known-series heuristics, which stay soft, best-effort, and unchanged (an
-"accepted" cosmetic edge case, per [File Matching](#file-matching)) -- a
-mis-grouped franchise row is a browsing annoyance, but a mis-resolved List
-entry silently un-commits someone from a show they're actively watching.
+"accepted" cosmetic edge case, per [File Matching](#file-matching)).
 
 ### Advancing next_ep
 
-Two distinct problems hide under "auto-advance," with very different
-certainty:
+Auto-advance has two parts with different certainty
+(why: [decisions](decisions.md#bumping-next_ep-is-certain-resolving-it-to-a-file-is-not)):
 
 1. **Bumping the counter.** When the group finishes a file belonging to a
    linked series, the server increments `next_ep` from that file's own
    `AniDbMetadata.episode` (authoritative) and resets `available` to false.
    For an **unlinked** entry the same bump happens from the *just-finished*
-   file's own filename-parsed episode number, when one parses cleanly --
-   there's no real ambiguity here, since it's a fact about a file already
-   confirmed watched, not a guess about one that hasn't aired yet. A file
-   whose name yields no parseable number leaves `next_ep` for a manual bump,
-   exactly like any other free-text entry ("movie 5?").
-2. **Resolving the counter to a file.** Finding *which* library file is
-   episode `next_ep + 1` is the genuinely uncertain step for an unlinked
-   series -- there's no AniDB episode identity to match against, only
-   heuristics (filename-parsed episode number, edit distance to the
-   expected label, mtime recency, `local_aliases`/`manual_files`
-   membership). Rather than guess silently, jumping to `next_ep` on an
-   unlinked entry reuses the Episode Browser's existing multi-file
-   disambiguation UI ("several files claim the same episode number ...
-   expand into a lightweight tree," see [Adding Files to the
-   Playlist](#adding-files-to-the-playlist)) -- generalized from "several
-   files, one confirmed identity" to "several *candidate* files, ranked by
-   score, no confirmed identity." Picking one runs the ordinary
-   add-to-playlist flow; nothing is queued until a human picks. This is
-   deliberately **not** a new kind of synced Playlist entry -- no
-   `Map<Ed2kHash, ...>` schema change -- it lives entirely in the
-   Series/List pane and the episode browser, exactly like choosing which
-   copy of a linked episode to play today.
+   file's own filename-parsed episode number, when one parses cleanly. A
+   file whose name yields no parseable number leaves `next_ep` for a manual
+   bump, exactly like any other free-text entry ("movie 5?").
+2. **Resolving the counter to a file.** For an unlinked series there is no
+   AniDB episode identity to match against, only heuristics
+   (filename-parsed episode number, edit distance to the expected label,
+   mtime recency, `local_aliases`/`manual_files` membership). Jumping to
+   `next_ep` on an unlinked entry therefore reuses the Episode Browser's
+   multi-file disambiguation UI ("several files claim the same episode
+   number ... expand into a lightweight tree," see [Adding Files to the
+   Playlist](#adding-files-to-the-playlist)), generalized to "several
+   *candidate* files, ranked by score, no confirmed identity." Picking one
+   runs the ordinary add-to-playlist flow; nothing is queued until a human
+   picks. This is **not** a new kind of synced Playlist entry and involves
+   no `Map<Ed2kHash, ...>` schema change; it lives entirely in the
+   Series/List pane and the episode browser.
 
 ### UI Integration
 
@@ -1340,18 +1253,18 @@ one the client can't name), so nothing vanishes. Below that the shared
 status groups: ShortList, Planned, Waiting, Hiatus, with Finished/Dropped
 collapsed at the bottom.
 
-Rows are **one per franchise** (proposal 2026-08-28): entries linked into
-the same relations component collapse into one row -- the canonical
-entry's name, status and `next_ep`, the union of the members' commitment
-initials, `available` if any member is, dim only if no member has
-anything to watch -- and unlinked entries stand alone. `e`/`n`/`l`/Enter
-act on the canonical entry.
+Rows are **one per franchise**: entries linked into the same relations
+component collapse into one row -- the canonical entry's name, status and
+`next_ep`, the union of the members' commitment initials, `available` if
+any member is, dim only if no member has anything to watch -- and unlinked
+entries stand alone. `e`/`n`/`l`/Enter act on the canonical entry
+(why: [decisions](decisions.md#one-list-row-per-franchise-2026-08-28)).
 
-Pressing `Enter` on an
-Active/CurrentSeason entry jumps toward `next_ep`: for a linked entry, into
-the episode browser with the cursor on that episode if anyone has it; for an
-unlinked entry, into the candidate-ranked disambiguation view described
-above. Either way queueing tonight's episode is a couple of keypresses.
+Pressing `Enter` on an Active/CurrentSeason entry jumps toward `next_ep`:
+for a linked entry, into the episode browser with the cursor on that
+episode if anyone has it; for an unlinked entry, into the candidate-ranked
+disambiguation view described above. Either way queueing tonight's episode
+is a couple of keypresses.
 
 Within each group, `s` toggles the sort (persisted across sessions, like
 All Series' sort): **Recency** (the default). A row is *watchable* when
@@ -1359,69 +1272,62 @@ the weekly `available` flag is set, or a **known** file -- any library
 metadata row -- is unwatched by both the group watched flag and personal
 watch history (the episode browser's muting rule), resolving to the entry
 by the Series Identity order. Whether anyone currently advertises a copy
-is deliberately not a condition (user decision 2026-08-29, matching the
-episode browser's season rows): the library index is the durable record
-of what exists, and a show nobody happens to be seeding tonight is not
-"nothing to watch". A duplicate encoding of an episode the group watched
-through *any* other copy doesn't count (the any-copy rule, by AniDB
-episode identity).
+is not a condition
+(why: [decisions](decisions.md#watchable-ignores-who-currently-advertises-a-copy-2026-08-29)).
+A duplicate encoding of an episode the group watched through *any* other
+copy doesn't count (the any-copy rule, by AniDB episode identity).
 Rows sort most recently watched first (from local watch history, the same
 source as Recent Series -- the newest watch of *any season in the
 franchise*, entry or not, so "the latest episode is in season three" still
 floats the row), never-watched last, name as the tiebreak;
 **Alphabetical** is plain name order. Rows with nothing to watch render
-dim in either sort but are **never reordered** by it (proposal
-2026-08-28): a predictable order beats a partition that shuffles as files
-come and go.
+dim in either sort but are **never reordered** by it
+(why: [decisions](decisions.md#dim-list-rows-are-never-reordered-2026-08-28)).
 
 Entries display name, nero_name, next_ep, and **live commitment initials**:
 the users whose `series_preference` is Watching, not the import-time
 `watchers` seed (which keeps its one-shot preference-seeding role and is
 never displayed). A **linked** entry whose `SeriesRelations` carries a
-curated community short title renders it *instead of* the official
-name, and alphabetizes under it — "GochiUsa", not "Gochuumon wa Usagi
-Desu ka??" (user decision 2026-08-17: save the space; the full name
-still lives in the edit modal and the episode browser) — but only when
-the entry's name still equals the official title (the auto-seeded
-case): a name a human typed or edited always wins (user decision
-2026-08-18), which is also the fix-it path for a bad curated pick.
+curated community short title renders it *instead of* the official name,
+and alphabetizes under it — "GochiUsa", not "Gochuumon wa Usagi Desu
+ka??" — but only when the entry's name still equals the official title
+(the auto-seeded case). A name a human typed or edited always wins
+(why: [decisions](decisions.md#curated-short-titles-replace-the-official-name-human-edits-win-2026-08-18)).
 
 The short titles are **AI-curated**, not read raw from the titles dump:
-the dump's kind-3 rows are lowercase search tags ("gochiusa s2", "s;g",
-"HnNKn") and only a quarter of series have one, so the server's worker
-sends each series' full title rows to an Anthropic model
-(trusting the answer as returned — the human-name precedence above is
-the backstop — though only for series actually in the batch: an answer
-for any other series is dropped) and caches the answer forever in its
-SQLite; a series the model repeatedly declines to answer settles after
-a few attempts as a durable "no short name", so no series is billed
-indefinitely. The reconcile pass then keeps the replicated
-`short_titles` in step with that cache. The API token is **client-provisioned**: it lives in one
-client's settings (the same `anthropic_token` the commentary engine
-uses), is pushed to the server over the encrypted control connection on
-connect and on any settings edit that changes it
-(`SetAnthropicToken`, protocol v12), and the server persists it — so
-the settings screen is also the interface for rotating or removing the
-server-side credential. No token, no curation; nothing else degrades.
+the server's worker sends each series' full title rows to an Anthropic
+model, trusts the answer as returned (though only for series actually in
+the batch: an answer for any other series is dropped), and caches the
+answer forever in its SQLite. A series the model repeatedly declines to
+answer settles after a few attempts as a durable "no short name". The
+reconcile pass then keeps the replicated `short_titles` in step with that
+cache. The API token is **client-provisioned**: it lives in one client's
+settings (the same `anthropic_token` the commentary engine uses), is
+pushed to the server over the encrypted control connection on connect and
+on any settings edit that changes it (`SetAnthropicToken`, protocol v12),
+and the server persists it. The settings screen is therefore also the
+interface for rotating or removing the server-side credential. No token,
+no curation; nothing else degrades
+(why: [decisions](decisions.md#short-titles-are-ai-curated-with-a-client-provisioned-token)).
 
-`nero_name` is appended dim-quoted as always, and gets its own
-fast entry path: `n` on an entry opens a minimal single-field editor
-(Enter saves — trimmed, empty clears — Esc cancels), the group's
-renaming culture in two keystrokes; the full edit modal remains for
+`nero_name` is appended dim-quoted as always, and gets its own fast entry
+path: `n` on an entry opens a minimal single-field editor (Enter saves —
+trimmed, empty clears — Esc cancels); the full edit modal remains for
 everything else. A linked entry whose free-text `next_ep` parses as a
 plain episode number renders it as **`SnEnn`** -- the season ordinal
 counted along the replicated prequel chain (best effort: cycle-guarded,
 counting the visible prefix when the graph hasn't filled in) -- with an
 "out" marker from `available`; anything else ("S3-05", "Sisters",
-"movie 5?", unlinked entries) renders verbatim. Editing fields and adding entries happens
-in a small edit modal (also where `local_aliases`/`manual_files` are edited
-for an unlinked entry); linking an unlinked entry (`l`) opens the AniDB
-search modal: it pre-searches for the entry's name (informal names like
-"GochiUsa" resolve through the titles dump's synonyms), the user picks
-from the ranked candidates and confirms. Enter on fresh results links;
-editing the query re-arms search. Linking does not require or touch
-`local_aliases`/`manual_files` -- an entry can be linked and still carry
-them, in case a stray file's derived name never matched the AniDB-known one.
+"movie 5?", unlinked entries) renders verbatim. Editing fields and adding
+entries happens in a small edit modal (also where
+`local_aliases`/`manual_files` are edited for an unlinked entry); linking
+an unlinked entry (`l`) opens the AniDB search modal: it pre-searches for
+the entry's name (informal names like "GochiUsa" resolve through the titles
+dump's synonyms), the user picks from the ranked candidates and confirms.
+Enter on fresh results links; editing the query re-arms search. Linking
+does not require or touch `local_aliases`/`manual_files` -- an entry can be
+linked and still carry them, in case a stray file's derived name never
+matched the AniDB-known one.
 
 The `watchers` set wires into the per-series watch preference, and is the
 declarative route to **commitment**: users *in* the watchers set get
@@ -1458,7 +1364,6 @@ CSVs:
   overwritten.
 
 ---
-
 ## TUI Layout
 
 ### UI Principles
@@ -1468,33 +1373,29 @@ setup DessPlay asks crossterm for the terminal's advertised color count once,
 supplemented by the standard `COLORTERM` and `*-direct` `TERM` hints. A
 true-color terminal gets an explicit app-wide dark theme: the complete
 alternate-screen buffer uses a known dark background and mapped RGB semantic
-foregrounds, including panes, modals, and passive overlays. This makes text
-contrast deterministic instead of depending on the user's terminal theme.
-Dim semantic text is materialized as an explicit muted RGB foreground in this
-final pass rather than left as SGR 2, whose treatment alongside explicit RGB
-colors varies between terminal emulators. Other text modifiers are preserved.
-A terminal without true-color retains its own foreground/background theme and
-uses DessPlay's finite ten-color application palette where identity colors are
-needed; its dim text continues to use the terminal's native attribute. The
-capability is injected into the synchronous `Ui`, so tests do not depend on
-process-global terminal state.
+foregrounds, including panes, modals, and passive overlays. Dim semantic text
+is materialized as an explicit muted RGB foreground in this final pass, never
+left as SGR 2. Other text modifiers are preserved. A terminal without
+true-color retains its own foreground/background theme and uses DessPlay's
+finite ten-color application palette where identity colors are needed; its
+dim text uses the terminal's native attribute. The capability is injected
+into the synchronous `Ui`, not read from process-global terminal state.
+(why: [decisions](decisions.md#explicit-dark-theme-on-true-color-terminals))
 
 **No silent long-running work.** Any operation that can take more than
 a moment (hashing a file for the playlist, scanning media roots,
 downloading from peers, archiving) must show visible progress in the
-UI while it runs — a user who sees nothing happen assumes nothing is
-happening, and retries. Playlist-add hashing shows a centered progress
+UI while it runs. Playlist-add hashing shows a centered progress
 overlay (one bar per in-flight file); it is visually modal but captures
 no input, so chat keeps working underneath. Transfers reuse the same
-pattern.
+pattern. (why: [decisions](decisions.md#visible-progress-for-every-long-running-operation))
 
 The **server link** is part of this: whenever the client is not
 connected, the status bar's play-state slot shows the link instead —
 "⚡ connecting to server (attempt N)…" while dialing (a dead handshake
 can take the full per-address timeout ladder; see
 [network-design.md](network-design.md#connection-types), Dialing) and
-"⚡ connection lost — retrying…" after a mid-session drop. Stale gating
-text ("⏸ paused") while silently failing to connect reads as a hang.
+"⚡ connection lost — retrying…" after a mid-session drop.
 
 ```
 +----------------------------------+------------------+
@@ -1523,14 +1424,13 @@ text ("⏸ paused") while silently failing to connect reads as a hang.
 **Proportions:**
 - Bottom: Player status (3 lines) then keybinding bar (1 line)
 - Above that, the main area's last row is one **terminal-wide bottom
-  line**: the progress bar + time at the left (its own row, kept off the
-  bottom status bar so the variable-width "waiting on ..." blocker text
-  never shoves it sideways; the same placement in every subtitle mode), the
+  line**, reserved before the column split: the progress bar + time at
+  the left (its own row, never on the bottom status bar; the same
+  placement in every subtitle mode), the
   [Connection Health Line](#connection-health-line)'s metrics
   **right-aligned** at the terminal edge, and the middle space carrying
   the suggestion slot, centered with a couple of spaces of margin.
-  Reserving the row before the column split keeps the playlist's bottom
-  border level with the chat input's.
+  (why: [decisions](decisions.md#progress-bar-on-its-own-terminal-wide-row))
 - Left 50%: Chat (with input line at bottom)
 - Right 50%, top: Series (three modes: Recent Series / All Series / The List)
 - Right 50%, middle: Users
@@ -1540,41 +1440,35 @@ When any selectable list is taller than its pane or modal, its viewport keeps
 the cursor as close to the vertical center as the list edges permit. Series
 and Users retain that cursor-centered context while unfocused; Playlist
 centers on the now-playing entry while another pane is focused. The chat log
-is deliberately separate: it keeps its history/newest-first scrolling policy
-rather than following a selection cursor.
+is separate: it keeps its history/newest-first scrolling policy rather than
+following a selection cursor.
 
 ### Connection Health Line
 
 The **right-aligned end of the terminal-wide bottom line** is a
 borderless, passive status field showing connection quality and sync
-health at a glance — a saturated uplink can let BitTorrent drown CRDT
-sync while the QUIC connection stays nominally "connected", and this
-row is what makes that visible. (The same line's left end is the
-progress bar; the middle is the suggestion slot below.)
+health at a glance. (The same line's left end is the progress bar; the
+middle is the suggestion slot below.)
+(why: [decisions](decisions.md#health-line-exposes-sync-starvation-on-a-live-connection))
 
 While connected it renders compact metric fragments, joined with dim
 separators: `▲1.2M ▼340K · rtt 89ms · sync ok` —
 
-- **▲/▼**: upload/download bytes per second, the QUIC plane (control,
+- **▲/▼**: upload/download bytes per second: the QUIC plane (control,
   datagrams, relayed transfer) **plus** the torrent engine's live
-  speeds, so the culprit of a saturated uplink is visible here even
-  though it never crosses the server connection.
+  speeds.
 - **rtt**: the median time-sync probe round trip (the probes are
-  datagrams, so this reflects real path latency — bufferbloat shows up
-  as seconds); before any probe is answered, QUIC's own path estimate.
+  datagrams, so this reflects real path latency, bufferbloat included);
+  before any probe is answered, QUIC's own path estimate.
 - **sync**: seconds since *anything* arrived from the server. The
-  server broadcasts a `StateHash` every 30s unconditionally, so this is
-  a zero-false-positive stalled-sync detector: a large value on a live
-  connection means sync is dead even though QUIC is not. Displayed as a
-  static **`sync ok`** while the age is unremarkable — a counting
-  number draws the eye, and what counts as remarkable depends on how
-  chatty the wire should be. During group playback (another interactive
-  peer present) peers' position datagrams arrive continuously, so the
-  age is shown from 5s of silence; alone or idle the only incoming
-  traffic is two interleaved 30s heartbeats (the age legitimately
-  sawtooths toward ~30s), so it is shown only past the 40s warning
-  threshold, where it colors anyway. Display only — the health
-  classification below is unaffected.
+  server broadcasts a `StateHash` every 30s unconditionally, so a large
+  value on a live connection means sync is dead even though QUIC is
+  not. Displayed as a static **`sync ok`** while the age is
+  unremarkable: during group playback (another interactive peer
+  present) the age is shown from 5s of silence; alone or idle it is
+  shown only past the 40s warning threshold, where it colors anyway.
+  Display only — the health classification below is unaffected.
+  (why: [decisions](decisions.md#sync-age-reads-sync-ok-until-remarkable))
 - **N probes lost**: shown only when consecutive steady-state probes go
   unanswered.
 
@@ -1583,9 +1477,9 @@ warning color. Classification (thresholds in `ui/props.rs`,
 `classify_health`): **Degraded** (yellow) at rtt ≥ 1.5s, silence past
 one missed StateHash interval (40s), or 2 lost probes; **Stalled**
 (red) past 2.5 missed intervals (75s), or 3 lost probes with 45s+
-silence. The displayed level is hysteresis-filtered — trouble shows
+silence. The displayed level is hysteresis-filtered: trouble shows
 immediately, calm must hold ~5s (stepping down through intermediate
-levels) — so a single quiet sample never flickers red back to dim.
+levels). (why: [decisions](decisions.md#health-level-hysteresis))
 While not connected the row shows a short link notice
 (`link: connecting…` / `link: down — retrying`); the bottom status
 bar keeps its existing, fuller `⚡` story.
@@ -1595,136 +1489,113 @@ centered with at least two spaces of margin toward each neighbour — is
 the **suggestion slot**, fed by the session-layer **advisor**:
 rule-based advice keyed to the health state — "high latency — disable
 BitTorrent (F3, applies immediately)" when the link degrades with an
-active torrent (and the toggle really does apply immediately — see
+active torrent (the toggle applies immediately — see
 [BitTorrent Downloads](#bittorrent-downloads)), "sync stalled — server
 silent Ns", and a divergence notice. Suggestions carry a severity
-(dim / yellow / red), only re-render when they change, and a cleared
-condition holds the slot ~30s against threshold flicker — but a full
-disconnect clears the slot at once (the `link:` notice supersedes it;
-a condition persisting across the reconnect re-emits). When the row
-is tight the health metrics keep their full width (they are the row's
-reason to exist), the progress bar truncates next, and the suggestion
+(dim / yellow / red) and only re-render when they change. A cleared
+condition holds the slot ~30s; a full disconnect clears the slot at
+once (the `link:` notice supersedes it; a condition persisting across
+the reconnect re-emits). When the row is tight the health metrics keep
+their full width, the progress bar truncates next, and the suggestion
 takes whatever middle space remains — dropped entirely rather than
 rendering a lone ellipsis. The slot's claim on the bar is
-**text-width-capped** — it reserves its occupant's text plus the
+**text-width-capped**: it reserves its occupant's text plus the
 2-space margins, the marquee included (a window as wide as the line
-shows all of it mid-pass), so the bar never shrinks further than the
-middle actually needs; an empty middle reserves nothing. The slot is
-also where the
+shows all of it mid-pass); an empty middle reserves nothing. The slot
+is also where the
 [AI commentary marquee](#ai-commentary-the-marquee) scrolls; slot
 precedence is **warning/critical suggestion > live marquee > info
-suggestion > blank** — a health warning is the row's job, so the
-commentary yields to it.
+suggestion > blank**.
+(why: [decisions](decisions.md#suggestion-slot-hold-truncation-and-precedence))
 
 The row is dead to the mouse (it is outside every pane rect).
 
 ### AI Commentary (the marquee)
 
-Just for fun, and explicitly a **single-user gimmick** (the settings tab
-says "Baughn only"): on the configured interval — jittered ±15 s per
-comment so it isn't metronomic, and only while connected, playing, and
-holding the now-playing file — the client with an Anthropic token asks
-**claude-opus-4-6** (adaptive thinking at low effort, hardcoded — the
-forward-compatible request shape, never the deprecated fixed
-thinking-token budget) to react to the
-episode *in character*, and the reply scrolls across the bottom line's
-middle slot on **every** client.
+A **single-user gimmick** (the settings tab says "Baughn only"): on the
+configured interval — jittered ±15 s per comment, and only while
+connected, playing, and holding the now-playing file — the client with
+an Anthropic token asks **claude-opus-4-6** (adaptive thinking at low
+effort, hardcoded) to react to the episode *in character*, and the
+reply scrolls across the bottom line's middle slot on **every** client.
+(why: [decisions](decisions.md#commentary-model-and-request-shape))
 
 - **The commentator.** The voice is a persistent character from the
   show's cast: a first, spoiler-bounded call asks for "major characters
   who have appeared up to and including this episode only", and the code
   picks one at random. The pick persists across ticks (and across API
-  failures) and is **re-rolled with 5% probability per tick** — a quietly
-  changing persona is funnier than a fresh voice every time. It is
-  deliberately **not** reset on a series change: the voice follows the
-  group to the next show — Hinamori Amu commenting on Grave of the
-  Fireflies is an accepted (welcomed) outcome — until the dice or a
-  client restart retire it. The character card stays pinned to the
-  commentator's *home* series, so a carried-over voice knows it is
-  watching someone else's show.
+  failures) and is **re-rolled with 5% probability per tick**. It is
+  **not** reset on a series change: the voice follows the group to the
+  next show until the dice or a client restart retire it. The character
+  card stays pinned to the commentator's *home* series, so a
+  carried-over voice knows it is watching someone else's show.
+  (why: [decisions](decisions.md#persistent-commentator-with-a-5-re-roll))
 - **The thread.** Each commentator is a real multi-turn conversation,
-  not a stateless call: the character card and rules (the spoiler bound
+  not a stateless call. The character card and rules (the spoiler bound
   — "you know nothing beyond the episode currently being watched" — and
   the output shape, one IRC-style line `<Amu> Whaaaat?`) live in the
-  system prompt, and every tick appends a user turn carrying only the
+  system prompt. Every tick appends a user turn carrying only the
   subtitle lines that arrived **since the last comment** (the advisor
-  ring's per-line sequence numbers are the cursor — consecutive turns
+  ring's per-line sequence numbers are the cursor: consecutive turns
   never overlap, and a failed call doesn't advance the cursor),
   **speaker-attributed** — a cue with an ASS Name field goes out as
-  `Name: line`, the same field the separate subtitle pane colors by,
-  since a model that can't watch the video needs the dialogue
-  attributed (a nameless cue stays bare) — plus an
-  mpv screenshot when one can be captured in time
-  (`screenshot-to-file`, raw frame, no OSD/subs; best-effort — its
-  absence never blocks the tick). The model's replies ride along as
-  assistant turns, so the commentator remembers what it already said.
-  An episode — or series — change stays in-thread: the next turn opens
-  with a "Now playing" header. Episode identity is keyed by the
-  now-playing **file** (alongside series name and episode label) —
-  AniDB-unknown files all share one hint-derived series name and no
-  episode number, so without the file in the key an unlinked series'
-  episode changes would never re-header (or reset the comment seed
-  below). A commentator change (the 5% re-roll)
-  cuts the thread; the fresh commentator's first turn is seeded with
-  the **text** of the current episode's earlier comments — never the
-  images or subtitles behind them — so the voice changes without the
-  conversation restarting from nothing. The 5% re-roll keeps threads
-  young *in expectation*, but its tail is geometric, so a hard cap
-  backs it up: a thread that reaches ~10 turns force-re-rolls on the
+  `Name: line`, the same field the separate subtitle pane colors by; a
+  nameless cue stays bare — plus an mpv screenshot when one can be
+  captured in time (`screenshot-to-file`, raw frame, no OSD/subs;
+  best-effort — its absence never blocks the tick). The model's replies
+  ride along as assistant turns, so the commentator remembers what it
+  already said. An episode — or series — change stays in-thread: the
+  next turn opens with a "Now playing" header. Episode identity is
+  keyed by the now-playing **file** (alongside series name and episode
+  label). A commentator change (the 5% re-roll) cuts the thread; the
+  fresh commentator's first turn is seeded with the **text** of the
+  current episode's earlier comments — never the images or subtitles
+  behind them. A thread that reaches ~10 turns force-re-rolls on the
   next tick, through the same fresh-thread path the dice take (seeding
   included). Sent history is **append-only** — a turn, once sent, is
-  never rewritten or trimmed, because the prompt cache below matches on
-  a byte-stable prefix — so the cap is what bounds the request body,
-  and a per-thread screenshot-byte budget (two worst-case frames'
-  worth) sends a turn frameless rather than let accumulated frames
-  outgrow the API's request-size cap. (An earlier design instead
-  stripped screenshots from turns older than the last two; that rewrote
-  the cached prefix every tick and silently re-billed the whole thread
-  at full price whenever frames flowed.)
+  never rewritten or trimmed — so the turn cap is what bounds the
+  request body, and a per-thread screenshot-byte budget (two worst-case
+  frames' worth) sends a turn frameless once it is exhausted.
+  (why: [decisions](decisions.md#commentary-thread-structure))
 - **Caching.** When the interval (jitter included) fits inside the
   Anthropic prompt cache's 5-minute ephemeral TTL — the 2 min and
-  4 min presets; the 4 min preset exists precisely to duck under
-  the TTL — each request marks the final text block with an ephemeral
-  `cache_control` breakpoint, so the append-only thread re-bills at
-  cache-read rates instead of full price. At 10 min the cache would be
-  cold anyway and the write surcharge is skipped. Per-call token usage
-  (input, output, cache read/write) is logged at info.
+  4 min presets — each request marks the final text block with an
+  ephemeral `cache_control` breakpoint, so the append-only thread
+  re-bills at cache-read rates instead of full price. At 10 min no
+  breakpoint is set. Per-call token usage (input, output, cache
+  read/write) is logged at info.
+  (why: [decisions](decisions.md#commentary-prompt-caching-by-interval-preset))
 - Replies are normalized (newlines flattened, missing `<Name>` prefix
   repaired, hard-capped ~220 chars).
-- **Distribution.** The line is written to the synced, deliberately
-  generic **marquee register** (`LwwCell<Option<MarqueeMessage>>`,
-  cleared at compaction like other ephemeral session state); every
-  client — the author included, via the ordinary sync echo — plays the
-  same marquee. How it is *shown* is a local choice: the
-  **commentary-marquee** setting (Playback & display tab) can instead
-  fold each update into the chat log as a dim local line (still one
-  line per LWW stamp, and a pre-startup stamp is still never
-  replayed), or hide updates entirely — either way the stamp is
-  adopted, so switching back to the marquee never replays an old
-  message. One update = **one pass**: the text enters entirely
-  off-screen right (the entry delay gives people time to notice motion
-  and glance down before the sentence starts leaving), scrolls left at
-  ~15 cells/s, exits entirely off-screen left, and the slot reverts to
-  the advisor suggestion. A pass is keyed by the register's LWW stamp —
-  a rewrite replays even with identical text; the same stamp never
-  restarts. A stamp from **before this session's first snapshot** never
-  plays at all: the register persists in synced state until compaction,
-  so a freshly started client would otherwise replay last night's final
-  comment on launch — it is adopted as already-played instead. While a
-  pass animates the UI thread ticks at ~100ms instead of its lazy 1s
-  (idle cost unchanged — a tick only repaints when something moved).
+- **Distribution.** The line is written to the synced, generic
+  **marquee register** (`LwwCell<Option<MarqueeMessage>>`, cleared at
+  compaction like other ephemeral session state); every client — the
+  author included, via the ordinary sync echo — plays the same marquee.
+  How it is *shown* is a local choice: the **commentary-marquee**
+  setting (Playback & display tab) can instead fold each update into
+  the chat log as a dim local line (still one line per LWW stamp, and a
+  pre-startup stamp is still never replayed), or hide updates entirely
+  — either way the stamp is adopted, so switching back to the marquee
+  never replays an old message. One update = **one pass**: the text
+  enters entirely off-screen right, scrolls left at ~15 cells/s, exits
+  entirely off-screen left, and the slot reverts to the advisor
+  suggestion. A pass is keyed by the register's LWW stamp — a rewrite
+  replays even with identical text; the same stamp never restarts. A
+  stamp from **before this session's first snapshot** never plays at
+  all: it is adopted as already-played. While a pass animates the UI
+  thread ticks at ~100ms instead of its lazy 1s (a tick only repaints
+  when something moved).
+  (why: [decisions](decisions.md#marquee-distribution-and-replay-rules))
 - **Failure policy.** Every failure — HTTP error, refusal, empty cast,
   malformed reply — is a log line and a skipped tick; never a chat line,
   never user-visible noise. An in-flight call never stacks with the next
   tick, and disabling mid-flight discards the late result. The feature
-  narrates itself in the log at **info** — whether it is enabled (at
-  startup and on every settings change, with the reason when it is not),
-  each outgoing request, the commentator it picked, each call's token
-  usage (input, output, cache read/write — "is the cache hitting?" is
-  one grep away), and the comment that came back — since a gimmick that
-  speaks once every few minutes is otherwise indistinguishable from a
-  broken token. Skipped ticks (paused, file not held, still in flight)
-  log their reason at debug.
+  logs at **info**: whether it is enabled (at startup and on every
+  settings change, with the reason when it is not), each outgoing
+  request, the commentator it picked, each call's token usage (input,
+  output, cache read/write), and the comment that came back. Skipped
+  ticks (paused, file not held, still in flight) log their reason at
+  debug. (why: [decisions](decisions.md#commentary-failures-are-silent-and-the-log-is-loud))
 
 **Subtitle display (optional):** the local player's subtitles can be
 surfaced in three modes, cycled live with `F2` (Off -> Intermixed ->
@@ -1744,13 +1615,13 @@ in the list panes, simultaneously selects the clicked row (the seeders
 line and other non-selectable rows are ignored). The wheel scrolls the
 pane under the pointer only when that pane is **already focused** (the
 chat scrolls its log, list panes move their selection like Up/Down);
-over an unfocused pane it is ignored — touchpads emit wheel events by
-accident, so a graze must neither scroll invisibly nor steal focus.
-The one exception is the separate [subtitle pane](#subtitle-display):
-it is not focusable, so the wheel scrolls it back through the subtitle
-log whenever the pointer is over it (its title shows the offset, e.g.
-`Subtitles (-6)`); this is deliberately mouse-only — keyboard users
-scroll subtitles in Intermixed mode, where they share the chat log.
+over an unfocused pane it is ignored. The one exception is the separate
+[subtitle pane](#subtitle-display): it is not focusable, so the wheel
+scrolls it back through the subtitle log whenever the pointer is over
+it (its title shows the offset, e.g. `Subtitles (-6)`). This is
+mouse-only; keyboard users scroll subtitles in Intermixed mode, where
+they share the chat log.
+(why: [decisions](decisions.md#wheel-scrolls-only-the-focused-pane))
 Clicking never activates a row (no double-click Enter); the one
 click-driven action is the chat [spoiler](#chat) reveal, whose key
 equivalent is `/reveal`. **Resizable panes:** the four pane boundaries
@@ -1759,32 +1630,30 @@ pane when shown) are splitters — press on the shared border cells and
 drag. Each pane keeps a minimum 10% share, the Series/Users splitter
 trades rows between those two only (the playlist boundary stays put),
 and the layout is persisted on release (`pane_layout`, whole percents)
-as a local display preference. No key equivalent — resizing is rare
-and not something keyboard speed matters for. Mouse events are ignored while a modal is
-open. Keyboard-only terminals lose nothing — every mouse action has a
-key equivalent, with one deliberate exception: chat text selection
-(below) is mouse-native, and uncommon enough to need no keyboard path.
+as a local display preference. There is no key equivalent for
+resizing. Mouse events are ignored while a modal is open.
+Keyboard-only terminals lose nothing — every mouse action has a key
+equivalent, with one exception: chat text selection (below) is
+mouse-native.
+(why: [decisions](decisions.md#mouse-actions-have-key-equivalents-except-resize-and-selection))
 
 **Chat text selection:** click-and-drag over the chat log selects text
-for copying (the terminal's own selection needs Shift once mouse
-capture is on, and knows nothing of panes). Releasing the button
-**copies immediately** to the system clipboard (`arboard`; local
-machine only — over SSH the copy quietly degrades). On X11 both
-selections are written — CLIPBOARD for Ctrl-V and PRIMARY for
-middle-click / Shift-Insert, the terminal-user reflex. No copy key is
-involved: the terminal owns Cmd-C, and Ctrl-C stays Quit. A drag
-within one message selects a char range and copies it verbatim,
-exactly as displayed (a hidden spoiler copies as its scramble —
-WYSIWYG, no leak). A drag that crosses a message boundary snaps to
-whole lines and copies them in the irccloud log format —
-`HH:MM:SS <nick> body` (`* nick body` for actions; day separators are
-render furniture, skipped) — and a selection is always one of those
-two shapes, never a mix. The reverse-video highlight is held for 5
-seconds after release; while held, Shift-Up/Down extend the selection
-one whole line at a time (a partial selection first widens to its
-whole line, gdocs-style), re-copying on each step. Any other key or
-click — or the timeout — dismisses the highlight; the clipboard keeps
-the last copy. A motionless click never touches the clipboard.
+for copying. Releasing the button **copies immediately** to the system
+clipboard (`arboard`; local machine only — over SSH the copy quietly
+degrades). On X11 both selections are written — CLIPBOARD for Ctrl-V
+and PRIMARY for middle-click / Shift-Insert. No copy key is involved.
+A drag within one message selects a char range and copies it verbatim,
+exactly as displayed (a hidden spoiler copies as its scramble). A drag
+that crosses a message boundary snaps to whole lines and copies them
+in the irccloud log format — `HH:MM:SS <nick> body` (`* nick body` for
+actions; day separators are skipped) — and a selection is always one
+of those two shapes, never a mix. The reverse-video highlight is held
+for 5 seconds after release; while held, Shift-Up/Down extend the
+selection one whole line at a time (a partial selection first widens
+to its whole line), re-copying on each step. Any other key or click —
+or the timeout — dismisses the highlight; the clipboard keeps the last
+copy. A motionless click never touches the clipboard.
+(why: [decisions](decisions.md#chat-selection-copies-on-release-with-no-copy-key))
 
 ### Keyboard Shortcuts
 
@@ -1847,7 +1716,6 @@ the last copy. A motionless click never touches the clipboard.
 Note: there is no `q` to quit -- too easy to hit while typing in chat.
 
 ---
-
 ## Network Protocol
 
 ### Overview
@@ -1873,10 +1741,11 @@ connects over loopback. Responsibilities:
    (see [Presence](#presence))
 4. **Relay**: Forward all file transfer traffic between peers (there are no
    client-to-client connections; see [network-design.md](network-design.md))
-5. **Compaction**: Scheduled daily (default 12:00 UTC, `--compact-at`, configurable
-   -- chosen to be far from watch-party hours). Compacts state, increments the
-   epoch, and broadcasts the fresh snapshot to all connected clients, which
-   adopt it like a stale-epoch reconnect. See [sync-state.md](sync-state.md).
+5. **Compaction**: Scheduled daily (default 12:00 UTC, `--compact-at`,
+   configurable). Compacts state, increments the epoch, and broadcasts the
+   fresh snapshot to all connected clients, which adopt it like a
+   stale-epoch reconnect. See [sync-state.md](sync-state.md).
+   (why: [decisions](decisions.md#compaction-hour-and-server-placement))
 6. **AniDB lookups**: Enriching playlist items with series/season/episode
    metadata, and fetching the relations graph for franchise grouping —
    plus the AI short-title curator (see The List), whose Anthropic token
@@ -1900,11 +1769,10 @@ NTP-like protocol to establish shared clock:
 4. Calculate offset and round-trip time
 5. Repeat periodically to maintain sync
 
-All state timestamps use this shared clock. UI animation deliberately
-does not: both the wall and shared clocks can step backward (NTP
-corrections; a later sync round shrinking the offset), so the TUI's
-animators run on a local monotonic clock and use shared/wall time only
-for display and message identity (see ui-architecture.md).
+All state timestamps use this shared clock. UI animation does not: the
+TUI's animators run on a local monotonic clock and use shared/wall time
+only for display and message identity (see ui-architecture.md).
+(why: [decisions](decisions.md#ui-animation-on-a-local-monotonic-clock))
 
 ### State Sync Protocol
 
@@ -1932,7 +1800,7 @@ Full details in [sync-state.md](sync-state.md). Summary of replicated data types
 | Marquee | `LwwCell<Option<MarqueeMessage>>` | Written by the commentary-running client; every client scrolls it on update; cleared at compaction |
 
 All registers are `LwwCell<V>` — DessPlay's own max-merge LWW register
-(`crdts::MVReg` proved non-convergent inside `Map`; see sync-state.md).
+(why: [decisions](decisions.md#lwwcell-instead-of-crdtsmvreg)).
 `ActorId` type parameters omitted from the table for brevity -- all CRDTs
 use `ActorId` as the actor type. See [sync-state.md](sync-state.md) for
 the full `Lww<V>` design.
@@ -1972,38 +1840,37 @@ Stored in local SQLite database, editable via settings screen.
 
 ### Media Library Scanning
 
-Clients keep a **library index** of every file under their media roots, so the
-franchise browser can show the group's collective collection and add any of it
--- not just files already in the playlist. The index reuses the `hash_cache`
-table (path -> ed2k root + per-block hashes, keyed by `(mtime, size)`).
+Clients keep a **library index** of every file under their media roots. The
+franchise browser shows the group's collective collection and can add any
+of it -- not just files already in the playlist. The index reuses the
+`hash_cache` table (path -> ed2k root + per-block hashes, keyed by
+`(mtime, size)`).
 
 - **At startup** the client walks every media root, `stat`s each file, and
   hashes anything new or changed (a path missing from `hash_cache`, or whose
   `(mtime, size)` disagrees). Unchanged files are a cache hit -- no re-read.
 - **Periodically** the client re-walks the roots and re-hashes only changed
-  files. Interactive clients rescan about once a minute; a seeder, whose store
-  is large and stable, rescans once a day.
-- **Hashing yields to transfers.** Scan hashing is bulk disk work
-  with no deadline, while transfers are latency-sensitive (a source that
-  serves nothing for 30s is snubbed) — so while transfer traffic (serving
-  or downloading) is active, scan hashing defers, resuming ~10s after the
+  files. Interactive clients rescan about once a minute; a seeder rescans
+  once a day.
+- **Hashing yields to transfers.** While transfer traffic (serving or
+  downloading) is active, scan hashing defers, resuming ~10s after the
   traffic goes quiet. The walk itself (stat-only) still runs. One
   exemption: a walked file whose name matches an unmet playlist entry is
-  resolved (and so hashed) immediately, even during transfers — otherwise
-  an active download would defer the discovery of the very file that makes
-  it redundant (see [Download Cache](#download-cache-and-retention), "a
-  local copy trumps the download").
+  resolved (and so hashed) immediately, even during transfers (see
+  [Download Cache](#download-cache-and-retention), "a local copy trumps
+  the download").
+  (why: [decisions](decisions.md#scan-hashing-yields-to-transfers))
 - **The walk also reconciles disappearance per media root.** If at least one
   previously indexed file in a root still exists, the root is online and
-  missing sibling rows are genuine moves/deletions, so they are removed
-  immediately. If *none* of that root's recorded files exists, the client
-  assumes removable storage was disconnected: it retains the hashes
-  indefinitely but marks the root vanished. Vanished rows are hidden from
-  library browsing/search and lookup announcements and are not advertised as
+  missing sibling rows are removed immediately. If *none* of that root's
+  recorded files exists, the client retains the hashes indefinitely and
+  marks the root vanished. Vanished rows are hidden from library
+  browsing/search and lookup announcements and are not advertised as
   locally available. When any recorded file returns, matching `(mtime, size)`
   rows reactivate without re-hashing and genuinely absent siblings are pruned.
   Rows outside media roots (the download cache) remain governed by their own
   startup reconciliation.
+  (why: [decisions](decisions.md#vanished-roots-and-the-removed-root-grace-period))
 - Removing a root from the effective runtime root list hides it immediately
   and starts a **seven-day grace period**. Re-adding the identical path within
   that window preserves its hashes; after seven days the root record and its
@@ -2012,11 +1879,10 @@ table (path -> ed2k root + per-block hashes, keyed by `(mtime, size)`).
   inserts a `FileHashInfo` (hash, size, filename, mtime, and a title-like
   containing-directory `series_hint`) into the
   `lookup_requests` GSet -- the same "please look this up" set the playlist
-  uses, now fed by the whole library. The scan has each file's path and mtime
-  in hand (the mtime keys the `hash_cache`; the path yields the directory
-  hint), so library requests always carry both. Server-side per-hash de-duplication and the cross-client
-  "already checked" bookkeeping (the `anidb_queue` table) keep AniDB load
-  bounded even when several clients index overlapping collections.
+  uses, fed by the whole library. Library requests always carry both the
+  mtime and the directory hint. The server de-duplicates per hash, and the
+  `anidb_queue` table records what has already been checked across clients.
+  (why: [decisions](decisions.md#library-wide-lookup-requests-and-anidb-load))
 
 Active hashing surfaces progress like any other long-running work (see
 [UI Principles](#ui-principles)); a quiet rescan that finds nothing new is
@@ -2047,27 +1913,22 @@ When a playlist item is added (or an entry re-resolves):
    `(mtime, size)` no longer agrees with the disk is stale, not evidence;
    and the row must be **visible** — inside a current media root, the
    download cache, or a manual-mapping path. A removed root's rows are
-   retained through the seven-day grace only so a re-add is cheap; they
-   are hidden from matching (and serving) the moment the root is removed.
+   hidden from matching (and serving) the moment the root is removed, even
+   though they are retained through the seven-day grace.
 2. **If the index holds no match**, search the media roots for a file with
-   the entry's exact basename and hash it now. This is the
-   freshly-arrived-file fast path — a copy dropped in moments ago that no
-   scan has reached — and the *only* on-demand hashing resolution ever
-   does. A name match with the wrong hash is a different encode: it goes to
-   the mismatch re-check watcher (see [Content Hash](#content-hash)), not
-   to Ready.
+   the entry's exact basename and hash it now. This is the only on-demand
+   hashing resolution ever does. A name match with the wrong hash is a
+   different encode: it goes to the mismatch re-check watcher (see
+   [Content Hash](#content-hash)), not to Ready.
 3. **Otherwise: Missing** (red in UI), and the entry's hash joins the
    **wanted set**. Whenever a hash subsequently enters the live index — a
    scan hashes a new or changed file, a vanished root's rows reactivate, a
    download completes — it is checked against the wanted set and the entry
    adopts the copy on the spot, by hash, whatever the file is named.
 
-Resolution never walks the disk hashing candidates: the index is expected
-to already exist (the scanner builds and maintains it ahead of demand),
-and a copy the index hasn't absorbed yet is picked up by step 3 when the
-scan reaches it. The basename search in step 2 exists only to close the
-gap between "the file just appeared" and "the next scan pass" — it is an
-optimization, and missing it is never load-bearing.
+Resolution never walks the disk hashing candidates. The basename search in
+step 2 is an optimization; missing it is never load-bearing.
+(why: [decisions](decisions.md#resolution-reads-the-index-instead-of-hashing-candidates))
 
 *Implementation note:* this requires the index to answer by-hash lookups
 (`hash_cache` is keyed by path; a reverse map or SQL index on the root
@@ -2085,50 +1946,47 @@ Files retrieved from peers are written to the **download cache**
 They are never automatically promoted into a media root.
 
 **The cache is hash-addressed, and the filesystem is the source of truth.**
-The `cache_entries` table is an index over the cache, not an authority: a
-user may delete, move, or truncate files behind the app's back. So at
-**startup the file actor reconciles `cache_entries` against disk** — a row
-whose file is gone or whose size disagrees is pruned (along with its
-`hash_cache` row), which makes the playlist entry re-resolve to Missing and
-re-download; a surviving row is re-registered as a servable copy. The
-reconciliation is bidirectional: it also **sweeps orphans** — hash-named
-cache files with *no* `cache_entries` row. An orphan is either a completed
-download whose bookkeeping was lost (a DB reset leaves the files but not the
-rows) or an abandoned peer-download partial (`download_path` is the final
-`<cache>/<hash>` path, so an interrupted download leaves one). Because
-eviction only iterates `cache_entries`, an orphan is invisible to it and
-would leak forever. Orphans **older than a week by mtime** are deleted at
-startup — matching the "in-flight downloads don't survive restarts"
-contract — while anything more recent is left alone (it may still be in
-flight or wanted). Resolution
-then finds a cached download like any other local copy — by hash, through
-the index (see [File Matching](#file-matching)); the cache being
-hash-named additionally lets `<cache>/<hash>` be checked directly, with no
-index row needed. Two **runtime guards** cover deletions that
+The `cache_entries` table is an index over the cache, not an authority. At
+**startup the file actor reconciles `cache_entries` against disk**:
+
+- A row whose file is gone or whose size disagrees is pruned (along with its
+  `hash_cache` row). The playlist entry then re-resolves to Missing and
+  re-downloads.
+- A surviving row is re-registered as a servable copy.
+- The reconciliation also **sweeps orphans** — hash-named cache files with
+  *no* `cache_entries` row. Orphans **older than a week by mtime** are
+  deleted at startup; anything more recent is left alone.
+
+(why: [decisions](decisions.md#cache-reconciliation-and-the-orphan-sweep))
+
+Resolution then finds a cached download like any other local copy — by
+hash, through the index (see [File Matching](#file-matching)); the cache
+being hash-named additionally lets `<cache>/<hash>` be checked directly,
+with no index row needed. Two **runtime guards** cover deletions that
 happen mid-session rather than between runs: a player load failure
 (file gone under us) and a serve-time absence (a peer asks for a file we no
 longer hold) both drop the local copy, prune its bookkeeping, and flip the
 file to Missing so it re-resolves.
 
-The serve-time answer distinguishes circumstance from identity. A
-solicitation for a file the session merely hasn't *registered* yet — the
-normal post-restart state, since Ready is durable synced state while the
-servable set is rebuilt lazily — is recovered from the library index: a
-live, visible row bearing the hash is a genuine copy, adopted and served
-on the spot. Only when nothing on disk backs the advert does the holder
-answer **nothing** and retract its own Ready (Missing), letting the
-requester's source refresh drop it and re-add it if a copy later
-re-resolves. `CannotServe` is reserved for a definitive identity mismatch
-(e.g. a manual mapping to a different encode): the requester treats it as
-a denial that lasts as long as the advert that earned it stands, so a
-transient "not right now" must never be answered with it.
+The serve-time answer distinguishes circumstance from identity:
+
+- A solicitation for a file the session has not *registered* yet is
+  recovered from the library index: a live, visible row bearing the hash is
+  a genuine copy, adopted and served on the spot.
+- Only when nothing on disk backs the advert does the holder answer
+  **nothing** and retract its own Ready (Missing). The requester's source
+  refresh then drops it, and re-adds it if a copy later re-resolves.
+- `CannotServe` is reserved for a definitive identity mismatch (e.g. a
+  manual mapping to a different encode). A transient "not right now" must
+  never be answered with it.
+
+(why: [decisions](decisions.md#serve-time-answers-nothing-versus-cannotserve))
 
 **Retention** (`cache_retention`, per client): a cached file becomes
 *evictable* once it is no longer needed — either it has been watched (85%
 rule, or it sits behind the group's progress via the watched flag) **or it
-is no longer referenced by the playlist at all** (an abandoned download must
-not pin cache space just because nobody happened to watch it). An evictable
-file is deleted `cache_retention` after its last access. Special values:
+is no longer referenced by the playlist at all**. An evictable file is
+deleted `cache_retention` after its last access. Special values:
 
 - `0`: deleted at the next eviction pass after watching -- the
   "small laptop" setting; nothing accumulates
@@ -2138,11 +1996,8 @@ Eviction passes run at startup and on EOF-advance. The now-playing file and
 queued unwatched playlist entries are never evicted, regardless of retention.
 Passes are additionally **gated on adoption**: no eviction runs until a
 synced state has been loaded from disk or adopted from the server this
-session (the sync actor's `adopted` watch). Before that, the view is the
-transient emptiness of a fresh replica — a first run, or the window after
-`--reset-sync`/`/resync` before the connect handshake — and a pass planned
-from it would protect nothing (2026-08-21 review: it deleted cached media
-the real playlist still referenced, including the now-playing file).
+session (the sync actor's `adopted` watch).
+(why: [decisions](decisions.md#eviction-rules-unreferenced-files-and-the-adoption-gate-2026-08-21))
 
 **Archive**: an explicit action (`A` in the playlist pane) that moves a cached
 file under the download root (the topmost media root). The default **Archive
@@ -2150,35 +2005,31 @@ subdirectory** setting produces `[Series name]/[Original filename]`; when
 disabled, the destination is `[Original filename]` directly under the root.
 This is the deliberate "keep this in the library" decision; retention is the
 default "it was just for the watch party" path. There is no `Season #`
-level: AniDB models each season as its own anime (a franchise member), so a
-single series name is already one season's folder. Both the series-name and
-filename components are sanitized.
+level. Both the series-name and filename components are sanitized.
+(why: [decisions](decisions.md#archive-layout-has-no-season-level))
 
 **Auto-archive** (the **Auto-archive watched** setting, default off) makes
 the personal watch record the archive trigger: the moment a cached file
 crosses the 85% rule (see [Watch Tracking](#watch-tracking)) it is archived
-exactly as `A` would, with the same series-name/filename destination. The
-symmetric case is covered too — a file watched off a still-downloading
-partial is archived when its download completes, since it only becomes a
-cached download then. Only cache-only files qualify; a library file or an
-already-archived one is silently skipped, and the group's watched flag (the
-`w` key, EOF-advance) is *not* a trigger — that is the group's history, not
-this user's viewing. Because the record fires at 85%, auto-archive always
-precedes the EOF-advance eviction pass, so `cache_retention: 0` and
-auto-archive compose: watched files are moved, never deleted. The archive
-policy — subdirectory layout and the auto trigger — is owned by the file
-actor and pushed on settings save, so the manual and automatic paths cannot
-disagree about the destination.
+exactly as `A` would, with the same series-name/filename destination. A
+file watched off a still-downloading partial is archived when its download
+completes. Only cache-only files qualify; a library file or an
+already-archived one is silently skipped. The group's watched flag (the
+`w` key, EOF-advance) is *not* a trigger. Auto-archive always precedes the
+EOF-advance eviction pass, so `cache_retention: 0` and auto-archive
+compose: watched files are moved, never deleted. The archive policy —
+subdirectory layout and the auto trigger — is owned by the file actor and
+pushed on settings save.
+(why: [decisions](decisions.md#auto-archive-trigger-and-ordering))
 
 An archive moves a file the player may have open. A same-filesystem rename
 completes inline and the open handle follows; a cross-device move copies in
-a background task (a multi-gigabyte copy must not stall serving mid-session)
-with the cache copy left servable until the copy lands, then re-keys the
-bookkeeping and deletes the source. The eviction pass skips a file whose
-copy is in flight. The session follows the move in its own bookkeeping —
-resolution and loaded path — **without reloading** the player: a reload at
-85% would be a visible hiccup, and a stale resolution would send a rewatch
-to the vanished cache path.
+a background task, with the cache copy left servable until the copy lands,
+then re-keys the bookkeeping and deletes the source. The eviction pass
+skips a file whose copy is in flight. The session follows the move in its
+own bookkeeping — resolution and loaded path — **without reloading** the
+player.
+(why: [decisions](decisions.md#archiving-an-open-file-without-a-reload))
 
 Cache-only files (those with a download-cache row, i.e. not yet in a media
 root) are flagged in the playlist pane with a dim **`temp`** marker in its
@@ -2194,7 +2045,7 @@ failed (…): …"); these notices are local, not synced.
 land locally through another channel mid-transfer (e.g. a bittorrent
 download racing the prefetch). The library walk (stat-only, so it runs
 even while transfers defer scan *hashing*) spots a new file bearing
-the name of an unmet playlist entry and resolves it immediately — resolve
+the name of an unmet playlist entry and resolves it immediately. Resolve
 hashes outside the scan deferral, and a copy still being written lands in
 the mismatch re-check, verifying seconds after the write finishes.
 A verified copy cancels the peer download (sources are told to drop our
@@ -2204,36 +2055,34 @@ matching file under a *different* filename, invisible to the name-based
 walk trigger, is adopted when its scan hash comes in. Every "a local
 copy turned up" channel — resolve, scan adoption, a completed
 [browse import](#bittorrent-downloads), and a manual mapping — funnels
-through one adoption seam, so none can skip the cancel. The manual
-mapping joins the seam **on content confirmation**: the mapping is
-filename-trusted for the user's own playback and resolves Ready
-immediately, but only once its background hash proves the content
-matches the entry is the copy adopted and the redundant download
-cancelled — a different-encode mapping never cancels a good download,
-which keeps running for the real bytes. A browse import cancels the peer
-download *before* placing its payload in the cache (both share the
-hash-addressed cache path), and an import of a file **already held
-under a media root** finishes against the library copy instead of
-demoting it to a retention-evictable cache row.
+through one adoption seam. The manual mapping joins the seam **on content
+confirmation**: the mapping is filename-trusted for the user's own
+playback and resolves Ready immediately, but the copy is adopted and the
+redundant download cancelled only once its background hash proves the
+content matches the entry. A browse import cancels the peer download
+*before* placing its payload in the cache (both share the hash-addressed
+cache path), and an import of a file **already held under a media root**
+finishes against the library copy instead of demoting it to a
+retention-evictable cache row.
+(why: [decisions](decisions.md#one-adoption-seam-for-local-copies))
 
 **Pre-fetching**: a client with downloading enabled wants **every unwatched
 playlist entry** local, plus now-playing itself regardless of the watched
-flag (a rewatch is a watch), so next week's episode -- and the whole queue
-behind it -- is usually local before the session starts. Fetch order is
-**anchored at now-playing**: entries after it in playlist order, nearest
-first, then entries behind it (nearest-first), lowest priority. The
-ordering acts at the **chunk level** (network-design.md, Scheduling): the
-per-source request window is one shared budget filled in this order, so a
-now-playing advance or a playlist edit re-targets the running transfers
-within a tick -- no cancels, no restarts. A **watched** entry queued ahead
-of now-playing does not prefetch; its rewatch fetch starts when it becomes
-now-playing. An interactive client **skips auto-download** for entries
-whose series it has marked **NotWatching** -- no point fetching a show
-you've opted out of. **Maybe** (the default) and **Watching** entries are
-fetched normally; a NotWatching file that is already local still loads
+flag (a rewatch is a watch). Fetch order is **anchored at now-playing**:
+entries after it in playlist order, nearest first, then entries behind it
+(nearest-first), lowest priority. The ordering acts at the **chunk level**
+(network-design.md, Scheduling): the per-source request window is one
+shared budget filled in this order, so a now-playing advance or a playlist
+edit re-targets the running transfers within a tick -- no cancels, no
+restarts. A **watched** entry queued ahead of now-playing does not
+prefetch; its rewatch fetch starts when it becomes now-playing. An
+interactive client **skips auto-download** for entries whose series it has
+marked **NotWatching**. **Maybe** (the default) and **Watching** entries
+are fetched normally; a NotWatching file that is already local still loads
 (you can mute), it is just never fetched. Seeders fetch everything, in the
 same anchored order with watched back-catalog last (see
 [Client Roles](#client-roles)).
+(why: [decisions](decisions.md#prefetch-anchored-at-now-playing))
 
 ### BitTorrent Downloads
 
@@ -2241,28 +2090,21 @@ BitTorrent exists in DessPlay for exactly one thing: the Playlist
 pane's explicit **browse search** (`n`) — a user types a query, picks a
 release by hand, and it downloads in the background. Missing playlist
 files are **never** fetched via torrent: the peer relay is the only
-automatic fetch path. (An earlier torrent-first automatic path was
-removed in 2026-08 once the peer transfer matured — for rare files a
-manual search plus a full BT client covers the gap.) DessPlay is not
-primarily a torrent client, and the design keeps its torrent footprint
-deliberately session-scoped: nothing torrent-related survives a
-restart.
+automatic fetch path. The torrent footprint is session-scoped: nothing
+torrent-related survives a restart.
+(why: [decisions](decisions.md#bittorrent-is-browse-only-2026-08))
 
 The feature is gated behind the **BitTorrent downloads** setting
-(`torrent_enabled`, default **off**) — the engine opens ports and joins
-the DHT, so it never starts unless the user opted in. The setting's
-lifecycle is **asymmetric**: *enabling* applies at startup (the engine
-is constructed then or never), but *disabling* applies **immediately** —
-saving the setting removes every seeding torrent (payload files
-deleted) and cancels pending imports. This is the mid-session escape
-hatch for a saturated uplink (torrent traffic can drown CRDT sync; the
-health line's suggestion points here). Cached copies of *completed*
-imports are untouched — they were hardlinked into the hash-addressed
-cache at verification. Known limitation: the librqbit session and its
-DHT socket stay alive until restart — bounded chatter, no payload
-traffic. **Seeders run no torrent path at all** — the browse import is
-an interactive feature, and a file nyaa can supply makes the seeder
-redundant; its job is the rare, peer-only files.
+(`torrent_enabled`, default **off**). The setting's lifecycle is
+**asymmetric**: *enabling* applies at startup (the engine is constructed
+then or never), but *disabling* applies **immediately** — saving the
+setting removes every seeding torrent (payload files deleted) and cancels
+pending imports. Cached copies of *completed* imports are untouched — they
+were hardlinked into the hash-addressed cache at verification. Known
+limitation: the librqbit session and its DHT socket stay alive until
+restart — bounded chatter, no payload traffic. **Seeders run no torrent
+path at all.**
+(why: [decisions](decisions.md#torrent-setting-default-off-asymmetric-lifecycle-no-seeder-path))
 
 **Search.** The browse search queries nyaa.si's Anime category,
 inspects at most the first 20 RSS entries in feed order, and fetches
@@ -2283,19 +2125,16 @@ cancelled import stays a local notice and never creates a provisional
 shared entry.
 
 **Session-only seeding.** A completed import keeps seeding from its
-import directory — a session typically lasts long enough to clear 1:1
-on a release worth importing — until the app closes, the cached file is
-evicted (retention or a lost local copy), or the setting is disabled;
-upload is capped by the existing `upload_limit` setting. Seeding
-deliberately does **not** resume on the next launch: "the video player
-is seeding last week's torrents" is unexpected behavior for something
-that isn't primarily a torrent client. Accordingly the engine runs
-with no persistence, nothing about a torrent is recorded in SQLite,
-and at startup the file actor sweeps everything under
-`<cache>/torrents/` — abandoned import payloads and any prior
-version's leftovers — sparing only a directory that still hosts a
+import directory until the app closes, the cached file is evicted
+(retention or a lost local copy), or the setting is disabled; upload is
+capped by the existing `upload_limit` setting. Seeding does **not** resume
+on the next launch. The engine runs with no persistence, nothing about a
+torrent is recorded in SQLite, and at startup the file actor sweeps
+everything under `<cache>/torrents/` — abandoned import payloads and any
+prior version's leftovers — sparing only a directory that still hosts a
 registered cache file (the rare failed-hardlink fallback, where the
 cached copy lives in the import dir itself).
+(why: [decisions](decisions.md#session-only-torrent-seeding))
 
 The engine is librqbit, embedded (one session per process, rooted at
 `<cache>/torrents/`, DHT enabled). A session that fails to start
@@ -2312,20 +2151,21 @@ unaffected (they persist no settings and must seed the whole playlist).
 
 **The local-copy offer** (proposal 2026-08-31-local-copy-offer) softens
 this corner: when now-playing resolves locally Missing (NotFound *or* a
-hash mismatch — two valid encodes under one filename are the motivating
-case) for a client with auto-download off, and the user hasn't marked
-the series NotWatching, the client offers a modal list of plausible
+hash mismatch) for a client with auto-download off, and the user hasn't
+marked the series NotWatching, the client offers a modal list of plausible
 local copies. Candidates come in two evidence classes, strong first:
-**same episode** — the candidate's synced metadata carries the same
-`(series id, parsed episode number)` as the entry's (the episode
-browser's copy-grouping equivalence; there is no AniDB eid in the
-schema) — and **name match** — a file with *no* episode identity whose
-filename is within a small edit distance of the entry's after
-normalization (lowercased, spaces coerced to underscores), guarded by
-the filename episode parse: when both names parse an episode number
-they must agree, because raw Levenshtein rates `- 01` vs `- 02` at
-distance 1. A file whose metadata names a *different* episode is never
-offered. Selecting a candidate writes an ordinary **manual mapping**
+
+- **same episode** — the candidate's synced metadata carries the same
+  `(series id, parsed episode number)` as the entry's (the episode
+  browser's copy-grouping equivalence; there is no AniDB eid in the
+  schema);
+- **name match** — a file with *no* episode identity whose filename is
+  within a small edit distance of the entry's after normalization
+  (lowercased, spaces coerced to underscores). When both names parse an
+  episode number they must agree.
+
+A file whose metadata names a *different* episode is never offered.
+Selecting a candidate writes an ordinary **manual mapping**
 (filename-trusted, never served — see
 [Manual File Mapping](#manual-file-mapping)); dismissing keeps the
 behavior above. The trigger is derived from state, not hooked on the
@@ -2334,9 +2174,8 @@ manual select, startup with the file already missing, a mapping pruned
 mid-session — once per file per session (re-armed if the file resolves
 and later goes missing again). While the offer is open, the
 unknown-series auto-NotWatching write is **deferred** and replayed on
-dismissal, so the user is never marked NotWatching under a dialog
-asking whether they want to watch their own copy.
-
+dismissal.
+(why: [decisions](decisions.md#local-copy-offer-evidence-classes-and-trigger-2026-08-31))
 ### Parsing files to series/season/episode
 
 We use the AniDB UDP API, with the understanding that the information may
@@ -2397,10 +2236,9 @@ future work.
    The fallback series name is the requester's `series_hint` (a title-like
    containing-directory name, e.g. `RahXephon` for a file under
    `<root>/RahXephon/Season 1/...`) when one was supplied, else the filename
-   minus its extension; no series ID, no episode number. The directory hint
-   keeps a series' AniDB-unknown episodes grouped into one franchise instead
-   of one per episode -- without it, per-episode filenames each parse to a
-   distinct series name. The hint is computed client-side by walking the
+   minus its extension; no series ID, no episode number
+   (why: [decisions](decisions.md#directory-hint-as-the-anidb-miss-series-name)).
+   The hint is computed client-side by walking the
    ancestors between the file and its media root, skipping season/disc folders
    and generic containers (`Movies`, `Anime`, ...) and taking the first
    title-like directory; the server stores the first non-null hint reported
@@ -2410,42 +2248,36 @@ future work.
    < 90 days, then never) and weekly for files AniDB knows. **The ladder's
    age is anchored on the *older* of when the server first queued the file
    (`first_seen`) and the file's mtime** (the minimum of the two; mtime
-   absent falls back to `first_seen`). This keeps files owned for years off
-   the aggressive new-file cadence: without it, a queue reset stamps every
-   long-owned unknown file with a fresh `first_seen` and re-polls it every
-   30 min indefinitely. Clients supply the mtime in the lookup request; the
-   server stores it on the `anidb_queue` row, lowering it toward the oldest
-   value reported (a request without an mtime never raises it).
+   absent falls back to `first_seen`). Clients supply the mtime in the
+   lookup request; the server stores it on the `anidb_queue` row, lowering
+   it toward the oldest value reported (a request without an mtime never
+   raises it)
+   (why: [decisions](decisions.md#re-validation-ladder-anchored-on-file-age)).
 5. Either way, the metadata register becomes `Some(AniDbMetadata)` --
    downstream code always has a series name to work with.
 
-**Durability reconciliation:** the queue attempt (settled, re-check in a
-week) is written to SQLite at once, but the metadata write lands only in
-the periodically-snapshotted CRDT state. A restart in that window loses the
-metadata yet keeps the settled queue row -- the file is then orphaned (no
-metadata, no retry for a week). At **startup the worker reconciles**: any
-`anidb_queue` row marked `has_data` whose hash has no metadata in the
-loaded state is re-armed (due now, `has_data` cleared), so it is looked up
-again. NoData rows self-heal on their short ladder and are left alone.
+**Durability reconciliation:** at **startup the worker reconciles** the
+queue against the loaded state: any `anidb_queue` row marked `has_data`
+whose hash has no metadata in the loaded state is re-armed (due now,
+`has_data` cleared), so it is looked up again. NoData rows are left alone;
+they self-heal on their short ladder
+(why: [decisions](decisions.md#startup-reconciliation-of-settled-anidb-rows)).
 
-**Directory-hint reconciliation:** the fallback series name is written
-once, at the first lookup, using whatever `series_hint` the `anidb_queue`
-row holds then. But the hint can arrive *after* that write -- a playlist
-add carries no hint (the client may not hold the file) and races ahead of
-the hinted library scan -- so the first-seen episode of a series can be
-frozen with its per-episode filename stem and split into its own franchise.
-Each worker pass therefore reconciles: for every row with a learned
+**Directory-hint reconciliation:** each worker pass reconciles the fallback
+series name against the learned hint: for every row with a learned
 `series_hint`, if the file's metadata is filename-derived and its
 `series_name` differs from the hint, the server rewrites it to the hint
 (no AniDB call, independent of the settled lookup schedule). Real AniDB
 hits are never touched, and a name already matching its hint is left alone,
-so this quiesces.
+so this quiesces
+(why: [decisions](decisions.md#directory-hint-reconciliation-each-worker-pass)).
 
 CRDT types:
 - Lookup requests: `GSet<FileHashInfo>` (cleared on compaction)
 - File catalog: `LwwCell<FileCatalogEntry>` keyed by ed2k hash (server-only
   writes; filename + size from the request, duration filled lazily)
-- Metadata: `LwwCell<Option<AniDbMetadata>>` keyed by ed2k hash (server-only writes)
+- Metadata: `LwwCell<Option<AniDbMetadata>>` keyed by ed2k hash (server-only
+  writes)
 
 See [sync-state.md](sync-state.md) for the full `AniDbMetadata` struct.
 
@@ -2465,9 +2297,8 @@ sequel/prequel chains, alternative versions (remakes), and
 side/parent/summary/full-story spin-offs (`RelationKind::groups_franchise`).
 Crossover and shared-universe edges -- same setting, shared characters, music
 videos, and AniDB's catch-all crossover code -- link *related but separate*
-works and are deliberately ignored. Without this filter a single crossover
-like *Isekai Quartet* (which relates to Overlord, KonoSuba, Re:Zero and Youjo
-Senki) would collapse every show it touches into one giant component.
+works and are ignored
+(why: [decisions](decisions.md#only-structural-relations-merge-a-franchise)).
 
 The relations walk pulls in the whole graph -- sequels you don't have,
 standalone shows reached through a crossover -- so a series can exist purely
@@ -2477,15 +2308,14 @@ and a franchise with no files at all does not appear. Title and year are still
 derived from the full component, so "Overlord" stays the franchise name even
 when only a later season is held.
 
-**Name search (the AniDbSearch modal):** the UDP API has no
-multi-result search -- `ANIME aname=` is an exact-title lookup, useless
-for informal names. Instead the server fetches AniDB's daily
+**Name search (the AniDbSearch modal):** the server fetches AniDB's daily
 **anime-titles dump** (`anidb.net/api/anime-titles.dat.gz`, the
 sanctioned approach; at most one download per day) into SQLite and
 answers search requests locally: case-insensitive substring over all
 titles and synonyms, ranked exact > prefix > substring, one hit per
 series. Search requests/results are plain wire messages
-(`AniDbSearch`/`AniDbSearchResults`), not CRDT state.
+(`AniDbSearch`/`AniDbSearchResults`), not CRDT state
+(why: [decisions](decisions.md#name-search-through-the-titles-dump)).
 
 ### Manual File Mapping
 
@@ -2508,20 +2338,18 @@ adopts it -- it registers the loaded path as a manual mapping for the
 now-playing file, exactly as if it had been picked through the browser.
 This clears the Missing/placeholder state, flips `FileAvailability` to
 Ready, and loads the real video. It is **filename-trusted, no hash
-check** -- the same "the user explicitly chose this file" exemption the
-browser map gets (see [Content Hash](#content-hash)). The trade-off is
-that a same-named *different encode* dropped in would silently desync the
-client from the group; this is accepted for parity with the browser map
-and because the user deliberately loaded that exact file. (Either way a
-mismatched mapping is never *served*: the holder answers peer
+check** -- the same exemption the browser map gets (see
+[Content Hash](#content-hash)). Known trade-off: a same-named *different
+encode* dropped in silently desyncs that client from the group
+(why: [decisions](decisions.md#drag-in-adoption-is-filename-trusted)).
+Either way a mismatched mapping is never *served*: the holder answers peer
 solicitations with a definitive `CannotServe`, so downloaders drop it as
 a source rather than re-asking forever -- see network-design.md, Peer
-Messages.) dessplay learns
-what mpv has loaded by observing its `path` property (see
-[Events from Player](#events-from-player)); a path it never commanded, with
-a matching name, is the trigger. (Especially handy in attach mode, where
-driving mpv directly -- including dragging files in -- is the normal
-workflow.)
+Messages. dessplay learns what mpv has loaded by observing its `path`
+property (see [Events from Player](#events-from-player)); a path it never
+commanded, with a matching name, is the trigger. This also works in attach
+mode, where driving mpv directly -- including dragging files in -- is the
+normal workflow.
 
 ### Content Hash
 
@@ -2532,23 +2360,23 @@ Before playback can unpause:
 
 If hash mismatch: File State is set to Missing, cannot participate until resolved.
 
-**Mismatch re-check.** A name-matched file that fails the hash is
-usually a copy or external download still being written into a media
-root — the hash ran mid-write. The file actor watches such files: it
-polls the path's `(mtime, size)` about once a second (a cheap `stat`),
-and once the file has changed *since the failed hash* and then held
-still for a couple of polls, it re-resolves — so the entry flips to
-Ready seconds after the write finishes, not at the next library scan a
-minute later. A mismatch that never changes (a genuine different encode)
-is never re-hashed — its hash-cache row still matches the disk — and its
-watch expires after 10 minutes; the periodic scan remains the long-tail
-safety net.
+**Mismatch re-check.** The file actor watches a name-matched file that
+failed the hash: it polls the path's `(mtime, size)` about once a second
+(a cheap `stat`), and once the file has changed *since the failed hash*
+and then held still for a couple of polls, it re-resolves -- so the entry
+flips to Ready seconds after a write finishes, not at the next library
+scan a minute later. A mismatch that never changes (a genuine different
+encode) is never re-hashed -- its hash-cache row still matches the disk --
+and its watch expires after 10 minutes; the periodic scan remains the
+long-tail safety net
+(why: [decisions](decisions.md#mismatch-re-check-watcher)).
 
 This is skipped for manually-mapped files (user explicitly chose a different file).
 
 ### Watch Tracking
 
-Two levels, deliberately distinct:
+Two levels, deliberately distinct
+(why: [decisions](decisions.md#personal-and-group-watch-records-are-separate)):
 
 **Personal** (local SQLite, keyed by hash/series so it survives cache
 eviction):
@@ -2601,39 +2429,32 @@ Player choice is per-user configuration.
 1. **Launch**: One persistent mpv instance per session (`--idle
    --keep-open=always --script-opts-add=autoload-disabled=yes`), spawned when
    the first file loads; later files are swapped in with `loadfile`.
-   `always` (not `yes`) so EOF parks the file regardless of playlist
-   length — user scripts such as autoload.lua pad mpv's playlist with
-   sibling files, and `yes` would auto-advance into one. The script-opt
-   additionally switches autoload off so stray playlist-next keys typed
-   into the mpv window find nothing. The user's mpv.conf is otherwise
-   honoured (no `--no-config`). Files always open paused; the derived
-   playback state then decides.
+   `--keep-open` is `always` (not `yes`), and the script-opt switches
+   autoload off
+   (why: [decisions](decisions.md#keep-open-always-and-autoload-disabled)).
+   The user's mpv.conf is otherwise honoured (no `--no-config`). Files
+   always open paused; the derived playback state then decides.
 2. **Control**: Send play/pause/seek commands via IPC
 3. **Monitor**: Read current position, playback state
 4. **OSD**: Display chat messages in video window
 5. **Crash handling** (also covers the user closing mpv by hand). The
    response escalates with the number of deaths in a row, each within 30s
-   of the last:
+   of the last
+   (why: [decisions](decisions.md#crash-ladder-escalation)):
    - **First death**: relaunch silently — reload the file, seek to the last
      position, restore the desired pause state.
    - **Second death within 30s**: *additionally* pause globally and notify
-     in chat — the relaunch then comes up paused, the safe state if
-     the file itself is crashing the player. Unlike most
+     in chat — the relaunch then comes up paused. Unlike most
      [system messages](#system-messages), this one is **shared**: the
      crashing client writes a real chat message (and forces playback
-     intent to Paused). A crash is the one state change peers cannot
-     derive from their own view (they have no signal for *another* user's
-     player dying), so it must be communicated — and being an ordinary
-     synced chat message, it persists and reaches late joiners.
-   - **Third death within 30s**: stop relaunching. A file that reliably
-     kills the player would otherwise loop forever (spamming the log and
-     re-pausing on every death). The client stays paused and writes a
-     second shared chat message ("my player keeps crashing — giving up
-     until someone picks another file"). Loading a **different file** (a new
-     now-playing) resets the counter and brings the player back — the
-     deliberate recovery action. The crash counter resets whenever a
-     different file is loaded, so deaths spaced further than 30s apart
-     never accumulate toward the give-up threshold.
+     intent to Paused), so it persists and reaches late joiners.
+   - **Third death within 30s**: stop relaunching. The client stays paused
+     and writes a second shared chat message ("my player keeps crashing —
+     giving up until someone picks another file"). Loading a **different
+     file** (a new now-playing) resets the counter and brings the player
+     back — the deliberate recovery action. The crash counter resets
+     whenever a different file is loaded, so deaths spaced further than
+     30s apart never accumulate toward the give-up threshold.
 
 **Attach mode (`--attach-mpv=<socket>`).** A dev/headless aid for working
 without a desktop (e.g. over ssh): instead of spawning mpv, dessplay
@@ -2675,10 +2496,8 @@ for it to come back. Interactive-only; seeders have no player.
 - Pause/unpause events (distinguished: user-initiated vs programmatic).
   An observed pause is followed by a `get_property time-pos` query, and
   the reply re-anchors the client's position estimate on the frame mpv
-  actually stopped at — otherwise the wall-clock-extrapolated estimate
-  counts the observation's in-flight window as phantom playback, and a
-  paused mpv emits no further `time-pos` changes to correct the
-  overshoot.
+  actually stopped at
+  (why: [decisions](decisions.md#observed-pause-re-anchors-the-position-estimate)).
 - Seek events (distinguished: user-initiated vs programmatic)
 - Subtitle text changes (observed `sub-text/ass-full` property; feeds the
   subtitle log, with the ASS speaker field for per-speaker coloring)
@@ -2705,30 +2524,24 @@ a misattributed echo self-heals on the next derived-state round trip. The
 we last commanded (including the placeholder PNG) is our echo and is
 swallowed; any other is the user's.
 
-**File attribution is evidence-based.** `loadfile` is asynchronous:
-after a load is commanded, mpv stays on — and keeps reporting positions,
-seeks, even the EOF of — the *previous* file until the new one actually
-opens, and on a slow machine (cold NAS, heavy mpv scripts) that window
-is long. mpv's events carry no file identity, so the actor pairs each
-file-attributed observation (position, seek, EOF, duration) with the
-file it *commanded* — which already names the new file during that
-window. The observed `path` property closes it: mpv's IPC event stream
-is ordered, so the actor accepts file-attributed observations only while
-the last observed path equals the commanded one; observations in the gap
-belong to the old file and are dropped. The same gate covers outgoing
-**drift correction**: authority samples are ignored (and the drift
-controller's state reset) while the player is off the commanded file, so
-a mid-load window — or a file the user dragged in themselves — is never
-slewed or hard-seeked. This is what makes the
+**File attribution is evidence-based.** mpv's events carry no file
+identity, and `loadfile` is asynchronous: until the new file actually
+opens, mpv keeps reporting the *previous* file. The actor pairs each
+file-attributed observation (position, seek, EOF, duration) with the file
+it *commanded*, and the observed `path` property gates them: mpv's IPC
+event stream is ordered, so the actor accepts file-attributed
+observations only while the last observed path equals the commanded one.
+Observations in the gap belong to the old file and are dropped. The same
+gate covers outgoing **drift correction**: authority samples are ignored
+(and the drift controller's state reset) while the player is off the
+commanded file, so a mid-load window — or a file the user dragged in
+themselves — is never slewed or hard-seeked. This is what makes the
 `PlaybackPosition` file tag (Playback Rules, drift correction)
-trustworthy at its source. Two carve-outs: the load-*failure* report —
-a file that fails to open may never produce a path observation at all,
-so gating it would suppress the report entirely; a stale one merely
-re-resolves the file (wrong but self-healing, the safe direction) — and
-the *echo accounting* of a programmatic seek, which is consumed even
-when the echo arrives gated-out (it is our own seek; leaving it
-outstanding would swallow the user's next genuine seek as a stale echo).
-Only the user-seek/debounce half of seek handling sits behind the gate.
+trustworthy at its source. Two carve-outs: the load-*failure* report is
+not gated, and the *echo accounting* of a programmatic seek is consumed
+even when the echo arrives gated-out. Only the user-seek/debounce half of
+seek handling sits behind the gate
+(why: [decisions](decisions.md#file-attribution-gated-on-the-observed-path)).
 
 ### Subtitle Display
 
@@ -2792,29 +2605,23 @@ Interleaving in Intermixed mode still orders by wall-clock arrival (the
 chat domain); the displayed timestamp and the sort key are deliberately
 two different clocks.
 
-**Incremental ASS reveals and overlapping cues.** The on-screen cue-set
-evolves while mpv re-emits the whole joined value on every change, so
-consecutive observations are often the *same* utterance growing or
-shrinking rather than a new line. Two cases:
-
-- *Reveal*: some subs reveal a line letter-by-letter over 2-3s as
-  rapid-fire cues, each a longer prefix of the last.
-- *Overlap*: when two ASS events display at once mpv joins them (separated
-  by a space); as one ends the combined text shrinks back to just the
-  other. The disappearing event can sit at either end of the join (mpv's
-  order is not fixed), so the shrink leaves a prefix *or* a suffix of what
-  was shown.
-
-The log collapses any such prefix/suffix relationship between the previous
-line and the new text into one entry: a growth replaces it in place
-(keeping the original cue's timestamp and tracking the latest speaker); a
-shrink-back is dropped as a redundant re-show (without this, a brief
-interjection overlapping a stable line duplicates when it clears). An
-exact repeat is the degenerate case and collapses too. A multi-line cue arrives newline-separated; since the log
-renders one line per cue, newlines become spaces (so a two-line cue reads
-"you demons", not "youdemons"). Known limitation: an unrelated later cue
-that happens to be a prefix or suffix of its predecessor will be collapsed
-(rare; accepted -- no time-window guard).
+**Incremental ASS reveals and overlapping cues.** mpv re-emits the whole
+joined on-screen value on every change, so consecutive observations are
+often the *same* utterance growing (a line revealed letter-by-letter as
+rapid-fire cues, each a longer prefix of the last) or shrinking (two
+overlapping ASS events joined by a space; as one ends the text shrinks
+back to a prefix *or* a suffix of what was shown, since mpv's join order
+is not fixed). The log collapses any such prefix/suffix relationship
+between the previous line and the new text into one entry: a growth
+replaces it in place (keeping the original cue's timestamp and tracking
+the latest speaker); a shrink-back is dropped as a redundant re-show. An
+exact repeat is the degenerate case and collapses too
+(why: [decisions](decisions.md#collapsing-incremental-subtitle-cues)). A
+multi-line cue arrives newline-separated; since the log renders one line
+per cue, newlines become spaces (so a two-line cue reads "you demons", not
+"youdemons"). Known limitation: an unrelated later cue that happens to be
+a prefix or suffix of its predecessor will be collapsed (rare; accepted --
+no time-window guard).
 
 ---
 
@@ -2824,7 +2631,7 @@ that happens to be a prefix or suffix of its predecessor will be collapsed
 
 Location: `$XDG_DATA_HOME/dessplay/dessplay.db` (typically `~/.local/share/dessplay/`)
 
-The client uses **two** databases (2026-08-21): local-only data lives in
+The client uses **two** databases: local-only data lives in
 `dessplay.db`, while the replicated CRDT snapshot lives in a derived
 sibling, `dessplay.sync.db` (`--db` derives both). The sync file is
 disposable — its contents are a replica of server-authoritative state —
@@ -2832,7 +2639,8 @@ so resetting wedged sync state (`dessplay --reset-sync`, `/resync`)
 never costs local data such as the hash cache. On first open the split
 code moves the legacy `crdt_state` row over and drops the old table
 (idempotent, crash-safe; details in docs/sync-state.md, Snapshot
-Storage).
+Storage)
+(why: [decisions](decisions.md#local-and-synced-state-in-separate-databases-2026-08-21)).
 
 **Single-instance lock:** at startup a process takes an exclusive advisory
 lock (`File::try_lock`) on `<db>.lock` and `<cache>/.lock` and refuses to start
@@ -2848,9 +2656,8 @@ loaded and passed to the sync engine as initial state. The current epoch is
 also stored so the client can detect stale state on reconnection.
 
 **Deliberate non-goal:** local ops the server has not yet seen are buffered
-in memory only. A crash loses the most recent local edits — accepted, since
-crashes should be rare enough not to matter, and an edit that *caused* a
-crash should not be replayed into the next session.
+in memory only. A crash loses the most recent local edits
+(why: [decisions](decisions.md#unsent-local-ops-are-not-persisted)).
 
 **Settings** (username, server, password, media roots, player choice, cache
 retention, archive subdirectory policy, auto-archive, upload limit, subtitle mode, subtitle speaker names, subtitle
@@ -2873,18 +2680,18 @@ tables are `STRICT`. Timestamps are unix milliseconds, caller-supplied
 
 The stored `crdt_state` blob carries a **tagged envelope**: a 4-byte
 magic (first byte 0xFF, which no untagged postcard state can start with)
-plus the protocol version, ahead of the postcard body — so a blob names
-its own layout instead of being identified by trial decode. Exactly one
+plus the protocol version, ahead of the postcard body. Exactly one
 **untagged** legacy layout (protocol v6, pre-envelope) is still decoded
 and migrated forward, and tagged versions whose state layout is
 byte-identical to the current one (a wire-only protocol bump; today v7
 and v8) decode via an explicit compatible-list arm; a tagged blob with
 any *other* version is refused outright rather than guessed at (a
-deliberate migration adds an explicit decode arm instead). This matters most for the *server*, which is
-authoritative and cannot re-sync its lost state from anyone (it backs up
-the whole database before first persisting a migrated blob); an
+deliberate migration adds an explicit decode arm instead). The server
+backs up the whole database before first persisting a migrated blob; an
 interactive client can fall back to dropping an unreadable blob and
-re-syncing from the server. See docs/sync-state.md, Snapshot Storage.
+re-syncing from the server
+(why: [decisions](decisions.md#tagged-snapshot-envelope)). See
+docs/sync-state.md, Snapshot Storage.
 
 **Client, local** (`$XDG_DATA_HOME/dessplay/dessplay.db`):
 
