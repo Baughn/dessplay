@@ -4,7 +4,10 @@ New features and fixes, grouped by calendar day, newest first. The client
 embeds this file and shows unseen entries at startup; `/changelog` shows
 the full history. Format: `## YYYY-MM-DD` headers in descending order,
 `- ` bullets with an optional one-word `Category: ` prefix, continuation
-lines indented two spaces. `cargo test` validates it.
+lines indented two spaces. `cargo test` validates it. The list is
+append-only; you cannot reword or remove existing entries.
+
+Add new days at the top. Add new entries at the bottom of existing days.
 
 ## 2026-09-02
 
