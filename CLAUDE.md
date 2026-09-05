@@ -8,6 +8,8 @@
 - Testing strategy: docs/testing-strategy.md
 - UI architecture (tui-realm, Elm model): docs/ui-architecture.md
 - Implementation plan: docs/plan.md
+- Roguelike player guide and standalone play instructions: docs/roguelike.md
+- Roguelike playtest and draft fun proposals: docs/proposals/2026-09-06-roguelike-playtest.md
 - Implemented settings-screen proposal: docs/proposals/2026-07-12-settings-screen.md
 - Implemented transfer flow-control overhaul (BBR, per-transfer streams, DSCP): docs/proposals/2026-07-28-transfer-flow-control.md
 - Implemented franchise-granularity List (one row per franchise, franchise commitment, season tree): docs/proposals/2026-08-28-franchise-list.md
@@ -111,4 +113,3 @@ Test comprehensively, especially on high-risk areas (echo suppression, network c
   unrepresentable-fix exception.
 - **High-risk areas get extra coverage**: Echo suppression, CRDT convergence,
   playlist conflict resolution, reconnection/epoch handling.
-

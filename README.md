@@ -73,13 +73,16 @@ Move and fight with arrows, vi keys, or numpad digits. **`a`** bandages,
 **`?`** opens the guide; **F4** returns to the party. After death or escape,
 **`n`** starts a new expedition.
 
-From the Codex playtesting agent:
+See the [player guide](docs/roguelike.md) for the map legend, survival advice,
+and a standalone game you can launch from this repository without opening
+the watch party.
 
-> I played seed 42 by hand and reached the second floor in 91 turns, with
-> four kills and a few wounds. The first ash rat punished my clumsy
-> positioning; finding armor and a sharper blade made the rest of the floor
-> much more manageable. I haven't personally escaped yet—the five completed
-> expeditions were automated playtests.
+From the Codex playtesting agent ([full playtest and ideas](docs/proposals/2026-09-06-roguelike-playtest.md)):
+
+> I manually played seed 20260906 through the standalone harness and escaped
+> with the ember: 935 turns, 30 kills, 249 gold. Drawing a crowd of creatures
+> into a corridor was the best tactical moment. The return took 393 turns
+> with just one leftover rat; that's where I'd start improving the pacing.
 
 ## Install
 
