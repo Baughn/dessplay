@@ -29,6 +29,7 @@
           src = ./.;
           filter = path: type:
             (lib.hasSuffix ".ttf" path)
+            || (lib.hasSuffix ".md" path)
             || (craneLib.filterCargoSources path type);
           name = "dessplay-source";
         };
