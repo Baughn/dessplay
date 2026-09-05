@@ -94,6 +94,7 @@ pub struct UiSnapshot {
 /// settings carry the password).
 fn log_action(action: &UserAction) {
     match action {
+        UserAction::Roguelike(command) => tracing::debug!(?command, "user action: Roguelike"),
         UserAction::Mutate(Mutation::SetSeriesPreference {
             user,
             entry,
@@ -351,6 +352,7 @@ enum Modal {
     LocalCopyOffer(LocalCopyOfferModal),
     Changelog(ChangelogModal),
     Logs(super::modals::LogModal),
+    Roguelike(super::modals::RoguelikeModal),
     Confirm(ConfirmModal),
 }
 
@@ -367,6 +369,7 @@ impl Modal {
             Modal::LocalCopyOffer(modal) => modal,
             Modal::Changelog(modal) => modal,
             Modal::Logs(modal) => modal,
+            Modal::Roguelike(modal) => modal,
             Modal::Confirm(modal) => modal,
         }
     }
@@ -383,6 +386,7 @@ impl Modal {
             Modal::LocalCopyOffer(modal) => modal.keybindings(),
             Modal::Changelog(modal) => modal.keybindings(),
             Modal::Logs(modal) => modal.keybindings(),
+            Modal::Roguelike(modal) => modal.keybindings(),
             Modal::Confirm(modal) => modal.keybindings(),
         }
     }
@@ -400,6 +404,7 @@ impl Modal {
             Modal::LocalCopyOffer(_) => "LocalCopyOffer",
             Modal::Changelog(_) => "Changelog",
             Modal::Logs(_) => "Logs",
+            Modal::Roguelike(_) => "Roguelike",
             Modal::Confirm(_) => "Confirm",
         }
     }
@@ -1081,8 +1086,72 @@ impl Ui {
         Vec::new()
     }
 
+    fn toggle_roguelike(&mut self) -> Vec<UserAction> {
+        let actions = if let Some(index) = self
+            .modals
+            .iter()
+            .position(|m| matches!(m, Modal::Roguelike(_)))
+        {
+            self.modals.remove(index);
+            Vec::new()
+        } else if self.settings.needs_setup() {
+            vec![UserAction::Notice(
+                "Save your settings before starting an expedition.".into(),
+            )]
+        } else {
+            self.push_modal(Modal::Roguelike(super::modals::RoguelikeModal::new()));
+            vec![UserAction::Roguelike(crate::roguelike_store::Command::Open)]
+        };
+        self.sync_focus_attr();
+        self.refresh_keybar();
+        actions
+    }
+
+    /// Apply a persisted dungeon turn, including while another modal covers it.
+    pub fn set_roguelike(&mut self, result: Result<Box<crate::roguelike::Run>, String>) {
+        if let Some(Modal::Roguelike(modal)) = self
+            .modals
+            .iter_mut()
+            .find(|m| matches!(m, Modal::Roguelike(_)))
+        {
+            match result {
+                Ok(run) => modal.set_run(*run),
+                Err(error) => modal.set_error(error),
+            }
+        }
+        self.refresh_keybar();
+    }
+
     /// Replace the snapshot and recompute every pane's props.
     pub fn apply_snapshot(&mut self, snapshot: UiSnapshot) {
+        // Peer identities, rather than narrated text, cover both new arrivals
+        // and Lost/Departed -> Present returns without interpreting chat.
+        use dessplay_core::net::{Presence, Role};
+        let arrivals: Vec<_> = snapshot
+            .peers
+            .iter()
+            .filter(|peer| {
+                peer.username != self.me
+                    && peer.role != Role::Seeder
+                    && peer.presence == Presence::Present
+                    && !self.snapshot.peers.iter().any(|old| {
+                        old.username == peer.username
+                            && old.role != Role::Seeder
+                            && old.presence == Presence::Present
+                    })
+            })
+            .map(|peer| peer.username.to_string())
+            .collect();
+        if !arrivals.is_empty() {
+            for modal in &mut self.modals {
+                if let Modal::Roguelike(modal) = modal {
+                    modal.set_notice(format!(
+                        "{} joined — Esc returns to the party",
+                        arrivals.join(", ")
+                    ));
+                }
+            }
+        }
         // `Ui::clock` is deliberately NOT advanced here: the shell
         // freshens it (monotonic millis) before dispatching every
         // input, this snapshot included. The snapshot's stamps live in
@@ -1281,6 +1350,7 @@ impl Ui {
             }
         };
         // Globals, always available (handled before pane/modal routing).
+        items.push(("F4", "Dungeon"));
         items.push(("F11", "Logs"));
         items.push(("Ctrl-r", "Ready"));
         items.push(("Ctrl-c", "Quit"));
@@ -1473,6 +1543,10 @@ impl Ui {
                 }
                 _ => self.chat.clear_selection(),
             }
+        }
+        if super::components::plain(&ev) == Some(Key::Function(4)) {
+            tracing::debug!("user action: toggle dungeon (F4)");
+            return self.toggle_roguelike();
         }
         // F11 also works over another modal, restoring it on close.
         if super::components::plain(&ev) == Some(Key::Function(11)) {
@@ -1843,6 +1917,7 @@ impl Ui {
     /// The Elm update: messages become internal changes or actions.
     fn update(&mut self, msg: Msg) -> Option<UserAction> {
         match msg {
+            Msg::Roguelike(command) => Some(UserAction::Roguelike(command)),
             Msg::None => None,
             // `Msg::SendChat`, `Msg::Command`, `Msg::PlaySelected`,
             // `Msg::ListEntrySaved`, `Msg::CycleSeriesWatch`,
@@ -2262,6 +2337,7 @@ impl Ui {
                 Vec::new()
             }
             "/changelog" => self.open_changelog(),
+            "/rogue" => self.toggle_roguelike(),
             "/ready" => self.become_ready(),
             "/pause" => self.become_unready(),
             // `/me <action>` emotes an IRC-style action. It is an ordinary
@@ -2681,7 +2757,10 @@ impl Ui {
         }
         self.status.view(frame, status_area);
         self.keybar.view(frame, keybar_area);
-        if matches!(self.modals.last(), Some(Modal::Logs(_))) {
+        if matches!(
+            self.modals.last(),
+            Some(Modal::Logs(_) | Modal::Roguelike(_))
+        ) {
             let area = frame.area();
             let y = super::modals::LogModal::area(area).bottom();
             self.chat.render_recent(
@@ -2696,7 +2775,10 @@ impl Ui {
         if let Some(modal) = self.modals.last_mut() {
             modal.as_component().view(frame, frame.area());
         }
-        if !matches!(self.modals.last(), Some(Modal::Logs(_))) {
+        if !matches!(
+            self.modals.last(),
+            Some(Modal::Logs(_) | Modal::Roguelike(_))
+        ) {
             self.draw_work_overlay(frame);
         }
         super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth);

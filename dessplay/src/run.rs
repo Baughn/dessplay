@@ -1328,6 +1328,43 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
 }
 
 impl<F: crate::player::PlayerFactory> SessionLoop<F> {
+    // Local outbox -> durable replicated chat. A crash between publication
+    // and acknowledgement retries the exact same message, which the sync
+    // actor deduplicates. The ordinary sync reconnect/merge delivers it.
+    async fn publish_roguelike_reports(&mut self) {
+        let reports = match self.storage.pending_roguelike_reports(&self.me.0) {
+            Ok(reports) => reports,
+            Err(error) => {
+                tracing::warn!(%error, "reading dungeon reports");
+                return;
+            }
+        };
+        for report in reports {
+            let (reply, received) = tokio::sync::oneshot::channel();
+            if self
+                .handle
+                .sync
+                .send(SyncCommand::PublishLocalReport {
+                    text: report.summary,
+                    timestamp: dessplay_core::types::SharedTimestamp(report.timestamp as u64),
+                    reply,
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if received.await != Ok(true) {
+                return;
+            }
+            if let Err(error) = self.storage.ack_roguelike_report(report.id) {
+                tracing::warn!(%error, "acknowledging dungeon report; will retry");
+                return;
+            }
+            tracing::info!(expedition = report.id, "dungeon summary saved to chat");
+        }
+    }
+
     /// Run until quit or auth failure.
     pub async fn run(&mut self) -> SessionEnd {
         use crate::actors::sync::Mutation;
@@ -1355,10 +1392,36 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
         let mut ui_dirty = false;
         let mut ui_tick = tokio::time::interval(std::time::Duration::from_millis(100));
         ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut rogue_reply = None;
+        let mut rogue_delivery = tokio::time::interval(std::time::Duration::from_millis(10));
+        rogue_delivery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut rogue_retry = tokio::time::interval(std::time::Duration::from_secs(30));
+        rogue_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
+                _ = rogue_retry.tick() => self.publish_roguelike_reports().await,
+                _ = rogue_delivery.tick(), if rogue_reply.is_some() => {
+                    if let Some(reply) = rogue_reply.take() {
+                        match self.ui.try_send(reply) {
+                            Ok(()) => {}
+                            Err(std::sync::mpsc::TrySendError::Full(reply)) => rogue_reply = Some(reply),
+                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return SessionEnd::Quit,
+                        }
+                    }
+                }
                 action = self.actions.recv() => {
                     match action {
+                        Some(UserAction::Roguelike(command)) => {
+                            let now = (system_clock())().saturating_add_signed(self.shell.clock_offset());
+                            let result = crate::roguelike_store::handle(
+                                &self.storage, &self.me.0, command, rand::random(), now as i64,
+                            ).map(Box::new).map_err(|error| {
+                                tracing::error!(%error, "saving dungeon expedition");
+                                format!("Could not save: {error}. Your previous turn is safe; close and reopen to retry.")
+                            });
+                            rogue_reply = Some(UiInput::Roguelike(result));
+                            self.publish_roguelike_reports().await;
+                        }
                         None | Some(UserAction::Quit) => return SessionEnd::Quit,
                         Some(UserAction::Mutate(mutation)) => {
                             // Tap our own chat for the IRC bridge. This arm

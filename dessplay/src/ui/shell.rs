@@ -13,6 +13,8 @@ use super::msg::UserAction;
 
 /// Everything the UI thread consumes.
 pub enum UiInput {
+    /// A dungeon snapshot after its turn has been saved, or a storage error.
+    Roguelike(Result<Box<crate::roguelike::Run>, String>),
     /// Fresh state to render.
     Snapshot(Box<UiSnapshot>),
     /// A terminal input event.
@@ -243,6 +245,7 @@ pub fn run_ui_loop<A: TerminalAdapter>(
         // by a draw below anyway.
         let _ = ui.advance_clock(now_millis());
         match input {
+            UiInput::Roguelike(result) => ui.set_roguelike(result),
             UiInput::Shutdown => break,
             UiInput::Snapshot(snapshot) => ui.apply_snapshot(*snapshot),
             UiInput::Subtitle {

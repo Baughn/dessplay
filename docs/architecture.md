@@ -814,3 +814,19 @@ dessplay-rendezvous/          (server: lib + thin binary)
 | `proptest` | Property-based testing |
 | `insta` | Snapshot testing |
 | `cargo-fuzz` / `libfuzzer-sys` | Fuzz testing |
+
+
+## Local roguelike (2026-09-05)
+
+`roguelike.rs` is a pure deterministic simulation with a serializable RNG.
+`roguelike_store.rs` owns versioned local saves and completed-run outbox/history
+using a short SQLite transaction. The UI emits `UserAction::Roguelike`; the
+session executes it and replies with `UiInput::Roguelike` only after commit.
+A full UI input channel retains and retries this response, so game input
+cannot remain locked because a snapshot crowded out its acknowledgement.
+
+The session retries pending reports at startup, after game actions, and every
+30 seconds. `SyncCommand::PublishLocalReport` preserves the saved timestamp,
+deduplicates the exact chat message, and flushes the sync database before
+acknowledgement. Ordinary reconnect/merge delivers offline reports to peers.
+No new actor or wire message is needed, and seeders never play the game.

@@ -816,3 +816,37 @@ The two carve-outs: a file that fails to open may never produce a path observati
 **Rule:** The stored `crdt_state` blob carries a 4-byte magic plus the protocol version ahead of the postcard body; one untagged legacy layout (v6) is decoded and migrated, byte-identical tagged versions decode via an explicit compatible list, and anything else is refused; the server backs up its database before first persisting a migrated blob; see [design.md](design.md#schema).
 
 **Why:** A blob should name its own layout instead of being identified by trial decode — postcard will happily "succeed" on the wrong layout. The first byte 0xFF is chosen because no untagged postcard state can start with it, which is what makes the single legacy arm safe. Refusing unknown versions matters most for the *server*, which is authoritative and cannot re-sync its lost state from anyone; a deliberate migration adds an explicit decode arm instead of guessing. An interactive client has the cheaper fallback of dropping an unreadable blob and re-syncing from the server.
+
+
+## A local expedition for the waiting room (2026-09-05)
+
+The Waiting Below gives people something to play while friends arrive. Five
+floors, a recover-and-return objective, fog, finite supplies, and body-part
+injuries provide a small complete roguelike without introducing another
+multiplayer protocol. Turns depend only on explicit commands: five-minute
+sessions must not punish someone for leaving to watch an episode. The
+existing log-modal layout keeps party chat visible, while a sticky presence
+banner makes arrivals noticeable even during help or after a death.
+
+The session bridge owns persistence and the UI only displays committed
+results. Saving after every action, including the RNG state, makes closing,
+crashing, and reopening ordinary lifecycle paths rather than special game
+save operations. SQLite transactions also contain the finished-run history
+and an outbox report. A disk failure cannot leave an advanced UI paired with
+an older save. Invalid/future saves are preserved for recovery rather than
+silently starting over. Saves are per username in the irreplaceable local
+database, so a sync reset does not erase them.
+
+Death summaries are real synced chat, because a late-arriving friend should
+see how the expedition ended. Local narrator lines cannot provide that.
+Their saved timestamp, sender, and expedition-numbered text form a stable
+retry identity. The sync actor deduplicates and flushes before acknowledging
+an outbox record; a crash between the two databases therefore safely retries.
+This adds a local command, without changing network or CRDT schemas.
+Automatic reports do not imply returning from Away and do not enter IRC.
+
+The command popup derives its height from the filtered command table. Adding
+`/rogue` exposed the old fixed fourteen-row cap, which hid `/quit`; removing
+that independent cap makes future commands discoverable without a second edit.
+The whole-app test requires every command to render on a sufficiently tall
+terminal.

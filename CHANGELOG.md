@@ -16,6 +16,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Improved: default logs explain why files need indexing or re-indexing,
   including changed file size or modification time and failed hashing attempts.
 
+- Added: F4 or /rogue opens The Waiting Below, a five-floor roguelike with
+  wounds, exploration, and supplies. Every turn saves locally; friends joining
+  get a persistent notice, and your expedition ends with a summary in chat.
+
 ## 2026-09-02
 
 - Added: this changelog. New features and fixes since your last session

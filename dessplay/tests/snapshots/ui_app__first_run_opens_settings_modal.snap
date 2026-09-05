@@ -1,6 +1,5 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 446
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -32,4 +31,4 @@ expression: screen
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ⚡  connecting to server…
 Nothing playing
-←→ Category | Enter Edit/Toggle | S Save | Esc Cancel | F11 Logs | Ctrl-r Ready | Ctrl-c Quit
+←→ Category | Enter Edit/Toggle | S Save | Esc Cancel | F4 Dungeon | F11 Logs | Ctrl-r Ready | Ctrl-

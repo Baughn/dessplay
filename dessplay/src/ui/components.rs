@@ -75,10 +75,6 @@ const CHAT_PAGE_STEP: usize = 5;
 const CHAT_WHEEL_STEP: usize = 3;
 /// Indent applied to wrapped continuation lines in the chat log.
 const CHAT_WRAP_INDENT: usize = 2;
-/// Most command suggestions shown at once in the discoverability popup.
-/// Sized to fit the whole command table on a bare `/` — bump it when a
-/// command is added (see [`super::commands::SLASH_COMMANDS`]).
-const CHAT_SUGGESTION_MAX: u16 = 14;
 
 /// Frames of re-randomization a spoiler click plays before settling.
 const SPOILER_FRAMES: u32 = 6;
@@ -1007,7 +1003,7 @@ impl ChatPane {
         let log_area = if suggestions.is_empty() {
             log_area
         } else {
-            let height = (suggestions.len() as u16).min(CHAT_SUGGESTION_MAX);
+            let height = suggestions.len() as u16;
             let [log_area, sugg_area] =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(height)]).areas(log_area);
             // Tabulate: every help string starts at the same column. The
@@ -3991,18 +3987,6 @@ mod chat_wrap_tests {
             let lines = wrap_body(&text, first, rest);
             assert_offsets(&text, &lines);
         }
-    }
-}
-
-#[cfg(test)]
-mod chat_popup_tests {
-    use super::CHAT_SUGGESTION_MAX;
-
-    /// The popup cap must fit the whole command table, or a bare `/`
-    /// silently drops rows.
-    #[test]
-    fn suggestion_cap_fits_command_table() {
-        assert!(super::super::commands::SLASH_COMMANDS.len() <= CHAT_SUGGESTION_MAX as usize);
     }
 }
 

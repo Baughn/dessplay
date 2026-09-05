@@ -722,3 +722,20 @@ mapping logic (snapshot -> display data) could be shared — and the
 [shared widgets](#shared-widgets) (line editing, selection, forms,
 keymaps) are pure state machines whose interaction logic ports as-is;
 only their `render` functions are ratatui-bound.
+
+
+## Waiting-room expedition (2026-09-05)
+
+`RoguelikeModal` uses the log viewer's upper-two-thirds boundary and the
+same live recent-chat strip. `F4` / `/rogue` pushes or removes it; `F11`
+can cover it. It emits typed `Msg::Roguelike` commands, captures pasted
+text, and accepts no further game action until the session replies with a
+committed `Run` or storage error. Help and arrival acknowledgement do not
+cross the save boundary or spend a turn. A player-centered viewport adapts
+the fixed dungeon to terminal size.
+
+`Ui::apply_snapshot` compares interactive Present peer identities with the
+previous snapshot and updates every game modal on the stack, including one
+covered by another modal. The notice remains until acknowledged. This uses
+presence data directly rather than parsing narrator text. Save replies also
+update a covered modal; replies arriving after it closes do not reopen it.

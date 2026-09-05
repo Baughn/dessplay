@@ -171,6 +171,13 @@ pub enum Mutation {
         /// Message text.
         text: String,
     },
+    /// A durable local report with its original timestamp, replayed idempotently.
+    LocalReport {
+        /// Stable report text, including its local expedition identity.
+        text: String,
+        /// The report's saved shared-clock timestamp.
+        timestamp: SharedTimestamp,
+    },
     /// Report our playback position.
     SetPlaybackPosition {
         /// Position within the file, milliseconds.
@@ -228,6 +235,7 @@ impl Mutation {
             Mutation::SetNextEp { .. } => "SetNextEp",
             Mutation::RequestLookup { .. } => "RequestLookup",
             Mutation::Chat { .. } => "Chat",
+            Mutation::LocalReport { .. } => "LocalReport",
             Mutation::SetPlaybackPosition { .. } => "SetPlaybackPosition",
             Mutation::SetPlaylistDuration { .. } => "SetPlaylistDuration",
             Mutation::AcknowledgeAbsent { .. } => "AcknowledgeAbsent",
@@ -239,6 +247,15 @@ impl Mutation {
 /// Commands into the sync actor.
 #[derive(Debug)]
 pub enum SyncCommand {
+    /// Publish a local outbox report and acknowledge only after a disk flush.
+    PublishLocalReport {
+        /// Stable text to deduplicate on retry.
+        text: String,
+        /// Original shared-clock timestamp from the outbox.
+        timestamp: SharedTimestamp,
+        /// Whether the local replica durably contains this report.
+        reply: oneshot::Sender<bool>,
+    },
     /// A local mutation.
     Mutate(Box<Mutation>),
     /// A state-sync message from the server.
@@ -539,6 +556,15 @@ impl SyncActor {
 
     async fn handle(&mut self, cmd: SyncCommand) {
         match cmd {
+            SyncCommand::PublishLocalReport {
+                text,
+                timestamp,
+                reply,
+            } => {
+                self.mutate(Mutation::LocalReport { text, timestamp }).await;
+                self.flush_to_storage();
+                let _ = reply.send(!self.dirty);
+            }
             SyncCommand::Mutate(mutation) => self.mutate(*mutation).await,
             SyncCommand::Server { msg, via_datagram } => {
                 self.remote(*msg, via_datagram).await;
@@ -668,6 +694,23 @@ impl SyncActor {
             Mutation::PutListEntry { id, entry } => self.state.put_list_entry(actor, ts, id, entry),
             Mutation::SetNextEp { id, next_ep } => self.state.set_next_ep(actor, ts, id, next_ep),
             Mutation::RequestLookup { info } => self.state.request_lookup(info),
+            Mutation::LocalReport { text, timestamp } => {
+                let message = ChatMessage {
+                    timestamp,
+                    sender: user,
+                    text,
+                };
+                if self
+                    .state
+                    .chat
+                    .iter()
+                    .any(|existing| existing.value() == &message)
+                {
+                    return;
+                }
+                self.observe(Some(timestamp));
+                self.state.append_chat(message)
+            }
             Mutation::Chat { text } => self.state.append_chat(ChatMessage {
                 timestamp: ts,
                 sender: user,

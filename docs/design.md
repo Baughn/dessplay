@@ -803,6 +803,7 @@ different encodes/versions. See [Content Hash](#content-hash).
     screen (the keyboard path for the spoiler click flow; repeat for
     earlier ones). Posts a local notice when nothing on screen is hidden.
   - `/settings` -- open the settings screen (also `F3`)
+  - `/rogue` -- play The Waiting Below (also `F4`)
   - `/changelog` -- open the full changelog viewer (see
     [Changelog](#changelog))
   - `/resync` -- clear the local synced state and restart the client
@@ -981,6 +982,58 @@ completion, or failure; failures are warnings and may retry on a later scan.
 Unchanged cache hits remain quiet at the default level.
 
 (why: [decisions](decisions.md#live-diagnostics-and-indexing-reasons-2026-09-05))
+
+### The Waiting Below
+
+`F4` or `/rogue` opens a local, single-player roguelike in a modal across
+the upper two-thirds of the terminal, with recent party chat visible below.
+Closing it restores the previous modal or pane and preserves the chat draft.
+`F11` can cover the game with diagnostic logs and restore it afterwards.
+The watch party, network, downloads, and player continue running normally;
+playing the dungeon does not change Ready, Away, or playback state.
+
+An expedition explores five generated dungeon floors, retrieves the ember
+on the fifth, and returns to the surface. Rooms and corridors are connected;
+creatures, supplies, equipment, and treasure populate each floor. The map
+reveals nearby spaces through line of sight and remembers explored terrain.
+Only creatures on the current floor act. Movement into a creature attacks;
+walking over supplies collects them and better equipment equips automatically.
+
+Health consists of wounds to the head, torso, arms, and legs, circulating
+blood, bleeding, stamina, and nutrition. Arm injuries weaken attacks, leg
+injuries make movement tiring, and pain drains stamina. Severe head or torso
+injuries and blood loss can kill. Bandages dress the most urgent wound;
+food restores nutrition; a single rest turn recovers condition when no
+creature is visible and bleeding has stopped. Supplies are finite.
+
+Arrows, vi keys, or numpad digits move (diagonals included); `.`/`5` waits,
+`a` bandages, `e` eats, `r` rests, and `<`/`>` uses the current stairway.
+`?` opens a scrollable guide. `Esc` closes the guide first, then the game;
+`F4` toggles the game. Pasted text never performs game actions.
+After death or escape, `n` starts another expedition. A living expedition
+cannot be replaced. Completed summaries remain in local history.
+
+Every action commits the complete expedition, including random-generator
+state, to the local SQLite database before its result appears. One expedition
+is stored per local username; it is never synced. No turns pass while the
+modal is closed, while idle, or between client launches. A storage failure
+shows an error and retains the last committed turn. Corrupt or unsupported
+saves produce an error and are preserved without being overwritten. Resetting
+synced state leaves expeditions and local history intact.
+
+When another interactive user becomes Present, including a return from Lost
+or Departed, a persistent banner appears on the game until acknowledged with
+`Enter`. It also survives a covering modal and remains visible in the guide
+and death screen. Self and seeder arrivals are excluded. Ordinary presence
+narration continues in the live chat strip.
+
+Death and escape each publish a real, persisted chat message under the
+player's username with cause/outcome, deepest floor, kills, gold, turns, and
+an expedition number. The local save and pending report commit atomically.
+The report retains its original timestamp and text across retries; it is
+acknowledged only after the sync replica is saved. Offline reports travel
+through ordinary state synchronization on reconnect. These automatic reports
+do not clear Away and are not forwarded to the public IRC bridge.
 
 ### Changelog
 

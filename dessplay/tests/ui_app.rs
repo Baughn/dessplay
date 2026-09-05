@@ -615,9 +615,13 @@ fn slash_shows_filtered_command_suggestions() {
     // A bare `/` lists every command.
     type_str(&mut ui, "/");
     let all = render(&mut ui, 100, 30);
-    assert!(all.contains("/ready"), "{all}");
-    assert!(all.contains("/skip"), "{all}");
-    assert!(all.contains("/quit"), "{all}");
+    for command in dessplay::ui::commands::SLASH_COMMANDS {
+        assert!(
+            all.contains(command.name),
+            "{} missing: {all}",
+            command.name
+        );
+    }
     // Help text is tabulated: each command's description starts at the
     // same column. Find the help column on two rows of differing
     // command-name length; they must line up.
@@ -2958,4 +2962,96 @@ fn log_view_and_dropdowns_fit_small_terminals_and_capture_typing() {
     let screen = render(&mut ui, 100, 30);
     assert!(!screen.contains("do not send"));
     assert!(!screen.contains("do not paste"));
+}
+
+#[test]
+fn roguelike_captures_input_saves_before_advancing_and_restores_modals() {
+    use dessplay::roguelike::{Action, Run};
+    use dessplay::roguelike_store::Command;
+    let mut ui = ui();
+    type_str(&mut ui, "chat draft");
+    ui.handle(key(Key::Function(3)));
+    assert_eq!(
+        ui.handle(key(Key::Function(4))),
+        vec![UserAction::Roguelike(Command::Open)]
+    );
+    assert!(
+        ui.handle(key(Key::Right)).is_empty(),
+        "loading must capture movement"
+    );
+    ui.set_roguelike(Ok(Box::new(Run::new(42))));
+    ui.push_system(1000, "Party chat stays visible".into());
+    let screen = render(&mut ui, 100, 45);
+    assert!(screen.contains("THE WAITING BELOW"));
+    assert!(screen.contains("Party chat stays visible"));
+    assert!(ui.handle(paste("...jjjj")).is_empty());
+    assert_eq!(
+        ui.handle(key(Key::Right)),
+        vec![UserAction::Roguelike(Command::Act(Action::Move(1, 0)))]
+    );
+    assert!(
+        ui.handle(key(Key::Right)).is_empty(),
+        "wait for durable acknowledgement"
+    );
+    ui.set_roguelike(Err("Disk full: previous turn retained".into()));
+    assert!(render(&mut ui, 100, 45).contains("Disk full"));
+    ui.set_roguelike(Ok(Box::new(Run::new(42))));
+    ui.handle(key(Key::Function(11)));
+    assert!(render(&mut ui, 100, 45).contains("Logs"));
+    ui.handle(key(Key::Esc));
+    assert!(render(&mut ui, 100, 45).contains("THE WAITING BELOW"));
+    ui.handle(key(Key::Esc));
+    assert!(render(&mut ui, 100, 45).contains("Settings"));
+    ui.handle(key(Key::Esc));
+    assert!(render(&mut ui, 100, 45).contains("chat draft"));
+}
+
+#[test]
+fn roguelike_arrivals_are_sticky_and_include_returns_but_exclude_seeders_and_self() {
+    use dessplay::roguelike::Run;
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    ui.handle(key(Key::Function(4)));
+    ui.set_roguelike(Ok(Box::new(Run::new(42))));
+    let mut seeder = peer("warehouse");
+    seeder.role = Role::Seeder;
+    ui.apply_snapshot(snapshot(
+        StateView::default(),
+        vec![peer("kim"), seeder.clone()],
+    ));
+    assert!(!render(&mut ui, 100, 45).contains("warehouse joined"));
+    // The game remains updated even under logs.
+    ui.handle(key(Key::Function(11)));
+    let arrived = vec![peer("kim"), seeder, peer("Nero")];
+    ui.apply_snapshot(snapshot(StateView::default(), arrived.clone()));
+    ui.handle(key(Key::Esc));
+    assert!(render(&mut ui, 100, 45).contains("Nero joined"));
+    ui.advance_clock(1_000_000);
+    assert!(render(&mut ui, 100, 45).contains("Nero joined"));
+    ui.handle(key(Key::Enter));
+    ui.apply_snapshot(snapshot(StateView::default(), arrived.clone()));
+    assert!(!render(&mut ui, 100, 45).contains("Nero joined"));
+    let mut lost = arrived.clone();
+    lost[2].presence = Presence::Lost;
+    ui.apply_snapshot(snapshot(StateView::default(), lost));
+    ui.apply_snapshot(snapshot(StateView::default(), arrived));
+    assert!(render(&mut ui, 100, 45).contains("Nero joined"));
+}
+
+#[test]
+fn roguelike_slash_command_and_tiny_terminals() {
+    let mut ui = ui();
+    type_str(&mut ui, "/rogue");
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::Roguelike(
+            dessplay::roguelike_store::Command::Open
+        )]
+    );
+    ui.set_roguelike(Ok(Box::new(dessplay::roguelike::Run::new(1))));
+    for (width, height) in [(1, 1), (10, 4), (40, 12), (80, 24), (120, 50)] {
+        render(&mut ui, width, height);
+    }
+    ui.handle(key(Key::Char('?')));
+    assert!(render(&mut ui, 100, 45).contains("THE WAITING BELOW"));
 }

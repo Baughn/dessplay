@@ -60,6 +60,8 @@ pub use super::widgets::overlay;
 
 mod log_view;
 pub use log_view::LogModal;
+mod roguelike;
+pub use roguelike::RoguelikeModal;
 
 /// A one-line text editor for modal fields: a [`TextField`] plus the
 /// modal commit protocol. Editing behavior (word motion, word kill,

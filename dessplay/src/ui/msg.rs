@@ -16,6 +16,8 @@ use crate::config::Settings;
 /// Messages produced by components.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg {
+    /// A local dungeon command; the session persists it before replying.
+    Roguelike(crate::roguelike_store::Command),
     // Chat
     /// Send a chat message (already stripped of /commands).
     SendChat(String),
@@ -191,6 +193,7 @@ impl Msg {
     /// `SettingsSaved` carries the password.
     pub(crate) fn name(&self) -> &'static str {
         match self {
+            Msg::Roguelike(_) => "Roguelike",
             Msg::SendChat(_) => "SendChat",
             Msg::Command(_) => "Command",
             Msg::CycleSeriesMode => "CycleSeriesMode",
@@ -276,6 +279,8 @@ pub enum BrowseRequest {
 #[derive(Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum UserAction {
+    /// Load or advance the locally saved dungeon expedition.
+    Roguelike(crate::roguelike_store::Command),
     /// Apply a state mutation through the sync actor.
     Mutate(crate::actors::sync::Mutation),
     /// Open a file browser: the UI has no storage access, so the main

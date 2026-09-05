@@ -254,6 +254,24 @@ const MIGRATIONS: &[&str] = &[
     "
     DROP TABLE torrents;
     ",
+    // v7: the waiting-room roguelike is entirely local; finished runs
+    // double as a durable outbox for their shared-chat epitaphs.
+    "
+    CREATE TABLE roguelike_runs (
+        username   TEXT PRIMARY KEY,
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        save       TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE roguelike_history (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        username   TEXT NOT NULL,
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        summary    TEXT NOT NULL,
+        ended_at   INTEGER NOT NULL CHECK (ended_at >= 0),
+        reported   INTEGER NOT NULL DEFAULT 0 CHECK (reported IN (0, 1)),
+        UNIQUE (username, generation)
+    ) STRICT;
+    ",
 ];
 
 /// Apply any unapplied migrations. Exposed shape (a slice parameter) so
@@ -433,6 +451,17 @@ impl Storage {
     /// The default database path: `$XDG_DATA_HOME/dessplay/dessplay.db`.
     pub fn default_path() -> Option<PathBuf> {
         Some(dirs::data_dir()?.join("dessplay").join("dessplay.db"))
+    }
+
+    /// Keep the roguelike's save and finished-run report in one transaction.
+    pub(crate) fn roguelike_transaction<T>(
+        &self,
+        operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let result = operation(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
     }
 
     // ---- Settings (see config.rs for the typed struct).

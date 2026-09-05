@@ -19,6 +19,11 @@ pub struct SlashCommand {
 /// Every command offered in the discoverability popup, in display order.
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
+        name: "/rogue",
+        args: "",
+        help: "play The Waiting Below (also F4; saves every turn)",
+    },
+    SlashCommand {
         name: "/ready",
         args: "",
         help: "mark yourself ready",

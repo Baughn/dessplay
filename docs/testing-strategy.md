@@ -825,3 +825,19 @@ Anything subtler than this belongs in the multi-client harness.
 | `cargo-fuzz` / `libfuzzer-sys` | Fuzz testing |
 | `tokio::time::pause()` | Deterministic time control in async tests |
 | `tracing-test` | Capture and assert on log output in tests |
+
+
+## Roguelike tests
+
+Seeded engine properties cover connected/reachable generated floors, valid
+positions and physiology, deterministic JSON save/resume, and finished-run
+immutability. Storage tests exercise close/reopen, username isolation,
+unsupported saves, transaction rollback on save/report failure, and the
+finished-run outbox. Real sync-actor tests crash after report acknowledgement
+and replay it after restart, checking disk contents and duplicate suppression.
+Whole-app UI tests cover input capture, acknowledgement gating, modal
+restoration, chat visibility, arrivals/reconnects, and tiny terminals.
+A cautious explorer additionally completes five full expeditions using only
+normal actions and visible/explored information, including the return journey.
+Multi-client session tests cover shared reports, startup recovery, restart
+resume, and delivery of a committed turn after the UI input queue fills.

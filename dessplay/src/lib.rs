@@ -24,6 +24,8 @@ pub mod instance_lock;
 pub mod logging;
 pub mod placeholder;
 pub mod player;
+pub mod roguelike;
+pub mod roguelike_store;
 pub mod run;
 pub mod seeder;
 pub mod session;
