@@ -38,7 +38,7 @@ don't stop.
 | Localisation | 13 languages | English |
 | Platforms | Windows, Linux, BSD, macOS; packaged installers | Linux and macOS; built from source on every launch |
 | Security | Optional TLS; hashed filenames for privacy on public servers | Always-on TLS with TOFU pinning; threat model is "there are five of us" |
-| Gimmicks | None | An in-character AI commentary marquee that reacts to the episode |
+| Gimmicks | None | An in-character AI commentary marquee that reacts to the episode; a locally saved roguelike for the waiting room |
 
 For scale, as of September 2026:
 
@@ -52,6 +52,34 @@ For scale, as of September 2026:
 Syncplay is missing nothing it set out to have. DessPlay is missing a
 second player, a GUI, and any reason for a stranger to run it.
 
+
+## While you're waiting: The Waiting Below
+
+Someone's late? Press **F4** or type **`/rogue`** to explore a dungeon above
+the live chat. Descend through five floors, recover the ember, and bring it
+back to the surface. Along the way: fog of war, creatures, supplies, better
+equipment, and wounds to individual body parts. Bleeding needs bandages;
+injured arms weaken attacks, injured legs tire you out, and safe rest helps
+you recover.
+
+Every action saves to your local database, including the dungeon's random
+state. Close the modal or quit the client and resume exactly where you left
+off—nothing happens while you're away. It's built for five-minute increments.
+Friends joining or reconnecting get a persistent banner over the game, and
+death or escape posts your expedition's summary to shared chat.
+
+Move and fight with arrows, vi keys, or numpad digits. **`a`** bandages,
+**`e`** eats, **`r`** rests, **`.`** waits, and **`<` / `>`** uses stairs.
+**`?`** opens the guide; **F4** returns to the party. After death or escape,
+**`n`** starts a new expedition.
+
+From the Codex playtesting agent:
+
+> I played seed 42 by hand and reached the second floor in 91 turns, with
+> four kills and a few wounds. The first ash rat punished my clumsy
+> positioning; finding armor and a sharper blade made the rest of the floor
+> much more manageable. I haven't personally escaped yet—the five completed
+> expeditions were automated playtests.
 
 ## Install
 
