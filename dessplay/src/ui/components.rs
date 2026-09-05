@@ -967,6 +967,35 @@ impl ChatPane {
         self.input.set_text(&text);
     }
 
+    /// Read-only live tail beneath the log viewer. Reuse chat wrapping and
+    /// spoiler styling without changing the normal pane's scroll or draft.
+    pub(crate) fn render_recent(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default().borders(Borders::ALL).title("Recent chat");
+        let inner = block.inner(area);
+        frame.render_widget(tuirealm::ratatui::widgets::Clear, area);
+        frame.render_widget(block, area);
+        let mut rows: Vec<ListItem> = self
+            .lines
+            .iter()
+            .rev()
+            .flat_map(|line| {
+                wrap_chat_line(
+                    line,
+                    inner.width as usize,
+                    &self.usernames,
+                    &self.me,
+                    &self.spoilers,
+                )
+                .into_iter()
+                .rev()
+                .map(|row| ListItem::new(row.visual))
+            })
+            .take(inner.height as usize)
+            .collect();
+        rows.reverse();
+        frame.render_widget(List::new(rows), inner);
+    }
+
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         let [log_area, input_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);

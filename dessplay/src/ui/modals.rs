@@ -58,6 +58,9 @@ macro_rules! passive_modal {
 // existing `modals::overlay` callers (and tests) keep their import path.
 pub use super::widgets::overlay;
 
+mod log_view;
+pub use log_view::LogModal;
+
 /// A one-line text editor for modal fields: a [`TextField`] plus the
 /// modal commit protocol. Editing behavior (word motion, word kill,
 /// scroll discipline) is the shared vocabulary — identical to the chat

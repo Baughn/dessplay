@@ -559,6 +559,37 @@ Sent history is append-only because the prompt cache matches on a byte-stable pr
 
 **Why:** Once mouse capture is on, the terminal's own selection needs Shift and knows nothing of panes, so the app provides its own. There is no copy key because the terminal owns Cmd-C and Ctrl-C stays Quit. PRIMARY is written for the terminal-user reflex of middle-click / Shift-Insert. Copying the scramble rather than the hidden text is WYSIWYG and cannot leak a spoiler. Day separators are render furniture, so they are skipped. Widening a partial selection to its whole line before extending follows the gdocs convention.
 
+
+### Live diagnostics and indexing reasons (2026-09-05)
+
+**Rule:** F11 shows a bounded live log over the upper two-thirds of the screen,
+with independent, session-only DessPlay and dependency logging levels. Default
+logs explain every cache-backed hashing decision with old/new metadata; see
+[design.md](design.md#diagnostic-logs).
+
+**Why:** Dagger reported a recurring indexing notice without debug logging
+enabled. Counts and paths could show the repeated work but not why the cache
+was rejected. The decision point must record its evidence at info level, and
+hash failures must be visible before the next attempt. This adds diagnostics;
+it does not infer or fix the cause of that report.
+
+An in-app tail lets a player inspect current activity and enable detail without
+restarting. Keeping the bottom chat lines visible preserves party context.
+The same formatted stream feeds the daily file and memory, so changing the
+level captures the evidence for later inspection too. Bounds on retained lines,
+bytes, and individual displayed events keep trace logging from growing memory
+without limit; disk files retain complete events under the existing rotation.
+A stable line identity prevents scrollback moving under the reader during
+appends or eviction.
+
+Separate workspace and dependency scopes let a player enable application trace
+without enabling every networking dependency. Overrides last only for the
+session (the user's preference), and Startup restores each scope's original
+filter independently, preserving target-specific RUST_LOG settings. Polling the
+buffer revision on the existing UI idle tick avoids a log-event channel flooding
+the UI queue or tracing its own delivery indefinitely.
+
+
 ## Network Protocol
 
 ### Compaction hour and server placement

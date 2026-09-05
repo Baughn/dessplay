@@ -650,6 +650,7 @@ pub async fn run(
     let mut scan_tick =
         tokio::time::interval(scan_interval.unwrap_or(std::time::Duration::from_secs(3600)));
     scan_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut first_scan = true;
     loop {
         tokio::select! {
             cmd = commands.recv() => {
@@ -672,7 +673,8 @@ pub async fn run(
                 actor.on_tick().await;
             }
             _ = scan_tick.tick(), if scan_enabled => {
-                actor.start_library_scan();
+                actor.start_library_scan(if first_scan { "startup" } else { "periodic" });
+                first_scan = false;
             }
         }
     }
@@ -1222,11 +1224,11 @@ impl Actor {
             FileCommand::SetMediaRoots(roots) => {
                 self.reconcile_media_roots(roots).await;
                 // New roots may hold files we've never indexed.
-                self.start_library_scan();
+                self.start_library_scan("media_roots_changed");
             }
             FileCommand::SetRetention(retention) => self.retention = retention,
             FileCommand::SetTorrentEnabled(enabled) => self.set_torrent_enabled(enabled).await,
-            FileCommand::RescanLibrary => self.start_library_scan(),
+            FileCommand::RescanLibrary => self.start_library_scan("rescan_requested"),
             FileCommand::StartDownload {
                 file,
                 size_bytes,
@@ -1619,7 +1621,7 @@ impl Actor {
     /// Kick off a media-library scan: walk the roots in the background,
     /// turning up new/changed video files to hash. Skips if a walk is
     /// already queued/running (overlapping walks would duplicate work).
-    fn start_library_scan(&mut self) {
+    fn start_library_scan(&mut self, trigger: &'static str) {
         if self.scan_walking {
             return;
         }
@@ -1632,7 +1634,15 @@ impl Actor {
             let started = std::time::Instant::now();
             let (hits, worklist, stale, vanished_roots, online_roots) =
                 scan_library(&roots, &cache);
+            if !worklist.is_empty() {
+                tracing::info!(
+                    trigger,
+                    to_hash = worklist.len(),
+                    "library scan found files requiring indexing"
+                );
+            }
             tracing::debug!(
+                trigger,
                 hits = hits.len(),
                 to_hash = worklist.len(),
                 stale = stale.len(),
@@ -1676,6 +1686,7 @@ impl Actor {
         };
         self.scan_defer_logged = false;
         self.scan_hashing = true;
+        tracing::info!(path = %item.path.display(), scanned_mtime = item.mtime, "hashing library file");
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = std::fs::File::open(&item.path).and_then(ed2k_hash_reader);
@@ -2833,15 +2844,7 @@ impl Actor {
                     self.resolve(hash, filename).await;
                 }
                 if self.scan_total > 0 {
-                    tracing::info!(
-                        to_hash = self.scan_total,
-                        files = ?self
-                            .scan_worklist
-                            .iter()
-                            .map(|item| &item.path)
-                            .collect::<Vec<_>>(),
-                        "indexing media library"
-                    );
+                    tracing::info!(to_hash = self.scan_total, "indexing media library");
                     self.scan_started = Some(std::time::Instant::now());
                     self.scan_failed = 0;
                     // ~20 info-level checkpoints regardless of library size;
@@ -2890,7 +2893,10 @@ impl Actor {
                                 })
                                 .await;
                         }
-                        tracing::trace!(
+                        tracing::info!(
+                            hash = %root,
+                            size,
+                            cached_mtime = item.mtime,
                             done = self.scan_done,
                             total = self.scan_total,
                             path = %item.path.display(),
@@ -2911,7 +2917,7 @@ impl Actor {
                     }
                     Err(e) => {
                         self.scan_failed += 1;
-                        tracing::debug!(path = %item.path.display(), "library scan hash failed: {e}");
+                        tracing::warn!(path = %item.path.display(), "library scan hash failed; a later scan will retry: {e}");
                     }
                 }
                 // Operator-visible progress for the headless seeder (info, so
@@ -3217,8 +3223,9 @@ impl Actor {
             return;
         }
         // Cache hit: the add is instant, no progress overlay needed.
-        if let Ok(metadata) = std::fs::metadata(&path)
-            && let Some(mtime) = mtime_millis(&metadata)
+        let metadata = std::fs::metadata(&path).ok();
+        if let Some(metadata) = &metadata
+            && let Some(mtime) = mtime_millis(metadata)
             && let Some((cached_mtime, hash)) = self.hash_cache.get(&path)
             && *cached_mtime == mtime
             && hash.size_bytes == metadata.len()
@@ -3237,7 +3244,12 @@ impl Actor {
             return;
         }
         self.hashing.insert(path.clone());
-        tracing::info!(path = %path.display(), "hashing for playlist add");
+        log_hash_reason(
+            &path,
+            "playlist_add",
+            metadata.as_ref(),
+            self.hash_cache.get(&path),
+        );
         let out = self.out.clone();
         let done_tx = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
@@ -3993,6 +4005,36 @@ fn resolve_with_cache(
     (resolution, fresh)
 }
 
+/// Shared diagnostics for every cache-backed hashing entry point. Keep
+/// the old fingerprint as well as the observed one: repeated indexing can
+/// then be traced to metadata churn, a missing row, or a failed earlier hash.
+fn log_hash_reason(
+    path: &Path,
+    operation: &str,
+    metadata: Option<&std::fs::Metadata>,
+    cached: Option<&(i64, Ed2kFileHash)>,
+) {
+    let mtime = metadata.and_then(mtime_millis);
+    let size = metadata.map(std::fs::Metadata::len);
+    let cached_mtime = cached.map(|(mtime, _)| *mtime);
+    let cached_size = cached.map(|(_, hash)| hash.size_bytes);
+    let reason = if metadata.is_none() {
+        "metadata_unavailable"
+    } else if mtime.is_none() {
+        "mtime_unavailable"
+    } else if cached.is_none() {
+        "not_cached"
+    } else {
+        match (mtime != cached_mtime, size != cached_size) {
+            (true, true) => "mtime_and_size_changed",
+            (true, false) => "mtime_changed",
+            (false, true) => "size_changed",
+            (false, false) => "already_queued",
+        }
+    };
+    tracing::info!(path = %path.display(), operation, reason, ?cached_mtime, ?mtime, ?cached_size, ?size, "file requires hashing");
+}
+
 /// The ed2k root of `candidate`: trusted from the hash cache when
 /// (mtime, size) match, otherwise hashed for real exactly once (the
 /// fresh hash is pushed to `fresh` for caching). `None` if unreadable.
@@ -4018,6 +4060,12 @@ fn candidate_root(
         Some(root) => Some(root),
         None => {
             // Cache miss or stale mtime: hash for real, once.
+            log_hash_reason(
+                candidate,
+                "file_resolution",
+                Some(&metadata),
+                cache.get(candidate),
+            );
             match std::fs::File::open(candidate).and_then(ed2k_hash_reader) {
                 Ok(hashed) => {
                     let root = hashed.root;
@@ -4248,13 +4296,16 @@ fn scan_library(roots: &[PathBuf], cache: &HashMap<PathBuf, (i64, Ed2kFileHash)>
                 });
             }
             // New or changed: needs a (re)hash.
-            _ => worklist.push_back(ScanItem {
-                path,
-                mtime,
-                filename,
-                series_hint,
-                media_root: root.to_path_buf(),
-            }),
+            _ => {
+                log_hash_reason(&path, "library_scan", Some(&metadata), cache.get(&path));
+                worklist.push_back(ScanItem {
+                    path,
+                    mtime,
+                    filename,
+                    series_hint,
+                    media_root: root.to_path_buf(),
+                });
+            }
         }
     });
     // Classify disappearance per root. If even one previously recorded
@@ -7826,6 +7877,46 @@ mod tests {
                 RootDisposition::Vanished
             };
             prop_assert_eq!(root_disposition(&exists), expected);
+        }
+    }
+
+    #[test]
+    fn default_logs_explain_every_library_cache_miss() {
+        let root = tempfile::tempdir().unwrap();
+        let path = write(root.path(), "episode.mkv", b"episode");
+        let mtime = mtime_millis(&std::fs::metadata(&path).unwrap()).unwrap();
+        for (cached, reason) in [
+            (None, "not_cached"),
+            (
+                Some((mtime - 1, ed2k_hash_bytes(b"episode"))),
+                "mtime_changed",
+            ),
+            (Some((mtime, ed2k_hash_bytes(b"short"))), "size_changed"),
+            (
+                Some((mtime - 1, ed2k_hash_bytes(b"short"))),
+                "mtime_and_size_changed",
+            ),
+        ] {
+            let cache = cached
+                .map(|value| HashMap::from([(path.clone(), value)]))
+                .unwrap_or_default();
+            let (subscriber, logs) = crate::logging::interactive_subscriber(
+                tracing_subscriber::EnvFilter::new("info"),
+                None,
+            );
+            tracing::subscriber::with_default(subscriber, || {
+                let (_, work, ..) = scan_library(&[root.path().to_path_buf()], &cache);
+                assert_eq!(work.len(), 1);
+            });
+            let text = logs
+                .lines()
+                .iter()
+                .map(|line| line.text.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains(reason), "missing {reason}: {text}");
+            assert!(text.contains("episode.mkv"));
+            assert!(text.contains("mtime") && text.contains("size"));
         }
     }
 

@@ -531,7 +531,7 @@ dynamically. When a modal is active:
 
 1. The modal component receives focus
 2. Background components are rendered but don't receive input
-3. The modal is rendered as a centered overlay
+3. The modal is rendered as an overlay (centered, except the upper-screen log viewer)
 4. Closing the modal restores focus to the previous component
 
 Modal types:
@@ -594,6 +594,17 @@ Modal types:
   torrents, while reopening during background imports defaults to an active
   list with `d` cancel and `s` new search. Selection closes the modal so the
   rest of the TUI remains usable during the download.
+- **Logs**: `F11` toggles `LogModal` over the current modal, using the full
+  width and upper two-thirds of the frame. Its two dropdowns call the injected
+  `LiveLogging` controller to reload independent workspace/dependency filters.
+  `logging::interactive_subscriber` constructs one formatted stream mirrored
+  to the daily writer and a bounded shared tail; the production runtime exposes
+  that controller, and tests inject a local subscriber without global state.
+  Rendering takes a short-lock snapshot of shared immutable lines, wraps them,
+  and anchors scrollback by monotonic line ID plus wrapped fragment. The UI's
+  existing one-second idle tick checks the tail revision only while this modal
+  is visible. The passive work overlay is hidden while viewing logs. No log
+  events enter the actor or UI input queues.
 - **Changelog**: The compiled-in changelog viewer (design.md, Changelog).
   Pushed by run.rs at startup — between `Ui` construction and the UI
   thread's start — when unseen entries exist ("What's new", unseen days

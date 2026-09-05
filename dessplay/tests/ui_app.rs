@@ -2838,3 +2838,124 @@ fn slash_changelog_opens_full_view() {
         vec![UserAction::ChangelogSeen { marker }]
     );
 }
+
+#[test]
+fn f11_logs_leave_recent_chat_visible_and_restore_the_previous_modal() {
+    let mut ui = ui();
+    let (_subscriber, logs) =
+        dessplay::logging::interactive_subscriber(tracing_subscriber::EnvFilter::new("info"), None);
+    ui.set_logging(logs);
+    ui.push_system(1000, "Recent chat remains visible".into());
+    ui.handle(key(Key::Function(11)));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Logs · LIVE"));
+    assert!(screen.contains("Recent chat remains visible"));
+    insta::assert_snapshot!("f11_log_view", screen);
+    ui.handle(key(Key::Function(11)));
+    assert!(!render(&mut ui, 100, 30).contains("Logs · LIVE"));
+
+    ui.handle(key(Key::Function(3)));
+    let settings = render(&mut ui, 100, 30);
+    ui.handle(key(Key::Function(11)));
+    assert!(render(&mut ui, 100, 30).contains("Logs · LIVE"));
+    ui.handle(key(Key::Esc));
+    assert_eq!(render(&mut ui, 100, 30), settings);
+}
+
+#[test]
+fn log_dropdowns_apply_independently_cancel_and_survive_reopening() {
+    use dessplay::logging::{LogLevel, interactive_subscriber};
+    let (subscriber, logs) =
+        interactive_subscriber(tracing_subscriber::EnvFilter::new("info"), None);
+    tracing::subscriber::with_default(subscriber, || {
+        let mut ui = ui();
+        ui.set_logging(logs.clone());
+        ui.handle(key(Key::Function(11)));
+        ui.handle(key(Key::Tab)); // DessPlay
+        ui.handle(key(Key::Enter));
+        ui.handle(key(Key::End)); // trace
+        ui.handle(key(Key::Esc)); // Cancel, without closing the modal.
+        assert!(render(&mut ui, 100, 30).contains("Logs · LIVE"));
+        assert_eq!(logs.levels(), [LogLevel::Startup; 2]);
+        ui.handle(key(Key::Enter));
+        ui.handle(key(Key::End));
+        ui.handle(key(Key::Enter));
+        assert_eq!(logs.levels(), [LogLevel::Trace, LogLevel::Startup]);
+        ui.handle(key(Key::Tab)); // Rust
+        ui.handle(key(Key::Enter));
+        ui.handle(key(Key::Down)); // off
+        ui.handle(key(Key::Enter));
+        assert_eq!(logs.levels(), [LogLevel::Trace, LogLevel::Off]);
+        tracing::trace!(target: "dessplay_core", "included application trace");
+        tracing::error!(target: "quinn", "excluded dependency error");
+        let screen = render(&mut ui, 100, 30);
+        assert!(screen.contains("included application trace"));
+        assert!(!screen.contains("excluded dependency error"));
+        ui.handle(key(Key::Function(11)));
+        ui.handle(key(Key::Function(11)));
+        assert_eq!(logs.levels(), [LogLevel::Trace, LogLevel::Off]);
+        assert!(render(&mut ui, 100, 30).contains("DessPlay: [ trace"));
+    });
+}
+
+#[test]
+fn log_scrollback_stays_anchored_during_appends_and_eviction_and_end_resumes_live() {
+    let (subscriber, logs) =
+        dessplay::logging::interactive_subscriber(tracing_subscriber::EnvFilter::new("info"), None);
+    tracing::subscriber::with_default(subscriber, || {
+        let mut ui = ui();
+        ui.set_logging(logs);
+        for n in 0..100 {
+            tracing::info!("retained event {n:04}");
+        }
+        ui.handle(key(Key::Function(11)));
+        assert!(render(&mut ui, 120, 30).contains("retained event 0099"));
+        ui.handle(key(Key::Home));
+        let before = render(&mut ui, 120, 30);
+        assert!(before.contains("retained event 0000"));
+        for n in 100..150 {
+            tracing::info!("retained event {n:04}");
+        }
+        assert!(
+            ui.advance_clock(2000),
+            "idle log arrivals request a repaint"
+        );
+        assert_eq!(render(&mut ui, 120, 30), before);
+        assert!(
+            !ui.advance_clock(2000),
+            "an unchanged log must not repaint forever"
+        );
+        for n in 150..2100 {
+            tracing::info!("retained event {n:04}");
+        }
+        let evicted = render(&mut ui, 120, 30);
+        assert!(evicted.contains("retained event 0100"));
+        assert!(!evicted.contains("retained event 0000"));
+        ui.handle(key(Key::End));
+        assert!(render(&mut ui, 120, 30).contains("retained event 2099"));
+        tracing::info!("a new live event");
+        assert!(render(&mut ui, 120, 30).contains("a new live event"));
+    });
+}
+
+#[test]
+fn log_view_and_dropdowns_fit_small_terminals_and_capture_typing() {
+    let (_subscriber, logs) =
+        dessplay::logging::interactive_subscriber(tracing_subscriber::EnvFilter::new("info"), None);
+    let mut ui = ui();
+    ui.set_logging(logs);
+    ui.handle(key(Key::Function(11)));
+    assert!(type_str(&mut ui, "do not send to chat").is_empty());
+    assert!(ui.handle(paste("do not paste to chat")).is_empty());
+    ui.handle(key(Key::Tab));
+    ui.handle(key(Key::Enter));
+    for width in [1, 10, 25, 80] {
+        for height in [1, 2, 5, 12, 24] {
+            let _ = render(&mut ui, width, height);
+        }
+    }
+    ui.handle(key(Key::Function(11)));
+    let screen = render(&mut ui, 100, 30);
+    assert!(!screen.contains("do not send"));
+    assert!(!screen.contains("do not paste"));
+}

@@ -350,6 +350,7 @@ enum Modal {
     NyaaSearch(NyaaSearchModal),
     LocalCopyOffer(LocalCopyOfferModal),
     Changelog(ChangelogModal),
+    Logs(super::modals::LogModal),
     Confirm(ConfirmModal),
 }
 
@@ -365,6 +366,7 @@ impl Modal {
             Modal::NyaaSearch(modal) => modal,
             Modal::LocalCopyOffer(modal) => modal,
             Modal::Changelog(modal) => modal,
+            Modal::Logs(modal) => modal,
             Modal::Confirm(modal) => modal,
         }
     }
@@ -380,6 +382,7 @@ impl Modal {
             Modal::NyaaSearch(modal) => modal.keybindings(),
             Modal::LocalCopyOffer(modal) => modal.keybindings(),
             Modal::Changelog(modal) => modal.keybindings(),
+            Modal::Logs(modal) => modal.keybindings(),
             Modal::Confirm(modal) => modal.keybindings(),
         }
     }
@@ -396,6 +399,7 @@ impl Modal {
             Modal::NyaaSearch(_) => "NyaaSearch",
             Modal::LocalCopyOffer(_) => "LocalCopyOffer",
             Modal::Changelog(_) => "Changelog",
+            Modal::Logs(_) => "Logs",
             Modal::Confirm(_) => "Confirm",
         }
     }
@@ -454,6 +458,7 @@ pub struct Ui {
     health: HealthLine,
     keybar: KeyBar,
     modals: Vec<Modal>,
+    logging: Option<crate::logging::LiveLogging>,
     focus: Focus,
     /// Where the panes landed in the last draw (mouse hit-testing).
     panes: PaneRects,
@@ -533,6 +538,11 @@ pub struct Ui {
 }
 
 impl Ui {
+    /// Supply a logging controller (production defaults to the process runtime).
+    pub fn set_logging(&mut self, logging: crate::logging::LiveLogging) {
+        self.logging = Some(logging);
+    }
+
     /// Build the UI. Opens the settings modal when the *given* settings
     /// need setup. Callers that prefill values (the `$USER` username,
     /// the `.env` password) but still want first-run confirmation use
@@ -568,6 +578,7 @@ impl Ui {
             health: HealthLine::default(),
             keybar: KeyBar::default(),
             modals: Vec::new(),
+            logging: crate::logging::runtime(),
             focus: Focus::Chat,
             panes: PaneRects::default(),
             splitter_drag: None,
@@ -630,7 +641,8 @@ impl Ui {
         let marquee = self.advance_marquee(now);
         let spoilers = self.chat.advance_spoilers(now);
         let selection = self.chat.expire_selection(now);
-        speakers || marquee || spoilers || selection
+        let logs = matches!(self.modals.last(), Some(Modal::Logs(modal)) if modal.refresh_needed());
+        speakers || marquee || spoilers || selection || logs
     }
 
     /// How soon the shell should tick again: fast while a marquee pass
@@ -1269,6 +1281,7 @@ impl Ui {
             }
         };
         // Globals, always available (handled before pane/modal routing).
+        items.push(("F11", "Logs"));
         items.push(("Ctrl-r", "Ready"));
         items.push(("Ctrl-c", "Quit"));
         self.keybar.set_items(items);
@@ -1460,6 +1473,26 @@ impl Ui {
                 }
                 _ => self.chat.clear_selection(),
             }
+        }
+        // F11 also works over another modal, restoring it on close.
+        if super::components::plain(&ev) == Some(Key::Function(11)) {
+            tracing::debug!("user action: toggle logs (F11)");
+            if let Some(index) = self
+                .modals
+                .iter()
+                .position(|modal| matches!(modal, Modal::Logs(_)))
+            {
+                self.modals.remove(index);
+                self.sync_focus_attr();
+                self.refresh_keybar();
+            } else {
+                self.push_modal(Modal::Logs(super::modals::LogModal::new(
+                    self.logging.clone(),
+                )));
+                self.sync_focus_attr();
+                self.refresh_keybar();
+            }
+            return Vec::new();
         }
         // Globals first.
         if let Event::Keyboard(KeyEvent {
@@ -2648,10 +2681,24 @@ impl Ui {
         }
         self.status.view(frame, status_area);
         self.keybar.view(frame, keybar_area);
+        if matches!(self.modals.last(), Some(Modal::Logs(_))) {
+            let area = frame.area();
+            let y = super::modals::LogModal::area(area).bottom();
+            self.chat.render_recent(
+                frame,
+                Rect {
+                    y,
+                    height: keybar_area.y.saturating_sub(y),
+                    ..area
+                },
+            );
+        }
         if let Some(modal) = self.modals.last_mut() {
             modal.as_component().view(frame, frame.area());
         }
-        self.draw_work_overlay(frame);
+        if !matches!(self.modals.last(), Some(Modal::Logs(_))) {
+            self.draw_work_overlay(frame);
+        }
         super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth);
     }
 

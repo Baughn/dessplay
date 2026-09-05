@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-02
+Last updated: 2026-09-05
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -943,6 +943,45 @@ the separators too, and days with no messages produce no separator. The
 boundary is local-time and per-client; it is never synced
 (why: [decisions](decisions.md#day-boundary-at-0900)).
 
+### Diagnostic Logs
+
+`F11` toggles a live log modal across the full width of the upper two-thirds
+of the terminal. The remaining area above the key bar shows a read-only live
+tail of recent chat, preserving the normal chat draft and scroll position,
+including when subtitles use a separate pane. It can open over another
+modal; closing it restores that modal. `Esc` closes the viewer, or cancels an
+open dropdown first. Background processing continues normally.
+
+The viewer retains the current session's most recent **2,000 lines**, bounded
+also to **2 MiB**. Individual events are limited to **16 KiB** in the viewer,
+with a visible truncation marker; the daily file receives the complete event.
+Terminal control characters are removed from displayed logs. Older daily files
+remain available on disk; the modal does not load previous sessions.
+
+The log follows new lines until the user scrolls back. `↑`/`↓` and
+`PgUp`/`PgDn` scroll wrapped rows, `Home` jumps to the oldest retained line,
+and `End` resumes live following. Scrollback stays anchored as new lines arrive;
+when its anchor expires it advances to the oldest retained line.
+
+`Tab`/`Shift-Tab` select the log, **DessPlay**, or **Rust (other crates)**
+control. Each level control opens a dropdown with `Enter`; arrows select and
+`Enter` applies. Choices are Startup, off, error, warn, info, debug, and trace.
+DessPlay covers the workspace's client, core, and rendezvous targets. Rust
+controls all remaining targets. Changes apply immediately to both the viewer
+and daily files, for the **current session only**. Each scope's Startup choice
+restores its original `RUST_LOG` filter, or `info` when none was supplied,
+without changing the other scope. The effective startup filter is displayed.
+
+Default (`info`) logging records each library cache miss's path, operation,
+reason (no cached row, changed mtime, changed size, or both), and old/new
+fingerprints. Playlist-add and file-resolution hashing report the same evidence,
+including unavailable metadata. Nonempty scans record their trigger (startup,
+periodic, roots changed, or requested), and library hashes log their start,
+completion, or failure; failures are warnings and may retry on a later scan.
+Unchanged cache hits remain quiet at the default level.
+
+(why: [decisions](decisions.md#live-diagnostics-and-indexing-reasons-2026-09-05))
+
 ### Changelog
 
 New features and fixes are surfaced in-app. `CHANGELOG.md` at the repo
@@ -956,8 +995,8 @@ degrades to an empty changelog
 
 At startup, entries newer than the persisted **seen marker** open a
 **"What's new" modal**. Scroll with `↑`/`↓`/`PgUp`/`PgDn`; `Enter` (the
-visible `[ OK ]` button on its bottom row) or `Esc` dismisses; every
-other key is swallowed
+visible `[ OK ]` button on its bottom row) or `Esc` dismisses; global
+keys (including `F11` logs) still work, and other keys are swallowed
 (why: [decisions](decisions.md#whats-new-modal-swallows-other-keys)).
 Dismissing persists the marker; quitting without dismissing shows the
 same entries again next launch. `/changelog` opens the full history any

@@ -19,6 +19,10 @@ use tracing_subscriber::fmt::MakeWriter;
 
 use crate::timeutil::biblical_date;
 
+mod live;
+pub use live::init as init_interactive;
+pub use live::{LiveLogging, LogLevel, LogLine, LogScope, interactive_subscriber, runtime};
+
 /// Prefix of a dated log file (`dessplay-2026-06-29.log`).
 const LOG_PREFIX: &str = "dessplay-";
 /// Suffix of a dated log file.

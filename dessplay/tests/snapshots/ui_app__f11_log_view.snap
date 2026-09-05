@@ -1,0 +1,35 @@
+---
+source: dessplay/tests/ui_app.rs
+assertion_line: 2853
+expression: screen
+---
+┌Logs · LIVE───────────────────────────────────────────────────────────────────────────────────────┐
+│Session only · Startup: info                                                                      │
+│DessPlay: [ Startup ▾ ]                                                                           │
+│Rust (other crates): [ Startup ▾ ]                                                                │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│Tab: control · Enter: dropdown · ↑/↓/PgUp/PgDn: scroll · End: live · F11/Esc: close               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Recent chat───────────────────────────────────────────────────────────────────────────────────────┐
+│01:00 * Recent chat remains visible                                                               │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Tab Control | Enter Choose | ↑/↓ Scroll/select | End Live | Esc Close | F11 Logs | Ctrl-r Ready | Ct

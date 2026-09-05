@@ -143,17 +143,7 @@ fn main() -> color_eyre::Result<()> {
         if let Some(dir) = &log_dir {
             dessplay::logging::trim_old_logs(dir, dessplay::logging::today_biblical(), 7);
         }
-        match log_dir.clone() {
-            Some(dir) => tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(dessplay::logging::BiblicalDailyWriter::new(dir))
-                .with_ansi(false)
-                .init(),
-            None => tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(std::io::sink)
-                .init(),
-        }
+        dessplay::logging::init_interactive(filter, log_dir.clone());
         tracing::info!("dessplay {} starting", env!("CARGO_PKG_VERSION"));
     } else if cli.dump || cli.reset_sync {
         // `--dump` writes JSON to stdout; keep logs off it so the output

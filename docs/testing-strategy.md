@@ -595,6 +595,14 @@ layer:
 - turning off the existing speaker-colors master toggle produces uniformly dim
   text regardless of terminal capability or overflow preference.
 
+Logging tests exercise the production subscriber through local tracing
+contexts: all pairs of workspace/dependency levels, callsite re-enabling,
+restoring target-specific startup filters, identical disk/viewer output, and
+bounded UTF-8 capture. Whole-app F11 tests cover modal restoration, visible
+recent chat, dropdown apply/cancel, anchored scrollback through eviction,
+idle refresh, input capture, and narrow/short terminals. The indexing diagnostic
+regression confirms all four cache-miss reasons are present at info level.
+
 ---
 
 ## Actor Tests

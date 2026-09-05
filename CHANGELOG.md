@@ -9,6 +9,13 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-05
+
+- Added: F11 opens live logs above recent chat, with scrolling and separate
+  DessPlay and Rust logging levels that apply for the current session.
+- Improved: default logs explain why files need indexing or re-indexing,
+  including changed file size or modification time and failed hashing attempts.
+
 ## 2026-09-02
 
 - Added: this changelog. New features and fixes since your last session
