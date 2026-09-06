@@ -1,6 +1,7 @@
 //! The Waiting Below: a deterministic expedition. Only explicit actions advance time.
 use serde::{Deserialize, Serialize};
 pub mod anatomy;
+mod narration;
 mod observation;
 mod simulation;
 pub mod world;

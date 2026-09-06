@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::anatomy::{
     ArmorMaterial, ArmorPiece, ArmorSlot, AttackProfile, Body, BodyKind, Equipment, WeaponKind,
 };
+use super::narration::{AttackSource, Victim};
 use super::{CELLS, FLOOR_COUNT, HEIGHT, Point, Rng, WIDTH};
 
 /// Hard ceiling on living creatures on a floor, including summoned creatures.
@@ -74,6 +75,14 @@ pub enum EnemyKind {
 }
 
 impl EnemyKind {
+    /// Anatomical naming and durability shared by creation and narration.
+    pub fn body_kind(self) -> BodyKind {
+        match self {
+            Self::Rat => BodyKind::Rat,
+            Self::Brute => BodyKind::Brute,
+            Self::Hollow | Self::Warden => BodyKind::Human,
+        }
+    }
     /// Name in observations and the journal.
     pub fn name(self) -> &'static str {
         match self {
@@ -143,13 +152,20 @@ pub struct Enemy {
 }
 
 impl Enemy {
+    /// Visible preparation reflects natural attacks and the usable weapon.
+    pub fn strike_windup(&self) -> &'static str {
+        match self.kind {
+            EnemyKind::Brute => "rears back to strike",
+            EnemyKind::Rat => "crouches to bite",
+            EnemyKind::Hollow | EnemyKind::Warden => match self.body.effective_weapon(&self.gear) {
+                WeaponKind::Unarmed => "draws back to strike",
+                _ => "raises its weapon",
+            },
+        }
+    }
     /// Construct a species and equipment loadout without consuming randomness.
     pub fn new(id: u64, kind: EnemyKind, position: Point, time: u64) -> Self {
-        let body = Body::new(match kind {
-            EnemyKind::Rat => BodyKind::Rat,
-            EnemyKind::Brute => BodyKind::Brute,
-            EnemyKind::Hollow | EnemyKind::Warden => BodyKind::Human,
-        });
+        let body = Body::new(kind.body_kind());
         let mut gear = Equipment {
             active: match kind {
                 EnemyKind::Rat | EnemyKind::Brute => WeaponKind::Unarmed,
@@ -1021,11 +1037,7 @@ pub fn advance(floor: &mut Floor, rng: &mut Rng, player: Point) -> Vec<WorldEven
             );
             events.push(WorldEvent {
                 position: Some(p),
-                message: format!(
-                    "Falling stone strikes the {}: {}",
-                    enemy.kind.name(),
-                    injury.message
-                ),
+                message: injury.narrate(AttackSource::FallingStone, Victim::Enemy(enemy.kind)),
                 danger: true,
                 impact: false,
             });

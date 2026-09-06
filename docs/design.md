@@ -1037,6 +1037,25 @@ seen terrain remains remembered and nearby sounds still warn of danger.
 Damaged limbs retain fallback movement and attacks while vital failure or
 blood loss can kill.
 
+Anatomical names follow the creature: rats have forelegs, forepaws, hind
+legs, and hind paws. Combat narration identifies the attacker, its effective
+weapon or natural action, and the struck region of the defender. Rats jump
+up to bite upper-body regions and bite lower limbs directly. Deflections
+are distinct from injuries; structural consequences name their owner.
+Natural attacks and weaponless fallback attacks have matching windup text.
+Unseen targets retain generic contact feedback. Narration consumes no RNG.
+
+Wound details use words instead of tissue values, percentages, local bleeding
+rates, sight radii, or breath capacities. Remaining flesh is scratched at
+75–99% of the species maximum, wounded at 50–74%, badly wounded at 25–49%,
+mangled below 25%, and destroyed at zero; full flesh adds no injury detail.
+Severance is a separate permanent loss. Bone damage, fractures and splint
+support, nerve damage or lost function, and damaged or destroyed individual
+organs remain explicit, with sight, breathing, grip, and movement consequences.
+Local bleeding is light at 1–4, ordinary at 5–14, and heavy at 15 or more.
+These thresholds affect descriptions only. Separate blood, breath, pain,
+total bleeding, nutrition, and supply counters remain numeric.
+
 Knife, spear, and mace differ in reach, speed, exertion, and injury type.
 One active weapon and one spare are carried, with armor for head, torso,
 arms, hands, legs, and feet. Armor coverage, material, and weight affect
@@ -1079,6 +1098,17 @@ observation, without unseen creatures or unremembered terrain. Consecutive
 identical recovery messages appear once while recovery keeps advancing.
 Distinct treatments and combat events remain visible. The inventory separates
 carried equipment from ground items with a blank line.
+
+The map sidebar shows only injured regions, or “No wounds”, with wrapped
+text and a blank line before perceived threats. Health and threats have
+separate height budgets; when both need more room, threats receive up to
+half the rows after the separator, and can use space unneeded by health.
+Whole entries that do not fit are replaced by “More wounds: v” or an
+omitted-threat count. The condition page retains all regions and scrolls by
+wrapped display rows; treatment applies to the selected row's anatomical
+region, including continuation rows and after resizing or a committed update.
+Recovery uses the same bounded wound summary. Recent journal messages wrap
+and retain the newest display rows. Existing saved journal text is preserved.
 
 Playback & display settings offer Full, Reduced, and Off injury effects,
 applied live and local to this client. Full uses brief red injury flashes

@@ -264,7 +264,8 @@ impl Run {
                 let intent = match e.intent {
                     EnemyIntent::Idle => "watching".into(),
                     EnemyIntent::Strike { target, at } => format!(
-                        "raising weapon: strike ({},{}) in {} time",
+                        "{}: strike ({},{}) in {} time",
+                        e.strike_windup(),
                         target.x,
                         target.y,
                         at.saturating_sub(floor.time)

@@ -29,6 +29,119 @@ fn scripted(code: u8) -> Action {
         _ => Action::Treat(6),
     }
 }
+
+#[test]
+fn creature_strikes_name_the_action_and_its_victim() {
+    for kind in [
+        EnemyKind::Rat,
+        EnemyKind::Hollow,
+        EnemyKind::Warden,
+        EnemyKind::Brute,
+    ] {
+        for seed in 0..64 {
+            let mut run = arena();
+            run.rng = Rng(seed);
+            let mut enemy = Enemy::new(0, kind, run.position.offset(1, 0), 0);
+            if matches!(kind, EnemyKind::Warden | EnemyKind::Brute) {
+                enemy.intent = EnemyIntent::Strike {
+                    target: run.position,
+                    at: 100,
+                };
+            }
+            run.floors[0].enemies.push(enemy);
+            run.reveal();
+            run.act(Action::Wait);
+            let injury = run
+                .journal
+                .iter()
+                .find(|e| e.kind == EventKind::Injury)
+                .unwrap();
+            assert!(
+                injury.text.starts_with(&format!("The {} ", kind.name())),
+                "{}",
+                injury.text
+            );
+            assert!(injury.text.contains("your "), "{}", injury.text);
+            if kind == EnemyKind::Rat {
+                assert!(injury.text.contains("bite"), "{}", injury.text);
+                if injury.text.contains("your torso") {
+                    assert!(
+                        injury.text.contains("jumps up to bite your torso"),
+                        "{}",
+                        injury.text
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn attacks_on_rats_never_describe_human_limbs() {
+    let mut saw_foreleg = false;
+    let mut saw_paw = false;
+    for seed in 0..128 {
+        let mut run = arena();
+        run.rng = Rng(seed);
+        let mut rat = Enemy::new(0, EnemyKind::Rat, run.position.offset(1, 0), 0);
+        rat.next_action = 10_000;
+        run.floors[0].enemies.push(rat);
+        run.reveal();
+        run.act(Action::Attack(1, 0));
+        let attack = run
+            .journal
+            .iter()
+            .find(|e| e.kind == EventKind::Combat)
+            .unwrap();
+        assert!(
+            ![" arm", " hand", " foot"]
+                .iter()
+                .any(|part| attack.text.contains(part)),
+            "{}",
+            attack.text
+        );
+        saw_foreleg |= attack.text.contains("foreleg");
+        saw_paw |= attack.text.contains("paw");
+    }
+    assert!(saw_foreleg && saw_paw);
+}
+
+#[test]
+fn natural_and_fallback_strikes_do_not_claim_a_weapon() {
+    for kind in [EnemyKind::Hollow, EnemyKind::Warden, EnemyKind::Brute] {
+        let mut run = arena();
+        let mut enemy = Enemy::new(0, kind, run.position.offset(1, 0), 0);
+        enemy.body.parts[4].nerve = 0;
+        enemy.body.parts[5].nerve = 0;
+        run.floors[0].enemies.push(enemy);
+        run.reveal();
+        run.act(Action::Wait);
+        if kind != EnemyKind::Hollow {
+            let view = run.view();
+            assert!(!view.enemies[0].intent.contains("weapon"));
+            assert!(
+                run.journal
+                    .iter()
+                    .any(|entry| entry.kind == EventKind::Danger && entry.text.contains("strike"))
+            );
+            run.act(Action::Wait);
+            run.act(Action::Wait);
+        }
+        let injury = run
+            .journal
+            .iter()
+            .find(|entry| entry.kind == EventKind::Injury)
+            .unwrap();
+        assert!(
+            !["knife", "mace", "weapon", "hands"]
+                .iter()
+                .any(|word| injury.text.contains(word)),
+            "{}",
+            injury.text
+        );
+        assert!(injury.text.contains("your "));
+    }
+}
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(64)))]
     #[test]

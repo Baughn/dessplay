@@ -823,6 +823,14 @@ owns shared tissue injury, equipment, treatment, and physiological effects;
 `world` owns generated floors and persistent ascent cycles; `simulation`
 orders actions, physiology, hazards, and enemy commitments; `observation`
 produces `RunView`. Game decisions use the saved RNG; presentation does not.
+`Body::hit` returns a structured impact result (region, deflection or injury,
+structural consequences, seriousness). The `narration` module combines it
+with perceived attacker/defender context for player strikes, enemy strikes,
+and environmental impacts. Names require the target's body kind; natural
+attacks are distinct from the weapon profiles used to calculate damage.
+These transient results are not part of the save envelope. `Body::conditions`
+provides qualitative descriptions with stable region IDs and injury flags;
+full inspection, wound summaries, and the plain harness share this source.
 
 A player action advances a deterministic integer clock in 50-unit slices.
 Physiology runs on 100-unit boundaries, followed by environmental events

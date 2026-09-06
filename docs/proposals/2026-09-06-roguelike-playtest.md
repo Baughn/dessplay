@@ -348,3 +348,26 @@ tile without a separate attack command. Sprinting still moves. The shared
 corner rule covers sight, attacks, door access, and enemy paths; older saves'
 recovery spam is also collapsed for display. These changes passed 1,411 tests
 and strict workspace Clippy, with failing regressions confirmed first.
+
+The next follow-up corrected human limb names on rats and ambiguous enemy
+retaliation messages. Combat now describes the actual attacker, natural or
+effective weapon action, and the defender's region; falling stone and armor
+deflections share the same narration. Wound details use qualitative words,
+and the health sidebar wraps injured regions with a blank line before threats
+and explicit overflow indicators. Condition scrolling reaches long entries
+while retaining the correct treatment region through resizing and healing.
+
+Seven initial regressions were confirmed failing before implementation.
+The completed change passes 1,427 tests (five default exclusions) and strict
+workspace Clippy. The full gate required running outside the sandbox because
+mpv test fixtures bind local Unix sockets. Render fixtures exercised ordinary
+and small terminals. A separate parent-revision comparison matched 3,200
+action states across 16 seeds after excluding journal text; those short
+roaming replays retained only six combat/injury events, so 6,144 direct impact
+comparisons additionally checked body state, seriousness, and RNG equality
+across species and weapon profiles. These are presentation and compatibility
+checks, not a new balance playtest.
+
+The final seeded fuzz campaign (`20260906`, maximum input length 1024)
+completed 23,142 executions in 601 seconds without a failure. AddressSanitizer
+remained enabled; LeakSanitizer was disabled for the traced environment.

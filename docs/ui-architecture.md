@@ -741,6 +741,19 @@ and ground-item selection, and the guide. Directional attack/door commands
 hold only a UI direction prompt. Browsing, help, and arrival acknowledgement
 spend no game time; equipment and treatment choices cross the save boundary.
 
+Condition descriptions carry region IDs and an explicit injury flag. The
+sidebar filters healthy regions, wraps complete entries to its width, budgets
+health and threats separately, and inserts a blank separating line. Omitted
+wounds point to `v`; omitted threats have a count. Recovery uses the same
+bounded wound summary. Recent journal entries are wrapped before selecting
+the newest display rows that fit.
+
+The condition page has a visual-row cursor: every wrapped continuation maps
+back to its anatomical region for `Action::Treat`. Up/Down and page keys can
+reach details inside an entry taller than the viewport. Rebuilding rows after
+a resize or committed reply preserves the selected region and clamps its
+continuation offset. Other inspection pages keep their existing item cursors.
+
 `r` starts a `Recovery` controller with the starting supply counts and a
 presentation-clock deadline. Its first care step is dispatched immediately;
 subsequent steps wait at least 250 ms after the previous committed reply.

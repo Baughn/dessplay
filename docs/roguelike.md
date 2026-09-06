@@ -90,6 +90,20 @@ and destroying both eyes leaves only adjacent perception. Blood loss,
 starvation, destroyed vital organs, and catastrophic head or torso injuries
 can kill. Full blood does not mean your body has healed.
 
+Wounds are described in words: for example, **left foot scratched, bone
+damaged**. Scratched, wounded, badly wounded, and mangled describe increasing
+flesh damage; fractures, splint support, nerve and organ damage, permanent
+losses, and bleeding remain separate details. Blood, breath, pain, and supplies
+still have their own counters. Rats have forelegs and paws, and combat explains
+their bites—including jumping up to reach your torso.
+
+The sidebar shows injured regions, or “No wounds”, and leaves a blank line
+before threats. “More wounds: v” means more details are available under **v**;
+an omitted-threat count means more perceived enemies could not fit. In the
+condition view, **Up/Down** and **Page Up/Page Down** scroll wrapped lines;
+**a** treats the region containing the highlighted line, even a continuation.
+Reading and scrolling spend no time.
+
 **Rest takes care of routine treatment for you.** It binds bleeding, applies
 available splints, eats when needed, catches breath, and recovers blood and
 superficial injuries. Linen, splints, food, and nutrition are finite. Ordinary

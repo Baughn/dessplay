@@ -30,6 +30,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
   this on screen, and diagonals can pass a single wall beside you.
 - Improved: Dungeon inventory separates ground items with a blank line, and
   resting no longer floods the journal with identical recovery messages.
+- Fixed: Ash rats now have forelegs and paws in combat messages, and enemy
+  attacks describe what the creature does and where it hits you.
+- Improved: Dungeon wounds use descriptions such as "left foot scratched,
+  bone damaged". Health details wrap, with a blank line before threats and
+  a hint when more wounds are available under v. Scroll through long injury
+  entries and treat the region on the highlighted line.
 
 ## 2026-09-05
 

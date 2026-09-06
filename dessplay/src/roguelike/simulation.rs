@@ -1,4 +1,5 @@
 //! Explicit actions and stable 50-unit scheduling. Other floors freeze in place.
+use super::narration::{AttackSource, Victim};
 use super::*;
 use std::collections::VecDeque;
 
@@ -85,7 +86,7 @@ impl Run {
                                 weapon: WeaponKind::Mace,
                                 power: 35,
                             },
-                            "falling stone",
+                            AttackSource::FallingStone,
                         );
                     }
                     if self.is_finished() {
@@ -305,15 +306,11 @@ impl Run {
                 e.intent = EnemyIntent::Recovering { until: now + 300 };
                 e.next_action = now + 300;
             }
-            let name = e.kind.name().to_string();
+            let victim = Victim::Enemy(e.kind);
             self.say(
                 EventKind::Combat,
                 if visible {
-                    format!(
-                        "Your {} strikes the {name}: {}",
-                        weapon.name(),
-                        report.message
-                    )
+                    report.narrate(AttackSource::Player(weapon), victim)
                 } else {
                     format!("Your {} strikes something beyond sight.", weapon.name())
                 },
@@ -570,15 +567,16 @@ impl Run {
         );
         self.say(EventKind::Ending, self.epilogue.clone());
     }
-    fn hurt(&mut self, profile: AttackProfile, source: &str) {
+    fn hurt(&mut self, profile: AttackProfile, source: AttackSource) {
         let report = self.body.hit(profile, &self.gear, &mut self.rng);
         if report.serious {
             self.serious_wounds += 1;
         }
         self.last_step.interrupted = true;
-        self.say(EventKind::Injury, format!("{source}: {}", report.message));
+        self.say(EventKind::Injury, report.narrate(source, Victim::Player));
         self.check_death(Some(format!(
-            "to {source} on floor {} ({})",
+            "to {} on floor {} ({})",
+            source.death_source(),
             self.depth + 1,
             self.body.death_cause()
         )));
@@ -640,7 +638,7 @@ impl Run {
             EnemyIntent::Strike { target, at } if now >= at => {
                 if self.position == target && adjacent {
                     let profile = enemy_attack(e);
-                    self.hurt(profile, e.kind.name());
+                    self.hurt(profile, AttackSource::Enemy(e.kind, profile.weapon));
                 } else if e.position.index().is_some_and(|i| self.floor().visible[i]) {
                     self.say(
                         EventKind::Combat,
@@ -717,14 +715,16 @@ impl Run {
                 self.say(
                     EventKind::Danger,
                     format!(
-                        "The {} raises its weapon toward ({},{}). Step away!",
+                        "The {} {} toward ({},{}). Step away!",
                         e.kind.name(),
+                        e.strike_windup(),
                         self.position.x,
                         self.position.y
                     ),
                 );
             } else {
-                self.hurt(enemy_attack(e), e.kind.name());
+                let profile = enemy_attack(e);
+                self.hurt(profile, AttackSource::Enemy(e.kind, profile.weapon));
                 e.body.stamina = e.body.stamina.saturating_sub(12);
                 e.intent = EnemyIntent::Recovering { until: now + 100 };
                 e.next_action = now + 100;

@@ -934,3 +934,37 @@ identical recovery events now coalesce, including when displaying older saves;
 physiology still advances and distinct treatment/combat events remain. Ground
 items also get a blank separator above them. The inventory renderer and input
 handling share a row mapping so that adding space cannot equip the wrong item.
+
+## Creature anatomy and readable wounds (2026-09-06)
+
+**Rule:** Combat names the attacker, its action, and the defender's actual
+anatomy. Wound details are qualitative, and the bounded health summary is
+separated from threats by a blank line; full details remain under `v`.
+
+**Why:** An ash rat was reported as having arms because shared region IDs
+were also used as human-only display names. Enemy retaliation prefixed the
+same context-free sentence used for player strikes, making “ash rat: The
+torso takes the blow” ambiguous about whose torso was struck. Keeping the
+shared injury model while requiring species-aware names fixes the vocabulary
+without changing damage, targeting, or saves. Structured impact results let
+one narrator describe player attacks, enemy attacks, deflections, and falling
+stone with explicit ownership. Bite and crushing mechanics use weapon damage
+profiles internally, but neither rat teeth nor a brute's weight are weapons
+in the prose. Tool users' windups and attacks also respect lost grip.
+
+The author found “flesh 70/80” too mechanical and requested descriptions such
+as “left foot scratched, bone damaged”. Qualitative tissue, nerve, organ,
+and local bleeding descriptions preserve actionable distinctions, including
+lasting loss and supported versus unsupported fractures. The author chose
+to retain the separate status and supply counters. Descriptive severity
+bands use species-relative flesh integrity; they do not rebalance injuries.
+
+Shorter words alone cannot guarantee a fitting panel. The sidebar now wraps
+injured regions, reserves threat space with the requested blank separator,
+and explicitly points to full condition details when entries do not fit.
+It omits healthy regions instead of consuming the panel with “sound” rows.
+Recovery shares that summary and recent combat logs wrap too. A visual-row
+condition cursor makes entries taller than the viewport accessible; each
+row carries its region identity so treatment remains correct after wrapping,
+resizing, or healing that shortens preceding entries. Existing saved journal
+strings are historical records and are not rewritten.

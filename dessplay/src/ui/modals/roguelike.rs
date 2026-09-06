@@ -3,7 +3,7 @@
 use super::*;
 use crate::config::RoguelikeEffects;
 use crate::roguelike::{
-    Action, EventKind, HEIGHT, LootKind, Outcome, Point, RunView, Supplies, WIDTH,
+    Action, Body, EventKind, HEIGHT, LootKind, Outcome, PartKind, Point, RunView, Supplies, WIDTH,
 };
 use crate::roguelike_store::Command;
 use tuirealm::ratatui::style::Color;
@@ -27,6 +27,63 @@ struct Recovery {
     due: u64,
 }
 
+struct ConditionRow {
+    part: PartKind,
+    text: String,
+}
+
+// Every displayed continuation carries its treatment identity. A visual cursor
+// can reach an arbitrarily long entry without turning its row into a body index.
+struct ConditionViewport {
+    rows: Vec<ConditionRow>,
+    cursor: ListCursor,
+    width: u16,
+}
+impl Default for ConditionViewport {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            cursor: ListCursor::default(),
+            width: 80,
+        }
+    }
+}
+impl ConditionViewport {
+    fn refresh(&mut self, body: &Body, width: u16) {
+        let selected = self.rows.get(self.cursor.index()).map(|row| row.part);
+        let offset = selected.map_or(0, |part| {
+            self.rows[..self.cursor.index()]
+                .iter()
+                .rev()
+                .take_while(|row| row.part == part)
+                .count()
+        });
+        self.width = width;
+        self.rows = body
+            .conditions()
+            .into_iter()
+            .flat_map(|condition| {
+                text_rows(&condition.text, width.max(1))
+                    .into_iter()
+                    .map(move |text| ConditionRow {
+                        part: condition.part,
+                        text,
+                    })
+            })
+            .collect();
+        if let Some(part) = selected
+            && let Some(start) = self.rows.iter().position(|row| row.part == part)
+        {
+            let count = self.rows[start..]
+                .iter()
+                .take_while(|row| row.part == part)
+                .count();
+            self.cursor.set(start + offset.min(count.saturating_sub(1)));
+        }
+        self.cursor.clamp(self.rows.len());
+    }
+}
+
 /// A committed expedition observation above the live party chat strip.
 pub struct RoguelikeModal {
     run: Option<RunView>,
@@ -35,6 +92,7 @@ pub struct RoguelikeModal {
     notices: Vec<String>,
     page: Page,
     cursor: ListCursor,
+    condition: ConditionViewport,
     direction: Option<Direction>,
     recovery: Option<Recovery>,
     now: u64,
@@ -56,6 +114,7 @@ impl RoguelikeModal {
             notices: Vec::new(),
             page: Page::Game,
             cursor: ListCursor::default(),
+            condition: ConditionViewport::default(),
             direction: None,
             recovery: None,
             now: 0,
@@ -88,6 +147,7 @@ impl RoguelikeModal {
         } else if let Some(recovery) = &mut self.recovery {
             recovery.due = self.now.saturating_add(250);
         }
+        self.condition.refresh(&run.body, self.condition.width);
         self.run = Some(run);
         self.waiting = false;
         self.error = None;
@@ -171,6 +231,7 @@ impl RoguelikeModal {
         self.page = if self.page == page { Page::Game } else { page };
         self.direction = None;
         self.cursor.reset();
+        self.condition.cursor.reset();
         if self.page == Page::Journal {
             // Scrollback opens on the latest entries, clamped after wrapping.
             self.cursor.set(usize::from(u16::MAX) - 1);
@@ -299,19 +360,26 @@ impl RoguelikeModal {
                 return;
             }
             Page::Condition => {
+                let heading = "CONDITION · ↑/↓ scroll · a: treat selected region";
+                let height =
+                    wrapped_height(heading, inner.width).min(inner.height.saturating_sub(1));
                 frame.render_widget(
-                    Paragraph::new("CONDITION · ↑/↓ select · a: treat selected part"),
-                    take_rows(&mut inner, 1),
+                    Paragraph::new(heading).wrap(Wrap { trim: false }),
+                    take_rows(&mut inner, height),
                 );
-                let lines = run.body.condition_lines();
-                self.cursor.clamp(lines.len());
-                let items = wrapped_items(lines, inner.width);
+                self.condition.refresh(&run.body, inner.width);
+                let items = self
+                    .condition
+                    .rows
+                    .iter()
+                    .map(|row| ListItem::new(row.text.as_str()))
+                    .collect();
                 render_list_body(
                     frame,
                     inner,
                     items,
-                    Some(self.cursor.index()),
-                    Some(self.cursor.index()),
+                    Some(self.condition.cursor.index()),
+                    Some(self.condition.cursor.index()),
                 );
                 return;
             }
@@ -387,25 +455,23 @@ impl RoguelikeModal {
                 ..map
             };
             map.width = map.width.saturating_sub(29);
-            let mut lines = run.body.condition_lines();
-            lines.extend(
-                run.enemies
-                    .iter()
-                    .map(|e| format!("{}: {}", e.name, e.intent)),
-            );
+            let lines = sidebar_rows(run, sidebar.width, sidebar.height);
             frame.render_widget(Paragraph::new(lines.join("\n")), sidebar);
         }
         render_map(frame, map, run);
-        let lines = run
+        let mut lines = run
             .journal
             .iter()
             .rev()
-            .take(inner.height as usize)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .map(|e| Line::from(Span::styled(e.text.as_str(), event_style(e.kind))))
+            .flat_map(|e| {
+                text_rows(&e.text, inner.width)
+                    .into_iter()
+                    .rev()
+                    .map(move |text| Line::from(Span::styled(text, event_style(e.kind))))
+            })
+            .take(usize::from(inner.height))
             .collect::<Vec<_>>();
+        lines.reverse();
         frame.render_widget(Paragraph::new(lines), inner);
         if let Some(recovery) = &self.recovery {
             let width = content.width.saturating_sub(2).min(68);
@@ -417,8 +483,8 @@ impl RoguelikeModal {
                 height,
             };
             frame.render_widget(Clear, panel);
-            let text = format!(
-                "{}\nBlood {}  Breath {}  Nutrition {}\nBleeding {}  Pain {}\nLinen {} (-{})  Splints {} (-{})  Food {} (-{})\n{}",
+            let status = format!(
+                "{}\nBlood {}  Breath {}  Nutrition {}\nBleeding {}  Pain {}\nLinen {} (-{})  Splints {} (-{})  Food {} (-{})",
                 run.journal
                     .iter()
                     .rev()
@@ -441,19 +507,20 @@ impl RoguelikeModal {
                     .saturating_sub(run.supplies.splints),
                 run.supplies.food,
                 recovery.started.food.saturating_sub(run.supplies.food),
-                run.body.condition_lines().join(" · ")
             );
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" RECOVERING ")
+                .title_bottom(" Any key stops recovery ");
+            let mut body = block.inner(panel);
+            frame.render_widget(block, panel);
+            let height = wrapped_height(&status, body.width);
             frame.render_widget(
-                Paragraph::new(text)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(" RECOVERING ")
-                            .title_bottom(" Any key stops recovery "),
-                    )
-                    .wrap(Wrap { trim: false }),
-                panel,
+                Paragraph::new(status).wrap(Wrap { trim: false }),
+                take_rows(&mut body, height),
             );
+            let wounds = wound_rows(run, body.width, body.height);
+            frame.render_widget(Paragraph::new(wounds.join("\n")), body);
         }
     }
 }
@@ -478,14 +545,10 @@ fn wrapped_items(lines: Vec<String>, width: u16) -> Vec<ListItem<'static>> {
             if text.is_empty() {
                 return ListItem::new(Line::default());
             }
-            let rows = super::super::components::wrap_body(
-                &text,
-                usize::from(width.max(1)),
-                usize::from(width.max(1)),
-            )
-            .into_iter()
-            .map(|(text, _)| Line::from(text))
-            .collect::<Vec<_>>();
+            let rows = text_rows(&text, width)
+                .into_iter()
+                .map(Line::from)
+                .collect::<Vec<_>>();
             ListItem::new(rows)
         })
         .collect()
@@ -507,18 +570,117 @@ fn take_rows(area: &mut Rect, height: u16) -> Rect {
     taken
 }
 fn wrapped_height(text: &str, width: u16) -> u16 {
+    text_rows(text, width).len().min(u16::MAX as usize) as u16
+}
+
+fn text_rows(text: &str, width: u16) -> Vec<String> {
     if width == 0 {
-        0
-    } else {
-        text.split('\n')
-            .map(|line| {
-                super::super::components::wrap_body(line, width as usize, width as usize)
-                    .len()
-                    .max(1)
-            })
-            .sum::<usize>()
-            .min(u16::MAX as usize) as u16
+        return Vec::new();
     }
+    text.split('\n')
+        .flat_map(|line| {
+            super::super::components::wrap_body(line, usize::from(width), usize::from(width))
+                .into_iter()
+                .map(|(text, _)| text)
+        })
+        .collect()
+}
+
+// Fit whole entries and an explicit omission marker into the measured viewport.
+fn bounded_rows(
+    entries: &[String],
+    width: u16,
+    height: u16,
+    omission: impl Fn(usize) -> String,
+    tiny: &str,
+) -> Vec<String> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let entries: Vec<_> = entries.iter().map(|text| text_rows(text, width)).collect();
+    let mut count = entries.len();
+    loop {
+        let marker = if count == entries.len() {
+            Vec::new()
+        } else {
+            text_rows(&omission(entries.len() - count), width)
+        };
+        let used: usize = entries[..count].iter().map(Vec::len).sum();
+        if used + marker.len() <= usize::from(height) {
+            return entries[..count]
+                .iter()
+                .flatten()
+                .cloned()
+                .chain(marker)
+                .collect();
+        }
+        if count == 0 {
+            return text_rows(tiny, width)
+                .into_iter()
+                .take(usize::from(height))
+                .collect();
+        }
+        count -= 1;
+    }
+}
+
+fn wound_entries(run: &RunView) -> Vec<String> {
+    let mut entries: Vec<_> = run
+        .body
+        .conditions()
+        .into_iter()
+        .filter(|condition| condition.injured)
+        .map(|condition| condition.text)
+        .collect();
+    if entries.is_empty() {
+        entries.push("No wounds".into());
+    }
+    entries
+}
+
+fn wound_rows(run: &RunView, width: u16, height: u16) -> Vec<String> {
+    bounded_rows(
+        &wound_entries(run),
+        width,
+        height,
+        |_| "More wounds: v".into(),
+        "v",
+    )
+}
+
+fn sidebar_rows(run: &RunView, width: u16, height: u16) -> Vec<String> {
+    if run.enemies.is_empty() || height < 3 {
+        return wound_rows(run, width, height);
+    }
+    let threats: Vec<_> = run
+        .enemies
+        .iter()
+        .map(|e| format!("{}: {}", e.name, e.intent))
+        .collect();
+    let threat_need: usize = threats
+        .iter()
+        .map(|text| text_rows(text, width).len())
+        .sum();
+    let wound_need: usize = wound_entries(run)
+        .iter()
+        .map(|text| text_rows(text, width).len())
+        .sum();
+    let available = usize::from(height - 1);
+    let threat_height = if wound_need + threat_need <= available {
+        threat_need
+    } else {
+        threat_need.min(available - wound_need.min(available - available / 2))
+    } as u16;
+    let mut rows = wound_rows(run, width, height - 1 - threat_height);
+    rows.push(String::new());
+    rows.extend(bounded_rows(
+        &threats,
+        width,
+        threat_height,
+        |count| format!("{count} more threats"),
+        "+",
+    ));
+    rows
 }
 fn render_scroll(frame: &mut Frame, area: Rect, text: &str, cursor: &mut ListCursor) {
     let rows: usize = text
@@ -628,6 +790,7 @@ const GUIDE: &str = concat!(
     "Uppercase vi keys sprint: faster, noisy, and costly in breath. Walking never restores breath.\nMoving toward a visible enemy within weapon reach attacks without moving. A spear reaches 2 tiles (one empty tile between you and the enemy). f then direction also attacks; sprinting stays movement-only.\n",
     "./5 wait · a bandage · e eat · r automatic care · </> stairs\ng interact: take the ember or use a fountain · c then direction closes a door\nx swap weapons · i equipment and ground items · v inspect injuries\n\n",
     "WOUNDS LAST\nBleeding drains blood. Armor protects body regions. Splints support fractures; linen controls bleeding. Rest automatically performs useful care using your supplies. Ordinary care cannot regrow destroyed anatomy.\n",
+    "Wounds use words: scratched, wounded, badly wounded, or mangled. Bone, nerve, organ damage and bleeding remain separate. The sidebar wraps injured regions above threats; v shows every region. In condition, arrows/page keys scroll lines and a treats the highlighted line's region.\n",
     "Recovery takes four steps per second at most, waiting for each save. Any input stops it. Danger and party arrivals interrupt it.\n\n",
     "THE EMBER\nTaking it explicitly awakens the dungeon permanently. Expect warnings, breaches, swarms, collapses, and lulls. Prepare escape routes on the descent. You can leave without it.\n\n",
     "MAP  @ you · # wall · < up · > down · + closed door · / open door\nr rat · h pilgrim · W warden · B brute · * ember\nUnseen terrain is remembered; hidden creatures are never shown. Threatened tiles are underlined.\n",
@@ -848,9 +1011,30 @@ impl AppComponent<Msg, NoUserEvent> for RoguelikeModal {
             return Some(msg);
         }
         if self.page != Page::Game {
+            if self.page == Page::Condition {
+                if let Some(key) = plain(ev) {
+                    if self.condition.cursor.nav(key, self.condition.rows.len()) {
+                        return Some(Msg::None);
+                    }
+                    match key {
+                        Key::Char('a') => {
+                            let part = self
+                                .condition
+                                .rows
+                                .get(self.condition.cursor.index())
+                                .map(|row| row.part);
+                            return part.map_or(Some(Msg::None), |part| {
+                                self.act(Action::Treat(part.index()))
+                            });
+                        }
+                        Key::Char('v') => return self.page(Page::Game),
+                        _ => {}
+                    }
+                }
+                return Some(Msg::None);
+            }
             let len = match (&self.run, self.page) {
                 (Some(run), Page::Equipment) => equipment_rows(run).0.len(),
-                (Some(run), Page::Condition) => run.body.condition_lines().len(),
                 _ => u16::MAX as usize,
             };
             if let Some(key) = plain(ev) {
@@ -869,10 +1053,7 @@ impl AppComponent<Msg, NoUserEvent> for RoguelikeModal {
                             .map_or(Some(Msg::None), |index| self.act(Action::Equip(index)));
                     }
                     (Page::Equipment, Key::Char('x')) => return self.act(Action::SwapWeapon),
-                    (Page::Condition, Key::Char('a')) => {
-                        return self.act(Action::Treat(self.cursor.index()));
-                    }
-                    (Page::Equipment, Key::Char('i')) | (Page::Condition, Key::Char('v')) => {
+                    (Page::Equipment, Key::Char('i')) => {
                         return self.page(Page::Game);
                     }
                     _ => {}
@@ -892,6 +1073,199 @@ impl AppComponent<Msg, NoUserEvent> for RoguelikeModal {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn injured_view() -> RunView {
+        let mut view = Run::new(19).view();
+        for part in &mut view.body.parts {
+            part.flesh = 10;
+            part.bone = 10;
+            part.nerve = 10;
+            part.bleeding = 18;
+        }
+        view.body.eyes = [0, 10];
+        view.body.brain = 50;
+        view.body.heart = 50;
+        view.body.lungs = [0, 50];
+        view.body.stamina = view.body.breath_capacity();
+        view.body.validate().unwrap();
+        view
+    }
+
+    #[test]
+    fn treatment_follows_the_displayed_region_through_wrapping_resize_and_replies() {
+        for part in PartKind::ALL {
+            let mut modal = RoguelikeModal::new();
+            let mut view = injured_view();
+            modal.set_run(view.clone());
+            modal.on(&key(Key::Char('v')));
+            render(&mut modal, 24, 18);
+            let name = part.name(crate::roguelike::BodyKind::Human);
+            for _ in 0..300 {
+                let row = &modal.condition.rows[modal.condition.cursor.index()];
+                if row.text.starts_with(name) {
+                    break;
+                }
+                modal.on(&key(Key::Down));
+            }
+            assert!(
+                modal.condition.rows[modal.condition.cursor.index()]
+                    .text
+                    .starts_with(name)
+            );
+            modal.on(&key(Key::Down)); // A continuation of this heavily injured region.
+            for (width, height) in [(120, 40), (40, 24), (24, 18)] {
+                let before = view.clone();
+                render(&mut modal, width, height);
+                assert_eq!(
+                    modal.run,
+                    Some(before),
+                    "browsing spends no simulation time"
+                );
+                assert_eq!(
+                    modal.on(&key(Key::Char('a'))),
+                    Some(Msg::Roguelike(Command::Act(Action::Treat(part.index()))))
+                );
+                // Earlier entries shrink when a committed reply adopts healing.
+                for previous in view.body.parts.iter_mut().take(part.index()) {
+                    previous.flesh = 80;
+                    previous.bone = 100;
+                    previous.nerve = 100;
+                    previous.bleeding = 0;
+                }
+                modal.set_run(view.clone());
+            }
+        }
+    }
+
+    #[test]
+    fn overloaded_sidebar_reports_omissions_without_hiding_the_separator() {
+        let mut view = injured_view();
+        view.enemies = (0..6)
+            .map(|id| crate::roguelike::VisibleEnemy {
+                id,
+                position: Point { x: 1, y: 1 },
+                name: "iron warden".into(),
+                intent: "raises its weapon: strike nearby soon".into(),
+                condition: String::new(),
+            })
+            .collect();
+        let rows = sidebar_rows(&view, 28, 11);
+        let separator = rows.iter().position(String::is_empty).unwrap();
+        assert!(rows[..separator].iter().any(|row| row == "More wounds: v"));
+        assert!(
+            rows[separator + 1..]
+                .iter()
+                .any(|row| row.contains("iron warden:"))
+        );
+        assert!(rows.last().unwrap().ends_with("more threats"));
+        assert!(rows.len() <= 11);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(64)))]
+        #[test]
+        fn wound_and_threat_rows_fit_arbitrary_viewports(width in 0_u16..100, height in 0_u16..50, enemies in 0_u64..25) {
+            let mut view = injured_view();
+            view.enemies = (0..enemies).map(|id| crate::roguelike::VisibleEnemy {
+                id, position: Point { x: 1, y: 1 }, name: "cavern brute".into(),
+                intent: "rears back to strike nearby soon".into(), condition: String::new(),
+            }).collect();
+            for rows in [sidebar_rows(&view, width, height), wound_rows(&view, width, height)] {
+                prop_assert!(rows.len() <= usize::from(height));
+                for row in rows {
+                    prop_assert!(unicode_width::UnicodeWidthStr::width(row.as_str()) <= usize::from(width));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recent_journal_wraps_and_keeps_the_latest_consequences() {
+        let mut modal = RoguelikeModal::new();
+        let mut view = Run::new(19).view();
+        view.journal.clear();
+        let mut text = "The ash rat jumps up to bite your torso. ".repeat(10);
+        text.push_str("Your left lung is damaged. Breathing grows harder.");
+        view.journal.push(crate::roguelike::JournalEntry {
+            id: 1,
+            time: 0,
+            text,
+            kind: EventKind::Injury,
+        });
+        modal.set_run(view);
+        let screen = render(&mut modal, 40, 24);
+        let words = screen
+            .lines()
+            .map(|line| line.trim_matches(['│', ' ']))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(words.contains("Your left lung is damaged."), "{screen}");
+        assert!(words.contains("Breathing grows harder."), "{screen}");
+    }
+
+    #[test]
+    fn wound_sidebar_wraps_and_separates_threats() {
+        let mut modal = RoguelikeModal::new();
+        let mut view = Run::new(19).view();
+        view.body.parts[8].flesh = 70;
+        view.body.parts[8].bone = 90;
+        view.enemies = vec![crate::roguelike::VisibleEnemy {
+            id: 0,
+            position: Point { x: 1, y: 1 },
+            name: "ash rat".into(),
+            intent: "watching".into(),
+            condition: String::new(),
+        }];
+        modal.set_run(view);
+        let screen = render(&mut modal, 120, 50);
+        let sidebar: Vec<String> = screen
+            .lines()
+            .map(|line| line.chars().skip(91).take(28).collect())
+            .collect();
+        let text = sidebar
+            .iter()
+            .map(|line| line.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains("left foot scratched") && text.contains("bone damaged"),
+            "{screen}"
+        );
+        assert!(!text.contains("head sound"), "{screen}");
+        let threat = sidebar
+            .iter()
+            .position(|line| line.contains("ash rat:"))
+            .unwrap();
+        assert!(sidebar[threat - 1].trim().is_empty(), "{screen}");
+    }
+
+    #[test]
+    fn condition_scroll_reaches_inside_an_entry_taller_than_the_viewport() {
+        let mut modal = RoguelikeModal::new();
+        let mut view = Run::new(19).view();
+        view.body.parts[0].flesh = 10;
+        view.body.parts[0].bone = 10;
+        view.body.parts[0].nerve = 20;
+        view.body.parts[0].bleeding = 20;
+        view.body.eyes = [0, 10];
+        view.body.brain = 10;
+        modal.set_run(view);
+        modal.on(&key(Key::Char('v')));
+        let mut seen = String::new();
+        for _ in 0..100 {
+            seen.push_str(
+                &render(&mut modal, 24, 18)
+                    .lines()
+                    .map(|line| line.trim_matches(['│', ' ']))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+            modal.on(&key(Key::Down));
+        }
+        assert!(seen.contains("brain damaged"));
+        assert!(seen.contains("right foot sound"));
+    }
 
     #[test]
     fn ground_section_has_a_blank_line_and_keeps_selection_working() {

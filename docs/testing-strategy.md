@@ -843,6 +843,13 @@ Recorded playtest/fuzz action sequences remain regression
 fixtures; structural occupancy tests continue covering the collision class
 when generation tuning changes the seed layouts.
 
+Combat regressions cover species-aware region names, rat attack height, all
+creature attack paths, natural/unarmed fallback windups, armor deflection,
+and explicit ownership of structural and organ injuries. Seeded real impacts
+exercise every region and shared falling-stone narration. Qualitative wound
+properties reject numeric details, and boundary tests cover species-relative
+flesh severity, local bleeding, lasting losses, and treatment state.
+
 Storage tests exercise close/reopen, username isolation, unsupported saves,
 transaction rollback on save/report failure, and the finished-run outbox.
 The v8 reset tests seed old saves and pending reports beside unrelated local
@@ -861,6 +868,13 @@ on input, cover/close, danger, arrivals, errors, and completion. Cosmetic
 settings and history loading must never replay injury effects or advance
 the simulation. The TUI and standalone harness consume the same `RunView`,
 which never exposes hidden enemies or current terrain behind fog.
+
+Health presentation tests measure sidebar rows against arbitrary viewport
+sizes, require the blank health/threat separator and omission indicators,
+and scroll through condition entries taller than the viewport. Treatment
+tests navigate continuation rows, resize, and adopt committed healing that
+shrinks earlier entries, requiring the same selected anatomical target.
+Recent-journal rendering must retain wrapped injury consequences.
 
 The client fuzz target `roguelike` exercises structured arbitrary real
 actions, save/resume equality and validation, and an independent awakened

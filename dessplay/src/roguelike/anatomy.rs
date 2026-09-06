@@ -56,8 +56,26 @@ impl PartKind {
         Self::RightFoot,
     ];
 
-    /// Short player-facing name.
-    pub fn name(self) -> &'static str {
+    /// Stable storage and treatment index.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Species-aware name; storage identifiers remain stable across saves.
+    pub fn name(self, body: BodyKind) -> &'static str {
+        if body == BodyKind::Rat {
+            match self {
+                Self::LeftArm => return "left foreleg",
+                Self::RightArm => return "right foreleg",
+                Self::LeftHand => return "left forepaw",
+                Self::RightHand => return "right forepaw",
+                Self::LeftLeg => return "left hind leg",
+                Self::RightLeg => return "right hind leg",
+                Self::LeftFoot => return "left hind paw",
+                Self::RightFoot => return "right hind paw",
+                Self::Head | Self::Torso => {}
+            }
+        }
         match self {
             Self::Head => "head",
             Self::Torso => "torso",
@@ -375,7 +393,7 @@ impl Body {
         part.bleeding = 0;
         CareResult::changed(format!(
             "You bind the {}. The bleeding stops.",
-            part.kind.name()
+            part.kind.name(self.kind)
         ))
     }
 
@@ -422,7 +440,7 @@ impl Body {
         supplies.splints -= 1;
         CareResult::changed(format!(
             "You splint your {}. The fracture is supported, not healed.",
-            self.parts[index].kind.name()
+            self.parts[index].kind.name(self.kind)
         ))
     }
 
@@ -512,7 +530,7 @@ impl Body {
     pub fn hit(&mut self, profile: AttackProfile, gear: &Equipment, rng: &mut Rng) -> InjuryReport {
         if self.is_dead() {
             return InjuryReport {
-                message: "The body is already still.".into(),
+                impact: Impact::AlreadyDead,
                 serious: false,
             };
         }
@@ -536,10 +554,7 @@ impl Body {
             .min(1000);
         if impact == 0 {
             return InjuryReport {
-                message: format!(
-                    "Armor turns the blow from the {}.",
-                    self.parts[index].kind.name()
-                ),
+                impact: Impact::Deflected(self.parts[index].kind),
                 serious: false,
             };
         }
@@ -580,11 +595,10 @@ impl Body {
             .blood
             .saturating_sub(impact.saturating_mul(blood_scale));
         let fractured = old_bone >= max_bone * 3 / 4 && part.bone < max_bone * 3 / 4;
-        let mut consequence = if fractured {
-            " Bone breaks.".to_owned()
-        } else {
-            String::new()
-        };
+        let mut consequences = Vec::new();
+        if fractured {
+            consequences.push(Injury::Fracture);
+        }
         let mut serious = fractured || impact >= 35;
         if part.flesh == 0
             && part.bone == 0
@@ -595,7 +609,8 @@ impl Body {
             part.nerve = 0;
             part.splinted = false;
             part.bleeding = 35;
-            consequence = " It is severed.".into();
+            consequences.clear();
+            consequences.push(Injury::Severed);
             serious = true;
             if let Some(child) = part.kind.child() {
                 self.parts[child].flesh = 0;
@@ -610,42 +625,58 @@ impl Body {
             let eye = (organ_roll % 2) as usize;
             let old = self.eyes[eye];
             self.eyes[eye] = old.saturating_sub(impact.saturating_mul(3));
-            consequence.push_str(if self.eyes[eye] == 0 {
-                " An eye is destroyed."
-            } else {
-                " An eye is injured; sight narrows."
+            consequences.push(Injury::Organ {
+                organ: if eye == 0 {
+                    Organ::LeftEye
+                } else {
+                    Organ::RightEye
+                },
+                destroyed: self.eyes[eye] == 0,
             });
             serious = true;
         }
         if index == 0 && self.parts[0].bone < max_bone / 2 {
             self.brain = self.brain.saturating_sub(impact.saturating_mul(2));
-            consequence.push_str(" The brain is damaged.");
+            consequences.push(Injury::Organ {
+                organ: Organ::Brain,
+                destroyed: self.brain == 0,
+            });
             serious = true;
         }
         if index == 1 && exposed && organ_roll < 40 {
             if organ_roll < 10 {
                 self.heart = self.heart.saturating_sub(impact.saturating_mul(2));
-                consequence.push_str(" The heart is injured.");
+                consequences.push(Injury::Organ {
+                    organ: Organ::Heart,
+                    destroyed: self.heart == 0,
+                });
             } else {
                 let lung = (organ_roll % 2) as usize;
                 self.lungs[lung] = self.lungs[lung].saturating_sub(impact.saturating_mul(2));
-                consequence.push_str(" A lung is damaged; breath comes harder.");
+                consequences.push(Injury::Organ {
+                    organ: if lung == 0 {
+                        Organ::LeftLung
+                    } else {
+                        Organ::RightLung
+                    },
+                    destroyed: self.lungs[lung] == 0,
+                });
             }
             serious = true;
         }
         self.stamina = self.stamina.min(self.breath_capacity());
         InjuryReport {
-            message: format!(
-                "The {} takes the blow.{consequence}",
-                self.parts[index].kind.name()
-            ),
+            impact: Impact::Hit {
+                part: self.parts[index].kind,
+                consequences,
+            },
             serious,
         }
     }
 
-    /// Exactly one line per treatment index. Details remain attached to their
-    /// region rather than inserting rows that would move the treatment target.
-    pub fn condition_lines(&self) -> Vec<String> {
+    /// One qualitative description per stable treatment index, including healthy
+    /// regions. Summary renderers filter the explicit injury flag, never the text.
+    pub fn conditions(&self) -> Vec<PartCondition> {
         let (flesh, bone) = Self::durability(self.kind);
         self.parts
             .iter()
@@ -656,7 +687,16 @@ impl Body {
                     details.push("severed; permanent loss".to_owned());
                 } else {
                     if p.flesh < flesh {
-                        details.push(format!("flesh {}/{}", p.flesh, flesh));
+                        details.push(
+                            match p.flesh * 100 / flesh {
+                                0 if p.flesh == 0 => "flesh destroyed",
+                                0..=24 => "mangled",
+                                25..=49 => "badly wounded",
+                                50..=74 => "wounded",
+                                _ => "scratched",
+                            }
+                            .to_owned(),
+                        );
                     }
                     if p.bone < bone * 3 / 4 {
                         details.push(
@@ -671,49 +711,75 @@ impl Body {
                         details.push("bone damaged".to_owned());
                     }
                     if p.nerve < 100 {
-                        details.push(format!("nerve {}%", p.nerve));
+                        details.push(
+                            if p.nerve == 0 {
+                                "nerve function lost"
+                            } else {
+                                "nerve damaged"
+                            }
+                            .into(),
+                        );
                     }
                 }
                 if p.bleeding > 0 {
-                    details.push(format!("bleeding {}/turn", p.bleeding));
+                    details.push(
+                        match p.bleeding {
+                            1..=4 => "light bleeding",
+                            5..=14 => "bleeding",
+                            _ => "heavy bleeding",
+                        }
+                        .into(),
+                    );
                 }
                 if index == 0 {
-                    if self.eyes != [100, 100] {
-                        details.push(format!(
-                            "eyes {}/{}%; sight {}",
-                            self.eyes[0],
-                            self.eyes[1],
-                            self.vision_radius()
-                        ));
-                    }
-                    if self.brain < 100 {
-                        details.push(format!("brain {}%", self.brain));
+                    organ_condition(&mut details, Organ::LeftEye, self.eyes[0]);
+                    organ_condition(&mut details, Organ::RightEye, self.eyes[1]);
+                    organ_condition(&mut details, Organ::Brain, self.brain);
+                    if self.eyes == [0, 0] {
+                        details.push("blind; adjacent perception only".into());
+                    } else if self.vision_radius() < Body::new(self.kind).vision_radius() {
+                        details.push("sight reduced".into());
                     }
                 }
                 if index == 1 {
-                    if self.heart < 100 {
-                        details.push(format!("heart {}%", self.heart));
-                    }
+                    organ_condition(&mut details, Organ::Heart, self.heart);
+                    organ_condition(&mut details, Organ::LeftLung, self.lungs[0]);
+                    organ_condition(&mut details, Organ::RightLung, self.lungs[1]);
                     if self.lungs != [100, 100] {
-                        details.push(format!(
-                            "lungs {}/{}%; breath cap {}",
-                            self.lungs[0],
-                            self.lungs[1],
-                            self.breath_capacity()
-                        ));
+                        details.push("breathing impaired".into());
                     }
                 }
                 if (2..=5).contains(&index) && self.part_function(index) < 75 {
-                    details.push("weak grip".into());
+                    details.push(
+                        if self.kind == BodyKind::Rat {
+                            "impaired forelimb"
+                        } else {
+                            "weak grip"
+                        }
+                        .into(),
+                    );
                 }
                 if index >= 6 && self.part_function(index) < 75 {
                     details.push("impaired movement".into());
                 }
-                if details.is_empty() {
+                let injured = !details.is_empty();
+                if !injured {
                     details.push("sound".to_owned());
                 }
-                format!("{}: {}", p.kind.name(), details.join(", "))
+                PartCondition {
+                    part: p.kind,
+                    injured,
+                    text: format!("{} {}", p.kind.name(self.kind), details.join(", ")),
+                }
             })
+            .collect()
+    }
+
+    /// Complete readable condition for the plain harness and inspection views.
+    pub fn condition_lines(&self) -> Vec<String> {
+        self.conditions()
+            .into_iter()
+            .map(|condition| condition.text)
             .collect()
     }
 
@@ -1081,12 +1147,100 @@ pub struct AttackProfile {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Player-readable consequences of a resolved physical impact.
+/// Facts from a resolved impact, formatted when both participants are known.
 pub struct InjuryReport {
-    /// Narration suitable for the expedition journal.
-    pub message: String,
+    /// Contact and its anatomical consequences.
+    pub impact: Impact,
     /// Whether this impact caused a major wound or structural injury.
     pub serious: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Mutually exclusive outcomes of an attempted impact.
+pub enum Impact {
+    /// No impact is resolved against a body that is already dead.
+    AlreadyDead,
+    /// Armor entirely stopped an attack at this region.
+    Deflected(PartKind),
+    /// Tissue was injured at this region.
+    Hit {
+        /// Region chosen by the simulation's existing target roll.
+        part: PartKind,
+        /// Structural injuries inflicted by this impact, in resolution order.
+        consequences: Vec<Injury>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Structural consequences supplementary to ordinary tissue damage.
+pub enum Injury {
+    /// The struck region crossed the fracture threshold.
+    Fracture,
+    /// The struck region and its distal anatomy were detached.
+    Severed,
+    /// An identified organ was injured or destroyed.
+    Organ {
+        /// Organ affected by this impact.
+        organ: Organ,
+        /// Whether no integrity remains after the injury.
+        destroyed: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Organs named in condition descriptions and impact consequences.
+pub enum Organ {
+    /// Left eye.
+    LeftEye,
+    /// Right eye.
+    RightEye,
+    /// Brain.
+    Brain,
+    /// Heart.
+    Heart,
+    /// Left lung.
+    LeftLung,
+    /// Right lung.
+    RightLung,
+}
+
+impl Organ {
+    /// Readable anatomical name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::LeftEye => "left eye",
+            Self::RightEye => "right eye",
+            Self::Brain => "brain",
+            Self::Heart => "heart",
+            Self::LeftLung => "left lung",
+            Self::RightLung => "right lung",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// A presentation row whose identity survives filtering and line wrapping.
+pub struct PartCondition {
+    /// Stable anatomy identifier, also used for treatment.
+    pub part: PartKind,
+    /// Whether this region has any tissue, organ, or functional injury.
+    pub injured: bool,
+    /// Complete qualitative condition, including the region's name.
+    pub text: String,
+}
+
+fn organ_condition(details: &mut Vec<String>, organ: Organ, integrity: u16) {
+    if integrity < 100 {
+        details.push(format!(
+            "{} {}",
+            organ.name(),
+            if integrity == 0 {
+                "destroyed"
+            } else {
+                "damaged"
+            }
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -1101,6 +1255,131 @@ mod tests {
             active: WeaponKind::Unarmed,
             spare: None,
             armor: [None; 6],
+        }
+    }
+
+    #[test]
+    fn wounds_describe_the_injury_in_words() {
+        let mut body = Body::default();
+        body.parts[8].flesh = 70;
+        body.parts[8].bone = 90;
+        assert_eq!(
+            body.condition_lines()[8],
+            "left foot scratched, bone damaged"
+        );
+    }
+
+    #[test]
+    fn rat_condition_names_all_four_legs_and_paws() {
+        let lines = Body::new(BodyKind::Rat).condition_lines();
+        for (line, name) in lines.iter().zip([
+            "head",
+            "torso",
+            "left foreleg",
+            "right foreleg",
+            "left forepaw",
+            "right forepaw",
+            "left hind leg",
+            "right hind leg",
+            "left hind paw",
+            "right hind paw",
+        ]) {
+            assert!(line.starts_with(name), "{line}");
+        }
+    }
+
+    #[test]
+    fn flesh_severity_boundaries_scale_with_species_and_organs_mark_sound_regions_injured() {
+        for kind in [BodyKind::Human, BodyKind::Rat, BodyKind::Brute] {
+            let mut body = Body::new(kind);
+            let maximum = body.parts[8].flesh;
+            for remaining in 0..=maximum {
+                body.parts[8].flesh = remaining;
+                let condition = &body.conditions()[8];
+                let expected = if remaining == maximum {
+                    "sound"
+                } else if remaining == 0 {
+                    "flesh destroyed"
+                } else if remaining * 4 >= maximum * 3 {
+                    "scratched"
+                } else if remaining * 2 >= maximum {
+                    "wounded"
+                } else if remaining * 4 >= maximum {
+                    "badly wounded"
+                } else {
+                    "mangled"
+                };
+                assert_eq!(
+                    condition.text,
+                    format!("{} {expected}", PartKind::LeftFoot.name(kind))
+                );
+                assert_eq!(condition.injured, remaining != maximum);
+            }
+            body.eyes = [0, 50];
+            body.brain = 50;
+            body.lungs = [50, 0];
+            body.heart = 50;
+            let conditions = body.conditions();
+            assert!(conditions[0].injured && conditions[1].injured);
+            for detail in ["left eye destroyed", "right eye damaged", "brain damaged"] {
+                assert!(conditions[0].text.contains(detail));
+            }
+            for detail in [
+                "left lung damaged",
+                "right lung destroyed",
+                "heart damaged",
+                "breathing impaired",
+            ] {
+                assert!(conditions[1].text.contains(detail));
+            }
+            for (i, condition) in conditions.iter().enumerate() {
+                assert_eq!(condition.part.index(), i);
+            }
+        }
+    }
+
+    #[test]
+    fn qualitative_details_keep_bleeding_fractures_nerve_loss_and_treatment_separate() {
+        let mut body = Body::default();
+        body.parts[8].bone = 20;
+        body.parts[8].nerve = 0;
+        body.parts[8].splinted = true;
+        for (bleeding, word) in [
+            (1, "light bleeding"),
+            (4, "light bleeding"),
+            (5, "bleeding"),
+            (14, "bleeding"),
+            (15, "heavy bleeding"),
+            (100, "heavy bleeding"),
+        ] {
+            body.parts[8].bleeding = bleeding;
+            let line = &body.condition_lines()[8];
+            assert!(line.contains("fracture, splinted"));
+            assert!(line.contains("nerve function lost"));
+            assert!(line.contains(&format!(", {word},")));
+            assert!(line.contains("impaired movement"));
+        }
+        let mut rat = Body::new(BodyKind::Rat);
+        rat.parts[2].bleeding = 4;
+        rat.parts[2].bone = 10;
+        let mut supplies = Supplies::default();
+        assert!(rat.treat(&mut supplies, 2).message.contains("left foreleg"));
+        assert!(rat.treat(&mut supplies, 2).message.contains("left foreleg"));
+    }
+
+    proptest! {
+        #[test]
+        fn every_wound_detail_is_qualitative(seed in any::<u64>(), kind in 0_usize..3) {
+            let mut body = Body::new([BodyKind::Human, BodyKind::Rat, BodyKind::Brute][kind]);
+            let mut rng = Rng(seed);
+            for _ in 0..20 {
+                body.hit(AttackProfile { weapon: WeaponKind::Mace, power: 15 }, &unarmored(), &mut rng);
+                let lines = body.condition_lines();
+                prop_assert_eq!(lines.len(), PartKind::ALL.len());
+                for line in lines {
+                    prop_assert!(!line.chars().any(|c| c.is_ascii_digit()), "{}", line);
+                }
+            }
         }
     }
 
