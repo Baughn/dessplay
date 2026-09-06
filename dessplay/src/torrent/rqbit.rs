@@ -354,13 +354,16 @@ mod tests {
     use super::*;
 
     /// The real session starts against a temp dir (no persistence
-    /// folder, DHT up) and unknown imports report no status. Ignored by
-    /// default: it binds sockets and touches the network stack.
+    /// folder) and unknown imports report no status. Uses the isolated
+    /// constructor: the production one enables the DHT on librqbit's
+    /// fixed port, which a live client on this machine already holds
+    /// (`Address already in use`, 2026-09-07). Ignored by default: it
+    /// still binds a listener socket.
     #[tokio::test]
     #[ignore = "binds real sockets; run manually"]
     async fn session_starts_without_persistence() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = RqbitEngine::new(dir.path().join("torrents"), Some(1_000_000))
+        let engine = RqbitEngine::new_for_tests(dir.path().join("torrents"))
             .await
             .unwrap();
         assert!(engine.import_status(TorrentImportId(1)).is_none());
