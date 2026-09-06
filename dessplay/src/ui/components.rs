@@ -408,6 +408,24 @@ pub struct ChatPane {
     /// `None` (tests, or the query still pending) renders image URLs as
     /// the plain text they are.
     picker: Option<ratatui_image::picker::Picker>,
+    /// Inline chat images, keyed by URL (design.md, Inline chat
+    /// images). URL-keyed on purpose: the whole log is replaced from
+    /// scratch ~10Hz, and a `StatefulProtocol`'s cached terminal encode
+    /// must survive that. Pruned in [`ChatPane::sync_images`] to the
+    /// URLs present in the current log window, so memory stays bounded
+    /// by the log caps.
+    images: HashMap<String, ImageSlot>,
+}
+
+/// Fetch/decode state for one inline chat image.
+enum ImageSlot {
+    /// Requested, no answer yet. Reserves no rows.
+    Loading,
+    /// Fetch or decode failed; the URL stays plain text. Kept so the
+    /// URL is never re-requested while its message remains in the log.
+    Failed,
+    /// Decoded and ready to render.
+    Ready(ratatui_image::protocol::StatefulProtocol),
 }
 
 /// In-flight Tab-completion cycle. While the input still equals `produced`,
@@ -444,6 +462,7 @@ impl Default for ChatPane {
             rendered: RenderedChatLog::default(),
             selection: None,
             picker: None,
+            images: HashMap::new(),
         }
     }
 }
@@ -459,6 +478,53 @@ impl ChatPane {
     /// deterministic Unicode output).
     pub fn set_picker(&mut self, picker: ratatui_image::picker::Picker) {
         self.picker = Some(picker);
+    }
+
+    /// Reconcile the image store with the current log: prune entries
+    /// whose message left the window, and (when inline images are
+    /// enabled and a terminal protocol exists) mark unseen URLs as
+    /// loading, returning them for the shell to fetch. A URL already
+    /// tracked — loading, failed, or ready — is never re-requested.
+    /// Disabling clears the store, freeing the decoded pixels; on
+    /// re-enable everything re-fetches through the disk cache.
+    pub fn sync_images(&mut self, enabled: bool) -> Vec<String> {
+        if !enabled || self.picker.is_none() {
+            self.images.clear();
+            return Vec::new();
+        }
+        let wanted: std::collections::HashSet<&str> = self
+            .lines
+            .iter()
+            .filter_map(|line| line.image_url.as_deref())
+            .collect();
+        self.images.retain(|url, _| wanted.contains(url.as_str()));
+        let mut fetches = Vec::new();
+        for url in wanted {
+            if !self.images.contains_key(url) {
+                self.images.insert(url.to_owned(), ImageSlot::Loading);
+                fetches.push(url.to_owned());
+            }
+        }
+        fetches
+    }
+
+    /// Deliver a fetch answer. Ignored when the URL's slot was pruned
+    /// (its message scrolled out of the log window) or images were
+    /// disabled meanwhile.
+    pub fn set_image(&mut self, url: &str, result: Result<image::DynamicImage, String>) {
+        let Some(picker) = &self.picker else {
+            return;
+        };
+        let Some(slot) = self.images.get_mut(url) else {
+            return;
+        };
+        *slot = match result {
+            Ok(img) => ImageSlot::Ready(picker.new_resize_protocol(img)),
+            Err(error) => {
+                tracing::debug!(url, error, "chat image failed; leaving the link as text");
+                ImageSlot::Failed
+            }
+        };
     }
 
     /// Set the online-username set used for completion and highlighting.
@@ -4018,6 +4084,7 @@ mod chat_spoiler_tests {
             action: false,
             irc: false,
             millis: 1_000,
+            image_url: None,
         }
     }
 
@@ -4311,6 +4378,7 @@ mod chat_selection_tests {
                 action: false,
                 irc: false,
                 millis,
+                image_url: None,
             },
         )
     }

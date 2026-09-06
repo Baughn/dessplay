@@ -374,6 +374,37 @@ pub struct ChatLine {
     /// local system lines, and subtitle arrivals. For subtitle lines
     /// this is wall-clock *arrival*, not the in-video `time`.
     pub millis: u64,
+    /// The first https image URL in `text`, if any (inline chat images,
+    /// design.md): the chat pane fetches and renders it under the
+    /// message. Detected on the sanitized display text; only chat and
+    /// IRC lines carry one (never system/subtitle/separator lines).
+    pub image_url: Option<String>,
+}
+
+/// Extensions accepted by [`first_image_url`]. Extension-based on
+/// purpose: a bare URL with no image extension stays a plain link
+/// rather than triggering a speculative fetch against an arbitrary
+/// host.
+const IMAGE_EXTENSIONS: [&str; 5] = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+
+/// Find the first https image URL in a chat message, if any. `https://`
+/// only (the source may be the public IRC channel — plain http is not
+/// worth fetching), with trailing punctuation stripped and the
+/// extension checked on the URL path (query string and fragment
+/// ignored), case-insensitively.
+pub(crate) fn first_image_url(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|token| {
+        let token = token.trim_end_matches([')', ',', '.', ']', '>']);
+        if !token.starts_with("https://") {
+            return None;
+        }
+        let path = token.split(['?', '#']).next().unwrap_or(token);
+        let path = path.to_ascii_lowercase();
+        IMAGE_EXTENSIONS
+            .iter()
+            .any(|ext| path.ends_with(ext))
+            .then(|| token.to_owned())
+    })
 }
 
 /// Strip control characters from remote-authored text before display:
@@ -398,6 +429,7 @@ pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
                 Some(phrase) => (strip_control_chars(phrase), true),
                 None => (strip_control_chars(&message.text), false),
             };
+            let image_url = first_image_url(&text);
             ChatLine {
                 time: hhmm(message.timestamp.0),
                 sender: message.sender.to_string(),
@@ -408,6 +440,7 @@ pub fn chat_lines(view: &StateView) -> Vec<ChatLine> {
                 action,
                 irc: false,
                 millis: message.timestamp.0,
+                image_url,
             }
         })
         .collect()
@@ -425,6 +458,7 @@ pub fn system_line(timestamp: u64, text: String) -> ChatLine {
         action: false,
         irc: false,
         millis: timestamp,
+        image_url: None,
     }
 }
 
@@ -432,16 +466,19 @@ pub fn system_line(timestamp: u64, text: String) -> ChatLine {
 /// normal chat (colored sender, mention highlight) but flagged `irc` so
 /// the renderer tags it; never synced.
 pub fn irc_line(timestamp: u64, sender: String, text: String, action: bool) -> ChatLine {
+    let text = strip_control_chars(&text);
+    let image_url = first_image_url(&text);
     ChatLine {
         time: hhmm(timestamp),
         sender,
-        text: strip_control_chars(&text),
+        text,
         system: false,
         subtitle: false,
         separator: false,
         action,
         irc: true,
         millis: timestamp,
+        image_url,
     }
 }
 
@@ -461,6 +498,7 @@ pub fn day_separator(millis: u64) -> ChatLine {
         action: false,
         irc: false,
         millis,
+        image_url: None,
     }
 }
 
@@ -501,6 +539,7 @@ pub fn subtitle_line(
         action: false,
         irc: false,
         millis: arrival_millis,
+        image_url: None,
     }
 }
 
@@ -2704,6 +2743,73 @@ mod tests {
     fn irc_lines_strip_control_characters() {
         let line = irc_line(0, "nick".into(), "hi\x1b[31m\rthere".into(), false);
         assert_eq!(line.text, "hi[31mthere");
+    }
+
+    #[test]
+    fn first_image_url_detects_https_image_links() {
+        // Every accepted extension, case-insensitively.
+        for ext in ["png", "jpg", "jpeg", "webp", "gif", "PNG", "Jpg"] {
+            let text = format!("look https://x.example/shot.{ext} wow");
+            assert_eq!(
+                first_image_url(&text).as_deref(),
+                Some(format!("https://x.example/shot.{ext}").as_str()),
+                "extension {ext}"
+            );
+        }
+        // Query strings and fragments don't hide the extension…
+        assert_eq!(
+            first_image_url("https://x.example/a.png?width=500#frag").as_deref(),
+            Some("https://x.example/a.png?width=500#frag")
+        );
+        // …and don't fake one either.
+        assert_eq!(first_image_url("https://x.example/page?fake=.png"), None);
+        // Trailing punctuation from surrounding prose is stripped.
+        assert_eq!(
+            first_image_url("(see https://x.example/a.png).").as_deref(),
+            Some("https://x.example/a.png")
+        );
+        // First of two.
+        assert_eq!(
+            first_image_url("https://x.example/1.png https://x.example/2.png").as_deref(),
+            Some("https://x.example/1.png")
+        );
+    }
+
+    #[test]
+    fn first_image_url_rejects_non_image_and_non_https() {
+        for text in [
+            "http://x.example/a.png",         // plain http
+            "https://x.example/a.svg",        // not a raster format we fetch
+            "https://x.example/page",         // no extension
+            "ftp://x.example/a.png",          // wrong scheme
+            "data:image/png;base64,AAAA",     // not a URL fetch at all
+            "see example.com/a.png for more", // no scheme
+            "nothing here",
+        ] {
+            assert_eq!(first_image_url(text), None, "{text}");
+        }
+        // Mid-word https is not a link token.
+        assert_eq!(first_image_url("xhttps://x.example/a.png"), None);
+    }
+
+    /// Detection is wired into both chat constructors — and only those.
+    #[test]
+    fn image_urls_populate_chat_and_irc_lines_only() {
+        let mut state = CrdtState::new();
+        state.append_chat(dessplay_core::types::ChatMessage {
+            timestamp: ts(1),
+            sender: UserId::new("dagger"),
+            text: "https://x.example/a.png".to_string(),
+        });
+        let lines = chat_lines(&state.view());
+        assert_eq!(
+            lines[0].image_url.as_deref(),
+            Some("https://x.example/a.png")
+        );
+        let irc = irc_line(0, "dagger".into(), "https://x.example/a.png".into(), false);
+        assert_eq!(irc.image_url.as_deref(), Some("https://x.example/a.png"));
+        let sys = system_line(0, "https://x.example/a.png".into());
+        assert_eq!(sys.image_url, None);
     }
 
     #[test]

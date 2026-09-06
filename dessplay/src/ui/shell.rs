@@ -53,6 +53,15 @@ pub enum UiInput {
         /// The message body.
         text: String,
     },
+    /// The answer to a [`UserAction::FetchChatImage`]: the decoded,
+    /// pre-scaled image (or a fetch/decode failure, which leaves the
+    /// URL as plain text).
+    ChatImage {
+        /// The URL this answers, the chat pane's image-store key.
+        url: String,
+        /// Decoded pixels, or a debug-level error string.
+        result: Result<Box<image::DynamicImage>, String>,
+    },
     /// A local-only chat line from an external IRC user (the IRC bridge).
     /// Not synced — each client runs its own bridge.
     Irc {
@@ -272,6 +281,7 @@ pub fn run_ui_loop<A: TerminalAdapter>(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let mut redraw = ui.advance_clock(now_millis());
                 redraw |= dispatch_due_recovery(&mut ui, &actions);
+                dispatch_image_fetches(&mut ui, &actions);
                 if redraw && adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err() {
                     break;
                 }
@@ -304,6 +314,7 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 finished,
             } => ui.set_hash_progress(filename, done_bytes, total_bytes, finished),
             UiInput::System { timestamp, text } => ui.push_system(timestamp, text),
+            UiInput::ChatImage { url, result } => ui.set_chat_image(&url, result.map(|img| *img)),
             UiInput::Irc {
                 timestamp,
                 sender,
@@ -361,8 +372,26 @@ pub fn run_ui_loop<A: TerminalAdapter>(
             }
         }
         dispatch_due_recovery(&mut ui, &actions);
+        dispatch_image_fetches(&mut ui, &actions);
         if adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err() {
             break;
+        }
+    }
+}
+
+/// Forward queued chat-image fetch requests to the main loop. Lossy on
+/// a full channel by re-queueing: the request stays pending in the `Ui`
+/// and is retried on the next input or tick, so a burst of actions
+/// can't silently strand an image in its loading state.
+fn dispatch_image_fetches(ui: &mut Ui, actions: &mpsc::Sender<UserAction>) {
+    for url in ui.take_image_fetches() {
+        if let Err(error) = actions.try_send(UserAction::FetchChatImage { url }) {
+            match error {
+                mpsc::error::TrySendError::Full(UserAction::FetchChatImage { url }) => {
+                    ui.requeue_image_fetch(url);
+                }
+                _ => return,
+            }
         }
     }
 }

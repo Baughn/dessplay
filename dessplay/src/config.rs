@@ -526,6 +526,10 @@ pub struct Settings {
     /// How the synced marquee line is displayed locally: scrolled on the
     /// bottom line (default), folded into the chat log, or hidden.
     pub marquee_mode: MarqueeMode,
+    /// Fetch and render image links posted in chat inline in the chat
+    /// log (design.md, Inline chat images). Local display preference;
+    /// when off, image links stay plain text. Default true.
+    pub chat_images: bool,
     /// Local cosmetic injury presentation for the waiting-room expedition.
     pub roguelike_effects: RoguelikeEffects,
     /// Sort order for the All Series browser mode (toggled with `s`).
@@ -594,6 +598,7 @@ impl Default for Settings {
             subtitle_speaker_colors: true,
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::default(),
             marquee_mode: MarqueeMode::default(),
+            chat_images: true,
             roguelike_effects: RoguelikeEffects::default(),
             series_sort: SeriesSort::default(),
             list_sort: ListSort::default(),
@@ -799,6 +804,11 @@ impl Settings {
                 })?,
                 None => defaults.file_browser_sort,
             },
+            chat_images: storage
+                .setting("chat_images")?
+                .map(|value| parse_bool("chat_images", &value))
+                .transpose()?
+                .unwrap_or(defaults.chat_images),
             auto_download: storage
                 .setting("auto_download")?
                 .map(|value| parse_bool("auto_download", &value))
@@ -894,6 +904,10 @@ impl Settings {
         storage.set_setting("list_sort", Some(self.list_sort.as_str()))?;
         storage.set_setting("file_browser_sort", Some(self.file_browser_sort.as_str()))?;
         storage.set_setting(
+            "chat_images",
+            Some(if self.chat_images { "true" } else { "false" }),
+        )?;
+        storage.set_setting(
             "auto_download",
             Some(if self.auto_download { "true" } else { "false" }),
         )?;
@@ -967,6 +981,7 @@ mod tests {
             subtitle_speaker_colors: false,
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::DisableColors,
             marquee_mode: MarqueeMode::Chat,
+            chat_images: false,
             roguelike_effects: RoguelikeEffects::Reduced,
             series_sort: SeriesSort::Year,
             list_sort: ListSort::Alphabetical,

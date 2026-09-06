@@ -309,6 +309,13 @@ pub enum UserAction {
         /// Free-form query.
         query: String,
     },
+    /// Fetch an image URL posted in chat for inline display (design.md,
+    /// Inline chat images). Answered with
+    /// [`crate::ui::shell::UiInput::ChatImage`].
+    FetchChatImage {
+        /// The https image URL, as detected in the message text.
+        url: String,
+    },
     /// Start a selected single-file torrent import.
     StartNyaaImport {
         /// Local pending-import identity.

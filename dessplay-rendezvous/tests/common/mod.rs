@@ -799,6 +799,8 @@ pub fn loop_rig(harness: &Harness, name: &str, nonce: u128, db_dir: &std::path::
         ui: ui_tx,
         storage,
         db_path: db_dir.join(format!("{name}.db")),
+        cache_dir: db_dir.join(format!("{name}-cache")),
+        image_fetch_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         me: UserId::new(name),
         settings: dessplay::config::Settings::default(),
         media_roots: Vec::new(),

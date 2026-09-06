@@ -13,6 +13,7 @@
 pub mod actors;
 pub mod advisor;
 pub mod changelog;
+pub mod chat_images;
 pub mod chunkstore;
 pub mod client;
 pub mod commentary;

@@ -123,6 +123,9 @@ fn log_action(action: &UserAction) {
         UserAction::SearchNyaa { query } => {
             tracing::debug!(%query, "user action: SearchNyaa");
         }
+        UserAction::FetchChatImage { url } => {
+            tracing::debug!(%url, "user action: FetchChatImage");
+        }
         UserAction::StartNyaaImport { id, result, .. } => {
             tracing::debug!(import = id.0, title = %result.title, "user action: StartNyaaImport");
         }
@@ -521,6 +524,10 @@ pub struct Ui {
     /// merged into the chat log by timestamp. Never synced — each client
     /// runs its own bridge.
     irc_log: Vec<props::ChatLine>,
+    /// Image URLs newly seen in chat, awaiting a fetch dispatch. The
+    /// shell drains this with [`Ui::take_image_fetches`] after every
+    /// input and tick (`Ui` itself can't reach the network).
+    pending_image_fetches: Vec<String>,
     snapshot: UiSnapshot,
     /// Memoizes the franchise grouping so it is not rebuilt on every 10Hz
     /// playback-position snapshot (was ~⅓ of normal-play CPU). Reachable
@@ -600,6 +607,7 @@ impl Ui {
             next_nyaa_import_id: 1,
             system_log: Vec::new(),
             irc_log: Vec::new(),
+            pending_image_fetches: Vec::new(),
             snapshot: UiSnapshot::default(),
             franchise_cache: franchise::FranchiseCache::default(),
             list_groups_cache: props::ListGroupsCache::default(),
@@ -853,6 +861,29 @@ impl Ui {
     fn refresh_chat(&mut self) {
         let chat = self.merged_chat(&self.snapshot.view);
         self.chat.set_lines(chat);
+        // Reconcile the inline-image store with the fresh log: prune
+        // departed URLs, queue fetches for new ones (design.md, Inline
+        // chat images).
+        self.pending_image_fetches
+            .extend(self.chat.sync_images(self.settings.chat_images));
+    }
+
+    /// Drain the image URLs awaiting a fetch. The shell forwards each
+    /// as a [`UserAction::FetchChatImage`] and answers with
+    /// [`Ui::set_chat_image`].
+    pub fn take_image_fetches(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_image_fetches)
+    }
+
+    /// Put a fetch request back in the queue (the action channel was
+    /// full); it retries on the next input or tick.
+    pub fn requeue_image_fetch(&mut self, url: String) {
+        self.pending_image_fetches.push(url);
+    }
+
+    /// Deliver a chat-image fetch answer to the chat pane.
+    pub fn set_chat_image(&mut self, url: &str, result: Result<image::DynamicImage, String>) {
+        self.chat.set_image(url, result);
     }
 
     /// The synced chat log merged with local system lines — and, in

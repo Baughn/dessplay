@@ -260,6 +260,8 @@ async fn perf_rig(harness: &Harness, name: &str, nonce: u128, series_count: u32)
         ui: ui_tx,
         storage: Storage::open_in_memory().expect("in-memory storage"),
         db_path: dir.path().join("session.db"),
+        cache_dir: dir.path().join("cache"),
+        image_fetch_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         me: UserId::new(name),
         settings: Settings::default(),
         media_roots: Vec::new(),

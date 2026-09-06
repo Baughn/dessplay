@@ -980,7 +980,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             media_roots: file_media_roots,
             retention: settings.cache_retention,
             archive: archive_policy(&settings),
-            cache_dir,
+            cache_dir: cache_dir.clone(),
             clock: system_clock(),
             download: download_config(&args),
             upload_limit: settings.upload_limit,
@@ -1015,6 +1015,8 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         ui: input_tx.clone(),
         storage: setup_storage,
         db_path,
+        cache_dir,
+        image_fetch_permits: Arc::new(tokio::sync::Semaphore::new(2)),
         me,
         settings,
         media_roots: persisted_roots,
@@ -1270,6 +1272,13 @@ pub struct SessionLoop<F: crate::player::PlayerFactory> {
     pub storage: Storage,
     /// Database path (settings saves reopen for `&mut` access).
     pub db_path: std::path::PathBuf,
+    /// Download-cache root; inline chat images cache under
+    /// `<cache_dir>/images/` (design.md, Inline chat images).
+    pub cache_dir: std::path::PathBuf,
+    /// Caps concurrent chat-image fetches: each holds a blocking-pool
+    /// thread for up to 30s, and a hostile burst of URLs must not
+    /// exhaust the pool.
+    pub image_fetch_permits: Arc<tokio::sync::Semaphore>,
     /// Our user.
     pub me: UserId,
     /// Current settings (updated by in-session saves).
@@ -1507,6 +1516,36 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                         }
                         Some(UserAction::SearchNyaa { query }) => {
                             self.shell.search_nyaa(query).await;
+                        }
+                        Some(UserAction::FetchChatImage { url }) => {
+                            // Blocking ureq + decode on the blocking pool
+                            // (the nyaa pattern), gated by the semaphore so
+                            // a burst of posted URLs can't monopolize it.
+                            // The UI's image store dedups requests; this arm
+                            // can stay stateless. Lossy try_send back: a
+                            // dropped answer leaves the slot loading until
+                            // its message leaves the log — acceptable for a
+                            // full channel, which only happens mid-flood.
+                            let permits = Arc::clone(&self.image_fetch_permits);
+                            let cache_dir = self.cache_dir.clone();
+                            let ui = self.ui.clone();
+                            tokio::spawn(async move {
+                                let Ok(_permit) = permits.acquire_owned().await else {
+                                    return;
+                                };
+                                let result = tokio::task::spawn_blocking(move || {
+                                    let result = crate::chat_images::fetch(&url, &cache_dir);
+                                    (url, result)
+                                })
+                                .await;
+                                let Ok((url, result)) = result else {
+                                    return;
+                                };
+                                let _ = ui.try_send(UiInput::ChatImage {
+                                    url,
+                                    result: result.map(Box::new),
+                                });
+                            });
                         }
                         Some(UserAction::StartNyaaImport { id, result, after }) => {
                             self.shell.start_nyaa_import(id, result, after).await;
