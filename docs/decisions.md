@@ -850,3 +850,64 @@ The command popup derives its height from the filtered command table. Adding
 that independent cap makes future commands discoverable without a second edit.
 The whole-app test requires every command to render on a sufficiently tall
 terminal.
+
+
+## Lasting injuries and an awakened dungeon (2026-09-06)
+
+**Rule:** Survival without the ember is a victory; committed ember attempts
+should usually fail. Taking it explicitly and irreversibly awakens a dangerous
+ascent with breaches, swarms, warned collapses, and lulls. See
+[design.md](design.md#the-waiting-below).
+
+**Why:** The initial playtest reached the ember in good condition, then spent
+393 of 935 turns returning through almost entirely cleared floors. Shortening
+the ascent alone would discard a useful source of tension: remembering a
+place that has become dangerous. We instead preserve the recognizable layout
+and transform it. Warnings make committing to a route consequential; lulls
+give wounded survivors opportunities to treat themselves. Action-time hazards
+preserve the waiting-room promise that a watch-party interruption is safe.
+Collapses must preserve an escape route, including dormant cavern entrances;
+a property test caught a future breach becoming disconnected after an earlier
+collapse removed its mouth, so such mouths remain passable rubble.
+
+Injuries are intended to accumulate into a death spiral. Shared anatomy,
+regional armor, different weapon injury types, permanent functional losses,
+and rare miraculous fountains give individual encounters lasting costs.
+Ordinary care separates stabilizing bleeding and supporting a fracture from
+repairing structural damage. Automatically choosing useful care prevents
+that complexity becoming mandatory repeated medical administration. Manual
+selection remains available for an unusual priority. Blindness reduces current
+perception while preserving memory and audible warnings; losing sight must
+not make a creature harmless to the rest controller.
+
+Walking preserves breath at best, while sprinting buys speed with breath and
+noise. A shared integer action clock makes walking, sprinting, limping, weapon
+recovery, physiology, and enemy windups comparable without letting faster
+commands evade injury costs. Sparse, separated early encounters provide room
+to learn and retreat; later threats and the awakening retain severe injury
+consequences. Observation-limited surveys informed two density passes, but
+scripted-policy outcomes are diagnostic evidence, not human win rates. The
+balance direction does not specify a promised percentage.
+
+The journal is the durable explanation of danger, injuries, and care. Red
+flashes and decorative corruption supplement it without obscuring controls
+or changing mechanics. One observation interface serves the modal and agents,
+so disabling effects cannot grant agents extra knowledge or healthier bodies.
+UI-paced rest sends one ordinary saved action at a time and waits for its
+acknowledgement; cancellation clears future scheduling, even when the already
+accepted action later replies.
+
+One manual return crossed the heavy-load threshold just before taking the
+ember. Its extra protection helped, but walking took 150 rather than 100
+time and the player had not appreciated that tradeoff. Equipment inspection
+and the plain harness therefore show actual walking time, sprint time, and
+sprint breath cost for the current body and kit. These are decisions a player
+can act on, not merely raw armor values.
+
+**Compatibility decision:** Nobody besides the author had played this
+pre-release game. The user explicitly approved deleting its database section
+instead of migrating old characters and layouts. Local migration v8 therefore
+clears both roguelike tables, including local history and pending reports,
+in one transaction, then normal version-2 saves apply. Other local records
+and already-published chat remain intact. This is a single upgrade operation,
+not a policy of silently resetting malformed or unsupported saves afterward.

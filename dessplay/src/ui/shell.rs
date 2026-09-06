@@ -14,7 +14,7 @@ use super::msg::UserAction;
 /// Everything the UI thread consumes.
 pub enum UiInput {
     /// A dungeon snapshot after its turn has been saved, or a storage error.
-    Roguelike(Result<Box<crate::roguelike::Run>, String>),
+    Roguelike(Result<Box<crate::roguelike::RunView>, String>),
     /// Fresh state to render.
     Snapshot(Box<UiSnapshot>),
     /// A terminal input event.
@@ -227,9 +227,9 @@ pub fn run_ui_loop<A: TerminalAdapter>(
         let input = match inputs.recv_timeout(ui.next_tick_hint()) {
             Ok(input) => input,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if ui.advance_clock(now_millis())
-                    && adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err()
-                {
+                let mut redraw = ui.advance_clock(now_millis());
+                redraw |= dispatch_due_recovery(&mut ui, &actions);
+                if redraw && adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err() {
                     break;
                 }
                 continue;
@@ -317,10 +317,23 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 }
             }
         }
+        dispatch_due_recovery(&mut ui, &actions);
         if adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err() {
             break;
         }
     }
+}
+
+/// Avoid blocking the terminal on automated work. A full or closed queue
+/// interrupts recovery and leaves the last committed observation intact.
+fn dispatch_due_recovery(ui: &mut Ui, actions: &mpsc::Sender<UserAction>) -> bool {
+    let Some(action) = ui.due_roguelike_action() else {
+        return false;
+    };
+    if let Err(error) = actions.try_send(action) {
+        ui.set_roguelike(Err(format!("recovery interrupted: {error}")));
+    }
+    true
 }
 
 /// Monotonic millis since the first call — the UI thread's only time
@@ -421,6 +434,102 @@ pub fn run_input_thread(inputs: std::sync::mpsc::SyncSender<UiInput>) {
         if inputs.send(UiInput::Event(event)).is_err() {
             tracing::debug!("input thread exiting (channel closed)");
             return;
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod roguelike_tests {
+    use super::*;
+    use crate::config::Settings;
+    use crate::roguelike::{Action, Run, RunView};
+    use crate::roguelike_store::Command;
+    use dessplay_core::types::UserId;
+    use tuirealm::event::{Key, KeyEvent, KeyModifiers};
+    fn key(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+    fn resting() -> (Ui, RunView) {
+        let mut ui = Ui::with_setup(
+            UserId::new("kim"),
+            Settings {
+                username: Some("kim".into()),
+                password: Some("test".into()),
+                ..Settings::default()
+            },
+            vec![],
+            false,
+        );
+        assert_eq!(
+            ui.handle(key(Key::Function(4))),
+            vec![UserAction::Roguelike(Command::Open)]
+        );
+        let mut view = Run::new(19).view();
+        view.can_rest = true;
+        view.danger = false;
+        view.last_step.changed = true;
+        view.last_step.interrupted = false;
+        ui.set_roguelike(Ok(Box::new(view.clone())));
+        assert_eq!(
+            ui.handle(key(Key::Char('r'))),
+            vec![UserAction::Roguelike(Command::Act(Action::Rest))]
+        );
+        (ui, view)
+    }
+    #[test]
+    fn busy_shell_dispatches_once_after_committed_ack() {
+        let (mut ui, view) = resting();
+        let (sender, mut receiver) = mpsc::channel(1);
+        ui.advance_clock(1000);
+        assert!(!dispatch_due_recovery(&mut ui, &sender));
+        ui.set_roguelike(Ok(Box::new(view)));
+        ui.advance_clock(1250);
+        assert!(dispatch_due_recovery(&mut ui, &sender));
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            UserAction::Roguelike(Command::Act(Action::Rest))
+        );
+        ui.advance_clock(10000);
+        assert!(!dispatch_due_recovery(&mut ui, &sender));
+    }
+    #[test]
+    fn full_and_closed_action_queues_stop_recovery_without_waiting() {
+        for closed in [false, true] {
+            let (mut ui, view) = resting();
+            let (sender, receiver) = mpsc::channel(1);
+            if closed {
+                drop(receiver);
+            } else {
+                sender.try_send(UserAction::Quit).unwrap();
+            }
+            ui.set_roguelike(Ok(Box::new(view.clone())));
+            ui.advance_clock(250);
+            assert!(dispatch_due_recovery(&mut ui, &sender));
+            ui.set_roguelike(Ok(Box::new(view)));
+            ui.advance_clock(1000);
+            assert!(!dispatch_due_recovery(&mut ui, &sender));
+        }
+    }
+    #[test]
+    fn covering_closing_and_input_cancel_before_late_replies() {
+        for key_code in [
+            Key::Char('h'),
+            Key::Function(11),
+            Key::Function(4),
+            Key::Esc,
+        ] {
+            let (mut ui, view) = resting();
+            ui.handle(key(key_code));
+            ui.set_roguelike(Ok(Box::new(view)));
+            ui.advance_clock(1000);
+            if key_code == Key::Function(11) {
+                ui.handle(key(Key::Esc));
+            }
+            assert!(ui.due_roguelike_action().is_none());
         }
     }
 }

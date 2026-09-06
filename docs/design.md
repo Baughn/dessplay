@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-05
+Last updated: 2026-09-06
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -57,8 +57,9 @@ working copy atomically. Tabs containing a missing required value carry a
   server's copy. There is no confirm step; local-only tables are untouched
   (why: [decisions](decisions.md#reset-synced-state-has-no-confirmation)).
 - **Playback & display**: Player, subtitle mode, subtitle speaker names,
-  subtitle speaker colors, the limited-terminal color-overflow policy, and
-  the commentary-marquee display mode.
+  subtitle speaker colors, the limited-terminal color-overflow policy, the
+  commentary-marquee display mode, and roguelike injury effects (Full /
+  Reduced / Off; default Full).
   Player cycles between mpv and VLC and is persisted, but is explicitly
   marked **WIP -- not applied**: the client still starts mpv regardless of
   this placeholder value. Subtitle mode is off / intermixed / separate pane
@@ -985,55 +986,128 @@ Unchanged cache hits remain quiet at the default level.
 
 ### The Waiting Below
 
-`F4` or `/rogue` opens a local, single-player roguelike in a modal across
-the upper two-thirds of the terminal, with recent party chat visible below.
-Closing it restores the previous modal or pane and preserves the chat draft.
-`F11` can cover the game with diagnostic logs and restore it afterwards.
-The watch party, network, downloads, and player continue running normally;
-playing the dungeon does not change Ready, Away, or playback state.
+`F4` or `/rogue` opens a local, single-player roguelike across the upper
+two-thirds of the terminal, with recent party chat below. Closing restores
+the previous modal or pane and preserves the chat draft; `F11` can cover and
+restore the game. The watch party continues normally. Playing does not
+change Ready, Away, or playback state.
 
-An expedition explores five generated dungeon floors, retrieves the ember
-on the fifth, and returns to the surface. Rooms and corridors are connected;
-creatures, supplies, equipment, and treasure populate each floor. The map
-reveals nearby spaces through line of sight and remembers explored terrain.
-Only creatures on the current floor act. Movement into a creature attacks;
-walking over supplies collects them and better equipment equips automatically.
+Surviving an expedition is a victory, with or without the ember. The surface
+stair always permits departure. The difficulty direction favors informed
+early retreat; committed ember attempts should usually fail. These are
+balance goals, not guaranteed outcomes or fixed win percentages.
 
-Health consists of wounds to the head, torso, arms, and legs, circulating
-blood, bleeding, stamina, and nutrition. Arm injuries weaken attacks, leg
-injuries make movement tiring, and pain drains stamina. Severe head or torso
-injuries and blood loss can kill. Bandages dress the most urgent wound;
-food restores nutrition; a single rest turn recovers condition when no
-creature is visible and bleeding has stopped. Supplies are finite.
+Five generated floors contain rooms, looped routes, doors, water, rubble,
+finite supplies, equipment, and optional treasuries. Early encounters are
+sparse and separated from the entrance; later floors introduce more dangerous
+creatures. Optional treasury guards are placed away from a traversable route
+between the stairs. Dormant caverns are generated with the original floor.
+An expedition has a 25% chance of one healing fountain, on floors two through
+four. Explicitly activating it restores anatomy and physiological reserves,
+including destroyed eyes or limbs, once.
 
-Arrows, vi keys, or numpad digits move (diagonals included); `.`/`5` waits,
-`a` bandages, `e` eats, `r` rests, and `<`/`>` uses the current stairway.
-`?` opens a scrollable guide. `Esc` closes the guide first, then the game;
-`F4` toggles the game. Pasted text never performs game actions.
-After death or escape, `n` starts another expedition. A living expedition
-cannot be replaced. Completed summaries remain in local history.
+Taking the ember on floor five requires `g`, with a warning about awakening
+the dungeon; walking over it does not collect it. Taking it permanently
+awakens all floors and cannot be reversed by dropping it. Each active floor
+cycles through warnings, outbreaks, and lulls. Caverns breach to reveal
+creatures, rat swarms emerge, and warned ceilings collapse. Rockfalls can
+injure the explorer and enemies; blocked passages retain a physically
+traversable route to the surface, including access through future cavern
+breaches. Creatures and surviving hazards remain during lulls. Creature
+counts and escalating wave intensity are bounded; spawned creatures supply
+no renewable loot. Stair travel preserves each floor's changes and crisis
+progress. Inactive floors freeze.
 
-Every action commits the complete expedition, including random-generator
-state, to the local SQLite database before its result appears. One expedition
-is stored per local username; it is never synced. No turns pass while the
-modal is closed, while idle, or between client launches. A storage failure
-shows an error and retains the last committed turn. Corrupt or unsupported
-saves produce an error and are preserved without being overwritten. Resetting
-synced state leaves expeditions and local history intact.
+Actions advance an integer simulation clock. Healthy walking costs 100 time
+units; a healthy sprint costs 50 per tile. Uppercase vi keys sprint one tile,
+including diagonals, spending breath and making more noise. Sprinting never
+bump-attacks. Walking never restores breath; waiting and resting can.
+Equipment weight, injuries, terrain, and weapon recovery affect action costs.
+Physiology, enemy commitments, and hazards use elapsed action time. Reading,
+closing the modal, and reopening the client spend none.
 
-When another interactive user becomes Present, including a return from Lost
-or Departed, a persistent banner appears on the game until acknowledged with
-`Enter`. It also survives a covering modal and remains visible in the guide
-and death screen. Self and seeder arrivals are excluded. Ordinary presence
-narration continues in the live chat strip.
+Humanoids and animals share anatomical injury rules: flesh, bones, nerves,
+eyes, brain, heart, and lungs can suffer lasting damage. Bleeding, pain,
+impaired grip, limping, and reduced breathing capacity affect subsequent
+choices. Destroyed anatomy and major structural damage do not heal through
+ordinary care. Losing both eyes reduces current sight to one tile; previously
+seen terrain remains remembered and nearby sounds still warn of danger.
+Damaged limbs retain fallback movement and attacks while vital failure or
+blood loss can kill.
 
-Death and escape each publish a real, persisted chat message under the
-player's username with cause/outcome, deepest floor, kills, gold, turns, and
-an expedition number. The local save and pending report commit atomically.
-The report retains its original timestamp and text across retries; it is
-acknowledged only after the sync replica is saved. Offline reports travel
-through ordinary state synchronization on reconnect. These automatic reports
-do not clear Away and are not forwarded to the public IRC bridge.
+Knife, spear, and mace differ in reach, speed, exertion, and injury type.
+One active weapon and one spare are carried, with armor for head, torso,
+arms, hands, legs, and feet. Armor coverage, material, and weight affect
+protection and exertion. A total carried weight of 28 or more adds 50 time
+to movement. Equipment inspection shows current walking/sprinting time and
+sprint breath cost. Supplies collect automatically; equipping and
+swapping gear are explicit actions, with replaced equipment left available
+on the ground. Movement into a creature attacks. Rats bite and disengage,
+pilgrims prepare calls that an injuring hit can interrupt, wardens commit
+to marked heavy strikes, and cavern
+brutes follow sound. Visible intentions reflect their actual saved schedules.
+
+`r` starts automatic care, at most four steps per second and only after the
+previous step has saved. Care prioritizes bleeding, fractures, useful food,
+and attainable recovery. Linen controls bleeding and splints support broken
+limbs; neither restores missing anatomy. The central recovery panel shows
+treatment, condition, supplies remaining, and supplies spent. Input stops
+future care without also making an accidental game move. Perceived danger,
+new injury, environmental warnings, arrivals, covering or closing the modal,
+storage failure, and exhausted recovery also stop it. Care never resumes
+itself after reopening. Manual treatment remains optional.
+
+Arrows, vi keys, or numpad digits move; `.`/`5` waits, `a` bandages, `e` eats,
+and `<`/`>` uses stairs. `f` followed by a direction attacks using weapon
+reach; `c` followed by a direction closes a door. `i` opens equipment,
+`x` swaps weapons, `v` opens condition and optional treatment, and `p` opens
+the scrollable journal. `?` opens the guide. Inspection is free; treatment
+and equipment changes spend time. Pasted text never executes game actions.
+After death or escape, `n` starts another expedition; a living expedition
+cannot be replaced.
+
+The journal retains 512 structured, time-stamped events. The ordinary view
+shows recent events alongside perceived threats and condition. Terrain memory
+stores what was last seen; unseen collapses and breaches do not silently
+update it. The modal and standalone agent harness receive the same player
+observation, without unseen creatures or unremembered terrain.
+
+Playback & display settings offer Full, Reduced, and Off injury effects,
+applied live and local to this client. Full uses brief red injury flashes
+and restrained decorative title corruption; Reduced uses static injury
+emphasis; Off disables both. Controls, condition, and journal remain legible.
+The standalone agent harness omits cosmetic effects. Injury mechanics and
+journal events are identical in every mode.
+
+Score awards one point per discovered terrain cell and 100 per floor reached
+beyond the first. Escaping adds 100, ten per gold brought home, and 10,000
+for the ember. Kills are a reported statistic, not a score source. Endings
+freeze the score and a deterministic account of the expedition; survivors
+receive a line about their later life, influenced by their condition and
+expedition. Death and escape publish a persisted chat report containing
+outcome, deepest floor, kills, gold, turns, score, later-life account, and
+expedition number.
+
+Every action commits the complete expedition, including RNG state and action
+schedules, before displaying its result. Saves are per local username and
+never synced. A storage failure retains the last committed observation.
+The local database v8 upgrade performs a one-time transactional deletion of
+`roguelike_runs` and `roguelike_history`, including pending reports, for this
+pre-release redesign. Settings, library and watch data, and published chat
+remain intact. New saves use envelope version 2; subsequent corrupt or
+unsupported saves are preserved and reported as errors. Ordinary sync resets
+continue to leave the game and its local history intact.
+
+When another interactive user becomes Present, including returning from Lost
+or Departed, a persistent banner appears until `Enter` acknowledges it. The
+banner survives covering modals and remains visible in inspection and ending
+screens. Self and seeder arrivals are excluded. Ordinary presence narration
+continues in the live chat strip.
+
+The local save and pending report commit atomically. Reports retain their
+original timestamp and text across retries and are acknowledged only after
+the sync replica is saved. Offline reports use ordinary synchronization on
+reconnect. Automatic reports do not clear Away or enter the public IRC bridge.
 
 ### Changelog
 

@@ -1,6 +1,6 @@
 # UI Architecture
 
-Last updated: 2026-09-02
+Last updated: 2026-09-06
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -724,18 +724,61 @@ keymaps) are pure state machines whose interaction logic ports as-is;
 only their `render` functions are ratatui-bound.
 
 
-## Waiting-room expedition (2026-09-05)
+## Waiting-room expedition (2026-09-06)
 
-`RoguelikeModal` uses the log viewer's upper-two-thirds boundary and the
-same live recent-chat strip. `F4` / `/rogue` pushes or removes it; `F11`
-can cover it. It emits typed `Msg::Roguelike` commands, captures pasted
-text, and accepts no further game action until the session replies with a
-committed `Run` or storage error. Help and arrival acknowledgement do not
-cross the save boundary or spend a turn. A player-centered viewport adapts
-the fixed dungeon to terminal size.
+`RoguelikeModal` uses the log viewer's upper-two-thirds boundary and live
+recent-chat strip. `F4` / `/rogue` pushes or removes it; `F11` can cover it.
+The modal emits typed `Msg::Roguelike` commands and accepts no further game
+action until a committed `RunView` or storage error arrives. It holds no
+hidden dungeon state. On save failure the previous committed observation
+remains visible. A player-centered viewport adapts the fixed dungeon to
+terminal size.
+
+The game page shows condition, equipment, perceived threats, and recent
+journal events. Separate scrollable pages provide the full 512-entry journal,
+anatomical condition with optional selected treatment, equipment comparisons
+and ground-item selection, and the guide. Directional attack/door commands
+hold only a UI direction prompt. Browsing, help, and arrival acknowledgement
+spend no game time; equipment and treatment choices cross the save boundary.
+
+`r` starts a `Recovery` controller with the starting supply counts and a
+presentation-clock deadline. Its first care step is dispatched immediately;
+subsequent steps wait at least 250 ms after the previous committed reply.
+`due_action` marks a request outstanding before dispatch, so slow storage or
+a busy queue cannot accumulate actions. The shell requests fast presentation
+ticks while recovery or a transient effect needs them. Simulation still
+advances only when an ordinary saved action executes.
+
+A central recovery panel uses the committed view to show the latest care,
+blood, breath, nutrition, bleeding, pain, remaining supplies, and consumption
+since rest began. Input cancels future steps and is consumed without an
+extra movement or attack; close/cover shortcuts keep their normal behavior.
+Danger, interrupted/unchanged results, unavailable recovery, completion,
+arrivals, and storage errors also cancel it. Covering and closing the modal
+cancel automation. An accepted in-flight action may still finish, but a late
+acknowledgement cannot recreate a cancelled controller. Opening never starts
+rest automatically. Pasted input is captured and cannot execute game actions.
 
 `Ui::apply_snapshot` compares interactive Present peer identities with the
-previous snapshot and updates every game modal on the stack, including one
-covered by another modal. The notice remains until acknowledged. This uses
+previous snapshot and updates every game modal on the stack, including a
+covered one. An arrival immediately cancels recovery and remains visible
+until acknowledged, including on inspection and ending pages. This uses
 presence data directly rather than parsing narrator text. Save replies also
-update a covered modal; replies arriving after it closes do not reopen it.
+update a covered modal; replies after closing do not reopen it.
+
+Equipment inspection also shows walking time, sprint time, and sprint breath
+cost from the current body and gear, before terrain delays. The plain harness
+uses the same movement summary.
+
+`RoguelikeEffects` is a live local Playback & display setting: Full by default,
+Reduced, or Off. Full briefly colors the border red for newly committed serious injuries
+and adds restrained decorative title corruption with substantial pain or
+brain damage.
+Reduced uses a static red border while injured; Off removes these cosmetics.
+The journal and actionable text remain unchanged and legible. The modal
+compares the serious-injury count within the same expedition so opening
+historical saves or receiving duplicate acknowledgements does not replay
+flashes. Effect
+expiry uses the injected monotonic presentation clock and never consumes
+simulation time or randomness. Standalone agent play has no cosmetic effects
+and retains identical injury mechanics and observations.

@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-08-21
+Last updated: 2026-09-06
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -816,14 +816,52 @@ dessplay-rendezvous/          (server: lib + thin binary)
 | `cargo-fuzz` / `libfuzzer-sys` | Fuzz testing |
 
 
-## Local roguelike (2026-09-05)
+## Local roguelike (2026-09-06)
 
-`roguelike.rs` is a pure deterministic simulation with a serializable RNG.
-`roguelike_store.rs` owns versioned local saves and completed-run outbox/history
-using a short SQLite transaction. The UI emits `UserAction::Roguelike`; the
-session executes it and replies with `UiInput::Roguelike` only after commit.
-A full UI input channel retains and retries this response, so game input
-cannot remain locked because a snapshot crowded out its acknowledgement.
+`roguelike.rs` is the serializable expedition facade. Its `anatomy` module
+owns shared tissue injury, equipment, treatment, and physiological effects;
+`world` owns generated floors and persistent ascent cycles; `simulation`
+orders actions, physiology, hazards, and enemy commitments; `observation`
+produces `RunView`. Game decisions use the saved RNG; presentation does not.
+
+A player action advances a deterministic integer clock in 50-unit slices.
+Physiology runs on 100-unit boundaries, followed by environmental events
+and due enemies in stable identity order. Death checks terminate remaining
+action work. Each floor has its own frozen-while-inactive clock, enemy
+commitments, terrain, dormant caverns, and crisis deadlines. Re-entering a
+floor resumes those values. Complete saves include RNG, anatomy, gear,
+physiology, clocks, pending attacks and collapses, journal IDs, and ending
+milestones.
+
+`Run::step` returns elapsed time, state/feedback change, and interruption
+status; `Run::act` remains a compatibility wrapper. `RunView` is the only
+renderer and diagnostic-policy interface. It includes player condition,
+perceived creatures and actual visible intentions, sounds, the structured
+journal, and last-observed terrain. Remembered terrain is distinct from true
+terrain so unseen breaches and collapses cannot leak through the map. The
+standalone harness uses these same observations and explicit typed actions.
+
+`roguelike_store.rs` owns version-2 save envelopes and the completed-run
+outbox/history in short SQLite transactions. The UI emits
+`UserAction::Roguelike`; the session executes it and returns
+`UiInput::Roguelike` containing a `RunView` only after commit. The previous
+committed view remains displayed on failure. A full UI input channel retains
+and retries the acknowledgement rather than permanently locking game input.
+
+Local schema migration v8 intentionally deletes every old roguelike run and
+history row, including pending reports, once and transactionally. It leaves
+other local data and the separate sync database intact. This pre-release
+reset does not change the normal preservation policy: corrupt, invalid, or
+unsupported version-2/future saves are reported without replacement.
+
+Automatic rest is a UI controller policy emitting ordinary `Rest` actions,
+not a background game clock. It waits at least 250 ms after each committed
+reply, permits one outstanding request, and cancels future steps on input,
+danger, arrival, covering/closing, completion, or storage failure. An already
+accepted action can still commit after cancellation; its late reply cannot
+restart automation. Cosmetic injury effects use the injected presentation
+clock and increases in the committed serious-injury count, never game RNG
+or simulation time.
 
 The session retries pending reports at startup, after game actions, and every
 30 seconds. `SyncCommand::PublishLocalReport` preserves the saved timestamp,

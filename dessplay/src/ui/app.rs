@@ -647,7 +647,12 @@ impl Ui {
         let spoilers = self.chat.advance_spoilers(now);
         let selection = self.chat.expire_selection(now);
         let logs = matches!(self.modals.last(), Some(Modal::Logs(modal)) if modal.refresh_needed());
-        speakers || marquee || spoilers || selection || logs
+        let dungeon = if let Some(Modal::Roguelike(modal)) = self.modals.last_mut() {
+            modal.advance_clock(now)
+        } else {
+            false
+        };
+        speakers || marquee || spoilers || selection || logs || dungeon
     }
 
     /// How soon the shell should tick again: fast while a marquee pass
@@ -656,7 +661,11 @@ impl Ui {
     /// only repaints when [`Self::advance_clock`] reports a change.
     pub(crate) fn next_tick_hint(&self) -> std::time::Duration {
         let marquee_live = matches!(&self.marquee, Some(anim) if !anim.done);
-        if marquee_live || self.chat.spoiler_animating() {
+        let dungeon_live =
+            matches!(self.modals.last(), Some(Modal::Roguelike(modal)) if modal.ticking());
+        if dungeon_live {
+            std::time::Duration::from_millis(50)
+        } else if marquee_live || self.chat.spoiler_animating() {
             std::time::Duration::from_millis(100)
         } else {
             std::time::Duration::from_secs(1)
@@ -1099,7 +1108,10 @@ impl Ui {
                 "Save your settings before starting an expedition.".into(),
             )]
         } else {
-            self.push_modal(Modal::Roguelike(super::modals::RoguelikeModal::new()));
+            let mut modal = super::modals::RoguelikeModal::new();
+            modal.advance_clock(self.clock);
+            modal.set_effects(self.settings.roguelike_effects);
+            self.push_modal(Modal::Roguelike(modal));
             vec![UserAction::Roguelike(crate::roguelike_store::Command::Open)]
         };
         self.sync_focus_attr();
@@ -1108,7 +1120,7 @@ impl Ui {
     }
 
     /// Apply a persisted dungeon turn, including while another modal covers it.
-    pub fn set_roguelike(&mut self, result: Result<Box<crate::roguelike::Run>, String>) {
+    pub fn set_roguelike(&mut self, result: Result<Box<crate::roguelike::RunView>, String>) {
         if let Some(Modal::Roguelike(modal)) = self
             .modals
             .iter_mut()
@@ -1120,6 +1132,16 @@ impl Ui {
             }
         }
         self.refresh_keybar();
+    }
+
+    /// Normal saved action channel, called after processing pending input so
+    /// cancellation takes priority over a due recovery tick.
+    pub(crate) fn due_roguelike_action(&mut self) -> Option<UserAction> {
+        if let Some(Modal::Roguelike(modal)) = self.modals.last_mut() {
+            modal.due_action().map(UserAction::Roguelike)
+        } else {
+            None
+        }
     }
 
     /// Replace the snapshot and recompute every pane's props.
@@ -1358,6 +1380,11 @@ impl Ui {
     }
 
     fn push_modal(&mut self, modal: Modal) {
+        for previous in &mut self.modals {
+            if let Modal::Roguelike(dungeon) = previous {
+                dungeon.cancel_recovery();
+            }
+        }
         tracing::debug!(modal = modal.name(), "modal opened");
         self.modals.push(modal);
     }
@@ -1512,6 +1539,21 @@ impl Ui {
 
     /// Route one input event; returns the actions it produced.
     pub fn handle(&mut self, ev: Event<NoUserEvent>) -> Vec<UserAction> {
+        // Every human input cancels recovery before globals, mouse handling,
+        // or modal routing. Closing/covering keys retain their usual meaning.
+        if let Some(Modal::Roguelike(modal)) = self.modals.last_mut()
+            && modal.recovering()
+        {
+            modal.cancel_recovery();
+            if !matches!(
+                super::components::plain(&ev),
+                Some(Key::Esc | Key::Function(4) | Key::Function(11))
+            ) {
+                self.refresh_keybar();
+                return Vec::new();
+            }
+        }
+
         // SECURITY: never log keystroke contents while the settings
         // modal is open — the user may be typing the password.
         if matches!(self.modals.last(), Some(Modal::Settings(_))) {
@@ -2243,6 +2285,11 @@ impl Ui {
                 self.pop_modal();
                 self.sync_focus_attr();
                 self.settings = (*settings).clone();
+                for modal in &mut self.modals {
+                    if let Modal::Roguelike(dungeon) = modal {
+                        dungeon.set_effects(settings.roguelike_effects);
+                    }
+                }
                 self.subtitle_mode = settings.subtitle_mode;
                 self.media_roots = roots.clone();
                 // A marquee pass mid-scroll stops when the display moves

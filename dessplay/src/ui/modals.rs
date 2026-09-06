@@ -994,6 +994,7 @@ enum SettingId {
     SubtitleSpeakerColors,
     SubtitleSpeakerOverflow,
     MarqueeMode,
+    RoguelikeEffects,
     MediaRoot(PathBuf),
     AddMediaRoot,
     ResetSyncedState,
@@ -1210,6 +1211,11 @@ impl SettingsForm {
                 "Commentary marquee",
                 self.settings.marquee_mode.label(),
             ),
+            FormRow::choice(
+                SettingId::RoguelikeEffects,
+                "Dungeon injury effects",
+                self.settings.roguelike_effects.label(),
+            ),
         ]
     }
 
@@ -1377,6 +1383,9 @@ impl FormModel for SettingsForm {
             (SettingId::SubtitleSpeakerOverflow, FormEdit::Cycle) => {
                 self.settings.subtitle_speaker_overflow =
                     self.settings.subtitle_speaker_overflow.next();
+            }
+            (SettingId::RoguelikeEffects, FormEdit::Cycle) => {
+                self.settings.roguelike_effects = self.settings.roguelike_effects.next();
             }
             (SettingId::MarqueeMode, FormEdit::Cycle) => {
                 self.settings.marquee_mode = self.settings.marquee_mode.next();

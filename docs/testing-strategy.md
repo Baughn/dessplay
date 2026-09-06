@@ -829,15 +829,66 @@ Anything subtler than this belongs in the multi-client harness.
 
 ## Roguelike tests
 
-Seeded engine properties cover connected/reachable generated floors, valid
-positions and physiology, deterministic JSON save/resume, and finished-run
-immutability. Storage tests exercise close/reopen, username isolation,
-unsupported saves, transaction rollback on save/report failure, and the
-finished-run outbox. Real sync-actor tests crash after report acknowledgement
-and replay it after restart, checking disk contents and duplicate suppression.
+Seeded engine properties cover connected generated floors and every awakening
+transition, valid positions and anatomy, deterministic JSON save/resume,
+no breath recovery while walking, irreversible structural injuries under
+ordinary care, and finished-run immutability. Crisis properties preserve
+stairs, loot, dormant cavern mouths, and traversable escape routes throughout
+breaches and collapses. Focused scenarios cover spear timing, explicit ember
+pickup, early victory, intent visibility, call interruption, and occupied
+pursuit goals. A short connected scenario takes the ember through normal
+descent and ascent actions, resumes after pickup, and verifies the banked
+bonus and immutable ending; it does not establish generated-run difficulty.
+Recorded playtest/fuzz action sequences remain regression
+fixtures; structural occupancy tests continue covering the collision class
+when generation tuning changes the seed layouts.
+
+Storage tests exercise close/reopen, username isolation, unsupported saves,
+transaction rollback on save/report failure, and the finished-run outbox.
+The v8 reset tests seed old saves and pending reports beside unrelated local
+data, check both roguelike tables are cleared once, reopen without clearing
+new saves, and inject failure between deletions to verify rollback. Real
+sync-actor tests crash after report acknowledgement and replay it after
+restart, checking disk contents and duplicate suppression. Multi-client
+session tests cover shared reports, startup recovery, restart resume, and
+delivery of a committed turn after the UI input queue fills.
+
 Whole-app UI tests cover input capture, acknowledgement gating, modal
 restoration, chat visibility, arrivals/reconnects, and tiny terminals.
-A cautious explorer additionally completes five full expeditions using only
-normal actions and visible/explored information, including the return journey.
-Multi-client session tests cover shared reports, startup recovery, restart
-resume, and delivery of a committed turn after the UI input queue fills.
+Recovery uses injected presentation time: tests require at most one pending
+action, a committed acknowledgement before the next step, and cancellation
+on input, cover/close, danger, arrivals, errors, and completion. Cosmetic
+settings and history loading must never replay injury effects or advance
+the simulation. The TUI and standalone harness consume the same `RunView`,
+which never exposes hidden enemies or current terrain behind fog.
+
+The client fuzz target `roguelike` exercises structured arbitrary real
+actions, save/resume equality and validation, and an independent awakened
+floor through repeated crisis transitions. Run from `dessplay`:
+
+```sh
+cargo fuzz run roguelike -- -max_total_time=600 -max_len=1024
+```
+
+AddressSanitizer remains enabled; if LeakSanitizer cannot operate under the
+local tracing/sandbox environment, use `ASAN_OPTIONS=detect_leaks=0` and
+record that limitation. Reproduce crashes before fixing them, retain a
+regression, and restart the ten-minute campaign after engine changes.
+
+For difficulty diagnostics, the observation-only example runs two fixed
+policies (early treasure/retreat and committed ember), reporting JSON lines:
+
+```sh
+cargo run -p dessplay --example roguelike_survey -- --seeds 100 --start 1
+cargo run -p dessplay --example roguelike_survey -- --seeds 1 --start 61 --policy ember
+```
+
+These policies use only visible/remembered terrain, current enemy intent,
+and player condition. Their action caps are incomplete expeditions, not
+wins or deaths. They are diagnostics rather than acceptance tests for a
+promised win rate. Manual playtests must choose from the same observation
+boundary, record seeds/actions/endings, and separate fresh play from replay
+continuations after code changes. Difficulty is intended to favor cautious
+retreat while making ember commitments usually fail; a script cannot prove
+that the resulting choices are enjoyable. Historical and new manual results
+belong in the existing playtest proposal.

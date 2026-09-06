@@ -1415,7 +1415,7 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             let now = (system_clock())().saturating_add_signed(self.shell.clock_offset());
                             let result = crate::roguelike_store::handle(
                                 &self.storage, &self.me.0, command, rand::random(), now as i64,
-                            ).map(Box::new).map_err(|error| {
+                            ).map(|run| Box::new(run.view())).map_err(|error| {
                                 tracing::error!(%error, "saving dungeon expedition");
                                 format!("Could not save: {error}. Your previous turn is safe; close and reopen to retry.")
                             });

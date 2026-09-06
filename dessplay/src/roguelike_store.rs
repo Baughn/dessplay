@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::roguelike::{Action, Run};
 use crate::storage::{Result, Storage, StorageError};
 
-const SAVE_VERSION: u32 = 1;
+const SAVE_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct Envelope {
@@ -189,9 +189,27 @@ mod tests {
             let mut next = run.clone();
             next.act(Action::Wait);
             if next.is_finished() {
+                // Build the starvation prefix through real simulation actions,
+                // seed its validated save once, then exercise the fatal action
+                // and outbox through the real transactional interface.
+                run.validate().unwrap();
+                let save = serde_json::to_string(&Envelope {
+                    version: SAVE_VERSION,
+                    run: run.clone(),
+                })
+                .unwrap();
+                storage
+                    .roguelike_transaction(|tx| {
+                        tx.execute(
+                            "UPDATE roguelike_runs SET save=?1 WHERE username=?2",
+                            params![save, user],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
                 return run;
             }
-            run = handle(storage, user, Command::Act(Action::Wait), 0, 200).unwrap();
+            run = next;
         }
         panic!("waiting without food should eventually finish the expedition");
     }

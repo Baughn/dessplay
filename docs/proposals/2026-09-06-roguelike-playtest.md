@@ -1,6 +1,8 @@
 # The Waiting Below: playtest and fun proposals
 
-Date: 2026-09-06. Status: draft ideas, not adopted design rules.
+Date: 2026-09-06. Status: original playtest preserved below; the adopted
+overhaul and its validation are recorded after the original report.
+Current rules are in [design.md](../design.md#the-waiting-below).
 
 ## What I played
 
@@ -170,5 +172,168 @@ or resource changes are still needed. Existing seeded invariant and
 completion tests can protect the engine; they cannot establish that a run
 is fun.
 
-No gameplay rules are changed by this document. Adopted proposals should
-update `design.md` and `decisions.md` when implemented.
+The original report ended here. Its experiments were suggestions, not rules;
+the following implementation supersedes the proposed short ascent.
+
+
+## Adopted overhaul (2026-09-06)
+
+The author's follow-up established a different ambition: most committed
+expeditions should fail, and escaping alive without the ember is still a
+victory. Taking the ember permanently awakens the existing dungeon, with
+breaches, swarms, telegraphed collapses, and lulls. There is no required
+shortcut or 15–25% return-length target. The design keeps the original
+observation that an empty return was the central problem.
+
+The implementation adds generated loops and branches, optional set-pieces,
+a shared layered anatomy system with lasting wounds and limb/organ loss,
+regional armor, knife/spear/mace choices and a spare weapon, sprinting that
+spends breath, and walking without breath recovery. Rest chooses useful
+ordinary treatment and recovery automatically, with visible finite supplies
+and cancellable pacing. A rare single-use fountain fully restores even lost
+anatomy. Visible enemy commitments and an expanded journal explain tactical
+consequences. Endings distinguish survival from ember recovery, award points,
+and describe the character's fate. Cosmetic injury feedback is optional and
+the observation-only agent harness always disables it.
+
+The existing local save/report transaction remains the persistence boundary.
+The author explicitly approved a one-time reset of the roguelike's local
+tables because nobody else had played the pre-release game. Schema v8 clears
+old runs and local history/pending reports; version-2 saves thereafter retain
+the normal error-and-preserve policy. No other local or synced data is reset.
+See [decisions](../decisions.md#lasting-injuries-and-an-awakened-dungeon-2026-09-06)
+for rationale and [the player guide](../roguelike.md) for controls.
+
+### Initial manual cohort
+
+Two agents chose actions from the player observation and guide, without
+reading hidden maps or the engine to decide moves. Each played two cautious
+retreats and two committed attempts on the first integrated build. These
+runs exposed defects and informed density changes; they do not describe the
+final balance.
+
+| Seed | Goal | Result | Actions | Notes |
+|---|---|---|---:|---|
+| 20260906 | Cautious | Escaped floor 1 | 50 | 16 gold, one rat killed, treated leg wounds |
+| 42 | Cautious | Died floor 1 | 51 | Trapped by two pilgrims and two rats during retreat |
+| 101 | Cautious | Escaped floor 1 | 39 | 52 gold, bleeding and bone injuries; baited a call |
+| 1001 | Cautious | Escaped floor 1 | 62 | 19 gold, uninjured; closing a door enabled retreat |
+| 7 | Ember | Engine error on floor 1 | 62 | Pursuers could enter another creature's occupied tile |
+| 2026 | Ember | Died floor 2 | 95 | 24 gold, one kill; exhausted linen after a costly passage |
+| 314159 | Ember | Died floor 2 | 82 | Pilgrim pincer, exhaustion, and continuing bleeding |
+| 271828 | Ember | Engine error on floor 1 | 43 | Same occupied pursuit-goal defect |
+
+Replaying the two interrupted prefixes after the repair changed earlier
+creature movement and subsequent randomness. Their continued deaths are not
+fresh manual balance evidence and are excluded from the table. Exact action
+prefixes remain regression fixtures alongside a generation-independent test
+of occupied pursuit goals. A fuzz campaign independently found the same
+validation error. Other checks caught unseen named windups leaking into the
+journal, a future cavern losing connectivity after a collapse, and closing
+a door over dropped equipment. Those classes now have regression coverage.
+
+Final integration review additionally caught responders stalling beside an
+occupied call destination, diagonal door closing through walls, blind spear
+hits disclosing unseen anatomy, and dodged heavy swings costing enemies no
+breath. Each received a failing regression before correction. Responders now
+approach a free adjacent tile, door access shares a corner rule, unseen
+contact gives generic feedback, and committed heavy swings spend breath
+even when dodged.
+
+### Density diagnostics
+
+The observation-only survey ran 100 seeds per policy. The initial cautious
+policy escaped 80 times; its committed counterpart died 99 times and hit its
+action cap once, with no ember pickups. Injury severity was left intact while
+two passes reduced and separated ordinary floor encounters and moved optional
+guards away from stair routes. The resulting frozen benchmark had 100
+cautious escapes, 91 committed deaths, nine incomplete action caps, and six
+ember pickups; all six ember carriers died during the awakened phase.
+Seeds 61 and 85 were selected for follow-up manual play because the diagnostic
+policy demonstrated that they reached that phase. They are selected coverage
+cases, not an unbiased win-rate sample. No difficulty guarantee is inferred
+from either scripted policies or this small manual cohort.
+
+
+The final engine survey, after the tactical edge-case fixes, again ran seeds
+1–100 for each policy: 100 cautious escapes; 92 committed deaths and eight
+incomplete caps; six ember pickups and no ember escapes. This supports the
+intended direction but leaves successful full returns sparsely exercised.
+The selected manual benchmark below used the frozen second density build,
+before those final edge-case fixes; it is kept separate from this survey.
+
+### Shared-seed manual follow-up
+
+| Seed | Goal | Result | Actions | Ember / first ascent | Score |
+|---|---|---|---:|---|---:|
+| 61 | Cautious | Escaped floor 1, uninjured, 18 gold | 36 | — | 391 |
+| 85 | Cautious | Escaped floor 1, minor arm bone damage, no gold | 146 | — | 564 |
+| 61 | Committed | Died from blood loss on floor 4; 18 kills, 132 gold | 959 | 881 / 934 | 2535 |
+| 85 | Committed | Died from blood loss on floor 4; 12 kills, 142 gold | 853 | 786 / 814 | 2368 |
+
+Both committed players deliberately prepared before pickup. Seed 85 used a
+fountain on floor three to restore an eye and hand injury, then reached the
+ember with one linen remaining after descent. Seed 61 brought six linen and
+more regional armor into the awakened phase, but took the ember at 883 blood
+and 67 breath with unrecovered flesh. Adding iron footwear had also pushed
+walking from 100 to 150 time. This was imperfect preparation, not an optimal
+return-policy trial. Current walking and sprinting costs are now conspicuous
+in equipment inspection and the plain harness. Spears gave useful reach, but
+the 200-time adjacent penalty needed a clearer equipment description; that
+number is now displayed explicitly.
+
+The return produced the intended new decisions. In seed 85 a collapse erased
+a planned bypass around an existing pilgrim; the player lured it aside,
+passed it, dodged a warden's marked strike, and finally diverted to an unknown
+corridor looking for linen. A brute ahead and rat behind made the last dodge
+costly, and continuing bleeding killed the character. Seed 61 used a door and
+the rats' bite/retreat rhythm to escape the fifth-floor entrance room, where
+seven or eight rats had gathered. All six linen were gone before ascending.
+A newly opened shortcut helped on floor four, but accumulated injuries and
+more pursuers ended the attempt just short of that floor's upward stair.
+
+Warnings, sprinting, alternate paths, doors, and committed heavy strikes
+supported real choices. Neither death was an immediate unavoidable loss on
+pickup. Nevertheless, rat accumulation and depleted medical supplies made
+both returns sustained attrition. **No sampled generated ember attempt won.**
+This demonstrates an active, dangerous return, not settled balance or proof
+that its difficulty is appropriate for a human player.
+
+Other pacing questions remain. Both agents spent hundreds of first-floor
+actions exploring, including substantial backtracking after mistaking an
+unseen room corner for a dead end. Seed 85 took 122 safe recovery steps before
+pickup. The harness performs one care action per `r`; the actual TUI automates
+those steps at about four per second, so harness input burden is not a TUI
+regression. Food was rarely needed in these expeditions. Dense footstep
+messages often stopped harness movement batches. These are follow-up tuning
+observations, not reasons to make ordinary care manual again.
+
+The helpers used JSON observations and readable map glyphs; one omitted
+colored/underlined terrain markers. Its report therefore evaluates audible
+collapse warnings and changed routes, not the quality of the TUI's marked
+impact tiles. Actual terminal presentation was checked separately below.
+
+### Presentation and automated validation
+
+The production terminal UI and SQLite action handler were exercised in an
+isolated tmux session with no networking or party messages. A marked,
+validated injury fixture demonstrated the Full red flash and decorative
+brain-injury title, Reduced static emphasis, and Off. Normal recovery actions
+committed about 261–262 ms apart, visibly consumed splints and food, and
+stopped immediately on input. Live rendering exposed a clipped cancellation
+instruction; a failing regression led to moving it into the recovery panel's
+bottom border. A subsequent equipment-rendering test caught a shared height
+helper ignoring explicit line breaks; paragraph sizing now counts those in
+all affected panels. This is presentation validation, not a combat playtest.
+
+The full default gate passes **1,404 tests** (five default exclusions), and
+`cargo clippy --workspace --all-targets -- -D warnings` passes. Properties
+cover world connectivity through crisis transitions, anatomical invariants,
+ordinary-care limits, save/resume equality, and finished-run immutability.
+A short connected scenario also verifies a successful normal-action descent,
+ember pickup, saved/resumed ascent, banked bonus, and immutable ending. This
+is contract coverage, not a generated-dungeon win. Regressions cover both
+recorded failures and the broader classes found in review. The final AddressSanitizer fuzz campaign completed
+**30,694 executions in 601 seconds** with no failure, using long structured action sequences as well
+as the mutating corpus. LeakSanitizer was disabled because the environment
+uses tracing; address checking and simulation assertions remained enabled.

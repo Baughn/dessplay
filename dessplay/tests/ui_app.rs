@@ -2979,7 +2979,7 @@ fn roguelike_captures_input_saves_before_advancing_and_restores_modals() {
         ui.handle(key(Key::Right)).is_empty(),
         "loading must capture movement"
     );
-    ui.set_roguelike(Ok(Box::new(Run::new(42))));
+    ui.set_roguelike(Ok(Box::new(Run::new(42).view())));
     ui.push_system(1000, "Party chat stays visible".into());
     let screen = render(&mut ui, 100, 45);
     assert!(screen.contains("THE WAITING BELOW"));
@@ -2995,7 +2995,7 @@ fn roguelike_captures_input_saves_before_advancing_and_restores_modals() {
     );
     ui.set_roguelike(Err("Disk full: previous turn retained".into()));
     assert!(render(&mut ui, 100, 45).contains("Disk full"));
-    ui.set_roguelike(Ok(Box::new(Run::new(42))));
+    ui.set_roguelike(Ok(Box::new(Run::new(42).view())));
     ui.handle(key(Key::Function(11)));
     assert!(render(&mut ui, 100, 45).contains("Logs"));
     ui.handle(key(Key::Esc));
@@ -3012,7 +3012,7 @@ fn roguelike_arrivals_are_sticky_and_include_returns_but_exclude_seeders_and_sel
     let mut ui = ui();
     ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
     ui.handle(key(Key::Function(4)));
-    ui.set_roguelike(Ok(Box::new(Run::new(42))));
+    ui.set_roguelike(Ok(Box::new(Run::new(42).view())));
     let mut seeder = peer("warehouse");
     seeder.role = Role::Seeder;
     ui.apply_snapshot(snapshot(
@@ -3048,7 +3048,7 @@ fn roguelike_slash_command_and_tiny_terminals() {
             dessplay::roguelike_store::Command::Open
         )]
     );
-    ui.set_roguelike(Ok(Box::new(dessplay::roguelike::Run::new(1))));
+    ui.set_roguelike(Ok(Box::new(dessplay::roguelike::Run::new(1).view())));
     for (width, height) in [(1, 1), (10, 4), (40, 12), (80, 24), (120, 50)] {
         render(&mut ui, width, height);
     }

@@ -9,6 +9,22 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-06
+
+- Improved: The Waiting Below now has branching dungeon routes, optional
+  fountains and guarded treasure. Escape alive whenever you choose; taking
+  the ember awakens swarms, opening caverns, and warned cave-ins on the return.
+- Added: Lasting wounds, damaged organs, lost limbs, regional armor, and a
+  two-weapon kit make every encounter a risk. Uppercase vi keys sprint using
+  breath; walking no longer restores it. Rest automatically treats injuries
+  and recovers while supplies last, stopping for danger or party arrivals.
+- Added: Inspect equipment and movement costs with i, injuries with v, and
+  the dungeon journal with p. Visible enemy intentions help you dodge heavy blows. Endings include
+  points and the rest of your character's life; injury effects can be reduced
+  or disabled in Settings.
+- Changed: This dungeon overhaul resets existing local expeditions and their
+  history once. Other DessPlay data and messages are preserved.
+
 ## 2026-09-05
 
 - Added: F11 opens live logs above recent chat, with scrolling and separate

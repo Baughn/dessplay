@@ -106,6 +106,53 @@ impl SubtitleMode {
     }
 }
 
+/// Local presentation of serious roguelike injuries. Never changes simulation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RoguelikeEffects {
+    #[default]
+    /// Red injury flashes and restrained decorative corruption.
+    Full,
+    /// Static injury emphasis without flashing or corruption.
+    Reduced,
+    /// Disable cosmetic injury effects; mechanical consequences remain.
+    Off,
+}
+impl RoguelikeEffects {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Reduced => "reduced",
+            Self::Off => "off",
+        }
+    }
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "full" => Ok(Self::Full),
+            "reduced" => Ok(Self::Reduced),
+            "off" => Ok(Self::Off),
+            other => Err(StorageError::Corrupt(format!(
+                "unknown roguelike_effects {other:?}"
+            ))),
+        }
+    }
+    /// Cycle through Full, Reduced, and Off.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Full => Self::Reduced,
+            Self::Reduced => Self::Off,
+            Self::Off => Self::Full,
+        }
+    }
+    /// Human-readable label for the settings screen.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Full => "Full",
+            Self::Reduced => "Reduced",
+            Self::Off => "Off",
+        }
+    }
+}
+
 /// How the synced marquee line (AI commentary today; the register is
 /// deliberately generic) is displayed locally. The register itself is
 /// always synced — this only chooses this client's presentation.
@@ -479,6 +526,8 @@ pub struct Settings {
     /// How the synced marquee line is displayed locally: scrolled on the
     /// bottom line (default), folded into the chat log, or hidden.
     pub marquee_mode: MarqueeMode,
+    /// Local cosmetic injury presentation for the waiting-room expedition.
+    pub roguelike_effects: RoguelikeEffects,
     /// Sort order for the All Series browser mode (toggled with `s`).
     /// Local-only display preference; persisted across sessions.
     pub series_sort: SeriesSort,
@@ -545,6 +594,7 @@ impl Default for Settings {
             subtitle_speaker_colors: true,
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::default(),
             marquee_mode: MarqueeMode::default(),
+            roguelike_effects: RoguelikeEffects::default(),
             series_sort: SeriesSort::default(),
             list_sort: ListSort::default(),
             file_browser_sort: BrowserSort::default(),
@@ -722,6 +772,11 @@ impl Settings {
                 .map(|value| SubtitleSpeakerOverflow::parse(&value))
                 .transpose()?
                 .unwrap_or(defaults.subtitle_speaker_overflow),
+            roguelike_effects: storage
+                .setting("roguelike_effects")?
+                .map(|value| RoguelikeEffects::parse(&value))
+                .transpose()?
+                .unwrap_or(defaults.roguelike_effects),
             marquee_mode: storage
                 .setting("marquee_mode")?
                 .map(|value| MarqueeMode::parse(&value))
@@ -833,6 +888,7 @@ impl Settings {
             "subtitle_speaker_overflow",
             Some(self.subtitle_speaker_overflow.as_str()),
         )?;
+        storage.set_setting("roguelike_effects", Some(self.roguelike_effects.as_str()))?;
         storage.set_setting("marquee_mode", Some(self.marquee_mode.as_str()))?;
         storage.set_setting("series_sort", Some(self.series_sort.as_str()))?;
         storage.set_setting("list_sort", Some(self.list_sort.as_str()))?;
@@ -911,6 +967,7 @@ mod tests {
             subtitle_speaker_colors: false,
             subtitle_speaker_overflow: SubtitleSpeakerOverflow::DisableColors,
             marquee_mode: MarqueeMode::Chat,
+            roguelike_effects: RoguelikeEffects::Reduced,
             series_sort: SeriesSort::Year,
             list_sort: ListSort::Alphabetical,
             file_browser_sort: BrowserSort::Newest,
@@ -1186,6 +1243,29 @@ mod tests {
             SubtitleSpeakerOverflow::DisableColors.next(),
             SubtitleSpeakerOverflow::ReuseColors
         );
+    }
+
+    #[test]
+    fn roguelike_effects_roundtrip_default_and_cycle() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(
+            storage.load_settings().unwrap().roguelike_effects,
+            RoguelikeEffects::Full
+        );
+        for mode in [
+            RoguelikeEffects::Full,
+            RoguelikeEffects::Reduced,
+            RoguelikeEffects::Off,
+        ] {
+            let settings = Settings {
+                roguelike_effects: mode,
+                ..Settings::default()
+            };
+            storage.save_settings(&settings).unwrap();
+            assert_eq!(storage.load_settings().unwrap().roguelike_effects, mode);
+            assert_eq!(mode.next().next().next(), mode);
+        }
+        assert!(RoguelikeEffects::parse("wild").is_err());
     }
 
     #[test]

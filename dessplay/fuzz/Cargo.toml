@@ -38,3 +38,10 @@ path = "fuzz_targets/download_scheduler.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "roguelike"
+path = "fuzz_targets/roguelike.rs"
+test = false
+doc = false
+bench = false

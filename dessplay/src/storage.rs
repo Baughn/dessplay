@@ -272,6 +272,12 @@ const MIGRATIONS: &[&str] = &[
         UNIQUE (username, generation)
     ) STRICT;
     ",
+    // v8: the pre-release anatomy/ascent redesign deliberately starts fresh.
+    // History also contains the report outbox; clear it in the same migration.
+    "
+    DELETE FROM roguelike_history;
+    DELETE FROM roguelike_runs;
+    ",
 ];
 
 /// Apply any unapplied migrations. Exposed shape (a slice parameter) so
@@ -1107,6 +1113,58 @@ mod tests {
         migrate(&conn, &with_extra).unwrap();
         conn.execute("INSERT INTO phase_two_test (x) VALUES (1)", [])
             .unwrap();
+    }
+
+    #[test]
+    fn anatomy_upgrade_discards_only_old_roguelike_data_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn, &MIGRATIONS[..7]).unwrap();
+        conn.execute_batch("INSERT INTO settings VALUES ('sentinel', 'keep');
+            INSERT INTO roguelike_runs VALUES ('Alice', 1, 'old incompatible save');
+            INSERT INTO roguelike_runs VALUES ('Bob', 2, 'another incompatible save');
+            INSERT INTO roguelike_history (username,generation,summary,ended_at) VALUES ('Alice',1,'pending report',1);").unwrap();
+        migrate(&conn, MIGRATIONS).unwrap();
+        for table in ["roguelike_runs", "roguelike_history"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+        let value: String = conn
+            .query_row("SELECT value FROM settings WHERE key='sentinel'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(value, "keep");
+        conn.execute(
+            "INSERT INTO roguelike_runs VALUES ('Alice',1,'new save')",
+            [],
+        )
+        .unwrap();
+        migrate(&conn, MIGRATIONS).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM roguelike_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn anatomy_upgrade_rolls_back_both_tables_on_failure() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn, &MIGRATIONS[..7]).unwrap();
+        conn.execute_batch("INSERT INTO roguelike_runs VALUES ('Alice',1,'old save');
+            INSERT INTO roguelike_history (username,generation,summary,ended_at) VALUES ('Alice',1,'pending',1);
+            CREATE TRIGGER fail_reset BEFORE DELETE ON roguelike_runs BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
+        assert!(migrate(&conn, MIGRATIONS).is_err());
+        conn.execute_batch("ROLLBACK;").unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM roguelike_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
     }
 
     /// Regression: every connection must carry a non-zero busy_timeout, so a

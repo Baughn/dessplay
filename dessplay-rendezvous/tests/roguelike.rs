@@ -5,14 +5,14 @@ mod common;
 use std::time::Duration;
 
 use common::{Harness, LoopRig, init_test_logging, loop_rig};
-use dessplay::roguelike::{Action, Point, Run, Tile};
+use dessplay::roguelike::{Action, Point, Run, RunView, Tile};
 use dessplay::roguelike_store::{Command, handle};
 use dessplay::storage::Storage;
 use dessplay::ui::msg::UserAction;
 use dessplay::ui::shell::UiInput;
 use rusqlite::OptionalExtension;
 
-async fn command(rig: &LoopRig, command: Command) -> Run {
+async fn command(rig: &LoopRig, command: Command) -> RunView {
     rig.actions
         .send(UserAction::Roguelike(command))
         .await
@@ -20,7 +20,7 @@ async fn command(rig: &LoopRig, command: Command) -> Run {
     receive_run(rig).await
 }
 
-async fn receive_run(rig: &LoopRig) -> Run {
+async fn receive_run(rig: &LoopRig) -> RunView {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             while let Ok(input) = rig.ui_rx.try_recv() {
@@ -69,15 +69,34 @@ async fn acknowledged(storage: &Storage) {
     .expect("published report acknowledged locally");
 }
 
-fn before_death(storage: &Storage) -> Run {
+fn before_death(storage: &Storage, path: &std::path::Path) -> Run {
     let mut run = handle(storage, "kim", Command::Open, 17, 100).unwrap();
     for _ in 0..10_000 {
         let mut next = run.clone();
         next.act(Action::Wait);
         if next.is_finished() {
+            // The long starvation prefix uses real engine actions. Persist its
+            // validated state once, then exercise the fatal action, transaction,
+            // session reply, and report delivery through production interfaces.
+            run.validate().unwrap();
+            let conn = rusqlite::Connection::open(path).unwrap();
+            let saved: String = conn
+                .query_row(
+                    "SELECT save FROM roguelike_runs WHERE username='kim'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut envelope: serde_json::Value = serde_json::from_str(&saved).unwrap();
+            envelope["run"] = serde_json::to_value(&run).unwrap();
+            conn.execute(
+                "UPDATE roguelike_runs SET save=?1 WHERE username='kim'",
+                [envelope.to_string()],
+            )
+            .unwrap();
             return run;
         }
-        run = handle(storage, "kim", Command::Act(Action::Wait), 0, 100).unwrap();
+        run = next;
     }
     panic!("waiting without food should eventually end a run");
 }
@@ -128,7 +147,7 @@ async fn committed_game_reply_survives_a_full_ui_queue() {
     .expect("game committed despite the full UI queue");
     let saved: serde_json::Value = serde_json::from_str(&save).unwrap();
     let committed: Run = serde_json::from_value(saved["run"].clone()).unwrap();
-    assert_eq!(receive_run(&rig).await, committed);
+    assert_eq!(receive_run(&rig).await, committed.view());
 
     // Receiving the retained reply frees the UI's waiting-for-save state, so
     // the next action must be accepted and return another committed snapshot.
@@ -156,7 +175,10 @@ async fn modal_turn_reply_is_persisted_and_resumes_after_client_restart() {
     let moved = command(&rig, Command::Act(Action::Move(dx, dy))).await;
     assert_eq!(moved.turns, initial.turns + 1);
     let storage = Storage::open(&dir.path().join("kim.db")).unwrap();
-    assert_eq!(handle(&storage, "kim", Command::Open, 0, 0).unwrap(), moved);
+    assert_eq!(
+        handle(&storage, "kim", Command::Open, 0, 0).unwrap().view(),
+        moved
+    );
     drop(storage);
     rig.quit().await;
     let resumed = loop_rig(&harness, "kim", 2, dir.path());
@@ -171,10 +193,10 @@ async fn dying_in_the_modal_publishes_one_summary_to_another_player() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
     let storage = Storage::open(&dir_a.path().join("kim.db")).unwrap();
-    let living = before_death(&storage);
+    let living = before_death(&storage, &dir_a.path().join("kim.db"));
     let rig_a = loop_rig(&harness, "kim", 1, dir_a.path());
     let rig_b = loop_rig(&harness, "nero", 1, dir_b.path());
-    assert_eq!(command(&rig_a, Command::Open).await, living);
+    assert_eq!(command(&rig_a, Command::Open).await, living.view());
     let dead = command(&rig_a, Command::Act(Action::Wait)).await;
     assert!(dead.is_finished());
     let summary = format!("{} [expedition #1]", dead.summary());
@@ -198,7 +220,7 @@ async fn startup_publishes_a_saved_death_even_without_opening_the_modal() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
     let storage = Storage::open(&dir_a.path().join("kim.db")).unwrap();
-    before_death(&storage);
+    before_death(&storage, &dir_a.path().join("kim.db"));
     // Model a process stopping after its fatal turn commits, before the
     // session loop has submitted the durable outbox entry to the sync actor.
     let dead = handle(

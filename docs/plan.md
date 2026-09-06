@@ -1799,3 +1799,45 @@ Coverage: the default and persistence round trip, the Files row toggle/save,
 the watch-record trigger (on, off, and a non-cached file), the
 download-completion trigger, and the no-reload re-key at the wiring
 boundary.
+
+---
+
+## Phase 35: Consequential expeditions and the awakened return
+
+**Status: implemented (2026-09-06).**
+
+The Waiting Below now treats leaving alive as a victory and ember retrieval
+as the dangerous commitment. The adopted scope supersedes the short-return
+experiment in the original [playtest proposal](proposals/2026-09-06-roguelike-playtest.md).
+
+The implementation was divided into these dependent work units:
+
+1. **Anatomy and equipment:** shared species-aware tissues, organs, lasting
+   losses, functional grip/gait/sight/breath, finite automatic care, regional
+   armor, and a small active/spare weapon kit.
+2. **Generation and awakening:** procedural connected loops and branches,
+   optional treasure/fountain/terrain set-pieces, dormant caverns, saved
+   warning/outbreak/lull cycles, swarms, and route-preserving rockfalls.
+3. **Simulation and observation:** integer elapsed-action scheduling,
+   sprinting without walking recovery, readable creature commitments,
+   interruptible calls, explicit pickup/interaction/equipment, structured
+   journal, survival scoring and epilogues, and one honest `RunView`.
+4. **Storage and controller:** version-2 saves behind the existing atomic
+   save/history/report boundary; the authorized one-time v8 roguelike reset;
+   committed views, paced cancellable care, inspection/journal screens, and
+   live Full/Reduced/Off cosmetic settings.
+5. **Validation and tuning:** seeded properties and recorded regressions,
+   a structured fuzz target, full application/session tests, observation-only
+   surveys, and two manual agents with separate initial and shared-seed
+   follow-up cohorts. Findings and limitations are recorded in the proposal.
+
+Anatomy, world generation, and UI work ran independently behind agreed
+interfaces; integration retained one deterministic engine and the existing
+party report pipeline. Initial testing found occupancy and perception bugs
+and descent density that prevented the return phase from being exercised.
+Those were addressed before the shared-seed follow-up. Difficulty remains a
+playtesting judgment: a policy survey is not a promised human win rate.
+
+The player guide, design rules, decision rationale, architecture, testing
+strategy, and changelog describe the final behavior. No new protocol or
+synced-state schema was introduced.
