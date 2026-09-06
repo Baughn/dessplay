@@ -3,6 +3,7 @@
 use std::sync::{Mutex, OnceLock};
 
 use tuirealm::ratatui::buffer::Buffer;
+use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 
 use palette::{FromColor, Hsluv, Lab, Srgb, color_difference::Ciede2000};
@@ -222,11 +223,27 @@ fn unit_interval(value: u64) -> f32 {
 /// Apply the terminal-depth-specific presentation to a completed frame.
 /// Limited terminals retain their configured terminal theme. RGB terminals
 /// get one app-wide dark palette, including every pane, modal and overlay.
-pub fn apply_color_depth(buffer: &mut Buffer, depth: ColorDepth) {
+///
+/// Cells inside `keep` are left untouched: inline chat images render
+/// through their own cells (half-block fg/bg pairs, or graphics-protocol
+/// payloads), and forcing the canvas colors onto them would corrupt the
+/// picture.
+pub fn apply_color_depth(buffer: &mut Buffer, depth: ColorDepth, keep: &[Rect]) {
     if depth == ColorDepth::Limited {
         return;
     }
-    for cell in &mut buffer.content {
+    let area = buffer.area;
+    for (i, cell) in buffer.content.iter_mut().enumerate() {
+        if !keep.is_empty() && area.width > 0 {
+            let x = area.x + (i % area.width as usize) as u16;
+            let y = area.y + (i / area.width as usize) as u16;
+            if keep
+                .iter()
+                .any(|r| r.contains(tuirealm::ratatui::layout::Position::new(x, y)))
+            {
+                continue;
+            }
+        }
         if cell.modifier.contains(Modifier::DIM) {
             cell.fg = TRUECOLOR_MUTED_FOREGROUND;
             cell.modifier.remove(Modifier::DIM);
@@ -399,7 +416,7 @@ mod tests {
         buffer[(3, 0)].fg = Color::Rgb(1, 2, 3);
         buffer[(3, 0)].bg = Color::Rgb(4, 5, 6);
 
-        apply_color_depth(&mut buffer, ColorDepth::TrueColor);
+        apply_color_depth(&mut buffer, ColorDepth::TrueColor, &[]);
 
         assert_eq!(buffer[(0, 0)].fg, TRUECOLOR_FOREGROUND);
         assert_eq!(buffer[(0, 0)].bg, TRUECOLOR_BACKGROUND);
@@ -441,7 +458,7 @@ mod tests {
             let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
             buffer[(0, 0)].modifier = retained | Modifier::DIM;
 
-            apply_color_depth(&mut buffer, ColorDepth::TrueColor);
+            apply_color_depth(&mut buffer, ColorDepth::TrueColor, &[]);
 
             prop_assert_eq!(buffer[(0, 0)].fg, TRUECOLOR_MUTED_FOREGROUND);
             prop_assert_eq!(buffer[(0, 0)].modifier, retained);
@@ -458,9 +475,39 @@ mod tests {
         buffer[(0, 0)].modifier = Modifier::DIM | Modifier::ITALIC;
         let original = buffer.clone();
 
-        apply_color_depth(&mut buffer, ColorDepth::Limited);
+        apply_color_depth(&mut buffer, ColorDepth::Limited, &[]);
 
         assert_eq!(buffer, original);
+    }
+
+    /// Cells inside a keep rect (an inline chat image) must survive the
+    /// pass untouched — the forced canvas background would overwrite the
+    /// half-block pixel colors and graphics-protocol payload cells.
+    #[test]
+    fn truecolor_mapping_skips_keep_rects() {
+        use tuirealm::ratatui::{buffer::Buffer, layout::Rect};
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
+        for x in 0..4 {
+            for y in 0..2 {
+                buffer[(x, y)].fg = Color::Rgb(10, 20, 30);
+                buffer[(x, y)].bg = Color::Rgb(40, 50, 60);
+            }
+        }
+        let keep = Rect::new(1, 0, 2, 1);
+
+        apply_color_depth(&mut buffer, ColorDepth::TrueColor, &[keep]);
+
+        for x in 0..4u16 {
+            for y in 0..2u16 {
+                let expected_bg = if keep.contains((x, y).into()) {
+                    Color::Rgb(40, 50, 60)
+                } else {
+                    TRUECOLOR_BACKGROUND
+                };
+                assert_eq!(buffer[(x, y)].bg, expected_bg, "cell ({x},{y})");
+            }
+        }
     }
 
     #[test]

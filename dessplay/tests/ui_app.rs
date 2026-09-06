@@ -3055,3 +3055,121 @@ fn roguelike_slash_command_and_tiny_terminals() {
     ui.handle(key(Key::Char('?')));
     assert!(render(&mut ui, 100, 45).contains("THE WAITING BELOW"));
 }
+
+// ---- Inline chat images (design.md, Inline chat images) --------------
+
+/// Vertical-gradient 100×400px test image: 10×20 cells under the
+/// halfblocks picker's fixed 10×20 font, so it always overflows the
+/// ⅓-of-log cap. The gradient makes every rendered row's colors
+/// distinct, so tests can tell *which* image rows are visible (a
+/// uniform color would render as identical background-colored spaces).
+fn gradient_image() -> image::DynamicImage {
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(100, 400, |_, y| {
+        image::Rgba([(y / 2) as u8, 40, 255 - (y / 2) as u8, 255])
+    }))
+}
+
+const IMAGE_URL: &str = "https://x.example/shot.png";
+
+/// Without an injected picker (every other test in this file), an image
+/// URL is plain chat text: no fetch requests, no reserved rows — the
+/// pre-images rendering, byte for byte.
+#[test]
+fn image_url_without_picker_stays_plain_text() {
+    let mut ui = ui();
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    ui.push_irc(1_000, "dagger".into(), format!("look {IMAGE_URL}"), false);
+    assert!(ui.take_image_fetches().is_empty());
+    let rendered = render(&mut ui, 100, 30);
+    assert!(rendered.contains(IMAGE_URL));
+    assert!(!rendered.contains('▀'));
+}
+
+/// With a picker, the URL is fetched once and the delivered image
+/// renders inline under its message, capped at a third of the log.
+#[test]
+fn image_renders_inline_with_halfblocks_picker() {
+    let mut ui = ui();
+    ui.set_image_picker(ratatui_image::picker::Picker::halfblocks());
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    ui.push_irc(1_000, "dagger".into(), format!("look {IMAGE_URL}"), false);
+    assert_eq!(ui.take_image_fetches(), vec![IMAGE_URL.to_string()]);
+    ui.set_chat_image(IMAGE_URL, Ok(gradient_image()));
+    insta::assert_snapshot!(render(&mut ui, 100, 30));
+}
+
+/// One log row of the chat column as comparable cell values (symbol +
+/// colors) — buffer_to_string drops colors, and the gradient test image
+/// distinguishes rows *only* by color.
+fn chat_row_cells(buffer: &tuirealm::ratatui::buffer::Buffer, y: u16) -> Vec<String> {
+    (1..49).map(|x| format!("{:?}", buffer[(x, y)])).collect()
+}
+
+fn render_buffer(ui: &mut Ui, width: u16, height: u16) -> tuirealm::ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| ui.draw(frame))
+        .unwrap()
+        .buffer
+        .clone()
+}
+
+/// Scrolling the log through an image crops the *fitted* image at the
+/// viewport edge — the visible slice matches the same rows of the
+/// unscrolled render, neither rescaled nor showing unscaled source
+/// pixels.
+#[test]
+fn scrolled_image_crops_at_the_top_edge() {
+    let (left, ..) = pane_rects(100, 30);
+    let mut ui = ui();
+    ui.set_image_picker(ratatui_image::picker::Picker::halfblocks());
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    ui.push_irc(1_000, "dagger".into(), format!("look {IMAGE_URL}"), false);
+    ui.take_image_fetches();
+    ui.set_chat_image(IMAGE_URL, Ok(gradient_image()));
+    // The reference geometry: the log viewport is 20 rows, so the band
+    // caps at 20 / 3 = 6 rows; the message wraps to log rows 0–1, the
+    // band sits at rows 2–7, drawn on log lines 3–8 (line 0 is the
+    // border). Assert it so a layout change fails here, loudly, rather
+    // than in the scroll arithmetic below.
+    let unscrolled = render_buffer(&mut ui, 100, 30);
+    let glyph_line = |buffer: &tuirealm::ratatui::buffer::Buffer, y: u16| {
+        chat_row_cells(buffer, y)
+            .iter()
+            .any(|cell| cell.contains('▀') || cell.contains('▄'))
+    };
+    let band_lines: Vec<u16> = (1..21).filter(|&y| glyph_line(&unscrolled, y)).collect();
+    assert_eq!(band_lines, vec![3, 4, 5, 6, 7, 8], "band geometry moved");
+    let band: Vec<Vec<String>> = (3..9).map(|y| chat_row_cells(&unscrolled, y)).collect();
+    // Bury the band: 30 filler lines (rows 8–37, 38 total) pin the log
+    // well past it, then four wheel steps (3 rows each, offset 12) put
+    // the viewport start at row 6 — the band's last two rows visible,
+    // clipped at the top.
+    for millis in 0..30u64 {
+        ui.push_irc(
+            2_000 + millis,
+            "kim".into(),
+            format!("filler {millis}"),
+            false,
+        );
+    }
+    for _ in 0..4 {
+        ui.handle(wheel(left.x + 2, left.y + 2, true));
+    }
+    let scrolled = render_buffer(&mut ui, 100, 30);
+    // Log lines 1–2 must show exactly the band's bottom two rows — the
+    // same cells (colors included), just clipped, never rescaled.
+    for (line, band_row) in (1..3).zip(4..6) {
+        assert_eq!(
+            chat_row_cells(&scrolled, line),
+            band[band_row],
+            "log line {line} should show band row {band_row}"
+        );
+    }
+    // And the clipped view differs from the band's top — rows really
+    // were skipped, not rescaled (the gradient makes rows distinct).
+    assert_ne!(chat_row_cells(&scrolled, 1), band[0]);
+    // Below the clipped band, the log resumes with the oldest filler.
+    let line3: String = (1..30).map(|x| scrolled[(x, 3u16)].symbol()).collect();
+    assert!(line3.contains("filler 0"), "got {line3:?}");
+}

@@ -2702,6 +2702,12 @@ impl Ui {
     /// Render the whole screen (design.md, TUI Layout).
     pub fn draw(&mut self, frame: &mut Frame) {
         use tuirealm::component::Component;
+        // Inline chat images hide while anything draws over the panes
+        // (modals, the work overlay): a graphics-protocol image ignores
+        // the cell z-order and would bleed through.
+        self.chat.set_images_suppressed(
+            !self.modals.is_empty() || !self.hashing.is_empty() || !self.nyaa_imports.is_empty(),
+        );
         let [main, status_area, keybar_area] = Layout::vertical([
             Constraint::Min(8),
             Constraint::Length(3),
@@ -2868,7 +2874,10 @@ impl Ui {
         ) {
             self.draw_work_overlay(frame);
         }
-        super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth);
+        // The image rects drawn this frame keep their own colors — their
+        // cells *are* the picture (see apply_color_depth).
+        let image_areas: Vec<Rect> = self.chat.image_areas().to_vec();
+        super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth, &image_areas);
     }
 
     /// The hashing progress overlay: visually modal (centered, on top

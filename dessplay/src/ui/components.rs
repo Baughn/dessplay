@@ -13,7 +13,7 @@ use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute, QueryResult};
 use tuirealm::ratatui::Frame;
-use tuirealm::ratatui::layout::{Constraint, Layout, Rect};
+use tuirealm::ratatui::layout::{Constraint, Layout, Rect, Size};
 use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
@@ -294,6 +294,10 @@ struct RowRecord {
 struct RenderedChatLog {
     area: Rect,
     rows: Vec<RowRecord>,
+    /// Screen rects the last render drew inline images into. The
+    /// theme's whole-buffer color pass must leave these cells alone
+    /// (their fg/bg pairs *are* the picture).
+    image_areas: Vec<Rect>,
 }
 
 impl RenderedChatLog {
@@ -415,6 +419,10 @@ pub struct ChatPane {
     /// URLs present in the current log window, so memory stays bounded
     /// by the log caps.
     images: HashMap<String, ImageSlot>,
+    /// Set by `Ui::draw` while a modal is open: a graphics-protocol
+    /// image ignores the cell z-order, so it could bleed through
+    /// whatever is drawn on top. Suppressed images reserve no rows.
+    suppress_images: bool,
 }
 
 /// Fetch/decode state for one inline chat image.
@@ -425,7 +433,17 @@ enum ImageSlot {
     /// URL is never re-requested while its message remains in the log.
     Failed,
     /// Decoded and ready to render.
-    Ready(ratatui_image::protocol::StatefulProtocol),
+    Ready {
+        /// The decoded (pre-scaled) pixels — kept so the protocol can
+        /// be re-encoded when the pane geometry changes.
+        image: image::DynamicImage,
+        /// The image encoded for a fitted cell size, sliceable by rows
+        /// so scrolling crops the *fitted* image at the viewport edge
+        /// (`Resize::Crop` would crop the unscaled source instead).
+        /// `None` until the first draw; rebuilt when the fitted size
+        /// changes (a pane resize).
+        sliced: Option<(Size, ratatui_image::sliced::SlicedProtocol)>,
+    },
 }
 
 /// In-flight Tab-completion cycle. While the input still equals `produced`,
@@ -463,6 +481,7 @@ impl Default for ChatPane {
             selection: None,
             picker: None,
             images: HashMap::new(),
+            suppress_images: false,
         }
     }
 }
@@ -508,18 +527,33 @@ impl ChatPane {
         fetches
     }
 
+    /// Hide inline images this frame (a modal is open — graphics
+    /// protocols ignore the cell z-order and would bleed through it).
+    pub fn set_images_suppressed(&mut self, suppressed: bool) {
+        self.suppress_images = suppressed;
+    }
+
+    /// The screen rects the last render drew images into; the theme's
+    /// whole-buffer color pass must skip these cells.
+    pub(crate) fn image_areas(&self) -> &[Rect] {
+        &self.rendered.image_areas
+    }
+
     /// Deliver a fetch answer. Ignored when the URL's slot was pruned
     /// (its message scrolled out of the log window) or images were
     /// disabled meanwhile.
     pub fn set_image(&mut self, url: &str, result: Result<image::DynamicImage, String>) {
-        let Some(picker) = &self.picker else {
+        if self.picker.is_none() {
             return;
-        };
+        }
         let Some(slot) = self.images.get_mut(url) else {
             return;
         };
         *slot = match result {
-            Ok(img) => ImageSlot::Ready(picker.new_resize_protocol(img)),
+            Ok(image) => ImageSlot::Ready {
+                image,
+                sliced: None,
+            },
             Err(error) => {
                 tracing::debug!(url, error, "chat image failed; leaving the link as text");
                 ImageSlot::Failed
@@ -1110,24 +1144,85 @@ impl ChatPane {
             log_area
         };
         let width = log_area.width.saturating_sub(2) as usize;
+        let visible = log_area.height.saturating_sub(2) as usize;
+        // An inline image may take at most a third of the log viewport
+        // (design.md, Inline chat images), and always at least one row.
+        let max_image_rows = (visible / 3).max(1) as u16;
         // Flatten every message into wrapped visual rows (each carrying
-        // its clickable spoiler ranges and selection geometry).
-        let rows: Vec<(usize, ChatRow)> = self
-            .lines
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, line)| {
+        // its clickable spoiler ranges and selection geometry), then
+        // reserve blank rows under a message whose image is ready. A URL
+        // posted twice renders under its first occurrence only — one
+        // encoded image drawn at two rects per frame would thrash its
+        // cache. Each band records where it starts and its fitted cell
+        // size (≤ ⅓ of the viewport high, aspect preserved).
+        let mut rows: Vec<(usize, ChatRow)> = Vec::new();
+        let mut image_bands: Vec<(String, usize, Size)> = Vec::new();
+        for (idx, line) in self.lines.iter().enumerate() {
+            rows.extend(
                 wrap_chat_line(line, width, &self.usernames, &self.me, &self.spoilers)
                     .into_iter()
-                    .map(move |row| (idx, row))
-            })
-            .collect();
-        let visible = log_area.height.saturating_sub(2) as usize;
+                    .map(|row| (idx, row)),
+            );
+            if self.suppress_images {
+                continue;
+            }
+            let (Some(url), Some(picker)) = (&line.image_url, &self.picker) else {
+                continue;
+            };
+            let Some(ImageSlot::Ready { image, .. }) = self.images.get(url.as_str()) else {
+                continue;
+            };
+            if image_bands.iter().any(|(seen, ..)| seen == url) {
+                continue;
+            }
+            let size = ratatui_image::Resize::Fit(None).size_for(
+                image,
+                picker.font_size(),
+                Size::new(width as u16, max_image_rows),
+            );
+            let size = Size::new(size.width.max(1), size.height.clamp(1, max_image_rows));
+            image_bands.push((url.clone(), rows.len(), size));
+            for _ in 0..size.height {
+                rows.push((
+                    idx,
+                    ChatRow {
+                        visual: Line::default(),
+                        hits: Vec::new(),
+                        body: String::new(),
+                        char_start: 0,
+                        body_col: 0,
+                        selectable: false,
+                    },
+                ));
+            }
+        }
         // Clamp the scroll so it can never run past the top of the log.
         let max_offset = rows.len().saturating_sub(visible);
         self.scroll_offset = self.scroll_offset.min(max_offset);
         let end = rows.len().saturating_sub(self.scroll_offset);
         let start = end.saturating_sub(visible);
+        // The bands intersecting the viewport, as (url, fitted size,
+        // row offset relative to the viewport top — negative when the
+        // band starts above it). The sliced widget crops the *fitted*
+        // image by rows, so scrolling reveals it gradually.
+        let mut image_draws: Vec<(String, Size, i16)> = Vec::new();
+        let mut image_areas: Vec<Rect> = Vec::new();
+        for (url, first_row, size) in image_bands {
+            let band_top = first_row as i64 - start as i64;
+            let band_bottom = band_top + size.height as i64;
+            if band_bottom <= 0 || band_top >= visible as i64 {
+                continue;
+            }
+            let visible_top = band_top.max(0) as u16;
+            let visible_bottom = band_bottom.min(visible as i64) as u16;
+            image_areas.push(Rect {
+                x: log_area.x + 1,
+                y: log_area.y + 1 + visible_top,
+                width: size.width.min(log_area.width.saturating_sub(2)),
+                height: visible_bottom - visible_top,
+            });
+            image_draws.push((url, size, band_top as i16));
+        }
         // Record the drawn viewport for spoiler-click and selection
         // mapping: shift the row-relative columns to absolute screen
         // columns (past the left border); body row i sits at
@@ -1152,6 +1247,7 @@ impl ChatPane {
                     selectable: row.selectable,
                 })
                 .collect(),
+            image_areas,
         };
         let selection = self.selection_range();
         let items: Vec<ListItem> = rows[start..end]
@@ -1173,6 +1269,53 @@ impl ChatPane {
             ),
             log_area,
         );
+        // Draw the images over their reserved rows. After the List so
+        // the image cells overwrite the blank rows, never the reverse.
+        // Encoding happens here, lazily: on the first draw and after a
+        // pane resize changes the fitted size (cheap — the source is
+        // pre-scaled to ≤1280px at decode).
+        let log_inner = Rect {
+            x: log_area.x + 1,
+            y: log_area.y + 1,
+            width: log_area.width.saturating_sub(2),
+            height: visible as u16,
+        };
+        let mut broken = Vec::new();
+        for (url, size, y_offset) in image_draws {
+            let Some(picker) = &self.picker else {
+                break;
+            };
+            let Some(ImageSlot::Ready { image, sliced }) = self.images.get_mut(&url) else {
+                continue;
+            };
+            if sliced.as_ref().map(|(encoded, _)| *encoded) != Some(size) {
+                match ratatui_image::sliced::SlicedProtocol::new_with_resize(
+                    picker,
+                    image.clone(),
+                    size,
+                    ratatui_image::Resize::Fit(None),
+                ) {
+                    Ok(protocol) => *sliced = Some((size, protocol)),
+                    Err(error) => {
+                        tracing::debug!(url, %error, "encoding chat image failed");
+                        broken.push(url);
+                        continue;
+                    }
+                }
+            }
+            if let Some((_, protocol)) = sliced {
+                frame.render_widget(
+                    ratatui_image::sliced::SlicedImage::new(
+                        protocol,
+                        ratatui_image::sliced::SignedPosition { x: 0, y: y_offset },
+                    ),
+                    log_inner,
+                );
+            }
+        }
+        for url in broken {
+            self.images.insert(url, ImageSlot::Failed);
+        }
         self.input.render(frame, input_area, self.focused, false);
     }
 }
@@ -1780,6 +1923,7 @@ impl ChatPane {
                 body_col: 1,
                 selectable: true,
             }],
+            image_areas: Vec::new(),
         };
     }
 
@@ -4274,6 +4418,7 @@ mod chat_spoiler_tests {
                     selectable: true,
                 })
                 .collect(),
+            image_areas: Vec::new(),
         };
         pane
     }
@@ -4849,5 +4994,202 @@ mod chat_completion_tests {
         // "Bau" is a completion prefix but not an exact name — never styled.
         let spans = highlight_mentions("Bau is short", &names(), "Nero", Style::default());
         assert!(spans.iter().all(|s| s.style.fg.is_none()));
+    }
+}
+
+#[cfg(test)]
+mod chat_image_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use tuirealm::ratatui::Terminal;
+    use tuirealm::ratatui::backend::TestBackend;
+
+    const URL: &str = "https://x.example/shot.png";
+
+    fn image_line(millis: u64, text: &str) -> ChatLine {
+        ChatLine {
+            time: "12:00".to_string(),
+            sender: "dagger".to_string(),
+            text: text.to_string(),
+            system: false,
+            subtitle: false,
+            separator: false,
+            action: false,
+            irc: true,
+            millis,
+            image_url: Some(URL.to_string()),
+        }
+    }
+
+    /// A tall test image: 100×400px is 10×20 cells under the halfblocks
+    /// picker's fixed 10×20 font, so it always overflows the ⅓ cap.
+    /// Striped so adjacent pixel rows differ after downscaling — a
+    /// uniform color would encode as plain background-colored spaces,
+    /// while stripes force visible `▀` half-block glyphs.
+    fn tall_image() -> image::DynamicImage {
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(100, 400, |_, y| {
+            if (y / 25).is_multiple_of(2) {
+                image::Rgba([200, 40, 40, 255])
+            } else {
+                image::Rgba([40, 40, 200, 255])
+            }
+        }))
+    }
+
+    /// A ready-to-render pane: halfblocks picker, one image message, the
+    /// image delivered.
+    fn ready_pane() -> ChatPane {
+        let mut pane = ChatPane::default();
+        pane.set_picker(ratatui_image::picker::Picker::halfblocks());
+        pane.set_lines(vec![image_line(1_000, "look at this")]);
+        assert_eq!(pane.sync_images(true), vec![URL.to_string()]);
+        pane.set_image(URL, Ok(tall_image()));
+        pane
+    }
+
+    fn draw(pane: &mut ChatPane, width: u16, height: u16) -> tuirealm::ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| pane.render(frame, frame.area()))
+            .unwrap()
+            .buffer
+            .clone()
+    }
+
+    /// The reserved band is capped at a third of the log viewport and its
+    /// rows are never selectable, so clicks and drags resolve to real text.
+    #[test]
+    fn image_rows_cap_at_a_third_and_are_not_selectable() {
+        let mut pane = ready_pane();
+        // 30-row pane: log = 30 - 3 (input) = 27, minus borders = 25
+        // visible rows; the cap is 25 / 3 = 8.
+        draw(&mut pane, 40, 30);
+        let image_rows: Vec<&RowRecord> = pane
+            .rendered
+            .rows
+            .iter()
+            .filter(|row| !row.selectable && row.body.is_empty())
+            .collect();
+        assert_eq!(image_rows.len(), 8, "reserved rows");
+        assert_eq!(pane.rendered.image_areas.len(), 1);
+        assert_eq!(pane.rendered.image_areas[0].height, 8);
+        // A click on an image row maps to no exact point, and the
+        // nearest point resolves to the message text above.
+        let rect = pane.rendered.image_areas[0];
+        assert_eq!(pane.rendered.point_at(rect.x + 1, rect.y + 1), None);
+        let near = pane.rendered.point_near(rect.x + 1, rect.y + 1).unwrap();
+        assert_eq!(near.line, 0);
+    }
+
+    /// Scrolling counts image rows like any other visual rows, and the
+    /// clamp keeps the log in range with the band included.
+    #[test]
+    fn scroll_clamp_counts_image_rows() {
+        let mut pane = ready_pane();
+        pane.scroll_offset = usize::MAX;
+        draw(&mut pane, 40, 30);
+        // 1 text row + 8 image rows, all visible in a 25-row viewport:
+        // nothing to scroll.
+        assert_eq!(pane.scroll_offset, 0);
+    }
+
+    /// Half-block pixels actually land in the reserved band.
+    #[test]
+    fn halfblock_cells_render_in_the_reserved_band() {
+        let mut pane = ready_pane();
+        let buffer = draw(&mut pane, 40, 30);
+        let rect = pane.rendered.image_areas[0];
+        let band: String = (rect.y..rect.y + rect.height)
+            .flat_map(|y| (rect.x..rect.x + rect.width).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+            .collect();
+        assert!(
+            band.contains('▀'),
+            "no half-block cells in rect {rect:?} band {band:?} full {:?}",
+            tuirealm::testing::buffer_to_string(&buffer)
+        );
+    }
+
+    /// Without a picker (plain tests, or a failed protocol query) the
+    /// URL renders as text only — no reserved rows, no fetches.
+    #[test]
+    fn no_picker_means_no_reservation_and_no_fetches() {
+        let mut pane = ChatPane::default();
+        pane.set_lines(vec![image_line(1_000, "look at this")]);
+        assert!(pane.sync_images(true).is_empty());
+        draw(&mut pane, 40, 30);
+        assert!(pane.rendered.image_areas.is_empty());
+        assert!(pane.rendered.rows.iter().all(|row| row.selectable));
+    }
+
+    /// Suppression (a modal is open) hides the band without disturbing
+    /// the store; the next unsuppressed frame brings it back.
+    #[test]
+    fn suppression_hides_the_band() {
+        let mut pane = ready_pane();
+        pane.set_images_suppressed(true);
+        draw(&mut pane, 40, 30);
+        assert!(pane.rendered.image_areas.is_empty());
+        pane.set_images_suppressed(false);
+        draw(&mut pane, 40, 30);
+        assert_eq!(pane.rendered.image_areas.len(), 1);
+    }
+
+    /// The same URL posted twice renders under its first occurrence only
+    /// (one StatefulProtocol must not draw at two rects per frame), and
+    /// sync_images requests it once.
+    #[test]
+    fn repeated_url_reserves_once_and_fetches_once() {
+        let mut pane = ChatPane::default();
+        pane.set_picker(ratatui_image::picker::Picker::halfblocks());
+        pane.set_lines(vec![
+            image_line(1_000, "first post"),
+            image_line(2_000, "same link again"),
+        ]);
+        assert_eq!(pane.sync_images(true), vec![URL.to_string()]);
+        assert!(pane.sync_images(true).is_empty(), "no re-request");
+        pane.set_image(URL, Ok(tall_image()));
+        draw(&mut pane, 40, 30);
+        assert_eq!(pane.rendered.image_areas.len(), 1, "one band");
+    }
+
+    /// Disabling the setting clears the store; re-enabling re-requests.
+    #[test]
+    fn disabling_clears_and_reenabling_refetches() {
+        let mut pane = ready_pane();
+        assert!(pane.sync_images(false).is_empty());
+        draw(&mut pane, 40, 30);
+        assert!(pane.rendered.image_areas.is_empty());
+        assert_eq!(pane.sync_images(true), vec![URL.to_string()]);
+    }
+
+    /// A failed fetch reserves nothing and is never re-requested while
+    /// its message stays in the log.
+    #[test]
+    fn failed_fetch_reserves_nothing() {
+        let mut pane = ChatPane::default();
+        pane.set_picker(ratatui_image::picker::Picker::halfblocks());
+        pane.set_lines(vec![image_line(1_000, "dead link")]);
+        assert_eq!(pane.sync_images(true), vec![URL.to_string()]);
+        pane.set_image(URL, Err("404".to_string()));
+        draw(&mut pane, 40, 30);
+        assert!(pane.rendered.image_areas.is_empty());
+        assert!(pane.sync_images(true).is_empty());
+    }
+
+    /// Pruning: when the message leaves the log window, the slot goes
+    /// with it (bounded memory), and a later answer for it is ignored.
+    #[test]
+    fn slots_prune_with_their_messages() {
+        let mut pane = ChatPane::default();
+        pane.set_picker(ratatui_image::picker::Picker::halfblocks());
+        pane.set_lines(vec![image_line(1_000, "going away")]);
+        assert_eq!(pane.sync_images(true), vec![URL.to_string()]);
+        pane.set_lines(Vec::new());
+        assert!(pane.sync_images(true).is_empty());
+        pane.set_image(URL, Ok(tall_image()));
+        draw(&mut pane, 40, 30);
+        assert!(pane.rendered.image_areas.is_empty());
     }
 }
