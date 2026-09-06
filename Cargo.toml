@@ -73,8 +73,16 @@ quick-xml = "0.37"
 # Building the nyaa search URL (query = an exact release filename).
 percent-encoding = "2"
 # Placeholder PNG generation (Phase 9): rasterize status text with the
-# embedded DejaVu Sans into a PNG mpv can display.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# embedded DejaVu Sans into a PNG mpv can display. The decode formats
+# (jpeg/webp/gif) are for inline chat images — see chat_images.rs.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# Inline chat images: renders a decoded image into the ratatui buffer
+# via the terminal's best protocol (Kitty graphics on Ghostty/kitty/
+# WezTerm, iTerm2, sixel) with a pure-Unicode half-block fallback.
+# default-features would pull in chafa-dyn (a dynamically linked C
+# library) and image-defaults (image/default: avif's rav1e, tiff, …) —
+# keep them off; the workspace `image` dep pins the decode formats.
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 ab_glyph = "0.2"
 # Manual-mapping browser: candidate files sorted by edit distance.
 strsim = "0.11"

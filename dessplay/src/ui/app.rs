@@ -625,6 +625,15 @@ impl Ui {
         self.color_depth = color_depth;
     }
 
+    /// Set the terminal's detected image protocol (Kitty graphics,
+    /// iTerm2, sixel, or half-block fallback) before the first draw.
+    /// Production calls this once during terminal setup; tests inject
+    /// `Picker::halfblocks()` for deterministic output. Never set in
+    /// plain `Ui` tests — image URLs then render as plain text.
+    pub fn set_image_picker(&mut self, picker: ratatui_image::picker::Picker) {
+        self.chat.set_picker(picker);
+    }
+
     /// Advance every animator (marquee pass, spoiler tease, selection
     /// TTL) to the given **monotonic** millis, independently of session
     /// traffic. Returns whether a redraw could change what's on screen.

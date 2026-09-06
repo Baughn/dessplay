@@ -859,11 +859,17 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     }
     let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
     let (action_tx, mut action_rx) = mpsc::channel::<UserAction>(64);
-    let ui_thread = std::thread::spawn(move || run_ui_thread(ui, input_rx, action_tx));
-    {
+    // The input thread starts only once the UI thread says the terminal
+    // is ready: terminal setup round-trips stdio (the image-protocol
+    // query), and an already-running `event::read` would eat the reply.
+    let ui_thread = {
         let input_tx = input_tx.clone();
-        std::thread::spawn(move || run_input_thread(input_tx));
-    }
+        std::thread::spawn(move || {
+            run_ui_thread(ui, input_rx, action_tx, move || {
+                std::thread::spawn(move || run_input_thread(input_tx));
+            })
+        })
+    };
 
     // First run: wait for the settings save before connecting (the Ui
     // updates its own identity from the saved username).

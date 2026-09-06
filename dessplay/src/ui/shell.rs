@@ -142,11 +142,33 @@ pub enum UiInput {
 /// Run the UI on the current (dedicated) thread until the input
 /// channel closes or the action receiver goes away. Returns the
 /// terminal to its normal state on exit.
+///
+/// `on_terminal_ready` is called exactly once, after every stdin
+/// round-trip this thread performs (the image-protocol query below)
+/// and before the first event could be consumed. The caller uses it
+/// to start the input thread: spawning that thread earlier would
+/// race its `event::read` against the query's reply on stdin (the
+/// same stdin-ownership hazard as the `Terminal::clear` ban in
+/// [`run_ui_loop`]). It fires on the error paths too — a failed
+/// terminal setup must not leave the caller waiting forever.
 pub fn run_ui_thread(
     mut ui: Ui,
     inputs: std::sync::mpsc::Receiver<UiInput>,
     actions: mpsc::Sender<UserAction>,
+    on_terminal_ready: impl FnOnce(),
 ) {
+    // Drop guard: `on_terminal_ready` fires on every exit path, early
+    // returns included.
+    struct Ready<F: FnOnce()>(Option<F>);
+    impl<F: FnOnce()> Drop for Ready<F> {
+        fn drop(&mut self) {
+            if let Some(f) = self.0.take() {
+                f();
+            }
+        }
+    }
+    let ready = Ready(Some(on_terminal_ready));
+
     let started = std::time::Instant::now();
     tracing::debug!("UI thread started");
     let mut adapter = match CrosstermTerminalAdapter::new() {
@@ -189,6 +211,27 @@ pub fn run_ui_thread(
     }
     let color_depth = super::theme::ColorDepth::detect();
     ui.set_color_depth(color_depth);
+    // Image-protocol detection round-trips stdio (it writes a query and
+    // reads the terminal's reply from stdin), so it MUST complete before
+    // the input thread starts and its `event::read` owns stdin — that's
+    // the `on_terminal_ready` contract above. Ordered after the alt
+    // screen is entered, per ratatui-image's docs. A terminal that
+    // answers nothing still gets images: half-blocks with an assumed
+    // font size.
+    let picker = match ratatui_image::picker::Picker::from_query_stdio() {
+        Ok(picker) => picker,
+        Err(e) => {
+            tracing::debug!("image protocol query failed ({e}); using half-blocks");
+            ratatui_image::picker::Picker::halfblocks()
+        }
+    };
+    tracing::debug!(
+        protocol = ?picker.protocol_type(),
+        font_size = ?picker.font_size(),
+        "image protocol selected"
+    );
+    ui.set_image_picker(picker);
+    drop(ready);
     tracing::debug!(
         ?color_depth,
         elapsed_ms = started.elapsed().as_millis() as u64,

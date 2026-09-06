@@ -404,6 +404,10 @@ pub struct ChatPane {
     /// Drag-selection state (design.md, Mouse support): in-flight drag
     /// or a held, already-copied highlight. Per-client, never synced.
     selection: Option<Selection>,
+    /// Terminal image-protocol capability, detected once at startup.
+    /// `None` (tests, or the query still pending) renders image URLs as
+    /// the plain text they are.
+    picker: Option<ratatui_image::picker::Picker>,
 }
 
 /// In-flight Tab-completion cycle. While the input still equals `produced`,
@@ -439,6 +443,7 @@ impl Default for ChatPane {
             spoilers: HashMap::new(),
             rendered: RenderedChatLog::default(),
             selection: None,
+            picker: None,
         }
     }
 }
@@ -447,6 +452,13 @@ impl ChatPane {
     /// Replace the log.
     pub fn set_lines(&mut self, lines: Vec<ChatLine>) {
         self.lines = lines;
+    }
+
+    /// Set the detected image-protocol capability (production: once at
+    /// terminal setup; tests inject `Picker::halfblocks()` for
+    /// deterministic Unicode output).
+    pub fn set_picker(&mut self, picker: ratatui_image::picker::Picker) {
+        self.picker = Some(picker);
     }
 
     /// Set the online-username set used for completion and highlighting.

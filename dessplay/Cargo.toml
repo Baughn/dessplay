@@ -33,6 +33,10 @@ crossterm = { workspace = true }
 palette = { workspace = true }
 unicode-width = { workspace = true }
 image = { workspace = true }
+ratatui-image = { workspace = true }
+# Chat-image disk cache filenames: hex(sha256(url)) — collision-proof
+# against adversarial URLs, unlike the fast non-cryptographic hashers.
+sha2 = { workspace = true }
 ab_glyph = { workspace = true }
 strsim = { workspace = true }
 # ListGroupsCache's input fingerprint (same non-cryptographic hasher
