@@ -379,12 +379,28 @@ scenarios touch the real filesystem (tempdir media roots, blocking-pool
 matcher), so they are eventually-style rather than perfectly
 deterministic.
 
-### Real-mpv smoke test
+### Real-mpv tests
 
 One end-to-end journey (`dessplay/tests/mpv_real.rs`) proves the JSON
 IPC layer speaks actual mpv: load → duration → unpause echo → position
 flow → speed slew → exact seek → EOF (asserting keep-open's mechanical
 pause does **not** leak as a user pause) → clean shutdown.
+
+The same file carries a **profile-persistence sequence test**
+(`dessplay_profile_holds_across_arbitrary_player_sequences`): the
+`[dessplay]` mpv.conf profile is applied once per connection and
+nothing re-applies it per file, so it must *hold* across everything a
+session does. mpv runs against a `--config-dir` whose only content is
+a `[dessplay]` profile setting a marker option (`sub-pos=73`), and a
+second IPC client — mpv serves several at once — reads the marker back
+after every step. The opening is pinned to the 2026-09-06 field report
+(idle → placeholder PNG, rendered by the real `placeholder` module →
+real file swap); a seeded arbitrary tail (loads, pause churn, seeks,
+speed slew, shutdown-and-relaunch) then hunts the rest of the class.
+Seeds are fixed, so failures reproduce from the seed and step in the
+panic message. This lives here rather than as a fuzz target because
+the oracle is real mpv's option state — dessplay keeps no profile
+state to fuzz in-process.
 
 - Requires the `mpv` binary; gated behind `--features mpv-tests`.
 - The test video is encoded on the fly *by mpv itself* from a lavfi

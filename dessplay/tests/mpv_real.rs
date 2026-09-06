@@ -16,6 +16,11 @@ use std::time::Duration;
 
 use dessplay::player::mpv::MpvPlayer;
 use dessplay::player::{Player, PlayerEvent};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 
 const BUDGET: Duration = Duration::from_secs(15);
 
@@ -159,6 +164,203 @@ async fn full_journey_against_real_mpv() {
         _ => None,
     })
     .await;
+}
+
+/// The marker value the test `[dessplay]` profile sets `sub-pos` to
+/// (default 100) — an innocuous global option we can read back to ask
+/// "is the profile in effect right now?".
+const PROFILE_SUB_POS: f64 = 73.0;
+
+/// A second IPC client on the same socket (mpv serves several at once;
+/// attach mode depends on that), used to read properties back without
+/// going through — or disturbing — the production layer under test.
+struct Probe {
+    write: tokio::net::unix::OwnedWriteHalf,
+    lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    next_id: u64,
+}
+
+impl Probe {
+    async fn connect(socket: &Path) -> Probe {
+        let stream = UnixStream::connect(socket).await.expect("probe connect");
+        let (read, write) = stream.into_split();
+        Probe {
+            write,
+            lines: BufReader::new(read).lines(),
+            next_id: 0,
+        }
+    }
+
+    /// One `get_property` round trip. mpv broadcasts events to every
+    /// IPC client; skip everything that isn't our reply.
+    async fn get(&mut self, name: &str) -> Value {
+        self.next_id += 1;
+        let id = self.next_id;
+        let mut line = json!({"command": ["get_property", name], "request_id": id}).to_string();
+        line.push('\n');
+        self.write
+            .write_all(line.as_bytes())
+            .await
+            .expect("probe write");
+        let deadline = tokio::time::Instant::now() + BUDGET;
+        loop {
+            let line = tokio::time::timeout_at(deadline, self.lines.next_line())
+                .await
+                .expect("probe reply budget exhausted")
+                .expect("probe read")
+                .expect("probe socket closed");
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if msg.get("request_id").and_then(Value::as_u64) == Some(id) {
+                return msg.get("data").cloned().unwrap_or(Value::Null);
+            }
+        }
+    }
+}
+
+/// Assert the profile's marker option is in effect. Polls up to the
+/// budget: right after a (re)launch, setup's `apply-profile` write
+/// races the probe's read (separate IPC connections have no ordering).
+async fn expect_profile_marker(probe: &mut Probe, context: &str) {
+    let deadline = tokio::time::Instant::now() + BUDGET;
+    let mut last = Value::Null;
+    while tokio::time::Instant::now() < deadline {
+        last = probe.get("sub-pos").await;
+        if last.as_f64() == Some(PROFILE_SUB_POS) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{context}: sub-pos is {last}, expected {PROFILE_SUB_POS} from the [dessplay] profile");
+}
+
+/// Load a file and wait until mpv confirms it opened.
+async fn load_and_settle(player: &MpvPlayer, path: &Path, title: Option<&str>) {
+    player.load(path, title).await.unwrap();
+    expect_event(player, BUDGET, |e| {
+        matches!(e, PlayerEvent::Loaded).then_some(())
+    })
+    .await;
+}
+
+/// Opportunistically empty the event channel (bounded: while unpaused,
+/// position updates never go quiet) so it cannot back up mid-sequence.
+async fn drain_events(player: &MpvPlayer) {
+    for _ in 0..64 {
+        if tokio::time::timeout(Duration::from_millis(50), player.recv())
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
+/// The `[dessplay]` mpv.conf profile is applied once per IPC connection
+/// (`apply-profile` in setup) and must then *hold* across everything a
+/// session does to the player: the profile has no per-file
+/// re-application, so nothing — placeholder loads, placeholder→real
+/// swaps, later episode swaps, pause churn, seeks, speed slew, crash
+/// relaunches — may reset it. Field report (2026-09-06): a user's mpv
+/// script saw no dessplay profile on the playing episode after a
+/// placeholder had loaded first.
+///
+/// The opening is pinned to the reported scenario (idle → placeholder →
+/// real file); a seeded arbitrary action tail then hunts the rest of
+/// the class. mpv runs against a config dir whose only content is a
+/// `[dessplay]` profile setting a marker option, and a second IPC
+/// client reads the marker back after every step. Reproduce a failure
+/// from the seed and step in the panic message.
+#[tokio::test]
+async fn dessplay_profile_holds_across_arbitrary_player_sequences() {
+    let dir = tempfile::tempdir().unwrap();
+    let video = encode_test_video(dir.path()).await;
+    // The real placeholder artwork path: the same renderer the session
+    // uses when a user is missing the file.
+    let placeholder = dir.path().join("placeholder.png");
+    dessplay::placeholder::render_to(
+        &placeholder,
+        &["Test Episode.mkv".into(), "You don't have this file".into()],
+    )
+    .unwrap();
+
+    let conf_dir = dir.path().join("mpv-home");
+    std::fs::create_dir(&conf_dir).unwrap();
+    std::fs::write(
+        conf_dir.join("mpv.conf"),
+        format!("[dessplay]\nsub-pos={PROFILE_SUB_POS}\n"),
+    )
+    .unwrap();
+
+    let socket = dir.path().join("profile.sock");
+    let extra_args: Vec<String> = vec![
+        "--vo=null".into(),
+        "--ao=null".into(),
+        "--force-window=no".into(),
+        format!("--config-dir={}", conf_dir.display()),
+    ];
+    let launch = || async {
+        MpvPlayer::launch("mpv", socket.clone(), &extra_args)
+            .await
+            .expect("launching mpv")
+    };
+
+    for seed in [1u64, 2] {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut player = launch().await;
+        let mut probe = Probe::connect(&socket).await;
+        // Applied while idle, before anything has loaded at all.
+        expect_profile_marker(&mut probe, &format!("seed {seed}: idle after launch")).await;
+
+        // The reported scenario, pinned: the placeholder loads first,
+        // then the real episode swaps in over it.
+        load_and_settle(&player, &placeholder, Some("Test Episode.mkv")).await;
+        expect_profile_marker(&mut probe, &format!("seed {seed}: placeholder loaded")).await;
+        load_and_settle(&player, &video, None).await;
+        expect_profile_marker(
+            &mut probe,
+            &format!("seed {seed}: episode swapped over the placeholder"),
+        )
+        .await;
+
+        for step in 0..10 {
+            let context = format!("seed {seed} step {step}");
+            match rng.random_range(0..8u8) {
+                0 => load_and_settle(&player, &placeholder, Some("placeholder")).await,
+                1 | 2 => {
+                    let title = rng.random_bool(0.5).then_some("Test Episode.mkv");
+                    load_and_settle(&player, &video, title).await;
+                }
+                3 | 4 => player.set_pause(rng.random_bool(0.5)).await.unwrap(),
+                5 => player.seek(rng.random_range(0..4_000)).await.unwrap(),
+                6 => player
+                    .set_speed(rng.random_range(0.95..=1.05))
+                    .await
+                    .unwrap(),
+                // The crash-relaunch path: a fresh mpv connection, whose
+                // setup must re-apply the profile.
+                _ => {
+                    player.shutdown().await;
+                    expect_event(&player, BUDGET, |e| {
+                        matches!(e, PlayerEvent::Exited { .. }).then_some(())
+                    })
+                    .await;
+                    player = launch().await;
+                    probe = Probe::connect(&socket).await;
+                }
+            }
+            drain_events(&player).await;
+            expect_profile_marker(&mut probe, &context).await;
+        }
+
+        // Let this mpv die fully before the next seed reuses the socket.
+        player.shutdown().await;
+        expect_event(&player, BUDGET, |e| {
+            matches!(e, PlayerEvent::Exited { .. }).then_some(())
+        })
+        .await;
+    }
 }
 
 /// Attach mode (`--attach-mpv`): dessplay connects to an mpv the user

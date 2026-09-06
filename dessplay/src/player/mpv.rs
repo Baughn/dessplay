@@ -31,6 +31,7 @@
 //! commands' echoes from user input. This layer only hides mpv's
 //! internal mechanics (load pauses, keep-open pauses).
 
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -61,6 +62,20 @@ const SOCKET_WAIT_SLOW_NOTE: Duration = Duration::from_secs(5);
 /// Grace period between `quit` and a kill on shutdown.
 const QUIT_GRACE: Duration = Duration::from_secs(2);
 
+/// Commands in flight, keyed by request id. mpv replies to every
+/// command; the reader pops the entry and logs rejections. Before this
+/// table the reply was silently discarded, so a failed command — an
+/// `apply-profile` with no `[dessplay]` section in mpv.conf, most
+/// notably — was indistinguishable from a successful one even with the
+/// log in hand (2026-09-06).
+type PendingCommands = Arc<std::sync::Mutex<HashMap<u64, String>>>;
+
+fn lock_pending(pending: &PendingCommands) -> std::sync::MutexGuard<'_, HashMap<u64, String>> {
+    pending
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Property-observation ids (mpv echoes them back in events).
 const OBS_PAUSE: u64 = 1;
 const OBS_TIME_POS: u64 = 2;
@@ -74,6 +89,7 @@ pub struct MpvPlayer {
     writer: Arc<Mutex<OwnedWriteHalf>>,
     events: Mutex<mpsc::Receiver<PlayerEvent>>,
     request_id: Arc<AtomicU64>,
+    pending: PendingCommands,
     /// Set during `load()`, cleared by the reader on `file-loaded`:
     /// pause flips while loading are mechanics, not news.
     loading: Arc<AtomicBool>,
@@ -152,12 +168,14 @@ impl MpvPlayer {
         let (kill_tx, kill_rx) = mpsc::channel(1);
         let request_id = Arc::new(AtomicU64::new(1));
         let loading = Arc::new(AtomicBool::new(false));
+        let pending = PendingCommands::default();
 
         let read_task = tokio::spawn(read_loop(
             BufReader::new(read_half),
             Arc::clone(&writer),
             Arc::clone(&request_id),
             Arc::clone(&loading),
+            Arc::clone(&pending),
             event_tx.clone(),
         ));
         match child {
@@ -177,6 +195,7 @@ impl MpvPlayer {
             writer,
             events: Mutex::new(event_rx),
             request_id,
+            pending,
             loading,
             kill: kill_tx,
             attached,
@@ -184,10 +203,12 @@ impl MpvPlayer {
         // Users can tune mpv for dessplay in a `[dessplay]` mpv.conf
         // profile. Applied here rather than as `--profile=dessplay`: mpv
         // exits with status 1 on an unknown command-line profile, while
-        // the IPC command merely fails. The profile may override anything
-        // — so re-assert the options our EOF/pause model depends on.
+        // the IPC command merely fails — and the reader logs mpv's
+        // verdict either way (see `log_reply`). The profile may override
+        // anything — so re-assert the options our EOF/pause model
+        // depends on.
         if let Err(e) = player.command(json!(["apply-profile", "dessplay"])).await {
-            tracing::debug!(error = %e, "no dessplay mpv profile applied");
+            tracing::debug!(error = %e, "could not send apply-profile to mpv");
         }
         for (name, value) in [
             ("keep-open", json!("always")),
@@ -217,24 +238,56 @@ impl MpvPlayer {
 
     async fn command(&self, command: Value) -> Result<(), PlayerError> {
         let id = self.request_id.fetch_add(1, Ordering::Relaxed);
-        send_command(&self.writer, command, id).await
+        send_command(&self.writer, &self.pending, command, id).await
     }
 }
 
 async fn send_command(
     writer: &Mutex<OwnedWriteHalf>,
+    pending: &PendingCommands,
     command: Value,
     request_id: u64,
 ) -> Result<(), PlayerError> {
+    let name = command
+        .get(0)
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+        .to_string();
     let mut line = json!({ "command": command, "request_id": request_id }).to_string();
     tracing::trace!(ipc = %line, "mpv command");
     line.push('\n');
+    // Registered before the write: the reply cannot arrive earlier.
+    lock_pending(pending).insert(request_id, name);
     writer
         .lock()
         .await
         .write_all(line.as_bytes())
         .await
         .map_err(|e| PlayerError::Gone(format!("mpv ipc write: {e}")))
+}
+
+/// Log the disposition of a command reply, settling its pending entry.
+///
+/// mpv answers every command; successes are routine (the per-line trace
+/// shows them), but a rejection used to vanish entirely —
+/// `apply-profile` in particular can fail (no `[dessplay]` section in
+/// the user's mpv.conf) with no evidence either way. Both of its
+/// outcomes log at debug so a field log positively answers "did my
+/// profile take?"; debug rather than trace because trace is off in most
+/// field logs.
+fn log_reply(pending: &PendingCommands, request_id: u64, msg: &Value) {
+    let command = lock_pending(pending).remove(&request_id);
+    let command = command.as_deref().unwrap_or("?");
+    let error = msg.get("error").and_then(Value::as_str).unwrap_or("?");
+    match (command, error == "success") {
+        ("apply-profile", true) => tracing::debug!("dessplay mpv profile applied"),
+        ("apply-profile", false) => tracing::debug!(
+            error,
+            "dessplay mpv profile not applied (no [dessplay] section in mpv.conf?)"
+        ),
+        (_, true) => {}
+        (_, false) => tracing::debug!(command, error, "mpv rejected a command"),
+    }
 }
 
 async fn wait_for_socket(
@@ -424,6 +477,7 @@ async fn read_loop(
     writer: Arc<Mutex<OwnedWriteHalf>>,
     request_id: Arc<AtomicU64>,
     loading: Arc<AtomicBool>,
+    pending: PendingCommands,
     events: mpsc::Sender<PlayerEvent>,
 ) {
     let mut lines = reader.lines();
@@ -442,7 +496,7 @@ async fn read_loop(
                     if events.send(PlayerEvent::PauseChanged(true)).await.is_err() {
                         return;
                     }
-                    query_paused_position(&writer, &request_id, &mut state).await;
+                    query_paused_position(&writer, &request_id, &pending, &mut state).await;
                     continue;
                 }
             }
@@ -455,6 +509,12 @@ async fn read_loop(
             continue;
         };
         tracing::trace!(ipc = %line, "mpv message");
+        // A command reply: settle and log it. Not exclusive with the
+        // translation below — the seek/pause position queries are
+        // replies too, and translate matches them by id itself.
+        if let Some(id) = msg.get("request_id").and_then(Value::as_u64) {
+            log_reply(&pending, id, &msg);
+        }
         for event in translate(&msg, &mut state, &loading) {
             let to_send = match event {
                 PlayerEvent::PauseChanged(true) => {
@@ -480,7 +540,7 @@ async fn read_loop(
                         if events.send(PlayerEvent::PauseChanged(true)).await.is_err() {
                             return;
                         }
-                        query_paused_position(&writer, &request_id, &mut state).await;
+                        query_paused_position(&writer, &request_id, &pending, &mut state).await;
                     }
                     other
                 }
@@ -496,7 +556,7 @@ async fn read_loop(
             state.seek_pending = false;
             let id = request_id.fetch_add(1, Ordering::Relaxed);
             state.seek_pos_request = Some(id);
-            let _ = send_command(&writer, json!(["get_property", "time-pos"]), id).await;
+            let _ = send_command(&writer, &pending, json!(["get_property", "time-pos"]), id).await;
         }
     }
     tracing::debug!("mpv ipc reader exiting");
@@ -515,11 +575,12 @@ async fn read_loop(
 async fn query_paused_position(
     writer: &Mutex<OwnedWriteHalf>,
     request_id: &AtomicU64,
+    pending: &PendingCommands,
     state: &mut Translate,
 ) {
     let id = request_id.fetch_add(1, Ordering::Relaxed);
     state.pause_pos_request = Some(id);
-    let _ = send_command(writer, json!(["get_property", "time-pos"]), id).await;
+    let _ = send_command(writer, pending, json!(["get_property", "time-pos"]), id).await;
 }
 
 /// Translate one mpv IPC message into player events.
@@ -1232,26 +1293,41 @@ mod tests {
     /// loaded CI machine never flakes; the hold window itself is 250ms).
     const BUDGET: Duration = Duration::from_secs(5);
 
-    /// Drive a real [`read_loop`] over a socketpair. Returns the fake-mpv
-    /// end: a writer for mpv→dessplay IPC lines, a line reader for the
-    /// commands dessplay writes back, and the translated event stream.
-    fn spawn_read_loop() -> (
+    /// The fake-mpv harness: a writer for mpv→dessplay IPC lines, a line
+    /// reader for the commands dessplay writes back, the translated event
+    /// stream, plus the app-side command writer and pending table for
+    /// tests that send commands through [`send_command`].
+    type FakeMpvEnd = (
         tokio::net::unix::OwnedWriteHalf,
         tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
         mpsc::Receiver<PlayerEvent>,
-    ) {
+        Arc<Mutex<OwnedWriteHalf>>,
+        PendingCommands,
+    );
+
+    /// Drive a real [`read_loop`] over a socketpair; see [`FakeMpvEnd`].
+    fn spawn_read_loop() -> FakeMpvEnd {
         let (app, mpv) = UnixStream::pair().unwrap();
         let (app_read, app_write) = app.into_split();
         let (event_tx, event_rx) = mpsc::channel(64);
+        let writer = Arc::new(Mutex::new(app_write));
+        let pending = PendingCommands::default();
         tokio::spawn(read_loop(
             BufReader::new(app_read),
-            Arc::new(Mutex::new(app_write)),
+            Arc::clone(&writer),
             Arc::new(AtomicU64::new(1)),
             Arc::new(AtomicBool::new(false)),
+            Arc::clone(&pending),
             event_tx,
         ));
         let (mpv_read, mpv_write) = mpv.into_split();
-        (mpv_write, BufReader::new(mpv_read).lines(), event_rx)
+        (
+            mpv_write,
+            BufReader::new(mpv_read).lines(),
+            event_rx,
+            writer,
+            pending,
+        )
     }
 
     async fn recv_event(events: &mut mpsc::Receiver<PlayerEvent>) -> PlayerEvent {
@@ -1271,7 +1347,7 @@ mod tests {
     /// re-anchoring the estimate on where mpv actually stopped.
     #[tokio::test]
     async fn user_pause_queries_where_playback_actually_stopped() {
-        let (mut mpv, mut commands, mut events) = spawn_read_loop();
+        let (mut mpv, mut commands, mut events, _writer, _pending) = spawn_read_loop();
         // Playback is near 12s when the user hits space; the last time-pos
         // sample predates the pause.
         mpv.write_all(
@@ -1321,7 +1397,7 @@ mod tests {
     /// re-anchor anything).
     #[tokio::test]
     async fn keep_open_eof_pause_issues_no_position_query() {
-        let (mut mpv, mut commands, mut events) = spawn_read_loop();
+        let (mut mpv, mut commands, mut events, _writer, _pending) = spawn_read_loop();
         mpv.write_all(
             b"{\"event\":\"property-change\",\"id\":1,\"name\":\"pause\",\"data\":true}\n\
               {\"event\":\"property-change\",\"id\":5,\"name\":\"eof-reached\",\"data\":true}\n",
@@ -1342,6 +1418,42 @@ mod tests {
                 .is_err(),
             "keep-open EOF pause issued a command"
         );
+    }
+
+    /// Every command's reply is read back: the pending entry registered
+    /// at send time is settled by the reader when mpv answers — for
+    /// rejections too (where `log_reply` reports the command by name;
+    /// before the table, an mpv-side error such as `apply-profile` with
+    /// no `[dessplay]` profile vanished without a trace).
+    #[tokio::test]
+    async fn command_replies_settle_their_pending_entries() {
+        let (mut mpv, mut commands, _events, writer, pending) = spawn_read_loop();
+        send_command(&writer, &pending, json!(["apply-profile", "dessplay"]), 9)
+            .await
+            .unwrap();
+        // The command went out, and is pending under its name.
+        let line = tokio::time::timeout(BUDGET, commands.next_line())
+            .await
+            .expect("command budget exhausted")
+            .unwrap()
+            .expect("mpv end closed");
+        assert!(line.contains("apply-profile"), "unexpected command: {line}");
+        assert_eq!(
+            pending.lock().unwrap().get(&9).map(String::as_str),
+            Some("apply-profile")
+        );
+        // mpv rejects it; the reader must settle (and log) the entry.
+        mpv.write_all(b"{\"request_id\":9,\"error\":\"error running command\"}\n")
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + BUDGET;
+        while !pending.lock().unwrap().is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reply never settled the pending command"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[test]

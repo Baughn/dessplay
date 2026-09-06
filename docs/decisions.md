@@ -791,6 +791,12 @@ the UI queue or tracing its own delivery indefinitely.
 
 The two carve-outs: a file that fails to open may never produce a path observation at all, so gating the load-*failure* report would suppress it entirely — and a stale one merely re-resolves the file (wrong but self-healing, the safe direction). The echo accounting of a programmatic seek is consumed even when the echo arrives gated-out because it is our own seek; leaving it outstanding would swallow the user's next genuine seek as a stale echo. Only the user-seek/debounce half of seek handling sits behind the gate.
 
+### The dessplay profile and command replies (2026-09-06)
+
+**Rule:** A `[dessplay]` mpv.conf profile is applied once per IPC connection via the `apply-profile` command (not `--profile=dessplay` on the command line, and not per file); the reader consumes mpv's reply to every command and logs rejections — both outcomes of `apply-profile` — at debug; see [design.md](design.md#player-lifecycle).
+
+**Why:** The command-line form makes mpv exit with status 1 when the profile doesn't exist, punishing users without one; the IPC command merely fails. Per-connection (rather than per-file) application suffices because `reset-on-next-file` is cleared, so profile-set options survive `loadfile` — a real-mpv sequence test pins this, including the placeholder-first opening (testing-strategy.md, Real-mpv tests). The reply readback exists because of a field report (2026-09-06): a user's mpv script saw no dessplay profile on the playing episode, and the logs could not distinguish "never applied" (a typo'd profile, none at all) from "applied and later reset" — command replies were written fire-and-forget and mpv's answers discarded. Replies now settle a pending-command table keyed by request id; failures log at debug (not trace, which is off in most field logs). The report itself reproduced as neither: the sequence test shows the profile holds, pointing at the script not observing profile changes.
+
 ### Collapsing incremental subtitle cues
 
 **Rule:** A subtitle observation that is a prefix or suffix of the previous line replaces it in place (growth) or is dropped (shrink-back); see [design.md](design.md#subtitle-display).

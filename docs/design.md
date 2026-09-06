@@ -2636,8 +2636,15 @@ Player choice is per-user configuration.
    `--keep-open` is `always` (not `yes`), and the script-opt switches
    autoload off
    (why: [decisions](decisions.md#keep-open-always-and-autoload-disabled)).
-   The user's mpv.conf is otherwise honoured (no `--no-config`). Files
-   always open paused; the derived playback state then decides.
+   The user's mpv.conf is otherwise honoured (no `--no-config`), and a
+   `[dessplay]` profile in it, if present, is applied over IPC on every
+   connection (launch, attach, crash relaunch) before the options the
+   EOF/pause model depends on are re-asserted; it is never re-applied
+   per file — nothing resets it, since `reset-on-next-file` is cleared.
+   mpv's verdict on every command is read back, and whether the profile
+   applied is logged at debug
+   (why: [decisions](decisions.md#the-dessplay-profile-and-command-replies-2026-09-06)).
+   Files always open paused; the derived playback state then decides.
 2. **Control**: Send play/pause/seek commands via IPC
 3. **Monitor**: Read current position, playback state
 4. **OSD**: Display chat messages in video window

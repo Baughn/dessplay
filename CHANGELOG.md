@@ -36,6 +36,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   bone damaged". Health details wrap, with a blank line before threats and
   a hint when more wounds are available under v. Scroll through long injury
   entries and treat the region on the highlighted line.
+- Added: the log now says (at debug level) whether your `[dessplay]` mpv
+  profile was applied, and reports any command mpv rejects — previously
+  mpv's answers were discarded, so a typo'd profile failed silently.
 
 ## 2026-09-05
 
