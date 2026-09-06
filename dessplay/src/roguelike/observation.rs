@@ -213,6 +213,14 @@ impl Run {
     /// Build an observation containing no unseen creatures or unremembered terrain.
     pub fn view(&self) -> RunView {
         let floor = self.floor();
+        // Older saves may already contain a long run of routine-care messages.
+        // Collapse their presentation without rewriting history during a read.
+        let mut journal = self.journal.clone();
+        journal.dedup_by(|later, earlier| {
+            later.kind == EventKind::Recovery
+                && earlier.kind == EventKind::Recovery
+                && later.text == earlier.text
+        });
         let cells = (0..CELLS)
             .map(|i| {
                 let p = Point {
@@ -307,7 +315,7 @@ impl Run {
                 .filter(|l| l.position == self.position)
                 .map(|l| l.kind)
                 .collect(),
-            journal: self.journal.clone(),
+            journal,
             danger: self.danger(),
             can_rest: !self.is_finished()
                 && !self.danger()

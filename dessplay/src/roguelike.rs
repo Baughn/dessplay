@@ -63,7 +63,7 @@ impl Rng {
 /// UI navigation never enters the simulation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
-    /// Walk or bump-attack in an adjacent direction.
+    /// Walk or attack a perceived enemy within weapon reach in that direction.
     Move(i32, i32),
     /// Spend breath to move one tile faster; never attacks.
     Sprint(i32, i32),
@@ -268,11 +268,22 @@ impl Run {
         self.step(action).changed
     }
     fn say(&mut self, kind: EventKind, text: impl Into<String>) {
+        let text = text.into();
+        // Routine care advances physiology without filling the journal with
+        // identical lines. Real intervening events and distinct treatments stay.
+        if kind == EventKind::Recovery
+            && self
+                .journal
+                .last()
+                .is_some_and(|e| e.kind == kind && e.text == text)
+        {
+            return;
+        }
         self.journal.push(JournalEntry {
             id: self.next_event,
             time: self.time,
             kind,
-            text: text.into(),
+            text,
         });
         self.next_event = self.next_event.saturating_add(1);
         if self.journal.len() > JOURNAL_CAPACITY {

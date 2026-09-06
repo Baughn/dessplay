@@ -70,7 +70,7 @@ fn known_step(view: &RunView, from: Point, to: Point) -> bool {
         && (from.x == to.x
             || from.y == to.y
             || (view.tile(Point { x: from.x, y: to.y }).walkable()
-                && view.tile(Point { x: to.x, y: from.y }).walkable()))
+                || view.tile(Point { x: to.x, y: from.y }).walkable()))
 }
 
 fn creature_at(view: &RunView, p: Point) -> bool {

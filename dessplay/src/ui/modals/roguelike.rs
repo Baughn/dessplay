@@ -178,7 +178,7 @@ impl RoguelikeModal {
             && let Some(run) = &self.run
             && !run.ground.is_empty()
         {
-            self.cursor.set(run.gear.lines().len() + 1);
+            self.cursor.set(equipment_rows(run).1);
         }
         Some(Msg::None)
     }
@@ -325,13 +325,7 @@ impl RoguelikeModal {
                     Paragraph::new(heading).wrap(Wrap { trim: false }),
                     take_rows(&mut inner, height),
                 );
-                let mut lines = run.gear.lines();
-                lines.push("GROUND · ↑/↓ inspect/select".into());
-                lines.extend(run.ground.iter().map(|item| match item {
-                    LootKind::Weapon(weapon) => weapon.description(),
-                    LootKind::Armor(armor) => armor.description(),
-                    _ => item.name(),
-                }));
+                let (lines, _) = equipment_rows(run);
                 self.cursor.clamp(lines.len());
                 let items = wrapped_items(lines, inner.width);
                 render_list_body(
@@ -373,6 +367,16 @@ impl RoguelikeModal {
             Paragraph::new(supplies(run)).style(theme::dim()),
             take_rows(&mut inner, 1),
         );
+        let reach = run.body.effective_weapon(&run.gear).reach();
+        if reach > 1 {
+            let hint =
+                format!("Move toward enemies within {reach} tiles to thrust without moving.");
+            let height = wrapped_height(&hint, inner.width);
+            frame.render_widget(
+                Paragraph::new(hint).wrap(Wrap { trim: false }),
+                take_rows(&mut inner, height),
+            );
+        }
         let journal_height = inner.height.saturating_sub(4).min(7);
         let map_height = inner.height.saturating_sub(journal_height);
         let mut map = take_rows(&mut inner, map_height);
@@ -453,10 +457,27 @@ impl RoguelikeModal {
         }
     }
 }
+// Rendering, initial focus, and Enter dispatch share one row-to-ground mapping.
+fn equipment_rows(run: &RunView) -> (Vec<String>, usize) {
+    let mut lines = run.gear.lines();
+    lines.push(String::new());
+    lines.push("GROUND · ↑/↓ inspect/select".into());
+    let ground_start = lines.len();
+    lines.extend(run.ground.iter().map(|item| match item {
+        LootKind::Weapon(weapon) => weapon.description(),
+        LootKind::Armor(armor) => armor.description(),
+        _ => item.name(),
+    }));
+    (lines, ground_start)
+}
+
 fn wrapped_items(lines: Vec<String>, width: u16) -> Vec<ListItem<'static>> {
     lines
         .into_iter()
         .map(|text| {
+            if text.is_empty() {
+                return ListItem::new(Line::default());
+            }
             let rows = super::super::components::wrap_body(
                 &text,
                 usize::from(width.max(1)),
@@ -604,7 +625,7 @@ fn render_epitaph(frame: &mut Frame, area: Rect, run: &RunView) {
 const GUIDE: &str = concat!(
     "THE WAITING BELOW\nEscape alive whenever you choose. Bring the ember home for an exceptional victory.\nEvery action is saved; closing the dungeon pauses it.\n\n",
     "MOVE / FIGHT  Arrows, numpad 1-9, or vi keys:\n  y k u     7 8 9\n  h @ l     4 @ 6\n  b j n     1 2 3\n",
-    "Uppercase vi keys sprint: faster, noisy, and costly in breath. Walking never restores breath.\nBump enemies to attack. f then direction attacks with your weapon's reach.\n",
+    "Uppercase vi keys sprint: faster, noisy, and costly in breath. Walking never restores breath.\nMoving toward a visible enemy within weapon reach attacks without moving. A spear reaches 2 tiles (one empty tile between you and the enemy). f then direction also attacks; sprinting stays movement-only.\n",
     "./5 wait · a bandage · e eat · r automatic care · </> stairs\ng interact: take the ember or use a fountain · c then direction closes a door\nx swap weapons · i equipment and ground items · v inspect injuries\n\n",
     "WOUNDS LAST\nBleeding drains blood. Armor protects body regions. Splints support fractures; linen controls bleeding. Rest automatically performs useful care using your supplies. Ordinary care cannot regrow destroyed anatomy.\n",
     "Recovery takes four steps per second at most, waiting for each save. Any input stops it. Danger and party arrivals interrupt it.\n\n",
@@ -828,7 +849,7 @@ impl AppComponent<Msg, NoUserEvent> for RoguelikeModal {
         }
         if self.page != Page::Game {
             let len = match (&self.run, self.page) {
-                (Some(run), Page::Equipment) => run.gear.lines().len() + 1 + run.ground.len(),
+                (Some(run), Page::Equipment) => equipment_rows(run).0.len(),
                 (Some(run), Page::Condition) => run.body.condition_lines().len(),
                 _ => u16::MAX as usize,
             };
@@ -841,7 +862,7 @@ impl AppComponent<Msg, NoUserEvent> for RoguelikeModal {
                         let index = self.run.as_ref().and_then(|run| {
                             self.cursor
                                 .index()
-                                .checked_sub(run.gear.lines().len() + 1)
+                                .checked_sub(equipment_rows(run).1)
                                 .filter(|index| *index < run.ground.len())
                         });
                         return index
@@ -871,6 +892,44 @@ impl AppComponent<Msg, NoUserEvent> for RoguelikeModal {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ground_section_has_a_blank_line_and_keeps_selection_working() {
+        let mut modal = RoguelikeModal::new();
+        let mut run = Run::new(19).view();
+        run.ground = vec![
+            LootKind::Weapon(crate::roguelike::WeaponKind::Spear),
+            LootKind::Bandage,
+        ];
+        modal.set_run(run);
+        modal.on(&key(Key::Char('i')));
+        let screen = render(&mut modal, 120, 50);
+        let lines: Vec<_> = screen.lines().collect();
+        let ground = lines.iter().position(|l| l.contains("GROUND")).unwrap();
+        assert!(
+            lines[ground - 1].trim_matches(['│', ' ']).is_empty(),
+            "{screen}"
+        );
+        assert_eq!(
+            modal.on(&key(Key::Enter)),
+            Some(Msg::Roguelike(Command::Act(Action::Equip(0))))
+        );
+    }
+
+    #[test]
+    fn holding_a_spear_explains_how_to_attack_at_reach() {
+        let mut modal = RoguelikeModal::new();
+        let mut run = Run::new(19).view();
+        run.gear.active = crate::roguelike::WeaponKind::Spear;
+        modal.set_run(run);
+        let screen = render(&mut modal, 120, 40);
+        assert!(
+            screen.contains("2 tiles")
+                && screen.contains("Move toward")
+                && screen.contains("without moving"),
+            "{screen}"
+        );
+    }
 
     #[test]
     fn equipment_shows_actual_movement_cost_with_heavy_armor() {

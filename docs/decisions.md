@@ -911,3 +911,26 @@ clears both roguelike tables, including local history and pending reports,
 in one transaction, then normal version-2 saves apply. Other local records
 and already-published chat remain intact. This is a single upgrade operation,
 not a policy of silently resetting malformed or unsupported saves afterward.
+
+
+## Dungeon controls should express intent (2026-09-06)
+
+The author's first hands-on feedback found that a single side wall blocked
+an otherwise natural diagonal step, and that a starting spear's “reach 2”
+stat did not explain how to use it. A diagonal now requires one open flank,
+with the same rule for movement, sight, attacks, doors, and creature paths.
+Two blocked flanks still prevent squeezing through a closed corner.
+
+Moving toward an enemy now uses the weapon's available reach automatically.
+The player expresses an attack by moving toward the visible threat; they do
+not need a separate input sequence to receive the spear's benefit. Explicit
+attacks remain for deliberate probing, and sprinting still expresses movement.
+The automatic choice cannot discover unseen targets or use a spear without
+the necessary hands. Weapon descriptions and an equipped-spear hint explain
+that a thrust across an empty tile does not move the character.
+
+Routine rest narration was filling the journal with identical lines. Adjacent
+identical recovery events now coalesce, including when displaying older saves;
+physiology still advances and distinct treatment/combat events remain. Ground
+items also get a blank separator above them. The inventory renderer and input
+handling share a row mapping so that adding space cannot equip the wrong item.

@@ -337,3 +337,14 @@ recorded failures and the broader classes found in review. The final AddressSani
 **30,694 executions in 601 seconds** with no failure, using long structured action sequences as well
 as the mutating corpus. LeakSanitizer was disabled because the environment
 uses tracing; address checking and simulation assertions remained enabled.
+
+### Author feedback after implementation
+
+The first hands-on follow-up relaxed diagonal clearance to permit passing a
+single blocked side, added a blank inventory separator above ground items,
+and collapsed repeated routine-care narration. Moving toward a visible enemy
+now automatically uses usable weapon reach, so a spear thrusts across an empty
+tile without a separate attack command. Sprinting still moves. The shared
+corner rule covers sight, attacks, door access, and enemy paths; older saves'
+recovery spam is also collapsed for display. These changes passed 1,411 tests
+and strict workspace Clippy, with failing regressions confirmed first.

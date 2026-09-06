@@ -25,6 +25,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: This dungeon overhaul resets existing local expeditions and their
   history once. Other DessPlay data and messages are preserved.
 
+- Improved: Dungeon movement now uses spear reach automatically: move toward
+  an enemy two tiles away to thrust without advancing. Equipped spears explain
+  this on screen, and diagonals can pass a single wall beside you.
+- Improved: Dungeon inventory separates ground items with a blank line, and
+  resting no longer floods the journal with identical recovery messages.
+
 ## 2026-09-05
 
 - Added: F11 opens live logs above recent chat, with scrolling and separate

@@ -768,7 +768,10 @@ update a covered modal; replies after closing do not reopen it.
 
 Equipment inspection also shows walking time, sprint time, and sprint breath
 cost from the current body and gear, before terrain delays. The plain harness
-uses the same movement summary.
+uses the same movement summary. An equipped reach weapon also shows a hint
+that moving toward a visible enemy attacks without advancing. Inventory rows
+include a blank separator before ground items, with a shared mapping for
+rendering, initial selection, and equipment actions.
 
 `RoguelikeEffects` is a live local Playback & display setting: Full by default,
 Reduced, or Off. Full briefly colors the border red for newly committed serious injuries

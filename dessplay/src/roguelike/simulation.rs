@@ -183,7 +183,7 @@ impl Run {
                     return 0;
                 }
                 let p = self.position.offset(dx, dy);
-                if !self.clear_corner(self.position, p) {
+                if !self.floor().clear_corner(self.position, p) {
                     return 0;
                 }
                 if self.tile(p) != Tile::DoorOpen {
@@ -213,7 +213,7 @@ impl Run {
         let p = self.position.offset(dx, dy);
         if self.tile(p) == Tile::DoorClosed && !sprint {
             // Opening also obeys diagonal wall-corner constraints.
-            if !self.clear_corner(self.position, p) {
+            if !self.floor().clear_corner(self.position, p) {
                 return 0;
             }
             if let Some(i) = p.index() {
@@ -227,12 +227,21 @@ impl Run {
             self.say(EventKind::Info, "The way is blocked.");
             return 0;
         }
-        if self.floor().enemies.iter().any(|e| e.position == p) {
-            if sprint {
-                self.say(EventKind::Info, "A creature blocks your sprint.");
-                return 0;
+        if !sprint {
+            let (_, target) = self.attack_target(dx, dy, self.body.effective_weapon(&self.gear));
+            if target.is_some_and(|i| {
+                let enemy = &self.floor().enemies[i];
+                enemy.position == p
+                    || enemy
+                        .position
+                        .index()
+                        .is_some_and(|index| self.floor().visible[index])
+            }) {
+                return self.attack(dx, dy);
             }
-            return self.attack(dx, dy);
+        } else if self.floor().enemies.iter().any(|e| e.position == p) {
+            self.say(EventKind::Info, "A creature blocks your sprint.");
+            return 0;
         }
         if sprint {
             let cost = self.body.sprint_cost(&self.gear);
@@ -254,11 +263,8 @@ impl Run {
         self.collect();
         cost.max(50)
     }
-    fn attack(&mut self, dx: i32, dy: i32) -> u64 {
-        if !direction(dx, dy) {
-            return 0;
-        }
-        let weapon = self.body.effective_weapon(&self.gear);
+    // Automatic thrusts and explicit attacks trace the same first target.
+    fn attack_target(&self, dx: i32, dy: i32, weapon: WeaponKind) -> (Point, Option<usize>) {
         let mut p = self.position;
         let mut target = None;
         for _ in 0..weapon.reach() {
@@ -272,6 +278,14 @@ impl Run {
                 break;
             }
         }
+        (p, target)
+    }
+    fn attack(&mut self, dx: i32, dy: i32) -> u64 {
+        if !direction(dx, dy) {
+            return 0;
+        }
+        let weapon = self.body.effective_weapon(&self.gear);
+        let (p, target) = self.attack_target(dx, dy, weapon);
         let power = self.body.attack_power(weapon.power());
         self.body.stamina = self.body.stamina.saturating_sub(weapon.breath_cost());
         self.noise(12);
@@ -791,12 +805,6 @@ impl Run {
             && !matches!(self.tile(to), Tile::Up | Tile::Down)
             && !self.floor().enemies.iter().any(|e| e.position == to)
     }
-    fn clear_corner(&self, from: Point, to: Point) -> bool {
-        from.x == to.x
-            || from.y == to.y
-            || (self.tile(Point { x: from.x, y: to.y }).walkable()
-                && self.tile(Point { x: to.x, y: from.y }).walkable())
-    }
     fn path_step(&self, start: Point, target: Point) -> Option<Point> {
         let occupied_goal = self.floor().enemies.iter().any(|e| e.position == target);
         let mut seen = vec![false; CELLS];
@@ -817,7 +825,7 @@ impl Run {
                 let Some(i) = next.index() else {
                     continue;
                 };
-                if seen[i] || !self.floor().passable(next) || !self.clear_corner(p, next) {
+                if seen[i] || !self.floor().passable(next) || !self.floor().clear_corner(p, next) {
                     continue;
                 }
                 // An occupied goal is still occupied. Calls may direct several

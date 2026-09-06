@@ -871,7 +871,8 @@ impl WeaponKind {
             match self {
                 Self::Unarmed => "weak blunt blows",
                 Self::Knife => "quick bleeding cuts",
-                Self::Spear => "pierces deep tissue; 200 time adjacent; requires two hands",
+                Self::Spear =>
+                    "move toward an enemy up to 2 tiles away to thrust without moving; 200 time adjacent; requires two hands",
                 Self::Mace => "crushes bone through armor",
             }
         )

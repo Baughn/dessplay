@@ -1021,7 +1021,9 @@ progress. Inactive floors freeze.
 Actions advance an integer simulation clock. Healthy walking costs 100 time
 units; a healthy sprint costs 50 per tile. Uppercase vi keys sprint one tile,
 including diagonals, spending breath and making more noise. Sprinting never
-bump-attacks. Walking never restores breath; waiting and resting can.
+bump-attacks. Diagonal movement, attacks, sight, and door access may pass one
+blocked side, but cannot squeeze between two walls or closed doors. Creatures
+use the same clearance rule. Walking never restores breath; waiting and resting can.
 Equipment weight, injuries, terrain, and weapon recovery affect action costs.
 Physiology, enemy commitments, and hazards use elapsed action time. Reading,
 closing the modal, and reopening the client spend none.
@@ -1042,7 +1044,10 @@ protection and exertion. A total carried weight of 28 or more adds 50 time
 to movement. Equipment inspection shows current walking/sprinting time and
 sprint breath cost. Supplies collect automatically; equipping and
 swapping gear are explicit actions, with replaced equipment left available
-on the ground. Movement into a creature attacks. Rats bite and disengage,
+on the ground. Moving toward a perceived creature within the active weapon's
+usable reach attacks without advancing. With a spear, a movement key thrusts
+across one empty tile; sprinting remains movement-only. Explicit directional
+attacks remain available, including probing beyond sight. Rats bite and disengage,
 pilgrims prepare calls that an injuring hit can interrupt, wardens commit
 to marked heavy strikes, and cavern
 brutes follow sound. Visible intentions reflect their actual saved schedules.
@@ -1070,7 +1075,10 @@ The journal retains 512 structured, time-stamped events. The ordinary view
 shows recent events alongside perceived threats and condition. Terrain memory
 stores what was last seen; unseen collapses and breaches do not silently
 update it. The modal and standalone agent harness receive the same player
-observation, without unseen creatures or unremembered terrain.
+observation, without unseen creatures or unremembered terrain. Consecutive
+identical recovery messages appear once while recovery keeps advancing.
+Distinct treatments and combat events remain visible. The inventory separates
+carried equipment from ground items with a blank line.
 
 Playback & display settings offer Full, Reduced, and Off injury effects,
 applied live and local to this client. Full uses brief red injury flashes

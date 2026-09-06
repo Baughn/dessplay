@@ -250,6 +250,156 @@ fn arena() -> Run {
 }
 
 #[test]
+fn diagonals_allow_one_blocked_side_but_not_two() {
+    for (dx, dy) in [(-1, -1), (-1, 1), (1, -1), (1, 1)] {
+        for a in [Tile::Floor, Tile::Wall, Tile::DoorClosed] {
+            for b in [Tile::Floor, Tile::Wall, Tile::DoorClosed] {
+                let mut run = arena();
+                let from = run.position;
+                let to = from.offset(dx, dy);
+                run.floors[0].tiles[from.offset(dx, 0).index().unwrap()] = a;
+                run.floors[0].tiles[from.offset(0, dy).index().unwrap()] = b;
+                let allowed = a.walkable() || b.walkable();
+                assert_eq!(run.floor().step_allowed(from, to), allowed);
+                assert_eq!(run.floor().step_allowed(to, from), allowed);
+                assert_eq!(run.floor().sight(from, to), allowed);
+                for action in [Action::Move(dx, dy), Action::Sprint(dx, dy)] {
+                    let mut walking = run.clone();
+                    assert_eq!(walking.step(action).elapsed > 0, allowed);
+                    assert_eq!(walking.position, if allowed { to } else { from });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_recovery_logs_once_but_keeps_healing_after_save_resume() {
+    let mut run = arena();
+    run.body.blood = 500;
+    for i in 0..8 {
+        let blood = run.body.blood;
+        let time = run.time;
+        assert!(run.act(Action::Rest));
+        assert!(run.body.blood > blood);
+        assert_eq!(run.time, time + 100);
+        if i == 3 {
+            run = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+        }
+    }
+    assert_eq!(
+        run.journal
+            .iter()
+            .filter(|e| e.kind == EventKind::Recovery)
+            .count(),
+        1
+    );
+    run.body.parts[2].bleeding = 10;
+    run.act(Action::Rest);
+    assert!(run.journal.last().unwrap().text.contains("left arm"));
+    run.act(Action::Rest);
+    assert_eq!(
+        run.journal
+            .iter()
+            .filter(|e| e.kind == EventKind::Recovery)
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn older_saved_recovery_spam_is_collapsed_without_hiding_repeated_combat() {
+    let mut run = arena();
+    for kind in [
+        EventKind::Recovery,
+        EventKind::Recovery,
+        EventKind::Combat,
+        EventKind::Combat,
+    ] {
+        // Model consecutive entries already persisted by an older client.
+        run.journal.push(JournalEntry {
+            id: run.next_event,
+            time: run.time,
+            kind,
+            text: "Repeated line".into(),
+        });
+        run.next_event += 1;
+    }
+    run.validate().unwrap();
+    let before = run.clone();
+    let view = run.view();
+    assert_eq!(
+        view.journal
+            .iter()
+            .filter(|e| e.kind == EventKind::Recovery)
+            .count(),
+        1
+    );
+    assert_eq!(
+        view.journal
+            .iter()
+            .filter(|e| e.kind == EventKind::Combat)
+            .count(),
+        2
+    );
+    assert_eq!(run, before, "displaying an old save must not rewrite it");
+}
+
+#[test]
+fn movement_uses_spear_reach_like_an_explicit_attack_in_every_direction() {
+    for (dx, dy) in [
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (-1, 1),
+        (1, -1),
+        (1, 1),
+    ] {
+        let mut run = arena();
+        run.gear.active = WeaponKind::Spear;
+        let mut enemy = Enemy::new(0, EnemyKind::Hollow, run.position.offset(2 * dx, 2 * dy), 0);
+        enemy.next_action = 10_000;
+        run.floors[0].enemies.push(enemy);
+        run.reveal();
+        let mut explicit = run.clone();
+        let position = run.position;
+        assert_eq!(run.step(Action::Move(dx, dy)).elapsed, 150);
+        explicit.act(Action::Attack(dx, dy));
+        assert_eq!(run, explicit);
+        assert_eq!(run.position, position);
+    }
+}
+
+#[test]
+fn automatic_reach_requires_a_visible_target_and_working_weapon_but_sprint_can_approach() {
+    for mode in 0..4 {
+        let mut run = arena();
+        run.gear.active = WeaponKind::Spear;
+        let from = run.position;
+        let mut enemy = Enemy::new(0, EnemyKind::Hollow, from.offset(2, 0), 0);
+        enemy.next_action = 10_000;
+        run.floors[0].enemies.push(enemy);
+        match mode {
+            0 => run.gear.active = WeaponKind::Knife,
+            1 => run.body.eyes = [0, 0],
+            2 => run.body.parts[4].nerve = 0,
+            _ => {}
+        }
+        run.reveal();
+        let enemy_before = run.floor().enemies[0].body.clone();
+        run.act(if mode == 3 {
+            Action::Sprint(1, 0)
+        } else {
+            Action::Move(1, 0)
+        });
+        assert_eq!(run.position, from.offset(1, 0));
+        assert_eq!(run.floor().enemies[0].body.parts, enemy_before.parts);
+    }
+}
+
+#[test]
 fn a_complete_stair_journey_banks_the_ember_and_freezes_its_ending() {
     // A short, connected scenario isolates the complete descent/return contract
     // from difficulty tuning. It is not evidence of winning a generated dungeon.
@@ -393,6 +543,12 @@ fn review_opening_and_closing_doors_both_respect_diagonal_corners() {
                     run.position.offset(0, dy)
                 };
                 run.floors[0].tiles[flank.index().unwrap()] = blocker;
+                let other = if block_x {
+                    run.position.offset(0, dy)
+                } else {
+                    run.position.offset(dx, 0)
+                };
+                run.floors[0].tiles[other.index().unwrap()] = Tile::Wall;
                 for (tile, action) in [
                     (Tile::DoorOpen, Action::CloseDoor(dx, dy)),
                     (Tile::DoorClosed, Action::Move(dx, dy)),

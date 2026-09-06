@@ -29,7 +29,7 @@ offline expedition reconnects.
 
 | Action | Keys |
 |---|---|
-| Walk; bump an adjacent creature to attack | Arrows, vi keys, numpad digits |
+| Walk; attack an enemy within weapon reach | Arrows, vi keys, numpad digits |
 | Sprint one tile using breath | Uppercase vi keys: `H J K L Y U B N` |
 | Attack along a direction, including spear reach | `f`, then a direction |
 | Wait and catch breath | `.` or `5` |
@@ -54,8 +54,9 @@ b j n       1 2 3
 ```
 
 Attacks spend time without moving you. Sprinting never attacks or opens a
-door: walk into a closed door to open it, then enter. Diagonals cannot cut
-wall corners. Walking into stone spends no time. Supplies and gold are
+door: walk into a closed door to open it, then enter. Diagonals can pass
+one wall beside you, but cannot squeeze between two blocked sides. Closed
+doors count as blocked sides too. Walking into stone spends no time. Supplies and gold are
 collected by walking over them; equipment requires an explicit choice.
 Your `@` hides the terrain symbol underfoot.
 
@@ -69,8 +70,12 @@ Waiting catches breath but still gives the dungeon time to act.
 
 Your kit holds one active weapon, one spare, and armor for the head, torso,
 arms, hands, legs, and feet. A knife attacks quickly; a spear reaches two
-tiles in a straight direction but needs two working hands and costs 200 time
-adjacent to an enemy (150 at reach); a mace is slow and better at breaking protected bones.
+tiles in a straight direction. **Move toward a visible enemy and the spear
+thrusts automatically without moving you.** For example, with `r.@` on a row,
+press `h` to stab the rat across the empty tile. You can also use `f` then a
+direction (`fh` to thrust left). Sprinting moves instead of thrusting. A spear
+needs two working hands and costs 200 time adjacent to an enemy (150 at
+reach); a mace is slow and better at breaking protected bones.
 Regional armor trades protection against weight. At total carried weight
 28 or higher, movement takes 50 additional time units. Equipment inspection
 shows your current walking and sprinting time and sprint breath cost. Read
@@ -95,7 +100,8 @@ lost anatomy, once; press `g` to drink. It then becomes dry (`;`).
 In DessPlay, recovery takes at most four saved steps per second, shows your
 reserves and supply use, and stops for danger, injuries, arrivals, input,
 covering/closing the game, storage errors, or when nothing useful remains.
-Manual bandaging remains available under pressure. Losing sight of a creature
+Repeated recovery narration appears once; the changing blood, breath, and
+supply values still show progress. Manual bandaging remains available under pressure. Losing sight of a creature
 does not freeze it; pay attention to audible warnings as well as the map.
 
 ## Read the dungeon

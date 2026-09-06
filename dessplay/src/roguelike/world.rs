@@ -340,15 +340,20 @@ impl Floor {
         self.tile(point) != Tile::Wall
     }
 
-    /// One-tile movement with both diagonal corners clear.
+    /// A diagonal may pass one blocked flank, but cannot squeeze between two.
+    pub fn clear_corner(&self, from: Point, to: Point) -> bool {
+        from.x == to.x
+            || from.y == to.y
+            || self.tile(Point { x: from.x, y: to.y }).walkable()
+            || self.tile(Point { x: to.x, y: from.y }).walkable()
+    }
+
+    /// One-tile movement respecting destination terrain and diagonal clearance.
     pub fn step_allowed(&self, from: Point, to: Point) -> bool {
         from != to
             && from.distance(to) == 1
             && self.tile(to).walkable()
-            && (from.x == to.x
-                || from.y == to.y
-                || (self.tile(Point { x: from.x, y: to.y }).walkable()
-                    && self.tile(Point { x: to.x, y: from.y }).walkable()))
+            && self.clear_corner(from, to)
     }
 
     /// Opaque doors and stone stop sight; sight does not leak through corners.
@@ -373,21 +378,7 @@ impl Floor {
                 error += dx;
                 p.y += sy;
             }
-            if p.x != previous.x
-                && p.y != previous.y
-                && (!self
-                    .tile(Point {
-                        x: p.x,
-                        y: previous.y,
-                    })
-                    .walkable()
-                    || !self
-                        .tile(Point {
-                            x: previous.x,
-                            y: p.y,
-                        })
-                        .walkable())
-            {
+            if !self.clear_corner(previous, p) {
                 return false;
             }
             if p == to {
@@ -1352,6 +1343,9 @@ mod tests {
         }
         floor.set(p.offset(1, 0), Tile::DoorClosed);
         assert!(!floor.sight(p, p.offset(2, 0)));
+        assert!(floor.sight(p, p.offset(1, 1)));
+        assert!(floor.step_allowed(p, p.offset(1, 1)));
+        floor.set(p.offset(0, 1), Tile::Wall);
         assert!(!floor.sight(p, p.offset(1, 1)));
         assert!(!floor.step_allowed(p, p.offset(1, 1)));
         assert!(floor.sight(p, p.offset(1, 0)));
