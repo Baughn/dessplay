@@ -167,3 +167,105 @@ fn measured_rows_are_reused_until_the_content_or_width_changes() {
     assert!(std::sync::Arc::ptr_eq(&first, &same));
     assert!(!std::sync::Arc::ptr_eq(&first, &resized));
 }
+
+#[test]
+fn drag_sizes_are_local_revision_scoped_and_legacy_import_happens_once() {
+    let storage = crate::storage::Storage::open_in_memory().unwrap();
+    let builtin = LayoutBundle::builtin().unwrap();
+    let mut sizes = LayoutSettings::default();
+    let legacy = crate::config::PaneLayout {
+        chat_width: 65,
+        ..Default::default()
+    };
+    assert!(sizes.activate(&builtin, legacy));
+    assert_eq!(sizes.shares("builtin")["chat-column"], 6500);
+    sizes.save(&storage).unwrap();
+    let mut restored = LayoutSettings::load(&storage).unwrap();
+    assert_eq!(restored, sizes);
+    assert!(!restored.activate(&builtin, Default::default()));
+    let mut changed = builtin.clone();
+    changed.revision.push('x');
+    assert!(restored.activate(&changed, legacy));
+    assert!(restored.shares("builtin").is_empty());
+    restored.save(&storage).unwrap();
+    let mut restored = LayoutSettings::load(&storage).unwrap();
+    assert!(!restored.activate(&changed, legacy));
+    assert!(
+        restored.shares("builtin").is_empty(),
+        "legacy sizes never reappear"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let custom = LayoutBundle::load(dir.path()).unwrap();
+    restored.activate(&custom, legacy);
+    let source = LayoutSettings::source(&custom);
+    restored.set(
+        &source,
+        "panes",
+        [("chat-column".into(), 7000), ("right-column".into(), 3000)].into(),
+    );
+    restored.save(&storage).unwrap();
+    storage
+        .save_settings(&crate::config::Settings::default())
+        .unwrap();
+    assert_eq!(
+        LayoutSettings::load(&storage).unwrap(),
+        restored,
+        "ordinary settings saves cannot overwrite drag sizes"
+    );
+    std::fs::write(
+        dir.path().join("style.css"),
+        "#chat-column { flex-basis: 40%; }",
+    )
+    .unwrap();
+    assert!(restored.activate(&LayoutBundle::load(dir.path()).unwrap(), legacy));
+    assert!(
+        restored.shares(&source).is_empty(),
+        "file changes win across restart"
+    );
+}
+
+#[test]
+fn resizable_containers_require_stable_children_and_flex_layout() {
+    for content in [
+        r#"<row resizable="true"><slot name="chat"/><slot name="users"/></row>"#,
+        r#"<row id="s" resizable="true"><slot name="chat"/><slot id="u" name="users"/></row>"#,
+        r#"<row id="s" resizable="false"><slot id="c" name="chat"/><slot id="u" name="users"/></row>"#,
+        r#"<row id="s" resizable="true" style="display: grid"><slot id="c" name="chat"/><slot id="u" name="users"/></row>"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("templates")).unwrap();
+        std::fs::write(
+            dir.path().join("templates/app.xml"),
+            format!(
+                "<templates version=\"1\"><template name=\"app\">{content}</template></templates>"
+            ),
+        )
+        .unwrap();
+        assert!(LayoutBundle::load(dir.path()).is_err(), "{content}");
+    }
+}
+
+proptest! {
+    #[test]
+    fn split_handles_translate_with_paint_and_trade_only_adjacent_children(width in 30u16..150, height in 20u16..80, x in 0u16..100, y in 0u16..100, pointer in 0u16..200) {
+        use tuirealm::ratatui::layout::Position;
+        let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+        let data = Presentation::default().boolean("separate-subtitles", true);
+        let a = renderer.arrange("app", Rect::new(0,0,width,height), &data).unwrap();
+        let b = renderer.arrange("app", Rect::new(x,y,width,height), &data).unwrap();
+        prop_assert_eq!(a.splits.len(), b.splits.len());
+        for (a,b) in a.splits.iter().zip(b.splits.iter()) {
+            prop_assert_eq!(&a.id,&b.id);
+            prop_assert_eq!(b.handle.x,a.handle.x+x);
+            prop_assert_eq!(b.handle.y,a.handle.y+y);
+            prop_assert_eq!(b.handle.width,a.handle.width);
+            prop_assert_eq!(b.handle.height,a.handle.height);
+            let one = a.drag(Position::new(pointer,pointer));
+            let two = b.drag(Position::new(pointer+x,pointer+y));
+            prop_assert_eq!(&one,&two);
+            prop_assert_eq!(one.values().map(|n| u32::from(*n)).sum::<u32>(),10_000);
+            let initial = a.drag(Position::new(a.handle.x+1,a.handle.y+1));
+            prop_assert!(one.iter().filter(|(id,n)| initial[*id] != **n).count() <= 2);
+        }
+    }
+}

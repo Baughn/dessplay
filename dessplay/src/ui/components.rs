@@ -971,7 +971,7 @@ impl ChatPane {
     }
 
     /// Current input text.
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         self.input.text()
     }
 

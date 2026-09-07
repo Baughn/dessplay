@@ -827,3 +827,18 @@ flashes. Effect
 expiry uses the injected monotonic presentation clock and never consumes
 simulation time or randomness. Standalone agent play has no cosmetic effects
 and retains identical injury mechanics and observations.
+
+### Application composition and local splits
+
+`app.xml` binds the four focusable panes and the subtitle, health, status, and
+keybar surfaces. `Ui` builds semantic data and derives the focus ring from
+`RenderedScene::visible_slots`; mouse dispatch uses the same scene rectangles.
+`SplitRegion` records an arranged boundary and adjacent stable child IDs.
+An active drag retains its press-time scene, so redraws cannot change its
+reference geometry. Reload cancels that grab, retaining held chat selections.
+
+`LayoutSettings` stores source/revision/split proportions under the local
+`layout_sizes` key. It is loaded separately from Settings and written only by
+`SaveLayoutSettings`. Activation precedes root arrangement, invalidating changed
+revisions before old sizes can affect their first frame. Dirty activation state
+is coalesced and retried by the UI shell when the action channel is full.

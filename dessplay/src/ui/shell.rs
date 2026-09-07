@@ -370,6 +370,13 @@ pub fn run_ui_loop<A: TerminalAdapter>(
         .raw_mut()
         .draw(|frame| ui.draw_with_renderer(frame, &mut renderer));
     loop {
+        if ui.layout_settings_dirty {
+            match actions.try_send(UserAction::SaveLayoutSettings(ui.layout_settings.clone())) {
+                Ok(()) => ui.layout_settings_dirty = false,
+                Err(mpsc::error::TrySendError::Full(_)) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         // Adaptive cadence: ~100ms while a marquee pass animates, the
         // lazy 1s otherwise. Idle cost is unchanged — the timeout arm
         // only repaints when advance_clock reports a visible change.

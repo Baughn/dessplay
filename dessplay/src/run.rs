@@ -859,6 +859,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             }
         }
     }
+    ui.layout_settings =
+        crate::ui::layout::LayoutSettings::load(&setup_storage).unwrap_or_else(|error| {
+            tracing::warn!(%error, "cannot restore layout sizes");
+            Default::default()
+        });
     ui.set_layout_options(args.layout_options.clone());
     let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
     let (action_tx, mut action_rx) = mpsc::channel::<UserAction>(64);
@@ -879,6 +884,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     if needs_setup {
         loop {
             match action_rx.recv().await {
+                Some(UserAction::SaveLayoutSettings(saved)) => {
+                    if let Err(error) = saved.save(&setup_storage) {
+                        tracing::error!(%error, "saving layout sizes");
+                    }
+                }
                 Some(UserAction::SaveSettings(saved, roots)) => {
                     setup_storage
                         .save_settings(&saved)
@@ -1684,6 +1694,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                     self.clipboard = None;
                                     tracing::warn!("clipboard copy failed: {e}");
                                 }
+                            }
+                        }
+                        Some(UserAction::SaveLayoutSettings(saved)) => {
+                            if let Err(error) = saved.save(&self.storage) {
+                                tracing::error!(%error, "saving layout sizes");
                             }
                         }
                         Some(UserAction::SaveSettings(saved, roots)) => {

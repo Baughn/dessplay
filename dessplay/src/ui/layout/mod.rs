@@ -3,13 +3,16 @@ mod compiler;
 mod css;
 mod reload;
 mod renderer;
+mod settings;
 #[cfg(test)]
 mod tests;
 mod text;
 
 pub use compiler::{Diagnostic, LayoutBundle, TemplateSchema};
 pub(crate) use reload::Watcher;
+pub(crate) use renderer::SplitRegion;
 pub use renderer::{Presentation, PresentedRow, RenderedScene, Renderer};
+pub use settings::LayoutSettings;
 pub use text::{Fragment, measure_text};
 
 /// Local startup options, never synced or written into user settings.

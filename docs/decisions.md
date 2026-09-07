@@ -1051,3 +1051,22 @@ condition cursor makes entries taller than the viewport accessible; each
 row carries its region identity so treatment remains correct after wrapping,
 resizing, or healing that shortens preceding entries. Existing saved journal
 strings are historical records and are not rewritten.
+
+## Template-owned pane composition and drag state (2026-09-07)
+
+**Rule:** Pane focus and mouse targets follow the rendered application template.
+Resizable containers own named splits; drag state is stored separately by
+source and revision and invalidated before a changed bundle is drawn.
+
+**Why:** Keeping the old four splitter variants beside editable root composition
+would make mouse boundaries depend on where panes used to be. Deriving handles
+from arranged adjacent children makes reordering and gaps work consistently.
+Only the neighboring children exchange shares, so another splitter stays put.
+Controller identity remains the semantic slot binding, independent of node IDs.
+
+Saving whole Settings on release could overwrite unrelated preferences and
+could not distinguish two layout directories. A dedicated layout-settings
+action writes its own storage key in both first-run and session loops. The UI
+retries pending revision updates through a full action channel; ordinary
+settings writes cannot revive old sizes. Initial legacy import is one-time,
+so editing the layout while the client is closed also wins on restart.

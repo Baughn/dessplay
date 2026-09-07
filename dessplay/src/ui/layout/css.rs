@@ -424,6 +424,12 @@ pub(super) fn resolve(
             substitute(&d.value, &out.variables, &mut Vec::new()).map_err(|m| fail(&d, m))?;
         apply(&mut out, &d.name, &value).map_err(|m| fail(&d, m))?;
     }
+    if node.attr("resizable") == "true" && out.layout.display == Display::Grid {
+        return Err(Diagnostic {
+            message: "resizable containers must use flex layout".into(),
+            ..node.location.clone()
+        });
+    }
     Ok(out)
 }
 fn substitute(

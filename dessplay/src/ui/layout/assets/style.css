@@ -6,3 +6,13 @@ scroll > slot { flex-grow: 1; }
 .form-value { flex-grow: 1; flex-shrink: 1; }
 .form-annotation { max-width: 50%; margin: 0 0 0 1ch; text-align: right; }
 #form-editor-frame { border: 1; border-color: yellow; }
+#main { flex-grow: 1; flex-shrink: 1; min-height: 8lh; }
+#panes { flex-grow: 1; flex-shrink: 1; min-height: 1lh; }
+#chat-column, #right-column { flex-basis: 50%; flex-grow: 1; }
+#chat { flex-grow: 1; flex-shrink: 1; }
+#subtitles { flex-basis: 30%; }
+#series { flex-basis: 34%; }
+#users, #playlist { flex-basis: 33%; }
+#series, #users, #playlist { flex-grow: 1; }
+#health, #keybar { height: 1lh; }
+#status { height: 3lh; }

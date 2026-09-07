@@ -28,6 +28,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   viewer's sections can now be customized with local XML templates and CSS.
   Use `dessplay layout init` to export defaults, `layout check` to validate,
   and F12 for live-reload diagnostics and recovery tools.
+- Added: Move or hide panes by editing the application layout template. Tab
+  order and mouse targets follow your layout; named splitters support dragging
+  and remember sizes until the layout files change. F12 resets drag sizes.
+
 
 ## 2026-09-06
 

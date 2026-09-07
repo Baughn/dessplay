@@ -7,6 +7,10 @@ const MAX_FILE: u64 = 1024 * 1024;
 const MAX_NODES: usize = 4096;
 const DEFAULTS: &[(&str, &str)] = &[
     (
+        "templates/app.xml",
+        include_str!("assets/templates/app.xml"),
+    ),
+    (
         "templates/form.xml",
         include_str!("assets/templates/form.xml"),
     ),
@@ -83,6 +87,21 @@ impl Default for TemplateSchema {
     fn default() -> Self {
         let mut templates = BTreeMap::new();
         for (name, slots, texts, bools) in [
+            (
+                "app",
+                &[
+                    "chat",
+                    "subtitles",
+                    "series",
+                    "users",
+                    "playlist",
+                    "health",
+                    "status",
+                    "keybar",
+                ][..],
+                &[][..],
+                &["separate-subtitles"][..],
+            ),
             (
                 "form",
                 &["header", "body", "notes", "save", "editor", "error"][..],
@@ -342,6 +361,20 @@ fn validate(
     if !node.attr("id").is_empty() && !ids.insert(node.attr("id").into()) {
         return Err(error(node, "duplicate node id"));
     }
+    if !node.attr("resizable").is_empty() {
+        if node.attr("resizable") != "true" || node.attr("id").is_empty() {
+            return Err(error(
+                node,
+                "resizable containers require resizable=\"true\" and a stable id",
+            ));
+        }
+        if node.children.len() < 2 || node.children.iter().any(|c| c.attr("id").is_empty()) {
+            return Err(error(
+                node,
+                "resizable containers require at least two children with stable ids",
+            ));
+        }
+    }
     for (attr, kind) in [
         ("if", BindingType::Bool),
         ("bind", BindingType::Text),
@@ -415,7 +448,10 @@ fn parse_xml(
                         "templates" => &["version"][..],
                         "template" => &["name"][..],
                         "use" => &["template"][..],
-                        "row" | "column" | "grid" | "box" | "scroll" | "overlay" => {
+                        "row" | "column" => {
+                            &["id", "class", "style", "if", "title", "resizable"][..]
+                        }
+                        "grid" | "box" | "scroll" | "overlay" => {
                             &["id", "class", "style", "if", "title"][..]
                         }
                         "slot" => &["id", "class", "style", "if", "name"][..],

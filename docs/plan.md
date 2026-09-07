@@ -1862,11 +1862,12 @@ player OSD, and standalone diagnostic output are outside scope.
   log dropdown overlay template; complete style integration.
 - [ ] Chat proof: all message variants, suggestions/input/recent projection,
   separate subtitles, and timestamp-aligned bordered attachments with scroll crops.
-- [ ] Root/pane focus and named splitter geometry; Users, Playlist, all Series
-  modes, browsers/search, and semantic collection cells.
+- [x] Root composition, markup focus order, painted hit/splitter geometry,
+  revision-keyed local drag persistence, and one-time PaneLayout import.
+- [ ] Users, Playlist, all Series modes, browsers/search, and semantic collection cells.
 - [ ] Remaining forms/dialogs, changelog, progress/status/keybars, modal layers,
   every roguelike page and recovery panel; remove production legacy adapters.
-- [ ] Revision-keyed drag persistence and old PaneLayout import; file-only
+- [ ] File-only
   demonstrations for panes, playlist columns, forms, roguelike sidebar, and
   attachments; final geometry/interactions/image/reload/performance audit.
 

@@ -935,3 +935,10 @@ continuations after code changes. Difficulty is intended to favor cautious
 retreat while making ember commitments usually fail; a script cannot prove
 that the resulting choices are enjoyable. Historical and new manual results
 belong in the existing playtest proposal.
+
+Runtime pane layout tests cover file-only pane reordering/hiding, focus fallback,
+mouse targets, drafts surviving hidden panes, and bundled F12 recovery when the
+entire custom root is hidden. Splitter properties check translation invariance,
+constant total proportions, and changes confined to adjacent children. Storage
+tests exercise one-time legacy import, revision invalidation across restart,
+source separation, and immunity to unrelated Settings saves.

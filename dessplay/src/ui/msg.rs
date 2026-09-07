@@ -332,6 +332,8 @@ pub enum UserAction {
     },
     /// Persist settings + media roots.
     SaveSettings(Box<Settings>, Vec<PathBuf>),
+    /// Persist local layout drag proportions independently of application settings.
+    SaveLayoutSettings(super::layout::LayoutSettings),
     /// Ask the server for an AniDB name search (results come back as a
     /// UI input).
     AniDbSearch {

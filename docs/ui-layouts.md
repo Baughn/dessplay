@@ -1,9 +1,9 @@
 # Terminal layout authoring
 
 The layout migration is in progress. Currently the shared settings/List-entry
-forms, their semantic label/value/annotation rows, and the F11 log viewer's
-header/body/footer composition use local templates. The rest of the display
-still uses its existing renderer. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
+forms, their semantic label/value/annotation rows, the F11 log viewer's
+header/body/footer, and the application pane composition use local templates.
+Pane interiors other than the migrated forms/log still use their existing renderer. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
 ## Files and recovery
@@ -30,11 +30,14 @@ F12 opens layout tools even above another modal. It shows the directory,
 latest compiler diagnostic, template identities, matched declarations, and
 arranged bounds from templates rendered in this session. Up/Down scroll;
 `r` reloads and resumes custom layouts; `b` selects bundled layouts for this
-session; `d` resets the existing pane drag percentages; Esc closes the tools.
+session; `d` resets drag sizes for the active layout; Esc closes the tools.
 This view always renders from embedded definitions. Opening it cancels
 pointer grabs and roguelike recovery, while retaining editors, modal state,
-and held text selections. The current drag reset still uses `PaneLayout`;
-revision-keyed named-split persistence is a later migration step.
+and held text selections. Drag proportions are stored in the local database,
+keyed by layout source, content revision, and stable split ID. Successful file
+changes clear that source's drag sizes, including changes discovered on restart.
+Old pane percentages are imported once into the bundled named splits.
+Ordinary settings saves and layout edits never write over each other.
 
 ## Contract version 1
 
@@ -133,6 +136,21 @@ but preserves explicit backgrounds and maps RGB text to the finite terminal
 palette in limited mode. Image regions bypass this conversion.
 
 ## File-only examples
+
+Move a pane by moving its `slot` in `templates/app.xml`. For example, swapping
+`<slot id="users" name="users" />` and `<slot id="series" name="series" />`
+changes their positions and Tab order. Hide a pane with `#users { display: none; }`.
+Focus stays on a surviving pane or moves to the next visible pane; F12 remains
+available even with every pane hidden. Hidden controllers keep their drafts
+and selections. A scroll viewport's offscreen rows remain navigable.
+
+Resizable rows and columns declare `resizable="true"` and an `id`; all direct
+children require stable IDs. Handles follow the actual adjacent boundaries,
+including gaps. Dragging trades space between that pair and preserves other
+children, with a ten-percent container share minimum where it fits. A resizable
+container must use flex layout. CSS grid composition remains available without
+drag handles. `app` bindings are the slots `chat`, `subtitles`, `series`, `users`,
+`playlist`, `health`, `status`, `keybar` and boolean `separate-subtitles`.
 
 Restyle a form in `style.css`:
 

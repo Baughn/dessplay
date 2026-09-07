@@ -1638,6 +1638,19 @@ and held text selections but cancels active pointer grabs. F12 provides
 embedded recovery tools: diagnostics, arranged templates/declarations,
 Reload, Use bundled, and Reset drag sizes.
 
+The application template determines pane order, visibility, and rectangles.
+Tab order follows visible, nonzero controller slots in markup order. Surviving
+focus is retained; hiding the focused pane selects the next available pane.
+Global commands remain available when no pane is focusable. Clipped rows in
+scrolling content are not hidden controllers.
+
+Resizable flex rows/columns and their children have stable IDs. Splitter
+handles come from arranged adjacent boundaries. Dragging trades only the
+adjacent shares, retaining ten-percent minima where possible. Drag sizes are
+stored independently of application settings and authored files, by source,
+revision, and split ID. A successfully installed revision clears that source's
+old sizes, including on restart. Legacy PaneLayout percentages import once.
+
 RGB text is quantized to the finite terminal palette in limited mode.
 Explicit background colors survive the legacy theme adapter during the
 migration. Image pixels bypass text color conversion.

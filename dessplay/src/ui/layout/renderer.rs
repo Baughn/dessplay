@@ -18,8 +18,14 @@ pub struct Presentation {
     styles: BTreeMap<String, PaintStyle>,
     preserve_end: Vec<String>,
     inherited_style: PaintStyle,
+    shares: BTreeMap<String, u16>,
 }
 impl Presentation {
+    /// Drag proportions in basis points, separate from authored CSS.
+    pub(crate) fn shares(mut self, shares: BTreeMap<String, u16>) -> Self {
+        self.shares = shares;
+        self
+    }
     /// Supply a plain-text binding.
     pub fn text(mut self, name: &str, value: impl Into<String>) -> Self {
         self.texts.insert(name.into(), value.into());
@@ -66,6 +72,41 @@ pub struct PresentedRow {
 #[derive(Clone, Debug, Default)]
 pub struct RenderedScene {
     nodes: Vec<Arranged>,
+    pub(crate) splits: Vec<SplitRegion>,
+}
+
+/// A handle and its adjacent children, derived from the painted scene.
+#[derive(Clone, Debug)]
+pub(crate) struct SplitRegion {
+    pub id: String,
+    pub handle: Rect,
+    horizontal: bool,
+    origin: u16,
+    extent: u16,
+    before: usize,
+    children: Vec<(String, u16)>,
+}
+impl SplitRegion {
+    pub fn drag(&self, position: tuirealm::ratatui::layout::Position) -> BTreeMap<String, u16> {
+        let coordinate = if self.horizontal {
+            position.x
+        } else {
+            position.y
+        };
+        let offset = u32::from(coordinate.saturating_sub(self.origin));
+        let pointer = (offset * 10_000 / u32::from(self.extent.max(1))).min(10_000) as u16;
+        let mut children = self.children.clone();
+        let preceding: u16 = children[..self.before].iter().map(|(_, n)| n).sum();
+        let pair = children[self.before].1 + children[self.before + 1].1;
+        // Preserve the default ten-percent minimum of the entire container.
+        let minimum = 1000.min(pair / 2);
+        let share = pointer
+            .saturating_sub(preceding)
+            .clamp(minimum, pair - minimum);
+        children[self.before].1 = share;
+        children[self.before + 1].1 = pair - share;
+        children.into_iter().collect()
+    }
 }
 #[derive(Clone, Debug)]
 struct Arranged {
@@ -81,6 +122,21 @@ struct Arranged {
     fragments: Vec<Fragment>,
 }
 impl RenderedScene {
+    /// Arranged visible bounds of a named component.
+    pub fn bounds(&self, id: &str) -> Rect {
+        self.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map_or(Rect::default(), |n| n.bounds.intersection(n.clip))
+    }
+    /// Visible controller slots, in markup order (independent of box placement).
+    pub fn visible_slots(&self) -> Vec<&str> {
+        self.nodes
+            .iter()
+            .filter(|n| !n.slot.is_empty() && !n.content.intersection(n.clip).is_empty())
+            .map(|n| n.slot.as_str())
+            .collect()
+    }
     /// Visible content rectangle for a controller primitive, from painted geometry.
     pub fn slot(&self, name: &str) -> Rect {
         self.nodes
@@ -489,6 +545,11 @@ fn build<'a>(
         .unwrap_or_default();
     path.push((node, states));
     let mut style = resolve(bundle, path, parent)?;
+    if let Some(share) = data.shares.get(node.attr("id")) {
+        style.layout.flex_basis = Dimension::Percent(f32::from(*share) / 10_000.0);
+        // Percentage shares divide the available track after authored gaps.
+        style.layout.flex_shrink = 1.0;
+    }
     if let Some(semantic) = data.styles.get(node.attr("bind")) {
         let semantic = if style.paint.fg.is_some() {
             semantic.remove_modifier(tuirealm::ratatui::style::Modifier::DIM)
@@ -621,7 +682,9 @@ fn collect(
             .unwrap_or_default(),
         fragments,
     });
+    let mut split_children = Vec::new();
     for child in &built.children {
+        let index = scene.nodes.len();
         collect(
             tree,
             child,
@@ -631,6 +694,79 @@ fn collect(
             in_overlay || built.node.tag == "overlay",
             scene,
         )?;
+        if let Some(node) = scene.nodes.get(index)
+            && !node.bounds.intersection(node.clip).is_empty()
+        {
+            split_children.push((child.node.attr("id").to_string(), node.bounds));
+        }
+    }
+    if built.node.attr("resizable") == "true" && split_children.len() >= 2 {
+        let horizontal = built.style.layout.flex_direction == FlexDirection::Row;
+        let origin = if horizontal { content.x } else { content.y };
+        let extent = if horizontal {
+            content.width
+        } else {
+            content.height
+        };
+        let total: u32 = split_children
+            .iter()
+            .map(|(_, r)| u32::from(if horizontal { r.width } else { r.height }))
+            .sum();
+        let saved: Option<Vec<_>> = split_children
+            .iter()
+            .map(|(id, _)| data.shares.get(id).map(|n| (id.clone(), *n)))
+            .collect();
+        let children = saved
+            .filter(|shares| shares.iter().map(|(_, n)| u32::from(*n)).sum::<u32>() == 10_000)
+            .unwrap_or_else(|| {
+                let mut used = 0;
+                let mut assigned = 0;
+                split_children
+                    .iter()
+                    .map(|(id, r)| {
+                        used += u32::from(if horizontal { r.width } else { r.height });
+                        let edge = used * 10_000 / total.max(1);
+                        let share = edge - assigned;
+                        assigned = edge;
+                        (id.clone(), share as u16)
+                    })
+                    .collect()
+            });
+        // Parent handles precede nested handles at intersecting boundaries.
+        let insertion = 0;
+        for (before, pair) in split_children.windows(2).enumerate() {
+            let a = pair[0].1;
+            let b = pair[1].1;
+            let handle = if horizontal {
+                Rect::new(
+                    a.right().saturating_sub(1),
+                    a.y.max(b.y),
+                    b.x.saturating_sub(a.right()).saturating_add(2),
+                    a.bottom().min(b.bottom()).saturating_sub(a.y.max(b.y)),
+                )
+            } else {
+                Rect::new(
+                    a.x.max(b.x),
+                    a.bottom().saturating_sub(1),
+                    a.right().min(b.right()).saturating_sub(a.x.max(b.x)),
+                    b.y.saturating_sub(a.bottom()).saturating_add(2),
+                )
+            }
+            .intersection(content)
+            .intersection(clip);
+            scene.splits.insert(
+                insertion,
+                SplitRegion {
+                    id: built.node.attr("id").into(),
+                    handle,
+                    horizontal,
+                    origin,
+                    extent,
+                    before,
+                    children: children.clone(),
+                },
+            );
+        }
     }
     Ok(())
 }

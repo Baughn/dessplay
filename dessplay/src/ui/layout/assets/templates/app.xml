@@ -1,0 +1,22 @@
+<templates version="1">
+  <template name="app">
+    <column id="app">
+      <column id="main">
+        <row id="panes" resizable="true">
+          <column id="chat-column" resizable="true">
+            <slot id="chat" name="chat" />
+            <slot id="subtitles" name="subtitles" if="separate-subtitles" />
+          </column>
+          <column id="right-column" resizable="true">
+            <slot id="series" name="series" />
+            <slot id="users" name="users" />
+            <slot id="playlist" name="playlist" />
+          </column>
+        </row>
+        <slot id="health" name="health" />
+      </column>
+      <slot id="status" name="status" />
+      <slot id="keybar" name="keybar" />
+    </column>
+  </template>
+</templates>
