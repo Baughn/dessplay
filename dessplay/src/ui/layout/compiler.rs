@@ -7,6 +7,10 @@ const MAX_FILE: u64 = 1024 * 1024;
 const MAX_NODES: usize = 4096;
 const DEFAULTS: &[(&str, &str)] = &[
     (
+        "templates/collections.xml",
+        include_str!("assets/templates/collections.xml"),
+    ),
+    (
         "templates/chat.xml",
         include_str!("assets/templates/chat.xml"),
     ),
@@ -91,6 +95,20 @@ impl Default for TemplateSchema {
     fn default() -> Self {
         let mut templates = BTreeMap::new();
         for (name, slots, texts, bools) in [
+            ("playlist", &["body"][..], &["title"][..], &[][..]),
+            ("users", &["body"][..], &["title"][..], &[][..]),
+            (
+                "playlist-row",
+                &[][..],
+                &["marker", "title", "download", "temporary", "watch"][..],
+                &["entry", "show-download", "show-temporary"][..],
+            ),
+            (
+                "user-row",
+                &[][..],
+                &["name", "status", "last-seen", "holders"][..],
+                &["online", "offline", "seeders"][..],
+            ),
             ("recent-chat", &["log"][..], &["title"][..], &[][..]),
             ("subtitles", &["body"][..], &["title"][..], &[][..]),
             (

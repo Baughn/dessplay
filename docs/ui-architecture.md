@@ -860,3 +860,14 @@ them. Only pixel rectangles bypass theme conversion. Chat's published viewport
 and source offsets drive hits and scrolling anchors; no border-width assumption
 remains in hit lookup. Separate subtitle rows retain a cue key when growing cues
 replace their text.
+
+### Semantic collections
+
+`Renderer::paint_collection` consumes stable `PresentedRow` identities and
+independent selected/center targets. Natural-height scenes freeze widths before
+measuring wrapping. It measures enough preceding/following rows to fill the
+viewport, paints them with signed clipping, and returns `RenderedCollection`
+interaction records. A wrapped row can span several hit cells while retaining
+one controller identity. Shared forms and suggestion/subtitle rows use the same
+collection renderer. Users and Playlist retain their existing input controllers;
+only their field presentation and geometry moved into `collections.xml`.

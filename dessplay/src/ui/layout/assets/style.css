@@ -29,3 +29,11 @@ scroll > slot { flex-grow: 1; }
 .subtitle-timestamp { color: darkgray; margin: 0 2ch 0 0; }
 .subtitle-speaker { margin: 0 1ch 0 0; }
 .subtitle-body { flex-grow: 1; flex-shrink: 1; }
+#playlist-frame, #users-frame { border: 1; }
+#playlist-frame:focus, #users-frame:focus { border-color: yellow; }
+.playlist-marker { width: 2ch; }
+.playlist-title { flex-grow: 1; flex-shrink: 1; min-width: 6ch; text-overflow: ellipsis; }
+.playlist-download, .playlist-temporary, .playlist-watch { margin: 0 0 0 1ch; }
+.playlist-download { width: 4ch; text-align: right; }
+.playlist-temporary { width: 4ch; }
+.user-name { margin: 0 1ch 0 0; }

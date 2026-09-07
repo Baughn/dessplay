@@ -951,3 +951,10 @@ border. Chat tests also resize scrolled Unicode text, append messages while
 scrolled back, and map hits through a borderless nonzero-origin viewport with
 custom continuation indentation. Real Kitty/Sixel/iTerm terminal smoke checks
 remain a manual completion requirement for the whole-display migration.
+
+Collection layout properties check colored wrapped text against semantic hit
+records over arbitrary viewport sizes and nonzero origins. A Playlist scenario
+moves watch state before title in XML, enables wrapping through CSS, clicks a
+continuation and the following episode, and reloads with the selection intact.
+Default snapshots and centered cursor/now-playing scenarios remain the behavior
+gate for migrating existing collection panes.

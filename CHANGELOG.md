@@ -39,6 +39,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   separate subtitle rows in layout files. Scrolled-back chat keeps its context
   when the layout changes or new messages arrive.
 
+- Added: Rearrange Playlist columns and customize Users rows in layout files.
+  Wrapped rows and row padding keep mouse clicks attached to the right item.
+
 
 ## 2026-09-06
 

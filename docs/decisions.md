@@ -1089,3 +1089,22 @@ border. Width changes retain a stable message/source anchor instead of retaining
 only a visual offset from the changing tail. Recent chat remains a read-only
 projection. Subtitle timestamps, optional speakers, and text are separate fields
 with stable cue identities rather than preformatted strings.
+
+## Semantic collection fields and measured rows (2026-09-07)
+
+**Rule:** Users/Playlist templates receive unpadded fields and stable row keys.
+Collection layout measures row heights after widths and publishes hit regions
+with the painted rows. Selection and viewport centering remain independent.
+
+**Why:** A preformatted table line fixes column order before a template can act.
+Passing watch labels, download percentages, temporary state, title, and marker
+separately allows file-only reordering. An intrinsic shared watch-label width
+keeps the default aligned table without inserting alignment spaces in content.
+
+Forcing every template row to one line would make padding and wrapping silently
+clip content. Natural-height row scenes reuse the width-first allocator and
+signed clipping path. The viewport measures backwards around its center target
+and forwards until filled, retaining existing centered selection and now-playing
+behavior without constructing an entire collection tree. A continuation's pointer
+record names the same controller item as the first line. Styles and layout reloads
+leave the selection/controller identities intact.

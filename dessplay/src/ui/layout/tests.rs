@@ -269,3 +269,36 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #[test]
+    fn wrapped_collection_paint_and_hits_agree_at_arbitrary_origins(width in 2u16..65, height in 1u16..25, x in 0u16..8, y in 0u16..8, center in 0usize..20) {
+        use tuirealm::ratatui::style::{Color, Style};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("templates")).unwrap();
+        std::fs::write(dir.path().join("templates/form-row.xml"), r#"<templates version="1"><template name="form-row"><column style="padding: 1ch"><text bind="value" style="white-space: normal"/></column></template></templates>"#).unwrap();
+        let mut renderer = Renderer::new(LayoutBundle::load(dir.path()).unwrap());
+        let rows = (0..20).map(|i| PresentedRow {
+            key: i.to_string(),
+            data: Presentation::default().text("value", "界 words and more words ".repeat(i % 3 + 1)).style("value", Style::default().bg(Color::Indexed(i as u8 + 1))),
+            gap_after: false,
+        }).collect::<Vec<_>>();
+        let area = Rect::new(x,y,width,height);
+        let mut terminal = Terminal::new(TestBackend::new(x+width+2,y+height+2)).unwrap();
+        let mut interactions = RenderedCollection::default();
+        let frame = terminal.draw(|frame| {
+            interactions = renderer.paint_collection(frame,area,"form-row",&rows,Some(center),Some(center),Style::default()).unwrap();
+        }).unwrap();
+        for yy in 0..frame.area.height {
+            for xx in 0..frame.area.width {
+                if let Color::Indexed(index) = frame.buffer[(xx,yy)].bg {
+                    prop_assert_eq!(interactions.hit(xx,yy),Some(usize::from(index-1)));
+                    prop_assert!(area.contains(tuirealm::ratatui::layout::Position::new(xx,yy)));
+                }
+                if !area.contains(tuirealm::ratatui::layout::Position::new(xx,yy)) {
+                    prop_assert!(interactions.hit(xx,yy).is_none());
+                }
+            }
+        }
+    }
+}

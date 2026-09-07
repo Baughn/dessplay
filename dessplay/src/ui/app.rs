@@ -2702,6 +2702,9 @@ impl Ui {
                 return;
             }
         };
+        if scene.has_overlay() {
+            self.chat.set_images_suppressed(true);
+        }
         scene.paint(frame);
         self.split_regions = scene.splits.clone();
         let order = scene
@@ -2845,8 +2848,8 @@ impl Ui {
             self.chat.render_layout(frame, left, renderer);
         }
         self.series.view(frame, series_area);
-        self.users.view(frame, users_area);
-        self.playlist.view(frame, playlist_area);
+        self.users.render_layout(frame, users_area, renderer);
+        self.playlist.render_layout(frame, playlist_area, renderer);
         let progress = self.status.progress_text();
         let marquee_frame = self
             .marquee
@@ -2884,6 +2887,7 @@ impl Ui {
                 renderer,
             );
         }
+        scene.paint_overlays(frame);
         if let Some(modal) = self.modals.last_mut() {
             match modal {
                 Modal::Settings(modal) => modal.render_layout(frame, frame.area(), renderer),

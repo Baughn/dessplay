@@ -19,11 +19,18 @@ pub struct Presentation {
     preserve_end: Vec<String>,
     inherited_style: PaintStyle,
     shares: BTreeMap<String, u16>,
+    intrinsic_widths: BTreeMap<String, u16>,
+    root_states: Vec<String>,
 }
 impl Presentation {
     /// Drag proportions in basis points, separate from authored CSS.
     pub(crate) fn shares(mut self, shares: BTreeMap<String, u16>) -> Self {
         self.shares = shares;
+        self
+    }
+    /// Unwrapped shared-column content width, supplied without padding text.
+    pub fn intrinsic_width(mut self, binding: &str, width: u16) -> Self {
+        self.intrinsic_widths.insert(binding.into(), width);
         self
     }
     /// Supply a plain-text binding.
@@ -66,6 +73,21 @@ pub struct PresentedRow {
     pub data: Presentation,
     /// A blank, noninteractive row following the item.
     pub gap_after: bool,
+}
+
+/// Interaction records produced alongside a painted semantic collection.
+#[derive(Clone, Debug, Default)]
+pub struct RenderedCollection {
+    rows: Vec<(Rect, usize)>,
+}
+impl RenderedCollection {
+    /// Controller row identity under the pointer, including scrolled offsets.
+    pub fn hit(&self, column: u16, row: u16) -> Option<usize> {
+        let point = tuirealm::ratatui::layout::Position::new(column, row);
+        self.rows
+            .iter()
+            .find_map(|(bounds, index)| bounds.contains(point).then_some(*index))
+    }
 }
 
 /// Painted geometry and semantic slots, published as one immutable frame result.
@@ -199,6 +221,12 @@ impl RenderedScene {
             })
             .collect()
     }
+    /// Whether a visible explicit overlay needs terminal-graphics suppression.
+    pub fn has_overlay(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|n| n.overlay_root && !n.bounds.intersection(n.clip).is_empty())
+    }
     /// Paint container chrome and already-measured text. Slots are filled by primitives.
     pub fn paint(&self, frame: &mut Frame<'_>) {
         self.paint_layer(frame, false, PaintView::new(frame.area(), 0, 0));
@@ -215,6 +243,7 @@ impl RenderedScene {
             i32::from(viewport.y) + row_offset,
         );
         self.paint_layer(frame, false, view);
+        self.paint_layer(frame, true, view);
     }
     /// Outer box for a semantic primitive, including authored borders.
     pub fn slot_bounds(&self, name: &str) -> Rect {
@@ -520,6 +549,16 @@ impl Renderer {
         area: Rect,
         data: &Presentation,
     ) -> Result<RenderedScene, Diagnostic> {
+        self.arrange_instance_mode(template, key, area, data, false)
+    }
+    fn arrange_instance_mode(
+        &mut self,
+        template: &str,
+        key: &str,
+        area: Rect,
+        data: &Presentation,
+        natural_height: bool,
+    ) -> Result<RenderedScene, Diagnostic> {
         if let Some((old_area, old_data, scene)) = self.cache.get(key)
             && *old_area == area
             && old_data == data
@@ -548,12 +587,20 @@ impl Renderer {
         )?;
         let available = Size {
             width: AvailableSpace::Definite(area.width as f32),
-            height: AvailableSpace::Definite(area.height as f32),
+            height: if natural_height {
+                AvailableSpace::MaxContent
+            } else {
+                AvailableSpace::Definite(area.height as f32)
+            },
         };
         let mut root_style = built.style.layout.clone();
         root_style.size = Size {
             width: Dimension::Length(area.width as f32),
-            height: Dimension::Length(area.height as f32),
+            height: if natural_height {
+                root_style.size.height
+            } else {
+                Dimension::Length(area.height as f32)
+            },
         };
         self.tree
             .set_style(built.id, root_style.clone())
@@ -616,8 +663,8 @@ impl Renderer {
             .insert(key.into(), (area, data.clone(), scene.clone()));
         Ok(scene)
     }
-    /// Paint the visible slice of a one-line semantic collection. Offscreen
-    /// entries remain in the controller and never become Taffy nodes.
+    /// Paint the visible slice of a measured semantic collection. Only rows
+    /// around the viewport are instantiated, with cached width-first measurements.
     pub fn paint_rows(
         &mut self,
         frame: &mut Frame<'_>,
@@ -627,6 +674,22 @@ impl Renderer {
         selected: Option<usize>,
         style: PaintStyle,
     ) -> Result<(), Diagnostic> {
+        self.paint_collection(frame, area, template, rows, selected, selected, style)
+            .map(|_| ())
+    }
+    /// Paint collection rows and publish their interaction bounds in the same pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_collection(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        template: &str,
+        rows: &[PresentedRow],
+        selected: Option<usize>,
+        center: Option<usize>,
+        style: PaintStyle,
+    ) -> Result<RenderedCollection, Diagnostic> {
+        let mut rendered = RenderedCollection::default();
         let mut keys = std::collections::BTreeSet::new();
         if rows.iter().any(|row| !keys.insert(&row.key)) {
             return Err(internal("duplicate semantic collection key"));
@@ -638,37 +701,101 @@ impl Renderer {
                 positions.push(None);
             }
         }
-        let target = selected.and_then(|s| positions.iter().position(|p| *p == Some(s)));
-        let top = target.map_or(0, |i| {
-            i.saturating_sub(area.height as usize / 2)
-                .min(positions.len().saturating_sub(area.height as usize))
-        });
-        for (y, index) in positions
-            .iter()
-            .skip(top)
-            .take(area.height as usize)
-            .enumerate()
-        {
-            let Some(index) = index else {
-                continue;
+        if area.is_empty() || positions.is_empty() {
+            return Ok(rendered);
+        }
+        let mut measured: BTreeMap<usize, (u16, Option<RenderedScene>)> = BTreeMap::new();
+        let measure = |renderer: &mut Self,
+                       position: usize,
+                       measured: &mut BTreeMap<usize, (u16, Option<RenderedScene>)>|
+         -> Result<u16, Diagnostic> {
+            if let Some((height, _)) = measured.get(&position) {
+                return Ok(*height);
+            }
+            let Some(index) = positions[position] else {
+                measured.insert(position, (1, None));
+                return Ok(1);
             };
-            let row = &rows[*index];
-            let rect = Rect::new(area.x, area.y + y as u16, area.width, 1);
+            let row = &rows[index];
             let mut data = row.data.clone();
             data.inherited_style = style;
-            if selected == Some(*index) {
-                data = data.state("form-row", "selected");
+            if selected == Some(index) {
+                data.root_states.push("selected".into());
             }
-            let scene =
-                self.arrange_instance(template, &format!("{template}/{}", row.key), rect, &data)?;
-            scene.paint(frame);
-            if selected == Some(*index) {
-                frame
-                    .buffer_mut()
-                    .set_style(rect, crate::ui::theme::highlight_style());
+            let scene = renderer.arrange_instance_mode(
+                template,
+                &format!("row:{template}/{}", row.key),
+                Rect::new(0, 0, area.width, u16::MAX),
+                &data,
+                true,
+            )?;
+            let height = scene.nodes.first().map_or(0, |root| root.bounds.height);
+            measured.insert(position, (height, Some(scene)));
+            Ok(height)
+        };
+        let target = center
+            .and_then(|s| positions.iter().position(|p| *p == Some(s)))
+            .unwrap_or(0);
+        let target_height = usize::from(measure(self, target, &mut measured)?);
+        let half = if center.is_some() && target_height < area.height as usize {
+            area.height as usize / 2
+        } else {
+            0
+        };
+        let mut top = target;
+        let mut preceding = 0;
+        while top > 0 && preceding < half {
+            top -= 1;
+            preceding += usize::from(measure(self, top, &mut measured)?);
+        }
+        let mut clipped_rows = preceding.saturating_sub(half);
+        let mut remaining = 0;
+        for index in top..positions.len() {
+            remaining += usize::from(measure(self, index, &mut measured)?);
+            if remaining >= area.height as usize + clipped_rows {
+                break;
             }
         }
-        Ok(())
+        // Fill the viewport near the tail, shifting backwards by measured cells.
+        if remaining < area.height as usize + clipped_rows {
+            let mut missing = area.height as usize + clipped_rows - remaining;
+            let recovered = missing.min(clipped_rows);
+            clipped_rows -= recovered;
+            missing -= recovered;
+            while top > 0 && missing > 0 {
+                top -= 1;
+                let height = usize::from(measure(self, top, &mut measured)?);
+                clipped_rows = height.saturating_sub(missing);
+                missing = missing.saturating_sub(height);
+            }
+        }
+        let mut offset = -(clipped_rows as i32);
+        for (position, index) in positions.iter().enumerate().skip(top) {
+            if offset >= i32::from(area.height) {
+                break;
+            }
+            let height = measure(self, position, &mut measured)?;
+            if let Some(index) = *index
+                && let Some((_, Some(scene))) = measured.get(&position)
+            {
+                scene.paint_scrolled(frame, area, offset);
+                if let Some(root) = scene.nodes.first() {
+                    let bounds =
+                        PaintView::new(area, i32::from(area.x), i32::from(area.y) + offset)
+                            .rect(root.bounds.intersection(root.clip));
+                    if !bounds.is_empty() {
+                        rendered.rows.push((bounds, index));
+                        if selected == Some(index) {
+                            frame
+                                .buffer_mut()
+                                .set_style(bounds, crate::ui::theme::highlight_style());
+                        }
+                    }
+                }
+            }
+            offset += i32::from(height);
+        }
+        Ok(rendered)
     }
 }
 fn internal(e: impl std::fmt::Display) -> Diagnostic {
@@ -687,11 +814,14 @@ fn build<'a>(
     path: &mut Vec<(&'a Node, Vec<&'a str>)>,
     parent: &Computed,
 ) -> Result<Built<'a>, Diagnostic> {
-    let states = data
+    let mut states: Vec<&str> = data
         .states
         .get(node.attr("id"))
         .map(|s| s.iter().map(String::as_str).collect())
         .unwrap_or_default();
+    if path.is_empty() {
+        states.extend(data.root_states.iter().map(String::as_str));
+    }
     path.push((node, states));
     let mut style = resolve(bundle, path, parent)?;
     if let Some(share) = data.shares.get(node.attr("id")) {
@@ -722,7 +852,9 @@ fn build<'a>(
         .unwrap_or_default();
     let (width, height) = data.slots.get(node.attr("name")).copied().unwrap_or((0, 0));
     let measure = Measure {
-        width: if text.is_empty() {
+        width: if let Some(width) = data.intrinsic_widths.get(node.attr("bind")) {
+            f32::from(*width)
+        } else if text.is_empty() {
             width as f32
         } else {
             text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0) as f32

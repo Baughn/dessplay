@@ -1132,6 +1132,7 @@ impl ChatPane {
         rows.reverse();
         frame.render_widget(List::new(rows), inner);
         frame.buffer_mut().set_style(inner, scene.style("log"));
+        scene.paint_overlays(frame);
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -1193,6 +1194,7 @@ impl ChatPane {
             self.rendered = RenderedChatLog::default();
             self.input
                 .render_content(frame, input_area, self.focused, false);
+            scene.paint_overlays(frame);
             return;
         }
         // Flatten every message into wrapped visual rows (each carrying
@@ -1217,7 +1219,7 @@ impl ChatPane {
                 .into_iter()
                 .map(|row| (idx, row)),
             );
-            if self.suppress_images {
+            if self.suppress_images || scene.has_overlay() {
                 continue;
             }
             let (Some(url), Some(picker)) = (&line.image_url, &self.picker) else {
@@ -2029,7 +2031,7 @@ pub struct UsersPane {
     cursor: ListCursor,
     focused: bool,
     /// The viewport of the last render, for mouse hit-testing.
-    rendered: RenderedList,
+    rendered: super::layout::RenderedCollection,
 }
 
 impl UsersPane {
@@ -2103,42 +2105,79 @@ impl UsersPane {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let mut items: Vec<ListItem> = self
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedRow};
+        let mut data = Presentation::default().text("title", "Users");
+        if self.focused {
+            data = data.state("users-frame", "focus");
+        }
+        let Ok(scene) = renderer.arrange("users", area, &data) else {
+            return;
+        };
+        scene.paint(frame);
+        let mut rows = self
             .props
             .rows
             .iter()
-            .map(|row| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{} ", row.name), theme::user_style(&row.name)),
-                    Span::styled(format!("[{}]", row.label), theme::tone_style(row.tone)),
-                ]))
+            .map(|row| PresentedRow {
+                key: format!("user:{}", row.name),
+                data: Presentation::default()
+                    .text("name", &row.name)
+                    .text("status", format!("[{}]", row.label))
+                    .boolean("online", true)
+                    .style("name", theme::user_style(&row.name))
+                    .style("status", theme::tone_style(row.tone)),
+                gap_after: false,
             })
-            .collect();
-        // Dim + italic, one row per known-offline user (design.md #15) --
-        // selectable, unlike the seeders line below.
-        items.extend(self.props.known_offline.iter().map(|row| {
-            ListItem::new(Span::styled(
-                format!("{} (last seen {})", row.name, row.last_seen_label),
-                theme::tone_style(Tone::Muted)
-                    .add_modifier(tuirealm::ratatui::style::Modifier::ITALIC),
-            ))
+            .collect::<Vec<_>>();
+        let offline =
+            theme::tone_style(Tone::Muted).add_modifier(tuirealm::ratatui::style::Modifier::ITALIC);
+        rows.extend(self.props.known_offline.iter().map(|row| {
+            PresentedRow {
+                key: format!("user:{}", row.name),
+                data: Presentation::default()
+                    .text("name", &row.name)
+                    .text("last-seen", format!("(last seen {})", row.last_seen_label))
+                    .boolean("offline", true)
+                    .style("name", offline)
+                    .style("last-seen", offline),
+                gap_after: false,
+            }
         }));
         if !self.props.seeders.is_empty() {
-            items.push(ListItem::new(Span::styled(
-                format!("seeders: {}", self.props.seeders.join(", ")),
-                theme::tone_style(Tone::Muted),
-            )));
+            rows.push(PresentedRow {
+                key: "seeders".into(),
+                data: Presentation::default()
+                    .text("name", "seeders:")
+                    .text("holders", self.props.seeders.join(", "))
+                    .boolean("seeders", true)
+                    .style("name", theme::dim())
+                    .style("holders", theme::dim()),
+                gap_after: false,
+            });
         }
         let selected = (self.focused && self.selectable_len() > 0).then(|| self.cursor.index());
-        self.rendered = render_list(
-            frame,
-            area,
-            "Users",
-            items,
-            selected,
-            self.focused,
-            Some(self.cursor.index()),
-        );
+        self.rendered = renderer
+            .paint_collection(
+                frame,
+                scene.slot("body"),
+                "user-row",
+                &rows,
+                selected,
+                Some(self.cursor.index()),
+                scene.style("body"),
+            )
+            .unwrap_or_default();
+        scene.paint_overlays(frame);
     }
 }
 
@@ -2178,7 +2217,7 @@ pub struct PlaylistPane {
     cursor: ListCursor,
     focused: bool,
     /// The viewport of the last render, for mouse hit-testing.
-    rendered: RenderedList,
+    rendered: super::layout::RenderedCollection,
 }
 
 impl PlaylistPane {
@@ -2280,20 +2319,31 @@ impl PlaylistPane {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let inner = area.width.saturating_sub(2) as usize;
-        // Table columns after the title: an optional "temp" column (only
-        // reserved when some row is cache-only) and the always-shown
-        // watch state, sized to the widest tag on screen. The title cell
-        // truncates — a long filename must not shove the columns off the
-        // pane.
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedRow};
+        let mut data = Presentation::default().text("title", "Playlist");
+        if self.focused {
+            data = data.state("playlist-frame", "focus");
+        }
+        let Ok(scene) = renderer.arrange("playlist", area, &data) else {
+            return;
+        };
+        scene.paint(frame);
         let watch_tag = |row: &crate::ui::props::PlaylistRow| match row.watch {
             dessplay_core::types::SeriesWatchState::Watching => "watching",
             dessplay_core::types::SeriesWatchState::Maybe => "maybe",
             dessplay_core::types::SeriesWatchState::NotWatching => "not watching",
         };
         let show_temp = self.props.rows.iter().any(|row| row.temporary);
-        // Our own background downloads surface here: a percentage column,
-        // reserved only while something is actually downloading.
         let show_download = self.props.rows.iter().any(|row| row.download.is_some());
         let watch_width = self
             .props
@@ -2301,57 +2351,61 @@ impl PlaylistPane {
             .iter()
             .map(|row| watch_tag(row).len())
             .max()
-            .unwrap_or(0);
-        let mut items: Vec<ListItem> = self
+            .unwrap_or(0) as u16;
+        let mut rows = self
             .props
             .rows
             .iter()
-            .map(|row| {
-                let marker = if row.is_now { "▶ " } else { "  " };
-                let style = theme::tone_style(row.tone);
-                let flex = vec![Span::styled(format!("{marker}{}", row.title), style)];
-                let mut cells = Vec::new();
-                if show_download {
-                    let text = row
-                        .download
-                        .map(|bps| format!("{}%", bps / 100))
-                        .unwrap_or_default();
-                    cells.push(Cell::new(
-                        text,
-                        theme::tone_style(Tone::Transfer),
-                        4,
-                        Align::Right,
-                    ));
-                }
-                if show_temp {
-                    let text = if row.temporary { "temp" } else { "" };
-                    cells.push(Cell::new(text, theme::dim(), 4, Align::Left));
-                }
-                cells.push(Cell::new(
-                    watch_tag(row),
-                    theme::dim(),
-                    watch_width,
-                    Align::Left,
-                ));
-                ListItem::new(table_row(inner, flex, cells))
+            .map(|row| PresentedRow {
+                key: row.hash.to_string(),
+                data: Presentation::default()
+                    .text("marker", if row.is_now { "▶" } else { "" })
+                    .text("title", &row.title)
+                    .text(
+                        "download",
+                        row.download
+                            .map(|bps| format!("{}%", bps / 100))
+                            .unwrap_or_default(),
+                    )
+                    .text("temporary", if row.temporary { "temp" } else { "" })
+                    .text("watch", watch_tag(row))
+                    .intrinsic_width("watch", watch_width)
+                    .boolean("entry", true)
+                    .boolean("show-download", show_download)
+                    .boolean("show-temporary", show_temp)
+                    .style("marker", theme::tone_style(row.tone))
+                    .style("title", theme::tone_style(row.tone))
+                    .style("download", theme::tone_style(Tone::Transfer))
+                    .style("temporary", theme::dim())
+                    .style("watch", theme::dim()),
+                gap_after: false,
             })
-            .collect();
-        items.push(ListItem::new(Span::styled("  [Add New]", theme::dim())));
+            .collect::<Vec<_>>();
+        rows.push(PresentedRow {
+            key: "add".into(),
+            data: Presentation::default()
+                .text("title", "[Add New]")
+                .style("title", theme::dim()),
+            gap_after: false,
+        });
         let selected = self.focused.then(|| self.cursor.index());
         let center = if self.focused {
             Some(self.cursor.index())
         } else {
             self.props.now_index
         };
-        self.rendered = render_list(
-            frame,
-            area,
-            "Playlist",
-            items,
-            selected,
-            self.focused,
-            center,
-        );
+        self.rendered = renderer
+            .paint_collection(
+                frame,
+                scene.slot("body"),
+                "playlist-row",
+                &rows,
+                selected,
+                center,
+                scene.style("body"),
+            )
+            .unwrap_or_default();
+        scene.paint_overlays(frame);
     }
 }
 
@@ -3974,6 +4028,62 @@ mod playlist_pane_tests {
         });
         pane.cursor.set(target);
         pane
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn file_only_columns_and_wrapped_rows_keep_clicks_on_the_painted_episode() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("templates")).unwrap();
+        std::fs::write(dir.path().join("templates/playlist.xml"), r#"<templates version="1"><template name="playlist-row"><row id="playlist-row"><text class="playlist-watch" bind="watch" if="entry"/><text class="playlist-marker" bind="marker"/><text class="playlist-title" bind="title"/></row></template></templates>"#).unwrap();
+        std::fs::write(
+            dir.path().join("style.css"),
+            "#playlist-frame { border: 0; } .playlist-title { white-space: normal; }",
+        )
+        .unwrap();
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::load(dir.path()).unwrap(),
+        );
+        let (mut pane, hashes) = pane_with_rows(2);
+        pane.props.rows[0].title = "one two 界界 three four five six seven".into();
+        pane.props.rows[1].title = "second.mkv".into();
+        let area = Rect::new(3, 2, 25, 12);
+        let mut terminal = Terminal::new(TestBackend::new(40, 18)).unwrap();
+        let frame = terminal
+            .draw(|f| pane.render_layout(f, area, &mut renderer))
+            .unwrap();
+        let first: String = (3..28).map(|x| frame.buffer[(x, 2)].symbol()).collect();
+        assert!(
+            first.find("maybe").unwrap() < first.find("one").unwrap(),
+            "{first}"
+        );
+        assert_eq!(
+            pane.rendered.hit(4, 3),
+            Some(0),
+            "continuation row still belongs to the first episode"
+        );
+        let second = (2..14)
+            .find(|y| pane.rendered.hit(4, *y) == Some(1))
+            .unwrap();
+        assert!(
+            second > 3,
+            "the next item follows the measured wrapped rows"
+        );
+        let text: String = (3..28)
+            .map(|x| frame.buffer[(x, second)].symbol())
+            .collect();
+        assert!(text.contains("second.mkv"));
+        pane.click(4, second);
+        assert_eq!(pane.act_play(), Some(Msg::PlaySelected(hashes[1])));
+        renderer.install(super::super::layout::LayoutBundle::builtin().unwrap());
+        terminal
+            .draw(|f| pane.render_layout(f, area, &mut renderer))
+            .unwrap();
+        assert_eq!(
+            pane.selected_hash(),
+            Some(hashes[1]),
+            "reload retains controller selection"
+        );
     }
 
     /// A long focused playlist keeps context on both sides of the cursor

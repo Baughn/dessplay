@@ -1651,6 +1651,12 @@ stored independently of application settings and authored files, by source,
 revision, and split ID. A successfully installed revision clears that source's
 old sizes, including on restart. Legacy PaneLayout percentages import once.
 
+Migrated collections expose unpadded semantic fields. Shared intrinsic column
+widths derive from unwrapped content. Rows measure wrapped height only after
+width allocation; painting and pointer targets consume that same measurement.
+Selection and centering are separate controller policies. Offscreen items remain
+navigable, while only the viewport and nearby rows are instantiated as layout trees.
+
 Chat attachment chrome belongs to the layout template. The bundled frame
 starts after the measured timestamp and separator, and its border and spacing
 fit within the existing one-third-of-log-height limit. If no interior fits,

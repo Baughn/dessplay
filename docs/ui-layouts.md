@@ -3,8 +3,8 @@
 The layout migration is in progress. Currently the shared settings/List-entry
 forms, their semantic label/value/annotation rows, the F11 log viewer's
 header/body/footer, application pane composition, chat/input/suggestions,
-attachments, recent-chat projection, and separate subtitle rows use local
-templates. Message rich-text composition and other pane interiors still use
+attachments, recent-chat projection, separate subtitle rows, Users and Playlist
+use local templates. Message rich-text composition and other pane interiors still use
 their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
@@ -153,6 +153,38 @@ children, with a ten-percent container share minimum where it fits. A resizable
 container must use flex layout. CSS grid composition remains available without
 drag handles. `app` bindings are the slots `chat`, `subtitles`, `series`, `users`,
 `playlist`, `health`, `status`, `keybar` and boolean `separate-subtitles`.
+
+Users and Playlist composition and rows live in `templates/collections.xml`.
+`users` and `playlist` expose `title` and a `body` slot. `user-row` fields are
+`name`, `status`, `last-seen`, and `holders`; booleans are `online`, `offline`,
+and `seeders`. Seeder summaries are read-only. `playlist-row` fields are
+`marker`, `title`, `download`, `temporary`, and `watch`; booleans are `entry`,
+`show-download`, and `show-temporary`. The synthetic Add New row uses the same
+template with `entry` false.
+
+Move the watch column before the title using only the row template:
+
+```xml
+<template name="playlist-row">
+  <row id="playlist-row">
+    <text class="playlist-watch" bind="watch" if="entry" />
+    <text class="playlist-marker" bind="marker" />
+    <text class="playlist-title" bind="title" />
+    <text class="playlist-download" bind="download" if="show-download" />
+    <text class="playlist-temporary" bind="temporary" if="show-temporary" />
+  </row>
+</template>
+```
+
+The watch column receives an intrinsic width from the widest unpadded watch
+label; CSS can override it. The default title minimum reserves six cells plus
+the two-cell marker before less important columns clip at the viewport edge.
+Rows measure their height after width allocation. For example,
+`.playlist-title { white-space: normal; }` wraps titles, and row padding adds
+space without changing which episode a click selects. Only rows around the
+viewport become layout trees; measurements cache by semantic key, presentation,
+style revision, and width. Keyboard selection remains controller-owned and
+available for offscreen items.
 
 Chat composition lives in `templates/chat.xml`. `chat` has slots `log`,
 `suggestions`, `input`, title bindings `title` and `input-title`, and boolean

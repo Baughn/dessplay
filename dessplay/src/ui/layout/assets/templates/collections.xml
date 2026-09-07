@@ -1,0 +1,25 @@
+<templates version="1">
+  <template name="playlist">
+    <scroll id="playlist-frame" title="title"><slot name="body" /></scroll>
+  </template>
+  <template name="playlist-row">
+    <row id="playlist-row">
+      <text class="playlist-marker" bind="marker" />
+      <text class="playlist-title" bind="title" />
+      <text class="playlist-download" bind="download" if="show-download" />
+      <text class="playlist-temporary" bind="temporary" if="show-temporary" />
+      <text class="playlist-watch" bind="watch" if="entry" />
+    </row>
+  </template>
+  <template name="users">
+    <scroll id="users-frame" title="title"><slot name="body" /></scroll>
+  </template>
+  <template name="user-row">
+    <row id="user-row">
+      <text class="user-name" bind="name" />
+      <text bind="status" if="online" />
+      <text bind="last-seen" if="offline" />
+      <text bind="holders" if="seeders" />
+    </row>
+  </template>
+</templates>

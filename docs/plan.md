@@ -1866,7 +1866,9 @@ player OSD, and standalone diagnostic output are outside scope.
   source-mapped span layout/caching.
 - [x] Root composition, markup focus order, painted hit/splitter geometry,
   revision-keyed local drag persistence, and one-time PaneLayout import.
-- [ ] Users, Playlist, all Series modes, browsers/search, and semantic collection cells.
+- [x] Users and Playlist semantic rows/fields, measured collection virtualization,
+  and shared paint/hit geometry for wrapped items.
+- [ ] All Series modes, browsers/search, and remaining semantic collection cells.
 - [ ] Remaining forms/dialogs, changelog, progress/status/keybars, modal layers,
   every roguelike page and recovery panel; remove production legacy adapters.
 - [ ] File-only
