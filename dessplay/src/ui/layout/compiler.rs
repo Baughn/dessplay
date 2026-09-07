@@ -201,6 +201,36 @@ impl Default for TemplateSchema {
                 ][..],
                 &["wide", "has-reach"][..],
             ),
+            (
+                "series",
+                &["body"][..],
+                &["title", "filter-label"][..],
+                &["filter-visible"][..],
+            ),
+            (
+                "series-row",
+                &[][..],
+                &[
+                    "title",
+                    "year",
+                    "marker",
+                    "count",
+                    "unavailable",
+                    "name",
+                    "nero",
+                    "episode",
+                    "available",
+                    "watchers",
+                ][..],
+                &[
+                    "franchise",
+                    "heading",
+                    "entry",
+                    "has-year",
+                    "has-nero",
+                    "unlinked",
+                ][..],
+            ),
             ("playlist", &["body"][..], &["title"][..], &[][..]),
             ("users", &["body"][..], &["title"][..], &[][..]),
             (
@@ -302,6 +332,10 @@ impl Default for TemplateSchema {
             "rich-text".into(),
             [("body".into(), BindingType::Rich)].into(),
         );
+        templates
+            .entry("series".into())
+            .or_default()
+            .insert("filter".into(), BindingType::Rich);
         templates
             .entry("chat-message".into())
             .or_default()
@@ -618,11 +652,14 @@ fn validate(
         }
     }
     if node.attrs.contains_key("placement")
-        && !matches!(node.attr("placement"), "center" | "bottom" | "after")
+        && !matches!(
+            node.attr("placement"),
+            "center" | "bottom" | "after" | "before"
+        )
     {
         return Err(error(
             node,
-            "overlay placement must be center, bottom, or after",
+            "overlay placement must be center, bottom, before, or after",
         ));
     }
     for child in &node.children {

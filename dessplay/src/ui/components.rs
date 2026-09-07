@@ -16,7 +16,7 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Rect, Size};
 use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, ListItem, Paragraph};
+use tuirealm::ratatui::widgets::{Block, Borders, Paragraph};
 use tuirealm::state::State;
 
 use super::msg::Msg;
@@ -26,8 +26,7 @@ use super::props::{
 };
 use super::theme;
 use super::widgets::{
-    Align, Binding, Cell, KeyPattern, Keymap, LineBuffer, ListCursor, RenderedList, TextField,
-    render_list, table_row, truncate_display,
+    Binding, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, truncate_display,
 };
 
 /// A key the pane responds to, for the keybinding bar.
@@ -288,7 +287,7 @@ struct RowRecord {
 
 /// The chat log viewport the last render actually drew: its rect plus a
 /// [`RowRecord`] per visible body row. The chat-pane analogue of
-/// [`RenderedList`] — click and selection mapping use render-recorded
+/// [`super::layout::RenderedCollection`] — click and selection mapping use render-recorded
 /// geometry, never a click-time re-derivation. Zero-default misses every
 /// click until the first draw.
 #[derive(Default)]
@@ -2704,7 +2703,7 @@ pub struct SeriesPane {
     cursor: ListCursor,
     focused: bool,
     /// The viewport of the last render, for mouse hit-testing.
-    rendered: RenderedList,
+    rendered: super::layout::RenderedCollection,
 }
 
 impl SeriesPane {
@@ -3004,34 +3003,67 @@ impl SeriesPane {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedRow, RichSpan};
         let base = match self.mode {
             SeriesMode::Recent => "Recent Series",
             SeriesMode::All => "All Series",
             SeriesMode::TheList => "The List",
         };
-        // Surface the filter so typing is visible (no silent state); show
-        // the `/` cue the moment filtering starts, even before any text.
-        // While editing, the filter's cursor renders as a reversed cell —
-        // it is a full text field (word motion, Home/End), not append-only.
-        let title: Line =
-            if self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty()) {
-                let mut spans = vec![Span::raw(format!("{base}  /"))];
-                if self.filtering {
-                    spans.extend(self.filter.cursor_spans());
-                } else {
-                    spans.push(Span::raw(self.filter.text()));
-                }
-                Line::from(spans)
-            } else {
-                Line::from(base)
-            };
-        let items: Vec<ListItem> = match self.mode {
+        let filter = if self.filtering {
+            self.filter.cursor_spans()
+        } else {
+            vec![Span::raw(self.filter.text())]
+        };
+        let mut data = Presentation::default()
+            .text("title", base)
+            .text("filter-label", "  /")
+            .boolean(
+                "filter-visible",
+                self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty()),
+            )
+            .rich(
+                "filter",
+                filter
+                    .into_iter()
+                    .map(|span| RichSpan {
+                        text: span.content.into_owned(),
+                        style: span.style,
+                        ..Default::default()
+                    })
+                    .collect(),
+            );
+        if self.focused {
+            data = data.state("series-frame", "focus");
+        }
+        let Ok(scene) = renderer.arrange("series", area, &data) else {
+            return;
+        };
+        scene.paint(frame);
+        let rows: Vec<PresentedRow> = match self.mode {
             SeriesMode::Recent | SeriesMode::All => self
                 .franchises
                 .iter()
-                .map(|row| {
-                    let year = row.year.map(|y| format!(" ({y})")).unwrap_or_default();
-                    ListItem::new(format!("{}{year}", row.title))
+                .map(|row| PresentedRow {
+                    key: format!("franchise/{:?}", row.key),
+                    data: Presentation::default()
+                        .boolean("franchise", true)
+                        .text("title", &row.title)
+                        .boolean("has-year", row.year.is_some())
+                        .text(
+                            "year",
+                            row.year.map(|year| format!("({year})")).unwrap_or_default(),
+                        ),
+                    gap_after: false,
                 })
                 .collect(),
             SeriesMode::TheList => self
@@ -3040,91 +3072,80 @@ impl SeriesPane {
                 .map(|row| match row {
                     ListNavRow::Heading(g) => {
                         let group = &self.groups[*g];
-                        let marker = if self.expanded(group) { "▾" } else { "▸" };
-                        ListItem::new(Span::styled(
-                            format!("{marker} {} ({})", group.heading, group.rows.len()),
-                            theme::dim(),
-                        ))
+                        PresentedRow {
+                            key: format!("heading/{:?}", group.heading),
+                            data: Presentation::default()
+                                .boolean("heading", true)
+                                .text("marker", if self.expanded(group) { "▾" } else { "▸" })
+                                .text("title", &group.heading)
+                                .text("count", format!("({})", group.rows.len()))
+                                .style("marker", theme::dim())
+                                .style("title", theme::dim())
+                                .style("count", theme::dim()),
+                            gap_after: false,
+                        }
                     }
                     ListNavRow::Entry(g, e) => {
-                        // A plain table: episode #, out-this-week, and
-                        // watchers are the spreadsheet's load-bearing
-                        // columns, so they get fixed-width, aligned cells
-                        // instead of drifting with the name's length
-                        // (`table_row` truncates the name cell and keeps
-                        // the columns put).
-                        const EP_WIDTH: usize = 8;
-                        const AVAIL_WIDTH: usize = 3;
-                        const WATCHERS_WIDTH: usize = 10;
-                        let inner = area.width.saturating_sub(2) as usize;
-
-                        let entry = &self.groups[*g].rows[*e];
-                        // Nothing to watch right now (no fresh episode,
-                        // no unwatched file): the whole row dims — the
-                        // display twin of the Recency sort's bottom
-                        // partition.
+                        let group = &self.groups[*g];
+                        let entry = &group.rows[*e];
                         let name_style = if entry.dimmed {
                             theme::dim()
                         } else {
                             Style::default()
                         };
-                        let mut flex = vec![Span::raw("  ")];
-                        // A search that came up empty is a durable "AniDB
-                        // doesn't have this" callout (design.md, Series
-                        // Identity) -- distinct from an unlinked entry
-                        // nobody's tried linking yet, which gets no marker.
-                        if entry.series_id.is_none() && entry.anidb_unavailable {
-                            flex.push(Span::styled("⊘ ", theme::dim()));
+                        PresentedRow {
+                            key: format!("entry/{:?}/{:?}", group.heading, entry.id),
+                            data: Presentation::default()
+                                .boolean("entry", true)
+                                .boolean(
+                                    "unlinked",
+                                    entry.series_id.is_none() && entry.anidb_unavailable,
+                                )
+                                .text("unavailable", "⊘")
+                                .style("unavailable", theme::dim())
+                                .text("name", &entry.name)
+                                .style("name", name_style)
+                                .boolean("has-nero", entry.nero_name.is_some())
+                                .text(
+                                    "nero",
+                                    entry
+                                        .nero_name
+                                        .as_ref()
+                                        .map(|name| format!("“{name}”"))
+                                        .unwrap_or_default(),
+                                )
+                                .style("nero", theme::dim())
+                                .text("episode", entry.next_ep.as_deref().unwrap_or(""))
+                                .style("episode", name_style)
+                                .text(
+                                    "available",
+                                    if entry.next_ep.is_some() && entry.available {
+                                        "✓"
+                                    } else {
+                                        ""
+                                    },
+                                )
+                                .style("available", theme::tone_style(Tone::Good))
+                                .text("watchers", &entry.watchers)
+                                .style("watchers", theme::dim()),
+                            gap_after: false,
                         }
-                        flex.push(Span::styled(entry.name.clone(), name_style));
-                        if let Some(nero) = &entry.nero_name {
-                            flex.push(Span::styled(format!(" “{nero}”"), theme::dim()));
-                        }
-
-                        let avail_text = if entry.next_ep.is_some() && entry.available {
-                            "✓"
-                        } else {
-                            ""
-                        };
-                        let cells = vec![
-                            Cell::new(
-                                entry.next_ep.as_deref().unwrap_or(""),
-                                if entry.dimmed {
-                                    theme::dim()
-                                } else {
-                                    theme::tone_style(Tone::Normal)
-                                },
-                                EP_WIDTH,
-                                Align::Left,
-                            ),
-                            Cell::new(
-                                avail_text,
-                                theme::tone_style(Tone::Good),
-                                AVAIL_WIDTH,
-                                Align::Center,
-                            ),
-                            Cell::new(
-                                entry.watchers.clone(),
-                                theme::dim(),
-                                WATCHERS_WIDTH,
-                                Align::Left,
-                            ),
-                        ];
-                        ListItem::new(table_row(inner, flex, cells))
                     }
                 })
                 .collect(),
         };
-        let selected = (self.focused && !items.is_empty()).then(|| self.cursor.index());
-        self.rendered = render_list(
-            frame,
-            area,
-            title,
-            items,
-            selected,
-            self.focused,
-            Some(self.cursor.index()),
-        );
+        self.rendered = renderer
+            .paint_collection(
+                frame,
+                scene.slot("body"),
+                "series-row",
+                &rows,
+                self.focused.then(|| self.cursor.index()),
+                Some(self.cursor.index()),
+                scene.style("body"),
+            )
+            .unwrap_or_default();
+        scene.paint_overlays(frame);
     }
 }
 
@@ -4087,6 +4108,59 @@ mod series_pane_tests {
         p.set_list_sort(ListSort::Alphabetical);
         p.set_groups(&fixture_groups(ListSort::Alphabetical));
         insta::assert_snapshot!(render_list_pane(&mut p));
+    }
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn series_template_reorders_fields_and_keeps_the_selected_entry_on_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/series-row.xml"), r#"<templates version="1"><template name="series-row"><column><text bind="title" if="heading"/><column if="entry"><text bind="episode"/><text bind="name" style="white-space: normal"/></column></column></template></templates>"#).unwrap();
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::load(directory.path()).unwrap(),
+        );
+        let mut pane = SeriesPane {
+            focused: true,
+            ..Default::default()
+        };
+        pane.set_groups(&fixture_groups(ListSort::Recency));
+        let expected = pane.groups[0].rows[0].id;
+        let mut terminal = Terminal::new(TestBackend::new(30, 15)).unwrap();
+        terminal
+            .draw(|frame| pane.render_layout(frame, Rect::new(3, 2, 24, 11), &mut renderer))
+            .unwrap();
+        // First entry's episode and name occupy separate rows after the heading.
+        pane.click(4, 5);
+        assert_eq!(pane.act_list_edit(), Some(Msg::EditListEntry(expected)));
+        renderer.install(super::super::layout::LayoutBundle::builtin().unwrap());
+        terminal
+            .draw(|frame| pane.render_layout(frame, Rect::new(3, 2, 24, 11), &mut renderer))
+            .unwrap();
+        assert_eq!(pane.act_list_edit(), Some(Msg::EditListEntry(expected)));
+    }
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn series_filter_cursor_is_painted_in_the_measured_caption() {
+        let mut pane = SeriesPane {
+            mode: SeriesMode::All,
+            focused: true,
+            ..Default::default()
+        };
+        pane.act_filter_start();
+        pane.filter.set_text("filter");
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::builtin().unwrap(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| pane.render_layout(frame, Rect::new(2, 3, 35, 8), &mut renderer))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(3, 3)].symbol(), "A");
+        assert!(
+            buffer[(22, 3)]
+                .modifier
+                .contains(tuirealm::ratatui::style::Modifier::REVERSED)
+        );
     }
 }
 

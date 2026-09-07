@@ -68,3 +68,12 @@ scroll > slot { flex-grow: 1; }
 .chat-separator { height: 1lh; color: darkgray; }
 .chat-day-label { margin: 0 1ch; }
 .chat-day-rule { flex-grow: 1; flex-shrink: 1; flex-basis: 0; height: 1lh; border-top: 1; }
+
+#series-frame { border: 1; }
+#series-frame:focus { border-color: yellow; }
+#series-caption { height: 1lh; max-width: 100%; }
+.series-entry { padding: 0 0 0 2ch; }
+.series-name { flex-grow: 1; flex-shrink: 1; min-width: 0; text-overflow: ellipsis; }
+.series-episode { width: 8ch; margin: 0 0 0 1ch; }
+.series-available { width: 3ch; text-align: center; margin: 0 0 0 1ch; }
+.series-watchers { width: 10ch; margin: 0 0 0 1ch; }

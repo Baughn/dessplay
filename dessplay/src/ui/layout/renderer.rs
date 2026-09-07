@@ -1360,6 +1360,11 @@ fn collect(
             .nodes
             .first()
             .map_or(clip, |root| root.content.intersection(root.clip))
+    } else if built.node.tag == "overlay" && built.node.attr("placement") == "before" {
+        scene
+            .nodes
+            .first()
+            .map_or(clip, |root| root.bounds.intersection(root.clip))
     } else if built.node.tag == "overlay" && built.node.attr("placement") == "center" {
         clip.intersection(containing.inner(tuirealm::ratatui::layout::Margin::new(1, 1)))
     } else {

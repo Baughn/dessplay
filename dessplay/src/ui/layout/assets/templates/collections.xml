@@ -1,4 +1,22 @@
 <templates version="1">
+  <template name="series">
+    <scroll id="series-frame">
+      <overlay id="series-caption" placement="before"><flow separator=""><text bind="title"/><text bind="filter-label" if="filter-visible"/><rich bind="filter" if="filter-visible"/></flow></overlay>
+      <slot name="body"/>
+    </scroll>
+  </template>
+  <template name="series-row">
+    <box>
+      <flow class="series-franchise" if="franchise"><text bind="title"/><text bind="year" if="has-year"/></flow>
+      <flow class="series-heading" if="heading"><text bind="marker"/><text bind="title"/><text bind="count"/></flow>
+      <row class="series-entry" if="entry">
+        <flow class="series-name"><text bind="unavailable" if="unlinked"/><text bind="name"/><text bind="nero" if="has-nero"/></flow>
+        <text class="series-episode" bind="episode"/>
+        <text class="series-available" bind="available"/>
+        <text class="series-watchers" bind="watchers"/>
+      </row>
+    </box>
+  </template>
   <template name="playlist">
     <scroll id="playlist-frame" title="title"><slot name="body" /></scroll>
   </template>

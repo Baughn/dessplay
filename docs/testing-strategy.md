@@ -992,3 +992,7 @@ redraw adds none and one arriving message adds one. Spoiler animation checks
 the same arrangement counter. Compiler tests reject ambiguous prefix positions
 and duplicate rich action bindings; fixed/natural cache-mode and wide-glyph
 prefix regressions were confirmed failing before their fixes.
+
+Series tests keep both existing default List snapshots, exercise file-only
+column-to-row reordering and edit-target retention on reload, and verify the
+filter cursor on a measured caption at a nonzero origin.

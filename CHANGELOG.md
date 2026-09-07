@@ -61,6 +61,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: Wide characters after a long chat prefix continue onto the next line
   instead of disappearing when the remaining space is too narrow.
 
+- Added: Customize Recent Series, All Series, and The List in layout files,
+  including episode and watcher columns, group headings, and the filter caption.
+
 ## 2026-09-06
 
 - Improved: The Waiting Below now has branching dungeon routes, optional

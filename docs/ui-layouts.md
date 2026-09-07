@@ -3,7 +3,7 @@
 The layout migration is in progress. Currently the shared settings/List-entry
 forms, their semantic label/value/annotation rows, the F11 log viewer's
 controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
-attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist,
+attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
 and the roguelike frame, game, recovery, document, equipment, and ending pages
 use local templates. Other pane interiors still use their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
@@ -70,7 +70,8 @@ clipped scroll viewport whose controller supplies the visible contents.
 parent content, inset one cell horizontally. Its dimensions and margins
 are styleable; `placement="center"` centers the allocated box with a one-cell
 inset on all sides. `placement="after"` attaches a popup below its parent control
-and lets it escape that control's clip while staying inside the entry viewport. Capture remains in controllers. `text bind="field"` paints typed text;
+and lets it escape that control's clip while staying inside the entry viewport. `placement="before"` attaches above its parent and may paint
+on the entry border, for measured captions containing an editor cursor. Capture remains in controllers. `text bind="field"` paints typed text;
 `slot name="field"` reserves a primitive's content rectangle. Containers accept
 `title` and `title-bottom` bindings for terminal frame captions.
 `if="field"` tests a named boolean. `id`, `class`, and `style` supply selector
@@ -308,3 +309,14 @@ The parser caps source files at 1 MiB, XML nesting at 64, expanded templates
 at 4096 nodes, and conditional style validation and variable expansion at
 bounded work budgets. An over-budget candidate is rejected rather than
 blocking or allocating without bounds on the UI thread.
+
+## Series rows
+
+`series` exposes `title`, `filter-label`, rich `filter`, boolean `filter-visible`,
+and a `body` slot. Its caption is an attached flow, so the filter cursor keeps
+its measured cell when the pane moves. `series-row` exposes `title`, `year`,
+`marker`, `count`, `unavailable`, `name`, `nero`, `episode`, `available`, and
+`watchers`; booleans are `franchise`, `heading`, `entry`, `has-year`, `has-nero`,
+and `unlinked`. Move these text elements to reorder columns or put them on
+separate rows. Group headings and entries retain controller identities across
+reload, wrapping, and changes in the List's ordering.

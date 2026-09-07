@@ -2847,7 +2847,7 @@ impl Ui {
             // (Intermixed shows subtitles inside the chat log).
             self.chat.render_layout(frame, left, renderer);
         }
-        self.series.view(frame, series_area);
+        self.series.render_layout(frame, series_area, renderer);
         self.users.render_layout(frame, users_area, renderer);
         self.playlist.render_layout(frame, playlist_area, renderer);
         let progress = self.status.progress_text();

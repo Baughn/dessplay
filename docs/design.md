@@ -1682,7 +1682,9 @@ wrapping rules apply to the enclosing flow; unsupported inline box rules fail
 validation. Recovery panels use explicit centered overlays with a one-cell inset,
 and their frame captions remain independent of overflowing content. Attached
 dropdowns follow their parent control and may escape its clip only within the
-entry-template viewport. Hiding the parent also hides its dropdown.
+entry-template viewport. Before-attached overlays can paint on the entry border
+for captions containing measured text and filter cursors. Hiding the parent
+also hides its attached overlays.
 
 RGB text is quantized to the finite terminal palette in limited mode.
 Explicit background colors survive the legacy theme adapter during the

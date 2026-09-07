@@ -27,6 +27,11 @@ and equal-width ASCII scrambling refresh painted spans without rebuilding
 Taffy geometry or source/action regions. Prefix/body fragments can share a
 visual row; their measured source records also supply selection highlights.
 
+Series modes use the same keyed collection renderer as Users and Playlist.
+List keys include group and entry identity, while franchise keys use the
+controller franchise identity. The caption is a before-attached flow whose
+rich filter binding contains the existing LineBuffer cursor spans.
+
 The filesystem worker owns notify and compiles candidate bundles after
 debouncing. A separate capacity-one channel retries full delivery, and an
 atomic requested generation makes queued stale candidates ineligible. The

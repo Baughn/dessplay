@@ -548,6 +548,16 @@ marks are source-indexed paint data, and ASCII scrambling with unchanged word
 boundaries refreshes cached spans without remeasuring. Arbitrary Unicode or
 style changes still take the normal measured path.
 
+### Series rows and filter captions share measured geometry (2026-09-07)
+
+Recent and All Series, List headings, and List entries now supply semantic
+fields without fixed-column padding. The collection renderer retains existing
+centering and controller selection, including duplicate entries under distinct
+groups. A before-attached flow paints the caption and editor cursor on the
+frame edge, avoiding a widget-owned coordinate calculation or a second text
+measurement path for rich captions. Existing default List snapshots remain
+unchanged; XML-only row reordering retains edit targets through reload.
+
 ### Explicit dark theme on true-color terminals
 
 **Rule:** A true-color terminal gets an explicit app-wide dark theme with RGB semantic foregrounds; dim text is an explicit muted RGB, never SGR 2; limited-color terminals keep their own theme and the ten-color palette; see [design.md](design.md#ui-principles).
