@@ -13,7 +13,7 @@ use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, NoUserEvent};
 use tuirealm::props::{AttrValue, Attribute, QueryResult};
 use tuirealm::ratatui::Frame;
-use tuirealm::ratatui::layout::{Constraint, Layout, Rect, Size};
+use tuirealm::ratatui::layout::{Rect, Size};
 use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
@@ -74,6 +74,7 @@ const CHAT_PAGE_STEP: usize = 5;
 /// smaller than a page, matching the wheel's fine-grained feel.
 const CHAT_WHEEL_STEP: usize = 3;
 /// Indent applied to wrapped continuation lines in the chat log.
+#[cfg(test)]
 const CHAT_WRAP_INDENT: usize = 2;
 
 /// Frames of re-randomization a spoiler click plays before settling.
@@ -303,7 +304,13 @@ struct RenderedChatLog {
 impl RenderedChatLog {
     /// The spoiler under a screen position, if any (border cells miss).
     fn hit(&self, column: u16, row: u16) -> Option<&SpoilerKey> {
-        let body_row = row.checked_sub(self.area.y + 1)? as usize;
+        if !self
+            .area
+            .contains(tuirealm::ratatui::layout::Position::new(column, row))
+        {
+            return None;
+        }
+        let body_row = row.checked_sub(self.area.y)? as usize;
         self.rows
             .get(body_row)?
             .hits
@@ -315,7 +322,13 @@ impl RenderedChatLog {
     /// Map a screen position to a text point, exactly: misses (borders,
     /// the input line, separator rows) return `None`. Anchors a drag.
     fn point_at(&self, column: u16, row: u16) -> Option<SelPoint> {
-        let body_row = row.checked_sub(self.area.y + 1)? as usize;
+        if !self
+            .area
+            .contains(tuirealm::ratatui::layout::Position::new(column, row))
+        {
+            return None;
+        }
+        let body_row = row.checked_sub(self.area.y)? as usize;
         let record = self.rows.get(body_row)?;
         record.selectable.then(|| Self::point_in(record, column))
     }
@@ -329,7 +342,7 @@ impl RenderedChatLog {
         if self.rows.is_empty() {
             return None;
         }
-        let body_row = (row.saturating_sub(self.area.y + 1) as usize).min(self.rows.len() - 1);
+        let body_row = (row.saturating_sub(self.area.y) as usize).min(self.rows.len() - 1);
         let record = &self.rows[body_row];
         if record.selectable {
             return Some(Self::point_in(record, column));
@@ -387,6 +400,8 @@ pub struct ChatPane {
     focused: bool,
     /// Visual lines scrolled up from the bottom (0 = pinned to newest).
     scroll_offset: usize,
+    rendered_offset: usize,
+    scroll_anchor: Option<(LineKey, usize, usize)>,
     /// Text of every message this client has sent this session, for
     /// shell-style Up/Down recall. Never touches the synced chat.
     sent_history: Vec<String>,
@@ -471,6 +486,8 @@ impl Default for ChatPane {
             input: TextField::new("say something…"),
             focused: false,
             scroll_offset: 0,
+            rendered_offset: 0,
+            scroll_anchor: None,
             sent_history: Vec::new(),
             history_pos: None,
             usernames: Vec::new(),
@@ -1077,22 +1094,34 @@ impl ChatPane {
 
     /// Read-only live tail beneath the log viewer. Reuse chat wrapping and
     /// spoiler styling without changing the normal pane's scroll or draft.
-    pub(crate) fn render_recent(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default().borders(Borders::ALL).title("Recent chat");
-        let inner = block.inner(area);
+    pub(crate) fn render_recent(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        let Ok(scene) = renderer.arrange(
+            "recent-chat",
+            area,
+            &super::layout::Presentation::default().text("title", "Recent chat"),
+        ) else {
+            return;
+        };
+        let inner = scene.slot("log");
         frame.render_widget(tuirealm::ratatui::widgets::Clear, area);
-        frame.render_widget(block, area);
+        scene.paint(frame);
         let mut rows: Vec<ListItem> = self
             .lines
             .iter()
             .rev()
             .flat_map(|line| {
-                wrap_chat_line(
+                wrap_chat_line_with_indent(
                     line,
                     inner.width as usize,
                     &self.usernames,
                     &self.me,
                     &self.spoilers,
+                    scene.hanging_indent("log"),
                 )
                 .into_iter()
                 .rev()
@@ -1102,52 +1131,70 @@ impl ChatPane {
             .collect();
         rows.reverse();
         frame.render_widget(List::new(rows), inner);
+        frame.buffer_mut().set_style(inner, scene.style("log"));
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let [log_area, input_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);
-        // When the input starts with `/`, carve the bottom of the log
-        // area for a grey, filtered list of matching commands — pure
-        // discoverability, captures no input. Collapses when the input
-        // no longer matches anything.
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
         let suggestions = super::commands::matching(&self.text());
-        let log_area = if suggestions.is_empty() {
-            log_area
-        } else {
-            let height = suggestions.len() as u16;
-            let [log_area, sugg_area] =
-                Layout::vertical([Constraint::Min(1), Constraint::Length(height)]).areas(log_area);
-            // Tabulate: every help string starts at the same column. The
-            // "name args" width is measured across the whole command table
-            // (not just the filtered subset) so the column is stable as
-            // the list narrows.
-            let name_col = super::commands::SLASH_COMMANDS
-                .iter()
-                .map(|cmd| super::commands::signature(cmd).chars().count())
-                .max()
-                .unwrap_or(0);
-            let items: Vec<ListItem> = suggestions
-                .iter()
-                .take(height as usize)
-                .map(|cmd| {
-                    let label = format!(
-                        "{:<width$}   {}",
-                        super::commands::signature(cmd),
-                        cmd.help,
-                        width = name_col,
-                    );
-                    ListItem::new(Span::styled(label, theme::dim()))
-                })
-                .collect();
-            frame.render_widget(List::new(items), sugg_area);
-            log_area
+        let mut data = super::layout::Presentation::default()
+            .text("title", "Chat")
+            .boolean("suggesting", !suggestions.is_empty())
+            .slot(
+                "suggestions",
+                0,
+                suggestions.len().min(u16::MAX as usize) as u16,
+            )
+            .slot("input", 0, 1);
+        if self.focused {
+            data = data
+                .state("chat-log-frame", "focus")
+                .state("chat-input-frame", "focus");
+        }
+        let Ok(scene) = renderer.arrange("chat", area, &data) else {
+            return;
         };
-        let width = log_area.width.saturating_sub(2) as usize;
-        let visible = log_area.height.saturating_sub(2) as usize;
-        // An inline image may take at most a third of the log viewport
-        // (design.md, Inline chat images), and always at least one row.
-        let max_image_rows = (visible / 3).max(1) as u16;
+        scene.paint(frame);
+        let log_inner = scene.slot("log");
+        let input_area = scene.slot("input");
+        let sugg_area = scene.slot("suggestions");
+        let suggestion_rows = suggestions
+            .iter()
+            .map(|cmd| super::layout::PresentedRow {
+                key: cmd.name.into(),
+                data: super::layout::Presentation::default()
+                    .text("signature", super::commands::signature(cmd))
+                    .text("help", cmd.help),
+                gap_after: false,
+            })
+            .collect::<Vec<_>>();
+        let _ = renderer.paint_rows(
+            frame,
+            sugg_area,
+            "chat-suggestion",
+            &suggestion_rows,
+            None,
+            Style::default(),
+        );
+        let width = log_inner.width as usize;
+        let visible = log_inner.height as usize;
+        let max_image_rows = (visible / 3) as u16;
+        if log_inner.is_empty() {
+            self.rendered = RenderedChatLog::default();
+            self.input
+                .render_content(frame, input_area, self.focused, false);
+            return;
+        }
         // Flatten every message into wrapped visual rows (each carrying
         // its clickable spoiler ranges and selection geometry), then
         // reserve blank rows under a message whose image is ready. A URL
@@ -1156,12 +1203,19 @@ impl ChatPane {
         // cache. Each band records where it starts and its fitted cell
         // size (≤ ⅓ of the viewport high, aspect preserved).
         let mut rows: Vec<(usize, ChatRow)> = Vec::new();
-        let mut image_bands: Vec<(String, usize, Size)> = Vec::new();
+        let mut image_bands: Vec<(String, usize, super::layout::RenderedScene)> = Vec::new();
         for (idx, line) in self.lines.iter().enumerate() {
             rows.extend(
-                wrap_chat_line(line, width, &self.usernames, &self.me, &self.spoilers)
-                    .into_iter()
-                    .map(|row| (idx, row)),
+                wrap_chat_line_with_indent(
+                    line,
+                    width,
+                    &self.usernames,
+                    &self.me,
+                    &self.spoilers,
+                    scene.hanging_indent("log"),
+                )
+                .into_iter()
+                .map(|row| (idx, row)),
             );
             if self.suppress_images {
                 continue;
@@ -1175,14 +1229,18 @@ impl ChatPane {
             if image_bands.iter().any(|(seen, ..)| seen == url) {
                 continue;
             }
-            let size = ratatui_image::Resize::Fit(None).size_for(
+            let Some(attachment) = renderer.attachment(
+                url,
+                &line.time,
+                Size::new(width as u16, max_image_rows),
                 image,
                 picker.font_size(),
-                Size::new(width as u16, max_image_rows),
-            );
-            let size = Size::new(size.width.max(1), size.height.clamp(1, max_image_rows));
-            image_bands.push((url.clone(), rows.len(), size));
-            for _ in 0..size.height {
+            ) else {
+                continue;
+            };
+            let height = attachment.occupied_height().min(max_image_rows);
+            image_bands.push((url.clone(), rows.len(), attachment));
+            for _ in 0..height {
                 rows.push((
                     idx,
                     ChatRow {
@@ -1196,39 +1254,60 @@ impl ChatPane {
                 ));
             }
         }
+        // A stable source anchor retains context when wrapping, files, or history
+        // changes. Explicit scroll input still chooses a new visual offset.
+        if self.scroll_offset > 0
+            && self.scroll_offset == self.rendered_offset
+            && let Some((key, source, old_row)) = &self.scroll_anchor
+            && let Some(line) = self.lines.iter().position(|line| key.matches(line))
+            && let Some(at) = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, (index, row))| {
+                    *index == line && row.selectable && row.char_start <= *source
+                })
+                .map(|(i, _)| i)
+                .next_back()
+        {
+            let start = at.saturating_sub(*old_row);
+            self.scroll_offset = rows.len().saturating_sub(start + visible);
+        }
         // Clamp the scroll so it can never run past the top of the log.
         let max_offset = rows.len().saturating_sub(visible);
         self.scroll_offset = self.scroll_offset.min(max_offset);
         let end = rows.len().saturating_sub(self.scroll_offset);
         let start = end.saturating_sub(visible);
+        self.rendered_offset = self.scroll_offset;
+        self.scroll_anchor = rows[start..end]
+            .iter()
+            .enumerate()
+            .find(|(_, (_, row))| row.selectable)
+            .map(|(position, (idx, row))| {
+                (LineKey::of(&self.lines[*idx]), row.char_start, position)
+            });
         // The bands intersecting the viewport, as (url, fitted size,
         // row offset relative to the viewport top — negative when the
         // band starts above it). The sliced widget crops the *fitted*
         // image by rows, so scrolling reveals it gradually.
-        let mut image_draws: Vec<(String, Size, i16)> = Vec::new();
-        let mut image_areas: Vec<Rect> = Vec::new();
-        for (url, first_row, size) in image_bands {
+        let mut image_draws = Vec::new();
+        let mut image_areas = Vec::new();
+        for (url, first_row, attachment) in image_bands {
             let band_top = first_row as i64 - start as i64;
-            let band_bottom = band_top + size.height as i64;
+            let band_bottom = band_top + i64::from(attachment.occupied_height());
             if band_bottom <= 0 || band_top >= visible as i64 {
                 continue;
             }
-            let visible_top = band_top.max(0) as u16;
-            let visible_bottom = band_bottom.min(visible as i64) as u16;
-            image_areas.push(Rect {
-                x: log_area.x + 1,
-                y: log_area.y + 1 + visible_top,
-                width: size.width.min(log_area.width.saturating_sub(2)),
-                height: visible_bottom - visible_top,
-            });
-            image_draws.push((url, size, band_top as i16));
+            let pixels = attachment.scrolled_slot("image", log_inner, band_top as i32);
+            if !pixels.is_empty() {
+                image_areas.push(pixels);
+            }
+            image_draws.push((url, attachment, band_top as i32));
         }
         // Record the drawn viewport for spoiler-click and selection
         // mapping: shift the row-relative columns to absolute screen
-        // columns (past the left border); body row i sits at
-        // log_area.y + 1 + i.
+        // columns in the arranged log viewport.
         self.rendered = RenderedChatLog {
-            area: log_area,
+            area: log_inner,
             rows: rows[start..end]
                 .iter()
                 .map(|(idx, row)| RowRecord {
@@ -1236,14 +1315,14 @@ impl ChatPane {
                         .hits
                         .iter()
                         .map(|hit| SpoilerHit {
-                            cols: hit.cols.start + log_area.x + 1..hit.cols.end + log_area.x + 1,
+                            cols: hit.cols.start + log_inner.x..hit.cols.end + log_inner.x,
                             key: hit.key.clone(),
                         })
                         .collect(),
                     line: *idx,
                     body: row.body.clone(),
                     char_start: row.char_start,
-                    body_col: row.body_col + log_area.x + 1,
+                    body_col: row.body_col + log_inner.x,
                     selectable: row.selectable,
                 })
                 .collect(),
@@ -1260,28 +1339,15 @@ impl ChatPane {
                 ListItem::new(visual)
             })
             .collect();
-        frame.render_widget(
-            List::new(items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::border_style(self.focused))
-                    .title("Chat"),
-            ),
-            log_area,
-        );
-        // Draw the images over their reserved rows. After the List so
-        // the image cells overwrite the blank rows, never the reverse.
-        // Encoding happens here, lazily: on the first draw and after a
-        // pane resize changes the fitted size (cheap — the source is
-        // pre-scaled to ≤1280px at decode).
-        let log_inner = Rect {
-            x: log_area.x + 1,
-            y: log_area.y + 1,
-            width: log_area.width.saturating_sub(2),
-            height: visible as u16,
-        };
+        frame.render_widget(List::new(items), log_inner);
+        frame.buffer_mut().set_style(log_inner, scene.style("log"));
         let mut broken = Vec::new();
-        for (url, size, y_offset) in image_draws {
+        for (url, attachment, band_top) in image_draws {
+            attachment.paint_scrolled(frame, log_inner, band_top);
+            let interior = attachment.slot("image");
+            let size = Size::new(interior.width, interior.height);
+            let y_offset = (band_top + i32::from(interior.y)) as i16;
+
             let Some(picker) = &self.picker else {
                 break;
             };
@@ -1307,7 +1373,10 @@ impl ChatPane {
                 frame.render_widget(
                     ratatui_image::sliced::SlicedImage::new(
                         protocol,
-                        ratatui_image::sliced::SignedPosition { x: 0, y: y_offset },
+                        ratatui_image::sliced::SignedPosition {
+                            x: interior.x as i16,
+                            y: y_offset,
+                        },
                     ),
                     log_inner,
                 );
@@ -1316,79 +1385,15 @@ impl ChatPane {
         for url in broken {
             self.images.insert(url, ImageSlot::Failed);
         }
-        self.input.render(frame, input_area, self.focused, false);
+        self.input
+            .render_content(frame, input_area, self.focused, false);
+        frame
+            .buffer_mut()
+            .set_style(input_area, scene.style("input"));
     }
 }
 
-/// Greedy word-wrap over **display width** (terminal cells, via
-/// `unicode-width`) — ratatui lays out by cell width, so double-width
-/// CJK must consume two cells of budget, not one. The first visual line
-/// gets `first_width` cells (the chat prefix eats into it); later lines
-/// get `rest_width`. Breaks at spaces where possible, hard-breaks any
-/// word wider than the available cells.
-///
-/// Each chunk is a contiguous char-slice of `text` (only boundary join
-/// spaces are dropped); the second tuple element is the chunk's starting
-/// **char offset** in `text` (identity, not geometry), which lets
-/// callers map char ranges of the input (spoiler runs) onto the wrapped
-/// lines.
-pub(crate) fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<(String, usize)> {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    let width_for = |idx: usize| if idx == 0 { first_width } else { rest_width }.max(1);
-    let mut lines: Vec<(String, usize)> = Vec::new();
-    let mut cur = String::new();
-    let mut cur_start = 0;
-    let mut width = width_for(0);
-    let mut next_word_start = 0;
-    for mut word in text.split(' ') {
-        let mut word_start = next_word_start;
-        next_word_start += word.chars().count() + 1;
-        loop {
-            let cur_cells = cur.width();
-            let space = usize::from(!cur.is_empty());
-            let word_cells = word.width();
-            if cur_cells + space + word_cells <= width {
-                if space == 1 {
-                    cur.push(' ');
-                } else {
-                    // Chunk begins with this word.
-                    cur_start = word_start;
-                }
-                cur.push_str(word);
-                break;
-            }
-            if cur.is_empty() {
-                // Word alone exceeds the line: hard-break it after the
-                // last char that still fits `width` cells — but always
-                // after at least one, so a single over-wide char cannot
-                // stall the loop.
-                let mut used = 0;
-                let mut split_at = word.len();
-                for (taken, (i, c)) in word.char_indices().enumerate() {
-                    let cells = c.width().unwrap_or(0);
-                    if taken > 0 && used + cells > width {
-                        split_at = i;
-                        break;
-                    }
-                    used += cells;
-                }
-                let (head, tail) = word.split_at(split_at);
-                cur_start = word_start;
-                cur.push_str(head);
-                lines.push((std::mem::take(&mut cur), cur_start));
-                width = width_for(lines.len());
-                word_start += head.chars().count();
-                word = tail;
-            } else {
-                // Flush and retry the word on a fresh line.
-                lines.push((std::mem::take(&mut cur), cur_start));
-                width = width_for(lines.len());
-            }
-        }
-    }
-    lines.push((cur, cur_start));
-    lines
-}
+pub(crate) use super::layout::wrap_body;
 
 /// Trailing punctuation stripped off a word before testing it against the
 /// username set (so "Baughn:" and "Nero," still match), and used to bound
@@ -1714,6 +1719,7 @@ fn reverse_cols(line: Line<'static>, cols: std::ops::Range<u16>) -> Line<'static
 /// Render one chat message as one or more wrapped visual rows, each
 /// carrying its clickable spoiler ranges (relative columns; empty for
 /// the line kinds that never carry spoilers) and selection geometry.
+#[cfg(test)]
 fn wrap_chat_line(
     line: &ChatLine,
     width: usize,
@@ -1721,9 +1727,21 @@ fn wrap_chat_line(
     me: &str,
     spoilers: &HashMap<SpoilerKey, SpoilerState>,
 ) -> Vec<ChatRow> {
+    wrap_chat_line_with_indent(line, width, usernames, me, spoilers, CHAT_WRAP_INDENT)
+}
+
+fn wrap_chat_line_with_indent(
+    line: &ChatLine,
+    width: usize,
+    usernames: &[String],
+    me: &str,
+    spoilers: &HashMap<SpoilerKey, SpoilerState>,
+    continuation_indent: usize,
+) -> Vec<ChatRow> {
+    let continuation_indent = continuation_indent.min(width.saturating_sub(1));
     use tuirealm::ratatui::style::Modifier;
     use unicode_width::UnicodeWidthStr;
-    let indent: String = " ".repeat(CHAT_WRAP_INDENT);
+    let indent: String = " ".repeat(continuation_indent);
     if line.separator {
         // Render-time day divider: the date label centered between
         // dashes. Drawn but never selectable — it is not a message.
@@ -1751,7 +1769,7 @@ fn wrap_chat_line(
         let chunks = wrap_body(
             &body,
             width.saturating_sub(prefix_width),
-            width.saturating_sub(CHAT_WRAP_INDENT),
+            width.saturating_sub(continuation_indent),
         );
         chunks
             .into_iter()
@@ -1768,7 +1786,7 @@ fn wrap_chat_line(
                 } else {
                     (
                         Line::from(Span::styled(format!("{indent}{chunk}"), theme::dim())),
-                        CHAT_WRAP_INDENT as u16,
+                        continuation_indent as u16,
                     )
                 };
                 ChatRow {
@@ -1796,7 +1814,7 @@ fn wrap_chat_line(
         let chunks = wrap_body(
             &display,
             width.saturating_sub(prefix_width),
-            width.saturating_sub(CHAT_WRAP_INDENT),
+            width.saturating_sub(continuation_indent),
         );
         let sender_style = theme::user_style(&line.sender).add_modifier(Modifier::BOLD);
         chunks
@@ -1811,7 +1829,7 @@ fn wrap_chat_line(
                 let offset = (if i == 0 {
                     prefix_width
                 } else {
-                    CHAT_WRAP_INDENT
+                    continuation_indent
                 }) as u16;
                 for hit in &mut hits {
                     hit.cols = hit.cols.start + offset..hit.cols.end + offset;
@@ -1853,7 +1871,7 @@ fn wrap_chat_line(
         let chunks = wrap_body(
             &display,
             width.saturating_sub(prefix_width),
-            width.saturating_sub(CHAT_WRAP_INDENT),
+            width.saturating_sub(continuation_indent),
         );
         let sender_style = theme::user_style(&line.sender).add_modifier(Modifier::BOLD);
         chunks
@@ -1871,7 +1889,7 @@ fn wrap_chat_line(
                 let offset = (if i == 0 {
                     prefix_width
                 } else {
-                    CHAT_WRAP_INDENT
+                    continuation_indent
                 }) as u16;
                 for hit in &mut hits {
                     hit.cols = hit.cols.start + offset..hit.cols.end + offset;
@@ -1911,7 +1929,7 @@ impl ChatPane {
     /// body row 0 (screen row 1).
     pub(crate) fn test_install_spoiler_hit(&mut self) {
         self.rendered = RenderedChatLog {
-            area: Rect::new(0, 0, 40, 10),
+            area: Rect::new(1, 1, 38, 8),
             rows: vec![RowRecord {
                 hits: vec![SpoilerHit {
                     cols: 5..10,
@@ -4404,7 +4422,7 @@ mod chat_spoiler_tests {
     fn pane_with_hit_rows(count: usize) -> ChatPane {
         let mut pane = ChatPane::default();
         pane.rendered = RenderedChatLog {
-            area: Rect::new(0, 0, 40, 10),
+            area: Rect::new(1, 1, 38, 8),
             rows: (0..count)
                 .map(|i| RowRecord {
                     hits: vec![SpoilerHit {
@@ -5057,6 +5075,175 @@ mod chat_image_tests {
             .clone()
     }
 
+    #[test]
+    fn attachment_border_follows_timestamp_and_is_included_in_height_cap() {
+        let mut pane = ready_pane();
+        let buffer = draw(&mut pane, 40, 30);
+        let pixels = pane.rendered.image_areas[0];
+        assert_eq!(
+            pixels.x, 8,
+            "log border + measured timestamp/separator + attachment border"
+        );
+        assert_eq!(
+            pixels.height, 6,
+            "eight-row budget includes two border rows"
+        );
+        assert_eq!(buffer[(pixels.x - 1, pixels.y - 1)].symbol(), "┌");
+        assert_eq!(buffer[(pixels.x - 1, pixels.bottom())].symbol(), "└");
+    }
+
+    #[test]
+    fn file_only_attachment_styles_change_frame_and_alignment() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("style.css"),
+            "#timestamp-gutter { display: none; } #chat-attachment-image { border: 0; }",
+        )
+        .unwrap();
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::load(dir.path()).unwrap(),
+        );
+        let mut pane = ready_pane();
+        let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
+        terminal
+            .draw(|f| pane.render_layout(f, f.area(), &mut renderer))
+            .unwrap();
+        assert_eq!(pane.rendered.image_areas[0].x, 1);
+        assert_eq!(pane.rendered.image_areas[0].height, 8);
+    }
+
+    #[test]
+    fn attachment_spacing_stays_within_the_frame_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("style.css"),
+            "#chat-attachment-image { padding: 1ch; margin: 1ch; }",
+        )
+        .unwrap();
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::load(dir.path()).unwrap(),
+        );
+        let mut pane = ready_pane();
+        let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
+        terminal
+            .draw(|f| pane.render_layout(f, f.area(), &mut renderer))
+            .unwrap();
+        assert_eq!(
+            pane.rendered.image_areas[0].height, 2,
+            "two borders + padding + margins consume six of eight rows"
+        );
+        assert_eq!(
+            pane.rendered.rows.iter().filter(|r| !r.selectable).count(),
+            8
+        );
+    }
+
+    #[test]
+    fn cropped_attachment_keeps_original_pixels_size_and_border_edges() {
+        let mut pane = ready_pane();
+        let full = draw(&mut pane, 40, 30);
+        let pixels = pane.rendered.image_areas[0];
+        for n in 0..20 {
+            let mut line = image_line(2000 + n, "later");
+            line.image_url = None;
+            pane.lines.push(line);
+        }
+        let cropped = draw(&mut pane, 40, 30);
+        let clipped = pane.rendered.image_areas[0];
+        assert_eq!(clipped.y, 1);
+        assert_eq!(clipped.height, 4);
+        for y in 0..clipped.height {
+            for x in 0..pixels.width {
+                assert_eq!(
+                    cropped[(clipped.x + x, clipped.y + y)],
+                    full[(pixels.x + x, pixels.y + y + 2)],
+                    "crop must sample the original fitted image"
+                );
+            }
+        }
+        assert_eq!(
+            cropped[(clipped.x - 1, 1)].symbol(),
+            "│",
+            "do not draw a new top border at the crop"
+        );
+        assert!(
+            matches!(&pane.images[URL], ImageSlot::Ready { sliced: Some((size, _)), .. } if size.height == 6)
+        );
+    }
+
+    #[test]
+    fn no_usable_bordered_interior_leaves_the_original_link() {
+        let mut pane = ready_pane();
+        pane.lines[0].text = URL.into();
+        let buffer = draw(&mut pane, 80, 10);
+        assert!(pane.rendered.image_areas.is_empty());
+        assert!(tuirealm::testing::buffer_to_string(&buffer).contains(URL));
+        draw(&mut pane, 8, 30);
+        assert!(pane.rendered.image_areas.is_empty());
+    }
+
+    #[test]
+    fn resizing_and_new_messages_preserve_scrolled_source_context() {
+        let mut pane = ChatPane {
+            scroll_offset: 20,
+            ..Default::default()
+        };
+        pane.set_lines(
+            (0..30)
+                .map(|i| {
+                    let mut line = image_line(
+                        i,
+                        "Unicode 界界界 one two three four five six seven eight nine ten",
+                    );
+                    line.image_url = None;
+                    line
+                })
+                .collect(),
+        );
+        draw(&mut pane, 50, 20);
+        let (key, source, _) = pane.scroll_anchor.clone().unwrap();
+        draw(&mut pane, 25, 20);
+        let first = &pane.rendered.rows[0];
+        assert!(key.matches(&pane.lines[first.line]));
+        assert!(first.char_start <= source);
+        assert!(first.char_start + first.body.chars().count() >= source);
+        pane.lines.push(image_line(100, "incoming message"));
+        draw(&mut pane, 25, 20);
+        assert!(key.matches(&pane.lines[pane.rendered.rows[0].line]));
+    }
+
+    #[test]
+    fn borderless_chat_and_custom_indentation_share_painted_hit_geometry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("style.css"),
+            "#chat-log-frame { border: 0; hanging-indent: 7ch; }",
+        )
+        .unwrap();
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::load(dir.path()).unwrap(),
+        );
+        let mut pane = ChatPane::default();
+        pane.lines.push(image_line(
+            1,
+            "one two three four five six seven eight nine ten",
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        terminal
+            .draw(|f| pane.render_layout(f, Rect::new(3, 2, 30, 16), &mut renderer))
+            .unwrap();
+        assert_eq!(pane.rendered.area.x, 3);
+        assert_eq!(pane.rendered.area.y, 2);
+        assert!(pane.rendered.point_at(3, 2).is_some());
+        assert!(pane.rendered.point_at(2, 2).is_none());
+        let continuation = &pane.rendered.rows[1];
+        assert_eq!(continuation.body_col, 10);
+        assert_eq!(
+            pane.rendered.point_at(10, 3).unwrap().floor,
+            continuation.char_start
+        );
+    }
+
     /// The reserved band is capped at a third of the log viewport and its
     /// rows are never selectable, so clicks and drags resolve to real text.
     #[test]
@@ -5073,7 +5260,7 @@ mod chat_image_tests {
             .collect();
         assert_eq!(image_rows.len(), 8, "reserved rows");
         assert_eq!(pane.rendered.image_areas.len(), 1);
-        assert_eq!(pane.rendered.image_areas[0].height, 8);
+        assert_eq!(pane.rendered.image_areas[0].height, 6);
         // A click on an image row maps to no exact point, and the
         // nearest point resolves to the message text above.
         let rect = pane.rendered.image_areas[0];

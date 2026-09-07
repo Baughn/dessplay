@@ -32,6 +32,13 @@ Add new days at the top. Add new entries at the bottom of existing days.
   order and mouse targets follow your layout; named splitters support dragging
   and remember sizes until the layout files change. F12 resets drag sizes.
 
+- Improved: Chat images now have a border aligned after the timestamp. The
+  frame fits within the existing height limit and scrolls with the image.
+  Edit the chat template or stylesheet to change its border and alignment.
+- Added: Customize chat composition, command suggestions, recent chat, and
+  separate subtitle rows in layout files. Scrolled-back chat keeps its context
+  when the layout changes or new messages arrive.
+
 
 ## 2026-09-06
 

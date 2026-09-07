@@ -3129,8 +3129,8 @@ fn scrolled_image_crops_at_the_top_edge() {
     ui.set_chat_image(IMAGE_URL, Ok(gradient_image()));
     // The reference geometry: the log viewport is 20 rows, so the band
     // caps at 20 / 3 = 6 rows; the message wraps to log rows 0–1, the
-    // band sits at rows 2–7, drawn on log lines 3–8 (line 0 is the
-    // border). Assert it so a layout change fails here, loudly, rather
+    // frame sits at rows 2–7, drawn on log lines 3–8; pixel rows are
+    // 4–7. Assert it so a layout change fails here, loudly, rather
     // than in the scroll arithmetic below.
     let unscrolled = render_buffer(&mut ui, 100, 30);
     let glyph_line = |buffer: &tuirealm::ratatui::buffer::Buffer, y: u16| {
@@ -3139,7 +3139,11 @@ fn scrolled_image_crops_at_the_top_edge() {
             .any(|cell| cell.contains('▀') || cell.contains('▄'))
     };
     let band_lines: Vec<u16> = (1..21).filter(|&y| glyph_line(&unscrolled, y)).collect();
-    assert_eq!(band_lines, vec![3, 4, 5, 6, 7, 8], "band geometry moved");
+    assert_eq!(
+        band_lines,
+        vec![4, 5, 6, 7],
+        "pixel rows exclude the two frame edges"
+    );
     let band: Vec<Vec<String>> = (3..9).map(|y| chat_row_cells(&unscrolled, y)).collect();
     // Bury the band: 30 filler lines (rows 8–37, 38 total) pin the log
     // well past it, then four wheel steps (3 rows each, offset 12) put
@@ -3157,8 +3161,8 @@ fn scrolled_image_crops_at_the_top_edge() {
         ui.handle(wheel(left.x + 2, left.y + 2, true));
     }
     let scrolled = render_buffer(&mut ui, 100, 30);
-    // Log lines 1–2 must show exactly the band's bottom two rows — the
-    // same cells (colors included), just clipped, never rescaled.
+    // Log lines 1–2 show the last pixel row and original bottom border —
+    // the same cells (colors included), just clipped, never rescaled.
     for (line, band_row) in (1..3).zip(4..6) {
         assert_eq!(
             chat_row_cells(&scrolled, line),
@@ -3166,6 +3170,8 @@ fn scrolled_image_crops_at_the_top_edge() {
             "log line {line} should show band row {band_row}"
         );
     }
+    assert_eq!(scrolled[(7, 1)].symbol(), "│");
+    assert_eq!(scrolled[(7, 2)].symbol(), "└");
     // And the clipped view differs from the band's top — rows really
     // were skipped, not rescaled (the gradient makes rows distinct).
     assert_ne!(chat_row_cells(&scrolled, 1), band[0]);

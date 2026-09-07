@@ -2,8 +2,10 @@
 
 The layout migration is in progress. Currently the shared settings/List-entry
 forms, their semantic label/value/annotation rows, the F11 log viewer's
-header/body/footer, and the application pane composition use local templates.
-Pane interiors other than the migrated forms/log still use their existing renderer. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
+header/body/footer, application pane composition, chat/input/suggestions,
+attachments, recent-chat projection, and separate subtitle rows use local
+templates. Message rich-text composition and other pane interiors still use
+their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
 ## Files and recovery
@@ -115,7 +117,7 @@ Properties:
 | Grid | `grid-template-columns`, `grid-template-rows`, `grid-column`, `grid-row` |
 | Color | `color`, `background-color`, `border-color`: #RGB, #RRGGBB, default, black/red/green/yellow/blue/magenta/cyan/white/gray/darkgray |
 | Borders | `border: 0/none/1/1ch/1lh`; single-cell solid frame |
-| Text | `font-weight: normal/bold`, `font-style: normal/italic`, `text-decoration: none/underline`, `text-align: left/center/right`, `white-space: normal/nowrap/pre`, `text-overflow: clip/ellipsis` |
+| Text | `font-weight: normal/bold`, `font-style: normal/italic`, `text-decoration: none/underline`, `text-align: left/center/right`, `white-space: normal/nowrap/pre`, `text-overflow: clip/ellipsis`, terminal `hanging-indent: Nch` |
 
 Lengths use `ch`, `lh`, percentages, `0`, and `auto` where meaningful.
 Terminal allocation treats a length unit as a cell in its allocation axis.
@@ -151,6 +153,40 @@ children, with a ten-percent container share minimum where it fits. A resizable
 container must use flex layout. CSS grid composition remains available without
 drag handles. `app` bindings are the slots `chat`, `subtitles`, `series`, `users`,
 `playlist`, `health`, `status`, `keybar` and boolean `separate-subtitles`.
+
+Chat composition lives in `templates/chat.xml`. `chat` has slots `log`,
+`suggestions`, `input`, title bindings `title` and `input-title`, and boolean
+`suggesting`. `chat-suggestion` exposes `signature` and `help`. `recent-chat`
+is an explicit read-only projection with slot `log` and text `title`; it does
+not own a second editor or affect chat scroll state. `subtitles` has slot `body`
+and text `title`; `subtitle-row` exposes `timestamp`, `speaker`, `body` and boolean
+`named`. Subtitle keys survive progressive cue updates.
+
+`chat-attachment` exposes intrinsic slots `timestamp-gutter` and `image`. The
+bundled gutter measures the timestamp plus its separator. The image slot's
+border, padding, and margins count toward the one-third-of-log-height budget.
+An unusable interior leaves the plain link. Frame rows are not selectable.
+Scrolling crops the original fitted frame and pixels, preserving the encoding
+size; text-theme conversion never recolors the pixels. Modals and recovery
+views still suppress terminal graphics.
+
+For example, these file-only changes restore a flush-left, borderless image:
+
+```css
+#timestamp-gutter { display: none; }
+#chat-attachment-image { border: 0; }
+```
+
+Change continuation indentation independently of message prefixes:
+
+```css
+#chat-log-frame, #recent-chat-frame { hanging-indent: 4ch; }
+```
+
+`hanging-indent` is inherited and accepts a cell length. The default chat value
+is two cells; general template text defaults to zero. Source anchors preserve
+scrolled-back context when the width or layout changes and when new messages
+arrive. Rich message prefix fields are not yet template-authored.
 
 Restyle a form in `style.css`:
 

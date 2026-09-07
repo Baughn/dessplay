@@ -37,7 +37,7 @@ pub fn measure_text(
         }
         .min(width);
         let measured = if wrap {
-            crate::ui::components::wrap_body(
+            wrap_body(
                 line,
                 width.saturating_sub(first),
                 width.saturating_sub(continuation_indent),
@@ -80,4 +80,74 @@ pub fn measure_text(
         offset += line.chars().count() + 1;
     }
     rows
+}
+
+/// Greedy word-wrap over **display width** (terminal cells, via
+/// `unicode-width`) — ratatui lays out by cell width, so double-width
+/// CJK must consume two cells of budget, not one. The first visual line
+/// gets `first_width` cells (the chat prefix eats into it); later lines
+/// get `rest_width`. Breaks at spaces where possible, hard-breaks any
+/// word wider than the available cells.
+///
+/// Each chunk is a contiguous char-slice of `text` (only boundary join
+/// spaces are dropped); the second tuple element is the chunk's starting
+/// **char offset** in `text` (identity, not geometry), which lets
+/// callers map char ranges of the input (spoiler runs) onto the wrapped
+/// lines.
+pub(crate) fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Vec<(String, usize)> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let width_for = |idx: usize| if idx == 0 { first_width } else { rest_width }.max(1);
+    let mut lines: Vec<(String, usize)> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_start = 0;
+    let mut width = width_for(0);
+    let mut next_word_start = 0;
+    for mut word in text.split(' ') {
+        let mut word_start = next_word_start;
+        next_word_start += word.chars().count() + 1;
+        loop {
+            let cur_cells = cur.width();
+            let space = usize::from(!cur.is_empty());
+            let word_cells = word.width();
+            if cur_cells + space + word_cells <= width {
+                if space == 1 {
+                    cur.push(' ');
+                } else {
+                    // Chunk begins with this word.
+                    cur_start = word_start;
+                }
+                cur.push_str(word);
+                break;
+            }
+            if cur.is_empty() {
+                // Word alone exceeds the line: hard-break it after the
+                // last char that still fits `width` cells — but always
+                // after at least one, so a single over-wide char cannot
+                // stall the loop.
+                let mut used = 0;
+                let mut split_at = word.len();
+                for (taken, (i, c)) in word.char_indices().enumerate() {
+                    let cells = c.width().unwrap_or(0);
+                    if taken > 0 && used + cells > width {
+                        split_at = i;
+                        break;
+                    }
+                    used += cells;
+                }
+                let (head, tail) = word.split_at(split_at);
+                cur_start = word_start;
+                cur.push_str(head);
+                lines.push((std::mem::take(&mut cur), cur_start));
+                width = width_for(lines.len());
+                word_start += head.chars().count();
+                word = tail;
+            } else {
+                // Flush and retry the word on a fresh line.
+                lines.push((std::mem::take(&mut cur), cur_start));
+                width = width_for(lines.len());
+            }
+        }
+    }
+    lines.push((cur, cur_start));
+    lines
 }

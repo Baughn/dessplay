@@ -335,6 +335,7 @@ pub(super) struct Computed {
     pub paint: PaintStyle,
     pub border: Color,
     pub wrap: bool,
+    pub hanging_indent: u16,
     pub ellipsis: bool,
     pub align: tuirealm::ratatui::layout::Alignment,
     pub variables: BTreeMap<String, String>,
@@ -355,6 +356,7 @@ impl Default for Computed {
             paint: PaintStyle::default(),
             border: Color::DarkGray,
             wrap: false,
+            hanging_indent: 0,
             ellipsis: false,
             align: Default::default(),
             variables: BTreeMap::new(),
@@ -373,6 +375,7 @@ pub(super) fn resolve(
     let mut out = Computed {
         paint: parent.paint,
         wrap: parent.wrap,
+        hanging_indent: parent.hanging_indent,
         ellipsis: parent.ellipsis,
         align: parent.align,
         variables: parent.variables.clone(),
@@ -534,6 +537,7 @@ const PROPERTIES: &[&str] = &[
     "text-decoration",
     "text-align",
     "white-space",
+    "hanging-indent",
     "text-overflow",
     "align-items",
     "align-self",
@@ -811,6 +815,12 @@ fn apply(out: &mut Computed, name: &str, value: &str) -> Result<(), String> {
                 "none" => out.paint.remove_modifier(Modifier::UNDERLINED),
                 _ => return Err(invalid()),
             }
+        }
+        "hanging-indent" => {
+            out.hanging_indent = match length(value)? {
+                Dimension::Length(n) => n.round() as u16,
+                _ => return Err("hanging-indent requires a cell length".into()),
+            };
         }
         "white-space" => {
             out.wrap = match value {

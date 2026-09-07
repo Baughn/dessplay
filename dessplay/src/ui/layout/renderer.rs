@@ -115,6 +115,7 @@ struct Arranged {
     id: String,
     slot: String,
     bounds: Rect,
+    margin_bottom: u16,
     content: Rect,
     clip: Rect,
     style: Computed,
@@ -143,6 +144,26 @@ impl RenderedScene {
             .iter()
             .find(|n| n.slot == name)
             .map_or(Rect::default(), |n| n.content.intersection(n.clip))
+    }
+    /// Terminal continuation indentation resolved for a text primitive.
+    pub fn hanging_indent(&self, name: &str) -> usize {
+        self.nodes
+            .iter()
+            .find(|n| n.slot == name)
+            .map_or(0, |n| usize::from(n.style.hanging_indent))
+    }
+    /// Vertical extent occupied by the template children, including margins.
+    pub(crate) fn occupied_height(&self) -> u16 {
+        let children = if self.nodes.len() > 1 {
+            &self.nodes[1..]
+        } else {
+            &self.nodes[..]
+        };
+        children
+            .iter()
+            .map(|n| n.bounds.bottom().saturating_add(n.margin_bottom))
+            .max()
+            .unwrap_or(0)
     }
     /// Resolved text appearance for a controller primitive.
     pub fn style(&self, name: &str) -> PaintStyle {
@@ -180,15 +201,40 @@ impl RenderedScene {
     }
     /// Paint container chrome and already-measured text. Slots are filled by primitives.
     pub fn paint(&self, frame: &mut Frame<'_>) {
-        self.paint_layer(frame, false);
+        self.paint_layer(frame, false, PaintView::new(frame.area(), 0, 0));
     }
     /// Paint declared overlays after ordinary content primitives.
     pub fn paint_overlays(&self, frame: &mut Frame<'_>) {
-        self.paint_layer(frame, true);
+        self.paint_layer(frame, true, PaintView::new(frame.area(), 0, 0));
     }
-    fn paint_layer(&self, frame: &mut Frame<'_>, overlay: bool) {
+    /// Paint an already arranged local scene through a scrolling viewport.
+    pub fn paint_scrolled(&self, frame: &mut Frame<'_>, viewport: Rect, row_offset: i32) {
+        let view = PaintView::new(
+            viewport.intersection(frame.area()),
+            i32::from(viewport.x),
+            i32::from(viewport.y) + row_offset,
+        );
+        self.paint_layer(frame, false, view);
+    }
+    /// Outer box for a semantic primitive, including authored borders.
+    pub fn slot_bounds(&self, name: &str) -> Rect {
+        self.nodes
+            .iter()
+            .find(|n| n.slot == name)
+            .map_or(Rect::default(), |n| n.bounds.intersection(n.clip))
+    }
+    /// Visible image/primitive bounds using the same scroll translation as paint.
+    pub fn scrolled_slot(&self, name: &str, viewport: Rect, row_offset: i32) -> Rect {
+        PaintView::new(
+            viewport,
+            i32::from(viewport.x),
+            i32::from(viewport.y) + row_offset,
+        )
+        .rect(self.slot(name))
+    }
+    fn paint_layer(&self, frame: &mut Frame<'_>, overlay: bool, view: PaintView) {
         for n in self.nodes.iter().filter(|n| n.overlay == overlay) {
-            let visible = n.bounds.intersection(n.clip).intersection(frame.area());
+            let visible = view.rect(n.bounds.intersection(n.clip));
             if visible.is_empty() {
                 continue;
             }
@@ -202,10 +248,12 @@ impl RenderedScene {
                 if n.style.layout.border.left != LengthPercentage::Length(0.0) {
                     for y in visible.y..visible.bottom() {
                         for x in visible.x..visible.right() {
-                            let left = x == n.bounds.x;
-                            let right = x == n.bounds.right().saturating_sub(1);
-                            let top = y == n.bounds.y;
-                            let bottom = y == n.bounds.bottom().saturating_sub(1);
+                            let left = i32::from(x) - view.x == i32::from(n.bounds.x);
+                            let right = i32::from(x) - view.x
+                                == i32::from(n.bounds.right().saturating_sub(1));
+                            let top = i32::from(y) - view.y == i32::from(n.bounds.y);
+                            let bottom = i32::from(y) - view.y
+                                == i32::from(n.bounds.bottom().saturating_sub(1));
                             let glyph = match (left, right, top, bottom) {
                                 (true, _, true, _) => "┌",
                                 (_, true, true, _) => "┐",
@@ -234,6 +282,7 @@ impl RenderedScene {
                     n.clip,
                     n.style.paint,
                     Default::default(),
+                    view,
                 );
             }
             for (i, fragment) in n.fragments.iter().enumerate() {
@@ -254,12 +303,41 @@ impl RenderedScene {
                     n.clip,
                     n.style.paint,
                     n.style.align,
+                    view,
                 );
             }
         }
     }
 }
 
+#[derive(Clone, Copy)]
+struct PaintView {
+    clip: Rect,
+    x: i32,
+    y: i32,
+}
+impl PaintView {
+    fn new(clip: Rect, x: i32, y: i32) -> Self {
+        Self { clip, x, y }
+    }
+    fn rect(self, source: Rect) -> Rect {
+        let left = (i32::from(source.x) + self.x).max(i32::from(self.clip.x));
+        let top = (i32::from(source.y) + self.y).max(i32::from(self.clip.y));
+        let right = (i32::from(source.right()) + self.x).min(i32::from(self.clip.right()));
+        let bottom = (i32::from(source.bottom()) + self.y).min(i32::from(self.clip.bottom()));
+        if right <= left || bottom <= top {
+            return Rect::default();
+        }
+        Rect::new(
+            left as u16,
+            top as u16,
+            (right - left) as u16,
+            (bottom - top) as u16,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn paint_line(
     frame: &mut Frame<'_>,
     text: &str,
@@ -267,8 +345,9 @@ fn paint_line(
     clip: Rect,
     style: PaintStyle,
     alignment: tuirealm::ratatui::layout::Alignment,
+    view: PaintView,
 ) {
-    let visible = row.intersection(clip).intersection(frame.area());
+    let visible = view.rect(row.intersection(clip));
     if visible.is_empty() || text.is_empty() {
         return;
     }
@@ -281,13 +360,22 @@ fn paint_line(
         _ => 0,
     };
     let origin = row.x.saturating_add(indent);
-    let painted =
-        Rect::new(origin, row.y, row.width.saturating_sub(indent), 1).intersection(visible);
+    let painted = view
+        .rect(Rect::new(
+            origin,
+            row.y,
+            row.width.saturating_sub(indent),
+            1,
+        ))
+        .intersection(visible);
     if !painted.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::raw(text.to_owned()))
                 .style(style)
-                .scroll((0, painted.x.saturating_sub(origin))),
+                .scroll((
+                    0,
+                    (i32::from(painted.x) - i32::from(origin) - view.x).max(0) as u16,
+                )),
             painted,
         );
     }
@@ -306,6 +394,7 @@ struct Measure {
     height: f32,
     text: String,
     wrap: bool,
+    hanging_indent: u16,
 }
 
 /// UI-thread renderer. Its Taffy state never crosses the controller's thread move.
@@ -371,6 +460,58 @@ impl Renderer {
         data: &Presentation,
     ) -> Result<RenderedScene, Diagnostic> {
         self.arrange_instance(template, template, area, data)
+    }
+    /// Fit image pixels inside authored attachment chrome and its whole-frame cap.
+    pub(crate) fn attachment(
+        &mut self,
+        key: &str,
+        timestamp: &str,
+        available: tuirealm::ratatui::layout::Size,
+        image: &image::DynamicImage,
+        font: ratatui_image::FontSize,
+    ) -> Option<RenderedScene> {
+        let area = Rect::new(0, 0, available.width, available.height);
+        let gutter = timestamp.width().saturating_add(1).min(u16::MAX as usize) as u16;
+        let probe = Presentation::default()
+            .slot("timestamp-gutter", gutter, 0)
+            .slot("image", available.width, available.height);
+        let measured = self
+            .arrange_instance(
+                "chat-attachment",
+                &format!("attachment-measure:{key}"),
+                area,
+                &probe,
+            )
+            .ok()?;
+        let mut interior = measured.slot("image");
+        interior.height = interior
+            .height
+            .saturating_sub(measured.occupied_height().saturating_sub(available.height));
+        if interior.is_empty() {
+            return None;
+        }
+        let fitted = ratatui_image::Resize::Fit(None).size_for(
+            image,
+            font,
+            tuirealm::ratatui::layout::Size::new(interior.width, interior.height),
+        );
+        if fitted.width == 0 || fitted.height == 0 {
+            return None;
+        }
+        let data = Presentation::default()
+            .slot("timestamp-gutter", gutter, 0)
+            .slot("image", fitted.width, fitted.height);
+        let mut scene = self
+            .arrange_instance("chat-attachment", &format!("attachment:{key}"), area, &data)
+            .ok()?;
+        if scene.occupied_height() > available.height {
+            return None;
+        }
+        let extent = Rect::new(0, 0, area.width, scene.occupied_height());
+        for node in &mut scene.nodes {
+            node.clip = node.clip.intersection(extent);
+        }
+        (!scene.slot("image").is_empty()).then_some(scene)
     }
     fn arrange_instance(
         &mut self,
@@ -442,7 +583,15 @@ impl Renderer {
                 let height = if m.text.is_empty() || !m.wrap {
                     m.height
                 } else {
-                    measure_text(&m.text, width.max(0.0) as usize, 0, 0, true, false).len() as f32
+                    measure_text(
+                        &m.text,
+                        width.max(0.0) as usize,
+                        0,
+                        usize::from(m.hanging_indent),
+                        true,
+                        false,
+                    )
+                    .len() as f32
                 };
                 Size {
                     width,
@@ -585,6 +734,7 @@ fn build<'a>(
         },
         text: text.clone(),
         wrap: style.wrap,
+        hanging_indent: style.hanging_indent,
     };
     let id = if children.is_empty() {
         tree.new_leaf_with_context(style.layout.clone(), measure)
@@ -658,7 +808,7 @@ fn collect(
         &text,
         content.width as usize,
         0,
-        0,
+        usize::from(built.style.hanging_indent),
         built.style.wrap,
         built.style.ellipsis,
     );
@@ -672,6 +822,7 @@ fn collect(
             String::new()
         },
         bounds,
+        margin_bottom: cell(layout.margin.bottom),
         content,
         clip,
         style: built.style.clone(),

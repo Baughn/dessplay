@@ -293,6 +293,7 @@ impl Modal {
 /// wall-clock arrival used to interleave with chat in Intermixed mode.
 #[derive(Clone, Debug)]
 struct SubtitleEntry {
+    key: u64,
     video_millis: u64,
     arrival_millis: u64,
     text: String,
@@ -682,7 +683,12 @@ impl Ui {
                 // re-show.
             }
             props::SubtitleCollapse::Distinct => {
+                let key = self
+                    .subtitles
+                    .back()
+                    .map_or(0, |entry| entry.key.wrapping_add(1));
                 self.subtitles.push_back(SubtitleEntry {
+                    key,
                     video_millis,
                     arrival_millis,
                     text,
@@ -2745,7 +2751,7 @@ impl Ui {
         if self.subtitle_mode == SubtitleMode::SeparatePane {
             let chat_area = scene.slot("chat");
             let subs_area = scene.slot("subtitles");
-            self.chat.view(frame, chat_area);
+            self.chat.render_layout(frame, chat_area, renderer);
             // The newest lines that fit, newest first (top) — the input box
             // sits just below, so the freshest line is closest to the eye.
             // A wheel scroll-back skips `subtitle_scroll` newest entries,
@@ -2756,8 +2762,13 @@ impl Ui {
             // activity-window slot to generate another perceptually spaced
             // color as needed. Speaker names are opt-in and formatted by the
             // same helper used for Intermixed mode.
-            use tuirealm::ratatui::text::{Line, Span};
-            let visible = (subs_area.height as usize).saturating_sub(2);
+            let subtitle_data = super::layout::Presentation::default().text("title", "Subtitles");
+            let subtitle_scene = renderer
+                .arrange("subtitles", subs_area, &subtitle_data)
+                .ok();
+            let visible = subtitle_scene
+                .as_ref()
+                .map_or(0, |scene| scene.slot("body").height as usize);
             self.subtitle_scroll = self
                 .subtitle_scroll
                 .min(self.subtitles.len().saturating_sub(visible));
@@ -2767,18 +2778,13 @@ impl Ui {
                 && !(limited_palette_overflow
                     && self.settings.subtitle_speaker_overflow
                         == SubtitleSpeakerOverflow::DisableColors);
-            let lines: Vec<Line> = self
+            let rows: Vec<super::layout::PresentedRow> = self
                 .subtitles
                 .iter()
                 .rev()
                 .skip(self.subtitle_scroll)
                 .take(visible)
                 .map(|entry| {
-                    let text = props::subtitle_text(
-                        &entry.text,
-                        entry.speaker.as_ref(),
-                        self.settings.subtitle_speaker_names,
-                    );
                     let text_style = if !speaker_colors_enabled {
                         super::theme::dim()
                     } else {
@@ -2792,34 +2798,51 @@ impl Ui {
                             },
                         }
                     };
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{}  ", props::mmss(entry.video_millis)),
-                            super::theme::dim(),
-                        ),
-                        Span::styled(text, text_style),
-                    ])
+                    let named = self.settings.subtitle_speaker_names && entry.speaker.is_some();
+                    super::layout::PresentedRow {
+                        key: entry.key.to_string(),
+                        data: super::layout::Presentation::default()
+                            .text("timestamp", props::mmss(entry.video_millis))
+                            .text(
+                                "speaker",
+                                entry
+                                    .speaker
+                                    .as_ref()
+                                    .map_or_else(String::new, |name| format!("{name}:")),
+                            )
+                            .boolean("named", named)
+                            .text("body", &entry.text)
+                            .style("speaker", text_style)
+                            .style("body", text_style),
+                        gap_after: false,
+                    }
                 })
                 .collect();
-            frame.render_widget(
-                tuirealm::ratatui::widgets::Paragraph::new(lines).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(super::theme::dim())
-                        .title(if self.subtitle_scroll == 0 {
-                            "Subtitles".to_string()
-                        } else {
-                            format!("Subtitles (-{})", self.subtitle_scroll)
-                        }),
-                ),
-                subs_area,
+            let data = subtitle_data.text(
+                "title",
+                if self.subtitle_scroll == 0 {
+                    "Subtitles".to_string()
+                } else {
+                    format!("Subtitles (-{})", self.subtitle_scroll)
+                },
             );
+            if let Ok(scene) = renderer.arrange("subtitles", subs_area, &data) {
+                scene.paint(frame);
+                let _ = renderer.paint_rows(
+                    frame,
+                    scene.slot("body"),
+                    "subtitle-row",
+                    &rows,
+                    None,
+                    scene.style("body"),
+                );
+            }
         } else {
             // Hidden pane: forget any scroll-back so it comes back live.
             self.subtitle_scroll = 0;
             // Off and Intermixed both use the full-height chat pane
             // (Intermixed shows subtitles inside the chat log).
-            self.chat.view(frame, left);
+            self.chat.render_layout(frame, left, renderer);
         }
         self.series.view(frame, series_area);
         self.users.view(frame, users_area);
@@ -2858,6 +2881,7 @@ impl Ui {
                     .saturating_sub(y),
                     ..area
                 },
+                renderer,
             );
         }
         if let Some(modal) = self.modals.last_mut() {

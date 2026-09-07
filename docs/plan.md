@@ -1860,8 +1860,10 @@ player OSD, and standalone diagnostic output are outside scope.
   stale/full-channel handling, and embedded F12 recovery tools.
 - [ ] Finish foundation: template-authored keyed repetition and rich bindings;
   log dropdown overlay template; complete style integration.
-- [ ] Chat proof: all message variants, suggestions/input/recent projection,
-  separate subtitles, and timestamp-aligned bordered attachments with scroll crops.
+- [x] Chat/input/suggestion composition, recent projection, semantic separate
+  subtitle rows, and timestamp-aligned bordered attachments with original scroll crops.
+- [ ] Finish chat proof: template-authored rich message variants and complete
+  source-mapped span layout/caching.
 - [x] Root composition, markup focus order, painted hit/splitter geometry,
   revision-keyed local drag persistence, and one-time PaneLayout import.
 - [ ] Users, Playlist, all Series modes, browsers/search, and semantic collection cells.

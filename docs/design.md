@@ -1651,6 +1651,14 @@ stored independently of application settings and authored files, by source,
 revision, and split ID. A successfully installed revision clears that source's
 old sizes, including on restart. Legacy PaneLayout percentages import once.
 
+Chat attachment chrome belongs to the layout template. The bundled frame
+starts after the measured timestamp and separator, and its border and spacing
+fit within the existing one-third-of-log-height limit. If no interior fits,
+the original link remains. Attachment rows are not selectable. Scrolling clips
+the fitted frame and image together, without reframing the visible slice.
+Chat continuation indentation is an inherited terminal text property; source
+anchors retain scrolled-back context through layout changes and new messages.
+
 RGB text is quantized to the finite terminal palette in limited mode.
 Explicit background colors survive the legacy theme adapter during the
 migration. Image pixels bypass text color conversion.

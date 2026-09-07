@@ -1,0 +1,34 @@
+<templates version="1">
+  <template name="chat">
+    <column id="chat-pane">
+      <scroll id="chat-log-frame" title="title"><slot name="log" /></scroll>
+      <slot id="chat-suggestions" name="suggestions" if="suggesting" />
+      <box id="chat-input-frame" title="input-title"><slot name="input" /></box>
+    </column>
+  </template>
+  <template name="chat-suggestion">
+    <row class="chat-suggestion">
+      <text class="command-signature" bind="signature" />
+      <text bind="help" />
+    </row>
+  </template>
+  <template name="chat-attachment">
+    <row id="chat-attachment-row">
+      <slot id="timestamp-gutter" name="timestamp-gutter" />
+      <slot id="chat-attachment-image" name="image" />
+    </row>
+  </template>
+  <template name="recent-chat">
+    <scroll id="recent-chat-frame" title="title"><slot name="log" /></scroll>
+  </template>
+  <template name="subtitles">
+    <scroll id="subtitle-frame" title="title"><slot name="body" /></scroll>
+  </template>
+  <template name="subtitle-row">
+    <row class="subtitle-row">
+      <text class="subtitle-timestamp" bind="timestamp" />
+      <text class="subtitle-speaker" bind="speaker" if="named" />
+      <text class="subtitle-body" bind="body" />
+    </row>
+  </template>
+</templates>

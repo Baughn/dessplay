@@ -1070,3 +1070,22 @@ action writes its own storage key in both first-run and session loops. The UI
 retries pending revision updates through a full action channel; ordinary
 settings writes cannot revive old sizes. Initial legacy import is one-time,
 so editing the layout while the client is closed also wins on restart.
+
+## Chat attachment frames and scrolling geometry (2026-09-07)
+
+**Rule:** Layout templates own chat/input/suggestion composition and attachment
+chrome. The image's full frame consumes the existing height budget and scrolls
+as one measured object; pixels retain their original fitted size.
+
+**Why:** Painting a border around the visible image slice would create a moving
+frame on scroll. A signed scene translation with an explicit viewport preserves
+original edges even above the viewport origin. The image protocol still owns
+pixel encoding and cropping; scene geometry supplies its origin and protection
+rectangle. Measuring the timestamp gutter avoids assumptions about timestamp
+width and allows border/alignment changes using files alone.
+
+The same viewport now defines chat hit rows, independent of the enclosing
+border. Width changes retain a stable message/source anchor instead of retaining
+only a visual offset from the changing tail. Recent chat remains a read-only
+projection. Subtitle timestamps, optional speakers, and text are separate fields
+with stable cue identities rather than preformatted strings.

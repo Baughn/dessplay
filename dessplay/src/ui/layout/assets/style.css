@@ -16,3 +16,16 @@ scroll > slot { flex-grow: 1; }
 #series, #users, #playlist { flex-grow: 1; }
 #health, #keybar { height: 1lh; }
 #status { height: 3lh; }
+#chat-log-frame { border: 1; min-height: 1lh; hanging-indent: 2ch; }
+#chat-log-frame:focus, #chat-input-frame:focus { border-color: yellow; }
+#chat-input-frame { border: 1; height: 3lh; }
+#chat-suggestions { flex-shrink: 1; }
+.chat-suggestion { color: darkgray; gap: 3ch; }
+.command-signature { width: 12ch; }
+#chat-attachment-row { align-items: start; }
+#chat-attachment-image { border: 1; flex-shrink: 1; max-height: 100%; }
+#recent-chat-frame { border: 1; border-color: default; hanging-indent: 2ch; }
+#subtitle-frame { border: 1; }
+.subtitle-timestamp { color: darkgray; margin: 0 2ch 0 0; }
+.subtitle-speaker { margin: 0 1ch 0 0; }
+.subtitle-body { flex-grow: 1; flex-shrink: 1; }

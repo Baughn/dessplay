@@ -942,3 +942,12 @@ entire custom root is hidden. Splitter properties check translation invariance,
 constant total proportions, and changes confined to adjacent children. Storage
 tests exercise one-time legacy import, revision invalidation across restart,
 source separation, and immunity to unrelated Settings saves.
+
+Chat attachment tests check timestamp gutter and frame-cap accounting, CSS-only
+border/alignment changes, unusable interiors, non-selection, repeated URLs,
+suppression, and exact cropped pixels against an uncropped half-block reference.
+They verify that a clipped top edge stays clipped and does not become a new
+border. Chat tests also resize scrolled Unicode text, append messages while
+scrolled back, and map hits through a borderless nonzero-origin viewport with
+custom continuation indentation. Real Kitty/Sixel/iTerm terminal smoke checks
+remain a manual completion requirement for the whole-display migration.

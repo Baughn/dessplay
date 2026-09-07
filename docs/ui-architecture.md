@@ -29,7 +29,7 @@ automated roguelike recovery. See [ui-layouts.md](ui-layouts.md) for the
 current authoring contract and [plan.md](plan.md#phase-36-runtime-editable-display-layouts)
 for outstanding migration work.
 
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,
@@ -842,3 +842,21 @@ reference geometry. Reload cancels that grab, retaining held chat selections.
 `SaveLayoutSettings`. Activation precedes root arrangement, invalidating changed
 revisions before old sizes can affect their first frame. Dirty activation state
 is coalesced and retried by the UI shell when the action channel is full.
+
+### Chat composition and attachment primitives
+
+`chat.xml` declares the log viewport, suggestion list, input frame, attachment
+frame/gutter, read-only recent projection, and separate subtitle rows. TextField
+retains its editor state and paints inside its assigned slot. The shared terminal
+text service owns greedy wrapping; `hanging-indent` controls continuation cells.
+Message rich spans still use a temporary presentation adapter pending the rest
+of Phase 36.
+
+`Renderer::attachment` probes the authored interior, fits pixels to that budget,
+and arranges the final frame. Cached scenes use stable URL identities. Signed
+scene translation paints only original frame edges inside the scrolling clip.
+Sliced image protocols keep their fitted size/encoding when the viewport crops
+them. Only pixel rectangles bypass theme conversion. Chat's published viewport
+and source offsets drive hits and scrolling anchors; no border-width assumption
+remains in hit lookup. Separate subtitle rows retain a cue key when growing cues
+replace their text.
