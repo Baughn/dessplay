@@ -1871,7 +1871,8 @@ player OSD, and standalone diagnostic output are outside scope.
 - [x] Users and Playlist semantic rows/fields, measured collection virtualization,
   and shared paint/hit geometry for wrapped items.
 - [x] All Series modes, semantic List columns, and measured filter captions.
-- [ ] Browsers/search and remaining semantic collection cells.
+- [x] File/episode browsers, AniDB/Nyaa searches and imports, local-copy rows,
+  confirmation/name dialogs, template modal sizing, and nested slot paint order.
 - [x] Roguelike frame captions/notices/error and game-page composition, including
   labeled statistics/supplies and file-only sidebar relocation.
 - [x] Roguelike recovery panel, inspection headings, equipment rows, documents,

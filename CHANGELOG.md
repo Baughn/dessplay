@@ -9,6 +9,12 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-08
+
+- Added: Customize file and episode browsers, AniDB and Nyaa search results,
+  active imports, local-copy offers, confirmations, and name dialogs in layout
+  files. Their frames, row fields, and editor placement now follow templates.
+
 ## 2026-09-07
 
 - Added: Image links posted in chat (DessPlay or IRC) now download and

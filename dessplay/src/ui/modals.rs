@@ -28,7 +28,7 @@ use super::theme;
 use super::widgets::FormControl;
 use super::widgets::{
     Binding, Form, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormRow, KeyPattern,
-    Keymap, LineBuffer, ListCursor, TextField, render_list, render_list_body,
+    Keymap, LineBuffer, ListCursor, TextField,
 };
 use crate::config::{Settings, SubtitleMode, format_upload_limit, parse_upload_limit};
 
@@ -96,20 +96,6 @@ impl FieldEditor {
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.input.render(frame, area, true, false);
     }
-}
-
-/// Render a selectable list as a modal overlay.
-fn render_modal_list<'a>(
-    frame: &mut Frame,
-    area: Rect,
-    title: impl Into<Line<'a>>,
-    items: Vec<ListItem<'a>>,
-    sel: usize,
-) {
-    let area = overlay(area, 70, 70);
-    frame.render_widget(Clear, area);
-    let selected = (!items.is_empty()).then_some(sel);
-    render_list(frame, area, title, items, selected, true, selected);
 }
 
 // ---- File browser ------------------------------------------------------
@@ -745,50 +731,97 @@ impl FileBrowser {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let title: Line = if self.searching() {
-            // Surface the search text with a cursor cell — it is a full
-            // text field (word motion, Home/End), like every other.
-            let label = match &self.purpose {
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedRow, RichSpan};
+        let title = if self.searching() {
+            match &self.purpose {
                 BrowseFor::File => "Add file".to_string(),
                 BrowseFor::Directory => "Pick directory".to_string(),
                 BrowseFor::Map { target, .. } => format!("Map “{target}”"),
-            };
-            let mut spans = vec![Span::raw(format!("{label}  /"))];
-            spans.extend(self.filter.cursor_spans());
-            Line::from(spans)
+            }
         } else {
             match (&self.cwd, &self.purpose) {
                 (None, _) => "Media roots".to_string(),
                 (Some(dir), BrowseFor::File) => format!("Add file — {}", dir.display()),
-                (Some(dir), BrowseFor::Directory) => {
-                    format!("Pick directory — {}", dir.display())
-                }
+                (Some(dir), BrowseFor::Directory) => format!("Pick directory — {}", dir.display()),
                 (Some(dir), BrowseFor::Map { target, .. }) => {
                     format!("Map “{target}” — {}", dir.display())
                 }
             }
-            .into()
         };
-        let items: Vec<ListItem> = self
+        let data = Presentation::default()
+            .text("title", title)
+            .text("filter-label", "  /")
+            .boolean("filter-visible", self.searching())
+            .rich(
+                "filter",
+                self.filter
+                    .cursor_spans()
+                    .into_iter()
+                    .map(|span| RichSpan {
+                        text: span.content.into_owned(),
+                        style: span.style,
+                        ..Default::default()
+                    })
+                    .collect(),
+            );
+        let Ok(scene) = renderer.arrange("file-browser", area, &data) else {
+            return;
+        };
+        let rows: Vec<_> = self
             .entries
             .iter()
-            .map(|row| match row.kind {
-                RowKind::Select | RowKind::Parent => ListItem::new(row.name.clone()),
-                RowKind::Note => ListItem::new(Span::styled(row.name.clone(), theme::dim())),
-                RowKind::Entry => {
-                    let prefix = if row.is_dir { "▸ " } else { "  " };
-                    let style = if row.is_dir {
-                        theme::directory()
-                    } else if row.watched {
-                        theme::tone_style(super::props::Tone::Muted)
-                    } else {
-                        tuirealm::ratatui::style::Style::default()
-                    };
-                    ListItem::new(Span::styled(format!("{prefix}{}", row.name), style))
+            .map(|row| {
+                let (kind, entry, style) = match row.kind {
+                    RowKind::Select => ("select", false, Style::default()),
+                    RowKind::Parent => ("parent", false, Style::default()),
+                    RowKind::Note => ("note", false, theme::dim()),
+                    RowKind::Entry => (
+                        "entry",
+                        true,
+                        if row.is_dir {
+                            theme::directory()
+                        } else if row.watched {
+                            theme::tone_style(props::Tone::Muted)
+                        } else {
+                            Style::default()
+                        },
+                    ),
+                };
+                PresentedRow {
+                    key: format!("{kind}/{:?}", row.path),
+                    data: Presentation::default()
+                        .boolean("entry", entry)
+                        .text("marker", if row.is_dir { "▸" } else { "" })
+                        .text("name", &row.name)
+                        .style("marker", style)
+                        .style("name", style),
+                    gap_after: false,
                 }
             })
             .collect();
-        render_modal_list(frame, area, title, items, self.cursor.index());
+        scene.paint_with_slots(frame, |name, frame, area, style| {
+            if name == "body" {
+                let _ = renderer.paint_collection(
+                    frame,
+                    area,
+                    "file-row",
+                    &rows,
+                    Some(self.cursor.index()),
+                    Some(self.cursor.index()),
+                    style,
+                );
+            }
+        });
     }
 }
 
@@ -1834,58 +1867,94 @@ impl EpisodeBrowser {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let (title, items): (String, Vec<ListItem>) = match self.open {
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedRow};
+        let (title, rows): (String, Vec<PresentedRow>) = match self.open {
             None => (
                 self.title.clone(),
                 self.seasons
                     .iter()
-                    .map(|season| {
+                    .enumerate()
+                    .map(|(index, season)| {
                         let known = season
                             .episodes
                             .iter()
                             .filter(|row| row.hash().is_some())
                             .count();
-                        // Branches indent under their parent (a tree,
-                        // not a drawn DAG — proposal 2026-08-28); a
-                        // season with nothing to watch renders dim.
-                        let gutter = if season.depth > 0 { "  └ " } else { "" };
-                        ListItem::new(Span::styled(
-                            format!("{gutter}{} ({known} known files)", season.title),
-                            theme::tone_style(if season.watchable {
-                                props::Tone::Normal
-                            } else {
-                                props::Tone::Muted
-                            }),
-                        ))
+                        let style = theme::tone_style(if season.watchable {
+                            props::Tone::Normal
+                        } else {
+                            props::Tone::Muted
+                        });
+                        PresentedRow {
+                            key: format!("season/{index}"),
+                            data: Presentation::default()
+                                .boolean("season", true)
+                                .boolean("branch", season.depth > 0)
+                                .text("gutter", "└")
+                                .text("title", &season.title)
+                                .text("count", format!("({known} known files)"))
+                                .style("gutter", style)
+                                .style("title", style)
+                                .style("count", style),
+                            gap_after: false,
+                        }
                     })
                     .collect(),
             ),
             Some(index) => {
                 let season = &self.seasons[index];
-                // Inner width of the modal's overlaid list area, for the
-                // holders column's right-alignment (mirrors PlaylistPane).
-                let width = overlay(area, 70, 70).width.saturating_sub(2) as usize;
-                (
-                    format!("{} — {}", self.title, season.title),
-                    if season.episodes.is_empty() {
-                        vec![ListItem::new(Span::styled(
-                            "no known files yet",
-                            theme::dim(),
-                        ))]
-                    } else {
-                        season
-                            .episodes
-                            .iter()
-                            .enumerate()
-                            .map(|(i, row)| {
-                                episode_row_item(row, Some(i) == season.first_unwatched, width)
-                            })
-                            .collect()
-                    },
-                )
+                let rows = if season.episodes.is_empty() {
+                    vec![PresentedRow {
+                        key: "empty".into(),
+                        data: Presentation::default()
+                            .boolean("empty", true)
+                            .text("note", "no known files yet")
+                            .style("note", theme::dim()),
+                        gap_after: false,
+                    }]
+                } else {
+                    season
+                        .episodes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, row)| {
+                            episode_presentation(row, Some(i) == season.first_unwatched)
+                        })
+                        .collect()
+                };
+                (format!("{} — {}", self.title, season.title), rows)
             }
         };
-        render_modal_list(frame, area, title.as_str(), items, self.cursor.index());
+        let Ok(scene) = renderer.arrange(
+            "episode-browser",
+            area,
+            &Presentation::default().text("title", title),
+        ) else {
+            return;
+        };
+        scene.paint_with_slots(frame, |name, frame, area, style| {
+            if name == "body" {
+                let _ = renderer.paint_collection(
+                    frame,
+                    area,
+                    "episode-row",
+                    &rows,
+                    Some(self.cursor.index()),
+                    Some(self.cursor.index()),
+                    style,
+                );
+            }
+        });
     }
 
     fn len(&self) -> usize {
@@ -1896,52 +1965,48 @@ impl EpisodeBrowser {
     }
 }
 
-/// Render one episode-browser row: a `<` marker on the season's first
-/// unwatched row, holders right-aligned and dim, the whole line dim when
-/// watched (design.md #31/#11 — mirrors the playlist pane's convention).
-fn episode_row_item(row: &EpisodeRow, marked: bool, width: usize) -> ListItem<'static> {
-    let marker = if marked { "< " } else { "  " };
-    let (left, watched, holders) = match row {
-        EpisodeRow::Single { episode, copy } => (
-            match episode {
-                Some(ep) => format!("{marker}{ep}  {}", copy.filename),
-                None => format!("{marker}{}", copy.filename),
-            },
-            copy.watched,
-            copy.holders.clone(),
-        ),
-        EpisodeRow::Header { episode, watched } => {
-            (format!("{marker}{episode}"), *watched, Vec::new())
-        }
-        EpisodeRow::Child(copy) => (
-            format!("{marker}  {}", copy.filename),
-            copy.watched,
-            copy.holders.clone(),
-        ),
+/// Semantic tree fields; geometry and alignment belong to the episode-row template.
+fn episode_presentation(row: &EpisodeRow, marked: bool) -> super::layout::PresentedRow {
+    use super::layout::{Presentation, PresentedRow};
+    let (episode, copy, child) = match row {
+        EpisodeRow::Single { episode, copy } => (episode.as_deref(), Some(copy), false),
+        EpisodeRow::Header { episode, .. } => (Some(episode.as_str()), None, false),
+        EpisodeRow::Child(copy) => (None, Some(copy), true),
     };
-    let style = theme::tone_style(if watched {
+    let key = copy
+        .map(|copy| copy.hash.to_string())
+        .unwrap_or_else(|| format!("header/{episode:?}"));
+    let style = theme::tone_style(if row.watched() {
         props::Tone::Muted
     } else {
         props::Tone::Normal
     });
-    let right = holders
-        .iter()
-        .map(|user| user.0.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if right.is_empty() {
-        return ListItem::new(Span::styled(left, style));
+    PresentedRow {
+        key,
+        data: Presentation::default()
+            .boolean("file", true)
+            .boolean("has-episode", episode.is_some())
+            .boolean("child", child)
+            .text("marker", if marked { "<" } else { "" })
+            .text("episode", episode.unwrap_or(""))
+            .text("filename", copy.map_or("", |copy| copy.filename.as_str()))
+            .text(
+                "holders",
+                copy.map(|copy| {
+                    copy.holders
+                        .iter()
+                        .map(|user| user.0.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default(),
+            )
+            .style("marker", style)
+            .style("episode", style)
+            .style("filename", style)
+            .style("holders", theme::dim()),
+        gap_after: false,
     }
-    // Display width, not char count: episode filenames routinely carry
-    // CJK, which occupies two cells per glyph and would over-pad here.
-    let pad = width
-        .saturating_sub(left.width() + right.width() + 1)
-        .max(1);
-    ListItem::new(Line::from(vec![
-        Span::styled(left, style),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(right, theme::dim()),
-    ]))
 }
 
 passive_modal!(EpisodeBrowser);
@@ -2003,30 +2068,26 @@ impl ConfirmModal {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let modal = overlay(area, 60, 20);
-        frame.render_widget(Clear, modal);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border_style(true))
-                .title("Confirm"),
-            modal,
-        );
-        let inner = Rect {
-            x: modal.x + 2,
-            y: modal.y + 1,
-            width: modal.width.saturating_sub(4),
-            height: modal.height.saturating_sub(2),
-        };
-        frame.render_widget(
-            tuirealm::ratatui::widgets::Paragraph::new(vec![
-                Line::from(self.prompt.clone()),
-                Line::from(""),
-                Line::from(Span::styled("y / Enter: yes    n / Esc: no", theme::dim())),
-            ])
-            .wrap(tuirealm::ratatui::widgets::Wrap { trim: false }),
-            inner,
-        );
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        let data = super::layout::Presentation::default()
+            .text("title", "Confirm")
+            .text("prompt", &self.prompt)
+            .text("yes", "y / Enter: yes")
+            .text("no", "n / Esc: no")
+            .style("yes", theme::dim())
+            .style("no", theme::dim());
+        if let Ok(scene) = renderer.arrange("confirm-dialog", area, &data) {
+            scene.paint_with_slots(frame, |_, _, _, _| {});
+        }
     }
 }
 
@@ -2385,57 +2446,63 @@ impl AniDbSearchModal {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let modal = overlay(area, 60, 60);
-        frame.render_widget(Clear, modal);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border_style(true))
-                .title(format!("Link to AniDB — {}", self.entry_name)),
-            modal,
-        );
-        let input_area = Rect {
-            x: modal.x + 2,
-            y: modal.y + 1,
-            width: modal.width.saturating_sub(4),
-            height: 3,
-        };
-        self.editor.view(frame, input_area);
-
-        let list_area = Rect {
-            x: modal.x + 2,
-            y: modal.y + 4,
-            width: modal.width.saturating_sub(4),
-            height: modal.height.saturating_sub(5),
-        };
-        if self.searching {
-            frame.render_widget(
-                tuirealm::ratatui::widgets::Paragraph::new("searching…"),
-                list_area,
-            );
-            return;
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
         }
-        if self.answered.is_some() && self.results.is_empty() {
-            frame.render_widget(
-                tuirealm::ratatui::widgets::Paragraph::new("no matches"),
-                list_area,
-            );
-            return;
-        }
-        let items: Vec<ListItem> = self
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedRow};
+        let message = if self.searching {
+            "searching…"
+        } else if self.answered.is_some() && self.results.is_empty() {
+            "no matches"
+        } else {
+            ""
+        };
+        let data = Presentation::default()
+            .text("title", format!("Link to AniDB — {}", self.entry_name))
+            .text("message", message)
+            .boolean("editing", true)
+            .boolean("has-message", !message.is_empty())
+            .boolean("has-results", message.is_empty());
+        let rows: Vec<_> = self
             .results
             .iter()
-            .map(|hit| {
-                let mut spans = vec![Span::raw(hit.title.clone())];
-                if hit.matched != hit.title {
-                    spans.push(Span::styled(format!("  ({})", hit.matched), theme::dim()));
-                }
-                spans.push(Span::styled(format!("  a{}", hit.series.0), theme::dim()));
-                ListItem::new(Line::from(spans))
+            .map(|hit| PresentedRow {
+                key: hit.series.0.to_string(),
+                data: Presentation::default()
+                    .text("title", &hit.title)
+                    .text("matched", format!("({})", hit.matched))
+                    .boolean("alias", hit.matched != hit.title)
+                    .text("series", format!("a{}", hit.series.0))
+                    .style("matched", theme::dim())
+                    .style("series", theme::dim()),
+                gap_after: false,
             })
             .collect();
-        let selected = (!self.results.is_empty()).then(|| self.cursor.index());
-        render_list_body(frame, list_area, items, selected, selected);
+        let Ok(scene) = renderer.arrange("anidb-search", area, &data) else {
+            return;
+        };
+        scene.paint_with_slots(frame, |name, frame, area, style| match name {
+            "editor" => self.editor.view(frame, area),
+            "body" => {
+                let _ = renderer.paint_collection(
+                    frame,
+                    area,
+                    "anidb-result",
+                    &rows,
+                    Some(self.cursor.index()),
+                    Some(self.cursor.index()),
+                    style,
+                );
+            }
+            _ => {}
+        });
     }
 }
 
@@ -2525,39 +2592,26 @@ impl LocalCopyOfferModal {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let modal = overlay(area, 70, 60);
-        frame.render_widget(Clear, modal);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border_style(true))
-                .title("You don't have this file"),
-            modal,
-        );
-        let inner = Rect {
-            x: modal.x + 2,
-            y: modal.y + 1,
-            width: modal.width.saturating_sub(4),
-            height: modal.height.saturating_sub(2),
-        };
-        let header = tuirealm::ratatui::widgets::Paragraph::new(vec![
-            Line::from(Span::raw(self.filename.clone())),
-            Line::from(Span::styled(
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedRow};
+        let data = Presentation::default()
+            .text("title", "You don't have this file")
+            .text("filename", &self.filename)
+            .text(
+                "note",
                 "You may already have a copy — pick one to play it instead:",
-                theme::dim(),
-            )),
-        ]);
-        let header_area = Rect {
-            height: 3.min(inner.height),
-            ..inner
-        };
-        frame.render_widget(header, header_area);
-        let list_area = Rect {
-            y: inner.y + 3,
-            height: inner.height.saturating_sub(3),
-            ..inner
-        };
-        let items: Vec<ListItem> = self
+            )
+            .style("note", theme::dim());
+        let rows: Vec<_> = self
             .candidates
             .iter()
             .map(|candidate| {
@@ -2565,14 +2619,31 @@ impl LocalCopyOfferModal {
                     dessplay_core::local_copy::CopyEvidence::SameEpisode => "same episode",
                     dessplay_core::local_copy::CopyEvidence::NameMatch => "name match",
                 };
-                ListItem::new(Line::from(vec![
-                    Span::raw(candidate.filename.clone()),
-                    Span::styled(format!("  {evidence}"), theme::dim()),
-                ]))
+                PresentedRow {
+                    key: format!("{:?}", candidate.path),
+                    data: Presentation::default()
+                        .text("filename", &candidate.filename)
+                        .text("evidence", evidence)
+                        .style("evidence", theme::dim()),
+                    gap_after: false,
+                }
             })
             .collect();
-        let selected = (!self.candidates.is_empty()).then(|| self.cursor.index());
-        render_list_body(frame, list_area, items, selected, selected);
+        if let Ok(scene) = renderer.arrange("copy-dialog", area, &data) {
+            scene.paint_with_slots(frame, |name, frame, area, style| {
+                if name == "body" {
+                    let _ = renderer.paint_collection(
+                        frame,
+                        area,
+                        "copy-row",
+                        &rows,
+                        Some(self.cursor.index()),
+                        Some(self.cursor.index()),
+                        style,
+                    );
+                }
+            });
+        }
     }
 }
 
@@ -2804,35 +2875,27 @@ impl NeroNameModal {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let modal = overlay(area, 50, 20);
-        frame.render_widget(Clear, modal);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border_style(true))
-                .title(format!("Nero's name — {}", self.entry_name)),
-            modal,
-        );
-        let input_area = Rect {
-            x: modal.x + 2,
-            y: modal.y + 1,
-            width: modal.width.saturating_sub(4),
-            height: 3,
-        };
-        self.editor.view(frame, input_area);
-        let hint_area = Rect {
-            x: modal.x + 2,
-            y: modal.y + 4,
-            width: modal.width.saturating_sub(4),
-            height: 1,
-        };
-        frame.render_widget(
-            tuirealm::ratatui::widgets::Paragraph::new(Span::styled(
-                "empty clears the name",
-                theme::dim(),
-            )),
-            hint_area,
-        );
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        let data = super::layout::Presentation::default()
+            .text("title", format!("Nero's name — {}", self.entry_name))
+            .text("note", "empty clears the name")
+            .style("note", theme::dim());
+        if let Ok(scene) = renderer.arrange("name-dialog", area, &data) {
+            scene.paint_with_slots(frame, |name, frame, area, _| {
+                if name == "editor" {
+                    self.editor.view(frame, area);
+                }
+            });
+        }
     }
 }
 
@@ -3002,44 +3065,43 @@ impl NyaaSearchModal {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let modal = overlay(area, 72, 65);
-        frame.render_widget(Clear, modal);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border_style(true))
-                .title(if self.showing_active {
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedRow};
+        let message = if self.showing_active {
+            ""
+        } else if self.searching {
+            "searching and inspecting torrent metadata…"
+        } else if let Some(error) = &self.error {
+            error
+        } else if self.answered.is_some() && self.results.is_empty() {
+            "no single-file matches"
+        } else {
+            ""
+        };
+        let data = Presentation::default()
+            .text(
+                "title",
+                if self.showing_active {
                     "Nyaa imports"
                 } else {
                     "Search Nyaa — Anime"
-                }),
-            modal,
-        );
-        let list_area = if self.showing_active {
-            Rect {
-                x: modal.x + 2,
-                y: modal.y + 1,
-                width: modal.width.saturating_sub(4),
-                height: modal.height.saturating_sub(2),
-            }
-        } else {
-            let input_area = Rect {
-                x: modal.x + 2,
-                y: modal.y + 1,
-                width: modal.width.saturating_sub(4),
-                height: 3,
-            };
-            self.editor.view(frame, input_area);
-            Rect {
-                x: modal.x + 2,
-                y: modal.y + 4,
-                width: modal.width.saturating_sub(4),
-                height: modal.height.saturating_sub(5),
-            }
-        };
-        if self.showing_active {
-            let items: Vec<ListItem> = self
-                .active
+                },
+            )
+            .text("message", message)
+            .boolean("editing", !self.showing_active)
+            .boolean("has-message", !message.is_empty())
+            .boolean("has-results", message.is_empty());
+        let rows: Vec<_> = if self.showing_active {
+            self.active
                 .iter()
                 .map(|row| {
                     let stage = match row.stage {
@@ -3051,60 +3113,56 @@ impl NyaaSearchModal {
                         .saturating_mul(100)
                         .checked_div(row.total_bytes)
                         .unwrap_or(0);
-                    ListItem::new(Line::from(vec![
-                        Span::raw(row.filename.clone()),
-                        Span::styled(format!("  {stage} {pct}%"), theme::dim()),
-                    ]))
+                    PresentedRow {
+                        key: format!("active/{:?}", row.id),
+                        data: Presentation::default()
+                            .boolean("active", true)
+                            .text("filename", &row.filename)
+                            .text("stage", stage)
+                            .text("progress", format!("{pct}%"))
+                            .style("stage", theme::dim())
+                            .style("progress", theme::dim()),
+                        gap_after: false,
+                    }
                 })
-                .collect();
-            let selected = (!items.is_empty()).then(|| self.cursor.index());
-            render_list_body(frame, list_area, items, selected, selected);
+                .collect()
+        } else {
+            self.results
+                .iter()
+                .map(|result| PresentedRow {
+                    key: format!("result/{}", result.chosen.info_hash),
+                    data: Presentation::default()
+                        .boolean("result", true)
+                        .text("filename", &result.filename)
+                        .text("title", &result.title)
+                        .boolean("alias", result.title != result.filename)
+                        .text("size", format!("{} MiB", result.size_bytes / (1024 * 1024)))
+                        .text("seeders", format!("{} seeders", result.seeders))
+                        .style("title", theme::dim())
+                        .style("size", theme::dim())
+                        .style("seeders", theme::dim()),
+                    gap_after: false,
+                })
+                .collect()
+        };
+        let Ok(scene) = renderer.arrange("nyaa-search", area, &data) else {
             return;
-        }
-        if self.searching {
-            frame.render_widget(
-                tuirealm::ratatui::widgets::Paragraph::new(
-                    "searching and inspecting torrent metadata…",
-                ),
-                list_area,
-            );
-            return;
-        }
-        if let Some(error) = &self.error {
-            frame.render_widget(
-                tuirealm::ratatui::widgets::Paragraph::new(error.as_str()),
-                list_area,
-            );
-            return;
-        }
-        if self.answered.is_some() && self.results.is_empty() {
-            frame.render_widget(
-                tuirealm::ratatui::widgets::Paragraph::new("no single-file matches"),
-                list_area,
-            );
-            return;
-        }
-        let items: Vec<ListItem> = self
-            .results
-            .iter()
-            .map(|result| {
-                let mut spans = vec![Span::raw(result.filename.clone())];
-                if result.title != result.filename {
-                    spans.push(Span::styled(format!("  {}", result.title), theme::dim()));
-                }
-                spans.push(Span::styled(
-                    format!(
-                        "  {} MiB  {} seeders",
-                        result.size_bytes / (1024 * 1024),
-                        result.seeders
-                    ),
-                    theme::dim(),
-                ));
-                ListItem::new(Line::from(spans))
-            })
-            .collect();
-        let selected = (!items.is_empty()).then(|| self.cursor.index());
-        render_list_body(frame, list_area, items, selected, selected);
+        };
+        scene.paint_with_slots(frame, |name, frame, area, style| match name {
+            "editor" => self.editor.view(frame, area),
+            "body" => {
+                let _ = renderer.paint_collection(
+                    frame,
+                    area,
+                    "nyaa-result",
+                    &rows,
+                    Some(self.cursor.index()),
+                    Some(self.cursor.index()),
+                    style,
+                );
+            }
+            _ => {}
+        });
     }
 }
 
@@ -4116,6 +4174,47 @@ mod tests {
             .clone();
 
         assert_eq!(row_y(&buffer, "series-10"), Some(14));
+    }
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn file_only_search_reordering_preserves_editor_and_link_target() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/result.xml"), r#"<templates version="1"><template name="anidb-result"><column><text bind="series"/><text bind="title"/></column></template></templates>"#).unwrap();
+        let mut modal = AniDbSearchModal::new(ListEntryId(1), "query".into());
+        modal.set_results(
+            "query",
+            vec![AniDbSearchHit {
+                series: dessplay_core::types::AniDbSeriesId(7),
+                title: "Example title".into(),
+                matched: "Example title".into(),
+            }],
+        );
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::load(directory.path()).unwrap(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(60, 25)).unwrap();
+        terminal
+            .draw(|frame| modal.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let number = row_y(terminal.backend().buffer(), "a7").unwrap();
+        assert_eq!(
+            row_y(terminal.backend().buffer(), "Example title"),
+            Some(number + 1)
+        );
+        let editor = modal.editor.text();
+        renderer.install(super::super::layout::LayoutBundle::builtin().unwrap());
+        terminal
+            .draw(|frame| modal.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        assert_eq!(modal.editor.text(), editor);
+        assert!(matches!(
+            modal.act_enter(),
+            Some(Msg::ListEntryLinked(
+                ListEntryId(1),
+                dessplay_core::types::AniDbSeriesId(7)
+            ))
+        ));
     }
 
     /// A SettingsModal with all the essentials filled in (saveable).

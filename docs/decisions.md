@@ -558,6 +558,21 @@ frame edge, avoiding a widget-owned coordinate calculation or a second text
 measurement path for rich captions. Existing default List snapshots remain
 unchanged; XML-only row reordering retains edit targets through reload.
 
+### Modal slots follow template stacking order (2026-09-08)
+
+Browser/search and small-dialog migrations use slots painted within the scene
+traversal. Painting all chrome first and all primitive contents afterward would
+let later body painting erase an earlier-declared nested popup. The renderer
+records subtree boundaries and paints nested overlays after their enclosing
+content, then proceeds to the next sibling overlay.
+
+Full dialogs use a separate bounded modal placement policy. Reusing the
+recovery panel's one-cell safety inset shifted browser frames on short
+terminals and clipped the bottom edge, caught by the existing season snapshot.
+Modal percentages floor to cells and minimum sizes yield to the viewport,
+preserving the existing browser dimensions and centering. The property gate
+compares arbitrary small sizes and translated origins against that contract.
+
 ### Explicit dark theme on true-color terminals
 
 **Rule:** A true-color terminal gets an explicit app-wide dark theme with RGB semantic foregrounds; dim text is an explicit muted RGB, never SGR 2; limited-color terminals keep their own theme and the ten-color palette; see [design.md](design.md#ui-principles).

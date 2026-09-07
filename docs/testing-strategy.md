@@ -996,3 +996,10 @@ prefix regressions were confirmed failing before their fixes.
 Series tests keep both existing default List snapshots, exercise file-only
 column-to-row reordering and edit-target retention on reload, and verify the
 filter cursor on a measured caption at a nonzero origin.
+
+Browser migrations retain season/episode/narrow-filename snapshots and the
+existing centered-navigation scenarios. Modal-placement properties compare
+arbitrary small viewport sizes and nonzero origins to the established dialog
+contract. A nested-overlay slot test checks painting order and surviving cells;
+a file-only AniDB result reorder retains the editor and selected link target
+through reload. Existing modal tests retain input capture and action semantics.

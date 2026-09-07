@@ -116,6 +116,65 @@ impl Default for TemplateSchema {
                 ][..],
                 &["external", "action", "named"][..],
             ),
+            (
+                "file-browser",
+                &["body"][..],
+                &["title", "filter-label"][..],
+                &["filter-visible"][..],
+            ),
+            ("episode-browser", &["body"][..], &["title"][..], &[][..]),
+            (
+                "anidb-search",
+                &["body", "editor"][..],
+                &["title", "message"][..],
+                &["editing", "has-message", "has-results"][..],
+            ),
+            (
+                "nyaa-search",
+                &["body", "editor"][..],
+                &["title", "message"][..],
+                &["editing", "has-message", "has-results"][..],
+            ),
+            (
+                "anidb-result",
+                &[][..],
+                &["title", "matched", "series"][..],
+                &["alias"][..],
+            ),
+            (
+                "nyaa-result",
+                &[][..],
+                &["filename", "title", "size", "seeders", "stage", "progress"][..],
+                &["alias", "result", "active"][..],
+            ),
+            (
+                "confirm-dialog",
+                &[][..],
+                &["title", "prompt", "yes", "no"][..],
+                &[][..],
+            ),
+            (
+                "name-dialog",
+                &["editor"][..],
+                &["title", "note"][..],
+                &[][..],
+            ),
+            (
+                "copy-dialog",
+                &["body"][..],
+                &["title", "filename", "note"][..],
+                &[][..],
+            ),
+            ("copy-row", &[][..], &["filename", "evidence"][..], &[][..]),
+            ("file-row", &[][..], &["marker", "name"][..], &["entry"][..]),
+            (
+                "episode-row",
+                &[][..],
+                &[
+                    "marker", "episode", "filename", "holders", "gutter", "title", "count", "note",
+                ][..],
+                &["file", "has-episode", "child", "season", "branch", "empty"][..],
+            ),
             ("chat-separator", &[][..], &["label"][..], &[][..]),
             (
                 "rogue-inspection",
@@ -332,6 +391,10 @@ impl Default for TemplateSchema {
             "rich-text".into(),
             [("body".into(), BindingType::Rich)].into(),
         );
+        templates
+            .entry("file-browser".into())
+            .or_default()
+            .insert("filter".into(), BindingType::Rich);
         templates
             .entry("series".into())
             .or_default()
@@ -654,12 +717,12 @@ fn validate(
     if node.attrs.contains_key("placement")
         && !matches!(
             node.attr("placement"),
-            "center" | "bottom" | "after" | "before"
+            "center" | "bottom" | "after" | "before" | "modal"
         )
     {
         return Err(error(
             node,
-            "overlay placement must be center, bottom, before, or after",
+            "overlay placement must be center, modal, bottom, before, or after",
         ));
     }
     for child in &node.children {

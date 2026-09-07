@@ -4,7 +4,8 @@ The layout migration is in progress. Currently the shared settings/List-entry
 forms, their semantic label/value/annotation rows, the F11 log viewer's
 controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
 attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
-and the roguelike frame, game, recovery, document, equipment, and ending pages
+file/episode browsers, AniDB/Nyaa searches, local-copy offers, confirmations,
+name editing, and the roguelike frame, game, recovery, document, equipment, and ending pages
 use local templates. Other pane interiors still use their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
@@ -69,7 +70,11 @@ clipped scroll viewport whose controller supplies the visible contents.
 `overlay` declares a separate paint layer aligned to the bottom of its
 parent content, inset one cell horizontally. Its dimensions and margins
 are styleable; `placement="center"` centers the allocated box with a one-cell
-inset on all sides. `placement="after"` attaches a popup below its parent control
+inset on all sides. `placement="modal"` centers a full dialog within the entry
+viewport: percentages floor to whole cells and minimum sizes yield to the
+viewport. Nested overlays paint after their ordinary content; later sibling
+overlays cover earlier ones. Primitive slots participate in this same order.
+`placement="after"` attaches a popup below its parent control
 and lets it escape that control's clip while staying inside the entry viewport. `placement="before"` attaches above its parent and may paint
 on the entry border, for measured captions containing an editor cursor. Capture remains in controllers. `text bind="field"` paints typed text;
 `slot name="field"` reserves a primitive's content rectangle. Containers accept
@@ -320,3 +325,28 @@ its measured cell when the pane moves. `series-row` exposes `title`, `year`,
 and `unlinked`. Move these text elements to reorder columns or put them on
 separate rows. Group headings and entries retain controller identities across
 reload, wrapping, and changes in the List's ordering.
+
+## Browsers, searches, and small dialogs
+
+Browser and search definitions are in `templates/collections.xml`.
+`file-browser` exposes `title`, `filter-label`, rich `filter`, boolean
+`filter-visible`, and slot `body`. `file-row` exposes `marker`, `name`, and
+boolean `entry`, including directory, file, parent, selection, and note rows.
+`episode-browser` exposes `title` and slot `body`. `episode-row` exposes
+`marker`, `episode`, `filename`, `holders`, `gutter`, `title`, `count`, `note`;
+booleans are `file`, `has-episode`, `child`, `season`, `branch`, and `empty`.
+The default episode row gives filenames priority over holders when narrow.
+Change its flex rules to allocate a reserved holder column instead.
+
+`anidb-search` and `nyaa-search` expose `title`, `message`, `editor`/`body`
+slots, and `editing`, `has-message`, `has-results` booleans. Both reuse the
+`search-dialog` helper. `anidb-result` exposes `title`, `matched`, `series`,
+and boolean `alias`. `nyaa-result` exposes `filename`, `title`, `size`,
+`seeders`, `stage`, `progress`, and booleans `alias`, `result`, `active`.
+Search editors, results, in-progress work, and errors retain controller state
+across reload. Search result fields can become columns or separate rows.
+
+`confirm-dialog` exposes `title`, `prompt`, `yes`, `no`; `name-dialog` exposes
+`title`, `note`, and slot `editor`; `copy-dialog` exposes `title`, `filename`,
+`note`, and slot `body`. `copy-row` exposes `filename` and `evidence`.
+Their capture and keyboard actions stay in the existing modal controllers.

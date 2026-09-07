@@ -194,6 +194,7 @@ impl RenderedCollection {
 #[derive(Clone, Debug, Default)]
 pub struct RenderedScene {
     nodes: Vec<Arranged>,
+    paint_order: Vec<usize>,
     /// Rich/plain text source ranges; consumers apply the scene's viewport transform.
     pub text_regions: Vec<TextRegion>,
     pub(crate) splits: Vec<SplitRegion>,
@@ -234,6 +235,7 @@ impl SplitRegion {
 }
 #[derive(Clone, Debug)]
 struct Arranged {
+    subtree_end: usize,
     overlay: bool,
     overlay_root: bool,
     id: String,
@@ -345,6 +347,16 @@ impl RenderedScene {
     pub fn paint_overlays(&self, frame: &mut Frame<'_>) {
         self.paint_layer(frame, true, PaintView::new(frame.area(), 0, 0));
     }
+    /// Fill primitive slots in the same layer order as their template chrome.
+    pub fn paint_with_slots(
+        &self,
+        frame: &mut Frame<'_>,
+        mut paint: impl FnMut(&str, &mut Frame<'_>, Rect, PaintStyle),
+    ) {
+        let view = PaintView::new(frame.area(), 0, 0);
+        self.paint_layer_with_slots(frame, false, view, &mut paint);
+        self.paint_layer_with_slots(frame, true, view, &mut paint);
+    }
     /// Paint an already arranged local scene through a scrolling viewport.
     pub fn paint_scrolled(&self, frame: &mut Frame<'_>, viewport: Rect, row_offset: i32) {
         let view = PaintView::new(
@@ -426,7 +438,21 @@ impl RenderedScene {
         .rect(self.slot(name))
     }
     fn paint_layer(&self, frame: &mut Frame<'_>, overlay: bool, view: PaintView) {
-        for n in self.nodes.iter().filter(|n| n.overlay == overlay) {
+        self.paint_layer_with_slots(frame, overlay, view, &mut |_, _, _, _| {});
+    }
+    fn paint_layer_with_slots(
+        &self,
+        frame: &mut Frame<'_>,
+        overlay: bool,
+        view: PaintView,
+        paint: &mut impl FnMut(&str, &mut Frame<'_>, Rect, PaintStyle),
+    ) {
+        for n in self
+            .paint_order
+            .iter()
+            .map(|index| &self.nodes[*index])
+            .filter(|n| n.overlay == overlay)
+        {
             let visible = view.rect(n.bounds.intersection(n.clip));
             if visible.is_empty() {
                 continue;
@@ -520,6 +546,12 @@ impl RenderedScene {
                     Default::default(),
                     view,
                 );
+            }
+            if !n.slot.is_empty() {
+                let area = view.rect(n.content.intersection(n.clip));
+                if !area.is_empty() {
+                    paint(&n.slot, frame, area, n.style.paint);
+                }
             }
         }
     }
@@ -823,6 +855,7 @@ impl Renderer {
             data,
             &mut Vec::new(),
             &inherited,
+            area,
         )?;
         let available = Size {
             width: AvailableSpace::Definite(area.width as f32),
@@ -897,6 +930,7 @@ impl Renderer {
             false,
             &mut scene,
         )?;
+        scene.paint_order = paint_order(&scene.nodes, 0..scene.nodes.len());
         if self.cache.len() >= 2048
             && !self.cache.contains_key(key)
             && let Some(oldest) = self
@@ -1055,6 +1089,25 @@ impl Renderer {
         Ok(rendered)
     }
 }
+fn paint_order(nodes: &[Arranged], range: std::ops::Range<usize>) -> Vec<usize> {
+    let mut order = Vec::new();
+    let mut overlays = Vec::new();
+    let mut index = range.start;
+    while index < range.end {
+        if nodes[index].overlay_root {
+            overlays.push(index);
+            index = nodes[index].subtree_end;
+        } else {
+            order.push(index);
+            index += 1;
+        }
+    }
+    for index in overlays {
+        order.push(index);
+        order.extend(paint_order(nodes, index + 1..nodes[index].subtree_end));
+    }
+    order
+}
 fn internal(e: impl std::fmt::Display) -> Diagnostic {
     Diagnostic::at(
         std::path::Path::new("<renderer>"),
@@ -1170,6 +1223,41 @@ fn refresh_paint(scene: &mut RenderedScene, data: &Presentation) {
     }
 }
 
+// A full modal uses viewport-relative dimensions, floors percentage cells, and
+// yields its minimum size to the viewport. Recovery popups retain their inset.
+fn constrain_modal(style: &mut taffy::Style, viewport: Rect) {
+    let axis = |size: &mut Dimension, min: &mut Dimension, max: &mut Dimension, available: u16| {
+        let available = f32::from(available);
+        let resolve = |value: Dimension| match value {
+            Dimension::Length(value) => Some(value),
+            Dimension::Percent(value) => Some((value * available).floor()),
+            Dimension::Auto => None,
+        };
+        let minimum = resolve(*min).unwrap_or(0.0).min(available);
+        let maximum = resolve(*max)
+            .unwrap_or(available)
+            .max(minimum)
+            .min(available);
+        *size = resolve(*size).map_or(Dimension::Auto, |value| {
+            Dimension::Length(value.clamp(minimum, maximum))
+        });
+        *min = Dimension::Length(minimum);
+        *max = Dimension::Length(maximum);
+    };
+    axis(
+        &mut style.size.width,
+        &mut style.min_size.width,
+        &mut style.max_size.width,
+        viewport.width,
+    );
+    axis(
+        &mut style.size.height,
+        &mut style.min_size.height,
+        &mut style.max_size.height,
+        viewport.height,
+    );
+}
+
 fn build<'a>(
     tree: &mut TaffyTree<Measure>,
     bundle: &LayoutBundle,
@@ -1177,6 +1265,7 @@ fn build<'a>(
     data: &'a Presentation,
     path: &mut Vec<(&'a Node, Vec<&'a str>)>,
     parent: &Computed,
+    viewport: Rect,
 ) -> Result<Built<'a>, Diagnostic> {
     let mut states: Vec<&str> = data
         .states
@@ -1188,6 +1277,9 @@ fn build<'a>(
     }
     path.push((node, states));
     let mut style = resolve(bundle, path, parent)?;
+    if node.tag == "overlay" && node.attr("placement") == "modal" {
+        constrain_modal(&mut style.layout, viewport);
+    }
     if let Some(semantic) = data.component_styles.get(node.attr("id")) {
         style.paint = semantic.patch(style.paint);
     }
@@ -1209,7 +1301,7 @@ fn build<'a>(
     }
     let mut children = Vec::new();
     for child in &node.children {
-        children.push(build(tree, bundle, child, data, path, &style)?);
+        children.push(build(tree, bundle, child, data, path, &style, viewport)?);
     }
     path.pop();
     let mut text = data
@@ -1374,14 +1466,25 @@ fn collect(
         return Ok(());
     }
     let layout = tree.layout(built.id).map_err(internal)?;
-    let centered = built.node.tag == "overlay" && built.node.attr("placement") == "center";
+    let modal = built.node.tag == "overlay" && built.node.attr("placement") == "modal";
+    let containing = if modal {
+        scene.nodes.first().map_or(containing, |root| root.bounds)
+    } else {
+        containing
+    };
+    let centered =
+        built.node.tag == "overlay" && matches!(built.node.attr("placement"), "center" | "modal");
+    let centered_offset = |available: u16, extent: f32| {
+        let offset = (f32::from(available) - extent).max(0.0) / 2.0;
+        if modal { offset.floor() } else { offset }
+    };
     let x = if centered {
-        f32::from(containing.x) + (f32::from(containing.width) - layout.size.width).max(0.0) / 2.0
+        f32::from(containing.x) + centered_offset(containing.width, layout.size.width)
     } else {
         origin.0 + layout.location.x
     };
     let y = if centered {
-        f32::from(containing.y) + (f32::from(containing.height) - layout.size.height).max(0.0) / 2.0
+        f32::from(containing.y) + centered_offset(containing.height, layout.size.height)
     } else {
         origin.1 + layout.location.y
     };
@@ -1494,7 +1597,9 @@ fn collect(
         .iter()
         .map(|fragment| fragment_line(fragment, &runs, built.style.paint))
         .collect();
+    let node_index = scene.nodes.len();
     scene.nodes.push(Arranged {
+        subtree_end: node_index + 1,
         overlay: in_overlay || built.node.tag == "overlay",
         overlay_root: built.node.tag == "overlay",
         id: built.node.attr("id").into(),
@@ -1542,6 +1647,7 @@ fn collect(
             split_children.push((child.node.attr("id").to_string(), node.bounds));
         }
     }
+    scene.nodes[node_index].subtree_end = scene.nodes.len();
     if built.node.attr("resizable") == "true" && split_children.len() >= 2 {
         let horizontal = built.style.layout.flex_direction == FlexDirection::Row;
         let origin = if horizontal { content.x } else { content.y };

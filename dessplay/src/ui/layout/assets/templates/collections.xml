@@ -1,4 +1,41 @@
 <templates version="1">
+  <template name="confirm-dialog"><box><overlay id="confirm-dialog" class="small-dialog" placement="modal" title="title"><text class="confirm-prompt" bind="prompt"/><flow class="confirm-answers" separator="    "><text bind="yes"/><text bind="no"/></flow></overlay></box></template>
+  <template name="name-dialog"><box><overlay id="name-dialog" class="small-dialog" placement="modal" title="title"><slot class="search-editor" name="editor"/><text bind="note"/></overlay></box></template>
+  <template name="copy-dialog"><box><overlay id="copy-dialog" class="small-dialog" placement="modal" title="title"><column class="copy-header"><text bind="filename"/><text bind="note"/></column><scroll><slot name="body"/></scroll></overlay></box></template>
+  <template name="copy-row"><flow separator="  "><text bind="filename"/><text bind="evidence"/></flow></template>
+
+  <template name="anidb-search"><box class="anidb-dialog"><use template="search-dialog"/></box></template>
+  <template name="nyaa-search"><box class="nyaa-dialog"><use template="search-dialog"/></box></template>
+  <template name="search-dialog">
+    <overlay id="search-dialog" placement="modal" title="title">
+      <slot class="search-editor" name="editor" if="editing"/>
+      <text class="search-message" bind="message" if="has-message"/>
+      <scroll if="has-results"><slot name="body"/></scroll>
+    </overlay>
+  </template>
+  <template name="anidb-result"><flow separator="  "><text bind="title"/><text bind="matched" if="alias"/><text bind="series"/></flow></template>
+  <template name="nyaa-result"><flow separator="  "><text bind="filename"/><text bind="title" if="alias"/><text bind="size" if="result"/><text bind="seeders" if="result"/><flow if="active"><text bind="stage"/><text bind="progress"/></flow></flow></template>
+
+  <template name="file-browser">
+    <box><overlay id="file-browser-frame" class="browser-dialog" placement="modal">
+      <overlay class="browser-caption" placement="before"><flow separator=""><text bind="title"/><text bind="filter-label" if="filter-visible"/><rich bind="filter" if="filter-visible"/></flow></overlay>
+      <scroll><slot name="body"/></scroll>
+    </overlay></box>
+  </template>
+  <template name="episode-browser">
+    <box><overlay id="episode-browser-frame" class="browser-dialog" placement="modal" title="title"><scroll><slot name="body"/></scroll></overlay></box>
+  </template>
+  <template name="file-row"><row><text class="file-marker" bind="marker" if="entry"/><text class="file-name" bind="name"/></row></template>
+  <template name="episode-row">
+    <box>
+      <text bind="note" if="empty"/>
+      <row if="season"><text class="season-gutter" bind="gutter" if="branch"/><flow><text bind="title"/><text bind="count"/></flow></row>
+      <row if="file">
+        <row class="episode-details"><text class="episode-marker" bind="marker"/><text class="episode-number" bind="episode" if="has-episode"/><box class="episode-child-gutter" if="child"/><text bind="filename"/></row>
+        <text class="episode-holders" bind="holders"/>
+      </row>
+    </box>
+  </template>
   <template name="series">
     <scroll id="series-frame">
       <overlay id="series-caption" placement="before"><flow separator=""><text bind="title"/><text bind="filter-label" if="filter-visible"/><rich bind="filter" if="filter-visible"/></flow></overlay>

@@ -10,6 +10,48 @@ fn defaults_are_valid_and_transferable() {
     assert!(LayoutBundle::builtin().is_ok());
 }
 #[test]
+fn nested_overlay_slots_paint_after_their_content_and_before_later_overlays() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    std::fs::write(directory.path().join("templates/form.xml"), r#"<templates version="1"><template name="form"><box><overlay placement="center" style="width: 20ch; height: 8lh"><overlay style="height: 1lh"><slot name="error"/></overlay><slot name="body" style="flex-grow: 1"/></overlay><overlay placement="center" style="width: 2ch; height: 2lh"><slot name="editor" style="flex-grow: 1"/></overlay></box></template></templates>"#).unwrap();
+    let scene = Renderer::new(LayoutBundle::load(directory.path()).unwrap())
+        .arrange(
+            "form",
+            Rect::new(0, 0, 30, 12),
+            &Presentation::default().slot("error", 0, 1),
+        )
+        .unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+    let mut order = Vec::new();
+    terminal
+        .draw(|frame| {
+            scene.paint_with_slots(frame, |name, frame, area, _| {
+                order.push(name.to_string());
+                for y in area.y..area.bottom() {
+                    for x in area.x..area.right() {
+                        frame.buffer_mut()[(x, y)].set_symbol(match name {
+                            "body" => "B",
+                            "error" => "E",
+                            _ => "I",
+                        });
+                    }
+                }
+            })
+        })
+        .unwrap();
+    assert_eq!(order, ["body", "error", "editor"]);
+    let error = scene.slot("error");
+    assert_eq!(
+        terminal.backend().buffer()[(error.x, error.y)].symbol(),
+        "E"
+    );
+    let editor = scene.slot("editor");
+    assert_eq!(
+        terminal.backend().buffer()[(editor.x, editor.y)].symbol(),
+        "I"
+    );
+}
+#[test]
 fn rejects_ambiguous_prefixes_and_repeated_action_bindings() {
     for content in [
         "<prefix><text bind=\"timestamp\"/></prefix>",
@@ -93,6 +135,14 @@ fn cascade_specificity_inheritance_and_custom_variables() {
     );
 }
 proptest! {
+    #[test]
+    fn modal_placement_preserves_browser_sizing_and_translation(width in 0u16..180, height in 0u16..90, x in 0u16..30, y in 0u16..20) {
+        let area = Rect::new(x,y,width,height);
+        let scene = Renderer::new(LayoutBundle::builtin().unwrap()).arrange("episode-browser", area, &Presentation::default()).unwrap();
+        let actual = scene.bounds("episode-browser-frame");
+        let expected = crate::ui::widgets::overlay(area,70,70);
+        if expected.is_empty() {prop_assert!(actual.is_empty());} else {prop_assert_eq!(actual, expected);}
+    }
     #[test]
     fn geometry_is_translation_invariant_and_contained(width in 0u16..150, height in 0u16..80, x in 0u16..200, y in 0u16..100) {
         let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());

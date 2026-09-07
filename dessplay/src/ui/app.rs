@@ -2890,6 +2890,13 @@ impl Ui {
         scene.paint_overlays(frame);
         if let Some(modal) = self.modals.last_mut() {
             match modal {
+                Modal::AniDbSearch(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::NyaaSearch(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::Confirm(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::NeroName(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::LocalCopyOffer(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::Files(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::Episodes(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Settings(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::ListEdit(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Logs(modal) => modal.render_layout(frame, frame.area(), renderer),

@@ -6,6 +6,7 @@ use crate::roguelike::{
     Action, Body, EventKind, HEIGHT, LootKind, Outcome, PartKind, Point, RunView, Supplies, WIDTH,
 };
 use crate::roguelike_store::Command;
+use crate::ui::widgets::render_list_body;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::widgets::Paragraph;
 

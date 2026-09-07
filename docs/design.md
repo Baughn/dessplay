@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1684,7 +1684,11 @@ and their frame captions remain independent of overflowing content. Attached
 dropdowns follow their parent control and may escape its clip only within the
 entry-template viewport. Before-attached overlays can paint on the entry border
 for captions containing measured text and filter cursors. Hiding the parent
-also hides its attached overlays.
+also hides its attached overlays. Full modal placement uses the entry viewport,
+floors percentage dimensions to cells, and yields minimum sizes to that viewport.
+Nested overlays paint after ordinary content within their enclosing overlay;
+later sibling overlays cover earlier ones. Primitive slots follow that same
+paint order. Browser and search models provide unpadded semantic row fields.
 
 RGB text is quantized to the finite terminal palette in limited mode.
 Explicit background colors survive the legacy theme adapter during the

@@ -32,6 +32,12 @@ List keys include group and entry identity, while franchise keys use the
 controller franchise identity. The caption is a before-attached flow whose
 rich filter binding contains the existing LineBuffer cursor spans.
 
+Browser/search and small-dialog controllers now provide semantic rows and
+editor primitives through `RenderedScene::paint_with_slots`. Arranged subtree
+boundaries determine nested overlay order, including slot callbacks. Modal
+placement constrains dimensions to the entry viewport before text measurement,
+then centers the integer frame using the existing dialog rounding policy.
+
 The filesystem worker owns notify and compiles candidate bundles after
 debouncing. A separate capacity-one channel retries full delivery, and an
 atomic requested generation makes queued stale candidates ineligible. The
@@ -42,7 +48,7 @@ automated roguelike recovery. See [ui-layouts.md](ui-layouts.md) for the
 current authoring contract and [plan.md](plan.md#phase-36-runtime-editable-display-layouts)
 for outstanding migration work.
 
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
 architecture on top of ratatui. This document covers the component structure,

@@ -77,3 +77,24 @@ scroll > slot { flex-grow: 1; }
 .series-episode { width: 8ch; margin: 0 0 0 1ch; }
 .series-available { width: 3ch; text-align: center; margin: 0 0 0 1ch; }
 .series-watchers { width: 10ch; margin: 0 0 0 1ch; }
+
+.browser-dialog { width: 70%; height: 70%; min-width: 20ch; min-height: 8lh; max-width: 100%; max-height: 100%; border: 1; border-color: yellow; }
+.browser-caption { height: 1lh; max-width: 100%; }
+.file-marker, .episode-marker, .episode-child-gutter { width: 2ch; }
+.file-name { flex-grow: 1; flex-shrink: 1; }
+.season-gutter { width: 4ch; padding: 0 1ch 0 2ch; }
+.episode-details { flex-grow: 1; }
+.episode-number { margin: 0 2ch 0 0; }
+.episode-holders { margin: 0 1ch 0 1ch; }
+
+#search-dialog { width: 60%; height: 60%; min-width: 20ch; min-height: 8lh; max-width: 100%; max-height: 100%; border: 1; border-color: yellow; padding: 0 1ch; }
+.nyaa-dialog #search-dialog { width: 72%; height: 65%; }
+.search-editor { height: 3lh; }
+.search-message { flex-grow: 1; }
+
+.small-dialog { width: 60%; height: 20%; min-width: 20ch; min-height: 8lh; max-width: 100%; max-height: 100%; border: 1; border-color: yellow; padding: 0 1ch; }
+#name-dialog { width: 50%; }
+#copy-dialog { width: 70%; height: 60%; }
+.copy-header { height: 3lh; }
+.confirm-prompt { white-space: normal; margin: 0 0 1lh 0; }
+.confirm-answers { white-space: normal; }

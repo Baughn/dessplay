@@ -405,7 +405,7 @@ pub(super) fn resolve(
             top: LengthPercentageAuto::Auto,
             bottom: LengthPercentageAuto::Length(0.0),
         };
-        if node.attr("placement") == "center" {
+        if matches!(node.attr("placement"), "center" | "modal") {
             out.layout.inset.top = LengthPercentageAuto::Length(1.0);
             out.layout.inset.bottom = LengthPercentageAuto::Length(1.0);
             out.layout.margin = taffy::Rect {
