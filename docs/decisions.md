@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-02
+Last updated: 2026-09-07
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -345,6 +345,36 @@ Scoping watch-preference lines to the now-playing series keeps The List's bulk a
 **Rule:** the `changelog_seen` marker is a bare settings key (`YYYY-MM-DD:count`), not a field of the typed `Settings` struct; see [design.md](design.md#changelog).
 
 **Why:** settings saves round-trip the whole struct from the UI's copy, so a marker field would be clobbered by any unrelated save. The `:count` suffix exists so that entries appended to a day the user already saw are still surfaced later.
+
+### Chat image fetching is https-only and hard-capped (2026-09-07)
+
+**Rule:** inline chat images fetch only `https://` URLs with a known image extension, first URL per message, under wire/time/dimension/allocation caps, with the format sniffed from magic bytes; see [design.md](design.md#inline-chat-images).
+
+**Why:** the URL source includes the IRC channel, which is public and unauthenticated — auto-fetching from it is an SSRF, decompression-bomb, and disk-fill surface. Extension gating keeps a bare link from triggering a speculative request to an arbitrary host; https-only (redirects pinned too) keeps a hostile link from downgrading; the 5 MB / 30 s / 8192 px / 64 MB caps bound what any one link can cost; magic-byte sniffing means a lying extension can't route bytes to the wrong decoder. First-URL-only bounds per-message cost and keeps the row-reservation geometry simple. Failures deliberately show no error chrome — the channel is watch-party chat, and a dead link is not the group's problem to stare at.
+
+### Chat images are per-client fetches, not synced attachments (2026-09-07)
+
+**Rule:** every client detects and fetches image URLs independently; nothing about images enters the CRDT or the wire protocol; see [design.md](design.md#inline-chat-images).
+
+**Why:** inbound IRC lines are already local-only (each member runs their own bridge and receives the same PRIVMSG), so every client sees the URL without help. A synced attachment would need a `ChatMessage` schema migration, would flow into the server's chat archive, and would make the group's sync fan-out carry image bytes — all to deduplicate a capped 5 MB download that a disk cache already amortizes. The `ChatMessage::text` doc states the project idiom: side-channel data rides inline in the text and is decoded at display sites only (the CTCP-action rule); a URL is already exactly that.
+
+### Sliced rendering, not crop-resize, for scrolled images (2026-09-07)
+
+**Rule:** an image scrolled partially out of view is drawn with ratatui-image's sliced renderer (the fitted image, cropped by rows), never with `Resize::Crop`; see [design.md](design.md#inline-chat-images).
+
+**Why:** `Resize::Crop` crops the *unscaled source*, so a partially scrolled image would suddenly show native-resolution pixels at a different scale than the fitted view — discovered by a test comparing scrolled against unscrolled cells. Slicing also keeps one cached encode valid across every scroll position; only a pane resize re-encodes. The decode path pre-scales sources to 1280 px for the same reason: re-encodes happen on the render thread, so their input must stay small.
+
+### Inline images hide under modals
+
+**Rule:** while any modal or the work overlay is up, inline images reserve no rows and draw nothing, and the under-modal recent-chat tail never shows them; see [design.md](design.md#inline-chat-images).
+
+**Why:** terminal graphics protocols place pixels outside ratatui's cell z-order, so an image can bleed through whatever is drawn on top of it. Suppressing for the whole modal duration is cruder than occlusion-testing the modal rect but is provably artifact-free on every protocol. The recent-chat tail additionally renders at a second rect, which would thrash the per-size encode cache for a dim context strip.
+
+### The image-protocol query gates the input thread (2026-09-07)
+
+**Rule:** terminal image-protocol detection runs on the UI thread after entering the alternate screen, and the input thread is only spawned afterwards, via a callback that fires on every setup path; see [design.md](design.md#inline-chat-images).
+
+**Why:** the query writes an escape sequence and reads the terminal's reply from stdin. The input thread's blocking `event::read` would consume that reply — the same stdin-ownership hazard behind the long-standing `Terminal::clear` ban in the UI loop. A terminal that fails or never answers the query falls back to half-blocks with an assumed font size, so detection can never cost more than a startup delay; the callback fires from a drop guard so a failed terminal setup still releases the caller.
 
 ## Client Roles
 

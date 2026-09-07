@@ -864,6 +864,41 @@ channel `#dess`.
   group, anything said in DessPlay chat is visible (and bot-loggable) on
   IRC; the settings screen says so.
 
+### Inline Chat Images
+
+An image link posted in chat -- synced DessPlay chat or the IRC bridge,
+treated the same -- is fetched and rendered inline in the chat log,
+directly under its message. Off-switchable in Settings → Playback &
+display ("Inline chat images", **default on**); when off, or on any
+failure, the link stays plain text with no error chrome.
+
+- **Detection.** The **first** `https://` URL in a message whose path
+  ends in `.png`, `.jpg`, `.jpeg`, `.webp`, or `.gif`
+  (case-insensitive; query string and fragment ignored). Plain `http://`
+  and extension-less URLs never trigger a fetch (why:
+  [decisions](decisions.md#chat-image-fetching-is-https-only-and-hard-capped)).
+  A second URL in the same message stays a plain link; a URL posted
+  twice renders under its first occurrence only.
+- **Fetching.** Every client fetches independently (inbound IRC is
+  local-only; there is nothing to sync). The source channel is public
+  and unauthenticated, so downloads are hard-capped: https-only
+  (redirects included), 5 MB on the wire, 30 s timeout, `image/*`
+  content-type when one is sent, decode limits of 8192 px per axis and
+  64 MB, format sniffed from magic bytes rather than the remote-chosen
+  extension. At most two fetches run at once. An animated GIF shows its
+  first frame. Wire bytes are cached under `cache_dir/images/` (names
+  are `sha256(url)`), evicted oldest-first past 64 MB.
+- **Display.** The image occupies blank, non-selectable rows reserved
+  under its message, at most **one third of the chat log's height**,
+  aspect preserved. It scrolls with the log and is cropped at the
+  viewport edge -- scrolling reveals it gradually, never rescales it.
+  Rendering uses the terminal's best graphics protocol (Kitty graphics
+  on Ghostty/kitty/WezTerm, iTerm2, sixel) with a Unicode half-block
+  fallback everywhere else, so every member sees *something*. Images
+  hide while a modal or overlay is up (why:
+  [decisions](decisions.md#inline-images-hide-under-modals)), and never
+  appear in the under-modal recent-chat tail.
+
 ### System Messages
 
 The chat log narrates what the group is doing -- who joined, who paused,

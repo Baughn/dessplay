@@ -9,6 +9,16 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-07
+
+- Added: Image links posted in chat (DessPlay or IRC) now download and
+  display inline in the chat log, under the message and at most a third of
+  the pane tall. Terminals with a graphics protocol (Ghostty, kitty,
+  WezTerm, iTerm2, sixel) show real pixels; everywhere else a half-block
+  approximation appears, so everyone sees something. Downloads are https-only
+  and size-capped; turn the feature off under Settings → Playback & display
+  ("Inline chat images").
+
 ## 2026-09-06
 
 - Improved: The Waiting Below now has branching dungeon routes, optional
