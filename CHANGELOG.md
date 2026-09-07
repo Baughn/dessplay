@@ -42,6 +42,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Rearrange Playlist columns and customize Users rows in layout files.
   Wrapped rows and row padding keep mouse clicks attached to the right item.
 
+- Added: Customize the dungeon frame, statistics, map, sidebar, and recent
+  journal in layout files. Moving the sidebar keeps your expedition intact.
+
 
 ## 2026-09-06
 

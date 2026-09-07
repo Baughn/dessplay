@@ -3,7 +3,7 @@
 The layout migration is in progress. Currently the shared settings/List-entry
 forms, their semantic label/value/annotation rows, the F11 log viewer's
 header/body/footer, application pane composition, chat/input/suggestions,
-attachments, recent-chat projection, separate subtitle rows, Users and Playlist
+attachments, recent-chat projection, separate subtitle rows, Users and Playlist, and the roguelike frame/game-page composition
 use local templates. Message rich-text composition and other pane interiors still use
 their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
@@ -67,7 +67,8 @@ clipped scroll viewport whose controller supplies the visible contents.
 `overlay` declares a separate paint layer aligned to the bottom of its
 parent content, inset one cell horizontally. Its dimensions and margins
 are styleable; capture remains in controllers. `text bind="field"` paints typed text;
-`slot name="field"` reserves a primitive's content rectangle.
+`slot name="field"` reserves a primitive's content rectangle. Containers accept
+`title` and `title-bottom` bindings for terminal frame captions.
 `if="field"` tests a named boolean. `id`, `class`, and `style` supply selector
 identity, whitespace-separated classes, and inline declarations. `title`
 names a text binding placed on the enclosing border.
@@ -153,6 +154,27 @@ children, with a ten-percent container share minimum where it fits. A resizable
 container must use flex layout. CSS grid composition remains available without
 drag handles. `app` bindings are the slots `chat`, `subtitles`, `series`, `users`,
 `playlist`, `health`, `status`, `keybar` and boolean `separate-subtitles`.
+
+The roguelike frame and game page are in `templates/rogue.xml`. `rogue` has
+`title`, `footer`, `notices`, `error`, a `body` slot, and `has-notices`/`has-error`
+booleans. `rogue-game` exposes `map`, `sidebar`, and `journal` slots, objective,
+weapon and reach text, and individual labeled depth, blood, breath, pain,
+bleeding, supply, nutrition, and gold fields. `wide` is true at 80 content cells;
+removing that condition makes the sidebar available at smaller widths.
+
+To put the sidebar on the left, move its slot before the map slot and change
+its margin to `#rogue-sidebar { margin: 0 1ch 0 0; }`. The default map minimum
+and bounded journal height preserve the existing layout. Sidebar wound/threat
+summaries remain bounded measured content; moving the sidebar does not affect
+expedition or recovery state. Other roguelike pages and the recovery panel
+still have presentation adapters pending migration.
+
+Built-in semantic color variables are `--surface`, `--text`, `--muted`,
+`--accent`, `--danger`, and `--dungeon-border`. The last follows the existing
+injury effect policy. Authored custom-property declarations override semantic
+values; CSS `border-color` can also override the frame directly. Colors include
+the six `lightred`/`lightgreen`/`lightyellow`/`lightblue`/`lightmagenta`/`lightcyan`
+terminal names alongside the colors listed above.
 
 Users and Playlist composition and rows live in `templates/collections.xml`.
 `users` and `playlist` expose `title` and a `body` slot. `user-row` fields are

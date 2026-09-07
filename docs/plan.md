@@ -1869,8 +1869,10 @@ player OSD, and standalone diagnostic output are outside scope.
 - [x] Users and Playlist semantic rows/fields, measured collection virtualization,
   and shared paint/hit geometry for wrapped items.
 - [ ] All Series modes, browsers/search, and remaining semantic collection cells.
+- [x] Roguelike frame captions/notices/error and game-page composition, including
+  labeled statistics/supplies and file-only sidebar relocation.
 - [ ] Remaining forms/dialogs, changelog, progress/status/keybars, modal layers,
-  every roguelike page and recovery panel; remove production legacy adapters.
+  other roguelike pages and recovery panel; remove production legacy adapters.
 - [ ] File-only
   demonstrations for panes, playlist columns, forms, roguelike sidebar, and
   attachments; final geometry/interactions/image/reload/performance audit.

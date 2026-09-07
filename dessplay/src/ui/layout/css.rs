@@ -359,7 +359,17 @@ impl Default for Computed {
             hanging_indent: 0,
             ellipsis: false,
             align: Default::default(),
-            variables: BTreeMap::new(),
+            variables: [
+                ("--surface", "default"),
+                ("--text", "default"),
+                ("--muted", "darkgray"),
+                ("--accent", "yellow"),
+                ("--danger", "lightred"),
+                ("--dungeon-border", "cyan"),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect(),
             matched: Vec::new(),
         }
     }
@@ -627,6 +637,12 @@ fn color(value: &str) -> Result<Color, String> {
         "white" => Color::White,
         "gray" => Color::Gray,
         "darkgray" => Color::DarkGray,
+        "lightred" => Color::LightRed,
+        "lightgreen" => Color::LightGreen,
+        "lightyellow" => Color::LightYellow,
+        "lightblue" => Color::LightBlue,
+        "lightmagenta" => Color::LightMagenta,
+        "lightcyan" => Color::LightCyan,
         value if value.starts_with('#') => {
             let raw = &value[1..];
             let expanded = if raw.len() == 3 {

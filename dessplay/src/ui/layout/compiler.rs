@@ -7,6 +7,10 @@ const MAX_FILE: u64 = 1024 * 1024;
 const MAX_NODES: usize = 4096;
 const DEFAULTS: &[(&str, &str)] = &[
     (
+        "templates/rogue.xml",
+        include_str!("assets/templates/rogue.xml"),
+    ),
+    (
         "templates/collections.xml",
         include_str!("assets/templates/collections.xml"),
     ),
@@ -95,6 +99,42 @@ impl Default for TemplateSchema {
     fn default() -> Self {
         let mut templates = BTreeMap::new();
         for (name, slots, texts, bools) in [
+            (
+                "rogue",
+                &["body"][..],
+                &["title", "footer", "notices", "error"][..],
+                &["has-notices", "has-error"][..],
+            ),
+            (
+                "rogue-game",
+                &["map", "sidebar", "journal"][..],
+                &[
+                    "objective",
+                    "weapon",
+                    "reach",
+                    "depth-label",
+                    "depth",
+                    "blood-label",
+                    "blood",
+                    "breath-label",
+                    "breath",
+                    "pain-label",
+                    "pain",
+                    "bleed-label",
+                    "bleed",
+                    "linen-label",
+                    "linen",
+                    "splints-label",
+                    "splints",
+                    "food-label",
+                    "food",
+                    "nutrition-label",
+                    "nutrition",
+                    "gold-label",
+                    "gold",
+                ][..],
+                &["wide", "has-reach"][..],
+            ),
             ("playlist", &["body"][..], &["title"][..], &[][..]),
             ("users", &["body"][..], &["title"][..], &[][..]),
             (
@@ -427,6 +467,7 @@ fn validate(
         ("if", BindingType::Bool),
         ("bind", BindingType::Text),
         ("title", BindingType::Text),
+        ("title-bottom", BindingType::Text),
         ("name", BindingType::Slot),
     ] {
         let value = node.attr(attr);
@@ -496,11 +537,17 @@ fn parse_xml(
                         "templates" => &["version"][..],
                         "template" => &["name"][..],
                         "use" => &["template"][..],
-                        "row" | "column" => {
-                            &["id", "class", "style", "if", "title", "resizable"][..]
-                        }
+                        "row" | "column" => &[
+                            "id",
+                            "class",
+                            "style",
+                            "if",
+                            "title",
+                            "title-bottom",
+                            "resizable",
+                        ][..],
                         "grid" | "box" | "scroll" | "overlay" => {
-                            &["id", "class", "style", "if", "title"][..]
+                            &["id", "class", "style", "if", "title", "title-bottom"][..]
                         }
                         "slot" => &["id", "class", "style", "if", "name"][..],
                         "text" => &["id", "class", "style", "if", "bind"][..],

@@ -1,0 +1,35 @@
+<templates version="1">
+  <template name="rogue">
+    <box id="rogue-frame" title="title" title-bottom="footer">
+      <text id="rogue-notices" bind="notices" if="has-notices" />
+      <text id="rogue-error" bind="error" if="has-error" />
+      <slot id="rogue-page" name="body" />
+    </box>
+  </template>
+  <template name="rogue-game">
+    <column id="rogue-game">
+      <text id="rogue-objective" bind="objective" />
+      <row class="rogue-statistics">
+        <row class="rogue-metric"><text class="metric-label" bind="depth-label"/><text bind="depth"/></row>
+        <row class="rogue-metric"><text class="metric-label" bind="blood-label"/><text bind="blood"/></row>
+        <row class="rogue-metric"><text class="metric-label" bind="breath-label"/><text bind="breath"/></row>
+        <row class="rogue-metric"><text class="metric-label" bind="pain-label"/><text bind="pain"/></row>
+        <row class="rogue-metric"><text class="metric-label" bind="bleed-label"/><text bind="bleed"/></row>
+      </row>
+      <row class="rogue-statistics rogue-supplies">
+        <row class="rogue-metric"><text class="metric-label" bind="linen-label"/><text bind="linen"/></row>
+        <row class="rogue-metric"><text class="metric-label" bind="splints-label"/><text bind="splints"/></row>
+        <row class="rogue-metric"><text class="metric-label" bind="food-label"/><text bind="food"/></row>
+        <row class="rogue-metric"><text class="metric-label" bind="nutrition-label"/><text bind="nutrition"/></row>
+        <row class="rogue-metric"><text class="metric-label" bind="gold-label"/><text bind="gold"/></row>
+        <text bind="weapon" />
+      </row>
+      <text id="rogue-reach" bind="reach" if="has-reach" />
+      <row id="rogue-exploration">
+        <slot id="rogue-map" name="map" />
+        <slot id="rogue-sidebar" name="sidebar" if="wide" />
+      </row>
+      <slot id="rogue-recent-journal" name="journal" />
+    </column>
+  </template>
+</templates>

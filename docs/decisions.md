@@ -1108,3 +1108,19 @@ and forwards until filled, retaining existing centered selection and now-playing
 behavior without constructing an entire collection tree. A continuation's pointer
 record names the same controller item as the first line. Styles and layout reloads
 leave the selection/controller identities intact.
+
+## Roguelike composition and semantic frame colors (2026-09-07)
+
+**Rule:** The roguelike frame and game page use the shared renderer. Map cells
+remain an intrinsic primitive, while captions, metric spacing, and the
+map/sidebar/journal split live in templates. Existing injury effects supply a
+typed semantic color, overridable by authored custom-property declarations.
+
+**Why:** Leaving the sidebar split in the game controller would prevent the
+requested file-only relocation. Labeled metric fields remove fixed alignment
+spaces from statistics and supplies. The map's minimum space and bounded recent
+journal preserve the default allocation; the same wound/threat policy receives
+the sidebar's newly arranged size. Typed color variables let effects retain
+their Full/Reduced/Off behavior without mutating CSS or overwriting authored
+styles after painting. Bottom captions are explicit frame metadata, so their
+bounds and clipping follow the same original-frame paint path as top captions.

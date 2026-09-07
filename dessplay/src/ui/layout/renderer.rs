@@ -21,11 +21,28 @@ pub struct Presentation {
     shares: BTreeMap<String, u16>,
     intrinsic_widths: BTreeMap<String, u16>,
     root_states: Vec<String>,
+    color_variables: BTreeMap<String, String>,
 }
 impl Presentation {
     /// Drag proportions in basis points, separate from authored CSS.
     pub(crate) fn shares(mut self, shares: BTreeMap<String, u16>) -> Self {
         self.shares = shares;
+        self
+    }
+    /// A typed semantic theme color. Authored custom-property declarations win.
+    pub fn color_variable(mut self, name: &str, color: tuirealm::ratatui::style::Color) -> Self {
+        use tuirealm::ratatui::style::Color;
+        let color = if let Color::Indexed(index) = color {
+            crate::ui::theme::xterm_rgb(index)
+        } else {
+            color
+        };
+        let value = match color {
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Reset => "default".into(),
+            other => other.to_string().to_lowercase(),
+        };
+        self.color_variables.insert(name.into(), value);
         self
     }
     /// Unwrapped shared-column content width, supplied without padding text.
@@ -142,6 +159,7 @@ struct Arranged {
     clip: Rect,
     style: Computed,
     title: String,
+    title_bottom: String,
     fragments: Vec<Fragment>,
 }
 impl RenderedScene {
@@ -271,7 +289,10 @@ impl RenderedScene {
                 frame.render_widget(tuirealm::ratatui::widgets::Clear, visible);
             }
             frame.buffer_mut().set_style(visible, n.style.paint);
-            if n.style.layout.border.left != LengthPercentage::Length(0.0) || !n.title.is_empty() {
+            if n.style.layout.border.left != LengthPercentage::Length(0.0)
+                || !n.title.is_empty()
+                || !n.title_bottom.is_empty()
+            {
                 // Draw only original frame edges inside the clip. Memory use is
                 // bounded by the terminal, even for enormous authored dimensions.
                 if n.style.layout.border.left != LengthPercentage::Length(0.0) {
@@ -298,21 +319,26 @@ impl RenderedScene {
                         }
                     }
                 }
-                let title = Rect::new(
-                    n.bounds.x.saturating_add(1),
-                    n.bounds.y,
-                    n.bounds.width.saturating_sub(2),
-                    1,
-                );
-                paint_line(
-                    frame,
-                    &n.title,
-                    title,
-                    n.clip,
-                    n.style.paint,
-                    Default::default(),
-                    view,
-                );
+                for (text, y) in [
+                    (&n.title, n.bounds.y),
+                    (&n.title_bottom, n.bounds.bottom().saturating_sub(1)),
+                ] {
+                    let title = Rect::new(
+                        n.bounds.x.saturating_add(1),
+                        y,
+                        n.bounds.width.saturating_sub(2),
+                        1,
+                    );
+                    paint_line(
+                        frame,
+                        text,
+                        title,
+                        n.clip,
+                        n.style.paint,
+                        Default::default(),
+                        view,
+                    );
+                }
             }
             for (i, fragment) in n.fragments.iter().enumerate() {
                 let y = n.content.y.saturating_add(i.min(u16::MAX as usize) as u16);
@@ -574,16 +600,18 @@ impl Renderer {
             )
         })?;
         self.tree.clear();
+        let mut inherited = Computed {
+            paint: data.inherited_style,
+            ..Computed::default()
+        };
+        inherited.variables.extend(data.color_variables.clone());
         let built = build(
             &mut self.tree,
             &self.bundle,
             root,
             data,
             &mut Vec::new(),
-            &Computed {
-                paint: data.inherited_style,
-                ..Computed::default()
-            },
+            &inherited,
         )?;
         let available = Size {
             width: AvailableSpace::Definite(area.width as f32),
@@ -961,6 +989,11 @@ fn collect(
         title: data
             .texts
             .get(built.node.attr("title"))
+            .cloned()
+            .unwrap_or_default(),
+        title_bottom: data
+            .texts
+            .get(built.node.attr("title-bottom"))
             .cloned()
             .unwrap_or_default(),
         fragments,

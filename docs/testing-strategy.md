@@ -958,3 +958,8 @@ moves watch state before title in XML, enables wrapping through CSS, clicks a
 continuation and the following episode, and reloads with the selection intact.
 Default snapshots and centered cursor/now-playing scenarios remain the behavior
 gate for migrating existing collection panes.
+
+A file-only roguelike test moves the sidebar to the left while a recovery save
+is pending, checking its painted position and unchanged expedition/recovery
+state. Existing notice, injury-effect, bounded-summary, and game-input tests
+remain the gate for the template game-page composition.

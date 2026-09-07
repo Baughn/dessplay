@@ -1665,6 +1665,12 @@ the fitted frame and image together, without reframing the visible slice.
 Chat continuation indentation is an inherited terminal text property; source
 anchors retain scrolled-back context through layout changes and new messages.
 
+Frame captions, including bottom captions, belong to templates. Semantic theme
+colors are available through custom properties; authored declarations override
+them. Roguelike injury effects select a semantic frame color without changing
+layout definitions. Its game template owns map/sidebar/journal placement and
+labeled metric fields; bounded wound/threat summaries remain measured policies.
+
 RGB text is quantized to the finite terminal palette in limited mode.
 Explicit background colors survive the legacy theme adapter during the
 migration. Image pixels bypass text color conversion.

@@ -37,3 +37,17 @@ scroll > slot { flex-grow: 1; }
 .playlist-download { width: 4ch; text-align: right; }
 .playlist-temporary { width: 4ch; }
 .user-name { margin: 0 1ch 0 0; }
+#rogue-frame { border: 1; border-color: var(--dungeon-border); }
+#rogue-page { flex-grow: 1; flex-shrink: 1; }
+#rogue-notices, #rogue-error { white-space: normal; max-height: 3lh; }
+#rogue-notices { color: yellow; }
+#rogue-error { color: red; }
+#rogue-objective { height: 1lh; color: cyan; }
+.rogue-statistics { height: 1lh; gap: 2ch; }
+.rogue-metric { gap: 1ch; }
+.rogue-supplies { color: darkgray; }
+#rogue-reach { white-space: normal; }
+#rogue-exploration { flex-grow: 1; flex-shrink: 1; min-height: 4lh; }
+#rogue-map { flex-grow: 1; flex-shrink: 1; }
+#rogue-sidebar { width: 28ch; margin: 0 0 0 1ch; }
+#rogue-recent-journal { height: 7lh; flex-shrink: 1; }

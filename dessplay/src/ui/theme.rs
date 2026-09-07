@@ -315,7 +315,7 @@ fn dark_foreground(color: Color) -> Color {
     }
 }
 
-fn xterm_rgb(index: u8) -> Color {
+pub(crate) fn xterm_rgb(index: u8) -> Color {
     const ANSI: [(u8, u8, u8); 16] = [
         (0, 0, 0),
         (128, 0, 0),

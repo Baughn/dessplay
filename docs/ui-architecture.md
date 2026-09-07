@@ -871,3 +871,14 @@ interaction records. A wrapped row can span several hit cells while retaining
 one controller identity. Shared forms and suggestion/subtitle rows use the same
 collection renderer. Users and Playlist retain their existing input controllers;
 only their field presentation and geometry moved into `collections.xml`.
+
+### Roguelike game composition
+
+`rogue.xml` owns frame captions, capped notice/error blocks, the page slot,
+and game-page objectives, labeled metrics, map/sidebar/journal placement. The
+existing `RoguelikeModal` retains save acknowledgements, active recovery,
+inspection cursors, and effects timing. Typed `Presentation::color_variable`
+values enter style inheritance before authored declarations; the compiler
+validates against the corresponding semantic defaults. Map cells and bounded
+sidebar summaries consume arranged primitive slots. Inspection pages and the
+recovery panel still use temporary presentation adapters.

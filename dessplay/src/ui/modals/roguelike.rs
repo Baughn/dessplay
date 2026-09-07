@@ -276,6 +276,17 @@ impl RoguelikeModal {
         bar
     }
     fn render(&mut self, frame: &mut Frame, area: Rect) {
+        if let Ok(bundle) = crate::ui::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut crate::ui::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut crate::ui::layout::Renderer,
+    ) {
+        use crate::ui::layout::Presentation;
         let modal = LogModal::area(area);
         frame.render_widget(Clear, modal);
         let flash = self.effects == RoguelikeEffects::Full && self.now < self.flash_until;
@@ -301,15 +312,10 @@ impl RoguelikeModal {
         } else {
             Color::Cyan
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border))
-            .title(title)
-            .title_bottom(" ?: guide  p: journal  F4: chat ");
-        let mut inner = block.inner(modal);
-        frame.render_widget(block, modal);
-        if !self.notices.is_empty() {
-            let text = format!(
+        let notices = if self.notices.is_empty() {
+            String::new()
+        } else {
+            format!(
                 "[Enter: acknowledge] {}",
                 self.notices
                     .iter()
@@ -317,25 +323,34 @@ impl RoguelikeModal {
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(" · ")
-            );
-            let height = wrapped_height(&text, inner.width).min(3).min(inner.height);
-            frame.render_widget(
-                Paragraph::new(text)
-                    .style(Style::default().fg(Color::Yellow))
-                    .wrap(Wrap { trim: false }),
-                take_rows(&mut inner, height),
-            );
-        }
-        if let Some(error) = &self.error {
-            let text = format!("Could not save/load: {error}. F4 closes; reopen to retry.");
-            let height = wrapped_height(&text, inner.width).min(3).min(inner.height);
-            frame.render_widget(
-                Paragraph::new(text)
-                    .style(Style::default().fg(Color::Red))
-                    .wrap(Wrap { trim: false }),
-                take_rows(&mut inner, height),
-            );
-        }
+            )
+        };
+        let data = Presentation::default()
+            .text("title", title)
+            .text("footer", " ?: guide  p: journal  F4: chat ")
+            .text("notices", notices)
+            .boolean("has-notices", !self.notices.is_empty())
+            .text(
+                "error",
+                self.error.as_ref().map_or_else(String::new, |error| {
+                    format!("Could not save/load: {error}. F4 closes; reopen to retry.")
+                }),
+            )
+            .boolean("has-error", self.error.is_some())
+            .color_variable("--dungeon-border", border);
+        let Ok(scene) = renderer.arrange("rogue", modal, &data) else {
+            return;
+        };
+        scene.paint(frame);
+        self.render_page(frame, scene.slot("body"), renderer);
+        scene.paint_overlays(frame);
+    }
+    fn render_page(
+        &mut self,
+        frame: &mut Frame,
+        mut inner: Rect,
+        renderer: &mut crate::ui::layout::Renderer,
+    ) {
         if inner.is_empty() {
             return;
         }
@@ -416,49 +431,46 @@ impl RoguelikeModal {
             Some(Direction::Close) => "Close door: choose a direction (Esc cancels)".into(),
             None => run.objective(),
         };
-        frame.render_widget(
-            Paragraph::new(objective).style(Style::default().fg(Color::Cyan)),
-            take_rows(&mut inner, 1),
-        );
-        frame.render_widget(
-            Paragraph::new(format!(
-                "Depth {}  Blood {}  Breath {}  Pain {}  Bleed {}",
-                run.depth + 1,
-                run.body.blood,
-                run.body.stamina,
-                run.body.pain(),
-                run.body.bleeding()
-            )),
-            take_rows(&mut inner, 1),
-        );
-        frame.render_widget(
-            Paragraph::new(supplies(run)).style(theme::dim()),
-            take_rows(&mut inner, 1),
-        );
         let reach = run.body.effective_weapon(&run.gear).reach();
-        if reach > 1 {
-            let hint =
-                format!("Move toward enemies within {reach} tiles to thrust without moving.");
-            let height = wrapped_height(&hint, inner.width);
+        let mut data = crate::ui::layout::Presentation::default()
+            .text("objective", objective)
+            .text("weapon", run.gear.active.name())
+            .text(
+                "reach",
+                format!("Move toward enemies within {reach} tiles to thrust without moving."),
+            )
+            .boolean("has-reach", reach > 1)
+            .boolean("wide", inner.width >= 80);
+        for (key, label, value) in [
+            ("depth", "Depth", run.depth as u64 + 1),
+            ("blood", "Blood", u64::from(run.body.blood)),
+            ("breath", "Breath", u64::from(run.body.stamina)),
+            ("pain", "Pain", u64::from(run.body.pain())),
+            ("bleed", "Bleed", u64::from(run.body.bleeding())),
+            ("linen", "Linen", u64::from(run.supplies.bandages)),
+            ("splints", "Splints", u64::from(run.supplies.splints)),
+            ("food", "Food", u64::from(run.supplies.food)),
+            ("nutrition", "Nutrition", u64::from(run.body.hunger)),
+            ("gold", "Gold", u64::from(run.gold)),
+        ] {
+            data = data
+                .text(&format!("{key}-label"), label)
+                .text(key, value.to_string());
+        }
+        let Ok(scene) = renderer.arrange("rogue-game", inner, &data) else {
+            return;
+        };
+        scene.paint(frame);
+        let sidebar = scene.slot("sidebar");
+        if !sidebar.is_empty() {
+            let lines = sidebar_rows(run, sidebar.width, sidebar.height);
             frame.render_widget(
-                Paragraph::new(hint).wrap(Wrap { trim: false }),
-                take_rows(&mut inner, height),
+                Paragraph::new(lines.join("\n")).style(scene.style("sidebar")),
+                sidebar,
             );
         }
-        let journal_height = inner.height.saturating_sub(4).min(7);
-        let map_height = inner.height.saturating_sub(journal_height);
-        let mut map = take_rows(&mut inner, map_height);
-        if map.width >= 80 {
-            let sidebar = Rect {
-                x: map.right().saturating_sub(28),
-                width: 28,
-                ..map
-            };
-            map.width = map.width.saturating_sub(29);
-            let lines = sidebar_rows(run, sidebar.width, sidebar.height);
-            frame.render_widget(Paragraph::new(lines.join("\n")), sidebar);
-        }
-        render_map(frame, map, run);
+        render_map(frame, scene.slot("map"), run);
+        inner = scene.slot("journal");
         let mut lines = run
             .journal
             .iter()
@@ -472,7 +484,8 @@ impl RoguelikeModal {
             .take(usize::from(inner.height))
             .collect::<Vec<_>>();
         lines.reverse();
-        frame.render_widget(Paragraph::new(lines), inner);
+        frame.render_widget(Paragraph::new(lines).style(scene.style("journal")), inner);
+        scene.paint_overlays(frame);
         if let Some(recovery) = &self.recovery {
             let width = content.width.saturating_sub(2).min(68);
             let height = content.height.saturating_sub(2).min(10);
@@ -694,17 +707,6 @@ fn render_scroll(frame: &mut Frame, area: Rect, text: &str, cursor: &mut ListCur
             .scroll((cursor.index().min(u16::MAX as usize) as u16, 0)),
         area,
     );
-}
-fn supplies(run: &RunView) -> String {
-    format!(
-        "Linen {}  Splints {}  Food {}  Nutrition {}  Gold {}  {}",
-        run.supplies.bandages,
-        run.supplies.splints,
-        run.supplies.food,
-        run.body.hunger,
-        run.gold,
-        run.gear.active.name()
-    )
 }
 fn render_map(frame: &mut Frame, area: Rect, run: &RunView) {
     if area.is_empty() {
@@ -1202,6 +1204,44 @@ mod tests {
             .join(" ");
         assert!(words.contains("Your left lung is damaged."), "{screen}");
         assert!(words.contains("Breathing grows harder."), "{screen}");
+    }
+
+    #[test]
+    fn file_only_sidebar_relocation_preserves_recovery_and_game_state() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("templates")).unwrap();
+        let xml = include_str!("../layout/assets/templates/rogue.xml").replace(
+            "        <slot id=\"rogue-map\" name=\"map\" />\n        <slot id=\"rogue-sidebar\" name=\"sidebar\" if=\"wide\" />",
+            "        <slot id=\"rogue-sidebar\" name=\"sidebar\" if=\"wide\" />\n        <slot id=\"rogue-map\" name=\"map\" />",
+        );
+        std::fs::write(dir.path().join("templates/rogue.xml"), xml).unwrap();
+        std::fs::write(
+            dir.path().join("style.css"),
+            "#rogue-sidebar { margin: 0 1ch 0 0; }",
+        )
+        .unwrap();
+        let mut renderer = crate::ui::layout::Renderer::new(
+            crate::ui::layout::LayoutBundle::load(dir.path()).unwrap(),
+        );
+        let mut modal = RoguelikeModal::new();
+        modal.set_run(restable());
+        modal.on(&key(Key::Char('r')));
+        assert!(modal.recovery.is_some());
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        let frame = terminal
+            .draw(|frame| modal.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let text = buffer_to_string(frame.buffer);
+        assert!(
+            text.lines().any(|line| line.starts_with("│No wounds")),
+            "{text}"
+        );
+        assert!(
+            modal.recovery.is_some(),
+            "rendering custom layout does not cancel committed recovery"
+        );
+        assert!(modal.waiting);
+        assert_eq!(modal.run.as_ref().unwrap().body.stamina, 20);
     }
 
     #[test]

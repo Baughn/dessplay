@@ -302,3 +302,37 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn semantic_color_variables_are_typed_and_authored_values_take_precedence() {
+    use tuirealm::ratatui::style::Color;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("style.css"),
+        "#form { color: var(--accent); }",
+    )
+    .unwrap();
+    let data = Presentation::default().color_variable("--accent", Color::LightGreen);
+    let scene = Renderer::new(LayoutBundle::load(dir.path()).unwrap())
+        .arrange("form", Rect::new(0, 0, 40, 20), &data)
+        .unwrap();
+    assert_eq!(scene.style("body").fg, Some(Color::LightGreen));
+    std::fs::write(
+        dir.path().join("style.css"),
+        "#form { --accent: blue; color: var(--accent); }",
+    )
+    .unwrap();
+    let scene = Renderer::new(LayoutBundle::load(dir.path()).unwrap())
+        .arrange("form", Rect::new(0, 0, 40, 20), &data)
+        .unwrap();
+    assert_eq!(scene.style("body").fg, Some(Color::Blue));
+    std::fs::write(
+        dir.path().join("style.css"),
+        "#rogue-frame { width: var(--dungeon-border); }",
+    )
+    .unwrap();
+    assert!(
+        LayoutBundle::load(dir.path()).is_err(),
+        "semantic color variables cannot supply dimensions"
+    );
+}

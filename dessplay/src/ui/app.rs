@@ -2893,6 +2893,7 @@ impl Ui {
                 Modal::Settings(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::ListEdit(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Logs(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::Roguelike(modal) => modal.render_layout(frame, frame.area(), renderer),
                 modal => modal.as_component().view(frame, frame.area()),
             }
         }
