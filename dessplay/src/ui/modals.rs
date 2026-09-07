@@ -994,6 +994,7 @@ enum SettingId {
     SubtitleSpeakerColors,
     SubtitleSpeakerOverflow,
     MarqueeMode,
+    ChatImages,
     RoguelikeEffects,
     MediaRoot(PathBuf),
     AddMediaRoot,
@@ -1211,6 +1212,11 @@ impl SettingsForm {
                 "Commentary marquee",
                 self.settings.marquee_mode.label(),
             ),
+            FormRow::toggle(
+                SettingId::ChatImages,
+                "Inline chat images",
+                self.settings.chat_images,
+            ),
             FormRow::choice(
                 SettingId::RoguelikeEffects,
                 "Dungeon injury effects",
@@ -1389,6 +1395,9 @@ impl FormModel for SettingsForm {
             }
             (SettingId::MarqueeMode, FormEdit::Cycle) => {
                 self.settings.marquee_mode = self.settings.marquee_mode.next();
+            }
+            (SettingId::ChatImages, FormEdit::SetBool(value)) => {
+                self.settings.chat_images = value;
             }
             (SettingId::AddMediaRoot, FormEdit::Activate) => {
                 return Ok(FormEffect::Out(Msg::OpenDirPicker));

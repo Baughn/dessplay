@@ -3138,6 +3138,52 @@ mod tests {
         ui
     }
 
+    /// Saving the settings applies the inline-images toggle on the very
+    /// next frame (SettingsSaved → refresh_chat → sync_images), in both
+    /// directions: off clears the drawn band, on re-requests the URL
+    /// (served from the disk cache).
+    #[test]
+    fn settings_save_toggles_inline_images_immediately() {
+        const URL: &str = "https://x.example/a.png";
+        let mut ui = ui_with_view(StateView::default());
+        ui.set_image_picker(ratatui_image::picker::Picker::halfblocks());
+        ui.push_irc(1_000, "dagger".into(), URL.into(), false);
+        assert_eq!(ui.take_image_fetches(), vec![URL.to_string()]);
+        ui.set_chat_image(
+            URL,
+            Ok(image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_pixel(100, 100, image::Rgba([200, 40, 40, 255])),
+            )),
+        );
+        render_test_buffer(&mut ui);
+        assert!(
+            !ui.chat.image_areas().is_empty(),
+            "band shows before the save"
+        );
+
+        let settings = Settings {
+            chat_images: false,
+            ..Settings::default()
+        };
+        ui.update(Msg::SettingsSaved(Box::new(settings), vec![]));
+        render_test_buffer(&mut ui);
+        assert!(
+            ui.chat.image_areas().is_empty(),
+            "band gone with images off"
+        );
+
+        let settings = Settings {
+            chat_images: true,
+            ..Settings::default()
+        };
+        ui.update(Msg::SettingsSaved(Box::new(settings), vec![]));
+        assert_eq!(
+            ui.take_image_fetches(),
+            vec![URL.to_string()],
+            "re-fetch on re-enable"
+        );
+    }
+
     fn mutations(actions: &[UserAction]) -> Vec<&Mutation> {
         actions
             .iter()

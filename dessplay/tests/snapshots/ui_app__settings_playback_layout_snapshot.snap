@@ -1,6 +1,5 @@
 ---
 source: dessplay/tests/ui_app.rs
-assertion_line: 459
 expression: screen
 ---
 ┌Chat────────────────────────────────────────────┐┌The List────────────────────────────────────────┐
@@ -15,8 +14,8 @@ expression: screen
 │              │Speaker colors          yes                       separate pane only│──────────────┐
 │              │Color overflow          Reuse colors    limited-color terminals only│              │
 │              │Commentary marquee      Marquee                                     │              │
+│              │Inline chat images      yes                                         │              │
 │              │Dungeon injury effects  Full                                        │              │
-│              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │──────────────┘
