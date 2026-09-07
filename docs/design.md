@@ -892,14 +892,14 @@ failure, the link stays plain text with no error chrome.
   under its message, at most **one third of the chat log's height**,
   aspect preserved. It scrolls with the log and is cropped at the
   viewport edge -- scrolling reveals it gradually, never rescales it.
-  Rendering is **truecolor Unicode half-blocks** (`▀` cells), drawn at
-  the terminal's real font aspect ratio, which works in every terminal
-  and composes cleanly with the cell grid. The higher-fidelity graphics
-  protocols (Kitty, sixel, iTerm2) are detected but **not used by
-  default** (why:
-  [decisions](decisions.md#half-blocks-are-the-default-image-renderer));
-  `DESSPLAY_IMAGE_PROTOCOL=auto` (or `kitty`/`sixel`/`iterm2`) opts into
-  them. Images hide while a modal or overlay is up
+  Rendering uses the **terminal's own graphics protocol** when the
+  startup query reports one (Kitty, sixel, iTerm2), and otherwise
+  **truecolor Unicode half-blocks** (`▀` cells) drawn at the terminal's
+  real font aspect ratio (why:
+  [decisions](decisions.md#the-detected-graphics-protocol-is-the-default));
+  `DESSPLAY_IMAGE_PROTOCOL=halfblocks` opts out of graphics, and
+  `kitty`/`sixel`/`iterm2` force a protocol for experiments. Images hide
+  while a modal or overlay is up
   (why: [decisions](decisions.md#inline-images-hide-under-modals)), and
   never appear in the under-modal recent-chat tail.
 - **Terminal state.** Right after entering the alternate screen the

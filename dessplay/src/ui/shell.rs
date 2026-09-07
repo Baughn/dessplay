@@ -235,9 +235,9 @@ pub fn run_ui_thread(
     // reads the terminal's reply from stdin), so it MUST complete before
     // the input thread starts and its `event::read` owns stdin — that's
     // the `on_terminal_ready` contract above. Ordered after the alt
-    // screen is entered, per ratatui-image's docs. The query is worth
-    // running even though we default to half-blocks: it reports the real
-    // font cell size, which gives inline images the correct aspect ratio.
+    // screen is entered, per ratatui-image's docs. Besides choosing the
+    // protocol, the query reports the real font cell size, which gives
+    // inline images the correct aspect ratio under every renderer.
     let picker = select_image_picker();
     tracing::debug!(
         protocol = ?picker.protocol_type(),
@@ -274,22 +274,19 @@ const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l";
 
 /// Pick the image-rendering protocol for inline chat images.
 ///
-/// Defaults to **half-blocks** even on graphics-capable terminals: they
-/// render as ordinary `▀` cells with foreground/background colors, so
-/// they compose with the cell grid, the diff, and the color pass in
-/// every terminal. The graphics protocols (Kitty, sixel, iTerm2) embed
-/// cursor-moving escapes inside cell symbols; those are correct as
-/// emitted, but they depend on terminal state we now establish in
-/// [`TERMINAL_STATE_PROLOGUE`], and only Kitty is actually implemented
-/// by Ghostty (the others show a blank block there).
+/// Defaults to whatever the terminal's query reports (Kitty, sixel, or
+/// iTerm2 graphics where supported, half-blocks otherwise). The graphics
+/// protocols embed cursor-moving escapes inside cell symbols; those are
+/// correct as emitted and depend only on the terminal state established
+/// by [`TERMINAL_STATE_PROLOGUE`]. A terminal that never answers the
+/// query gets half-blocks at an assumed font size — the one path that
+/// works everywhere. Even for half-blocks the query matters: it reports
+/// the real font cell size, so `▀` cells render at the true aspect ratio.
 ///
-/// The stdio query still runs, because it reports the terminal's real
-/// font cell size — half-blocks rendered at the true aspect ratio look
-/// far better than the assumed 10×20 of a bare `halfblocks()` picker.
-///
-/// `DESSPLAY_IMAGE_PROTOCOL` overrides the choice: `auto` uses the
-/// detected protocol as-is (real Kitty/sixel/iTerm2 graphics);
-/// `halfblocks`, `kitty`, `sixel`, or `iterm2` force one.
+/// `DESSPLAY_IMAGE_PROTOCOL` overrides the choice: `halfblocks` opts
+/// out of graphics (the robust path, keeping the queried font size);
+/// `kitty`, `sixel`, or `iterm2` force a protocol the query did not
+/// pick, for experiments; `auto` (or unset) is the default.
 fn select_image_picker() -> ratatui_image::picker::Picker {
     use ratatui_image::picker::{Picker, ProtocolType};
     let mut picker = match Picker::from_query_stdio() {
@@ -306,15 +303,21 @@ fn select_image_picker() -> ratatui_image::picker::Picker {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        // Detected protocol, untouched — the escape hatch for testing
-        // real graphics on a terminal that supports them.
-        Some("auto") => {}
+        // The opt-out: ordinary cells, queried font size kept for the
+        // aspect ratio.
+        Some("halfblocks") => picker.set_protocol_type(ProtocolType::Halfblocks),
         Some("kitty") => picker.set_protocol_type(ProtocolType::Kitty),
         Some("sixel") => picker.set_protocol_type(ProtocolType::Sixel),
         Some("iterm2") => picker.set_protocol_type(ProtocolType::Iterm2),
-        // Default (unset, "halfblocks", or anything unrecognized): the
-        // robust path, keeping the queried font size for aspect ratio.
-        _ => picker.set_protocol_type(ProtocolType::Halfblocks),
+        // Default (unset, "auto", or anything unrecognized): the
+        // detected protocol, untouched.
+        Some(other) if other != "auto" => {
+            tracing::warn!(
+                value = other,
+                "unknown DESSPLAY_IMAGE_PROTOCOL; using detected"
+            );
+        }
+        _ => {}
     }
     picker
 }

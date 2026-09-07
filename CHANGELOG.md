@@ -20,6 +20,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   (`DESSPLAY_IMAGE_PROTOCOL=kitty`/`auto`) no longer land at the top-left
   of the screen when the terminal was left in margin mode by a previous
   program; DessPlay now resets that state at startup.
+- Changed: Inline chat images now use your terminal's own graphics
+  protocol (Kitty, sixel, or iTerm2) when it has one, showing real pixels
+  instead of half-block art; terminals without one still get half-blocks.
+  Set `DESSPLAY_IMAGE_PROTOCOL=halfblocks` to go back to the old look.
 
 ## 2026-09-06
 
