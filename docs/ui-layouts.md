@@ -24,7 +24,9 @@ binary. `style.css` follows embedded CSS in the cascade. Template files are
 read in filename order; duplicate names within the custom bundle are errors.
 
 Changes are watched, including rename-based editor saves, and debounced for
-200 ms. Compilation happens on a worker thread. A complete valid candidate
+200 ms. Relative directory arguments are normalized for event matching. The
+watch survives creation or replacement of the override directory. Compilation
+happens on a worker thread. A complete valid candidate
 is installed at a frame boundary; an invalid candidate leaves the last good
 layout installed. Startup initially uses the embedded layout. Files and
 layout state never enter the synchronized replica.

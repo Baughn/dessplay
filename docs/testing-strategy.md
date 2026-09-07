@@ -976,3 +976,11 @@ popup to follow the arranged control and escape the header clip, and hides the
 parent to verify that no orphan popup remains. Existing log tests continue to
 cover independent filters, cancellation, reopening, small terminals, capture,
 and the default full-view snapshot.
+
+Real watcher tests use a successful requested compilation as the registration
+handshake, then wait on bounded channel delivery for atomic file edits. They
+cover invalid-then-repaired CSS, relative directory arguments, initial directory
+absence, and whole-directory replacement followed by another edit. The six
+customization demonstrations verify arranged results after real watcher delivery.
+These tests need operating-system filesystem events; run the full gate outside
+restricted sandboxes, as for the existing local-network integration tests.

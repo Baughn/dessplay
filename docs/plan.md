@@ -1877,9 +1877,11 @@ player OSD, and standalone diagnostic output are outside scope.
   and expedition endings.
 - [ ] Remaining forms/dialogs, changelog, progress/status/keybars, modal layers,
   roguelike condition rows and bounded-summary children; remove production legacy adapters.
-- [ ] File-only
-  demonstrations for panes, playlist columns, forms, roguelike sidebar, and
-  attachments; final geometry/interactions/image/reload/performance audit.
+- [x] All six file-only demonstrations through real filesystem events and
+  runtime bundle installation; atomic saves, relative paths, missing-directory
+  creation, and whole-directory replacement.
+- [ ] Final geometry/interactions/image/reload/performance audit, including real
+  terminal graphics protocol smoke checks.
 
 The current usable authoring subset, examples, and migration limitations are
 documented in [ui-layouts.md](ui-layouts.md). Do not mark this phase complete

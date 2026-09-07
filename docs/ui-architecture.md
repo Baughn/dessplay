@@ -898,3 +898,10 @@ anchors, attached option slots, and a footer. `placement="after"` derives the
 popup position from its parent's arranged box; the entry content viewport bounds
 its overflow. Options use the shared measured collection renderer. Controllers
 supply focus appearance before authored declarations and keep all filter actions.
+
+The layout worker resolves watch paths against canonical existing ancestors and
+watches a surviving parent. Event filtering and backend events therefore share
+one path identity even for relative CLI paths or platform directory aliases;
+creating/replacing the override directory does not strand the worker on an old
+inode. Compilation still reads the selected source path and uses the same
+bounded generation-stamped delivery lane.

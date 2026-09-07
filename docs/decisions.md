@@ -1157,3 +1157,20 @@ control rearrangement visually detach the options from their trigger. Attached
 overlays keep that geometry in the renderer. They are a bounded placement mode,
 not arbitrary positioning. The existing scope selection, session-only filter
 updates, cancellation, and modal capture stay in the log controller.
+
+## Watch paths and directory replacement (2026-09-07)
+
+**Rule:** Layout watches compare normalized absolute paths and attach to a
+surviving ancestor of the override directory. Missing directory suffixes are
+resolved against the nearest existing canonical ancestor.
+
+**Why:** Real filesystem regressions failed for atomic saves, relative paths,
+and directory replacement, including outside the sandbox. The event backend
+canonicalizes paths while the previous filter compared their spelling with the
+original argument; on macOS temporary-directory aliases also hit this class.
+Watching the selected directory itself additionally couples the watch to an
+inode that an atomic bundle replacement can remove. Normalizing the filter and
+watching the parent fixes both paths. Tests wait on actual compilation delivery,
+without arbitrary sleeps, and cover initial absence and later replacement.
+The six file-only authoring demonstrations now install their results through
+this actual watcher rather than relying only on direct compiler calls.

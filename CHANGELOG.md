@@ -53,6 +53,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Customize log-viewer controls, dropdown options, and footer in layout
   files. Dropdowns follow their controls when you move them.
 
+- Fixed: Layout auto-reload now works with relative directory paths and keeps
+  watching when the override directory is created or replaced.
+
 ## 2026-09-06
 
 - Improved: The Waiting Below now has branching dungeon routes, optional
