@@ -89,11 +89,44 @@ impl LogModal {
         } else {
             "Logs · scrollback"
         };
-        let data = crate::ui::layout::Presentation::default()
+        let levels = self
+            .logging
+            .as_ref()
+            .map_or([LogLevel::Startup; 2], |logging| logging.levels());
+        let startup = self
+            .logging
+            .as_ref()
+            .map_or_else(String::new, |logging| logging.startup_filter().to_string());
+        let footer = self.error.as_deref().unwrap_or(
+            "Tab: control · Enter: dropdown · ↑/↓/PgUp/PgDn: scroll · End: live · F11/Esc: close",
+        );
+        let mut data = crate::ui::layout::Presentation::default()
             .text("title", title)
-            .slot("header", 0, modal.height.saturating_sub(2).min(3))
-            .slot("body", 0, 0)
-            .slot("footer", 0, 1);
+            .text("session-label", "Session only · Startup: ")
+            .text("startup", startup)
+            .text("app-label", "DessPlay")
+            .text("app-level", levels[0].label())
+            .text("other-label", "Rust (other crates)")
+            .text("other-level", levels[1].label())
+            .text("picker-end", "▾ ]")
+            .text("footer", footer)
+            .text(
+                "unavailable",
+                "Live logging is unavailable in this session.",
+            )
+            .boolean("has-unavailable", self.logging.is_none())
+            .boolean("available", self.logging.is_some())
+            .boolean("choose-app", self.dropdown.is_some() && self.focus == 1)
+            .boolean("choose-other", self.dropdown.is_some() && self.focus == 2);
+        if let Some(id) = match self.focus {
+            1 => Some("log-app-control"),
+            2 => Some("log-other-control"),
+            _ => None,
+        } {
+            data = data
+                .state(id, "focus")
+                .component_style(id, theme::highlight_style());
+        }
         let scene = match renderer.arrange("log", modal, &data) {
             Ok(scene) => scene,
             Err(error) => {
@@ -104,34 +137,12 @@ impl LogModal {
         scene.paint(frame);
         let body = scene.slot("body");
         let Some(logging) = &self.logging else {
-            frame.render_widget(
-                Paragraph::new("Live logging is unavailable in this session."),
-                body,
-            );
+            scene.paint_overlays(frame);
             return;
         };
-        let levels = logging.levels();
-        let startup = logging.startup_filter().to_string();
-        // Snapshot first, then derive its revision: a concurrent append must
-        // still trigger the next refresh.
+        // Snapshot before deriving its revision so a concurrent append repaints.
         let lines = logging.lines();
         self.revision = lines.last().map_or(0, |line| line.id + 1);
-        let mut controls = vec![Line::from(format!("Session only · Startup: {startup}"))];
-        for (idx, label) in ["DessPlay", "Rust (other crates)"].iter().enumerate() {
-            let style = if self.focus == idx + 1 {
-                theme::highlight_style()
-            } else {
-                Style::default()
-            };
-            controls.push(Line::from(Span::styled(
-                format!("{label}: [ {} ▾ ]", levels[idx].label()),
-                style,
-            )));
-        }
-        frame.render_widget(
-            Paragraph::new(controls).style(scene.style("header")),
-            scene.slot("header"),
-        );
         if body.width > 0 && body.height > 0 {
             let mut rows = Vec::new();
             self.row_keys.clear();
@@ -160,37 +171,28 @@ impl LogModal {
                 body,
             );
         }
-        let footer = self.error.as_deref().unwrap_or(
-            "Tab: control · Enter: dropdown · ↑/↓/PgUp/PgDn: scroll · End: live · F11/Esc: close",
-        );
-        frame.render_widget(
-            Paragraph::new(footer).style(theme::dim().patch(scene.style("footer"))),
-            scene.slot("footer"),
-        );
+        scene.paint_overlays(frame);
         if let Some(selected) = self.dropdown {
-            let inner = scene.slot("header").union(body).union(scene.slot("footer"));
-            let popup = Rect {
-                x: inner.x,
-                y: (inner.y + self.focus as u16 + 1).min(inner.bottom()),
-                width: inner.width.min(24),
-                height: inner
-                    .bottom()
-                    .saturating_sub(inner.y + self.focus as u16 + 1)
-                    .min(9),
-            };
-            frame.render_widget(Clear, popup);
-            let items: Vec<_> = LogLevel::ALL
+            let popup = scene.slot(if self.focus == 1 {
+                "app-options"
+            } else {
+                "other-options"
+            });
+            let rows = LogLevel::ALL
                 .iter()
-                .map(|level| ListItem::new(level.label()))
-                .collect();
-            let mut state =
-                tuirealm::ratatui::widgets::ListState::default().with_selected(Some(selected));
-            frame.render_stateful_widget(
-                tuirealm::ratatui::widgets::List::new(items)
-                    .block(Block::default().borders(Borders::ALL))
-                    .highlight_style(theme::highlight_style()),
+                .map(|level| crate::ui::layout::PresentedRow {
+                    key: level.label().into(),
+                    data: crate::ui::layout::Presentation::default().text("label", level.label()),
+                    gap_after: false,
+                })
+                .collect::<Vec<_>>();
+            let _ = renderer.paint_rows(
+                frame,
                 popup,
-                &mut state,
+                "log-option",
+                &rows,
+                Some(selected),
+                Style::default(),
             );
         }
     }

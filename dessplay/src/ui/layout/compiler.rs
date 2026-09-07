@@ -251,10 +251,22 @@ impl Default for TemplateSchema {
             ),
             (
                 "log",
-                &["header", "body", "footer", "dropdown"][..],
-                &["title"][..],
-                &["choosing"][..],
+                &["body", "app-options", "other-options"][..],
+                &[
+                    "title",
+                    "session-label",
+                    "startup",
+                    "app-label",
+                    "app-level",
+                    "other-label",
+                    "other-level",
+                    "picker-end",
+                    "footer",
+                    "unavailable",
+                ][..],
+                &["choose-app", "choose-other", "has-unavailable", "available"][..],
             ),
+            ("log-option", &[][..], &["label"][..], &[][..]),
             ("layout-tools", &[][..], &["title", "body"][..], &[][..]),
             (
                 "form-row",
@@ -568,9 +580,12 @@ fn validate(
         ));
     }
     if node.attrs.contains_key("placement")
-        && !matches!(node.attr("placement"), "center" | "bottom")
+        && !matches!(node.attr("placement"), "center" | "bottom" | "after")
     {
-        return Err(error(node, "overlay placement must be center or bottom"));
+        return Err(error(
+            node,
+            "overlay placement must be center, bottom, or after",
+        ));
     }
     for child in &node.children {
         validate(child, fields, ids, slots)?;

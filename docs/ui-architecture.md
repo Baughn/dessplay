@@ -890,3 +890,11 @@ styled paint lines once, and publishes corresponding `TextRegion` records.
 `rich` accepts typed `RichSpan` data without parsing message contents. Natural
 document scenes use the same signed viewport painting as collection rows;
 source anchors retain document context when widths change.
+
+### Attached control overlays
+
+`log.xml` supplies semantic header flows, stable application/dependency control
+anchors, attached option slots, and a footer. `placement="after"` derives the
+popup position from its parent's arranged box; the entry content viewport bounds
+its overflow. Options use the shared measured collection renderer. Controllers
+supply focus appearance before authored declarations and keep all filter actions.

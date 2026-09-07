@@ -50,6 +50,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   and expedition endings through layout templates. Recovery labels and values
   wrap together and remain independently editable.
 
+- Added: Customize log-viewer controls, dropdown options, and footer in layout
+  files. Dropdowns follow their controls when you move them.
+
 ## 2026-09-06
 
 - Improved: The Waiting Below now has branching dungeon routes, optional

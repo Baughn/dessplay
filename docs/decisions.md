@@ -1144,3 +1144,16 @@ the reserved inset consistently at very small sizes. Properties cover those
 sizes and translated origins. Guide/journal text, equipment rows, and expedition
 endings also use measured scenes; condition-row and bounded-summary composition
 remain tracked work rather than hidden behind a completion claim.
+
+## Attached log dropdowns (2026-09-07)
+
+**Rule:** An explicit `placement="after"` overlay follows its parent control and
+escapes that control's clip only within the entry viewport. Hidden ancestors
+suppress the popup. Log labels, current values, options, and footer are semantic
+fields rather than a preformatted header and a separately positioned widget.
+
+**Why:** Reusing a controller-computed popup rectangle would make file-only
+control rearrangement visually detach the options from their trigger. Attached
+overlays keep that geometry in the renderer. They are a bounded placement mode,
+not arbitrary positioning. The existing scope selection, session-only filter
+updates, cancellation, and modal capture stay in the log controller.

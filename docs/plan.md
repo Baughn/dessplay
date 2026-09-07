@@ -1860,8 +1860,8 @@ player OSD, and standalone diagnostic output are outside scope.
   stale/full-channel handling, and embedded F12 recovery tools.
 - [x] Shared inline flows, typed rich spans, source/action paint records, and
   centered recovery overlays.
-- [ ] Finish foundation: template-authored keyed repetition;
-  log dropdown overlay template; complete style integration.
+- [x] Log control fields, attached dropdown overlays, and semantic option rows.
+- [ ] Finish foundation: template-authored keyed repetition and complete style integration.
 - [x] Chat/input/suggestion composition, recent projection, semantic separate
   subtitle rows, and timestamp-aligned bordered attachments with original scroll crops.
 - [ ] Finish chat proof: template-authored rich message variants and complete

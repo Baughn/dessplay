@@ -21,6 +21,7 @@ pub struct Presentation {
     slots: BTreeMap<String, (u16, u16)>,
     states: BTreeMap<String, Vec<String>>,
     styles: BTreeMap<String, PaintStyle>,
+    component_styles: BTreeMap<String, PaintStyle>,
     preserve_end: Vec<String>,
     inherited_style: PaintStyle,
     shares: BTreeMap<String, u16>,
@@ -78,6 +79,11 @@ impl Presentation {
     /// Supply semantic focus/selection/disabled state for a stable node id.
     pub fn state(mut self, id: &str, state: &str) -> Self {
         self.states.entry(id.into()).or_default().push(state.into());
+        self
+    }
+    /// Semantic control appearance before authored declarations, including inline separators.
+    pub fn component_style(mut self, id: &str, style: PaintStyle) -> Self {
+        self.component_styles.insert(id.into(), style);
         self
     }
     /// Semantic text style; authored CSS has precedence over this default.
@@ -916,6 +922,9 @@ fn build<'a>(
     }
     path.push((node, states));
     let mut style = resolve(bundle, path, parent)?;
+    if let Some(semantic) = data.component_styles.get(node.attr("id")) {
+        style.paint = semantic.patch(style.paint);
+    }
     if let Some(share) = data.shares.get(node.attr("id")) {
         style.layout.flex_basis = Dimension::Percent(f32::from(*share) / 10_000.0);
         // Percentage shares divide the available track after authored gaps.
@@ -1064,7 +1073,13 @@ fn collect(
     }
     // Centered overlays reserve a one-cell safety inset even when their border
     // minimum exceeds the available track (including a zero-sized interior).
-    let clip = if built.node.tag == "overlay" && built.node.attr("placement") == "center" {
+    let clip = if built.node.tag == "overlay" && built.node.attr("placement") == "after" {
+        // Attached popups escape the anchor box, but stay inside the entry viewport.
+        scene
+            .nodes
+            .first()
+            .map_or(clip, |root| root.content.intersection(root.clip))
+    } else if built.node.tag == "overlay" && built.node.attr("placement") == "center" {
         clip.intersection(containing.inner(tuirealm::ratatui::layout::Margin::new(1, 1)))
     } else {
         clip

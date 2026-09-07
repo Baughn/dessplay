@@ -1,9 +1,26 @@
 <templates version="1">
   <template name="log">
     <column id="log" title="title">
-      <slot name="header" />
-      <scroll id="log-scroll"><slot name="body" /></scroll>
-      <slot name="footer" />
+      <column id="log-header">
+        <flow separator=""><text bind="session-label"/><text bind="startup"/></flow>
+        <box id="log-app-anchor">
+          <flow id="log-app-control" separator=": [ ">
+            <text bind="app-label"/>
+            <flow><text bind="app-level"/><text bind="picker-end"/></flow>
+          </flow>
+          <overlay id="log-app-picker" class="log-picker" placement="after" if="choose-app"><slot name="app-options"/></overlay>
+        </box>
+        <box id="log-other-anchor">
+          <flow id="log-other-control" separator=": [ ">
+            <text bind="other-label"/>
+            <flow><text bind="other-level"/><text bind="picker-end"/></flow>
+          </flow>
+          <overlay id="log-other-picker" class="log-picker" placement="after" if="choose-other"><slot name="other-options"/></overlay>
+        </box>
+      </column>
+      <scroll id="log-scroll"><slot name="body" if="available"/><text bind="unavailable" if="has-unavailable"/></scroll>
+      <text id="log-footer" bind="footer" />
     </column>
   </template>
+  <template name="log-option"><text class="log-option" bind="label"/></template>
 </templates>

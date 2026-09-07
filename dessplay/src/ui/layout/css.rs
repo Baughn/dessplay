@@ -415,6 +415,12 @@ pub(super) fn resolve(
                 bottom: LengthPercentageAuto::Auto,
             };
         }
+        if node.attr("placement") == "after" {
+            out.layout.inset.left = LengthPercentageAuto::Length(0.0);
+            out.layout.inset.right = LengthPercentageAuto::Auto;
+            out.layout.inset.top = LengthPercentageAuto::Percent(1.0);
+            out.layout.inset.bottom = LengthPercentageAuto::Auto;
+        }
     }
     let mut matched = Vec::new();
     for rule in &bundle.rules {

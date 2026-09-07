@@ -1674,7 +1674,9 @@ Inline text flows combine semantic children into shared measured lines. Their
 source ranges and controller actions come from the painted fragments. Box and
 wrapping rules apply to the enclosing flow; unsupported inline box rules fail
 validation. Recovery panels use explicit centered overlays with a one-cell inset,
-and their frame captions remain independent of overflowing content.
+and their frame captions remain independent of overflowing content. Attached
+dropdowns follow their parent control and may escape its clip only within the
+entry-template viewport. Hiding the parent also hides its dropdown.
 
 RGB text is quantized to the finite terminal palette in limited mode.
 Explicit background colors survive the legacy theme adapter during the

@@ -970,3 +970,9 @@ source offsets, and matching painted cells at arbitrary widths and origins.
 Unsupported box declarations on inline children must fail compilation. Centered
 recovery overlay properties cover zero/tiny viewports, the inset, size caps, and
 translation. Document scroll anchors include blank-line redraw stability.
+
+The attached-dropdown scenario moves a log control using only CSS, requires its
+popup to follow the arranged control and escape the header clip, and hides the
+parent to verify that no orphan popup remains. Existing log tests continue to
+cover independent filters, cancellation, reopening, small terminals, capture,
+and the default full-view snapshot.

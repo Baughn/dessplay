@@ -444,3 +444,43 @@ fn filename_ellipsis_has_no_source_and_retains_the_suffix_identity() {
     assert_eq!(source, "/file.mkv");
     assert_eq!(region.bounds.x, 1);
 }
+
+#[test]
+fn attached_dropdown_follows_its_reordered_control_and_escapes_header_clip() {
+    let dir = tempfile::tempdir().unwrap();
+    LayoutBundle::init(dir.path()).unwrap();
+    std::fs::write(dir.path().join("style.css"), "#log-header { padding: 0 2ch; } #log-app-anchor { margin: 2lh 0 0 0; } #log-header { max-height: 5lh; }").unwrap();
+    let mut renderer = Renderer::new(LayoutBundle::load(dir.path()).unwrap());
+    let data = Presentation::default()
+        .boolean("choose-app", true)
+        .text("app-label", "DessPlay")
+        .text("app-level", "trace");
+    let scene = renderer
+        .arrange("log", Rect::new(5, 7, 40, 20), &data)
+        .unwrap();
+    let anchor = scene.bounds("log-app-anchor");
+    let popup = scene.bounds("log-app-picker");
+    assert_eq!(popup.x, anchor.x);
+    assert_eq!(popup.y, anchor.bottom());
+    assert_eq!(
+        popup.height, 9,
+        "the header clip must not truncate its attached popup"
+    );
+    assert_eq!(
+        scene.slot("app-options"),
+        popup.inner(tuirealm::ratatui::layout::Margin::new(1, 1))
+    );
+    assert!(scene.has_overlay());
+    std::fs::write(
+        dir.path().join("style.css"),
+        "#log-header { display: none; }",
+    )
+    .unwrap();
+    renderer.install(LayoutBundle::load(dir.path()).unwrap());
+    assert!(
+        !renderer
+            .arrange("log", Rect::new(5, 7, 40, 20), &data)
+            .unwrap()
+            .has_overlay()
+    );
+}

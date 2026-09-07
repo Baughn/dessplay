@@ -2,7 +2,7 @@
 
 The layout migration is in progress. Currently the shared settings/List-entry
 forms, their semantic label/value/annotation rows, the F11 log viewer's
-header/body/footer, application pane composition, chat/input/suggestions,
+controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
 attachments, recent-chat projection, separate subtitle rows, Users, Playlist,
 and the roguelike frame, game, recovery, document, equipment, and ending pages
 use local templates. Message rich-text composition and other pane interiors still use
@@ -68,7 +68,8 @@ clipped scroll viewport whose controller supplies the visible contents.
 `overlay` declares a separate paint layer aligned to the bottom of its
 parent content, inset one cell horizontally. Its dimensions and margins
 are styleable; `placement="center"` centers the allocated box with a one-cell
-inset on all sides. Capture remains in controllers. `text bind="field"` paints typed text;
+inset on all sides. `placement="after"` attaches a popup below its parent control
+and lets it escape that control's clip while staying inside the entry viewport. Capture remains in controllers. `text bind="field"` paints typed text;
 `slot name="field"` reserves a primitive's content rectangle. Containers accept
 `title` and `title-bottom` bindings for terminal frame captions.
 `if="field"` tests a named boolean. `id`, `class`, and `style` supply selector
@@ -99,12 +100,15 @@ Current entry templates and bindings:
 | --- | --- | --- | --- |
 | `form` | `title` | `header`, `body`, `notes`, `save`, `editor`, `error` | `editing`, `invalid` |
 | `form-row` | `label`, `value`, `annotation` | none | `labelled`, `annotated` |
-| `log` | `title` | `header`, `body`, `footer`, `dropdown` | `choosing` |
+| `log` | `title`, `session-label`, `startup`, `app-label`, `app-level`, `other-label`, `other-level`, `picker-end`, `footer`, `unavailable` | `body`, `app-options`, `other-options` | `choose-app`, `choose-other`, `has-unavailable`, `available` |
+| `log-option` | `label` | none | none |
 | `layout-tools` | `title`, `body` | none | none |
 
 The form's editor frame/error layout is authored in its overlay template;
-the text-editor primitive owns only the text and cursor. The log dropdown
-is still controller-rendered; its slot/boolean reserve names for migration.
+the text-editor primitive owns only the text and cursor. Log controls and their
+attached dropdowns are authored together; option rows retain controller keys.
+Moving either control moves its dropdown anchor without changing which logging
+scope it edits.
 Form body rows remain navigable while scrolled offscreen. Model row identities
 preserve selection across data changes. Secret values are masked before
 presentation; the inspector never prints binding contents.
