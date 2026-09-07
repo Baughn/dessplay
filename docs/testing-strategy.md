@@ -984,3 +984,11 @@ absence, and whole-directory replacement followed by another edit. The six
 customization demonstrations verify arranged results after real watcher delivery.
 These tests need operating-system filesystem events; run the full gate outside
 restricted sandboxes, as for the existing local-network integration tests.
+
+Chat template scenarios reorder sender/timestamp and body using files only,
+then retain drafts, held selection, and spoiler actions through reload. A
+5,000-message live-tail test bounds initial arrangements and checks that a
+redraw adds none and one arriving message adds one. Spoiler animation checks
+the same arrangement counter. Compiler tests reject ambiguous prefix positions
+and duplicate rich action bindings; fixed/natural cache-mode and wide-glyph
+prefix regressions were confirmed failing before their fixes.

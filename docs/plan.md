@@ -1864,8 +1864,8 @@ player OSD, and standalone diagnostic output are outside scope.
 - [ ] Finish foundation: template-authored keyed repetition and complete style integration.
 - [x] Chat/input/suggestion composition, recent projection, semantic separate
   subtitle rows, and timestamp-aligned bordered attachments with original scroll crops.
-- [ ] Finish chat proof: template-authored rich message variants and complete
-  source-mapped span layout/caching.
+- [x] Chat rich message variants, authored first-line prefixes, source-mapped
+  selection/spoiler actions, virtualized live tail, and paint-only animation caching.
 - [x] Root composition, markup focus order, painted hit/splitter geometry,
   revision-keyed local drag persistence, and one-time PaneLayout import.
 - [x] Users and Playlist semantic rows/fields, measured collection virtualization,

@@ -105,6 +105,19 @@ impl Default for TemplateSchema {
         let mut templates = BTreeMap::new();
         for (name, slots, texts, bools) in [
             (
+                "chat-message",
+                &[][..],
+                &[
+                    "timestamp",
+                    "origin",
+                    "action-marker",
+                    "sender",
+                    "sender-delimiter",
+                ][..],
+                &["external", "action", "named"][..],
+            ),
+            ("chat-separator", &[][..], &["label"][..], &[][..]),
+            (
                 "rogue-inspection",
                 &["body"][..],
                 &["heading", "note"][..],
@@ -289,6 +302,10 @@ impl Default for TemplateSchema {
             "rich-text".into(),
             [("body".into(), BindingType::Rich)].into(),
         );
+        templates
+            .entry("chat-message".into())
+            .or_default()
+            .insert("body".into(), BindingType::Rich);
         Self { templates }
     }
 }
@@ -408,7 +425,7 @@ impl LayoutBundle {
             let fields = &schema.templates[name];
             let mut ids = BTreeSet::new();
             let mut slots = BTreeSet::new();
-            validate(&root, fields, &mut ids, &mut slots)?;
+            validate(&root, fields, &mut ids, &mut slots, false)?;
             templates.insert(name.clone(), root);
         }
         for (name, node) in &definitions {
@@ -514,6 +531,7 @@ fn validate(
     fields: &BTreeMap<String, BindingType>,
     ids: &mut BTreeSet<String>,
     slots: &mut BTreeSet<String>,
+    in_inline: bool,
 ) -> Result<(), Diagnostic> {
     if !node.attr("id").is_empty() && !ids.insert(node.attr("id").into()) {
         return Err(error(node, "duplicate node id"));
@@ -565,19 +583,39 @@ fn validate(
     if matches!(node.tag.as_str(), "text" | "rich") && node.attr("bind").is_empty() {
         return Err(error(node, "text requires a bind attribute"));
     }
+    if node.tag == "rich" && !slots.insert(format!("rich:{}", node.attr("bind"))) {
+        return Err(error(
+            node,
+            "action-bearing rich bindings must occur once per entry; use a separate read-only projection",
+        ));
+    }
     if matches!(node.tag.as_str(), "slot" | "text" | "rich") && !node.children.is_empty() {
         return Err(error(node, "leaf elements cannot contain children"));
     }
-    if node.tag == "flow"
+    if matches!(node.tag.as_str(), "flow" | "prefix")
         && node
             .children
             .iter()
-            .any(|child| !matches!(child.tag.as_str(), "text" | "rich" | "flow"))
+            .any(|child| !matches!(child.tag.as_str(), "text" | "rich" | "flow" | "prefix"))
     {
         return Err(error(
             node,
-            "flow accepts only text, rich, and nested flow children",
+            "flow accepts only text, rich, prefix, and nested flow children",
         ));
+    }
+    if node.tag == "prefix" && !in_inline {
+        return Err(error(
+            node,
+            "prefix must be the first child of an outer flow",
+        ));
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        if child.tag == "prefix" && (node.tag != "flow" || in_inline || index != 0) {
+            return Err(error(
+                child,
+                "prefix must be the first child of an outer flow",
+            ));
+        }
     }
     if node.attrs.contains_key("placement")
         && !matches!(node.attr("placement"), "center" | "bottom" | "after")
@@ -588,7 +626,13 @@ fn validate(
         ));
     }
     for child in &node.children {
-        validate(child, fields, ids, slots)?;
+        validate(
+            child,
+            fields,
+            ids,
+            slots,
+            in_inline || matches!(node.tag.as_str(), "flow" | "prefix"),
+        )?;
     }
     Ok(())
 }
@@ -653,7 +697,7 @@ fn parse_xml(
                             "title-bottom",
                             "placement",
                         ][..],
-                        "flow" => &["id", "class", "style", "if", "separator"][..],
+                        "flow" | "prefix" => &["id", "class", "style", "if", "separator"][..],
                         "slot" => &["id", "class", "style", "if", "name"][..],
                         "text" | "rich" => &["id", "class", "style", "if", "bind"][..],
                         _ => {
@@ -689,6 +733,7 @@ fn parse_xml(
                     "text",
                     "rich",
                     "flow",
+                    "prefix",
                 ]
                 .contains(&tag.as_str())
                 {

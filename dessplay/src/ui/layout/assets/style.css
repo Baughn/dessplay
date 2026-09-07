@@ -64,3 +64,7 @@ scroll > slot { flex-grow: 1; }
 #log-footer { height: 1lh; color: darkgray; }
 .log-picker { width: 24ch; max-width: 100%; height: 9lh; border: 1; }
 .log-picker > slot { flex-grow: 1; }
+.chat-message { white-space: normal; }
+.chat-separator { height: 1lh; color: darkgray; }
+.chat-day-label { margin: 0 1ch; }
+.chat-day-rule { flex-grow: 1; flex-shrink: 1; flex-basis: 0; height: 1lh; border-top: 1; }

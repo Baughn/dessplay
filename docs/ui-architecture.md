@@ -19,6 +19,14 @@ viewer measures through the renderer and anchors by line identity plus
 source offset. Existing primitive and unmigrated widget rendering remains
 behind temporary adapters while the migration proceeds.
 
+Chat and recent-chat build separate keyed message scenes from semantic prefix
+fields and rich body spans. The live tail measures backwards only as far as
+the viewport or retained source anchor requires. An LRU bounds cached scenes;
+cache identity includes fixed versus natural height. Combining spoiler marks
+and equal-width ASCII scrambling refresh painted spans without rebuilding
+Taffy geometry or source/action regions. Prefix/body fragments can share a
+visual row; their measured source records also supply selection highlights.
+
 The filesystem worker owns notify and compiles candidate bundles after
 debouncing. A separate capacity-one channel retries full delivery, and an
 atomic requested generation makes queued stale candidates ineligible. The

@@ -532,6 +532,22 @@ recovery surface uses embedded definitions so customization cannot remove
 the recovery controls. Native GUI rendering and scripting remain outside
 this change.
 
+### Shared chat fragments preserve source identities (2026-09-07)
+
+The message prefix and body now use the same flow service as other rich text.
+A distinct prefix policy preserves the existing first-line formatting without
+requiring pre-padded strings; separate fragments allow body source offsets to
+remain correct when wrapping drops boundary whitespace. Wide first glyphs
+move to the continuation row rather than disappearing behind a long prefix.
+Selection and spoiler hit regions derive from the painted fragments.
+
+Live chat lays out only the tail window or the retained scroll anchor. Scene
+cache keys distinguish fixed-height and natural-height requests, preventing
+a clipped measurement from becoming an intrinsic row height. Cosmetic spoiler
+marks are source-indexed paint data, and ASCII scrambling with unchanged word
+boundaries refreshes cached spans without remeasuring. Arbitrary Unicode or
+style changes still take the normal measured path.
+
 ### Explicit dark theme on true-color terminals
 
 **Rule:** A true-color terminal gets an explicit app-wide dark theme with RGB semantic foregrounds; dim text is an explicit muted RGB, never SGR 2; limited-color terminals keep their own theme and the ten-color palette; see [design.md](design.md#ui-principles).

@@ -1664,6 +1664,10 @@ starts after the measured timestamp and separator, and its border and spacing
 fit within the existing one-third-of-log-height limit. If no interior fits,
 the original link remains. Attachment rows are not selectable. Scrolling clips
 the fitted frame and image together, without reframing the visible slice.
+Chat messages expose timestamp, origin/action markers, sender, and rich body
+fields before formatting. A first-line prefix is an explicit flow policy; a
+wide body glyph that cannot fit its remainder continues on the next row.
+Rich bindings occur once per entry and preserve source/action identity.
 Chat continuation indentation is an inherited terminal text property; source
 anchors retain scrolled-back context through layout changes and new messages.
 

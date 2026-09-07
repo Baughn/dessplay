@@ -1,4 +1,22 @@
 <templates version="1">
+  <template name="chat-message">
+    <flow class="chat-message">
+      <prefix>
+        <text class="chat-timestamp" bind="timestamp" />
+        <text class="chat-origin" bind="origin" if="external" />
+        <text class="chat-action-marker" bind="action-marker" if="action" />
+        <flow separator="" if="named"><text class="chat-sender" bind="sender"/><text bind="sender-delimiter"/></flow>
+      </prefix>
+      <rich class="chat-body" bind="body" />
+    </flow>
+  </template>
+  <template name="chat-separator">
+    <row class="chat-separator">
+      <box class="chat-day-rule"/>
+      <text class="chat-day-label" bind="label"/>
+      <box class="chat-day-rule"/>
+    </row>
+  </template>
   <template name="chat">
     <column id="chat-pane">
       <scroll id="chat-log-frame" title="title"><slot name="log" /></scroll>

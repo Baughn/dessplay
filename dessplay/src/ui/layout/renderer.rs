@@ -24,12 +24,38 @@ pub struct Presentation {
     component_styles: BTreeMap<String, PaintStyle>,
     preserve_end: Vec<String>,
     inherited_style: PaintStyle,
+    inherited_indent: u16,
     shares: BTreeMap<String, u16>,
     intrinsic_widths: BTreeMap<String, u16>,
     root_states: Vec<String>,
     color_variables: BTreeMap<String, String>,
 }
 impl Presentation {
+    fn same_measurement(&self, other: &Self) -> bool {
+        let normalize = |data: &Self| {
+            let mut data = data.clone();
+            for span in data.rich.values_mut().flatten() {
+                span.marks.clear();
+                // ASCII letter/digit substitutions preserve every word boundary,
+                // source index, and cell width. Non-ASCII text remains exact.
+                if span.text.is_ascii() {
+                    span.text = span
+                        .text
+                        .chars()
+                        .map(|ch| if ch.is_ascii_alphanumeric() { 'a' } else { ch })
+                        .collect();
+                }
+            }
+            data
+        };
+        normalize(self) == normalize(other)
+    }
+    /// Text properties inherited across a controller primitive boundary.
+    pub fn inherit(mut self, style: PaintStyle, indent: u16) -> Self {
+        self.inherited_style = style;
+        self.inherited_indent = indent;
+        self
+    }
     /// Styled data with optional controller-owned action identities, never markup.
     pub fn rich(mut self, name: &str, spans: Vec<RichSpan>) -> Self {
         self.rich.insert(name.into(), spans);
@@ -107,6 +133,8 @@ pub struct RichSpan {
     pub style: PaintStyle,
     /// Existing controller action identity, such as a spoiler toggle.
     pub action: Option<String>,
+    /// Paint-only combining diacritics (U+0300–U+036F), keyed by source character.
+    pub marks: BTreeMap<usize, String>,
 }
 
 /// Source identity and cell range emitted from the same fragments that are painted.
@@ -120,6 +148,8 @@ pub struct TextRegion {
     pub source: std::ops::Range<usize>,
     /// Unclipped cell rectangle in the scene's coordinate system.
     pub bounds: Rect,
+    /// The same ancestor/content clip used while painting this span.
+    pub clip: Rect,
     /// Controller action associated with this span.
     pub action: Option<String>,
 }
@@ -132,6 +162,7 @@ struct TextRun {
     node: String,
     style: PaintStyle,
     action: Option<String>,
+    marks: BTreeMap<usize, String>,
 }
 
 /// A stable, controller-owned row in a virtualized collection.
@@ -216,6 +247,8 @@ struct Arranged {
     title_bottom: String,
     fragments: Vec<Fragment>,
     lines: Vec<Line<'static>>,
+    align_offsets: Vec<u16>,
+    runs: Vec<TextRun>,
 }
 impl RenderedScene {
     /// Natural height of the arranged root, including its chrome.
@@ -322,6 +355,60 @@ impl RenderedScene {
         self.paint_layer(frame, false, view);
         self.paint_layer(frame, true, view);
     }
+    /// Highlight a semantic source range using painted fragments. `None` selects
+    /// all text in the scene, including first-line prefix separators.
+    #[allow(clippy::too_many_arguments)]
+    pub fn highlight_text(
+        &self,
+        frame: &mut Frame<'_>,
+        viewport: Rect,
+        row_offset: i32,
+        binding: Option<&str>,
+        source: Option<std::ops::Range<usize>>,
+        text: &str,
+        style: PaintStyle,
+    ) {
+        let view = PaintView::new(
+            viewport.intersection(frame.area()),
+            i32::from(viewport.x),
+            i32::from(viewport.y) + row_offset,
+        );
+        let mut rows = BTreeMap::<u16, Rect>::new();
+        for region in &self.text_regions {
+            if binding.is_some_and(|binding| binding != region.binding) {
+                continue;
+            }
+            let mut bounds = region.bounds;
+            if let Some(source) = &source {
+                let start = source.start.max(region.source.start);
+                let end = source.end.min(region.source.end);
+                if start >= end {
+                    continue;
+                }
+                let prefix: String = text
+                    .chars()
+                    .skip(region.source.start)
+                    .take(start - region.source.start)
+                    .collect();
+                let selected: String = text.chars().skip(start).take(end - start).collect();
+                bounds.x = bounds.x.saturating_add(prefix.width() as u16);
+                bounds.width = selected.width().min(u16::MAX as usize) as u16;
+            }
+            bounds = bounds.intersection(region.clip);
+            if bounds.is_empty() {
+                continue;
+            }
+            rows.entry(bounds.y)
+                .and_modify(|row| *row = row.union(bounds))
+                .or_insert(bounds);
+        }
+        for bounds in rows.into_values() {
+            let visible = view.rect(bounds);
+            if !visible.is_empty() {
+                frame.buffer_mut().set_style(visible, style);
+            }
+        }
+    }
     /// Outer box for a semantic primitive, including authored borders.
     pub fn slot_bounds(&self, name: &str) -> Rect {
         self.nodes
@@ -348,21 +435,26 @@ impl RenderedScene {
                 frame.render_widget(tuirealm::ratatui::widgets::Clear, visible);
             }
             frame.buffer_mut().set_style(visible, n.style.paint);
-            if n.style.layout.border.left != LengthPercentage::Length(0.0)
-                || !n.title.is_empty()
-                || !n.title_bottom.is_empty()
-            {
+            let border = &n.style.layout.border;
+            let has_border = [border.left, border.right, border.top, border.bottom]
+                .iter()
+                .any(|edge| *edge != LengthPercentage::Length(0.0));
+            if has_border || !n.title.is_empty() || !n.title_bottom.is_empty() {
                 // Draw only original frame edges inside the clip. Memory use is
                 // bounded by the terminal, even for enormous authored dimensions.
-                if n.style.layout.border.left != LengthPercentage::Length(0.0) {
+                if has_border {
                     for y in visible.y..visible.bottom() {
                         for x in visible.x..visible.right() {
-                            let left = i32::from(x) - view.x == i32::from(n.bounds.x);
-                            let right = i32::from(x) - view.x
-                                == i32::from(n.bounds.right().saturating_sub(1));
-                            let top = i32::from(y) - view.y == i32::from(n.bounds.y);
-                            let bottom = i32::from(y) - view.y
-                                == i32::from(n.bounds.bottom().saturating_sub(1));
+                            let left = border.left != LengthPercentage::Length(0.0)
+                                && i32::from(x) - view.x == i32::from(n.bounds.x);
+                            let right = border.right != LengthPercentage::Length(0.0)
+                                && i32::from(x) - view.x
+                                    == i32::from(n.bounds.right().saturating_sub(1));
+                            let top = border.top != LengthPercentage::Length(0.0)
+                                && i32::from(y) - view.y == i32::from(n.bounds.y);
+                            let bottom = border.bottom != LengthPercentage::Length(0.0)
+                                && i32::from(y) - view.y
+                                    == i32::from(n.bounds.bottom().saturating_sub(1));
                             let glyph = match (left, right, top, bottom) {
                                 (true, _, true, _) => "┌",
                                 (_, true, true, _) => "┐",
@@ -400,14 +492,23 @@ impl RenderedScene {
                 }
             }
             for (i, fragment) in n.fragments.iter().enumerate() {
-                let y = n.content.y.saturating_add(i.min(u16::MAX as usize) as u16);
+                let y = n
+                    .content
+                    .y
+                    .saturating_add(fragment.row.min(u16::MAX as usize) as u16);
                 if y >= n.content.bottom() {
                     break;
                 }
                 let row = Rect::new(
-                    n.content.x.saturating_add(fragment.indent as u16),
+                    n.content
+                        .x
+                        .saturating_add(fragment.indent as u16)
+                        .saturating_add(n.align_offsets[i]),
                     y,
-                    n.content.width.saturating_sub(fragment.indent as u16),
+                    n.content
+                        .width
+                        .saturating_sub(fragment.indent as u16)
+                        .saturating_sub(n.align_offsets[i]),
                     1,
                 );
                 paint_line(
@@ -416,7 +517,7 @@ impl RenderedScene {
                     row,
                     n.clip,
                     n.style.paint,
-                    n.style.align,
+                    Default::default(),
                     view,
                 );
             }
@@ -501,6 +602,7 @@ struct Built<'a> {
     children: Vec<Built<'a>>,
     text: String,
     runs: Vec<TextRun>,
+    prefix_chars: usize,
 }
 #[derive(Clone)]
 struct Measure {
@@ -509,14 +611,26 @@ struct Measure {
     text: String,
     wrap: bool,
     hanging_indent: u16,
+    prefix_chars: usize,
 }
 
 /// UI-thread renderer. Its Taffy state never crosses the controller's thread move.
 pub struct Renderer {
     bundle: LayoutBundle,
     tree: TaffyTree<Measure>,
-    cache: HashMap<String, (Rect, Presentation, RenderedScene)>,
+    cache: HashMap<String, CachedScene>,
+    cache_clock: u64,
+    #[cfg(test)]
+    arrangements: usize,
     text_cache: HashMap<(String, u16), std::sync::Arc<Vec<Fragment>>>,
+}
+struct CachedScene {
+    template: String,
+    area: Rect,
+    data: Presentation,
+    scene: RenderedScene,
+    natural_height: bool,
+    last_used: u64,
 }
 impl Renderer {
     /// Construct locally after entering the UI thread.
@@ -525,8 +639,15 @@ impl Renderer {
             bundle,
             tree: TaffyTree::new(),
             cache: HashMap::new(),
+            cache_clock: 0,
+            #[cfg(test)]
+            arrangements: 0,
             text_cache: HashMap::new(),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn arrangement_count(&self) -> usize {
+        self.arrangements
     }
     /// Replace definitions atomically; controller state is external to this renderer.
     pub fn install(&mut self, bundle: LayoutBundle) {
@@ -562,7 +683,7 @@ impl Renderer {
         names.sort();
         names
             .into_iter()
-            .map(|name| format!("{name}\n{}", self.cache[name].2.inspect().join("\n")))
+            .map(|name| format!("{name}\n{}", self.cache[name].scene.inspect().join("\n")))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -654,12 +775,28 @@ impl Renderer {
         data: &Presentation,
         natural_height: bool,
     ) -> Result<RenderedScene, Diagnostic> {
-        if let Some((old_area, old_data, scene)) = self.cache.get(key)
-            && *old_area == area
-            && old_data == data
-        {
-            return Ok(scene.clone());
+        self.cache_clock = self.cache_clock.wrapping_add(1);
+        if self.cache_clock == 0 {
+            self.cache.clear();
         }
+        if let Some(cached) = self.cache.get_mut(key)
+            && cached.area == area
+            && cached.template == template
+            && cached.natural_height == natural_height
+        {
+            if cached.data == *data {
+                cached.last_used = self.cache_clock;
+                return Ok(cached.scene.clone());
+            }
+            if cached.data.same_measurement(data) {
+                validate_rich(data)?;
+                refresh_paint(&mut cached.scene, data);
+                cached.data = data.clone();
+                cached.last_used = self.cache_clock;
+                return Ok(cached.scene.clone());
+            }
+        }
+        validate_rich(data)?;
         let root = self.bundle.templates.get(template).ok_or_else(|| {
             Diagnostic::at(
                 std::path::Path::new("<renderer>"),
@@ -668,9 +805,14 @@ impl Renderer {
                 "unknown template",
             )
         })?;
+        #[cfg(test)]
+        {
+            self.arrangements += 1;
+        }
         self.tree.clear();
         let mut inherited = Computed {
             paint: data.inherited_style,
+            hanging_indent: data.inherited_indent,
             ..Computed::default()
         };
         inherited.variables.extend(data.color_variables.clone());
@@ -727,15 +869,16 @@ impl Renderer {
                 let height = if m.text.is_empty() || !m.wrap {
                     m.height
                 } else {
-                    measure_text(
+                    super::text::measure_flow(
                         &m.text,
                         width.max(0.0) as usize,
-                        0,
+                        m.prefix_chars,
                         usize::from(m.hanging_indent),
                         true,
                         false,
                     )
-                    .len() as f32
+                    .last()
+                    .map_or(0, |fragment| fragment.row + 1) as f32
                 };
                 Size {
                     width,
@@ -754,11 +897,27 @@ impl Renderer {
             false,
             &mut scene,
         )?;
-        if self.cache.len() > 512 {
-            self.cache.clear();
+        if self.cache.len() >= 2048
+            && !self.cache.contains_key(key)
+            && let Some(oldest) = self
+                .cache
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(key, _)| key.clone())
+        {
+            self.cache.remove(&oldest);
         }
-        self.cache
-            .insert(key.into(), (area, data.clone(), scene.clone()));
+        self.cache.insert(
+            key.into(),
+            CachedScene {
+                template: template.into(),
+                area,
+                data: data.clone(),
+                scene: scene.clone(),
+                natural_height,
+                last_used: self.cache_clock,
+            },
+        );
         Ok(scene)
     }
     /// Paint the visible slice of a measured semantic collection. Only rows
@@ -904,6 +1063,113 @@ fn internal(e: impl std::fmt::Display) -> Diagnostic {
         format!("layout allocation: {e}"),
     )
 }
+fn validate_rich(data: &Presentation) -> Result<(), Diagnostic> {
+    for span in data.rich.values().flatten() {
+        let length = span.text.chars().count();
+        if span.marks.iter().any(|(index, marks)| {
+            *index >= length
+                || marks
+                    .chars()
+                    .any(|mark| !(('\u{0300}'..='\u{036f}').contains(&mark)))
+        }) {
+            return Err(internal(
+                "rich combining marks require valid source indices and U+0300–U+036F diacritics",
+            ));
+        }
+    }
+    Ok(())
+}
+fn fragment_line(fragment: &Fragment, runs: &[TextRun], style: PaintStyle) -> Line<'static> {
+    let chars: Vec<_> = fragment.text.chars().collect();
+    let mut spans = Vec::new();
+    let mut cursor = fragment.source.start;
+    for run in runs {
+        let start = run.range.start.max(fragment.source.start);
+        let end = run.range.end.min(fragment.source.end);
+        if start >= end {
+            continue;
+        }
+        if start > cursor {
+            let before: String = chars
+                [cursor - fragment.source.start..start - fragment.source.start]
+                .iter()
+                .collect();
+            spans.push(Span::styled(before, style));
+        }
+        let mut painted = String::new();
+        for (index, ch) in chars[start - fragment.source.start..end - fragment.source.start]
+            .iter()
+            .enumerate()
+        {
+            painted.push(*ch);
+            if let Some(marks) = run
+                .marks
+                .get(&(run.source + start - run.range.start + index))
+            {
+                painted.push_str(marks);
+            }
+        }
+        spans.push(Span::styled(painted, run.style));
+        cursor = end;
+    }
+    let tail: String = chars[cursor - fragment.source.start..].iter().collect();
+    if !tail.is_empty() {
+        spans.push(Span::styled(tail, style));
+    }
+    Line::from(spans)
+}
+fn refresh_paint(scene: &mut RenderedScene, data: &Presentation) {
+    let fields: BTreeMap<_, _> = data
+        .rich
+        .iter()
+        .map(|(name, spans)| {
+            let mut chars = Vec::new();
+            let mut marks = BTreeMap::new();
+            for span in spans {
+                marks.extend(
+                    span.marks
+                        .iter()
+                        .map(|(index, marks)| (chars.len() + index, marks.clone())),
+                );
+                chars.extend(span.text.chars());
+            }
+            (name, (chars, marks))
+        })
+        .collect();
+    for node in &mut scene.nodes {
+        for run in &mut node.runs {
+            if let Some((_, marks)) = fields.get(&run.binding) {
+                run.marks = marks
+                    .range(run.source..run.source + run.range.len())
+                    .map(|(index, marks)| (*index, marks.clone()))
+                    .collect();
+            }
+        }
+        for fragment in &mut node.fragments {
+            let mut chars: Vec<_> = fragment.text.chars().collect();
+            for run in &node.runs {
+                let Some((source, _)) = fields.get(&run.binding) else {
+                    continue;
+                };
+                let start = run.range.start.max(fragment.source.start);
+                let end = run.range.end.min(fragment.source.end);
+                if start >= end {
+                    continue;
+                }
+                let from = run.source + start - run.range.start;
+                chars[start - fragment.source.start..end - fragment.source.start]
+                    .copy_from_slice(&source[from..from + end - start]);
+            }
+            fragment.text = chars.into_iter().collect();
+        }
+        node.lines = node
+            .fragments
+            .iter()
+            .map(|fragment| fragment_line(fragment, &node.runs, node.style.paint))
+            .collect();
+    }
+}
+
 fn build<'a>(
     tree: &mut TaffyTree<Measure>,
     bundle: &LayoutBundle,
@@ -952,6 +1218,7 @@ fn build<'a>(
         .cloned()
         .unwrap_or_default();
     let mut runs = Vec::new();
+    let mut prefix_chars = 0;
     if node.tag == "rich" {
         text.clear();
         let mut start = 0;
@@ -970,11 +1237,16 @@ fn build<'a>(
                 }
                 .patch(style.paint),
                 action: span.action.clone(),
+                marks: span
+                    .marks
+                    .iter()
+                    .map(|(index, marks)| (start + index, marks.clone()))
+                    .collect(),
             });
             text.push_str(&span.text);
             start = end;
         }
-    } else if node.tag == "flow" {
+    } else if matches!(node.tag.as_str(), "flow" | "prefix") {
         text.clear();
         let separator = node.attrs.get("separator").map_or(" ", String::as_str);
         let mut offset = 0;
@@ -996,6 +1268,12 @@ fn build<'a>(
             }
             text.push_str(&child.text);
             offset += child.text.chars().count();
+            if child.node.tag == "prefix" {
+                prefix_chars = offset;
+            }
+        }
+        if prefix_chars > 0 && prefix_chars < offset {
+            prefix_chars += separator.chars().count();
         }
         // Inline children share the flow's measured lines, not separate boxes.
         children.clear();
@@ -1007,6 +1285,7 @@ fn build<'a>(
             node: node.attr("id").into(),
             style: style.paint,
             action: None,
+            marks: BTreeMap::new(),
         });
     }
     let (width, height) = data.slots.get(node.attr("name")).copied().unwrap_or((0, 0));
@@ -1026,6 +1305,7 @@ fn build<'a>(
         text: text.clone(),
         wrap: style.wrap,
         hanging_indent: style.hanging_indent,
+        prefix_chars,
     };
     let id = if children.is_empty() {
         tree.new_leaf_with_context(style.layout.clone(), measure)
@@ -1043,6 +1323,7 @@ fn build<'a>(
         children,
         text,
         runs,
+        prefix_chars,
     })
 }
 fn freeze_widths(tree: &mut TaffyTree<Measure>, built: &Built<'_>) -> Result<(), Diagnostic> {
@@ -1123,14 +1404,32 @@ fn collect(
     } else {
         built.text.clone()
     };
-    let fragments = measure_text(
+    let fragments = super::text::measure_flow(
         &text,
         content.width as usize,
-        0,
+        built.prefix_chars,
         usize::from(built.style.hanging_indent),
         built.style.wrap,
         built.style.ellipsis,
     );
+    let mut line_widths = BTreeMap::<usize, usize>::new();
+    for fragment in &fragments {
+        let width = line_widths.entry(fragment.row).or_default();
+        *width = (*width).max(fragment.indent + fragment.width);
+    }
+    let align_offsets: Vec<u16> = fragments
+        .iter()
+        .map(|fragment| {
+            let spare = content
+                .width
+                .saturating_sub(line_widths[&fragment.row].min(u16::MAX as usize) as u16);
+            match built.style.align {
+                tuirealm::ratatui::layout::Alignment::Center => spare / 2,
+                tuirealm::ratatui::layout::Alignment::Right => spare,
+                _ => 0,
+            }
+        })
+        .collect();
     let mut runs = built.runs.clone();
     if text != built.text {
         // A filename-preserving ellipsis is decoration, not a source character.
@@ -1149,70 +1448,46 @@ fn collect(
             true
         });
     }
+    for (index, fragment) in fragments.iter().enumerate() {
+        let chars: Vec<_> = fragment.text.chars().collect();
+        for run in &runs {
+            let start = run.range.start.max(fragment.source.start);
+            let end = run.range.end.min(fragment.source.end);
+            if start >= end {
+                continue;
+            }
+            let text: String = chars[start - fragment.source.start..end - fragment.source.start]
+                .iter()
+                .collect();
+            let prefix: String = chars[..start - fragment.source.start].iter().collect();
+            let bounds = Rect::new(
+                content
+                    .x
+                    .saturating_add(align_offsets[index])
+                    .saturating_add(fragment.indent as u16)
+                    .saturating_add(prefix.width() as u16),
+                content
+                    .y
+                    .saturating_add(fragment.row.min(u16::MAX as usize) as u16),
+                text.width().min(u16::MAX as usize) as u16,
+                1,
+            );
+            if !bounds.intersection(content).intersection(clip).is_empty() {
+                scene.text_regions.push(TextRegion {
+                    node: run.node.clone(),
+                    binding: run.binding.clone(),
+                    source: run.source + start - run.range.start
+                        ..run.source + end - run.range.start,
+                    bounds,
+                    clip: content.intersection(clip),
+                    action: run.action.clone(),
+                });
+            }
+        }
+    }
     let lines = fragments
         .iter()
-        .enumerate()
-        .map(|(row, fragment)| {
-            let mut spans = Vec::new();
-            let mut cursor = fragment.source.start;
-            let chars: Vec<_> = fragment.text.chars().collect();
-            let align_offset = content
-                .width
-                .saturating_sub((fragment.width + fragment.indent) as u16);
-            let align_offset = match built.style.align {
-                tuirealm::ratatui::layout::Alignment::Center => align_offset / 2,
-                tuirealm::ratatui::layout::Alignment::Right => align_offset,
-                _ => 0,
-            };
-            for run in &runs {
-                let start = run.range.start.max(fragment.source.start);
-                let end = run.range.end.min(fragment.source.end);
-                if start >= end {
-                    continue;
-                }
-                let before: String = chars
-                    [cursor - fragment.source.start..start - fragment.source.start]
-                    .iter()
-                    .collect();
-                if !before.is_empty() {
-                    spans.push(Span::styled(before, built.style.paint));
-                }
-                let text: String = chars
-                    [start - fragment.source.start..end - fragment.source.start]
-                    .iter()
-                    .collect();
-                let prefix: String = chars[..start - fragment.source.start].iter().collect();
-                let bounds = Rect::new(
-                    content
-                        .x
-                        .saturating_add(align_offset)
-                        .saturating_add(fragment.indent as u16)
-                        .saturating_add(prefix.width() as u16),
-                    content.y.saturating_add(row.min(u16::MAX as usize) as u16),
-                    text.width().min(u16::MAX as usize) as u16,
-                    1,
-                );
-                // A clipped source span is not a complete source mapping. Leave
-                // clipping to the fragment viewport consumer rather than inventing offsets.
-                if !bounds.intersection(content).intersection(clip).is_empty() {
-                    scene.text_regions.push(TextRegion {
-                        node: run.node.clone(),
-                        binding: run.binding.clone(),
-                        source: run.source + start - run.range.start
-                            ..run.source + end - run.range.start,
-                        bounds,
-                        action: run.action.clone(),
-                    });
-                }
-                spans.push(Span::styled(text, run.style));
-                cursor = end;
-            }
-            let tail: String = chars[cursor - fragment.source.start..].iter().collect();
-            if !tail.is_empty() {
-                spans.push(Span::styled(tail, built.style.paint));
-            }
-            Line::from(spans)
-        })
+        .map(|fragment| fragment_line(fragment, &runs, built.style.paint))
         .collect();
     scene.nodes.push(Arranged {
         overlay: in_overlay || built.node.tag == "overlay",
@@ -1240,6 +1515,8 @@ fn collect(
             .unwrap_or_default(),
         fragments,
         lines,
+        align_offsets,
+        runs,
     });
     let mut split_children = Vec::new();
     for child in &built.children {

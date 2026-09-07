@@ -1,4 +1,4 @@
-//! The main panes: hand-rendered ratatui widgets behind tui-realm's
+//! The main panes: synchronous controllers and presentation models behind tui-realm's
 //! `Component`/`AppComponent` traits, driven by typed props from
 //! [`super::props`] and built on the shared interaction primitives in
 //! [`super::widgets`]. (We use the component model but not tui-realm's
@@ -16,7 +16,7 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Rect, Size};
 use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use tuirealm::ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 use tuirealm::state::State;
 
 use super::msg::Msg;
@@ -1110,28 +1110,35 @@ impl ChatPane {
         let inner = scene.slot("log");
         frame.render_widget(tuirealm::ratatui::widgets::Clear, area);
         scene.paint(frame);
-        let mut rows: Vec<ListItem> = self
-            .lines
-            .iter()
-            .rev()
-            .flat_map(|line| {
-                wrap_chat_line_with_indent(
-                    line,
-                    inner.width as usize,
-                    &self.usernames,
-                    &self.me,
-                    &self.spoilers,
-                    scene.hanging_indent("log"),
-                )
-                .into_iter()
-                .rev()
-                .map(|row| ListItem::new(row.visual))
-            })
-            .take(inner.height as usize)
-            .collect();
-        rows.reverse();
-        frame.render_widget(List::new(rows), inner);
-        frame.buffer_mut().set_style(inner, scene.style("log"));
+        let mut messages = Vec::new();
+        let mut used = 0usize;
+        for line in self.lines.iter().rev() {
+            let Ok((_, message)) = layout_chat_line(
+                line,
+                inner.width,
+                &self.usernames,
+                &self.me,
+                &self.spoilers,
+                scene.hanging_indent("log") as u16,
+                scene.style("log"),
+                "recent",
+                renderer,
+            ) else {
+                continue;
+            };
+            used += usize::from(message.height());
+            messages.push(message);
+            if used >= usize::from(inner.height) {
+                break;
+            }
+        }
+        let mut offset = -(used
+            .saturating_sub(usize::from(inner.height))
+            .min(i32::MAX as usize) as i32);
+        for message in messages.iter().rev() {
+            message.paint_scrolled(frame, inner, offset);
+            offset += i32::from(message.height());
+        }
         scene.paint_overlays(frame);
     }
 
@@ -1197,63 +1204,112 @@ impl ChatPane {
             scene.paint_overlays(frame);
             return;
         }
-        // Flatten every message into wrapped visual rows (each carrying
-        // its clickable spoiler ranges and selection geometry), then
-        // reserve blank rows under a message whose image is ready. A URL
-        // posted twice renders under its first occurrence only — one
-        // encoded image drawn at two rects per frame would thrash its
-        // cache. Each band records where it starts and its fitted cell
-        // size (≤ ⅓ of the viewport high, aspect preserved).
-        let mut rows: Vec<(usize, ChatRow)> = Vec::new();
-        let mut image_bands: Vec<(String, usize, super::layout::RenderedScene)> = Vec::new();
-        for (idx, line) in self.lines.iter().enumerate() {
-            rows.extend(
-                wrap_chat_line_with_indent(
-                    line,
-                    width,
-                    &self.usernames,
-                    &self.me,
-                    &self.spoilers,
-                    scene.hanging_indent("log"),
-                )
-                .into_iter()
-                .map(|row| (idx, row)),
-            );
-            if self.suppress_images || scene.has_overlay() {
-                continue;
+        // Start at the live tail and instantiate only the required message window.
+        // Source anchoring may extend that window to the retained scrollback item.
+        let anchor = (self.scroll_offset > 0 && self.scroll_offset == self.rendered_offset)
+            .then_some(self.scroll_anchor.as_ref())
+            .flatten()
+            .and_then(|(key, source, old_row)| {
+                self.lines
+                    .iter()
+                    .position(|line| key.matches(line))
+                    .map(|index| (index, *source, *old_row))
+            });
+        let mut first_images = HashMap::new();
+        for (index, line) in self.lines.iter().enumerate() {
+            if let Some(url) = &line.image_url {
+                first_images.entry(url.as_str()).or_insert(index);
             }
-            let (Some(url), Some(picker)) = (&line.image_url, &self.picker) else {
-                continue;
-            };
-            let Some(ImageSlot::Ready { image, .. }) = self.images.get(url.as_str()) else {
-                continue;
-            };
-            if image_bands.iter().any(|(seen, ..)| seen == url) {
-                continue;
-            }
-            let Some(attachment) = renderer.attachment(
-                url,
-                &line.time,
-                Size::new(width as u16, max_image_rows),
-                image,
-                picker.font_size(),
+        }
+        let mut groups = Vec::new();
+        let mut measured_rows = 0usize;
+        let mut older_needed = None;
+        for (idx, line) in self.lines.iter().enumerate().rev() {
+            let Ok((message_rows, message)) = layout_chat_line(
+                line,
+                width as u16,
+                &self.usernames,
+                &self.me,
+                &self.spoilers,
+                scene.hanging_indent("log") as u16,
+                scene.style("log"),
+                "chat",
+                renderer,
             ) else {
                 continue;
             };
-            let height = attachment.occupied_height().min(max_image_rows);
-            image_bands.push((url.clone(), rows.len(), attachment));
-            for _ in 0..height {
-                rows.push((
-                    idx,
-                    ChatRow {
-                        visual: Line::default(),
-                        hits: Vec::new(),
-                        body: String::new(),
-                        char_start: 0,
-                        body_col: 0,
-                        selectable: false,
-                    },
-                ));
+            let attachment = if self.suppress_images || scene.has_overlay() || message.has_overlay()
+            {
+                None
+            } else {
+                line.image_url.as_ref().and_then(|url| {
+                    if first_images.get(url.as_str()) != Some(&idx) {
+                        return None;
+                    }
+                    let picker = self.picker.as_ref()?;
+                    let ImageSlot::Ready { image, .. } = self.images.get(url)? else {
+                        return None;
+                    };
+                    renderer
+                        .attachment(
+                            url,
+                            &line.time,
+                            Size::new(width as u16, max_image_rows),
+                            image,
+                            picker.font_size(),
+                        )
+                        .map(|attachment| (url.clone(), attachment))
+                })
+            };
+            let height = message_rows.len()
+                + attachment.as_ref().map_or(0, |(_, attachment)| {
+                    usize::from(attachment.occupied_height().min(max_image_rows))
+                });
+            measured_rows += height;
+            if let Some((target, source, old_row)) = anchor {
+                if idx == target {
+                    let at = message_rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, row)| row.selectable && row.char_start <= source)
+                        .map(|(index, _)| index)
+                        .next_back()
+                        .unwrap_or(0);
+                    older_needed = Some(old_row.saturating_sub(at));
+                } else if let Some(remaining) = &mut older_needed {
+                    *remaining = remaining.saturating_sub(height);
+                }
+            }
+            groups.push((idx, message_rows, message, attachment));
+            if older_needed == Some(0)
+                || (anchor.is_none() && measured_rows >= self.scroll_offset.saturating_add(visible))
+            {
+                break;
+            }
+        }
+        let mut rows: Vec<(usize, ChatRow)> = Vec::new();
+        let mut image_bands = Vec::new();
+        let mut message_bands = Vec::new();
+        for (idx, message_rows, message, attachment) in groups.into_iter().rev() {
+            message_bands.push((idx, rows.len(), message));
+            rows.extend(message_rows.into_iter().map(|row| (idx, row)));
+            if let Some((url, attachment)) = attachment {
+                let height = attachment.occupied_height().min(max_image_rows);
+                image_bands.push((url, rows.len(), attachment));
+                for _ in 0..height {
+                    rows.push((
+                        idx,
+                        ChatRow {
+                            #[cfg(test)]
+                            visual: Line::default(),
+                            hits: Vec::new(),
+                            body: String::new(),
+                            char_start: 0,
+                            body_col: 0,
+                            selectable: false,
+                        },
+                    ));
+                }
             }
         }
         // A stable source anchor retains context when wrapping, files, or history
@@ -1331,18 +1387,41 @@ impl ChatPane {
             image_areas,
         };
         let selection = self.selection_range();
-        let items: Vec<ListItem> = rows[start..end]
-            .iter()
-            .map(|(idx, row)| {
-                let visual = match selection_cols(selection, *idx, row) {
-                    Some(cols) => reverse_cols(row.visual.clone(), cols),
-                    None => row.visual.clone(),
-                };
-                ListItem::new(visual)
-            })
-            .collect();
-        frame.render_widget(List::new(items), log_inner);
-        frame.buffer_mut().set_style(log_inner, scene.style("log"));
+        for (idx, first, message) in message_bands {
+            let offset = first as i64 - start as i64;
+            if offset + i64::from(message.height()) <= 0 || offset >= visible as i64 {
+                continue;
+            }
+            message.paint_scrolled(frame, log_inner, offset as i32);
+            match selection {
+                Some(SelRange::Lines { anchor, focus })
+                    if (anchor.min(focus)..=anchor.max(focus)).contains(&idx)
+                        && !self.lines[idx].separator =>
+                {
+                    message.highlight_text(
+                        frame,
+                        log_inner,
+                        offset as i32,
+                        None,
+                        None,
+                        "",
+                        theme::highlight_style(),
+                    );
+                }
+                Some(SelRange::Partial { line, start, end }) if line == idx => {
+                    message.highlight_text(
+                        frame,
+                        log_inner,
+                        offset as i32,
+                        Some("body"),
+                        Some(start..end),
+                        &display_body(&self.lines[idx], &self.spoilers),
+                        theme::highlight_style(),
+                    );
+                }
+                _ => {}
+            }
+        }
         let mut broken = Vec::new();
         for (url, attachment, band_top) in image_draws {
             attachment.paint_scrolled(frame, log_inner, band_top);
@@ -1547,6 +1626,7 @@ fn compose_spoiler_body(
 /// ratatui advances by cell width, so hit geometry must too (the zalgo
 /// marks are zero-width — added here, after wrapping, precisely so they
 /// can't perturb the columns).
+#[cfg(test)]
 fn spoiler_chunk_spans(
     chunk: &str,
     chunk_start: usize,
@@ -1614,6 +1694,7 @@ fn spoiler_chunk_spans(
 /// hit ranges, and the selection geometry — which chars of the line's
 /// display body this row shows, starting at which relative column.
 struct ChatRow {
+    #[cfg(test)]
     visual: Line<'static>,
     hits: Vec<SpoilerHit>,
     /// The display-body chunk drawn on this row (empty for separators).
@@ -1642,80 +1723,166 @@ fn display_body(line: &ChatLine, spoilers: &HashMap<SpoilerKey, SpoilerState>) -
     }
 }
 
-/// The relative column range of one row a selection highlights, if any.
-fn selection_cols(
-    selection: Option<SelRange>,
-    line: usize,
-    row: &ChatRow,
-) -> Option<std::ops::Range<u16>> {
-    use unicode_width::UnicodeWidthChar;
-    match selection? {
-        SelRange::Lines { anchor, focus } => {
-            let (lo, hi) = (anchor.min(focus), anchor.max(focus));
-            (row.selectable && (lo..=hi).contains(&line)).then_some(0..u16::MAX)
-        }
-        SelRange::Partial {
-            line: sel_line,
-            start,
-            end,
-        } => {
-            if line != sel_line {
-                return None;
-            }
-            let len = row.body.chars().count();
-            let lo = start.max(row.char_start);
-            let hi = end.min(row.char_start + len);
-            if lo >= hi {
-                return None;
-            }
-            let width_to = |n: usize| -> u16 {
-                row.body
-                    .chars()
-                    .take(n)
-                    .map(|c| c.width().unwrap_or(0))
-                    .sum::<usize>() as u16
-            };
-            Some(
-                row.body_col + width_to(lo - row.char_start)
-                    ..row.body_col + width_to(hi - row.char_start),
-            )
-        }
-    }
-}
-
-/// Re-style a drawn line so the cells in `cols` render reversed — the
-/// selection highlight. Splits spans at the range edges; every char
-/// keeps its own style otherwise.
-fn reverse_cols(line: Line<'static>, cols: std::ops::Range<u16>) -> Line<'static> {
+#[allow(clippy::too_many_arguments)]
+fn layout_chat_line(
+    line: &ChatLine,
+    width: u16,
+    usernames: &[String],
+    me: &str,
+    spoilers: &HashMap<SpoilerKey, SpoilerState>,
+    indent: u16,
+    inherited: Style,
+    projection: &str,
+    renderer: &mut super::layout::Renderer,
+) -> Result<(Vec<ChatRow>, super::layout::RenderedScene), super::layout::Diagnostic> {
+    use super::layout::{Presentation, RichSpan};
     use tuirealm::ratatui::style::Modifier;
-    use unicode_width::UnicodeWidthChar;
-    let mut col: u16 = 0;
-    let mut spans = Vec::new();
-    for span in line.spans {
-        let mut run = String::new();
-        let mut run_rev = false;
-        let mut flush = |run: &mut String, rev: bool| {
-            if !run.is_empty() {
-                let style = if rev {
-                    span.style.add_modifier(Modifier::REVERSED)
-                } else {
-                    span.style
-                };
-                spans.push(Span::styled(std::mem::take(run), style));
-            }
-        };
-        for c in span.content.chars() {
-            let rev = cols.contains(&col);
-            col = col.saturating_add(c.width().unwrap_or(0) as u16);
-            if rev != run_rev {
-                flush(&mut run, run_rev);
-                run_rev = rev;
-            }
-            run.push(c);
+    let key = format!("{projection}/{:?}", LineKey::of(line));
+    let (display, runs) = if line.system || line.subtitle || line.separator {
+        (display_body(line, spoilers), Vec::new())
+    } else {
+        compose_spoiler_body(line, spoilers)
+    };
+    let base = if line.system || line.subtitle || line.action {
+        theme::dim()
+    } else {
+        Style::default()
+    };
+    let mut rich = Vec::new();
+    let plain = |text: &str| -> Vec<RichSpan> {
+        if line.system || line.subtitle {
+            vec![RichSpan {
+                text: text.into(),
+                style: base,
+                ..Default::default()
+            }]
+        } else {
+            highlight_mentions(text, usernames, me, base)
+                .into_iter()
+                .map(|span| RichSpan {
+                    text: span.content.into_owned(),
+                    style: span.style,
+                    ..Default::default()
+                })
+                .collect()
         }
-        flush(&mut run, run_rev);
+    };
+    let chars: Vec<_> = display.chars().collect();
+    let mut position = 0;
+    for run in &runs {
+        if run.chars.start > position {
+            rich.extend(plain(
+                &chars[position..run.chars.start].iter().collect::<String>(),
+            ));
+        }
+        let text: String = chars[run.chars.clone()].iter().collect();
+        if let Some((seed, generation)) = run.hidden {
+            let marks = text
+                .chars()
+                .enumerate()
+                .filter_map(|(index, ch)| {
+                    let marked = spoiler::zalgo(&ch.to_string(), seed, generation, index);
+                    let marks: String = marked.chars().skip(1).collect();
+                    (!marks.is_empty()).then_some((index, marks))
+                })
+                .collect();
+            rich.push(RichSpan {
+                text,
+                style: theme::spoiler(),
+                action: Some(run.key.index.to_string()),
+                marks,
+            });
+        } else {
+            rich.push(RichSpan {
+                text,
+                style: base,
+                ..Default::default()
+            });
+        }
+        position = run.chars.end;
     }
-    Line::from(spans)
+    if position < chars.len() {
+        rich.extend(plain(&chars[position..].iter().collect::<String>()));
+    }
+    let data = Presentation::default()
+        .inherit(inherited, indent)
+        .text("timestamp", &line.time)
+        .style("timestamp", theme::dim())
+        .text("origin", "irc")
+        .style("origin", theme::dim())
+        .text("action-marker", "*")
+        .style("action-marker", theme::dim())
+        .text("sender", &line.sender)
+        .style(
+            "sender",
+            theme::user_style(&line.sender).add_modifier(Modifier::BOLD),
+        )
+        .text("sender-delimiter", if line.action { "" } else { ":" })
+        .style(
+            "sender-delimiter",
+            theme::user_style(&line.sender).add_modifier(Modifier::BOLD),
+        )
+        .boolean("external", line.irc && !line.system && !line.subtitle)
+        .boolean("action", line.action && !line.system && !line.subtitle)
+        .boolean("named", !line.system && !line.subtitle)
+        .rich("body", rich)
+        .text("label", &line.text);
+    let scene = renderer.measure_content(
+        if line.separator {
+            "chat-separator"
+        } else {
+            "chat-message"
+        },
+        &key,
+        width,
+        &data,
+    )?;
+    let rows = (0..scene.height())
+        .map(|y| {
+            let regions: Vec<_> = scene
+                .text_regions
+                .iter()
+                .filter(|region| region.binding == "body" && region.bounds.y == y)
+                .collect();
+            let start = regions
+                .iter()
+                .map(|region| region.source.start)
+                .min()
+                .unwrap_or(0);
+            let end = regions
+                .iter()
+                .map(|region| region.source.end)
+                .max()
+                .unwrap_or(start);
+            let body_col = regions
+                .iter()
+                .map(|region| region.bounds.x)
+                .min()
+                .unwrap_or(0);
+            let hits = regions
+                .iter()
+                .filter_map(|region| {
+                    let index = region.action.as_ref()?.parse::<usize>().ok()?;
+                    let run = runs.iter().find(|run| run.key.index == index)?;
+                    let bounds = region.bounds.intersection(region.clip);
+                    (!bounds.is_empty()).then(|| SpoilerHit {
+                        cols: bounds.x..bounds.right(),
+                        key: run.key.clone(),
+                    })
+                })
+                .collect();
+            ChatRow {
+                #[cfg(test)]
+                visual: Line::default(),
+                hits,
+                body: chars[start..end].iter().collect(),
+                char_start: start,
+                body_col,
+                selectable: !line.separator && (!regions.is_empty() || display.is_empty()),
+            }
+        })
+        .collect();
+    Ok((rows, scene))
 }
 
 /// Render one chat message as one or more wrapped visual rows, each
@@ -1732,6 +1899,7 @@ fn wrap_chat_line(
     wrap_chat_line_with_indent(line, width, usernames, me, spoilers, CHAT_WRAP_INDENT)
 }
 
+#[cfg(test)]
 fn wrap_chat_line_with_indent(
     line: &ChatLine,
     width: usize,
@@ -5488,5 +5656,147 @@ mod chat_image_tests {
         pane.set_image(URL, Ok(tall_image()));
         draw(&mut pane, 40, 30);
         assert!(pane.rendered.image_areas.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod chat_layout_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use crate::ui::layout::{LayoutBundle, Renderer};
+    use tuirealm::ratatui::{Terminal, backend::TestBackend};
+
+    fn message(millis: u64, text: &str) -> ChatLine {
+        ChatLine {
+            time: "12:00".into(),
+            sender: "kim".into(),
+            text: text.into(),
+            system: false,
+            subtitle: false,
+            separator: false,
+            action: false,
+            irc: false,
+            millis,
+            image_url: None,
+        }
+    }
+    #[test]
+    fn live_tail_instantiates_visible_messages_and_reuses_their_scenes() {
+        let mut pane = ChatPane::default();
+        pane.set_lines((0..5000).map(|id| message(id, "one line")).collect());
+        let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let first = renderer.arrangement_count();
+        assert!(
+            first < 40,
+            "only the viewport should need layout, got {first} trees"
+        );
+        terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        assert_eq!(renderer.arrangement_count(), first);
+        pane.lines.push(message(5001, "new line"));
+        terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        assert_eq!(renderer.arrangement_count(), first + 1);
+    }
+    #[test]
+    fn spoiler_animation_reuses_measured_geometry() {
+        let mut pane = ChatPane::default();
+        pane.set_lines(vec![message(1, "before ||secret words|| after")]);
+        let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let (row, hit) = pane
+            .rendered
+            .rows
+            .iter()
+            .enumerate()
+            .find_map(|(row, record)| record.hits.first().map(|hit| (row, hit)))
+            .unwrap();
+        pane.click(hit.cols.start, pane.rendered.area.y + row as u16, 100);
+        terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let measured = renderer.arrangement_count();
+        assert!(pane.advance_spoilers(100 + SPOILER_FRAME_MS));
+        terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        assert_eq!(renderer.arrangement_count(), measured);
+    }
+    #[test]
+    fn file_only_message_reordering_retains_draft_selection_and_spoiler_actions() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/chat-message.xml"), r#"<templates version="1"><template name="chat-message"><column><row style="gap: 1ch"><text bind="sender"/><text bind="timestamp"/></row><rich bind="body" style="white-space: normal; margin: 0 0 0 3ch"/></column></template></templates>"#).unwrap();
+        let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+        let mut pane = ChatPane::default();
+        pane.set_input("unsent draft".into());
+        pane.set_lines(vec![message(1, "before ||hidden words|| after 界")]);
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let frame = terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let text: String = frame
+            .buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("kim 12:00"));
+        let (row, record) = pane
+            .rendered
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, record)| record.body.starts_with("before"))
+            .unwrap();
+        assert_eq!(record.body_col, pane.rendered.area.x + 3);
+        let (x, y) = (record.body_col, pane.rendered.area.y + row as u16);
+        pane.mouse_down(x, y);
+        pane.mouse_drag(x + 5, y);
+        assert_eq!(pane.mouse_up(0).as_deref(), Some("before"));
+        renderer.install(LayoutBundle::builtin().unwrap());
+        terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        assert!(pane.selection_held());
+        assert_eq!(pane.text(), "unsent draft");
+        assert_eq!(
+            pane.selection_range(),
+            Some(SelRange::Partial {
+                line: 0,
+                start: 0,
+                end: 6
+            })
+        );
+        let (row, hit) = pane
+            .rendered
+            .rows
+            .iter()
+            .enumerate()
+            .find_map(|(row, record)| record.hits.first().map(|hit| (row, hit)))
+            .unwrap();
+        let (x, y) = (hit.cols.start, pane.rendered.area.y + row as u16);
+        pane.click(x, y, 100);
+        pane.click(x, y, 150);
+        let frame = terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let text: String = frame
+            .buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("hidden words"));
+        assert!(!pane.reveal_newest_visible());
     }
 }

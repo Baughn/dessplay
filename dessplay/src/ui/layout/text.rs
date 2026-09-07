@@ -4,6 +4,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// One measured display row and its source-character mapping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fragment {
+    /// Visual row within the measured content; inline prefix/body pieces can share a row.
+    pub row: usize,
     /// Text painted without a second wrapping pass.
     pub text: String,
     /// Character range in the original binding (not UTF-8 bytes).
@@ -71,6 +73,7 @@ pub fn measure_text(
                 used += 1;
             }
             rows.push(Fragment {
+                row: rows.len(),
                 text: shown,
                 source: offset + source..offset + source + count,
                 indent,
@@ -78,6 +81,57 @@ pub fn measure_text(
             });
         }
         offset += line.chars().count() + 1;
+    }
+    rows
+}
+
+/// A first-line prefix is measured independently of wrapped body text, retaining
+/// separate source intervals when wrapping drops a boundary space.
+pub(super) fn measure_flow(
+    text: &str,
+    width: usize,
+    prefix_chars: usize,
+    indent: usize,
+    wrap: bool,
+    ellipsis: bool,
+) -> Vec<Fragment> {
+    if prefix_chars == 0 || width == 0 {
+        return measure_text(text, width, 0, indent, wrap, ellipsis);
+    }
+    let prefix: String = text
+        .chars()
+        .take(prefix_chars)
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
+    let body: String = text.chars().skip(prefix_chars).collect();
+    let prefix_width = prefix.width();
+    let mut rows = measure_text(&prefix, width, 0, 0, false, ellipsis);
+    if body.is_empty() {
+        return rows;
+    }
+    if !wrap && prefix_width >= width {
+        return rows;
+    }
+    let indent = indent.min(width.saturating_sub(1));
+    let first_glyph = body
+        .split('\n')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .find(|c| !c.is_whitespace())
+        .and_then(UnicodeWidthChar::width)
+        .unwrap_or(0);
+    let next_row = usize::from(
+        prefix_width >= width
+            || (wrap
+                && first_glyph > width.saturating_sub(prefix_width)
+                && first_glyph <= width - indent),
+    );
+    let first_indent = if next_row == 0 { prefix_width } else { indent };
+    for mut fragment in measure_text(&body, width, first_indent, indent, wrap, ellipsis) {
+        fragment.row += next_row;
+        fragment.source = fragment.source.start + prefix_chars..fragment.source.end + prefix_chars;
+        rows.push(fragment);
     }
     rows
 }

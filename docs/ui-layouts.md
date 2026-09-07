@@ -3,10 +3,9 @@
 The layout migration is in progress. Currently the shared settings/List-entry
 forms, their semantic label/value/annotation rows, the F11 log viewer's
 controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
-attachments, recent-chat projection, separate subtitle rows, Users, Playlist,
+attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist,
 and the roguelike frame, game, recovery, document, equipment, and ending pages
-use local templates. Message rich-text composition and other pane interiors still use
-their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
+use local templates. Other pane interiors still use their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
 ## Files and recovery
@@ -135,7 +134,7 @@ Properties:
 | Alignment | `align-items`, `align-self`: start/end/center/stretch; `justify-content`: start/end/center/space-between/space-around |
 | Grid | `grid-template-columns`, `grid-template-rows`, `grid-column`, `grid-row` |
 | Color | `color`, `background-color`, `border-color`: #RGB, #RRGGBB, default, black/red/green/yellow/blue/magenta/cyan/white/gray/darkgray |
-| Borders | `border: 0/none/1/1ch/1lh`; single-cell solid frame |
+| Borders | `border`, `border-top`, `border-right`, `border-bottom`, `border-left`: `0/none/1/1ch/1lh`; single-cell solid edges |
 | Text | `font-weight: normal/bold`, `font-style: normal/italic`, `text-decoration: none/underline`, `text-align: left/center/right`, `white-space: normal/nowrap/pre`, `text-overflow: clip/ellipsis`, terminal `hanging-indent: Nch` |
 
 Lengths use `ch`, `lh`, percentages, `0`, and `auto` where meaningful.
@@ -265,7 +264,19 @@ Change continuation indentation independently of message prefixes:
 `hanging-indent` is inherited and accepts a cell length. The default chat value
 is two cells; general template text defaults to zero. Source anchors preserve
 scrolled-back context when the width or layout changes and when new messages
-arrive. Rich message prefix fields are not yet template-authored.
+arrive. The `chat-message` template exposes `timestamp`, `origin`,
+`action-marker`, `sender`, and `sender-delimiter` text, `external`, `action`,
+and `named` booleans, and rich `body`. The `chat-separator` template exposes
+`label`. All message variants use these fields; user text stays literal.
+
+A `prefix` may be the first child of an outer `flow`. Its text stays on the
+first line; the body wraps through the remaining cells and continues at the
+authored hanging indent. If the first body glyph is too wide for the remainder,
+it starts on the next line when wrapping is enabled. Move the prefix fields
+into a separate row to put sender and timestamp above the body.
+Each rich binding appears once per entry; a secondary view uses an explicit
+read-only projection. Rich source ranges exclude spoiler animation marks,
+so selections and spoiler clicks use the same character positions as painting.
 
 Restyle a form in `style.css`:
 

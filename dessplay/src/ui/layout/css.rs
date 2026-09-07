@@ -825,18 +825,27 @@ fn apply(out: &mut Computed, name: &str, value: &str) -> Result<(), String> {
         "column-gap" => out.layout.gap.width = lp(value)?,
         "padding" => out.layout.padding = edges(value, lp)?,
         "margin" => out.layout.margin = edges(value, lpa)?,
-        "border" => {
+        "border" | "border-left" | "border-right" | "border-top" | "border-bottom" => {
             let v = match value {
                 "0" | "none" => 0.0,
                 "1" | "1ch" | "1lh" => 1.0,
                 _ => return Err(invalid()),
             };
-            out.layout.border = taffy::Rect {
-                left: LengthPercentage::Length(v),
-                right: LengthPercentage::Length(v),
-                top: LengthPercentage::Length(v),
-                bottom: LengthPercentage::Length(v),
-            };
+            let v = LengthPercentage::Length(v);
+            match name {
+                "border-left" => out.layout.border.left = v,
+                "border-right" => out.layout.border.right = v,
+                "border-top" => out.layout.border.top = v,
+                "border-bottom" => out.layout.border.bottom = v,
+                _ => {
+                    out.layout.border = taffy::Rect {
+                        left: v,
+                        right: v,
+                        top: v,
+                        bottom: v,
+                    }
+                }
+            }
         }
         "border-color" => out.border = color(value)?,
         "color" => out.paint = out.paint.fg(color(value)?),

@@ -10,6 +10,25 @@ fn defaults_are_valid_and_transferable() {
     assert!(LayoutBundle::builtin().is_ok());
 }
 #[test]
+fn rejects_ambiguous_prefixes_and_repeated_action_bindings() {
+    for content in [
+        "<prefix><text bind=\"timestamp\"/></prefix>",
+        "<flow><rich bind=\"body\"/><prefix><text bind=\"timestamp\"/></prefix></flow>",
+        "<flow><flow><prefix><text bind=\"timestamp\"/></prefix></flow></flow>",
+        "<column><rich bind=\"body\"/><rich bind=\"body\"/></column>",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("templates")).unwrap();
+        std::fs::write(dir.path().join("templates/message.xml"), format!("<templates version=\"1\"><template name=\"chat-message\">{content}</template></templates>")).unwrap();
+        let error = LayoutBundle::load(dir.path()).unwrap_err();
+        assert!(error.line > 0 && error.column > 0, "{error}");
+        assert!(
+            error.message.contains("prefix") || error.message.contains("rich bindings"),
+            "{error}"
+        );
+    }
+}
+#[test]
 fn export_never_overwrites_and_missing_files_fall_back() {
     let dir = tempfile::tempdir().unwrap();
     LayoutBundle::init(dir.path()).unwrap();
@@ -386,8 +405,8 @@ proptest! {
         let body = "literal <b>spoiler</b> words 界 repeated words";
         let source = format!("{prefix}{body}");
         let data = Presentation::default().rich("body", vec![
-            RichSpan { text: prefix.into(), style: Style::default().fg(Color::Red), action: None },
-            RichSpan { text: body.into(), style: Style::default().fg(Color::Green), action: Some("spoiler:7".into()) },
+            RichSpan { text: prefix.into(), style: Style::default().fg(Color::Red), action: None, ..Default::default() },
+            RichSpan { text: body.into(), style: Style::default().fg(Color::Green), action: Some("spoiler:7".into()), ..Default::default() },
         ]);
         let area = Rect::new(x, y, width, height);
         let scene = Renderer::new(LayoutBundle::builtin().unwrap()).arrange("rich-text", area, &data).unwrap();
@@ -483,4 +502,160 @@ fn attached_dropdown_follows_its_reordered_control_and_escapes_header_clip() {
             .unwrap()
             .has_overlay()
     );
+}
+
+#[test]
+fn first_line_prefix_shares_the_body_row_and_preserves_independent_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("templates")).unwrap();
+    std::fs::write(dir.path().join("templates/form-row.xml"), r#"<templates version="1"><template name="form-row"><flow style="white-space: normal; hanging-indent: 2ch"><prefix><text bind="label"/></prefix><text bind="value"/></flow></template></templates>"#).unwrap();
+    let mut renderer = Renderer::new(LayoutBundle::load(dir.path()).unwrap());
+    let data = Presentation::default()
+        .text("label", "12:00 Sam:")
+        .text("value", "hello more words");
+    let scene = renderer
+        .measure_content("form-row", "prefix", 20, &data)
+        .unwrap();
+    assert_eq!(scene.height(), 2);
+    let body: Vec<_> = scene
+        .text_regions
+        .iter()
+        .filter(|region| region.binding == "value")
+        .collect();
+    assert_eq!(body[0].source, 0..5);
+    assert_eq!(body[0].bounds, Rect::new(11, 0, 5, 1));
+    assert_eq!(body[1].source, 6..16);
+    assert_eq!(body[1].bounds, Rect::new(2, 1, 10, 1));
+    let mut terminal = Terminal::new(TestBackend::new(20, 2)).unwrap();
+    terminal.draw(|frame| scene.paint(frame)).unwrap();
+    assert_eq!(terminal.backend().buffer()[(11, 0)].symbol(), "h");
+    assert_eq!(terminal.backend().buffer()[(2, 1)].symbol(), "m");
+    let narrow = renderer
+        .measure_content("form-row", "prefix", 8, &data)
+        .unwrap();
+    let first = narrow
+        .text_regions
+        .iter()
+        .find(|region| region.binding == "value")
+        .unwrap();
+    assert_eq!(
+        first.source.start, 0,
+        "a long prefix must not discard the beginning of the message"
+    );
+    assert_eq!(first.bounds.y, 1);
+}
+
+#[test]
+fn prefix_leaves_a_wide_first_body_glyph_for_the_next_line() {
+    let fragments = super::text::measure_flow("12345678 界hello", 10, 9, 2, true, false);
+    let wide = fragments
+        .iter()
+        .find(|fragment| fragment.text.starts_with('界'));
+    assert!(
+        wide.is_some(),
+        "an available continuation row must retain the wide glyph: {fragments:?}"
+    );
+    let wide = wide.unwrap();
+    assert_eq!(wide.row, 1);
+    assert_eq!(wide.source.start, 9);
+}
+
+#[test]
+fn combining_decorations_do_not_change_source_or_action_geometry() {
+    let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+    let data = Presentation::default().rich(
+        "body",
+        vec![RichSpan {
+            text: "abcd efgh".into(),
+            action: Some("hidden:0".into()),
+            marks: [(0, "\u{0301}".into()), (6, "\u{0300}".into())].into(),
+            ..Default::default()
+        }],
+    );
+    let scene = renderer
+        .measure_content("rich-text", "marks", 5, &data)
+        .unwrap();
+    assert_eq!(scene.height(), 2);
+    assert_eq!(scene.text_regions[0].source, 0..4);
+    assert_eq!(scene.text_regions[1].source, 5..9);
+    assert_eq!(scene.text_regions[1].bounds.width, 4);
+    assert_eq!(scene.text_regions[1].action.as_deref(), Some("hidden:0"));
+    let mut terminal = Terminal::new(TestBackend::new(5, 2)).unwrap();
+    terminal.draw(|frame| scene.paint(frame)).unwrap();
+    assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "a\u{0301}");
+    assert_eq!(terminal.backend().buffer()[(1, 1)].symbol(), "f\u{0300}");
+    for (index, mark) in [(20, "\u{0301}"), (0, "x"), (0, "\n"), (0, "\u{200d}")] {
+        let data = Presentation::default().rich(
+            "body",
+            vec![RichSpan {
+                text: "x".into(),
+                marks: [(index, mark.into())].into(),
+                ..Default::default()
+            }],
+        );
+        assert!(
+            renderer
+                .measure_content("rich-text", "invalid", 5, &data)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn fixed_and_natural_height_requests_do_not_share_a_cache_entry() {
+    let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+    let data = Presentation::default().text("value", "one row");
+    assert_eq!(
+        renderer
+            .arrange("form-row", Rect::new(0, 0, 40, u16::MAX), &data)
+            .unwrap()
+            .height(),
+        u16::MAX
+    );
+    assert_eq!(
+        renderer
+            .measure_content("form-row", "form-row", 40, &data)
+            .unwrap()
+            .height(),
+        1
+    );
+}
+
+#[test]
+fn equal_width_scramble_and_marks_reuse_measured_geometry() {
+    let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+    let before = Presentation::default().rich(
+        "body",
+        vec![RichSpan {
+            text: "abcd efgh".into(),
+            action: Some("hidden:0".into()),
+            ..Default::default()
+        }],
+    );
+    let first = renderer
+        .measure_content("rich-text", "animation", 5, &before)
+        .unwrap();
+    let count = renderer.arrangement_count();
+    let after = Presentation::default().rich(
+        "body",
+        vec![RichSpan {
+            text: "zyxw vuts".into(),
+            action: Some("hidden:0".into()),
+            marks: [(0, "\u{0301}".into())].into(),
+            ..Default::default()
+        }],
+    );
+    let second = renderer
+        .measure_content("rich-text", "animation", 5, &after)
+        .unwrap();
+    assert_eq!(
+        renderer.arrangement_count(),
+        count,
+        "paint-only scramble animation must reuse its measured breaks"
+    );
+    assert_eq!(first.height(), second.height());
+    let mut terminal = Terminal::new(TestBackend::new(5, 2)).unwrap();
+    terminal.draw(|frame| second.paint(frame)).unwrap();
+    assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "z\u{0301}");
+    assert_eq!(terminal.backend().buffer()[(0, 1)].symbol(), "v");
 }

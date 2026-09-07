@@ -56,6 +56,11 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: Layout auto-reload now works with relative directory paths and keeps
   watching when the override directory is created or replaced.
 
+- Added: Customize chat timestamp, sender, action markers, message body, and
+  day separators in layout files. Selection and spoiler clicks follow the layout.
+- Fixed: Wide characters after a long chat prefix continue onto the next line
+  instead of disappearing when the remaining space is too narrow.
+
 ## 2026-09-06
 
 - Improved: The Waiting Below now has branching dungeon routes, optional
