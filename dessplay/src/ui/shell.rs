@@ -199,6 +199,17 @@ pub fn run_ui_thread(
         let _ = adapter.restore();
         return;
     }
+    // Establish the cursor-addressing state we depend on instead of
+    // inheriting whatever the previous occupant of this terminal left
+    // behind (design.md, Inline chat images; decisions.md, "The terminal
+    // state prologue"). Non-fatal: a terminal that ignores these is one
+    // that never had the modes to begin with.
+    if let Err(e) = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::style::Print(TERMINAL_STATE_PROLOGUE)
+    ) {
+        tracing::warn!("cannot reset terminal margins: {e}");
+    }
     // Bracketed paste (design.md #33): without it, a terminal delivers
     // pasted text as a stream of individual key-press events instead of
     // one `Event::Paste`, so a dropped-in file path can't be told apart
@@ -246,26 +257,39 @@ pub fn run_ui_thread(
     tracing::debug!("UI thread exiting");
 }
 
+/// Escapes that put the terminal's cursor addressing into the state the
+/// renderer assumes, written once after entering the alternate screen.
+///
+/// In order: DECLRMM off (`CSI ?69l`), scroll region reset to the full
+/// screen (`CSI r`), origin mode off (`CSI ?6l`). None of these are
+/// changed by the alternate-screen switch (ghostty keeps margins per
+/// terminal, not per screen), so a previous program that left them set
+/// — a suspended TUI, say — would otherwise leak into our frames. The
+/// concrete casualty was left/right margin mode: with it on, `CSI s`
+/// means "set margins" (and homes the cursor) rather than "save
+/// cursor", which is the sequence ratatui-image embeds in every Kitty
+/// image row, so each row of a picture printed at the screen's
+/// top-left instead of under its message.
+const TERMINAL_STATE_PROLOGUE: &str = "\x1b[?69l\x1b[r\x1b[?6l";
+
 /// Pick the image-rendering protocol for inline chat images.
 ///
-/// Defaults to **half-blocks** even on graphics-capable terminals:
-/// the graphics protocols (Kitty, sixel, iTerm2) place pixels outside
-/// ratatui's cell grid via cursor-moving escapes embedded in cell
-/// symbols, which desync ratatui's cursor tracking and, near the
-/// screen's bottom edge, scroll the terminal — corrupting the layout
-/// (the loop deliberately never clears, so a scroll leaves duplicated
-/// content behind). Half-blocks render as ordinary `▀` cells with
-/// foreground/background colors, so they compose with the cell grid,
-/// the diff, and the color pass without any of that.
+/// Defaults to **half-blocks** even on graphics-capable terminals: they
+/// render as ordinary `▀` cells with foreground/background colors, so
+/// they compose with the cell grid, the diff, and the color pass in
+/// every terminal. The graphics protocols (Kitty, sixel, iTerm2) embed
+/// cursor-moving escapes inside cell symbols; those are correct as
+/// emitted, but they depend on terminal state we now establish in
+/// [`TERMINAL_STATE_PROLOGUE`], and only Kitty is actually implemented
+/// by Ghostty (the others show a blank block there).
 ///
 /// The stdio query still runs, because it reports the terminal's real
 /// font cell size — half-blocks rendered at the true aspect ratio look
 /// far better than the assumed 10×20 of a bare `halfblocks()` picker.
 ///
-/// `DESSPLAY_IMAGE_PROTOCOL` overrides the choice for experimentation:
-/// `auto` uses the detected protocol as-is (real Kitty/sixel/iTerm2
-/// graphics — currently glitchy in this TUI, pending on-terminal
-/// iteration); `halfblocks`, `kitty`, `sixel`, or `iterm2` force one.
+/// `DESSPLAY_IMAGE_PROTOCOL` overrides the choice: `auto` uses the
+/// detected protocol as-is (real Kitty/sixel/iTerm2 graphics);
+/// `halfblocks`, `kitty`, `sixel`, or `iterm2` force one.
 fn select_image_picker() -> ratatui_image::picker::Picker {
     use ratatui_image::picker::{Picker, ProtocolType};
     let mut picker = match Picker::from_query_stdio() {
@@ -646,5 +670,19 @@ mod roguelike_tests {
             }
             assert!(ui.due_roguelike_action().is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod prologue_tests {
+    use super::TERMINAL_STATE_PROLOGUE;
+
+    /// The prologue resets exactly the three modes that remap absolute
+    /// cursor moves or repurpose `CSI s`: left/right margin mode, the
+    /// scroll region, and origin mode. Anything else here would be a
+    /// silent change to what every frame assumes.
+    #[test]
+    fn prologue_resets_margin_region_and_origin() {
+        assert_eq!(TERMINAL_STATE_PROLOGUE, "\x1b[?69l\x1b[r\x1b[?6l");
     }
 }

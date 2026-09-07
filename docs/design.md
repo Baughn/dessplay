@@ -896,13 +896,20 @@ failure, the link stays plain text with no error chrome.
   the terminal's real font aspect ratio, which works in every terminal
   and composes cleanly with the cell grid. The higher-fidelity graphics
   protocols (Kitty, sixel, iTerm2) are detected but **not used by
-  default** -- they place pixels outside the cell grid and corrupt the
-  layout in this TUI (why:
+  default** (why:
   [decisions](decisions.md#half-blocks-are-the-default-image-renderer));
   `DESSPLAY_IMAGE_PROTOCOL=auto` (or `kitty`/`sixel`/`iterm2`) opts into
-  them for experimentation. Images hide while a modal or overlay is up
+  them. Images hide while a modal or overlay is up
   (why: [decisions](decisions.md#inline-images-hide-under-modals)), and
   never appear in the under-modal recent-chat tail.
+- **Terminal state.** Right after entering the alternate screen the
+  client resets left/right margin mode, the scroll region, and origin
+  mode (`CSI ?69l`, `CSI r`, `CSI ?6l`). Every frame assumes absolute
+  cursor addressing and that `CSI s`/`CSI u` save and restore the
+  cursor; those hold only in that state, and a terminal keeps it across
+  the alternate-screen switch, so whatever the previous program left
+  set would otherwise leak into ours (why:
+  [decisions](decisions.md#the-terminal-state-prologue)).
 
 ### System Messages
 

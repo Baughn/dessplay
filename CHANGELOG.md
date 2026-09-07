@@ -16,6 +16,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   the pane tall, rendered as colored half-block art that works in every
   terminal. Downloads are https-only and size-capped; turn the feature off
   under Settings → Playback & display ("Inline chat images").
+- Fixed: Inline images drawn with the Kitty graphics protocol
+  (`DESSPLAY_IMAGE_PROTOCOL=kitty`/`auto`) no longer land at the top-left
+  of the screen when the terminal was left in margin mode by a previous
+  program; DessPlay now resets that state at startup.
 
 ## 2026-09-06
 
