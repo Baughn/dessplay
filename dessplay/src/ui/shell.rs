@@ -224,16 +224,10 @@ pub fn run_ui_thread(
     // reads the terminal's reply from stdin), so it MUST complete before
     // the input thread starts and its `event::read` owns stdin — that's
     // the `on_terminal_ready` contract above. Ordered after the alt
-    // screen is entered, per ratatui-image's docs. A terminal that
-    // answers nothing still gets images: half-blocks with an assumed
-    // font size.
-    let picker = match ratatui_image::picker::Picker::from_query_stdio() {
-        Ok(picker) => picker,
-        Err(e) => {
-            tracing::debug!("image protocol query failed ({e}); using half-blocks");
-            ratatui_image::picker::Picker::halfblocks()
-        }
-    };
+    // screen is entered, per ratatui-image's docs. The query is worth
+    // running even though we default to half-blocks: it reports the real
+    // font cell size, which gives inline images the correct aspect ratio.
+    let picker = select_image_picker();
     tracing::debug!(
         protocol = ?picker.protocol_type(),
         font_size = ?picker.font_size(),
@@ -250,6 +244,55 @@ pub fn run_ui_thread(
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     let _ = adapter.restore();
     tracing::debug!("UI thread exiting");
+}
+
+/// Pick the image-rendering protocol for inline chat images.
+///
+/// Defaults to **half-blocks** even on graphics-capable terminals:
+/// the graphics protocols (Kitty, sixel, iTerm2) place pixels outside
+/// ratatui's cell grid via cursor-moving escapes embedded in cell
+/// symbols, which desync ratatui's cursor tracking and, near the
+/// screen's bottom edge, scroll the terminal — corrupting the layout
+/// (the loop deliberately never clears, so a scroll leaves duplicated
+/// content behind). Half-blocks render as ordinary `▀` cells with
+/// foreground/background colors, so they compose with the cell grid,
+/// the diff, and the color pass without any of that.
+///
+/// The stdio query still runs, because it reports the terminal's real
+/// font cell size — half-blocks rendered at the true aspect ratio look
+/// far better than the assumed 10×20 of a bare `halfblocks()` picker.
+///
+/// `DESSPLAY_IMAGE_PROTOCOL` overrides the choice for experimentation:
+/// `auto` uses the detected protocol as-is (real Kitty/sixel/iTerm2
+/// graphics — currently glitchy in this TUI, pending on-terminal
+/// iteration); `halfblocks`, `kitty`, `sixel`, or `iterm2` force one.
+fn select_image_picker() -> ratatui_image::picker::Picker {
+    use ratatui_image::picker::{Picker, ProtocolType};
+    let mut picker = match Picker::from_query_stdio() {
+        Ok(picker) => picker,
+        Err(e) => {
+            tracing::debug!("image protocol query failed ({e}); using half-blocks");
+            return Picker::halfblocks();
+        }
+    };
+    let forced = std::env::var("DESSPLAY_IMAGE_PROTOCOL").ok();
+    match forced
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        // Detected protocol, untouched — the escape hatch for testing
+        // real graphics on a terminal that supports them.
+        Some("auto") => {}
+        Some("kitty") => picker.set_protocol_type(ProtocolType::Kitty),
+        Some("sixel") => picker.set_protocol_type(ProtocolType::Sixel),
+        Some("iterm2") => picker.set_protocol_type(ProtocolType::Iterm2),
+        // Default (unset, "halfblocks", or anything unrecognized): the
+        // robust path, keeping the queried font size for aspect ratio.
+        _ => picker.set_protocol_type(ProtocolType::Halfblocks),
+    }
+    picker
 }
 
 /// The terminal-agnostic UI loop body: apply inputs and redraw until the

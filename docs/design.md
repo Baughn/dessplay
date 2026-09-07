@@ -892,12 +892,17 @@ failure, the link stays plain text with no error chrome.
   under its message, at most **one third of the chat log's height**,
   aspect preserved. It scrolls with the log and is cropped at the
   viewport edge -- scrolling reveals it gradually, never rescales it.
-  Rendering uses the terminal's best graphics protocol (Kitty graphics
-  on Ghostty/kitty/WezTerm, iTerm2, sixel) with a Unicode half-block
-  fallback everywhere else, so every member sees *something*. Images
-  hide while a modal or overlay is up (why:
-  [decisions](decisions.md#inline-images-hide-under-modals)), and never
-  appear in the under-modal recent-chat tail.
+  Rendering is **truecolor Unicode half-blocks** (`▀` cells), drawn at
+  the terminal's real font aspect ratio, which works in every terminal
+  and composes cleanly with the cell grid. The higher-fidelity graphics
+  protocols (Kitty, sixel, iTerm2) are detected but **not used by
+  default** -- they place pixels outside the cell grid and corrupt the
+  layout in this TUI (why:
+  [decisions](decisions.md#half-blocks-are-the-default-image-renderer));
+  `DESSPLAY_IMAGE_PROTOCOL=auto` (or `kitty`/`sixel`/`iterm2`) opts into
+  them for experimentation. Images hide while a modal or overlay is up
+  (why: [decisions](decisions.md#inline-images-hide-under-modals)), and
+  never appear in the under-modal recent-chat tail.
 
 ### System Messages
 
