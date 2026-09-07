@@ -7,6 +7,10 @@ const MAX_FILE: u64 = 1024 * 1024;
 const MAX_NODES: usize = 4096;
 const DEFAULTS: &[(&str, &str)] = &[
     (
+        "templates/text.xml",
+        include_str!("assets/templates/text.xml"),
+    ),
+    (
         "templates/rogue.xml",
         include_str!("assets/templates/rogue.xml"),
     ),
@@ -86,6 +90,7 @@ impl std::error::Error for Diagnostic {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BindingType {
     Text,
+    Rich,
     Bool,
     Slot,
 }
@@ -99,6 +104,54 @@ impl Default for TemplateSchema {
     fn default() -> Self {
         let mut templates = BTreeMap::new();
         for (name, slots, texts, bools) in [
+            (
+                "rogue-inspection",
+                &["body"][..],
+                &["heading", "note"][..],
+                &["has-note"][..],
+            ),
+            (
+                "rogue-equipment-row",
+                &[][..],
+                &["description"][..],
+                &[][..],
+            ),
+            (
+                "rogue-epitaph",
+                &[][..],
+                &["heading", "summary", "actions"][..],
+                &[][..],
+            ),
+            ("rogue-document", &[][..], &["body"][..], &[][..]),
+            (
+                "rogue-recovery",
+                &["wounds"][..],
+                &[
+                    "title",
+                    "footer",
+                    "phase",
+                    "blood-label",
+                    "blood",
+                    "breath-label",
+                    "breath",
+                    "nutrition-label",
+                    "nutrition",
+                    "bleed-label",
+                    "bleed",
+                    "pain-label",
+                    "pain",
+                    "linen-label",
+                    "linen",
+                    "linen-used",
+                    "splints-label",
+                    "splints",
+                    "splints-used",
+                    "food-label",
+                    "food",
+                    "food-used",
+                ][..],
+                &[][..],
+            ),
             (
                 "rogue",
                 &["body"][..],
@@ -220,6 +273,10 @@ impl Default for TemplateSchema {
             }
             templates.insert(name.into(), fields);
         }
+        templates.insert(
+            "rich-text".into(),
+            [("body".into(), BindingType::Rich)].into(),
+        );
         Self { templates }
     }
 }
@@ -449,7 +506,7 @@ fn validate(
     if !node.attr("id").is_empty() && !ids.insert(node.attr("id").into()) {
         return Err(error(node, "duplicate node id"));
     }
-    if !node.attr("resizable").is_empty() {
+    if node.attrs.contains_key("resizable") {
         if node.attr("resizable") != "true" || node.attr("id").is_empty() {
             return Err(error(
                 node,
@@ -465,7 +522,14 @@ fn validate(
     }
     for (attr, kind) in [
         ("if", BindingType::Bool),
-        ("bind", BindingType::Text),
+        (
+            "bind",
+            if node.tag == "rich" {
+                BindingType::Rich
+            } else {
+                BindingType::Text
+            },
+        ),
         ("title", BindingType::Text),
         ("title-bottom", BindingType::Text),
         ("name", BindingType::Slot),
@@ -486,11 +550,27 @@ fn validate(
     {
         return Err(error(node, "slots require a unique controller binding"));
     }
-    if node.tag == "text" && node.attr("bind").is_empty() {
+    if matches!(node.tag.as_str(), "text" | "rich") && node.attr("bind").is_empty() {
         return Err(error(node, "text requires a bind attribute"));
     }
-    if matches!(node.tag.as_str(), "slot" | "text") && !node.children.is_empty() {
+    if matches!(node.tag.as_str(), "slot" | "text" | "rich") && !node.children.is_empty() {
         return Err(error(node, "leaf elements cannot contain children"));
+    }
+    if node.tag == "flow"
+        && node
+            .children
+            .iter()
+            .any(|child| !matches!(child.tag.as_str(), "text" | "rich" | "flow"))
+    {
+        return Err(error(
+            node,
+            "flow accepts only text, rich, and nested flow children",
+        ));
+    }
+    if node.attrs.contains_key("placement")
+        && !matches!(node.attr("placement"), "center" | "bottom")
+    {
+        return Err(error(node, "overlay placement must be center or bottom"));
     }
     for child in &node.children {
         validate(child, fields, ids, slots)?;
@@ -546,11 +626,21 @@ fn parse_xml(
                             "title-bottom",
                             "resizable",
                         ][..],
-                        "grid" | "box" | "scroll" | "overlay" => {
+                        "grid" | "box" | "scroll" => {
                             &["id", "class", "style", "if", "title", "title-bottom"][..]
                         }
+                        "overlay" => &[
+                            "id",
+                            "class",
+                            "style",
+                            "if",
+                            "title",
+                            "title-bottom",
+                            "placement",
+                        ][..],
+                        "flow" => &["id", "class", "style", "if", "separator"][..],
                         "slot" => &["id", "class", "style", "if", "name"][..],
-                        "text" => &["id", "class", "style", "if", "bind"][..],
+                        "text" | "rich" => &["id", "class", "style", "if", "bind"][..],
                         _ => {
                             return Err(Diagnostic::at(
                                 file,
@@ -582,6 +672,8 @@ fn parse_xml(
                     "overlay",
                     "slot",
                     "text",
+                    "rich",
+                    "flow",
                 ]
                 .contains(&tag.as_str())
                 {

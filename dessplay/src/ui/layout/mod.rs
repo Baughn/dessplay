@@ -11,7 +11,9 @@ mod text;
 pub use compiler::{Diagnostic, LayoutBundle, TemplateSchema};
 pub(crate) use reload::Watcher;
 pub(crate) use renderer::SplitRegion;
-pub use renderer::{Presentation, PresentedRow, RenderedCollection, RenderedScene, Renderer};
+pub use renderer::{
+    Presentation, PresentedRow, RenderedCollection, RenderedScene, Renderer, RichSpan, TextRegion,
+};
 pub use settings::LayoutSettings;
 pub(crate) use text::wrap_body;
 pub use text::{Fragment, measure_text};

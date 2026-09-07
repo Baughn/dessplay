@@ -336,3 +336,111 @@ fn semantic_color_variables_are_typed_and_authored_values_take_precedence() {
         "semantic color variables cannot supply dimensions"
     );
 }
+
+#[test]
+fn inline_flow_wraps_semantic_children_and_rejects_ignored_box_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("templates")).unwrap();
+    std::fs::write(dir.path().join("templates/form-row.xml"), r#"<templates version="1"><template name="form-row"><flow style="white-space: normal"><text id="label" bind="label" style="color: red"/><text id="value" bind="value" style="color: green"/></flow></template></templates>"#).unwrap();
+    let data = Presentation::default()
+        .text("label", "Blood")
+        .text("value", "100 道 next");
+    let mut renderer = Renderer::new(LayoutBundle::load(dir.path()).unwrap());
+    let scene = renderer
+        .arrange("form-row", Rect::new(2, 3, 10, 4), &data)
+        .unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+    terminal.draw(|frame| scene.paint(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(2, 3)].symbol(), "B");
+    assert_eq!(buffer[(8, 3)].symbol(), "1");
+    assert_eq!(buffer[(2, 4)].symbol(), "道");
+    assert_eq!(buffer[(8, 3)].fg, tuirealm::ratatui::style::Color::Green);
+    let value = scene
+        .text_regions
+        .iter()
+        .find(|region| region.bounds.y == 4)
+        .unwrap();
+    assert_eq!(value.binding, "value");
+    assert_eq!(value.source, 4..10);
+    std::fs::write(
+        dir.path().join("style.css"),
+        "flow > text { padding: 1ch; }",
+    )
+    .unwrap();
+    assert!(
+        LayoutBundle::load(dir.path())
+            .unwrap_err()
+            .message
+            .contains("inline flow")
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(dessplay_core::test_support::proptest_cases(64)))]
+    #[test]
+    fn rich_text_paint_and_source_regions_agree(width in 1u16..60, height in 1u16..10, x in 0u16..20, y in 0u16..10) {
+        use tuirealm::ratatui::style::{Color, Style};
+        use unicode_width::UnicodeWidthStr;
+        let prefix = "name 道 ";
+        let body = "literal <b>spoiler</b> words 界 repeated words";
+        let source = format!("{prefix}{body}");
+        let data = Presentation::default().rich("body", vec![
+            RichSpan { text: prefix.into(), style: Style::default().fg(Color::Red), action: None },
+            RichSpan { text: body.into(), style: Style::default().fg(Color::Green), action: Some("spoiler:7".into()) },
+        ]);
+        let area = Rect::new(x, y, width, height);
+        let scene = Renderer::new(LayoutBundle::builtin().unwrap()).arrange("rich-text", area, &data).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(x + width, y + height)).unwrap();
+        terminal.draw(|frame| scene.paint(frame)).unwrap();
+        for region in &scene.text_regions {
+            let text: String = source.chars().skip(region.source.start).take(region.source.len()).collect();
+            prop_assert_eq!(text.width(), usize::from(region.bounds.width));
+            prop_assert_eq!(region.bounds.intersection(area), region.bounds);
+            let mut cell = region.bounds.x;
+            for ch in text.chars() {
+                let expected = ch.to_string();
+                prop_assert_eq!(terminal.backend().buffer()[(cell, region.bounds.y)].symbol(), expected.as_str());
+                cell += expected.width() as u16;
+            }
+            let action = region.source.start >= prefix.chars().count();
+            prop_assert_eq!(region.action.as_deref(), action.then_some("spoiler:7"));
+        }
+    }
+    #[test]
+    fn centered_recovery_overlay_has_stable_cell_bounds(width in 0u16..160, height in 0u16..60, x in 0u16..20, y in 0u16..20) {
+        let area = Rect::new(x,y,width,height);
+        let data = Presentation::default().text("phase", "Preparing care");
+        let scene = Renderer::new(LayoutBundle::builtin().unwrap()).arrange("rogue-recovery", area, &data).unwrap();
+        let bounds = scene.bounds("rogue-recovery");
+        if !bounds.is_empty() {
+            prop_assert_eq!(bounds.intersection(area), bounds);
+            prop_assert_eq!(bounds.width, width.saturating_sub(2).min(68), "{:?}", scene.inspect());
+            prop_assert_eq!(bounds.height, height.saturating_sub(2).min(10));
+            prop_assert!((i32::from(bounds.x - x) * 2 - i32::from(width - bounds.width)).abs() <= 1);
+            prop_assert!((i32::from(bounds.y - y) * 2 - i32::from(height - bounds.height)).abs() <= 1);
+        }
+    }
+}
+
+#[test]
+fn filename_ellipsis_has_no_source_and_retains_the_suffix_identity() {
+    let data = Presentation::default()
+        .text("value", "/long/path/道/file.mkv")
+        .preserve_end("value");
+    let scene = Renderer::new(LayoutBundle::builtin().unwrap())
+        .arrange("form-row", Rect::new(0, 0, 10, 2), &data)
+        .unwrap();
+    let region = scene
+        .text_regions
+        .iter()
+        .find(|region| region.binding == "value")
+        .unwrap();
+    let source: String = "/long/path/道/file.mkv"
+        .chars()
+        .skip(region.source.start)
+        .take(region.source.len())
+        .collect();
+    assert_eq!(source, "/file.mkv");
+    assert_eq!(region.bounds.x, 1);
+}

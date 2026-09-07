@@ -1124,3 +1124,23 @@ the sidebar's newly arranged size. Typed color variables let effects retain
 their Full/Reduced/Off behavior without mutating CSS or overwriting authored
 styles after painting. Bottom captions are explicit frame metadata, so their
 bounds and clipping follow the same original-frame paint path as top captions.
+
+## Inline semantic text and recovery overlays (2026-09-07)
+
+**Rule:** Inline flows measure semantic child text as one stream while retaining
+field/source/action ranges and resolved span styles. Box and wrapping rules live
+on the enclosing flow; inline box declarations are rejected. Centered overlays
+reserve a one-cell inset and paint original frame captions independently of
+content overflow.
+
+**Why:** Recovery metrics previously became one formatted string, so authors
+could not rearrange their fields. Separate flex boxes would lose the existing
+word wrapping on narrow screens. Inline flows preserve that behavior while
+keeping labels and values independently editable. Typed rich spans use the same
+measurement and paint path and carry existing controller action keys rather
+than executable expressions. The terminal adapter centers allocated overlay
+boxes explicitly: Taffy's absolute auto-margin positioning does not account for
+the reserved inset consistently at very small sizes. Properties cover those
+sizes and translated origins. Guide/journal text, equipment rows, and expedition
+endings also use measured scenes; condition-row and bounded-summary composition
+remain tracked work rather than hidden behind a completion claim.

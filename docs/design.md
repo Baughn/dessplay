@@ -1670,6 +1670,11 @@ colors are available through custom properties; authored declarations override
 them. Roguelike injury effects select a semantic frame color without changing
 layout definitions. Its game template owns map/sidebar/journal placement and
 labeled metric fields; bounded wound/threat summaries remain measured policies.
+Inline text flows combine semantic children into shared measured lines. Their
+source ranges and controller actions come from the painted fragments. Box and
+wrapping rules apply to the enclosing flow; unsupported inline box rules fail
+validation. Recovery panels use explicit centered overlays with a one-cell inset,
+and their frame captions remain independent of overflowing content.
 
 RGB text is quantized to the finite terminal palette in limited mode.
 Explicit background colors survive the legacy theme adapter during the
@@ -1917,7 +1922,9 @@ expected). See [Subtitle Display](#subtitle-display) and
 available actions for the currently focused pane. Derived automatically from
 the active component's keybinding declarations (see [ui-architecture.md](ui-architecture.md)).
 
-**Focus cycling:** `Tab` cycles through Chat, Series, Users, Playlist
+**Focus cycling:** `Tab` follows visible pane slots in markup order (bundled:
+Chat, Series, Users, Playlist); Shift-Tab reverses it. Hidden or zero-sized panes
+leave the focus ring without losing their controller state.
 
 **Mouse support:** a left-click focuses the pane under the pointer and,
 in the list panes, simultaneously selects the clicked row (the seeders
@@ -1938,8 +1945,9 @@ equivalent is `/reveal`. **Resizable panes:** the four pane boundaries
 pane when shown) are splitters — press on the shared border cells and
 drag. Each pane keeps a minimum 10% share, the Series/Users splitter
 trades rows between those two only (the playlist boundary stays put),
-and the layout is persisted on release (`pane_layout`, whole percents)
-as a local display preference. There is no key equivalent for
+and the layout is persisted on release (`layout_sizes`, basis points)
+as a revision-keyed local display preference. The old `pane_layout` values
+are imported once for the bundled layout. There is no key equivalent for
 resizing. Mouse events are ignored while a modal is open.
 Keyboard-only terminals lose nothing — every mouse action has a key
 equivalent, with one exception: chat text selection (below) is

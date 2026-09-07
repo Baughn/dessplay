@@ -51,3 +51,10 @@ scroll > slot { flex-grow: 1; }
 #rogue-map { flex-grow: 1; flex-shrink: 1; }
 #rogue-sidebar { width: 28ch; margin: 0 0 0 1ch; }
 #rogue-recent-journal { height: 7lh; flex-shrink: 1; }
+#rogue-recovery { border: 1; max-width: 68ch; max-height: 10lh; }
+#recovery-phase, .recovery-line { white-space: normal; }
+#recovery-wounds { flex-grow: 1; flex-shrink: 1; min-height: 0; }
+#rogue-inspection-heading, #rogue-inspection-note, .rogue-equipment-description,
+#rogue-document, #epitaph-heading, #epitaph-summary, #epitaph-actions { white-space: normal; }
+.rogue-equipment-description { min-height: 1lh; }
+#epitaph-actions { margin: 1lh 0 0 0; }

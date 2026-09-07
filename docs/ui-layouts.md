@@ -3,7 +3,8 @@
 The layout migration is in progress. Currently the shared settings/List-entry
 forms, their semantic label/value/annotation rows, the F11 log viewer's
 header/body/footer, application pane composition, chat/input/suggestions,
-attachments, recent-chat projection, separate subtitle rows, Users and Playlist, and the roguelike frame/game-page composition
+attachments, recent-chat projection, separate subtitle rows, Users, Playlist,
+and the roguelike frame, game, recovery, document, equipment, and ending pages
 use local templates. Message rich-text composition and other pane interiors still use
 their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
@@ -66,7 +67,8 @@ and processing instructions are unsupported.
 clipped scroll viewport whose controller supplies the visible contents.
 `overlay` declares a separate paint layer aligned to the bottom of its
 parent content, inset one cell horizontally. Its dimensions and margins
-are styleable; capture remains in controllers. `text bind="field"` paints typed text;
+are styleable; `placement="center"` centers the allocated box with a one-cell
+inset on all sides. Capture remains in controllers. `text bind="field"` paints typed text;
 `slot name="field"` reserves a primitive's content rectangle. Containers accept
 `title` and `title-bottom` bindings for terminal frame captions.
 `if="field"` tests a named boolean. `id`, `class`, and `style` supply selector
@@ -78,8 +80,18 @@ templates and inherit the caller's binding contract. Unknown references,
 cycles, duplicate expanded IDs, and repeated controller slots are errors.
 Unused names outside the entry-template schema are errors, to catch typos.
 Form collections use stable controller keys and only instantiate visible
-rows. XML-authored keyed repetition, rich-text/image bindings, and explicit
-read-only projections are not implemented yet.
+rows. XML-authored keyed repetition and image bindings are not implemented yet.
+Chat recent-history projections remain explicit controller-owned views.
+
+`flow` combines text, rich, and nested flow children into shared measured lines.
+`separator=" "` supplies the text between nonempty visible children (one space
+by default); nested flows let metric groups use different separators. Wrapping,
+alignment, indentation, and box allocation belong to the outer flow. Inline
+children accept text colors/emphasis/custom properties and `display: none`;
+box properties on inline children are errors. `rich bind="field"` accepts typed
+styled spans and opaque existing controller actions. Message data never becomes
+XML. The `rich-text` entry exposes a rich `body` field. Source character ranges
+and action identities are emitted from the measured paint fragments.
 
 Current entry templates and bindings:
 
@@ -166,8 +178,15 @@ To put the sidebar on the left, move its slot before the map slot and change
 its margin to `#rogue-sidebar { margin: 0 1ch 0 0; }`. The default map minimum
 and bounded journal height preserve the existing layout. Sidebar wound/threat
 summaries remain bounded measured content; moving the sidebar does not affect
-expedition or recovery state. Other roguelike pages and the recovery panel
-still have presentation adapters pending migration.
+expedition or recovery state. `rogue-recovery` exposes title/footer/phase,
+individual label/value fields for blood, breath, nutrition, bleed, pain, linen,
+splints, and food, `linen-used`/`splints-used`/`food-used` annotations, and a
+bounded `wounds` slot. Its metric flows can be reordered or restyled separately.
+
+`rogue-inspection` supplies `heading`, optional `note` (`has-note`), and a `body`
+slot. `rogue-equipment-row` has `description`; `rogue-document` has plain `body`;
+`rogue-epitaph` has `heading`, `summary`, and `actions`. Condition-row composition
+and bounded wound/threat children still need the remaining semantic migration.
 
 Built-in semantic color variables are `--surface`, `--text`, `--muted`,
 `--accent`, `--danger`, and `--dungeon-border`. The last follows the existing

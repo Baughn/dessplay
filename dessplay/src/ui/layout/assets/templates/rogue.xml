@@ -1,4 +1,42 @@
 <templates version="1">
+  <template name="rogue-inspection">
+    <column>
+      <text id="rogue-inspection-heading" bind="heading" />
+      <text id="rogue-inspection-note" bind="note" if="has-note" />
+      <scroll><slot name="body" /></scroll>
+    </column>
+  </template>
+  <template name="rogue-equipment-row"><text class="rogue-equipment-description" bind="description" /></template>
+  <template name="rogue-document"><text id="rogue-document" bind="body" /></template>
+  <template name="rogue-epitaph">
+    <column>
+      <text id="epitaph-heading" bind="heading" />
+      <text id="epitaph-summary" bind="summary" />
+      <text id="epitaph-actions" bind="actions" />
+    </column>
+  </template>
+  <template name="rogue-recovery">
+    <box>
+      <overlay id="rogue-recovery" placement="center" title="title" title-bottom="footer">
+        <text id="recovery-phase" bind="phase" />
+        <flow class="recovery-line" separator="  ">
+          <flow><text bind="blood-label"/><text bind="blood"/></flow>
+          <flow><text bind="breath-label"/><text bind="breath"/></flow>
+          <flow><text bind="nutrition-label"/><text bind="nutrition"/></flow>
+        </flow>
+        <flow class="recovery-line" separator="  ">
+          <flow><text bind="bleed-label"/><text bind="bleed"/></flow>
+          <flow><text bind="pain-label"/><text bind="pain"/></flow>
+        </flow>
+        <flow class="recovery-line" separator="  ">
+          <flow><text bind="linen-label"/><text bind="linen"/><text bind="linen-used"/></flow>
+          <flow><text bind="splints-label"/><text bind="splints"/><text bind="splints-used"/></flow>
+          <flow><text bind="food-label"/><text bind="food"/><text bind="food-used"/></flow>
+        </flow>
+        <slot id="recovery-wounds" name="wounds" />
+      </overlay>
+    </box>
+  </template>
   <template name="rogue">
     <box id="rogue-frame" title="title" title-bottom="footer">
       <text id="rogue-notices" bind="notices" if="has-notices" />

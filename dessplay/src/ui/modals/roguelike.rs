@@ -7,7 +7,7 @@ use crate::roguelike::{
 };
 use crate::roguelike_store::Command;
 use tuirealm::ratatui::style::Color;
-use tuirealm::ratatui::widgets::{Paragraph, Wrap};
+use tuirealm::ratatui::widgets::Paragraph;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -25,6 +25,14 @@ enum Direction {
 struct Recovery {
     started: Supplies,
     due: u64,
+}
+
+struct DocumentAnchor {
+    key: String,
+    source: usize,
+    cursor: usize,
+    // Blank lines/padding before the first source-bearing fragment remain visible.
+    leading_rows: usize,
 }
 
 struct ConditionRow {
@@ -92,6 +100,7 @@ pub struct RoguelikeModal {
     notices: Vec<String>,
     page: Page,
     cursor: ListCursor,
+    document_anchor: Option<DocumentAnchor>,
     condition: ConditionViewport,
     direction: Option<Direction>,
     recovery: Option<Recovery>,
@@ -114,6 +123,7 @@ impl RoguelikeModal {
             notices: Vec::new(),
             page: Page::Game,
             cursor: ListCursor::default(),
+            document_anchor: None,
             condition: ConditionViewport::default(),
             direction: None,
             recovery: None,
@@ -356,7 +366,15 @@ impl RoguelikeModal {
         }
         let content = inner;
         if self.page == Page::Guide {
-            render_scroll(frame, inner, GUIDE, &mut self.cursor);
+            render_scroll(
+                frame,
+                inner,
+                "guide",
+                GUIDE,
+                &mut self.cursor,
+                &mut self.document_anchor,
+                renderer,
+            );
             return;
         }
         let Some(run) = &self.run else {
@@ -371,17 +389,27 @@ impl RoguelikeModal {
                     .map(|e| format!("[{}] {}", e.time, e.text))
                     .collect::<Vec<_>>()
                     .join("\n");
-                render_scroll(frame, inner, &text, &mut self.cursor);
+                render_scroll(
+                    frame,
+                    inner,
+                    "journal",
+                    &text,
+                    &mut self.cursor,
+                    &mut self.document_anchor,
+                    renderer,
+                );
                 return;
             }
             Page::Condition => {
-                let heading = "CONDITION · ↑/↓ scroll · a: treat selected region";
-                let height =
-                    wrapped_height(heading, inner.width).min(inner.height.saturating_sub(1));
-                frame.render_widget(
-                    Paragraph::new(heading).wrap(Wrap { trim: false }),
-                    take_rows(&mut inner, height),
+                let data = crate::ui::layout::Presentation::default().text(
+                    "heading",
+                    "CONDITION · ↑/↓ scroll · a: treat selected region",
                 );
+                let Ok(scene) = renderer.arrange("rogue-inspection", inner, &data) else {
+                    return;
+                };
+                scene.paint(frame);
+                inner = scene.slot("body");
                 self.condition.refresh(&run.body, inner.width);
                 let items = self
                     .condition
@@ -399,31 +427,43 @@ impl RoguelikeModal {
                 return;
             }
             Page::Equipment => {
-                let heading = format!(
-                    "EQUIPMENT · x: swap · Enter: equip selected ground item\n{}",
-                    run.movement_summary()
-                );
-                let height = wrapped_height(&heading, inner.width);
-                frame.render_widget(
-                    Paragraph::new(heading).wrap(Wrap { trim: false }),
-                    take_rows(&mut inner, height),
-                );
+                let data = crate::ui::layout::Presentation::default()
+                    .text(
+                        "heading",
+                        "EQUIPMENT · x: swap · Enter: equip selected ground item",
+                    )
+                    .text("note", run.movement_summary())
+                    .boolean("has-note", true);
+                let Ok(scene) = renderer.arrange("rogue-inspection", inner, &data) else {
+                    return;
+                };
+                scene.paint(frame);
                 let (lines, _) = equipment_rows(run);
                 self.cursor.clamp(lines.len());
-                let items = wrapped_items(lines, inner.width);
-                render_list_body(
+                let rows = lines
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, text)| crate::ui::layout::PresentedRow {
+                        key: format!("equipment:{index}"),
+                        data: crate::ui::layout::Presentation::default().text("description", text),
+                        gap_after: false,
+                    })
+                    .collect::<Vec<_>>();
+                let _ = renderer.paint_rows(
                     frame,
-                    inner,
-                    items,
+                    scene.slot("body"),
+                    "rogue-equipment-row",
+                    &rows,
                     Some(self.cursor.index()),
-                    Some(self.cursor.index()),
+                    scene.style("body"),
                 );
+                scene.paint_overlays(frame);
                 return;
             }
             _ => {}
         }
         if run.is_finished() {
-            render_epitaph(frame, inner, run);
+            render_epitaph(frame, inner, run, renderer);
             return;
         }
         let objective = match self.direction {
@@ -487,53 +527,51 @@ impl RoguelikeModal {
         frame.render_widget(Paragraph::new(lines).style(scene.style("journal")), inner);
         scene.paint_overlays(frame);
         if let Some(recovery) = &self.recovery {
-            let width = content.width.saturating_sub(2).min(68);
-            let height = content.height.saturating_sub(2).min(10);
-            let panel = Rect {
-                x: content.x + (content.width - width) / 2,
-                y: content.y + (content.height - height) / 2,
-                width,
-                height,
-            };
-            frame.render_widget(Clear, panel);
-            let status = format!(
-                "{}\nBlood {}  Breath {}  Nutrition {}\nBleeding {}  Pain {}\nLinen {} (-{})  Splints {} (-{})  Food {} (-{})",
-                run.journal
-                    .iter()
-                    .rev()
-                    .find(|e| e.kind == EventKind::Recovery)
-                    .map_or("Preparing care", |e| e.text.as_str()),
-                run.body.blood,
-                run.body.stamina,
-                run.body.hunger,
-                run.body.bleeding(),
-                run.body.pain(),
-                run.supplies.bandages,
-                recovery
-                    .started
-                    .bandages
-                    .saturating_sub(run.supplies.bandages),
-                run.supplies.splints,
-                recovery
-                    .started
-                    .splints
-                    .saturating_sub(run.supplies.splints),
-                run.supplies.food,
-                recovery.started.food.saturating_sub(run.supplies.food),
-            );
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(" RECOVERING ")
-                .title_bottom(" Any key stops recovery ");
-            let mut body = block.inner(panel);
-            frame.render_widget(block, panel);
-            let height = wrapped_height(&status, body.width);
-            frame.render_widget(
-                Paragraph::new(status).wrap(Wrap { trim: false }),
-                take_rows(&mut body, height),
-            );
-            let wounds = wound_rows(run, body.width, body.height);
-            frame.render_widget(Paragraph::new(wounds.join("\n")), body);
+            let mut data = crate::ui::layout::Presentation::default()
+                .text("title", " RECOVERING ")
+                .text("footer", " Any key stops recovery ")
+                .text(
+                    "phase",
+                    run.journal
+                        .iter()
+                        .rev()
+                        .find(|event| event.kind == EventKind::Recovery)
+                        .map_or("Preparing care", |event| event.text.as_str()),
+                );
+            for (key, label, value) in [
+                ("blood", "Blood", run.body.blood),
+                ("breath", "Breath", run.body.stamina),
+                ("nutrition", "Nutrition", run.body.hunger),
+                ("bleed", "Bleeding", run.body.bleeding()),
+                ("pain", "Pain", run.body.pain()),
+                ("linen", "Linen", run.supplies.bandages),
+                ("splints", "Splints", run.supplies.splints),
+                ("food", "Food", run.supplies.food),
+            ] {
+                data = data
+                    .text(&format!("{key}-label"), label)
+                    .text(key, value.to_string());
+            }
+            for (key, start, now) in [
+                ("linen", recovery.started.bandages, run.supplies.bandages),
+                ("splints", recovery.started.splints, run.supplies.splints),
+                ("food", recovery.started.food, run.supplies.food),
+            ] {
+                data = data.text(
+                    &format!("{key}-used"),
+                    format!("(-{})", start.saturating_sub(now)),
+                );
+            }
+            if let Ok(scene) = renderer.arrange("rogue-recovery", content, &data) {
+                scene.paint(frame);
+                scene.paint_overlays(frame);
+                let body = scene.slot("wounds");
+                let wounds = wound_rows(run, body.width, body.height);
+                frame.render_widget(
+                    Paragraph::new(wounds.join("\n")).style(scene.style("wounds")),
+                    body,
+                );
+            }
         }
     }
 }
@@ -551,22 +589,6 @@ fn equipment_rows(run: &RunView) -> (Vec<String>, usize) {
     (lines, ground_start)
 }
 
-fn wrapped_items(lines: Vec<String>, width: u16) -> Vec<ListItem<'static>> {
-    lines
-        .into_iter()
-        .map(|text| {
-            if text.is_empty() {
-                return ListItem::new(Line::default());
-            }
-            let rows = text_rows(&text, width)
-                .into_iter()
-                .map(Line::from)
-                .collect::<Vec<_>>();
-            ListItem::new(rows)
-        })
-        .collect()
-}
-
 fn event_style(kind: EventKind) -> Style {
     Style::default().fg(match kind {
         EventKind::Injury | EventKind::Danger => Color::LightRed,
@@ -575,17 +597,6 @@ fn event_style(kind: EventKind) -> Style {
         _ => Color::Reset,
     })
 }
-fn take_rows(area: &mut Rect, height: u16) -> Rect {
-    let height = height.min(area.height);
-    let taken = Rect { height, ..*area };
-    area.y += height;
-    area.height -= height;
-    taken
-}
-fn wrapped_height(text: &str, width: u16) -> u16 {
-    text_rows(text, width).len().min(u16::MAX as usize) as u16
-}
-
 fn text_rows(text: &str, width: u16) -> Vec<String> {
     if width == 0 {
         return Vec::new();
@@ -695,19 +706,46 @@ fn sidebar_rows(run: &RunView, width: u16, height: u16) -> Vec<String> {
     ));
     rows
 }
-fn render_scroll(frame: &mut Frame, area: Rect, text: &str, cursor: &mut ListCursor) {
-    let rows: usize = text
-        .lines()
-        .map(|line| wrapped_height(line, area.width) as usize)
-        .sum();
-    cursor.clamp(rows.saturating_sub(area.height as usize) + 1);
-    frame.render_widget(
-        Paragraph::new(text)
-            .wrap(Wrap { trim: false })
-            .scroll((cursor.index().min(u16::MAX as usize) as u16, 0)),
-        area,
-    );
+#[allow(clippy::too_many_arguments)]
+fn render_scroll(
+    frame: &mut Frame,
+    area: Rect,
+    key: &str,
+    text: &str,
+    cursor: &mut ListCursor,
+    anchor: &mut Option<DocumentAnchor>,
+    renderer: &mut crate::ui::layout::Renderer,
+) {
+    let data = crate::ui::layout::Presentation::default().text("body", text);
+    if let Ok(scene) = renderer.measure_content("rogue-document", key, area.width, &data) {
+        if let Some(previous) = anchor
+            && previous.key == key
+            && previous.cursor == cursor.index()
+            && let Some(region) = scene
+                .text_regions
+                .iter()
+                .rev()
+                .find(|region| region.source.start <= previous.source)
+        {
+            cursor.set(usize::from(region.bounds.y).saturating_sub(previous.leading_rows));
+        }
+        cursor.clamp(usize::from(scene.height().saturating_sub(area.height)) + 1);
+        scene.paint_scrolled(frame, area, -(cursor.index().min(i32::MAX as usize) as i32));
+        if let Some(region) = scene
+            .text_regions
+            .iter()
+            .find(|region| usize::from(region.bounds.y) >= cursor.index())
+        {
+            *anchor = Some(DocumentAnchor {
+                key: key.into(),
+                source: region.source.start,
+                cursor: cursor.index(),
+                leading_rows: usize::from(region.bounds.y).saturating_sub(cursor.index()),
+            });
+        }
+    }
 }
+
 fn render_map(frame: &mut Frame, area: Rect, run: &RunView) {
     if area.is_empty() {
         return;
@@ -770,22 +808,28 @@ fn render_map(frame: &mut Frame, area: Rect, run: &RunView) {
         },
     );
 }
-fn render_epitaph(frame: &mut Frame, area: Rect, run: &RunView) {
+fn render_epitaph(
+    frame: &mut Frame,
+    area: Rect,
+    run: &RunView,
+    renderer: &mut crate::ui::layout::Renderer,
+) {
     let heading = match &run.outcome {
         Outcome::Dead(_) => "HERE ENDS YOUR EXPEDITION",
         Outcome::Escaped if run.relic => "THE EMBER COMES HOME",
         Outcome::Escaped => "YOU ESCAPED WITH YOUR LIFE",
         Outcome::Alive => return,
     };
-    frame.render_widget(
-        Paragraph::new(format!(
-            "{heading}\n{}\n\nn: new expedition   p: journal   F4 / Esc: chat",
-            run.summary()
-        ))
-        .wrap(Wrap { trim: false }),
-        area,
-    );
+    let data = crate::ui::layout::Presentation::default()
+        .text("heading", heading)
+        .text("summary", run.summary())
+        .text("actions", "n: new expedition   p: journal   F4 / Esc: chat");
+    if let Ok(scene) = renderer.arrange("rogue-epitaph", area, &data) {
+        scene.paint(frame);
+        scene.paint_overlays(frame);
+    }
 }
+
 const GUIDE: &str = concat!(
     "THE WAITING BELOW\nEscape alive whenever you choose. Bring the ember home for an exceptional victory.\nEvery action is saved; closing the dungeon pauses it.\n\n",
     "MOVE / FIGHT  Arrows, numpad 1-9, or vi keys:\n  y k u     7 8 9\n  h @ l     4 @ 6\n  b j n     1 2 3\n",
@@ -1609,6 +1653,36 @@ mod tests {
         modal.set_run(view);
         assert!(!modal.ticking());
     }
+    #[test]
+    fn document_scroll_anchor_does_not_advance_over_blank_lines() {
+        let mut renderer =
+            crate::ui::layout::Renderer::new(crate::ui::layout::LayoutBundle::builtin().unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        let mut cursor = ListCursor::default();
+        cursor.set(1);
+        let mut anchor = None;
+        for _ in 0..3 {
+            terminal
+                .draw(|frame| {
+                    render_scroll(
+                        frame,
+                        frame.area(),
+                        "guide",
+                        "first\n\nthird\nfourth\nfifth\nsixth",
+                        &mut cursor,
+                        &mut anchor,
+                        &mut renderer,
+                    )
+                })
+                .unwrap();
+            assert_eq!(
+                cursor.index(),
+                1,
+                "repaint retains an intentionally blank top row"
+            );
+        }
+    }
+
     #[test]
     fn recovery_cancel_instruction_survives_wrapped_condition_details() {
         let mut modal = RoguelikeModal::new();

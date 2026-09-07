@@ -963,3 +963,10 @@ A file-only roguelike test moves the sidebar to the left while a recovery save
 is pending, checking its painted position and unchanged expedition/recovery
 state. Existing notice, injury-effect, bounded-summary, and game-input tests
 remain the gate for the template game-page composition.
+
+Inline flow/rich text tests check literal markup-like contents, child colors,
+wrapping, Unicode source ranges, opaque action identities, filename ellipsis
+source offsets, and matching painted cells at arbitrary widths and origins.
+Unsupported box declarations on inline children must fail compilation. Centered
+recovery overlay properties cover zero/tiny viewports, the inset, size caps, and
+translation. Document scroll anchors include blank-line redraw stability.

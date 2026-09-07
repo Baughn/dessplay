@@ -405,6 +405,16 @@ pub(super) fn resolve(
             top: LengthPercentageAuto::Auto,
             bottom: LengthPercentageAuto::Length(0.0),
         };
+        if node.attr("placement") == "center" {
+            out.layout.inset.top = LengthPercentageAuto::Length(1.0);
+            out.layout.inset.bottom = LengthPercentageAuto::Length(1.0);
+            out.layout.margin = taffy::Rect {
+                left: LengthPercentageAuto::Auto,
+                right: LengthPercentageAuto::Auto,
+                top: LengthPercentageAuto::Auto,
+                bottom: LengthPercentageAuto::Auto,
+            };
+        }
     }
     let mut matched = Vec::new();
     for rule in &bundle.rules {
@@ -435,6 +445,20 @@ pub(super) fn resolve(
         }
         let value =
             substitute(&d.value, &out.variables, &mut Vec::new()).map_err(|m| fail(&d, m))?;
+        if path[..path.len() - 1]
+            .iter()
+            .any(|(ancestor, _)| ancestor.tag == "flow")
+            && !matches!(
+                d.name.as_str(),
+                "color" | "background-color" | "font-weight" | "font-style" | "text-decoration"
+            )
+            && !(d.name == "display" && value == "none")
+        {
+            return Err(fail(
+                &d,
+                "inline flow children accept text appearance and display: none; put box and wrapping rules on the enclosing flow",
+            ));
+        }
         apply(&mut out, &d.name, &value).map_err(|m| fail(&d, m))?;
     }
     if node.attr("resizable") == "true" && out.layout.display == Display::Grid {

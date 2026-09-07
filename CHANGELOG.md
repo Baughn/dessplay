@@ -46,6 +46,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   journal in layout files. Moving the sidebar keeps your expedition intact.
 
 
+- Added: Restyle dungeon recovery, equipment rows, guide and journal text,
+  and expedition endings through layout templates. Recovery labels and values
+  wrap together and remain independently editable.
+
 ## 2026-09-06
 
 - Improved: The Waiting Below now has branching dungeon routes, optional

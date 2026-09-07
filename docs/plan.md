@@ -1858,7 +1858,9 @@ player OSD, and standalone diagnostic output are outside scope.
   label/value/annotation rows; log header/body/footer and source anchors.
 - [x] Local discovery, CLI export/check, debounced background compilation,
   stale/full-channel handling, and embedded F12 recovery tools.
-- [ ] Finish foundation: template-authored keyed repetition and rich bindings;
+- [x] Shared inline flows, typed rich spans, source/action paint records, and
+  centered recovery overlays.
+- [ ] Finish foundation: template-authored keyed repetition;
   log dropdown overlay template; complete style integration.
 - [x] Chat/input/suggestion composition, recent projection, semantic separate
   subtitle rows, and timestamp-aligned bordered attachments with original scroll crops.
@@ -1871,8 +1873,10 @@ player OSD, and standalone diagnostic output are outside scope.
 - [ ] All Series modes, browsers/search, and remaining semantic collection cells.
 - [x] Roguelike frame captions/notices/error and game-page composition, including
   labeled statistics/supplies and file-only sidebar relocation.
+- [x] Roguelike recovery panel, inspection headings, equipment rows, documents,
+  and expedition endings.
 - [ ] Remaining forms/dialogs, changelog, progress/status/keybars, modal layers,
-  other roguelike pages and recovery panel; remove production legacy adapters.
+  roguelike condition rows and bounded-summary children; remove production legacy adapters.
 - [ ] File-only
   demonstrations for panes, playlist columns, forms, roguelike sidebar, and
   attachments; final geometry/interactions/image/reload/performance audit.

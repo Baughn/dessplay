@@ -880,5 +880,13 @@ existing `RoguelikeModal` retains save acknowledgements, active recovery,
 inspection cursors, and effects timing. Typed `Presentation::color_variable`
 values enter style inheritance before authored declarations; the compiler
 validates against the corresponding semantic defaults. Map cells and bounded
-sidebar summaries consume arranged primitive slots. Inspection pages and the
-recovery panel still use temporary presentation adapters.
+sidebar summaries consume arranged primitive slots. Recovery phase and metric
+flows, inspection headings, equipment rows, documents, and endings now use
+templates. Condition rows and bounded summary children still need migration.
+
+`flow` flattens styled inline children into one intrinsic text measurement. The
+renderer retains field/source/action ranges across that flattening, creates
+styled paint lines once, and publishes corresponding `TextRegion` records.
+`rich` accepts typed `RichSpan` data without parsing message contents. Natural
+document scenes use the same signed viewport painting as collection rows;
+source anchors retain document context when widths change.
