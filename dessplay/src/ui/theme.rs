@@ -229,9 +229,6 @@ fn unit_interval(value: u64) -> f32 {
 /// payloads), and forcing the canvas colors onto them would corrupt the
 /// picture.
 pub fn apply_color_depth(buffer: &mut Buffer, depth: ColorDepth, keep: &[Rect]) {
-    if depth == ColorDepth::Limited {
-        return;
-    }
     let area = buffer.area;
     for (i, cell) in buffer.content.iter_mut().enumerate() {
         if !keep.is_empty() && area.width > 0 {
@@ -244,16 +241,49 @@ pub fn apply_color_depth(buffer: &mut Buffer, depth: ColorDepth, keep: &[Rect]) 
                 continue;
             }
         }
+        if depth == ColorDepth::Limited {
+            cell.fg = terminal_palette(cell.fg);
+            cell.bg = terminal_palette(cell.bg);
+            continue;
+        }
         if cell.modifier.contains(Modifier::DIM) {
             cell.fg = TRUECOLOR_MUTED_FOREGROUND;
             cell.modifier.remove(Modifier::DIM);
         } else {
             cell.fg = dark_foreground(cell.fg);
         }
-        // DessPlay owns the whole alternate-screen canvas in true-color
-        // mode. A single explicit background makes contrast deterministic
-        // instead of guessing the user's terminal theme.
-        cell.bg = TRUECOLOR_BACKGROUND;
+        // Fill the default canvas while preserving authored backgrounds.
+        cell.bg = match cell.bg {
+            Color::Reset => TRUECOLOR_BACKGROUND,
+            explicit => dark_foreground(explicit),
+        };
+    }
+}
+
+/// Quantize an authored RGB text color to the xterm 256-color cube or gray ramp.
+/// Image pixels never pass through this conversion.
+fn terminal_palette(color: Color) -> Color {
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    let square = |a: u8, b: u8| (i32::from(a) - i32::from(b)).unsigned_abs().pow(2);
+    let nearest = |channel: u8| {
+        LEVELS
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, level)| square(channel, **level))
+            .map_or(0, |(i, _)| i)
+    };
+    let (ri, gi, bi) = (nearest(r), nearest(g), nearest(b));
+    let cube = square(r, LEVELS[ri]) + square(g, LEVELS[gi]) + square(b, LEVELS[bi]);
+    let mean = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
+    let gray_index = ((mean.saturating_sub(8) + 5) / 10).min(23) as u8;
+    let gray = 8 + gray_index * 10;
+    if square(r, gray) + square(g, gray) + square(b, gray) < cube {
+        Color::Indexed(232 + gray_index)
+    } else {
+        Color::Indexed((16 + 36 * ri + 6 * gi + bi) as u8)
     }
 }
 
@@ -421,11 +451,11 @@ mod tests {
         assert_eq!(buffer[(0, 0)].fg, TRUECOLOR_FOREGROUND);
         assert_eq!(buffer[(0, 0)].bg, TRUECOLOR_BACKGROUND);
         assert!(matches!(buffer[(1, 0)].fg, Color::Rgb(..)));
-        assert_eq!(buffer[(1, 0)].bg, TRUECOLOR_BACKGROUND);
+        assert_eq!(buffer[(1, 0)].bg, dark_foreground(Color::Blue));
         assert!(matches!(buffer[(2, 0)].fg, Color::Rgb(..)));
-        assert_eq!(buffer[(2, 0)].bg, TRUECOLOR_BACKGROUND);
+        assert_eq!(buffer[(2, 0)].bg, dark_foreground(Color::Indexed(141)));
         assert_eq!(buffer[(3, 0)].fg, Color::Rgb(1, 2, 3));
-        assert_eq!(buffer[(3, 0)].bg, TRUECOLOR_BACKGROUND);
+        assert_eq!(buffer[(3, 0)].bg, Color::Rgb(4, 5, 6));
     }
 
     proptest! {
@@ -480,32 +510,32 @@ mod tests {
         assert_eq!(buffer, original);
     }
 
-    /// Cells inside a keep rect (an inline chat image) must survive the
-    /// pass untouched — the forced canvas background would overwrite the
-    /// half-block pixel colors and graphics-protocol payload cells.
+    /// Image cells bypass both semantic theming and finite-palette conversion.
     #[test]
-    fn truecolor_mapping_skips_keep_rects() {
+    fn color_mapping_skips_image_rects_in_both_terminal_modes() {
         use tuirealm::ratatui::{buffer::Buffer, layout::Rect};
-
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
-        for x in 0..4 {
-            for y in 0..2 {
-                buffer[(x, y)].fg = Color::Rgb(10, 20, 30);
-                buffer[(x, y)].bg = Color::Rgb(40, 50, 60);
+        for depth in [ColorDepth::TrueColor, ColorDepth::Limited] {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
+            for cell in &mut buffer.content {
+                cell.fg = Color::Rgb(10, 20, 30);
+                cell.bg = Color::Rgb(40, 50, 60);
+                cell.modifier = Modifier::DIM;
             }
-        }
-        let keep = Rect::new(1, 0, 2, 1);
-
-        apply_color_depth(&mut buffer, ColorDepth::TrueColor, &[keep]);
-
-        for x in 0..4u16 {
-            for y in 0..2u16 {
-                let expected_bg = if keep.contains((x, y).into()) {
-                    Color::Rgb(40, 50, 60)
-                } else {
-                    TRUECOLOR_BACKGROUND
-                };
-                assert_eq!(buffer[(x, y)].bg, expected_bg, "cell ({x},{y})");
+            let original = buffer.clone();
+            let keep = Rect::new(1, 0, 2, 1);
+            apply_color_depth(&mut buffer, depth, &[keep]);
+            for x in 0..4u16 {
+                for y in 0..2u16 {
+                    if keep.contains((x, y).into()) {
+                        assert_eq!(buffer[(x, y)], original[(x, y)]);
+                    } else if depth == ColorDepth::TrueColor {
+                        assert_eq!(buffer[(x, y)].fg, TRUECOLOR_MUTED_FOREGROUND);
+                        assert_eq!(buffer[(x, y)].bg, Color::Rgb(40, 50, 60));
+                    } else {
+                        assert!(matches!(buffer[(x, y)].fg, Color::Indexed(_)));
+                        assert!(matches!(buffer[(x, y)].bg, Color::Indexed(_)));
+                    }
+                }
             }
         }
     }

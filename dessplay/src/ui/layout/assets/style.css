@@ -1,0 +1,8 @@
+/* Terminal lengths are cells: ch horizontally, lh vertically. */
+#form, #log { border: 1; border-color: yellow; }
+scroll { flex-grow: 1; flex-shrink: 1; min-height: 0; }
+scroll > slot { flex-grow: 1; }
+.form-label { width: 24ch; }
+.form-value { flex-grow: 1; flex-shrink: 1; }
+.form-annotation { max-width: 50%; margin: 0 0 0 1ch; text-align: right; }
+#form-editor-frame { border: 1; border-color: yellow; }

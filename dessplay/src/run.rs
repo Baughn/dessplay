@@ -25,6 +25,8 @@ use crate::storage::Storage;
 /// stored settings / environment / defaults".
 #[derive(Debug, Default)]
 pub struct HeadlessArgs {
+    /// Runtime terminal layout discovery (interactive mode only).
+    pub layout_options: crate::ui::layout::LayoutOptions,
     /// Run as a seeder: no settings database, flags/env only, never
     /// gates playback.
     pub seeder: bool,
@@ -857,6 +859,7 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
             }
         }
     }
+    ui.set_layout_options(args.layout_options.clone());
     let (input_tx, input_rx) = std::sync::mpsc::sync_channel::<UiInput>(64);
     let (action_tx, mut action_rx) = mpsc::channel::<UserAction>(64);
     // The input thread starts only once the UI thread says the terminal

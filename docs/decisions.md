@@ -507,6 +507,31 @@ So entries carry confirmed aliases (seeded from the first file's derived name, g
 
 ## TUI Layout
 
+### Runtime templates retain synchronous controllers (2026-09-07)
+
+Layout authoring must reach semantic widget interiors, rather than only
+moving opaque panes. The migration starts with shared form composition and
+label/value/annotation rows plus the diagnostic log, preserving their
+existing controller-owned editors and selections. Remaining surfaces are
+explicitly tracked before claiming whole-display customization.
+
+XML and CSS compile into immutable, transferable bundles. quick-xml handles
+markup; cssparser supplies CSS tokens and locations; Taffy allocates boxes.
+Browser-style error recovery is disabled at the authoring boundary: an
+incomplete save or unsupported feature retains the working bundle. Embedded
+assets use the same compiler. Width-first measurement prevents wrapped
+height from feeding back into terminal width, and clipping paints original
+edges without allocating buffers proportional to authored overflow.
+
+The shell constructs the renderer after entering the UI thread. Putting its
+Taffy tree in `Ui` would compromise the existing pre-thread controller
+construction and Send boundary. A separate bounded reload lane coalesces
+editor saves, retries full-channel delivery, and rejects generations
+invalidated by newer filesystem events. It sleeps while idle. The F12
+recovery surface uses embedded definitions so customization cannot remove
+the recovery controls. Native GUI rendering and scripting remain outside
+this change.
+
 ### Explicit dark theme on true-color terminals
 
 **Rule:** A true-color terminal gets an explicit app-wide dark theme with RGB semantic foregrounds; dim text is an explicit muted RGB, never SGR 2; limited-color terminals keep their own theme and the ten-color palette; see [design.md](design.md#ui-principles).

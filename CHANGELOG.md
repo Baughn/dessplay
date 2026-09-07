@@ -24,6 +24,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   protocol (Kitty, sixel, or iTerm2) when it has one, showing real pixels
   instead of half-block art; terminals without one still get half-blocks.
   Set `DESSPLAY_IMAGE_PROTOCOL=halfblocks` to go back to the old look.
+- Added: Settings and List-entry forms, their field layouts, and the log
+  viewer's sections can now be customized with local XML templates and CSS.
+  Use `dessplay layout init` to export defaults, `layout check` to validate,
+  and F12 for live-reload diagnostics and recovery tools.
 
 ## 2026-09-06
 

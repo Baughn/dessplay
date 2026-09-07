@@ -7,6 +7,7 @@
 - Network design (QUIC, hub-and-spoke, file transfer): docs/network-design.md
 - Testing strategy: docs/testing-strategy.md
 - UI architecture (tui-realm, Elm model): docs/ui-architecture.md
+- Runtime layout authoring and migration status: docs/ui-layouts.md
 - Implementation plan: docs/plan.md
 - Roguelike player guide and standalone play instructions: docs/roguelike.md
 - Roguelike playtest and draft fun proposals: docs/proposals/2026-09-06-roguelike-playtest.md

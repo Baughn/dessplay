@@ -394,6 +394,11 @@ impl TextField {
             .border_style(theme::border_style(focused));
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        self.render_content(frame, inner, focused, masked);
+    }
+
+    /// Render only editor contents; enclosing chrome belongs to its template.
+    pub fn render_content(&mut self, frame: &mut Frame, inner: Rect, focused: bool, masked: bool) {
         if inner.width == 0 || inner.height == 0 {
             return;
         }

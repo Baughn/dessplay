@@ -1,0 +1,9 @@
+<templates version="1">
+  <template name="log">
+    <column id="log" title="title">
+      <slot name="header" />
+      <scroll id="log-scroll"><slot name="body" /></scroll>
+      <slot name="footer" />
+    </column>
+  </template>
+</templates>

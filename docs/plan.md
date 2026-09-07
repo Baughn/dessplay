@@ -1841,3 +1841,35 @@ playtesting judgment: a policy survey is not a promised human win rate.
 The player guide, design rules, decision rationale, architecture, testing
 strategy, and changelog describe the final behavior. No new protocol or
 synced-state schema was introduced.
+
+## Phase 36: Runtime-editable display layouts
+
+**Status: in progress (2026-09-07); whole-display completion is outstanding.**
+
+The accepted implementation is a staged migration to versioned local XML
+component templates, CSS, and one width-first terminal geometry pipeline.
+It retains synchronous Elm controllers. Native GUI rendering, scripting,
+player OSD, and standalone diagnostic output are outside scope.
+
+- [x] Embedded/custom bundle compiler, source diagnostics, typed entry schemas,
+  template reuse, cascade/custom properties, flex/grid cell allocation,
+  clipped scenes, and width-first text fragments.
+- [x] UI-thread renderer ownership; shared form composition and semantic
+  label/value/annotation rows; log header/body/footer and source anchors.
+- [x] Local discovery, CLI export/check, debounced background compilation,
+  stale/full-channel handling, and embedded F12 recovery tools.
+- [ ] Finish foundation: template-authored keyed repetition and rich bindings;
+  log dropdown overlay template; complete style integration.
+- [ ] Chat proof: all message variants, suggestions/input/recent projection,
+  separate subtitles, and timestamp-aligned bordered attachments with scroll crops.
+- [ ] Root/pane focus and named splitter geometry; Users, Playlist, all Series
+  modes, browsers/search, and semantic collection cells.
+- [ ] Remaining forms/dialogs, changelog, progress/status/keybars, modal layers,
+  every roguelike page and recovery panel; remove production legacy adapters.
+- [ ] Revision-keyed drag persistence and old PaneLayout import; file-only
+  demonstrations for panes, playlist columns, forms, roguelike sidebar, and
+  attachments; final geometry/interactions/image/reload/performance audit.
+
+The current usable authoring subset, examples, and migration limitations are
+documented in [ui-layouts.md](ui-layouts.md). Do not mark this phase complete
+until all six demonstrations work with live reload and no Rust edits.

@@ -456,6 +456,12 @@ struct MarqueeAnim {
 
 /// The whole TUI.
 pub struct Ui {
+    pub(crate) layout_options: Option<super::layout::LayoutOptions>,
+    pub(crate) layout_request: Option<char>,
+    pub(crate) layout_message: String,
+    pub(crate) layout_watch_error: String,
+    layout_tools: bool,
+    layout_tools_scroll: u16,
     me: UserId,
     chat: ChatPane,
     series: SeriesPane,
@@ -581,6 +587,12 @@ impl Ui {
             .as_deref()
             .is_some_and(|stored| me.0 != stored);
         let mut ui = Self {
+            layout_options: Default::default(),
+            layout_request: None,
+            layout_message: String::new(),
+            layout_watch_error: String::new(),
+            layout_tools: false,
+            layout_tools_scroll: 0,
             me,
             chat: ChatPane::default(),
             series: SeriesPane::default(),
@@ -1579,6 +1591,38 @@ impl Ui {
 
     /// Route one input event; returns the actions it produced.
     pub fn handle(&mut self, ev: Event<NoUserEvent>) -> Vec<UserAction> {
+        if super::components::plain(&ev) == Some(Key::Function(12)) {
+            self.layout_tools = !self.layout_tools;
+            self.cancel_layout_grabs();
+            for modal in &mut self.modals {
+                if let Modal::Roguelike(modal) = modal {
+                    modal.cancel_recovery();
+                }
+            }
+            return Vec::new();
+        }
+        if self.layout_tools {
+            match super::components::plain(&ev) {
+                Some(Key::Esc) => self.layout_tools = false,
+                Some(Key::Char(c @ ('r' | 'b'))) => self.layout_request = Some(c),
+                Some(Key::Char('d')) => {
+                    self.settings.pane_layout = PaneLayout::default();
+                    return vec![UserAction::SaveSettings(
+                        Box::new(self.settings.clone()),
+                        self.media_roots.clone(),
+                    )];
+                }
+                Some(Key::Down) => {
+                    self.layout_tools_scroll = self.layout_tools_scroll.saturating_add(1)
+                }
+                Some(Key::Up) => {
+                    self.layout_tools_scroll = self.layout_tools_scroll.saturating_sub(1)
+                }
+                Some(Key::Home) => self.layout_tools_scroll = 0,
+                _ => {}
+            }
+            return Vec::new();
+        }
         // Every human input cancels recovery before globals, mouse handling,
         // or modal routing. Closing/covering keys retain their usual meaning.
         if let Some(Modal::Roguelike(modal)) = self.modals.last_mut()
@@ -2701,12 +2745,26 @@ impl Ui {
 
     /// Render the whole screen (design.md, TUI Layout).
     pub fn draw(&mut self, frame: &mut Frame) {
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.draw_with_renderer(frame, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+
+    /// Render with the renderer constructed on the owning UI thread.
+    pub fn draw_with_renderer(
+        &mut self,
+        frame: &mut Frame,
+        renderer: &mut super::layout::Renderer,
+    ) {
         use tuirealm::component::Component;
         // Inline chat images hide while anything draws over the panes
         // (modals, the work overlay): a graphics-protocol image ignores
         // the cell z-order and would bleed through.
         self.chat.set_images_suppressed(
-            !self.modals.is_empty() || !self.hashing.is_empty() || !self.nyaa_imports.is_empty(),
+            self.layout_tools
+                || !self.modals.is_empty()
+                || !self.hashing.is_empty()
+                || !self.nyaa_imports.is_empty(),
         );
         let [main, status_area, keybar_area] = Layout::vertical([
             Constraint::Min(8),
@@ -2866,7 +2924,12 @@ impl Ui {
             );
         }
         if let Some(modal) = self.modals.last_mut() {
-            modal.as_component().view(frame, frame.area());
+            match modal {
+                Modal::Settings(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::ListEdit(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::Logs(modal) => modal.render_layout(frame, frame.area(), renderer),
+                modal => modal.as_component().view(frame, frame.area()),
+            }
         }
         if !matches!(
             self.modals.last(),
@@ -2878,6 +2941,59 @@ impl Ui {
         // cells *are* the picture (see apply_color_depth).
         let image_areas: Vec<Rect> = self.chat.image_areas().to_vec();
         super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth, &image_areas);
+        if self.layout_tools
+            && let Ok(bundle) = super::layout::LayoutBundle::builtin()
+        {
+            let mut recovery = super::layout::Renderer::new(bundle);
+            let body = format!(
+                "r Reload · b Use bundled · d Reset drag sizes · ↑/↓ Scroll · Esc Close\nDirectory: {}\nActive: {}\n{}\n{}",
+                self.layout_options
+                    .as_ref()
+                    .and_then(|o| o.directory.clone())
+                    .unwrap_or_else(super::layout::default_directory)
+                    .display(),
+                if renderer.bundle().source.is_some() {
+                    "custom"
+                } else {
+                    "bundled"
+                },
+                format_args!("{}\n{}", self.layout_message, self.layout_watch_error),
+                renderer.inspect()
+            );
+            let max = body
+                .lines()
+                .count()
+                .saturating_sub(frame.area().height.saturating_sub(2) as usize);
+            self.layout_tools_scroll = self
+                .layout_tools_scroll
+                .min(max.min(u16::MAX as usize) as u16);
+            let data = super::layout::Presentation::default()
+                .text("title", "Layout tools")
+                .text(
+                    "body",
+                    body.lines()
+                        .skip(self.layout_tools_scroll as usize)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            if let Ok(scene) = recovery.arrange("layout-tools", frame.area(), &data) {
+                frame.render_widget(tuirealm::ratatui::widgets::Clear, frame.area());
+                scene.paint(frame);
+                super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth, &[]);
+            }
+        }
+    }
+
+    /// Configure local layout discovery before moving the controller to its thread.
+    pub fn set_layout_options(&mut self, options: super::layout::LayoutOptions) {
+        self.layout_options = Some(options);
+    }
+
+    pub(crate) fn cancel_layout_grabs(&mut self) {
+        self.splitter_drag = None;
+        if self.chat.dragging() {
+            self.chat.clear_selection();
+        }
     }
 
     /// The hashing progress overlay: visually modal (centered, on top

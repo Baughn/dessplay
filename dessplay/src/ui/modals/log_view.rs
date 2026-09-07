@@ -7,7 +7,7 @@ use tuirealm::ratatui::widgets::Paragraph;
 pub struct LogModal {
     logging: Option<LiveLogging>,
     revision: u64,
-    // None follows the tail; stable line/fragment identity survives eviction.
+    // None follows the tail; stable line/source offsets survive wrapping changes.
     anchor: Option<(u64, usize)>,
     row_keys: Vec<(u64, usize)>,
     top: usize,
@@ -70,26 +70,43 @@ impl LogModal {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
+        if let Ok(bundle) = crate::ui::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut crate::ui::layout::Renderer::new(bundle));
+        }
+    }
+
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut crate::ui::layout::Renderer,
+    ) {
         // Full width, upper two-thirds. Never grow downward on a tiny terminal.
         let modal = Self::area(area);
         frame.render_widget(Clear, modal);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::border_style(true))
-            .title(if self.anchor.is_none() {
-                "Logs · LIVE"
-            } else {
-                "Logs · scrollback"
-            });
-        let inner = block.inner(modal);
-        frame.render_widget(block, modal);
-        if inner.is_empty() {
-            return;
-        }
+        let title = if self.anchor.is_none() {
+            "Logs · LIVE"
+        } else {
+            "Logs · scrollback"
+        };
+        let data = crate::ui::layout::Presentation::default()
+            .text("title", title)
+            .slot("header", 0, modal.height.saturating_sub(2).min(3))
+            .slot("body", 0, 0)
+            .slot("footer", 0, 1);
+        let scene = match renderer.arrange("log", modal, &data) {
+            Ok(scene) => scene,
+            Err(error) => {
+                tracing::error!(%error, "log layout failed");
+                return;
+            }
+        };
+        scene.paint(frame);
+        let body = scene.slot("body");
         let Some(logging) = &self.logging else {
             frame.render_widget(
                 Paragraph::new("Live logging is unavailable in this session."),
-                inner,
+                body,
             );
             return;
         };
@@ -111,44 +128,24 @@ impl LogModal {
                 style,
             )));
         }
-        let header_height = inner.height.min(3);
         frame.render_widget(
-            Paragraph::new(controls),
-            Rect {
-                height: header_height,
-                ..inner
-            },
+            Paragraph::new(controls).style(scene.style("header")),
+            scene.slot("header"),
         );
-        let body = Rect {
-            y: inner.y + header_height,
-            height: inner.height.saturating_sub(header_height + 1),
-            ..inner
-        };
         if body.width > 0 && body.height > 0 {
             let mut rows = Vec::new();
             self.row_keys.clear();
             for line in lines {
-                for (part, (text, _)) in super::super::components::wrap_body(
-                    &line.text,
-                    body.width as usize,
-                    body.width as usize,
-                )
-                .into_iter()
-                .enumerate()
-                {
-                    self.row_keys.push((line.id, part));
-                    rows.push(Line::from(text));
+                for fragment in renderer.measured_text(&line.text, body.width).iter() {
+                    self.row_keys.push((line.id, fragment.source.start));
+                    rows.push(Line::from(fragment.text.clone()));
                 }
             }
             self.page = body.height as usize;
             let max = rows.len().saturating_sub(self.page);
-            self.top = self.anchor.map_or(max, |key| {
-                self.row_keys
-                    .iter()
-                    .position(|row| *row >= key)
-                    .unwrap_or(max)
-                    .min(max)
-            });
+            self.top = self
+                .anchor
+                .map_or(max, |key| source_anchor(&self.row_keys, key).min(max));
             if self.anchor.is_some() {
                 self.anchor = self.row_keys.get(self.top).copied();
             }
@@ -158,7 +155,8 @@ impl LogModal {
                         .skip(self.top)
                         .take(self.page)
                         .collect::<Vec<_>>(),
-                ),
+                )
+                .style(scene.style("body")),
                 body,
             );
         }
@@ -166,14 +164,11 @@ impl LogModal {
             "Tab: control · Enter: dropdown · ↑/↓/PgUp/PgDn: scroll · End: live · F11/Esc: close",
         );
         frame.render_widget(
-            Paragraph::new(footer).style(theme::dim()),
-            Rect {
-                y: inner.bottom().saturating_sub(1),
-                height: 1,
-                ..inner
-            },
+            Paragraph::new(footer).style(theme::dim().patch(scene.style("footer"))),
+            scene.slot("footer"),
         );
         if let Some(selected) = self.dropdown {
+            let inner = scene.slot("header").union(body).union(scene.slot("footer"));
             let popup = Rect {
                 x: inner.x,
                 y: (inner.y + self.focus as u16 + 1).min(inner.bottom()),
@@ -198,6 +193,30 @@ impl LogModal {
                 &mut state,
             );
         }
+    }
+}
+
+fn source_anchor(rows: &[(u64, usize)], key: (u64, usize)) -> usize {
+    let after = rows.partition_point(|row| *row <= key);
+    if after > 0 && rows[after - 1].0 == key.0 {
+        after - 1
+    } else {
+        after
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::source_anchor;
+    #[test]
+    fn resizing_retains_the_fragment_containing_the_original_source_offset() {
+        assert_eq!(
+            source_anchor(&[(1, 0), (1, 8), (1, 16), (2, 0)], (1, 12)),
+            1
+        );
+        assert_eq!(source_anchor(&[(1, 0), (1, 20), (2, 0)], (1, 12)), 0);
+        assert_eq!(source_anchor(&[(2, 0), (2, 8)], (1, 12)), 0);
+        assert_eq!(source_anchor(&[], (1, 12)), 0);
     }
 }
 

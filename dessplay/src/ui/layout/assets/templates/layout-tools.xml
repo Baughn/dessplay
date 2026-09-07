@@ -1,0 +1,7 @@
+<templates version="1">
+  <template name="layout-tools">
+    <column id="layout-tools" title="title" style="border: 1; border-color: yellow">
+      <text bind="body" />
+    </column>
+  </template>
+</templates>

@@ -1065,6 +1065,15 @@ impl SettingsModal {
         self.form.render(frame, area);
     }
 
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        self.form.render_layout(frame, area, renderer);
+    }
+
     fn switch_category(&mut self, right: bool) {
         let current = self.form.model.category;
         self.selections[current.index()] = self.form.selected_row();
@@ -2037,7 +2046,7 @@ impl AppComponent<Msg, NoUserEvent> for ConfirmModal {
 
 // ---- List entry editor -------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ListField {
     Name,
     NeroName,
@@ -2138,6 +2147,15 @@ impl ListEditModal {
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         self.form.render(frame, area);
+    }
+
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        self.form.render_layout(frame, area, renderer);
     }
 }
 

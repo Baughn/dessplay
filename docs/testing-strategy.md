@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-08-31
+Last updated: 2026-09-07
 
 ## Table of Contents
 
@@ -143,6 +143,19 @@ overlay, reopening active imports, and `d` cancellation.
 ---
 
 ## Running the Suite
+
+The slow-mpv-startup Unix-socket regression is ignored by default because
+restricted sandboxes cannot bind its socket. Run it explicitly with
+`cargo nextest run --run-ignored only -E 'test(a_slow_mpv_startup_is_not_a_crash)'`
+outside that restriction. It remains a deterministic paused-time regression.
+
+Runtime layout tests compile embedded and overridden assets through the same
+compiler, check source errors and cascade behavior, exercise template reuse
+and cycle rejection, and property-test translation invariance, containment,
+and Unicode source ranges. Bounded-channel tests cover reload retry and
+stale-result rejection without filesystem timing. Existing form snapshots,
+editor behavior, and log scrollback scenarios remain compatibility checks.
+The release full profile remains the responsiveness/CPU gate during migration.
 
 The stop hook and the dev loop run tests under **cargo-nextest** (in the
 dev shell; the hook falls back to plain `cargo test` when nextest is not

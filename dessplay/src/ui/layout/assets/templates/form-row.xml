@@ -1,0 +1,9 @@
+<templates version="1">
+  <template name="form-row">
+    <row id="form-row" class="form-row">
+      <text class="form-label" bind="label" if="labelled" />
+      <text class="form-value" bind="value" />
+      <text class="form-annotation" bind="annotation" if="annotated" />
+    </row>
+  </template>
+</templates>

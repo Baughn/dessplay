@@ -48,6 +48,9 @@ arboard = { workspace = true }
 # blocking pool, same pattern as the server's titles-dump fetch).
 ureq = { workspace = true }
 quick-xml = { workspace = true }
+cssparser = "0.37"
+taffy = "0.7"
+notify = "8"
 percent-encoding = { workspace = true }
 librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls"] }
 

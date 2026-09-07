@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 
 This document describes DessPlay's internal structure: actor boundaries,
 message flow, and concurrency model. For the external protocol, see
@@ -34,6 +34,13 @@ messages are sent to each actor. This replaces the ad-hoc "event" types that
 accumulated in the prototype.
 
 ### Unidirectional Data Flow
+
+The interactive layout compiler is a local filesystem worker, independent
+of the synchronized actors. It sends immutable validated bundles over a
+bounded channel; the UI shell owns the renderer and installs candidates at
+frame boundaries. `Ui` keeps controller state and remains movable before
+thread startup. Taffy and rendering caches are constructed on the UI thread.
+See [ui-layouts.md](ui-layouts.md) for the staged authoring contract.
 
 State flows in one direction: actors produce outputs in response to inputs.
 There are no circular dependencies between actors. The event loop coordinates

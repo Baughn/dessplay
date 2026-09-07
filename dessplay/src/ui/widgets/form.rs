@@ -8,14 +8,12 @@ use tuirealm::event::{Event, Key, NoUserEvent};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Style;
-use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
-use unicode_width::UnicodeWidthStr;
+use tuirealm::ratatui::text::Line;
+use tuirealm::ratatui::widgets::{Clear, Paragraph};
 
 use super::keys::{ctrl, plain, typed};
 use super::line::TextField;
-use super::list::{ListCursor, render_list_body};
-use super::table::{Align, Cell, table_row, truncate_display_start};
+use super::list::ListCursor;
 use crate::ui::theme;
 
 /// The centered overlay area: `percent` of the frame, clamped.
@@ -200,42 +198,6 @@ impl<Id> FormRow<Id> {
         self.gap_after = true;
         self
     }
-
-    fn line(&self, width: usize) -> Line<'static> {
-        let annotation_width = self
-            .annotation
-            .as_ref()
-            .map(|(text, _)| text.width().min((width / 2).max(1)))
-            .unwrap_or(0);
-        let reserved = if annotation_width == 0 {
-            0
-        } else {
-            annotation_width + 1
-        };
-        let flex_width = width.saturating_sub(reserved).max(8);
-        let display = self.control.display();
-        let content = match &self.control {
-            FormControl::Action { .. } => self.control.display(),
-            _ if self.preserve_value_end => {
-                let value_width = flex_width.saturating_sub(24);
-                let (value, _) = truncate_display_start(&display, value_width);
-                format!("{:<24}{value}", self.label)
-            }
-            _ => format!("{:<24}{display}", self.label),
-        };
-        let cells = self
-            .annotation
-            .as_ref()
-            .map_or_else(Vec::new, |(text, style)| {
-                vec![Cell::new(
-                    text.clone(),
-                    *style,
-                    annotation_width,
-                    Align::Right,
-                )]
-            });
-        table_row(width, vec![Span::styled(content, self.style)], cells)
-    }
 }
 
 /// A semantic edit emitted by the shared form interaction layer.
@@ -283,7 +245,7 @@ impl FormError {
 /// the model projects owned rows and applies edits by semantic row identity.
 pub trait FormModel {
     /// Stable row identity.
-    type RowId: Clone + Eq;
+    type RowId: Clone + Eq + std::fmt::Debug;
     /// What a completed form emits (the app's message type).
     type Out;
 
@@ -602,98 +564,150 @@ impl<M: FormModel> Form<M> {
     /// Render a centered modal with fixed header, notes, and Save footer
     /// around a scrollable list of controls.
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        if let Ok(bundle) = crate::ui::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut crate::ui::layout::Renderer::new(bundle));
+        }
+    }
+
+    /// Render using the UI thread's active template renderer, preserving editors.
+    pub fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut crate::ui::layout::Renderer,
+    ) {
         self.reconcile_selection();
         let (px, py) = self.model.overlay_percent();
         let modal = overlay(area, px, py);
         frame.render_widget(Clear, modal);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::border_style(true))
-            .title(self.model.title());
-        let inner = block.inner(modal);
-        frame.render_widget(block, modal);
-        if inner.width == 0 || inner.height == 0 {
-            return;
-        }
-
         let header = self.model.header();
         let notes = self.model.notes();
-        let header_height = (header.len() as u16).min(inner.height.saturating_sub(1));
+        // The fixed-footer priority remains a measured-content policy.
+        let available = modal.height.saturating_sub(2);
+        let header_height = (header.len() as u16).min(available.saturating_sub(1));
         let notes_height =
-            (notes.len() as u16).min(inner.height.saturating_sub(header_height).saturating_sub(1));
-        let body_height = inner
-            .height
-            .saturating_sub(header_height)
-            .saturating_sub(notes_height)
-            .saturating_sub(1);
-
-        let header_area = Rect::new(inner.x, inner.y, inner.width, header_height);
-        let body_area = Rect::new(inner.x, inner.y + header_height, inner.width, body_height);
-        let notes_area = Rect::new(
-            inner.x,
-            body_area.y + body_area.height,
-            inner.width,
-            notes_height,
-        );
-        let save_area = Rect::new(inner.x, notes_area.y + notes_area.height, inner.width, 1);
+            (notes.len() as u16).min(available.saturating_sub(header_height).saturating_sub(1));
+        let data = crate::ui::layout::Presentation::default()
+            .text("title", self.model.title())
+            .slot("header", 0, header_height)
+            .slot("body", 0, 0)
+            .slot("notes", 0, notes_height)
+            .slot("save", 0, available.min(1))
+            .slot("editor", 0, 1)
+            .slot("error", 0, 1)
+            .boolean("editing", self.editor.is_some())
+            .boolean(
+                "invalid",
+                self.editor.as_ref().is_some_and(|e| e.error.is_some()),
+            );
+        let scene = match renderer.arrange("form", modal, &data) {
+            Ok(scene) => scene,
+            Err(error) => {
+                tracing::error!(%error, "form layout failed");
+                return;
+            }
+        };
+        scene.paint(frame);
+        let header_area = scene.slot("header");
+        let body_area = scene.slot("body");
+        let notes_area = scene.slot("notes");
+        let save_area = scene.slot("save");
 
         if header_height > 0 {
-            frame.render_widget(Paragraph::new(header), header_area);
+            frame.render_widget(
+                Paragraph::new(header).style(scene.style("header")),
+                header_area,
+            );
         }
 
         let rows = self.model.rows();
-        if body_height > 0 {
-            let mut items = Vec::with_capacity(rows.len());
-            let mut selected_item = None;
-            for (index, row) in rows.iter().enumerate() {
-                if self.cursor.index() == index {
-                    selected_item = Some(items.len());
-                }
-                items.push(ListItem::new(row.line(inner.width as usize)));
-                if row.gap_after {
-                    items.push(ListItem::new(Line::raw("")));
-                }
+        if !body_area.is_empty() {
+            let items = rows
+                .iter()
+                .map(|row| {
+                    let mut data = crate::ui::layout::Presentation::default()
+                        .text("label", row.label)
+                        .text("value", row.control.display())
+                        .text(
+                            "annotation",
+                            row.annotation
+                                .as_ref()
+                                .map(|(text, _)| text.clone())
+                                .unwrap_or_default(),
+                        )
+                        .style("label", row.style)
+                        .style("value", row.style)
+                        .style(
+                            "annotation",
+                            row.annotation
+                                .as_ref()
+                                .map(|(_, style)| *style)
+                                .unwrap_or_default(),
+                        )
+                        .boolean(
+                            "labelled",
+                            !matches!(row.control, FormControl::Action { .. }),
+                        )
+                        .boolean("annotated", row.annotation.is_some());
+                    if row.preserve_value_end {
+                        data = data.preserve_end("value");
+                    }
+                    crate::ui::layout::PresentedRow {
+                        key: format!("{:?}", row.id),
+                        data,
+                        gap_after: row.gap_after,
+                    }
+                })
+                .collect::<Vec<_>>();
+            if let Err(error) = renderer.paint_rows(
+                frame,
+                body_area,
+                "form-row",
+                &items,
+                Some(self.cursor.index()),
+                scene.style("body"),
+            ) {
+                tracing::error!(%error, "form row layout failed");
             }
-            render_list_body(frame, body_area, items, selected_item, selected_item);
         }
 
         if notes_height > 0 {
-            frame.render_widget(Paragraph::new(notes), notes_area);
+            frame.render_widget(
+                Paragraph::new(notes).style(scene.style("notes")),
+                notes_area,
+            );
         }
 
         let save_line = match self.model.save_hint() {
             None => Line::raw("[Save]"),
             Some(hint) => Line::styled(format!("[Save] — needs {hint}"), theme::dim()),
         };
-        let save = Paragraph::new(save_line).style(if self.cursor.index() == rows.len() {
-            theme::highlight_style()
-        } else {
-            Style::default()
-        });
+        let save = Paragraph::new(save_line).style(scene.style("save").patch(
+            if self.cursor.index() == rows.len() {
+                theme::highlight_style()
+            } else {
+                Style::default()
+            },
+        ));
         frame.render_widget(save, save_area);
 
+        scene.paint_overlays(frame);
         if let Some(editor) = &mut self.editor {
-            let edit_height = if editor.error.is_some() { 4 } else { 3 };
-            let edit_area = Rect {
-                x: modal.x + 2,
-                y: modal
-                    .y
-                    .saturating_add(modal.height.saturating_sub(edit_height + 1)),
-                width: modal.width.saturating_sub(4),
-                height: edit_height,
-            };
-            frame.render_widget(Clear, edit_area);
-            let field_area = Rect::new(edit_area.x, edit_area.y, edit_area.width, 3);
-            editor.input.render(frame, field_area, true, editor.masked);
+            editor
+                .input
+                .render_content(frame, scene.slot("editor"), true, editor.masked);
+            frame
+                .buffer_mut()
+                .set_style(scene.slot("editor"), scene.style("editor"));
             if let Some(error) = &editor.error {
-                let error_area = Rect::new(edit_area.x, edit_area.y + 3, edit_area.width, 1);
                 frame.render_widget(
                     Paragraph::new(Line::styled(
                         error.clone(),
-                        theme::tone_style(crate::ui::props::Tone::Blocked),
+                        theme::tone_style(crate::ui::props::Tone::Blocked)
+                            .patch(scene.style("error")),
                     )),
-                    error_area,
+                    scene.slot("error"),
                 );
             }
         }
@@ -708,7 +722,7 @@ mod tests {
     use tuirealm::ratatui::backend::TestBackend;
     use tuirealm::ratatui::layout::Rect;
 
-    #[derive(Clone, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     enum Field {
         Text,
         Flag,
@@ -904,12 +918,7 @@ mod tests {
     #[test]
     fn secret_row_masks_its_value() {
         let row = FormRow::secret(Field::Text, "Password", "hunter2");
-        let rendered: String = row
-            .line(50)
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+        let rendered = row.control.display();
         assert!(!rendered.contains("hunter2"), "{rendered:?}");
         assert!(rendered.contains("*******"), "{rendered:?}");
     }

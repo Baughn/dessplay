@@ -20,6 +20,12 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Cli {
+    /// Override the local terminal layout directory.
+    #[arg(long, conflicts_with = "builtin_layout")]
+    layout_dir: Option<std::path::PathBuf>,
+    /// Ignore custom layouts for this session (F12 Reload resumes them).
+    #[arg(long)]
+    builtin_layout: bool,
     /// Run headless as a seeder: no TUI, no player, never gates
     /// playback. Configured purely by flags/env; persists nothing.
     #[arg(long)]
@@ -104,6 +110,11 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
+    /// Export or validate local terminal layouts without starting the client.
+    Layout {
+        #[command(subcommand)]
+        command: LayoutCommand,
+    },
     /// One-shot import of the tracking spreadsheet (CSV exports, one
     /// file per sheet) into The List. Re-imports update existing
     /// entries by name instead of duplicating them.
@@ -120,10 +131,37 @@ enum Command {
     },
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum LayoutCommand {
+    /// Export all embedded defaults without overwriting existing files.
+    Init { path: Option<std::path::PathBuf> },
+    /// Validate the complete bundle, including embedded fallbacks.
+    Check { path: Option<std::path::PathBuf> },
+}
+
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     load_dotenv();
     let cli = Cli::parse();
+    if let Some(Command::Layout { command }) = &cli.command {
+        use dessplay::ui::layout::{LayoutBundle, default_directory};
+        match command {
+            LayoutCommand::Init { path } => {
+                let path = path.clone().unwrap_or_else(default_directory);
+                LayoutBundle::init(&path)?;
+                println!(
+                    "Editable defaults exported to {} (existing files kept)",
+                    path.display()
+                );
+            }
+            LayoutCommand::Check { path } => {
+                let path = path.clone().unwrap_or_else(default_directory);
+                let bundle = LayoutBundle::load(&path)?;
+                println!("Layout valid: {} ({})", path.display(), bundle.revision);
+            }
+        }
+        return Ok(());
+    }
     let interactive =
         cli.command.is_none() && !cli.seeder && !cli.headless && !cli.dump && !cli.reset_sync;
     // The TUI owns the screen: route logs to a file there. Without
@@ -176,6 +214,10 @@ fn main() -> color_eyre::Result<()> {
     }
 
     let args = HeadlessArgs {
+        layout_options: dessplay::ui::layout::LayoutOptions {
+            directory: cli.layout_dir,
+            builtin: cli.builtin_layout,
+        },
         seeder: cli.seeder,
         server: cli.server,
         username: cli.username,
@@ -210,6 +252,7 @@ fn main() -> color_eyre::Result<()> {
             watchers,
             dry_run,
         }) => runtime.block_on(run_import(args, files, watchers, dry_run)),
+        Some(Command::Layout { .. }) => Ok(()),
     };
     if let Err(message) = result {
         eprintln!("error: {message}");

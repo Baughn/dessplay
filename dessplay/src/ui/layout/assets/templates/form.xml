@@ -1,0 +1,14 @@
+<templates version="1">
+  <template name="form">
+    <column id="form" title="title">
+      <slot name="header" />
+      <scroll id="form-scroll"><slot name="body" /></scroll>
+      <slot name="notes" />
+      <slot name="save" />
+      <overlay id="form-editor" if="editing">
+        <box id="form-editor-frame"><slot name="editor" /></box>
+        <slot name="error" if="invalid" />
+      </overlay>
+    </column>
+  </template>
+</templates>

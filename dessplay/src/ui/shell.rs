@@ -334,6 +334,31 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     actions: mpsc::Sender<UserAction>,
     adapter: &mut A,
 ) {
+    let builtin = match super::layout::LayoutBundle::builtin() {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            tracing::error!(%error, "embedded layout is invalid");
+            return;
+        }
+    };
+    let mut renderer = super::layout::Renderer::new(builtin.clone());
+    let mut custom_enabled = ui.layout_options.as_ref().is_some_and(|o| !o.builtin);
+    let watcher = ui.layout_options.as_ref().map(|options| {
+        let directory = options
+            .directory
+            .clone()
+            .unwrap_or_else(super::layout::default_directory);
+        let directory = if directory.is_absolute() {
+            directory
+        } else {
+            std::env::current_dir().unwrap_or_default().join(directory)
+        };
+        let watcher = super::layout::Watcher::start(directory);
+        if custom_enabled {
+            watcher.reload();
+        }
+        watcher
+    });
     // Deliberately NO Terminal::clear() here (or anywhere while the
     // input thread lives): ratatui's clear() queries the cursor
     // position, and crossterm answers that by reading the terminal's
@@ -341,7 +366,9 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     // so the query burns its full 2-second timeout. The alternate
     // screen is already blank and the first fullscreen draw paints
     // every cell.
-    let _ = adapter.raw_mut().draw(|frame| ui.draw(frame));
+    let _ = adapter
+        .raw_mut()
+        .draw(|frame| ui.draw_with_renderer(frame, &mut renderer));
     loop {
         // Adaptive cadence: ~100ms while a marquee pass animates, the
         // lazy 1s otherwise. Idle cost is unchanged — the timeout arm
@@ -350,9 +377,15 @@ pub fn run_ui_loop<A: TerminalAdapter>(
             Ok(input) => input,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let mut redraw = ui.advance_clock(now_millis());
+                redraw |= poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
                 redraw |= dispatch_due_recovery(&mut ui, &actions);
                 dispatch_image_fetches(&mut ui, &actions);
-                if redraw && adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err() {
+                if redraw
+                    && adapter
+                        .raw_mut()
+                        .draw(|frame| ui.draw_with_renderer(frame, &mut renderer))
+                        .is_err()
+                {
                     break;
                 }
                 continue;
@@ -443,10 +476,61 @@ pub fn run_ui_loop<A: TerminalAdapter>(
         }
         dispatch_due_recovery(&mut ui, &actions);
         dispatch_image_fetches(&mut ui, &actions);
-        if adapter.raw_mut().draw(|frame| ui.draw(frame)).is_err() {
+        match ui.layout_request.take() {
+            Some('r') => {
+                custom_enabled = true;
+                if let Some(watcher) = &watcher {
+                    watcher.reload();
+                }
+            }
+            Some('b') => {
+                custom_enabled = false;
+                renderer.install(builtin.clone());
+                ui.cancel_layout_grabs();
+            }
+            _ => {}
+        }
+        poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
+        if adapter
+            .raw_mut()
+            .draw(|frame| ui.draw_with_renderer(frame, &mut renderer))
+            .is_err()
+        {
             break;
         }
     }
+}
+
+fn poll_layout(
+    ui: &mut Ui,
+    renderer: &mut super::layout::Renderer,
+    watcher: Option<&super::layout::Watcher>,
+    enabled: bool,
+) -> bool {
+    let mut changed = false;
+    if let Some(error) = watcher.and_then(|w| w.error()) {
+        ui.layout_watch_error = error.to_string();
+        changed = true;
+    }
+    let Some(result) = watcher.and_then(|w| w.poll()) else {
+        return changed;
+    };
+    if !enabled {
+        return changed;
+    }
+    match result {
+        Ok(bundle) => {
+            tracing::info!(revision = %bundle.revision, "layout installed");
+            renderer.install(bundle);
+            ui.cancel_layout_grabs();
+            ui.layout_message = "Layout valid".into();
+        }
+        Err(error) => {
+            tracing::warn!(%error, "keeping the last working layout");
+            ui.layout_message = format!("{error}\nKeeping the last working layout");
+        }
+    }
+    true
 }
 
 /// Forward queued chat-image fetch requests to the main loop. Lossy on

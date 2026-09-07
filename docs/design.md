@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1616,6 +1616,31 @@ CSVs:
 
 ---
 ## TUI Layout
+
+### Runtime layout templates
+
+Interactive terminal layouts use versioned local component templates and a
+bounded CSS subset, migrated in working stages. The currently editable
+surfaces and supported authoring contract are documented in
+[ui-layouts.md](ui-layouts.md). The complete display migration is tracked in
+[plan.md](plan.md#phase-36-runtime-editable-display-layouts).
+
+The binary embeds valid defaults. Custom templates replace definitions by
+name; custom CSS follows embedded CSS. Missing definitions use embedded
+ones. `--layout-dir` changes the local directory; `--builtin-layout` starts
+from defaults. `layout init` exports without overwriting; `layout check`
+validates without starting a client. Layout files never enter synced state.
+
+Reloads compile off the UI thread after a 200 ms debounce. Only complete,
+validated candidates install at frame boundaries. Errors retain the previous
+bundle, or embedded defaults at startup. Reload preserves controller state
+and held text selections but cancels active pointer grabs. F12 provides
+embedded recovery tools: diagnostics, arranged templates/declarations,
+Reload, Use bundled, and Reset drag sizes.
+
+RGB text is quantized to the finite terminal palette in limited mode.
+Explicit background colors survive the legacy theme adapter during the
+migration. Image pixels bypass text color conversion.
 
 ### UI Principles
 

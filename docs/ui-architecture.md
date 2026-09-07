@@ -1,5 +1,34 @@
 # UI Architecture
 
+## Runtime layout migration (2026-09-07)
+
+`ui::layout::LayoutBundle` owns validated templates, source diagnostics,
+styles, and a content revision. It is Send + Sync and independent of UI
+controllers. `Renderer` owns Taffy, arranged-scene caches, and measured log
+fragments; production constructs it inside `run_ui_loop`, after `Ui` has
+moved to its thread. Tests may construct the same renderer locally and call
+`Ui::draw_with_renderer`; the older `draw` entry point is a bundled-layout
+convenience adapter.
+
+`Presentation` supplies typed text, booleans, semantic text styles, and
+primitive intrinsic dimensions. `RenderedScene` publishes clipped slot
+bounds and source-mapped fragments together. Shared forms expose semantic
+label/value/annotation rows keyed by controller identity; only visible rows
+become trees. The form controller retains editors and selection. The log
+viewer measures through the renderer and anchors by line identity plus
+source offset. Existing primitive and unmigrated widget rendering remains
+behind temporary adapters while the migration proceeds.
+
+The filesystem worker owns notify and compiles candidate bundles after
+debouncing. A separate capacity-one channel retries full delivery, and an
+atomic requested generation makes queued stale candidates ineligible. The
+shell polls candidates before drawing and installs successful bundles at
+that boundary. UI inputs retain the synchronous Elm routing model. F12
+capture precedes other input, preserves covered modal state, and cancels
+automated roguelike recovery. See [ui-layouts.md](ui-layouts.md) for the
+current authoring contract and [plan.md](plan.md#phase-36-runtime-editable-display-layouts)
+for outstanding migration work.
+
 Last updated: 2026-09-06
 
 DessPlay uses **tui-realm** as its TUI framework, providing an Elm-style
