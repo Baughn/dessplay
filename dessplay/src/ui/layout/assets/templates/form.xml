@@ -1,4 +1,8 @@
 <templates version="1">
+  <template name="settings-form"><box><overlay class="form-modal" placement="modal"><use template="form"/></overlay></box></template>
+  <template name="list-edit-form"><box class="list-edit-form"><overlay class="form-modal" placement="modal"><use template="form"/></overlay></box></template>
+  <template name="form-save"><flow id="form-save"><text bind="save-label"/><text bind="save-needs" if="save-blocked"/><text bind="save-hint" if="save-blocked"/></flow></template>
+  <template name="form-error"><text id="form-error" bind="error"/></template>
   <template name="form">
     <column id="form" title="title">
       <slot id="form-header" name="header" />

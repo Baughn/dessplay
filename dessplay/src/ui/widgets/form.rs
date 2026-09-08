@@ -8,8 +8,6 @@ use tuirealm::event::{Event, Key, NoUserEvent};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::Style;
-use tuirealm::ratatui::text::Line;
-use tuirealm::ratatui::widgets::{Clear, Paragraph};
 
 use super::keys::{ctrl, plain, typed};
 use super::line::TextField;
@@ -17,6 +15,7 @@ use super::list::ListCursor;
 use crate::ui::theme;
 
 /// The centered overlay area: `percent` of the frame, clamped.
+#[cfg(test)]
 pub fn overlay(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     // Widen to u32 for the multiply: `area.width * percent` overflows u16 on
     // a very wide terminal (panic in debug, garbage rect in release). The
@@ -103,7 +102,7 @@ impl FormControl {
             | FormControl::ReadOnly { value } => value.clone(),
             FormControl::Secret { value } => "*".repeat(value.chars().count()),
             FormControl::Toggle { value } => if *value { "yes" } else { "no" }.into(),
-            FormControl::Action { label } => format!("[{label}]"),
+            FormControl::Action { label } => label.clone(),
         }
     }
 }
@@ -312,9 +311,9 @@ pub trait FormModel {
     /// Output of a successful save.
     fn save(&self) -> Self::Out;
 
-    /// Overlay size as (percent_x, percent_y).
-    fn overlay_percent(&self) -> (u16, u16) {
-        (70, 70)
+    /// Template entry for this form's semantic kind.
+    fn layout_template(&self) -> &'static str {
+        "settings-form"
     }
 }
 
@@ -599,17 +598,9 @@ impl<M: FormModel> Form<M> {
         renderer: &mut crate::ui::layout::Renderer,
     ) {
         self.reconcile_selection();
-        let (px, py) = self.model.overlay_percent();
-        let modal = overlay(area, px, py);
-        frame.render_widget(Clear, modal);
 
         let tabs = self.model.tabs();
         let notes = self.model.notes();
-        // The fixed-footer priority remains a measured-content policy.
-        let available = modal.height.saturating_sub(2);
-        let header_height = u16::from(!tabs.is_empty()).min(available.saturating_sub(1));
-        let notes_height =
-            (notes.len() as u16).min(available.saturating_sub(header_height).saturating_sub(1));
         let tab_items: Vec<_> = tabs
             .into_iter()
             .map(|tab| {
@@ -643,6 +634,35 @@ impl<M: FormModel> Form<M> {
                     .style("body", note.style),
             })
             .collect();
+        let header_height = u16::from(!tab_items.is_empty());
+        let notes_height = note_items.len().min(u16::MAX as usize) as u16;
+        let hint = self.model.save_hint();
+        let save_style = if hint.is_some() {
+            theme::dim()
+        } else {
+            Style::default()
+        }
+        .patch(if self.save_selected() {
+            theme::highlight_style()
+        } else {
+            Style::default()
+        });
+        let save_data = crate::ui::layout::Presentation::default()
+            .text("save-label", "[Save]")
+            .text("save-needs", "— needs")
+            .text("save-hint", hint.clone().unwrap_or_default())
+            .boolean("save-blocked", hint.is_some())
+            .component_style("form-save", save_style)
+            .selected(self.save_selected());
+        let error_data = crate::ui::layout::Presentation::default()
+            .text(
+                "error",
+                self.editor
+                    .as_ref()
+                    .and_then(|e| e.error.clone())
+                    .unwrap_or_default(),
+            )
+            .style("error", theme::tone_style(crate::ui::props::Tone::Blocked));
         let data = crate::ui::layout::Presentation::default()
             .text("title", self.model.title())
             .list("tabs", tab_items.clone())
@@ -650,7 +670,7 @@ impl<M: FormModel> Form<M> {
             .slot("header", 0, header_height)
             .slot("body", 0, 0)
             .slot("notes", 0, notes_height)
-            .slot("save", 0, available.min(1))
+            .slot("save", 0, 1)
             .slot("editor", 0, 1)
             .slot("error", 0, 1)
             .boolean("editing", self.editor.is_some())
@@ -658,120 +678,102 @@ impl<M: FormModel> Form<M> {
                 "invalid",
                 self.editor.as_ref().is_some_and(|e| e.error.is_some()),
             );
-        let scene = match renderer.arrange("form", modal, &data) {
+        let scene = match renderer.arrange(self.model.layout_template(), area, &data) {
             Ok(scene) => scene,
             Err(error) => {
                 tracing::error!(%error, "form layout failed");
                 return;
             }
         };
-        scene.paint(frame);
-        let header_area = scene.slot("header");
-        let body_area = scene.slot("body");
-        let notes_area = scene.slot("notes");
-        let save_area = scene.slot("save");
-
-        if header_height > 0 {
-            let data = crate::ui::layout::Presentation::default()
-                .list("tabs", tab_items)
-                .inherit(scene.style("header"), 0);
-            if let Ok(header) = renderer.arrange("form-tabs", header_area, &data) {
-                header.paint_with_slots(frame, |_, _, _, _| {});
-            }
-        }
-
         let rows = self.model.rows();
-        if !body_area.is_empty() {
-            let items = rows
-                .iter()
-                .map(|row| {
-                    let mut data = crate::ui::layout::Presentation::default()
-                        .text("label", row.label)
-                        .text("value", row.control.display())
-                        .text(
-                            "annotation",
-                            row.annotation
-                                .as_ref()
-                                .map(|(text, _)| text.clone())
-                                .unwrap_or_default(),
-                        )
-                        .style("label", row.style)
-                        .style("value", row.style)
-                        .style(
-                            "annotation",
-                            row.annotation
-                                .as_ref()
-                                .map(|(_, style)| *style)
-                                .unwrap_or_default(),
-                        )
-                        .boolean(
-                            "labelled",
-                            !matches!(row.control, FormControl::Action { .. }),
-                        )
-                        .boolean("annotated", row.annotation.is_some());
-                    if row.preserve_value_end {
-                        data = data.preserve_end("value");
-                    }
-                    crate::ui::layout::PresentedRow {
-                        key: format!("{:?}", row.id),
-                        data,
-                        gap_after: row.gap_after,
-                    }
-                })
-                .collect::<Vec<_>>();
-            if let Err(error) = renderer.paint_rows(
-                frame,
-                body_area,
-                "form-row",
-                &items,
-                Some(self.cursor.index()),
-                scene.style("body"),
-            ) {
-                tracing::error!(%error, "form row layout failed");
+        scene.paint_with_slots(frame, |name, frame, body_area, style| match name {
+            "header" | "notes" => {
+                let (template, field, items) = if name == "header" {
+                    ("form-tabs", "tabs", &tab_items)
+                } else {
+                    ("form-notes", "notes", &note_items)
+                };
+                let data = crate::ui::layout::Presentation::default()
+                    .list(field, items.clone())
+                    .inherit(style, 0);
+                if let Ok(scene) = renderer.arrange(template, body_area, &data) {
+                    scene.paint_with_slots(frame, |_, _, _, _| {});
+                }
             }
-        }
-
-        if notes_height > 0 {
-            let data = crate::ui::layout::Presentation::default()
-                .list("notes", note_items)
-                .inherit(scene.style("notes"), 0);
-            if let Ok(notes) = renderer.arrange("form-notes", notes_area, &data) {
-                notes.paint_with_slots(frame, |_, _, _, _| {});
+            "save" | "error" => {
+                let (template, data) = if name == "save" {
+                    ("form-save", &save_data)
+                } else {
+                    ("form-error", &error_data)
+                };
+                if let Ok(scene) =
+                    renderer.arrange(template, body_area, &data.clone().inherit(style, 0))
+                {
+                    scene.paint_with_slots(frame, |_, _, _, _| {});
+                }
             }
-        }
-
-        let save_line = match self.model.save_hint() {
-            None => Line::raw("[Save]"),
-            Some(hint) => Line::styled(format!("[Save] — needs {hint}"), theme::dim()),
-        };
-        let save = Paragraph::new(save_line).style(scene.style("save").patch(
-            if self.cursor.index() == rows.len() {
-                theme::highlight_style()
-            } else {
-                Style::default()
-            },
-        ));
-        frame.render_widget(save, save_area);
-
-        scene.paint_overlays(frame);
-        if let Some(editor) = &mut self.editor {
-            editor
-                .input
-                .render_content(frame, scene.slot("editor"), true, editor.masked);
-            frame
-                .buffer_mut()
-                .set_style(scene.slot("editor"), scene.style("editor"));
-            if let Some(error) = &editor.error {
-                frame.render_widget(
-                    Paragraph::new(Line::styled(
-                        error.clone(),
-                        theme::tone_style(crate::ui::props::Tone::Blocked)
-                            .patch(scene.style("error")),
-                    )),
-                    scene.slot("error"),
-                );
+            "editor" => {
+                if let Some(editor) = &mut self.editor {
+                    editor
+                        .input
+                        .render_content(frame, body_area, true, editor.masked);
+                    frame.buffer_mut().set_style(body_area, style);
+                }
             }
-        }
+            "body" if !body_area.is_empty() => {
+                let items = rows
+                    .iter()
+                    .map(|row| {
+                        let mut data = crate::ui::layout::Presentation::default()
+                            .text("label", row.label)
+                            .text("value", row.control.display())
+                            .text("open", "[")
+                            .text("close", "]")
+                            .boolean("action", matches!(row.control, FormControl::Action { .. }))
+                            .text(
+                                "annotation",
+                                row.annotation
+                                    .as_ref()
+                                    .map(|(text, _)| text.clone())
+                                    .unwrap_or_default(),
+                            )
+                            .style("label", row.style)
+                            .style("value", row.style)
+                            .style(
+                                "annotation",
+                                row.annotation
+                                    .as_ref()
+                                    .map(|(_, style)| *style)
+                                    .unwrap_or_default(),
+                            )
+                            .boolean(
+                                "labelled",
+                                !matches!(row.control, FormControl::Action { .. }),
+                            )
+                            .boolean("annotated", row.annotation.is_some());
+                        if row.preserve_value_end {
+                            data = data.preserve_end("value");
+                        }
+                        crate::ui::layout::PresentedRow {
+                            key: format!("{:?}", row.id),
+                            data,
+                            gap_after: row.gap_after,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if let Err(error) = renderer.paint_rows(
+                    frame,
+                    body_area,
+                    "form-row",
+                    &items,
+                    Some(self.cursor.index()),
+                    style,
+                ) {
+                    tracing::error!(%error, "form row layout failed");
+                }
+            }
+            _ => {}
+        });
     }
 }
 
@@ -852,6 +854,54 @@ mod tests {
             text: String::new(),
             flag: false,
         })
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn authored_modal_size_and_footer_survive_an_active_validation_error() {
+        use crate::ui::layout::{LayoutBundle, Renderer};
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/form.xml"), r#"<templates version="1"><template name="form-save"><flow><text bind="save-hint"/><text bind="save-label"/></flow></template></templates>"#).unwrap();
+        std::fs::write(
+            directory.path().join("style.css"),
+            ".form-modal { width: 100%; height: 100%; } #form-error { color: cyan; }",
+        )
+        .unwrap();
+        let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+        let mut form = form();
+        let mut terminal = Terminal::new(TestBackend::new(70, 16)).unwrap();
+        let frame = terminal
+            .draw(|frame| form.render_layout(frame, Rect::new(4, 2, 60, 12), &mut renderer))
+            .unwrap();
+        assert_eq!(frame.buffer[(4, 2)].symbol(), "┌");
+        let text = frame
+            .buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("some text [Save]"), "{text}");
+        form.on(&key(Key::Enter));
+        form.on(&key(Key::Enter));
+        let frame = terminal
+            .draw(|frame| form.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let text = frame
+            .buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("text is required"), "{text}");
+        assert!(form.is_editing());
+        form.on(&key(Key::Char('x')));
+        renderer.install(LayoutBundle::builtin().unwrap());
+        terminal
+            .draw(|frame| form.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        form.on(&key(Key::Enter));
+        assert_eq!(form.model.text, "x");
     }
 
     #[test]
@@ -1024,8 +1074,8 @@ mod tests {
 
         fn save(&self) -> Self::Out {}
 
-        fn overlay_percent(&self) -> (u16, u16) {
-            (100, 100)
+        fn layout_template(&self) -> &'static str {
+            "form"
         }
     }
 

@@ -51,10 +51,6 @@ macro_rules! passive_modal {
     };
 }
 
-// The centered-overlay helper lives with the Form widget; re-exported so
-// existing `modals::overlay` callers (and tests) keep their import path.
-pub use super::widgets::overlay;
-
 mod log_view;
 pub use log_view::LogModal;
 mod roguelike;
@@ -2349,8 +2345,8 @@ impl FormModel for ListEditForm {
         "Edit/Cycle"
     }
 
-    fn overlay_percent(&self) -> (u16, u16) {
-        (60, 60)
+    fn layout_template(&self) -> &'static str {
+        "list-edit-form"
     }
 }
 

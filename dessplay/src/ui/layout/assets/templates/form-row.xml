@@ -7,7 +7,7 @@
   <template name="form-row">
     <row id="form-row" class="form-row">
       <text class="form-label" bind="label" if="labelled" />
-      <text class="form-value" bind="value" />
+      <row class="form-value"><text bind="open" if="action"/><text class="form-control-value" bind="value"/><text bind="close" if="action"/></row>
       <text class="form-annotation" bind="annotation" if="annotated" />
     </row>
   </template>

@@ -1018,3 +1018,10 @@ at a nonzero origin. Root margin tests were confirmed failing before fixing the
 shared viewport allocation; they cover width-dependent wrapping, complete row
 spacing in both collections and documents, explicit sizes, and noninteractive
 margin cells.
+
+Health layout checks preserve the existing narrow-terminal warning/progress
+priority and marquee timing scenarios. Intrinsic-width tests include Unicode
+and authored padding; a file-only test reorders playback and metric fields at a
+nonzero origin and hides metrics. Form scenarios exercise template modal sizes,
+fixed footer reservation, active editors, validation errors, and existing
+settings/List snapshots through the production renderer.

@@ -5,7 +5,7 @@ forms, their semantic label/value/annotation rows, category tabs and notes, the 
 controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
 attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
 file/episode browsers, AniDB/Nyaa searches, local-copy offers, confirmations,
-name editing, changelog entries, status text, keybindings, and the roguelike frame, game, recovery, document, equipment, and ending pages
+name editing, changelog entries, status text, keybindings, health metrics and progress, and the roguelike frame, game, recovery, document, equipment, and ending pages
 use local templates. Other pane interiors still use their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
@@ -393,3 +393,34 @@ only the visible document window and rows needed to navigate are measured.
 booleans. Keybar has a keyed `bindings` list. Its `keybinding` item exposes
 `separator`, `key`, `label`, and boolean `separated`; changing their layout
 never changes the keymap. Health/progress composition remains under migration.
+
+### Health and form chrome
+
+`health` supplies `progress`, `middle`, and `metrics` slots. Their default
+priority policy measures unwrapped `health-metrics`, reserves at least four
+useful cells plus the authored middle padding for a suggestion, and gives the
+remaining width to `health-progress`. Progress truncates before the suggestion
+disappears. Metrics may clip when the whole row is too narrow. Rearrange the
+slots in `health` or fields in their templates to change the composition.
+
+`health-metrics` repeats keyed `metrics` through `health-metric`. Each item
+supplies `label`, `value`, `separator`, `up-marker`, `down-marker`, `upload`,
+`download`; conditions are `ordinary`, `bandwidth`, `suffix`, `separated`.
+`health-progress` exposes `open`, `fill`, `close`, `elapsed`, `slash`, `duration`
+and boolean `available`. The fill is the terminal progress primitive; it
+contains only fill cells. `health-middle` supplies text `body` and slot
+`marquee`, with `suggestion` and `animation` conditions. Warning suggestions
+keep precedence over marquee animation. The marquee's moving slice remains an
+intrinsic primitive inside the authored padding and clip.
+
+`settings-form` and `list-edit-form` wrap the shared `form` in modal overlays.
+The default `.form-modal` is 70% by 70%; the List editor uses 60% by 60%.
+Change those rules to resize the outer dialog. Header and notes may shrink;
+the body yields before the fixed Save footer. The Save slot renders
+`form-save`: `save-label`, `save-needs`, `save-hint`, `save-blocked`, and
+`:selected`. The error slot renders `form-error` with text `error`.
+Editors, validation, and Save behavior remain controller-owned.
+
+Form rows supply raw action labels in `value`; `action`, `open`, and `close`
+let templates control their enclosing brackets. Secret values remain masked
+before they enter presentation data.

@@ -2849,15 +2849,15 @@ impl Ui {
         self.series.render_layout(frame, series_area, renderer);
         self.users.render_layout(frame, users_area, renderer);
         self.playlist.render_layout(frame, playlist_area, renderer);
-        let progress = self.status.progress_text();
+        let progress = self.status.progress_presentation();
         let marquee_frame = self
             .marquee
             .as_ref()
             .filter(|anim| !anim.done)
             .map(|anim| (anim.text.as_str(), anim.offset));
-        let slot_width = self
-            .health
-            .render(frame, bottom_area, &progress, marquee_frame);
+        let slot_width =
+            self.health
+                .render_layout(frame, bottom_area, &progress, marquee_frame, renderer);
         if let Some(anim) = &mut self.marquee {
             // Measure the slot every draw (even while a warning owns
             // it), so the done-check tracks the real width.

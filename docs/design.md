@@ -1653,6 +1653,13 @@ old sizes, including on restart. Watch events use normalized absolute paths
 and a surviving ancestor watch so relative paths, missing directories, and
 whole-directory replacement remain reloadable. Legacy PaneLayout percentages import once.
 
+Health-line budgets use intrinsic template widths, including authored padding.
+Metrics retain priority; progress yields to a useful suggestion window.
+The moving marquee and progress fill are intrinsic terminal primitives;
+metric labels, values, surrounding chrome, and placement belong to templates.
+Form entry templates own outer modal sizing, Save appearance, and validation
+text. Fixed Save space survives body shrinkage; editors remain controller state.
+
 Migrated collections expose unpadded semantic fields. Shared intrinsic column
 widths derive from unwrapped content. Rows measure wrapped height only after
 width allocation; painting and pointer targets consume that same measurement.

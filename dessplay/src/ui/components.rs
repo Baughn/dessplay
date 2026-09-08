@@ -15,8 +15,9 @@ use tuirealm::props::{AttrValue, Attribute, QueryResult};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Rect, Size};
 use tuirealm::ratatui::style::Style;
-use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::Paragraph;
+#[cfg(test)]
+use tuirealm::ratatui::text::Line;
+use tuirealm::ratatui::text::Span;
 use tuirealm::state::State;
 
 use super::msg::Msg;
@@ -25,9 +26,7 @@ use super::props::{
     StatusProps, Tone, UsersProps,
 };
 use super::theme;
-use super::widgets::{
-    Binding, KeyPattern, Keymap, LineBuffer, ListCursor, TextField, truncate_display,
-};
+use super::widgets::{Binding, KeyPattern, Keymap, LineBuffer, ListCursor, TextField};
 
 /// A key the pane responds to, for the keybinding bar.
 pub type Keybinding = (&'static str, &'static str);
@@ -3372,28 +3371,24 @@ impl StatusBar {
         }
     }
 
-    /// The progress-bar + elapsed/total time text for the bottom line
-    /// (design.md #6): its own row, so the variable-width "waiting
-    /// on ..." state text on the main status line never shoves it
-    /// sideways. It shares `self.props` with [`Self::render`] but is
-    /// drawn by [`HealthLine`] (the left end of the terminal-wide
-    /// bottom line), so this returns text instead of rendering.
-    pub(crate) fn progress_text(&self) -> String {
-        match (self.props.position_millis, self.props.duration_millis) {
-            (Some(pos), Some(dur)) => {
-                let dur = dur.get();
-                let width = 30usize;
-                let filled = ((pos as f64 / dur as f64) * width as f64) as usize;
-                format!(
-                    "[{}>{}] {} / {}",
-                    "=".repeat(filled.min(width)),
-                    " ".repeat(width - filled.min(width)),
-                    mmss(pos),
-                    mmss(dur),
+    /// Semantic progress fields; the fill is a specialized terminal primitive.
+    pub(crate) fn progress_presentation(&self) -> super::layout::Presentation {
+        let mut data = super::layout::Presentation::default();
+        if let (Some(pos), Some(dur)) = (self.props.position_millis, self.props.duration_millis) {
+            let filled = ((pos as f64 / dur.get() as f64) * 30.0).min(30.0) as usize;
+            data = data
+                .boolean("available", true)
+                .text("open", "[")
+                .text("close", "]")
+                .text(
+                    "fill",
+                    format!("{}>{}", "=".repeat(filled), " ".repeat(30 - filled)),
                 )
-            }
-            _ => String::new(),
+                .text("elapsed", mmss(pos))
+                .text("duration", mmss(dur.get()))
+                .text("slash", "/");
         }
+        data
     }
 }
 
@@ -3426,118 +3421,88 @@ impl HealthLine {
         self.props = props;
     }
 
-    /// Render the row. `marquee` is the live scroll frame — the text
-    /// and its current cell offset — when one is animating; the slot
-    /// precedence is **warning/critical suggestion > marquee > info
-    /// suggestion > blank** (a health warning is the row's job; the
-    /// commentary yields to it). Returns the middle slot's width in
-    /// cells, so the caller can measure when the marquee has fully
-    /// exited.
-    pub(crate) fn render(
+    /// Render semantic metrics with the shared health content-priority policy.
+    pub(crate) fn render_layout(
         &self,
         frame: &mut Frame,
         area: Rect,
-        progress: &str,
+        progress: &super::layout::Presentation,
         marquee: Option<(&str, usize)>,
+        renderer: &mut super::layout::Renderer,
     ) -> usize {
-        use unicode_width::UnicodeWidthStr;
-        let width = area.width as usize;
-
-        // Right end: the health fragments, dim separators between. They
-        // always keep their full width — they are the row's reason to
-        // exist (design.md, Connection Health Line).
-        let mut health = Vec::new();
-        for (text, tone) in super::props::health_fragments(&self.props) {
-            if !health.is_empty() {
-                health.push(Span::styled(" · ", theme::dim()));
-            }
-            health.push(Span::styled(text, theme::tone_style(tone)));
-        }
-        let health_width: usize = health.iter().map(|span| span.content.width()).sum();
-        let remaining = width.saturating_sub(health_width);
-
-        // Middle-slot budget, reserved *before* the progress bar is
-        // measured so design.md's truncation order holds: health full
-        // width, then the bar truncates, and only then is the slot
-        // dropped. The prospective occupant (by the same precedence the
-        // rendering below applies: warning > marquee > info suggestion)
-        // claims its text plus the two 2-space margins — text-width
-        // capped, for the marquee too: a window as wide as the line
-        // shows all of it mid-pass, and any slack the bar leaves anyway
-        // still widens the slot below (`free` is what renders, not the
-        // reservation). An empty middle reserves nothing, and a
-        // reservation that cannot reach MIN_SLOT useful cells reserves
-        // nothing either — the slot is dropped entirely rather than
-        // rendering a lone ellipsis.
-        const MIN_SLOT: usize = 4 + 4;
-        let occupant_width = {
-            let suggestion = self.props.suggestion.as_ref();
-            let warning = suggestion.filter(|s| s.tone != super::props::Tone::Muted);
-            warning
-                .map(|s| s.text.width())
-                .or_else(|| marquee.map(|(text, _)| text.width()))
-                .or_else(|| suggestion.map(|s| s.text.width()))
-        };
-        let reserved = match occupant_width {
-            Some(text_width) => {
-                let desired = (text_width + 4).max(MIN_SLOT).min(remaining);
-                if desired >= MIN_SLOT { desired } else { 0 }
-            }
-            None => 0,
-        };
-
-        // Left end: the progress bar takes what the health metrics and
-        // the reserved slot leave over (with a 2-cell gap toward the
-        // metrics when nothing is reserved; a reserved slot carries its
-        // own margins).
-        let progress_max = if reserved > 0 {
-            remaining - reserved
-        } else {
-            remaining.saturating_sub(2)
-        };
-        let (progress, progress_width) = truncate_display(progress, progress_max);
-
-        // Middle: the suggestion / commentary slot, centered in the
-        // leftover space with ≥2 spaces of margin toward each
-        // neighbour; dropped entirely (rather than a lone ellipsis)
-        // when the space is too tight for useful text.
-        let free = width.saturating_sub(progress_width + health_width);
-        let mut spans = vec![Span::raw(progress)];
-        let suggestion = self.props.suggestion.as_ref().filter(|_| free >= MIN_SLOT);
-        // A warning (or worse) owns the slot; the marquee scrolls only
-        // over an empty or merely-informational slot. The ≥2-space
-        // margins live inside the marquee window (its `free - 4`).
-        let warning = suggestion.filter(|s| s.tone != super::props::Tone::Muted);
-        let marquee_frame = warning
-            .is_none()
-            .then(|| {
-                marquee
-                    .filter(|_| free >= MIN_SLOT)
-                    .and_then(|(text, offset)| super::props::marquee_window(text, free - 4, offset))
+        use super::layout::{Presentation, PresentedItem};
+        use super::props::{HealthMetric, Tone};
+        let metrics = super::props::health_metrics(&self.props)
+            .into_iter()
+            .enumerate()
+            .map(|(index, metric)| {
+                let (key, label, value, tone, bandwidth, suffix) = match metric {
+                    HealthMetric::Link(state, tone) => ("link", "link:", state, tone, None, false),
+                    HealthMetric::Bandwidth(up, down) => (
+                        "bandwidth",
+                        "",
+                        String::new(),
+                        Tone::Muted,
+                        Some((up, down)),
+                        false,
+                    ),
+                    HealthMetric::RoundTrip(rtt, tone) => {
+                        ("rtt", "rtt", format!("{rtt}ms"), tone, None, false)
+                    }
+                    HealthMetric::Sync(state, tone) => ("sync", "sync", state, tone, None, false),
+                    HealthMetric::Probes(lost, tone) => {
+                        ("probes", "probes lost", lost.to_string(), tone, None, true)
+                    }
+                };
+                let mut data = Presentation::default()
+                    .boolean("bandwidth", bandwidth.is_some())
+                    .boolean("ordinary", bandwidth.is_none() && !suffix)
+                    .boolean("suffix", suffix)
+                    .boolean("separated", index > 0)
+                    .text("separator", "·")
+                    .text("label", label)
+                    .text("value", value)
+                    .component_style("health-metric", theme::tone_style(tone))
+                    .style("separator", theme::dim());
+                if let Some((up, down)) = bandwidth {
+                    data = data
+                        .text("up-marker", "▲")
+                        .text("down-marker", "▼")
+                        .text("upload", up)
+                        .text("download", down);
+                }
+                PresentedItem {
+                    key: key.into(),
+                    data,
+                }
             })
-            .flatten();
-        match (warning.or(suggestion), marquee_frame) {
-            (_, Some((text, window_pad))) => {
-                let text_width = text.width();
-                spans.push(Span::raw(" ".repeat(2 + window_pad)));
-                spans.push(Span::raw(text.clone()));
-                spans.push(Span::raw(
-                    " ".repeat(free.saturating_sub(2 + window_pad + text_width)),
-                ));
-            }
-            (Some(suggestion), None) => {
-                let (text, text_width) = truncate_display(&suggestion.text, free - 4);
-                let pad = free - text_width;
-                let left_pad = pad / 2;
-                spans.push(Span::raw(" ".repeat(left_pad)));
-                spans.push(Span::styled(text, theme::tone_style(suggestion.tone)));
-                spans.push(Span::raw(" ".repeat(pad - left_pad)));
-            }
-            (None, None) => spans.push(Span::raw(" ".repeat(free))),
-        }
-        spans.extend(health);
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
-        free.saturating_sub(4)
+            .collect();
+        let data = Presentation::default().list("metrics", metrics);
+        let suggestion = self.props.suggestion.as_ref();
+        let warning = suggestion.filter(|s| s.tone != Tone::Muted);
+        let middle = warning
+            .map(|s| s.text.as_str())
+            .or_else(|| marquee.map(|(text, _)| text))
+            .or_else(|| suggestion.map(|s| s.text.as_str()));
+        let tone = if warning.is_some() || marquee.is_none() {
+            suggestion.map_or(Tone::Normal, |s| s.tone)
+        } else {
+            Tone::Normal
+        };
+        renderer
+            .paint_health(
+                frame,
+                area,
+                progress,
+                &data,
+                middle.unwrap_or(""),
+                theme::tone_style(tone),
+                warning
+                    .is_none()
+                    .then(|| marquee.map(|(_, offset)| offset))
+                    .flatten(),
+            )
+            .unwrap_or(0)
     }
 }
 

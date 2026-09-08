@@ -23,10 +23,13 @@ pub mod table;
 
 pub use form::{
     Form, FormControl, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormNote, FormRow,
-    FormTab, overlay,
+    FormTab,
 };
 pub use keymap::{BarEntry, Binding, KeyPattern, Keymap};
 pub(crate) use keys::{plain, typed};
 pub use line::{LineBuffer, TextField};
 pub use list::{ListCursor, RenderedList, render_list, render_list_body};
 pub use table::{Align, Cell, table_row, truncate_display};
+
+#[cfg(test)]
+pub use form::overlay;

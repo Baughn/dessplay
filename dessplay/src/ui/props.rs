@@ -955,76 +955,95 @@ pub fn marquee_window(text: &str, free: usize, offset: usize) -> Option<(String,
     }
 }
 
-/// The health row's left-hand metric fragments, in display order, as
-/// (text, tone) pairs — the component joins them with dim `·`
-/// separators. Pure, and the per-field warning tones live here with the
-/// thresholds they mirror, so the row's story is testable without a
-/// terminal. Only the *offending* field warns; the rest stay dim.
-pub fn health_fragments(props: &HealthProps) -> Vec<(String, Tone)> {
+/// Semantic connection metrics, before labels, separators, and row composition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HealthMetric {
+    /// Link lifecycle notice.
+    Link(String, Tone),
+    /// Upload and download rates in display units.
+    Bandwidth(String, String),
+    /// Round trip time.
+    RoundTrip(u64, Tone),
+    /// Synchronization freshness.
+    Sync(String, Tone),
+    /// Unanswered heartbeat probes.
+    Probes(u32, Tone),
+}
+
+/// Connection-health fields with the same thresholds as the health controller.
+pub fn health_metrics(props: &HealthProps) -> Vec<HealthMetric> {
+    use HealthMetric::*;
     match props.link {
-        // The status bar carries the full "⚡ connecting (attempt N)"
-        // story; the health row just avoids showing stale metrics.
-        LinkStatus::Connecting { .. } => vec![("link: connecting…".into(), Tone::Paused)],
-        LinkStatus::Down => vec![("link: down — retrying".into(), Tone::Paused)],
+        LinkStatus::Connecting { .. } => vec![Link("connecting…".into(), Tone::Paused)],
+        LinkStatus::Down => vec![Link("down — retrying".into(), Tone::Paused)],
         LinkStatus::Connected => {
             let Some(sample) = &props.sample else {
-                return vec![("link: measuring…".into(), Tone::Muted)];
+                return vec![Link("measuring…".into(), Tone::Muted)];
             };
-            let mut fragments = vec![(
-                format!(
-                    "▲{} ▼{}",
-                    fmt_rate(sample.up_bps),
-                    fmt_rate(sample.down_bps)
-                ),
-                Tone::Muted,
+            let mut metrics = vec![Bandwidth(
+                fmt_rate(sample.up_bps),
+                fmt_rate(sample.down_bps),
             )];
             if let Some(rtt) = sample.rtt_millis {
-                let tone = if rtt >= RTT_DEGRADED_MILLIS {
-                    Tone::Paused
-                } else {
-                    Tone::Muted
-                };
-                fragments.push((format!("rtt {rtt}ms"), tone));
+                metrics.push(RoundTrip(
+                    rtt,
+                    if rtt >= RTT_DEGRADED_MILLIS {
+                        Tone::Paused
+                    } else {
+                        Tone::Muted
+                    },
+                ));
             }
             let silence = sample.server_silence_millis;
-            let sync_tone = if silence > SILENCE_STALLED_MILLIS {
+            let tone = if silence > SILENCE_STALLED_MILLIS {
                 Tone::Blocked
             } else if silence > SILENCE_DEGRADED_MILLIS {
                 Tone::Paused
             } else {
                 Tone::Muted
             };
-            // A static "sync ok" until the age is worth attention — a
-            // counting number draws the eye, and what counts as normal
-            // depends on how chatty the wire should be: during group
-            // playback peers' position updates arrive constantly, so a
-            // few seconds of silence is already news; alone or idle,
-            // only the 30s heartbeats arrive and the age is shown only
-            // once it would warn anyway.
             let show_from = if props.playing && props.company {
                 SILENCE_SHOW_PLAYBACK_MILLIS
             } else {
                 SILENCE_DEGRADED_MILLIS
             };
-            let sync_text = if silence > show_from {
-                format!("sync {}s", silence / 1000)
-            } else {
-                "sync ok".to_string()
-            };
-            fragments.push((sync_text, sync_tone));
-            if sample.unanswered_probes > 0 {
-                let tone = if sample.unanswered_probes >= PROBES_STALLED {
-                    Tone::Blocked
-                } else if sample.unanswered_probes >= PROBES_DEGRADED {
-                    Tone::Paused
+            metrics.push(Sync(
+                if silence > show_from {
+                    format!("{}s", silence / 1000)
                 } else {
-                    Tone::Muted
-                };
-                fragments.push((format!("{} probes lost", sample.unanswered_probes), tone));
+                    "ok".into()
+                },
+                tone,
+            ));
+            if sample.unanswered_probes > 0 {
+                metrics.push(Probes(
+                    sample.unanswered_probes,
+                    if sample.unanswered_probes >= PROBES_STALLED {
+                        Tone::Blocked
+                    } else if sample.unanswered_probes >= PROBES_DEGRADED {
+                        Tone::Paused
+                    } else {
+                        Tone::Muted
+                    },
+                ));
             }
-            fragments
+            metrics
         }
     }
+}
+
+#[cfg(test)]
+fn health_fragments(props: &HealthProps) -> Vec<(String, Tone)> {
+    health_metrics(props)
+        .into_iter()
+        .map(|metric| match metric {
+            HealthMetric::Link(state, tone) => (format!("link: {state}"), tone),
+            HealthMetric::Bandwidth(up, down) => (format!("▲{up} ▼{down}"), Tone::Muted),
+            HealthMetric::RoundTrip(rtt, tone) => (format!("rtt {rtt}ms"), tone),
+            HealthMetric::Sync(state, tone) => (format!("sync {state}"), tone),
+            HealthMetric::Probes(lost, tone) => (format!("{lost} probes lost"), tone),
+        })
+        .collect()
 }
 
 // ---- Series pane -----------------------------------------------------

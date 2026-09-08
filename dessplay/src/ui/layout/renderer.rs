@@ -223,6 +223,7 @@ pub struct RenderedScene {
     nodes: Vec<Arranged>,
     paint_order: Vec<usize>,
     height: u16,
+    width: u16,
     /// Arranged keyed items for controller navigation and inspection.
     pub items: Vec<RepeatedItem>,
     /// Rich/plain text source ranges; consumers apply the scene's viewport transform.
@@ -308,6 +309,12 @@ impl RenderedScene {
             .iter()
             .find(|n| n.id == id)
             .map_or(Rect::default(), |n| n.bounds.intersection(n.clip))
+    }
+    /// Content box of this entry, after authored border, padding, and margins.
+    pub fn root_content(&self) -> Rect {
+        self.nodes
+            .first()
+            .map_or(Rect::default(), |node| node.content.intersection(node.clip))
     }
     /// Visible controller slots, in markup order (independent of box placement).
     pub fn visible_slots(&self) -> Vec<&str> {
@@ -710,6 +717,7 @@ struct CachedScene {
     data: Presentation,
     scene: RenderedScene,
     natural_height: bool,
+    natural_width: bool,
     last_used: u64,
 }
 impl Renderer {
@@ -784,7 +792,30 @@ impl Renderer {
         width: u16,
         data: &Presentation,
     ) -> Result<RenderedScene, Diagnostic> {
-        self.arrange_instance_mode(template, key, Rect::new(0, 0, width, u16::MAX), data, true)
+        self.arrange_instance_mode(
+            template,
+            key,
+            Rect::new(0, 0, width, u16::MAX),
+            data,
+            true,
+            false,
+        )
+    }
+    /// Measure unwrapped intrinsic content, including authored chrome and spacing.
+    pub fn intrinsic_width(
+        &mut self,
+        template: &str,
+        data: &Presentation,
+    ) -> Result<u16, Diagnostic> {
+        self.arrange_instance_mode(
+            template,
+            &format!("intrinsic:{template}"),
+            Rect::new(0, 0, u16::MAX, u16::MAX),
+            data,
+            true,
+            true,
+        )
+        .map(|scene| scene.width)
     }
     /// Fit image pixels inside authored attachment chrome and its whole-frame cap.
     pub(crate) fn attachment(
@@ -838,6 +869,15 @@ impl Renderer {
         }
         (!scene.slot("image").is_empty()).then_some(scene)
     }
+    pub(super) fn arrange_named(
+        &mut self,
+        template: &str,
+        key: &str,
+        area: Rect,
+        data: &Presentation,
+    ) -> Result<RenderedScene, Diagnostic> {
+        self.arrange_instance(template, key, area, data)
+    }
     fn arrange_instance(
         &mut self,
         template: &str,
@@ -845,7 +885,7 @@ impl Renderer {
         area: Rect,
         data: &Presentation,
     ) -> Result<RenderedScene, Diagnostic> {
-        self.arrange_instance_mode(template, key, area, data, false)
+        self.arrange_instance_mode(template, key, area, data, false, false)
     }
     fn arrange_instance_mode(
         &mut self,
@@ -854,6 +894,7 @@ impl Renderer {
         area: Rect,
         data: &Presentation,
         natural_height: bool,
+        natural_width: bool,
     ) -> Result<RenderedScene, Diagnostic> {
         self.cache_clock = self.cache_clock.wrapping_add(1);
         if self.cache_clock == 0 {
@@ -863,6 +904,7 @@ impl Renderer {
             && cached.area == area
             && cached.template == template
             && cached.natural_height == natural_height
+            && cached.natural_width == natural_width
         {
             if cached.data == *data {
                 cached.last_used = self.cache_clock;
@@ -910,7 +952,11 @@ impl Renderer {
             },
         )?;
         let available = Size {
-            width: AvailableSpace::Definite(area.width as f32),
+            width: if natural_width {
+                AvailableSpace::MaxContent
+            } else {
+                AvailableSpace::Definite(area.width as f32)
+            },
             height: if natural_height {
                 AvailableSpace::MaxContent
             } else {
@@ -926,7 +972,11 @@ impl Renderer {
                 taffy::Style {
                     display: Display::Grid,
                     size: Size {
-                        width: Dimension::Length(area.width as f32),
+                        width: if natural_width {
+                            Dimension::Auto
+                        } else {
+                            Dimension::Length(area.width as f32)
+                        },
                         height: if natural_height {
                             Dimension::Auto
                         } else {
@@ -985,6 +1035,14 @@ impl Renderer {
             })
             .map_err(internal)?;
         let mut scene = RenderedScene {
+            width: self
+                .tree
+                .layout(viewport)
+                .map_err(internal)?
+                .size
+                .width
+                .round()
+                .clamp(0.0, u16::MAX as f32) as u16,
             height: self
                 .tree
                 .layout(viewport)
@@ -1023,6 +1081,7 @@ impl Renderer {
                 data: data.clone(),
                 scene: scene.clone(),
                 natural_height,
+                natural_width,
                 last_used: self.cache_clock,
             },
         );
@@ -1093,6 +1152,7 @@ impl Renderer {
                 Rect::new(0, 0, area.width, u16::MAX),
                 &data,
                 true,
+                false,
             )?;
             let height = scene.height();
             measured.insert(position, (height, Some(scene)));

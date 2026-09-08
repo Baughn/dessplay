@@ -16,6 +16,20 @@ remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
 
+## Measured health priorities and template form chrome (2026-09-08)
+
+**Rule:** Health priority budgets measure authored metric/progress components
+without wrapped-height feedback. Form entry templates own modal sizing and
+footer/error appearance; controls retain only semantic identity and state.
+
+**Why:** Padding complete strings made field rearrangement impossible and hid
+reserved spacing from CSS. Intrinsic measurement preserves the existing narrow
+terminal degradation while exposing metrics and playback times independently.
+Keeping the marquee slice and progress fill as small terminal primitives avoids
+making animation a markup language. Template modal wrappers remove the model's
+percentage rectangle arithmetic, and slot-layer painting keeps editors above
+their authored chrome when the form is rearranged.
+
 ## User Experience
 
 ### Reset synced state has no confirmation

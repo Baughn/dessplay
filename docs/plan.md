@@ -1881,7 +1881,9 @@ player OSD, and standalone diagnostic output are outside scope.
   and expedition endings.
 - [x] Changelog semantic entries and anchored document scrolling; status fields
   and repeated keybinding entries; authored root dimensions and outer margins.
-- [ ] Remaining form internals, progress/health, modal layers,
+- [x] Semantic health/progress fields with measured priority budgets, form modal
+  entry sizing, Save/error templates, raw action labels, and slot-layer editor composition.
+- [ ] Remaining modal layers,
   roguelike condition rows and bounded-summary children; remove production legacy adapters.
 - [x] All six file-only demonstrations through real filesystem events and
   runtime bundle installation; atomic saves, relative paths, missing-directory

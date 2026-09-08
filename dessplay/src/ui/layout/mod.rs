@@ -2,6 +2,7 @@
 mod compiler;
 mod css;
 mod document;
+mod health;
 mod reload;
 mod renderer;
 mod settings;

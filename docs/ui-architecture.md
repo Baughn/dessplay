@@ -416,11 +416,12 @@ snapshot data to component props:
   the sync display, and the advisor's suggestion; all run-loop state
   carried on the snapshot like `link`, not CRDT state) -> the
   terminal-wide, borderless bottom line of the main area: the progress
-  bar text (from `StatusBar::progress_text`, shared props with the
+  bar fields (from `StatusBar::progress_presentation`, shared props with the
   status bar) at the left, health metrics right-aligned at the terminal
   edge, and the suggestion / marquee slot centered in the middle with
   ≥2 spaces of margin. Metric text and per-field warning tones come
-  from the pure `props::health_fragments`. When the row is tight:
+  from the pure `props::health_metrics`. Template measurement and priority
+  allocation live in `layout::health`; the component provides semantic fields. When the row is tight:
   health keeps its width, progress truncates, the suggestion takes the
   leftover (or is dropped). Rendered directly by `Ui::draw`: passive,
   no input, outside every recorded pane rect — so mouse hit-testing
@@ -938,3 +939,8 @@ one path identity even for relative CLI paths or platform directory aliases;
 creating/replacing the override directory does not strand the worker on an old
 inode. Compilation still reads the selected source path and uses the same
 bounded generation-stamped delivery lane.
+
+Form models select a semantic entry (`settings-form` or `list-edit-form`),
+whose modal overlay owns dimensions. `form-save` and `form-error` render their
+fields through the same cascade as rows. A single slot-layer traversal paints
+tabs, notes, body, Save, and editor/error overlays in template order.

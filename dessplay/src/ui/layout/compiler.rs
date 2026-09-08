@@ -178,6 +178,13 @@ impl Default for TemplateSchema {
                 &["invalid"][..],
             ),
             ("form-note", &[][..], &["body"][..], &[][..]),
+            (
+                "form-save",
+                &[][..],
+                &["save-label", "save-needs", "save-hint"][..],
+                &["save-blocked"][..],
+            ),
+            ("form-error", &[][..], &["error"][..], &[][..]),
             ("changelog", &["body"][..], &["title", "ok"][..], &[][..]),
             (
                 "changelog-row",
@@ -190,6 +197,38 @@ impl Default for TemplateSchema {
                 &[][..],
                 &["marker", "state", "blockers", "now-label", "title"][..],
                 &["has-title", "blocked"][..],
+            ),
+            (
+                "health",
+                &["progress", "middle", "metrics"][..],
+                &[][..],
+                &[][..],
+            ),
+            (
+                "health-progress",
+                &[][..],
+                &["open", "fill", "close", "elapsed", "slash", "duration"][..],
+                &["available"][..],
+            ),
+            (
+                "health-middle",
+                &["marquee"][..],
+                &["body"][..],
+                &["animation", "suggestion"][..],
+            ),
+            (
+                "health-metric",
+                &[][..],
+                &[
+                    "separator",
+                    "label",
+                    "value",
+                    "up-marker",
+                    "down-marker",
+                    "upload",
+                    "download",
+                ][..],
+                &["bandwidth", "ordinary", "suffix", "separated"][..],
             ),
             (
                 "keybinding",
@@ -404,8 +443,8 @@ impl Default for TemplateSchema {
             (
                 "form-row",
                 &[][..],
-                &["label", "value", "annotation"][..],
-                &["labelled", "annotated"][..],
+                &["label", "value", "annotation", "open", "close"][..],
+                &["labelled", "annotated", "action"][..],
             ),
         ] {
             let mut fields = BTreeMap::new();
@@ -421,6 +460,10 @@ impl Default for TemplateSchema {
         templates.insert(
             "rich-text".into(),
             [("body".into(), BindingType::Rich)].into(),
+        );
+        templates.insert(
+            "health-metrics".into(),
+            [("metrics".into(), BindingType::List("health-metric"))].into(),
         );
         templates.insert(
             "keybar".into(),
@@ -454,6 +497,9 @@ impl Default for TemplateSchema {
             .entry("chat-message".into())
             .or_default()
             .insert("body".into(), BindingType::Rich);
+        for name in ["settings-form", "list-edit-form"] {
+            templates.insert(name.into(), templates["form"].clone());
+        }
         Self { templates }
     }
 }

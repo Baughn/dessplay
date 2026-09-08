@@ -109,3 +109,18 @@ scroll > slot { flex-grow: 1; }
 #status-frame { border-top: 1; border-color: var(--muted); }
 #keybindings { flex-direction: row; }
 .key-separator { margin: 0 1ch; }
+
+#health-middle-slot { flex-grow: 1; }
+#health-progress { text-overflow: ellipsis; }
+#health-middle { padding: 0 2ch; }
+#health-middle > text { text-align: center; text-overflow: ellipsis; }
+#health-metrics { flex-direction: row; }
+.health-separator { margin: 0 1ch; }
+.health-bandwidth { gap: 1ch; }
+
+.form-modal { width: 70%; height: 70%; min-width: 20ch; min-height: 8lh; }
+.list-edit-form .form-modal { width: 60%; height: 60%; }
+.form-modal > #form { flex-grow: 1; flex-shrink: 1; }
+#form-header, #form-notes { flex-shrink: 1; min-height: 0; }
+
+.form-control-value { flex-shrink: 1; min-width: 0; }

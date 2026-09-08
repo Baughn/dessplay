@@ -24,6 +24,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: Custom component sizes and outer margins now affect row spacing and
   wrapping consistently, including chat and collection rows.
 
+- Added: Customize health metrics, progress fields, form sizes, Save rows, and
+  validation messages in layout files. Narrow terminals retain useful health
+  suggestions while the progress bar yields space.
+
 ## 2026-09-07
 
 - Added: Image links posted in chat (DessPlay or IRC) now download and
