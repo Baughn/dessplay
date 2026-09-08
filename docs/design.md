@@ -1653,6 +1653,12 @@ old sizes, including on restart. Watch events use normalized absolute paths
 and a surviving ancestor watch so relative paths, missing directories, and
 whole-directory replacement remain reloadable. Legacy PaneLayout percentages import once.
 
+Dungeon condition continuations retain anatomical keys and source positions
+from measured template fragments. Bounded wound/threat summaries keep complete
+entries and explicit omission hints, measuring authored row/marker templates.
+Guide and journal scrolling use the shared keyed/source-anchored document service.
+The dungeon-cell painter remains an intrinsic primitive.
+
 The log/dungeon page and its recent-chat/keybar composition use a shared
 page template. Work progress overlays expose keyed jobs and separate stage,
 filename, and terminal progress primitives. Auto modal dimensions fit content.

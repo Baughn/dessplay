@@ -35,6 +35,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
   including health metrics and form chrome. Image colors remain independent
   of text themes.
 
+- Added: Customize dungeon condition fields, wound and threat summaries, journal
+  entries, and loading notices in layout files. Treatment keeps targeting the
+  selected body region when condition rows are rearranged or rewrapped.
+
 ## 2026-09-07
 
 - Added: Image links posted in chat (DessPlay or IRC) now download and

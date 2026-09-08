@@ -229,7 +229,7 @@ enum Modal {
     LocalCopyOffer(LocalCopyOfferModal),
     Changelog(ChangelogModal),
     Logs(super::modals::LogModal),
-    Roguelike(super::modals::RoguelikeModal),
+    Roguelike(Box<super::modals::RoguelikeModal>),
     Confirm(ConfirmModal),
 }
 
@@ -246,7 +246,7 @@ impl Modal {
             Modal::LocalCopyOffer(modal) => modal,
             Modal::Changelog(modal) => modal,
             Modal::Logs(modal) => modal,
-            Modal::Roguelike(modal) => modal,
+            Modal::Roguelike(modal) => modal.as_mut(),
             Modal::Confirm(modal) => modal,
         }
     }
@@ -1055,7 +1055,7 @@ impl Ui {
             let mut modal = super::modals::RoguelikeModal::new();
             modal.advance_clock(self.clock);
             modal.set_effects(self.settings.roguelike_effects);
-            self.push_modal(Modal::Roguelike(modal));
+            self.push_modal(Modal::Roguelike(Box::new(modal)));
             vec![UserAction::Roguelike(crate::roguelike_store::Command::Open)]
         };
         self.sync_focus_attr();

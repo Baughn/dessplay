@@ -1887,7 +1887,9 @@ player OSD, and standalone diagnostic output are outside scope.
   entry sizing, Save/error templates, raw action labels, and slot-layer editor composition.
 - [x] Shared log/dungeon/recent-chat page shell, typed work-progress overlays,
   intrinsic modal height, and explicit terminal cell rounding.
-- [ ] Roguelike condition rows and bounded-summary children; remove production legacy adapters.
+- [x] Roguelike condition/source navigation, measured bounded-summary children,
+  semantic journal projections, and shared guide/journal document scrolling.
+- [ ] Remove remaining production legacy adapters and finish the geometry audit.
 - [x] All six file-only demonstrations through real filesystem events and
   runtime bundle installation; atomic saves, relative paths, missing-directory
   creation, and whole-directory replacement.

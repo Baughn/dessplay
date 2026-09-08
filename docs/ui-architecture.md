@@ -802,7 +802,7 @@ and ground-item selection, and the guide. Directional attack/door commands
 hold only a UI direction prompt. Browsing, help, and arrival acknowledgement
 spend no game time; equipment and treatment choices cross the save boundary.
 
-Condition descriptions carry region IDs and an explicit injury flag. The
+Condition descriptions carry region IDs, separate names/details, and an explicit injury flag. The
 sidebar filters healthy regions, wraps complete entries to its width, budgets
 health and threats separately, and inserts a blank separating line. Omitted
 wounds point to `v`; omitted threats have a count. Recovery uses the same
@@ -813,7 +813,7 @@ The condition page has a visual-row cursor: every wrapped continuation maps
 back to its anatomical region for `Action::Treat`. Up/Down and page keys can
 reach details inside an entry taller than the viewport. Rebuilding rows after
 a resize or committed reply preserves the selected region and clamps its
-continuation offset. Other inspection pages keep their existing item cursors.
+source-field offset through `MeasuredLines`. Other inspection pages keep their existing item cursors.
 
 `r` starts a `Recovery` controller with the starting supply counts and a
 presentation-clock deadline. Its first care step is dispatched immediately;
@@ -948,3 +948,11 @@ keybindings as one scene. The modal controllers receive their allocated page
 box. `work-overlay` repeats semantic job rows; the renderer paints typed progress
 quantities as nonselectable fills inside their authored boxes. CSS cell rounding
 runs before the second allocation pass, preserving shared sibling edges.
+
+`layout::lines` measures condition entries once and publishes physical-line
+navigation records with their anatomical keys and source positions. Its painter
+clips complete scenes around the visual cursor. `layout::summary` measures
+whole wound/threat entries and omission templates, applies the bounded-content
+budget, and paints their same fragments. Guide, journal, and recent events use
+`DocumentScroll`; tail opening starts at the last semantic item. Dungeon cells
+are the remaining specialized painter in the modal.

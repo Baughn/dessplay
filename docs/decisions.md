@@ -16,6 +16,21 @@ remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
 
+## Measured dungeon inspection and summaries (2026-09-08)
+
+**Rule:** Condition navigation and bounded wound/threat summaries consume the
+same measured scenes they paint. Anatomical IDs and source fields survive row
+rearrangement; guide/journal scrolling shares the document-anchor service.
+
+**Why:** Prewrapping strings in the controller would diverge when CSS changed
+padding, fields, or text wrapping. Measured line records retain treatment
+identity even within an entry taller than the viewport. Summary budgets retain
+whole entries and omission markers without manually assembling padded rows.
+The recent journal and full journal are explicit projections with stable event
+keys. Opening a 5,000-entry document at the tail instantiates only visible
+entries. The larger dungeon controller is boxed in the modal enum so document
+state does not inflate every modal allocation.
+
 ## Styles resolve before painting (2026-09-08)
 
 **Rule:** Scenes and intrinsic primitives resolve terminal colors before they

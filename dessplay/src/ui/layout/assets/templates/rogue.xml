@@ -70,4 +70,11 @@
       <slot id="rogue-recent-journal" name="journal" />
     </column>
   </template>
+  <template name="rogue-condition"><flow class="rogue-condition"><text bind="region"/><text bind="details"/></flow></template>
+  <template name="rogue-summary"><column id="rogue-summary"><slot id="summary-wounds" name="wounds"/><slot id="summary-threats" name="threats" if="has-threats"/></column></template>
+  <template name="rogue-threat"><flow class="rogue-threat"><prefix separator=""><text bind="name"/><text bind="separator"/></prefix><text bind="intent"/></flow></template>
+  <template name="rogue-omission"><flow class="rogue-omission"><text bind="count" if="counted"/><text bind="label"/><text bind="key"/></flow></template>
+  <template name="rogue-journal-row"><flow class="rogue-journal-row"><prefix separator=""><text bind="open"/><text bind="time"/><text bind="close"/></prefix><text bind="body"/></flow></template>
+  <template name="rogue-recent-event"><text class="rogue-journal-row" bind="body"/></template>
+  <template name="rogue-loading"><column><text bind="notice"/><text bind="detail"/></column></template>
 </templates>

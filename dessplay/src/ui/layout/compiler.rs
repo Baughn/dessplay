@@ -190,6 +190,43 @@ impl Default for TemplateSchema {
                 &[][..],
                 &[][..],
             ),
+            (
+                "rogue-condition",
+                &[][..],
+                &["region", "details"][..],
+                &["injured"][..],
+            ),
+            (
+                "rogue-summary",
+                &["wounds", "threats"][..],
+                &[][..],
+                &["has-threats"][..],
+            ),
+            (
+                "rogue-threat",
+                &[][..],
+                &["name", "separator", "intent"][..],
+                &[][..],
+            ),
+            (
+                "rogue-omission",
+                &[][..],
+                &["label", "key", "count"][..],
+                &["counted"][..],
+            ),
+            (
+                "rogue-journal-row",
+                &[][..],
+                &["open", "time", "close", "body"][..],
+                &[][..],
+            ),
+            (
+                "rogue-recent-event",
+                &[][..],
+                &["open", "time", "close", "body"][..],
+                &[][..],
+            ),
+            ("rogue-loading", &[][..], &["notice", "detail"][..], &[][..]),
             ("form-note", &[][..], &["body"][..], &[][..]),
             (
                 "form-save",

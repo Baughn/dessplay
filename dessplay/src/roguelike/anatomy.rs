@@ -770,6 +770,8 @@ impl Body {
                     part: p.kind,
                     injured,
                     text: format!("{} {}", p.kind.name(self.kind), details.join(", ")),
+                    name: p.kind.name(self.kind).into(),
+                    details,
                 }
             })
             .collect()
@@ -1225,6 +1227,10 @@ pub struct PartCondition {
     pub part: PartKind,
     /// Whether this region has any tissue, organ, or functional injury.
     pub injured: bool,
+    /// Region caption, independent of surrounding UI layout.
+    pub name: String,
+    /// Separate qualitative observations, without layout padding.
+    pub details: Vec<String>,
     /// Complete qualitative condition, including the region's name.
     pub text: String,
 }

@@ -3,15 +3,18 @@ mod compiler;
 mod css;
 mod document;
 mod health;
+mod lines;
 mod reload;
 mod renderer;
 mod settings;
+mod summary;
 #[cfg(test)]
 mod tests;
 mod text;
 
 pub use compiler::{Diagnostic, LayoutBundle, TemplateSchema};
 pub use document::DocumentScroll;
+pub(crate) use lines::MeasuredLines;
 pub(crate) use reload::Watcher;
 pub(crate) use renderer::SplitRegion;
 pub use renderer::{
@@ -19,6 +22,7 @@ pub use renderer::{
     RichSpan, TextRegion,
 };
 pub use settings::LayoutSettings;
+#[cfg(test)]
 pub(crate) use text::wrap_body;
 pub use text::{Fragment, measure_text};
 

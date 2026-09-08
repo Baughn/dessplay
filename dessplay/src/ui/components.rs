@@ -1481,6 +1481,7 @@ impl ChatPane {
     }
 }
 
+#[cfg(test)]
 pub(crate) use super::layout::wrap_body;
 
 /// Trailing punctuation stripped off a word before testing it against the

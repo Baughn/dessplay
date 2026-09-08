@@ -132,3 +132,11 @@ scroll > slot { flex-grow: 1; }
 #page-keybar { height: 1lh; }
 
 #page-shell { width: 100%; height: 100%; }
+
+.rogue-condition { white-space: normal; }
+
+#summary-wounds { flex-shrink: 1; }
+#summary-threats { margin: 1lh 0 0 0; }
+.rogue-threat, .rogue-omission { white-space: normal; }
+
+.rogue-journal-row { white-space: normal; }

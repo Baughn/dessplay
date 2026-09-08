@@ -1037,3 +1037,11 @@ modifiers against the previous test-only frame-pass oracle. A regression first
 confirmed component DIM overriding CSS foreground, then verifies authored RGB,
 limited-palette conversion, and cache reuse across a palette change. Whole-UI
 theme, speaker-color, editor, and image regressions exercise production painting.
+
+Dungeon tests reorder condition fields in files while retaining the treatment
+identity, exercise replies and narrower widths, and reach continuations taller
+than the viewport. Bounded-summary properties now paint the production renderer
+at varied nonzero origins and assert that sentinel cells outside its viewport
+remain unchanged. Omission/separator checks also use actual painting. A 5,000-row
+journal tail check bounds layout instantiation to visible entries. Blank guide
+rows retain their source anchor across repaints through the shared document API.

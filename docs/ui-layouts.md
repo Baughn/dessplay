@@ -5,7 +5,7 @@ forms, their semantic label/value/annotation rows, category tabs and notes, the 
 controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
 attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
 file/episode browsers, AniDB/Nyaa searches, local-copy offers, confirmations,
-name editing, changelog entries, status text, keybindings, health metrics and progress, work-progress overlays, shared log/dungeon page composition, and the roguelike frame, game, recovery, document, equipment, and ending pages
+name editing, changelog entries, status text, keybindings, health metrics and progress, work-progress overlays, shared log/dungeon page composition, and the roguelike frame, game, recovery, condition, wound/threat summaries, journal, guide, equipment, and ending pages
 use local templates. Other pane interiors still use their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
@@ -450,3 +450,25 @@ Text styles resolve before painting. Explicit foreground colors override semanti
 dimming on components and individual fields. Limited terminals quantize authored
 RGB colors; true-color terminals preserve them. Terminal image pixels bypass
 this conversion. A palette change reuses arranged geometry and measured text.
+
+### Dungeon inspection and bounded summaries
+
+`rogue-condition` separates `region` and `details`, with boolean `injured`.
+The condition controller navigates measured physical lines, retaining the
+anatomical key and source position through reload and resize. Every continuation
+still treats that same region.
+
+`rogue-summary` supplies `wounds` and `threats` slots and `has-threats`.
+Wounds use `rogue-condition`; `rogue-threat` exposes `name`, `separator`, and
+`intent`. The measured-content policy reserves room for each story, fits whole
+entries, then uses `rogue-omission` (`count`, `label`, `key`, `counted`). Tiny
+viewports retain the compact `v` or `+` hint. Slot margins provide the separator;
+unused wound budget does not create extra blank lines before threats. Recovery
+uses the same bounded wound renderer.
+
+`rogue-journal-row` exposes `open`, `time`, `close`, and `body`. Its separate
+read-only projection, `rogue-recent-event`, receives the same fields and defaults
+to just the body with the event's semantic tone. Both use keyed document
+scrolling; opening at the tail measures only the entries needed for the viewport.
+The guide uses `rogue-document` and the same source-anchor service.
+`rogue-loading` exposes `notice` and `detail`.

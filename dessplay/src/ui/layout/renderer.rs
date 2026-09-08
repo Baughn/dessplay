@@ -324,6 +324,33 @@ impl RenderedScene {
             .first()
             .map_or(Rect::default(), |node| node.content.intersection(node.clip))
     }
+    pub(super) fn root_style(&self) -> PaintStyle {
+        crate::ui::theme::paint_style(
+            self.nodes
+                .first()
+                .map_or(PaintStyle::default(), |node| node.style.paint),
+            self.depth,
+        )
+    }
+    #[cfg(test)]
+    pub(super) fn line_text(&self, row: u16) -> String {
+        let mut parts: Vec<_> = self
+            .nodes
+            .iter()
+            .flat_map(|node| {
+                node.fragments.iter().filter_map(move |fragment| {
+                    (usize::from(node.content.y) + fragment.row == usize::from(row))
+                        .then_some((node.content.x, fragment.text.as_str()))
+                })
+            })
+            .collect();
+        parts.sort_by_key(|(x, _)| *x);
+        parts
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
     /// Visible controller slots, in markup order (independent of box placement).
     pub fn visible_slots(&self) -> Vec<&str> {
         self.nodes

@@ -14,10 +14,56 @@ pub struct DocumentScroll {
 }
 
 impl DocumentScroll {
+    /// Open at the tail without measuring all preceding entries.
+    pub fn to_end(&mut self) {
+        *self = Self {
+            index: usize::MAX,
+            offset: usize::MAX,
+            ..Self::default()
+        };
+    }
+
     /// Request movement by measured terminal rows; negative values move upward.
     pub fn advance(&mut self, rows: i64) {
         self.pending = self.pending.saturating_add(rows);
     }
+}
+
+#[cfg(test)]
+#[test]
+#[allow(clippy::unwrap_used)]
+fn opening_a_long_document_at_the_tail_measures_only_visible_entries() {
+    use tuirealm::ratatui::{Terminal, backend::TestBackend};
+    let rows: Vec<_> = (0..5000)
+        .map(|index| PresentedRow {
+            key: index.to_string(),
+            data: Presentation::default().text("body", format!("event {index}")),
+            gap_after: false,
+        })
+        .collect();
+    let mut renderer = Renderer::new(super::LayoutBundle::builtin().unwrap());
+    let mut scroll = DocumentScroll::default();
+    scroll.to_end();
+    let mut terminal = Terminal::new(TestBackend::new(30, 5)).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer
+                .paint_document(
+                    frame,
+                    frame.area(),
+                    "rogue-recent-event",
+                    &rows,
+                    &mut scroll,
+                    Style::default(),
+                )
+                .unwrap()
+        })
+        .unwrap();
+    assert!(renderer.arrangement_count() <= 6);
+    let last: String = (0..30)
+        .map(|x| terminal.backend().buffer()[(x, 4)].symbol())
+        .collect();
+    assert!(last.contains("event 4999"), "{last}");
 }
 
 impl Renderer {
