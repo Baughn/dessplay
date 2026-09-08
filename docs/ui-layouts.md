@@ -5,7 +5,7 @@ forms, their semantic label/value/annotation rows, category tabs and notes, the 
 controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
 attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
 file/episode browsers, AniDB/Nyaa searches, local-copy offers, confirmations,
-name editing, changelog entries, status text, keybindings, health metrics and progress, and the roguelike frame, game, recovery, document, equipment, and ending pages
+name editing, changelog entries, status text, keybindings, health metrics and progress, work-progress overlays, shared log/dungeon page composition, and the roguelike frame, game, recovery, document, equipment, and ending pages
 use local templates. Other pane interiors still use their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
@@ -424,3 +424,24 @@ Editors, validation, and Save behavior remain controller-owned.
 Form rows supply raw action labels in `value`; `action`, `open`, and `close`
 let templates control their enclosing brackets. Secret values remain masked
 before they enter presentation data.
+
+### Page composition and progress primitives
+
+`page-shell` owns the log/dungeon page, recent-chat projection, and keybar slots
+(`page`, `recent`, `keybar`). Its default foreground page keeps the upper two
+thirds of the viewport. Move or hide the slots to relocate that composition.
+
+`cell-rounding: nearest` is the ordinary cell-allocation policy.
+`cell-rounding: floor` rounds allocated widths and explicit heights downward
+before the final layout pass, so following siblings use the same snapped edge.
+Auto heights still measure wrapped content. The foreground page uses floor to
+retain its previous two-thirds boundary. Tiny floating-point error at an exact
+cell boundary does not remove a cell.
+
+`work-overlay` exposes `title` and keyed `jobs`, rendered by `work-row`.
+Rows contain `stage`, `filename`, `open`, `close`, and typed progress `progress`.
+`<progress bind="progress"/>` paints a clamped terminal fill in its allocated
+content box. It has no selectable source text and paints its original fitted
+width through clipping; surrounding brackets and labels belong to the template.
+The default overlay uses 60% width and intrinsic height. `auto` modal dimensions
+fit content; opposite positioning insets do not stretch them to fill the screen.

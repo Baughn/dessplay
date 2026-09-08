@@ -21,7 +21,6 @@ use tuirealm::event::{
 use tuirealm::props::{AttrValue, Attribute};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Position, Rect};
-use tuirealm::ratatui::widgets::{Block, Borders};
 
 use super::components::{
     ChatPane, HealthLine, KeyBar, PlaylistPane, SeriesMode, SeriesPane, StatusBar, UsersPane,
@@ -2864,30 +2863,32 @@ impl Ui {
             anim.slot_width = Some(slot_width);
         }
         self.status.render_layout(frame, status_area, renderer);
-        self.keybar.render_layout(frame, keybar_area, renderer);
-        if matches!(
+        let page_open = matches!(
             self.modals.last(),
             Some(Modal::Logs(_) | Modal::Roguelike(_))
-        ) {
-            let area = frame.area();
-            let y = super::modals::LogModal::area(area).bottom();
-            self.chat.render_recent(
-                frame,
-                Rect {
-                    y,
-                    height: if keybar_area.is_empty() {
-                        area.bottom()
-                    } else {
-                        keybar_area.y
-                    }
-                    .saturating_sub(y),
-                    ..area
-                },
-                renderer,
-            );
+        );
+        if !page_open {
+            self.keybar.render_layout(frame, keybar_area, renderer);
         }
         scene.paint_overlays(frame);
-        if let Some(modal) = self.modals.last_mut() {
+        if page_open {
+            if let Ok(shell) = renderer.arrange(
+                "page-shell",
+                frame.area(),
+                &super::layout::Presentation::default(),
+            ) {
+                shell.paint_with_slots(frame, |name, frame, area, _| match name {
+                    "page" => match self.modals.last_mut() {
+                        Some(Modal::Logs(modal)) => modal.render_layout(frame, area, renderer),
+                        Some(Modal::Roguelike(modal)) => modal.render_layout(frame, area, renderer),
+                        _ => {}
+                    },
+                    "recent" => self.chat.render_recent(frame, area, renderer),
+                    "keybar" => self.keybar.render_layout(frame, area, renderer),
+                    _ => {}
+                });
+            }
+        } else if let Some(modal) = self.modals.last_mut() {
             match modal {
                 Modal::AniDbSearch(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::NyaaSearch(modal) => modal.render_layout(frame, frame.area(), renderer),
@@ -2898,16 +2899,15 @@ impl Ui {
                 Modal::Episodes(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Settings(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::ListEdit(modal) => modal.render_layout(frame, frame.area(), renderer),
-                Modal::Logs(modal) => modal.render_layout(frame, frame.area(), renderer),
-                Modal::Roguelike(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Changelog(modal) => modal.render_layout(frame, frame.area(), renderer),
+                Modal::Logs(_) | Modal::Roguelike(_) => {}
             }
         }
         if !matches!(
             self.modals.last(),
             Some(Modal::Logs(_) | Modal::Roguelike(_))
         ) {
-            self.draw_work_overlay(frame);
+            self.draw_work_overlay(frame, renderer);
         }
         // The image rects drawn this frame keep their own colors — their
         // cells *are* the picture (see apply_color_depth).
@@ -2971,86 +2971,65 @@ impl Ui {
     /// The hashing progress overlay: visually modal (centered, on top
     /// of everything), but it captures no input — chat keeps working
     /// while files hash. Design.md's no-silent-work rule.
-    fn draw_work_overlay(&self, frame: &mut Frame<'_>) {
-        use tuirealm::ratatui::layout::Rect;
-        use tuirealm::ratatui::widgets::{Clear, Paragraph};
-
-        // The Nyaa modal itself shows active imports and their cancellation
-        // controls; do not paint the passive overlay over those controls.
+    fn draw_work_overlay(&self, frame: &mut Frame<'_>, renderer: &mut super::layout::Renderer) {
+        use super::layout::{Presentation, PresentedItem};
         if matches!(self.modals.last(), Some(Modal::NyaaSearch(_)))
             || (self.hashing.is_empty() && self.nyaa_imports.is_empty())
         {
             return;
         }
         let has_nyaa = !self.nyaa_imports.is_empty();
-        let mut rows: Vec<(String, u64, u64)> = self
+        let row = |key: String, stage: &str, filename: &str, done: u64, total: u64| PresentedItem {
+            key,
+            data: Presentation::default()
+                .text("stage", stage)
+                .text("filename", filename)
+                .text("open", "[")
+                .text("close", "]")
+                .progress("progress", done, total),
+        };
+        let mut occurrences = BTreeMap::new();
+        let mut rows: Vec<_> = self
             .hashing
             .iter()
             .map(|(filename, done, total)| {
-                let label = if has_nyaa {
-                    format!("Hashing {filename}")
-                } else {
-                    filename.clone()
-                };
-                (label, *done, *total)
+                let count = occurrences.entry(filename).or_insert(0usize);
+                let key = format!("hash:{filename:?}/{count}");
+                *count += 1;
+                row(
+                    key,
+                    if has_nyaa { "Hashing" } else { "" },
+                    filename,
+                    *done,
+                    *total,
+                )
             })
             .collect();
-        rows.extend(self.nyaa_imports.values().map(|row| {
-            let stage = match row.stage {
+        rows.extend(self.nyaa_imports.iter().map(|(key, job)| {
+            let stage = match job.stage {
                 crate::actors::file::NyaaImportStage::Downloading => "Downloading",
                 crate::actors::file::NyaaImportStage::Hashing => "Hashing",
             };
-            (
-                format!("{stage} {}", row.filename),
-                row.done_bytes,
-                row.total_bytes,
+            row(
+                format!("nyaa:{key:?}"),
+                stage,
+                &job.filename,
+                job.done_bytes,
+                job.total_bytes,
             )
         }));
-        let overlay = hash_overlay_rect(frame.area(), rows.len());
-        frame.render_widget(Clear, overlay);
-        frame.render_widget(
-            Block::default().borders(Borders::ALL).title(if has_nyaa {
-                "Adding to playlist"
-            } else {
-                "Hashing for playlist"
-            }),
-            overlay,
-        );
-        for (i, (filename, done, total)) in rows.iter().enumerate() {
-            let y = overlay.y + 1 + (i as u16) * 2;
-            if y + 1 >= overlay.y + overlay.height {
-                break;
-            }
-            let inner_x = overlay.x + 1;
-            let inner_w = overlay.width.saturating_sub(2);
-            frame.render_widget(
-                Paragraph::new(filename.as_str()),
-                Rect {
-                    x: inner_x,
-                    y,
-                    width: inner_w,
-                    height: 1,
+        let data = Presentation::default()
+            .text(
+                "title",
+                if has_nyaa {
+                    "Adding to playlist"
+                } else {
+                    "Hashing for playlist"
                 },
-            );
-            let ratio = if *total > 0 {
-                (*done as f64 / *total as f64).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            // A classic [####    ] bar — fill length is easier to track
-            // at a glance than a number.
-            let slots = inner_w.saturating_sub(2) as usize;
-            let filled = (ratio * slots as f64).round() as usize;
-            let bar = format!("[{}{}]", "#".repeat(filled), " ".repeat(slots - filled));
-            frame.render_widget(
-                Paragraph::new(bar),
-                Rect {
-                    x: inner_x,
-                    y: y + 1,
-                    width: inner_w,
-                    height: 1,
-                },
-            );
+            )
+            .list("jobs", rows);
+        if let Ok(scene) = renderer.arrange("work-overlay", frame.area(), &data) {
+            scene.paint_with_slots(frame, |_, _, _, _| {});
         }
     }
 
@@ -3062,29 +3041,6 @@ impl Ui {
     /// Current settings (the shell persists them on save).
     pub fn settings(&self) -> &Settings {
         &self.settings
-    }
-}
-
-/// The centered rect for the playlist-add hashing overlay: 60% of the
-/// frame width (min 20), two rows per in-flight file plus a border.
-///
-/// The arithmetic is done in u32: `area.width * 3` overflows u16 on an
-/// extremely wide terminal (panic in debug, garbage rect in release) — the
-/// same class of bug fixed in `modals::overlay`. Both dimensions are
-/// clamped back under the frame, so the final `as u16` is always in range.
-fn hash_overlay_rect(
-    area: tuirealm::ratatui::layout::Rect,
-    n_hashing: usize,
-) -> tuirealm::ratatui::layout::Rect {
-    let aw = u32::from(area.width);
-    let ah = u32::from(area.height);
-    let height = ((n_hashing as u32) * 2 + 2).min(ah) as u16;
-    let width = (aw * 3 / 5).clamp(20u32.min(aw), aw) as u16;
-    tuirealm::ratatui::layout::Rect {
-        x: area.x + (area.width - width) / 2,
-        y: area.y + (area.height - height) / 2,
-        width,
-        height,
     }
 }
 
@@ -3313,22 +3269,6 @@ mod tests {
             },
         );
         id
-    }
-
-    /// Regression: the hashing-overlay rect must not overflow u16 when the
-    /// terminal is extremely wide. `area.width * 3` overflowed u16 (panic in
-    /// debug, garbage rect in release) — e.g. 30000 * 3 = 90000 > u16::MAX.
-    /// The result must stay clamped to the frame.
-    #[test]
-    fn hash_overlay_rect_does_not_overflow_on_a_very_wide_terminal() {
-        use tuirealm::ratatui::layout::Rect;
-        let area = Rect::new(0, 0, 30000, 30000);
-        let rect = hash_overlay_rect(area, 3);
-        assert_eq!(rect.width, 18000); // 30000 * 3 / 5
-        assert_eq!(rect.height, 8); // 3 files * 2 + 2
-        assert!(rect.width <= area.width && rect.height <= area.height);
-        assert_eq!(rect.x, (area.width - rect.width) / 2);
-        assert_eq!(rect.y, (area.height - rect.height) / 2);
     }
 
     fn me() -> UserId {

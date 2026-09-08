@@ -944,3 +944,9 @@ Form models select a semantic entry (`settings-form` or `list-edit-form`),
 whose modal overlay owns dimensions. `form-save` and `form-error` render their
 fields through the same cascade as rows. A single slot-layer traversal paints
 tabs, notes, body, Save, and editor/error overlays in template order.
+
+`page-shell` arranges the log/dungeon foreground, read-only recent chat, and
+keybindings as one scene. The modal controllers receive their allocated page
+box. `work-overlay` repeats semantic job rows; the renderer paints typed progress
+quantities as nonselectable fills inside their authored boxes. CSS cell rounding
+runs before the second allocation pass, preserving shared sibling edges.

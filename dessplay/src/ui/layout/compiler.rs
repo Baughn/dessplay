@@ -95,6 +95,7 @@ impl std::error::Error for Diagnostic {}
 pub(super) enum BindingType {
     Text,
     Rich,
+    Progress,
     Bool,
     Slot,
     List(&'static str),
@@ -176,6 +177,18 @@ impl Default for TemplateSchema {
                 &[][..],
                 &["open", "label", "missing", "close"][..],
                 &["invalid"][..],
+            ),
+            (
+                "work-row",
+                &[][..],
+                &["stage", "filename", "open", "close"][..],
+                &[][..],
+            ),
+            (
+                "page-shell",
+                &["page", "recent", "keybar"][..],
+                &[][..],
+                &[][..],
             ),
             ("form-note", &[][..], &["body"][..], &[][..]),
             (
@@ -497,6 +510,18 @@ impl Default for TemplateSchema {
             .entry("chat-message".into())
             .or_default()
             .insert("body".into(), BindingType::Rich);
+        templates.insert(
+            "work-overlay".into(),
+            [
+                ("title".into(), BindingType::Text),
+                ("jobs".into(), BindingType::List("work-row")),
+            ]
+            .into(),
+        );
+        templates
+            .entry("work-row".into())
+            .or_default()
+            .insert("progress".into(), BindingType::Progress);
         for name in ["settings-form", "list-edit-form"] {
             templates.insert(name.into(), templates["form"].clone());
         }
@@ -761,6 +786,8 @@ fn validate(
                     Some(kind @ BindingType::List(_)) => *kind,
                     _ => return Err(error(node, "repeat requires a typed list binding")),
                 }
+            } else if node.tag == "progress" {
+                BindingType::Progress
             } else if node.tag == "rich" {
                 BindingType::Rich
             } else {
@@ -787,7 +814,7 @@ fn validate(
     {
         return Err(error(node, "slots require a unique controller binding"));
     }
-    if matches!(node.tag.as_str(), "text" | "rich") && node.attr("bind").is_empty() {
+    if matches!(node.tag.as_str(), "text" | "rich" | "progress") && node.attr("bind").is_empty() {
         return Err(error(node, "text requires a bind attribute"));
     }
     if node.tag == "rich" && !slots.insert(format!("rich:{}", node.attr("bind"))) {
@@ -796,7 +823,9 @@ fn validate(
             "action-bearing rich bindings must occur once per entry; use a separate read-only projection",
         ));
     }
-    if matches!(node.tag.as_str(), "slot" | "text" | "rich") && !node.children.is_empty() {
+    if matches!(node.tag.as_str(), "slot" | "text" | "rich" | "progress")
+        && !node.children.is_empty()
+    {
         return Err(error(node, "leaf elements cannot contain children"));
     }
     if matches!(node.tag.as_str(), "flow" | "prefix")
@@ -929,7 +958,9 @@ fn parse_xml(
                         ][..],
                         "flow" | "prefix" => &["id", "class", "style", "if", "separator"][..],
                         "slot" => &["id", "class", "style", "if", "name"][..],
-                        "text" | "rich" | "repeat" => &["id", "class", "style", "if", "bind"][..],
+                        "text" | "rich" | "repeat" | "progress" => {
+                            &["id", "class", "style", "if", "bind"][..]
+                        }
                         _ => {
                             return Err(Diagnostic::at(
                                 file,
@@ -965,6 +996,7 @@ fn parse_xml(
                     "flow",
                     "prefix",
                     "repeat",
+                    "progress",
                 ]
                 .contains(&tag.as_str())
                 {

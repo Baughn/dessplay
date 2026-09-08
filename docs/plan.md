@@ -1883,8 +1883,9 @@ player OSD, and standalone diagnostic output are outside scope.
   and repeated keybinding entries; authored root dimensions and outer margins.
 - [x] Semantic health/progress fields with measured priority budgets, form modal
   entry sizing, Save/error templates, raw action labels, and slot-layer editor composition.
-- [ ] Remaining modal layers,
-  roguelike condition rows and bounded-summary children; remove production legacy adapters.
+- [x] Shared log/dungeon/recent-chat page shell, typed work-progress overlays,
+  intrinsic modal height, and explicit terminal cell rounding.
+- [ ] Roguelike condition rows and bounded-summary children; remove production legacy adapters.
 - [x] All six file-only demonstrations through real filesystem events and
   runtime bundle installation; atomic saves, relative paths, missing-directory
   creation, and whole-directory replacement.

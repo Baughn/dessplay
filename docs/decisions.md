@@ -16,6 +16,20 @@ remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
 
+## Page shells and intrinsic progress overlays (2026-09-08)
+
+**Rule:** Templates own the full page/recent-chat/keybar split and work-progress
+composition. Progress fill is a typed intrinsic primitive. Explicit floor cell
+rounding preserves the default foreground page boundary.
+
+**Why:** Independent page and recent-chat rectangles could diverge after file
+edits. A shared scene makes their relationship editable and consistent. Existing
+small-terminal and snapshot checks caught nearest rounding moving the split;
+freezing the explicit extent before sibling allocation preserves the old default.
+A new intrinsic overlay check also caught opposing absolute insets stretching an
+auto-height modal. Removing the opposite inset for auto dimensions fixes that
+class while retaining centered placement and definite modal dimensions.
+
 ## Measured health priorities and template form chrome (2026-09-08)
 
 **Rule:** Health priority budgets measure authored metric/progress components

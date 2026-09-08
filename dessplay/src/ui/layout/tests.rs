@@ -697,6 +697,81 @@ fn filename_ellipsis_has_no_source_and_retains_the_suffix_identity() {
 }
 
 #[test]
+fn page_shell_preserves_the_two_thirds_boundary_and_accepts_reordering() {
+    let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+    for height in 1..100u16 {
+        let area = Rect::new(7, 3, 80, height);
+        let scene = renderer
+            .arrange("page-shell", area, &Presentation::default())
+            .unwrap();
+        let page = scene.slot("page");
+        assert_eq!(page.height, height * 2 / 3, "height={height}");
+        if !page.is_empty() {
+            assert_eq!(page.y, 3);
+        }
+        assert!(scene.slot("recent").is_empty() || scene.slot("recent").y >= page.bottom());
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    std::fs::write(directory.path().join("templates/page.xml"), r#"<templates version="1"><template name="page-shell"><row><slot name="recent" style="width: 20ch"/><slot name="page" style="flex-grow: 1"/></row></template></templates>"#).unwrap();
+    renderer.install(LayoutBundle::load(directory.path()).unwrap());
+    let scene = renderer
+        .arrange(
+            "page-shell",
+            Rect::new(7, 3, 80, 30),
+            &Presentation::default(),
+        )
+        .unwrap();
+    assert_eq!(scene.slot("recent"), Rect::new(7, 3, 20, 30));
+    assert_eq!(scene.slot("page"), Rect::new(27, 3, 60, 30));
+}
+
+#[test]
+fn progress_fill_clips_original_geometry_and_has_no_selectable_text() {
+    let data = Presentation::default()
+        .text("open", "[")
+        .text("close", "]")
+        .progress("progress", 50, 100);
+    let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+    let scene = renderer
+        .measure_content("work-row", "job", 12, &data)
+        .unwrap();
+    assert!(
+        scene
+            .text_regions
+            .iter()
+            .all(|region| region.binding != "progress")
+    );
+    let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+    terminal
+        .draw(|frame| scene.paint_scrolled(frame, Rect::new(3, 2, 12, 1), 0))
+        .unwrap();
+    let text: String = (3..15)
+        .map(|x| terminal.backend().buffer()[(x, 2)].symbol())
+        .collect();
+    assert_eq!(text, "[#####     ]");
+    let oversized = renderer
+        .arrange(
+            "work-overlay",
+            Rect::new(0, 0, 30000, 30000),
+            &Presentation::default().list(
+                "jobs",
+                (0..3)
+                    .map(|i| PresentedItem {
+                        key: i.to_string(),
+                        data: data.clone().text("filename", "file"),
+                    })
+                    .collect(),
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        oversized.bounds("work-overlay"),
+        Rect::new(6000, 14996, 18000, 8)
+    );
+}
+
+#[test]
 fn attached_dropdown_follows_its_reordered_control_and_escapes_header_clip() {
     let dir = tempfile::tempdir().unwrap();
     LayoutBundle::init(dir.path()).unwrap();

@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Presentation {
     texts: BTreeMap<String, String>,
+    progress: BTreeMap<String, (u64, u64)>,
     lists: BTreeMap<String, Vec<PresentedItem>>,
     rich: BTreeMap<String, Vec<RichSpan>>,
     bools: BTreeMap<String, bool>,
@@ -102,6 +103,11 @@ impl Presentation {
     /// Unwrapped shared-column content width, supplied without padding text.
     pub fn intrinsic_width(mut self, binding: &str, width: u16) -> Self {
         self.intrinsic_widths.insert(binding.into(), width);
+        self
+    }
+    /// Progress quantities; ratios are clamped by the terminal fill primitive.
+    pub fn progress(mut self, name: &str, completed: u64, total: u64) -> Self {
+        self.progress.insert(name.into(), (completed, total));
         self
     }
     /// Supply a plain-text binding.
@@ -282,6 +288,7 @@ impl SplitRegion {
 #[derive(Clone, Debug)]
 struct Arranged {
     subtree_end: usize,
+    progress: Option<(u64, u64)>,
     overlay: bool,
     overlay_root: bool,
     id: String,
@@ -598,6 +605,25 @@ impl RenderedScene {
                     Default::default(),
                     view,
                 );
+            }
+            if let Some((done, total)) = n.progress {
+                let filled = if total == 0 {
+                    0
+                } else {
+                    ((done.min(total) as f64 / total as f64) * f64::from(n.content.width)).round()
+                        as u16
+                };
+                let bar = Rect {
+                    height: n.content.height.min(1),
+                    ..n.content
+                };
+                let visible = view.rect(bar.intersection(n.clip));
+                for x in visible.x..visible.right() {
+                    let column = i32::from(x) - view.x - i32::from(n.content.x);
+                    frame.buffer_mut()[(x, visible.y)]
+                        .set_symbol(if column < i32::from(filled) { "#" } else { " " })
+                        .set_style(n.style.paint);
+                }
             }
             if !n.slot.is_empty() {
                 let area = view.rect(n.content.intersection(n.clip));
@@ -1405,6 +1431,14 @@ fn constrain_modal(style: &mut taffy::Style, viewport: Rect) {
         &mut style.max_size.height,
         viewport.height,
     );
+    // Auto modal dimensions measure their content; opposite definite insets
+    // would otherwise stretch an absolutely positioned Taffy box to the viewport.
+    if style.size.width == Dimension::Auto {
+        style.inset.right = LengthPercentageAuto::Auto;
+    }
+    if style.size.height == Dimension::Auto {
+        style.inset.bottom = LengthPercentageAuto::Auto;
+    }
 }
 
 struct BuildScope<'a> {
@@ -1575,7 +1609,9 @@ fn build<'a>(
         } else {
             text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0) as f32
         },
-        height: if text.is_empty() {
+        height: if node.tag == "progress" {
+            1.0
+        } else if text.is_empty() {
             height as f32
         } else {
             text.lines().count().max(1) as f32
@@ -1614,8 +1650,21 @@ fn build<'a>(
     })
 }
 fn freeze_widths(tree: &mut TaffyTree<Measure>, built: &Built<'_>) -> Result<(), Diagnostic> {
-    let width = tree.layout(built.id).map_err(internal)?.size.width;
+    let mut width = tree.layout(built.id).map_err(internal)?.size.width;
     let mut style = tree.style(built.id).map_err(internal)?.clone();
+    if built.style.floor_size {
+        let size = tree.unrounded_layout(built.id).size;
+        // Percentage parsing and allocation can land a couple of f32 ULPs
+        // below an exact cell boundary (e.g. two thirds of 30).
+        let floor = |value: f32| value.next_up().next_up().floor();
+        width = floor(size.width);
+        if style.size.height != Dimension::Auto {
+            let height = Dimension::Length(floor(size.height));
+            style.size.height = height;
+            style.min_size.height = height;
+            style.max_size.height = height;
+        }
+    }
     style.size.width = Dimension::Length(width);
     style.min_size.width = Dimension::Length(width);
     style.max_size.width = Dimension::Length(width);
@@ -1804,6 +1853,11 @@ fn collect(
     let node_index = scene.nodes.len();
     scene.nodes.push(Arranged {
         subtree_end: node_index + 1,
+        progress: if built.node.tag == "progress" {
+            data.progress.get(built.node.attr("bind")).copied()
+        } else {
+            None
+        },
         overlay: in_overlay || built.node.tag == "overlay",
         overlay_root: built.node.tag == "overlay",
         id: if built.node.attr("id").is_empty() {

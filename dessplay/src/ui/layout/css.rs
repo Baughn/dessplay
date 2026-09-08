@@ -334,6 +334,7 @@ pub(super) struct Computed {
     pub layout: Style,
     pub paint: PaintStyle,
     pub border: Color,
+    pub floor_size: bool,
     pub wrap: bool,
     pub hanging_indent: u16,
     pub ellipsis: bool,
@@ -355,6 +356,7 @@ impl Default for Computed {
             },
             paint: PaintStyle::default(),
             border: Color::DarkGray,
+            floor_size: false,
             wrap: false,
             hanging_indent: 0,
             ellipsis: false,
@@ -561,6 +563,7 @@ const PROPERTIES: &[&str] = &[
     "flex-grow",
     "flex-shrink",
     "flex-basis",
+    "cell-rounding",
     "width",
     "height",
     "min-width",
@@ -801,6 +804,13 @@ fn apply(out: &mut Computed, name: &str, value: &str) -> Result<(), String> {
         "flex-grow" => out.layout.flex_grow = number(value)?,
         "flex-shrink" => out.layout.flex_shrink = number(value)?,
         "flex-basis" => out.layout.flex_basis = length(value)?,
+        "cell-rounding" => {
+            out.floor_size = match value {
+                "floor" => true,
+                "nearest" => false,
+                _ => return Err("cell-rounding accepts floor or nearest".into()),
+            }
+        }
         "width" => out.layout.size.width = length(value)?,
         "height" => out.layout.size.height = length(value)?,
         "min-width" => out.layout.min_size.width = length(value)?,

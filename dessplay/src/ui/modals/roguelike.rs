@@ -9,7 +9,7 @@ use crate::roguelike_store::Command;
 use crate::ui::widgets::render_list_body;
 use tuirealm::ratatui::style::Color;
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Clear, ListItem, Paragraph};
+use tuirealm::ratatui::widgets::{ListItem, Paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -289,7 +289,14 @@ impl RoguelikeModal {
     }
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         if let Ok(bundle) = crate::ui::layout::LayoutBundle::builtin() {
-            self.render_layout(frame, area, &mut crate::ui::layout::Renderer::new(bundle));
+            let mut renderer = crate::ui::layout::Renderer::new(bundle);
+            if let Ok(shell) = renderer.arrange(
+                "page-shell",
+                area,
+                &crate::ui::layout::Presentation::default(),
+            ) {
+                self.render_layout(frame, shell.slot("page"), &mut renderer);
+            }
         }
     }
     pub(crate) fn render_layout(
@@ -299,8 +306,7 @@ impl RoguelikeModal {
         renderer: &mut crate::ui::layout::Renderer,
     ) {
         use crate::ui::layout::Presentation;
-        let modal = LogModal::area(area);
-        frame.render_widget(Clear, modal);
+
         let flash = self.effects == RoguelikeEffects::Full && self.now < self.flash_until;
         let injured = self.effects == RoguelikeEffects::Reduced
             && self
@@ -350,12 +356,14 @@ impl RoguelikeModal {
             )
             .boolean("has-error", self.error.is_some())
             .color_variable("--dungeon-border", border);
-        let Ok(scene) = renderer.arrange("rogue", modal, &data) else {
+        let Ok(scene) = renderer.arrange("rogue", area, &data) else {
             return;
         };
-        scene.paint(frame);
-        self.render_page(frame, scene.slot("body"), renderer);
-        scene.paint_overlays(frame);
+        scene.paint_with_slots(frame, |name, frame, area, _| {
+            if name == "body" {
+                self.render_page(frame, area, renderer);
+            }
+        });
     }
     fn render_page(
         &mut self,

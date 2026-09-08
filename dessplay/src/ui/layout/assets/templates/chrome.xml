@@ -7,4 +7,7 @@
   <template name="health-middle"><box id="health-middle"><slot name="marquee" if="animation"/><text bind="body" if="suggestion"/></box></template>
   <template name="health-metrics"><repeat id="health-metrics" bind="metrics"><use template="health-metric"/></repeat></template>
   <template name="health-metric"><row id="health-metric"><text class="health-separator" bind="separator" if="separated"/><flow if="ordinary"><text bind="label"/><text bind="value"/></flow><flow if="suffix"><text bind="value"/><text bind="label"/></flow><row class="health-bandwidth" if="bandwidth"><flow separator=""><text bind="up-marker"/><text bind="upload"/></flow><flow separator=""><text bind="down-marker"/><text bind="download"/></flow></row></row></template>
+  <template name="work-overlay"><box><overlay id="work-overlay" placement="modal" title="title"><repeat bind="jobs"><use template="work-row"/></repeat></overlay></box></template>
+  <template name="work-row"><column><flow><text bind="stage"/><text bind="filename"/></flow><row><text bind="open"/><progress class="work-progress" bind="progress"/><text bind="close"/></row></column></template>
+  <template name="page-shell"><overlay id="page-shell" placement="modal"><slot id="foreground-page" name="page"/><slot id="page-recent-chat" name="recent"/><slot id="page-keybar" name="keybar"/></overlay></template>
 </templates>

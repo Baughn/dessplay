@@ -2,7 +2,7 @@ use super::*;
 use crate::logging::{LiveLogging, LogLevel, LogScope};
 use tuirealm::event::{KeyEvent, KeyModifiers};
 use tuirealm::ratatui::text::Line;
-use tuirealm::ratatui::widgets::{Clear, Paragraph};
+use tuirealm::ratatui::widgets::Paragraph;
 
 /// Live diagnostic log, positioned above the last few chat lines.
 pub struct LogModal {
@@ -19,14 +19,6 @@ pub struct LogModal {
 }
 
 impl LogModal {
-    /// Shared boundary for the overlay and the recent-chat strip beneath it.
-    pub(crate) fn area(area: Rect) -> Rect {
-        Rect {
-            height: (u32::from(area.height) * 2 / 3) as u16,
-            ..area
-        }
-    }
-
     /// Open on the newest retained lines.
     pub fn new(logging: Option<LiveLogging>) -> Self {
         Self {
@@ -72,7 +64,14 @@ impl LogModal {
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         if let Ok(bundle) = crate::ui::layout::LayoutBundle::builtin() {
-            self.render_layout(frame, area, &mut crate::ui::layout::Renderer::new(bundle));
+            let mut renderer = crate::ui::layout::Renderer::new(bundle);
+            if let Ok(shell) = renderer.arrange(
+                "page-shell",
+                area,
+                &crate::ui::layout::Presentation::default(),
+            ) {
+                self.render_layout(frame, shell.slot("page"), &mut renderer);
+            }
         }
     }
 
@@ -82,9 +81,6 @@ impl LogModal {
         area: Rect,
         renderer: &mut crate::ui::layout::Renderer,
     ) {
-        // Full width, upper two-thirds. Never grow downward on a tiny terminal.
-        let modal = Self::area(area);
-        frame.render_widget(Clear, modal);
         let title = if self.anchor.is_none() {
             "Logs · LIVE"
         } else {
@@ -128,7 +124,7 @@ impl LogModal {
                 .state(id, "focus")
                 .component_style(id, theme::highlight_style());
         }
-        let scene = match renderer.arrange("log", modal, &data) {
+        let scene = match renderer.arrange("log", area, &data) {
             Ok(scene) => scene,
             Err(error) => {
                 tracing::error!(%error, "log layout failed");

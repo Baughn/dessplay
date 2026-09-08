@@ -1025,3 +1025,9 @@ and authored padding; a file-only test reorders playback and metric fields at a
 nonzero origin and hides metrics. Form scenarios exercise template modal sizes,
 fixed footer reservation, active editors, validation errors, and existing
 settings/List snapshots through the production renderer.
+
+Page-shell checks sweep terminal heights and translated origins against the
+previous two-thirds boundary, then reorder its slots using files alone. Existing
+log snapshots and tiny dungeon scenarios remain gates. Typed progress checks
+verify no source mappings, clipping, and intrinsic overlay height at a 30,000-cell
+viewport, replacing the old controller-rectangle overflow regression.

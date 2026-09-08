@@ -1653,6 +1653,12 @@ old sizes, including on restart. Watch events use normalized absolute paths
 and a surviving ancestor watch so relative paths, missing directories, and
 whole-directory replacement remain reloadable. Legacy PaneLayout percentages import once.
 
+The log/dungeon page and its recent-chat/keybar composition use a shared
+page template. Work progress overlays expose keyed jobs and separate stage,
+filename, and terminal progress primitives. Auto modal dimensions fit content.
+Cell rounding is explicit when a surface requires downward allocation; siblings
+are arranged after that decision and share the resulting cell boundary.
+
 Health-line budgets use intrinsic template widths, including authored padding.
 Metrics retain priority; progress yields to a useful suggestion window.
 The moving marquee and progress fill are intrinsic terminal primitives;
