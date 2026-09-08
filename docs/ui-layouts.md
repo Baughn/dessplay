@@ -1,7 +1,7 @@
 # Terminal layout authoring
 
 The layout migration is in progress. Currently the shared settings/List-entry
-forms, their semantic label/value/annotation rows, the F11 log viewer's
+forms, their semantic label/value/annotation rows, category tabs and notes, the F11 log viewer's
 controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
 attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
 file/episode browsers, AniDB/Nyaa searches, local-copy offers, confirmations,
@@ -88,7 +88,8 @@ templates and inherit the caller's binding contract. Unknown references,
 cycles, duplicate expanded IDs, and repeated controller slots are errors.
 Unused names outside the entry-template schema are errors, to catch typos.
 Form collections use stable controller keys and only instantiate visible
-rows. XML-authored keyed repetition and image bindings are not implemented yet.
+rows. Small semantic lists also support XML-authored keyed repetition; direct
+image bindings remain outstanding.
 Chat recent-history projections remain explicit controller-owned views.
 
 `flow` combines text, rich, and nested flow children into shared measured lines.
@@ -100,6 +101,31 @@ box properties on inline children are errors. `rich bind="field"` accepts typed
 styled spans and opaque existing controller actions. Message data never becomes
 XML. The `rich-text` entry exposes a rich `body` field. Source character ranges
 and action identities are emitted from the measured paint fragments.
+
+`repeat bind="list"` contains one item root, which may use a helper template.
+Its children use the list's typed item contract rather than the enclosing
+view's fields. Rust supplies nonempty unique keys; reordering a list preserves
+those identities, and `:selected` follows the selected item. IDs inside an item
+are local for CSS matching and qualified by list/key in arranged records.
+Repetition has no expressions or markup generated from message text.
+
+```xml
+<repeat bind="tabs" style="flex-direction: row; gap: 1ch">
+  <flow><text bind="label"/><text bind="missing" if="invalid"/></flow>
+</repeat>
+```
+
+The `form` contract exposes lists `tabs` (`form-tab` items) and `note-items`
+(`form-note` items). The default header delegates to `form-tabs`, whose list is
+`tabs`; the note region delegates to `form-notes`, whose list is `notes`.
+`form-tab` exposes `open`, `label`, `missing`, `close` text and `invalid` boolean;
+`form-note` exposes plain `body`. Edit these helpers to restyle the fields, or
+put a repeat directly in the main form to move the list. The default header
+reserves one line; change `#form-header` height when arranging tabs vertically.
+Controller-owned editors and Save/footer reservation retain their existing
+behavior. Repeats eagerly arrange small lists (at most 1,024 items each and
+65,536 layout nodes per entry). Long history and browser collections continue
+using the virtualized row renderer.
 
 Current entry templates and bindings:
 

@@ -1,4 +1,9 @@
 <templates version="1">
+  <template name="form-tabs"><repeat id="form-tabs" bind="tabs"><use template="form-tab"/></repeat></template>
+  <template name="form-tab"><flow id="form-tab" separator=""><text bind="open"/><flow><text bind="label"/><text bind="missing" if="invalid"/></flow><text bind="close"/></flow></template>
+  <template name="form-notes"><repeat bind="notes"><use template="form-note"/></repeat></template>
+  <template name="form-note"><text bind="body"/></template>
+
   <template name="form-row">
     <row id="form-row" class="form-row">
       <text class="form-label" bind="label" if="labelled" />

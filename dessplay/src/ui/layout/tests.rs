@@ -10,6 +10,90 @@ fn defaults_are_valid_and_transferable() {
     assert!(LayoutBundle::builtin().is_ok());
 }
 #[test]
+fn keyed_repetition_uses_item_bindings_states_and_stable_geometry_identities() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    std::fs::write(directory.path().join("templates/form.xml"), r#"<templates version="1"><template name="form"><column><repeat bind="tabs" style="flex-direction: row; gap: 2ch"><row id="tab"><text bind="label"/><text bind="missing" if="invalid"/></row></repeat></column></template></templates>"#).unwrap();
+    std::fs::write(
+        directory.path().join("style.css"),
+        "#tab:selected { color: red; }",
+    )
+    .unwrap();
+    let item = |key: &str, text: &str, selected: bool| PresentedItem {
+        key: key.into(),
+        data: Presentation::default()
+            .text("label", text)
+            .selected(selected),
+    };
+    let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+    let area = Rect::new(3, 2, 30, 6);
+    let first = renderer
+        .arrange(
+            "form",
+            area,
+            &Presentation::default().list(
+                "tabs",
+                vec![item("a", "Alpha", false), item("b", "Beta", true)],
+            ),
+        )
+        .unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    terminal.draw(|frame| first.paint(frame)).unwrap();
+    assert_eq!(first.items.len(), 2);
+    assert_eq!(first.items[1].bounds.x, 10);
+    assert_eq!(terminal.backend().buffer()[(10, 2)].symbol(), "B");
+    assert_eq!(
+        terminal.backend().buffer()[(10, 2)].fg,
+        tuirealm::ratatui::style::Color::Red
+    );
+    let next = renderer
+        .arrange(
+            "form",
+            area,
+            &Presentation::default().list(
+                "tabs",
+                vec![item("b", "Beta", true), item("a", "Alpha", false)],
+            ),
+        )
+        .unwrap();
+    assert_eq!(next.items[0].instance, first.items[1].instance);
+    assert_eq!(next.items[0].bounds.x, 3);
+    let duplicate = Presentation::default().list(
+        "tabs",
+        vec![item("a", "Alpha", false), item("a", "Beta", true)],
+    );
+    assert!(
+        renderer
+            .arrange("form", area, &duplicate)
+            .unwrap_err()
+            .message
+            .contains("unique keys")
+    );
+    let empty_key = Presentation::default().list("tabs", vec![item("", "Alpha", false)]);
+    assert!(renderer.arrange("form", area, &empty_key).is_err());
+}
+
+#[test]
+fn repeated_items_validate_their_own_contract() {
+    for content in [
+        "<repeat bind=\"title\"><text bind=\"label\"/></repeat>",
+        "<repeat bind=\"tabs\"><text bind=\"title\"/></repeat>",
+        "<repeat bind=\"tabs\"><text bind=\"label\"/><text bind=\"missing\"/></repeat>",
+        "<repeat bind=\"tabs\"><slot name=\"editor\"/></repeat>",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(
+            directory.path().join("templates/form.xml"),
+            format!(
+                "<templates version=\"1\"><template name=\"form\">{content}</template></templates>"
+            ),
+        )
+        .unwrap();
+        assert!(LayoutBundle::load(directory.path()).is_err(), "{content}");
+    }
+}
+#[test]
 fn nested_overlay_slots_paint_after_their_content_and_before_later_overlays() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join("templates")).unwrap();
@@ -135,6 +219,28 @@ fn cascade_specificity_inheritance_and_custom_variables() {
     );
 }
 proptest! {
+    #[test]
+    fn repeated_unicode_text_keeps_item_source_mappings(width in 10u16..60, x in 0u16..20, y in 0u16..10, labels in prop::collection::vec("[a-z界😀 ]{1,20}", 1..8)) {
+        use unicode_width::UnicodeWidthStr;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/form.xml"), r#"<templates version="1"><template name="form"><repeat bind="tabs"><text bind="label" style="width: 100%; white-space: normal"/></repeat></template></templates>"#).unwrap();
+        let items = labels.iter().enumerate().map(|(index, label)| PresentedItem { key: index.to_string(), data: Presentation::default().text("label", label) }).collect();
+        let scene = Renderer::new(LayoutBundle::load(directory.path()).unwrap()).arrange("form", Rect::new(x,y,width,80), &Presentation::default().list("tabs", items)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(x + width, y + 80)).unwrap();
+        terminal.draw(|frame| scene.paint(frame)).unwrap();
+        for item in &scene.items {
+            let label = &labels[item.key.parse::<usize>().unwrap()];
+            for region in scene.text_regions.iter().filter(|region| region.node.starts_with(&item.instance)) {
+                let mut column = region.bounds.x;
+                for ch in label.chars().skip(region.source.start).take(region.source.len()) {
+                    let expected = ch.to_string();
+                    prop_assert_eq!(terminal.backend().buffer()[(column, region.bounds.y)].symbol(), expected.as_str());
+                    column += expected.width() as u16;
+                }
+            }
+        }
+    }
     #[test]
     fn modal_placement_preserves_browser_sizing_and_translation(width in 0u16..180, height in 0u16..90, x in 0u16..30, y in 0u16..20) {
         let area = Rect::new(x,y,width,height);

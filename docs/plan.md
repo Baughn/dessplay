@@ -1861,7 +1861,9 @@ player OSD, and standalone diagnostic output are outside scope.
 - [x] Shared inline flows, typed rich spans, source/action paint records, and
   centered recovery overlays.
 - [x] Log control fields, attached dropdown overlays, and semantic option rows.
-- [ ] Finish foundation: template-authored keyed repetition and complete style integration.
+- [x] Template-authored keyed repetition for small semantic lists, item-scoped
+  binding validation, stable geometry identities, and form tabs/notes.
+- [ ] Extend authored repetition to virtualized collections and finish style integration.
 - [x] Chat/input/suggestion composition, recent projection, semantic separate
   subtitle rows, and timestamp-aligned bordered attachments with original scroll crops.
 - [x] Chat rich message variants, authored first-line prefixes, source-mapped

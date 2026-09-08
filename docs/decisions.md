@@ -573,6 +573,22 @@ Modal percentages floor to cells and minimum sizes yield to the viewport,
 preserving the existing browser dimensions and centering. The property gate
 compares arbitrary small sizes and translated origins against that contract.
 
+### Repeated items have their own binding and identity scope (2026-09-08)
+
+A repeat contains one item root and consumes a typed list. Validating that root
+against the enclosing form would confuse fields such as tab labels with form
+titles; item-scoped validation catches those errors before installation. Rust
+provides stable keys, and arranged IDs include their list/key scope while CSS
+selectors retain local template IDs. Reordering data therefore retains its
+selection identity without imposing order-derived IDs on template authors.
+
+Settings tabs and notes now supply semantic fields instead of preassembled
+lines. Small repeats arrange eagerly under explicit item/node limits. Large
+collections retain their existing virtualized renderer while authored virtual
+repetition is completed. Paint-only cache refresh remains disabled for list
+containers until it can resolve nested rich spans by their complete item scope;
+unchanged lists still hit the exact scene cache.
+
 ### Explicit dark theme on true-color terminals
 
 **Rule:** A true-color terminal gets an explicit app-wide dark theme with RGB semantic foregrounds; dim text is an explicit muted RGB, never SGR 2; limited-color terminals keep their own theme and the ten-color palette; see [design.md](design.md#ui-principles).

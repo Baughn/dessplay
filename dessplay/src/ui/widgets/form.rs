@@ -36,6 +36,28 @@ pub fn overlay(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     }
 }
 
+/// A semantic category tab; the template supplies its brackets and spacing.
+pub struct FormTab {
+    /// Stable category identity.
+    pub key: String,
+    /// Unpadded category caption.
+    pub label: String,
+    /// The active category.
+    pub selected: bool,
+    /// The category contains a missing required value.
+    pub missing: bool,
+}
+
+/// A semantic form note with a stable identity.
+pub struct FormNote {
+    /// Stable note identity.
+    pub key: String,
+    /// Literal note contents.
+    pub text: String,
+    /// Semantic appearance, before authored declarations.
+    pub style: Style,
+}
+
 /// A standard form control. The form derives Enter's behavior from this
 /// value, so a model cannot render a toggle while accidentally opening a text
 /// editor for the same row.
@@ -262,13 +284,13 @@ pub trait FormModel {
         edit: FormEdit,
     ) -> Result<FormEffect<Self::Out>, FormError>;
 
-    /// Fixed lines above the scrollable rows (settings category tabs).
-    fn header(&self) -> Vec<Line<'static>> {
+    /// Category tabs above the scrollable rows.
+    fn tabs(&self) -> Vec<FormTab> {
         Vec::new()
     }
 
     /// Fixed notes below the rows and above Save (the public-IRC warning).
-    fn notes(&self) -> Vec<Line<'static>> {
+    fn notes(&self) -> Vec<FormNote> {
         Vec::new()
     }
 
@@ -581,15 +603,50 @@ impl<M: FormModel> Form<M> {
         let modal = overlay(area, px, py);
         frame.render_widget(Clear, modal);
 
-        let header = self.model.header();
+        let tabs = self.model.tabs();
         let notes = self.model.notes();
         // The fixed-footer priority remains a measured-content policy.
         let available = modal.height.saturating_sub(2);
-        let header_height = (header.len() as u16).min(available.saturating_sub(1));
+        let header_height = u16::from(!tabs.is_empty()).min(available.saturating_sub(1));
         let notes_height =
             (notes.len() as u16).min(available.saturating_sub(header_height).saturating_sub(1));
+        let tab_items: Vec<_> = tabs
+            .into_iter()
+            .map(|tab| {
+                let mut style = if tab.selected {
+                    theme::highlight_style()
+                } else {
+                    Style::default()
+                };
+                if tab.missing {
+                    style = style.patch(theme::tone_style(crate::ui::props::Tone::Blocked));
+                }
+                crate::ui::layout::PresentedItem {
+                    key: tab.key,
+                    data: crate::ui::layout::Presentation::default()
+                        .text("open", "[")
+                        .text("label", tab.label)
+                        .text("missing", "!")
+                        .text("close", "]")
+                        .boolean("invalid", tab.missing)
+                        .selected(tab.selected)
+                        .component_style("form-tab", style),
+                }
+            })
+            .collect();
+        let note_items: Vec<_> = notes
+            .into_iter()
+            .map(|note| crate::ui::layout::PresentedItem {
+                key: note.key,
+                data: crate::ui::layout::Presentation::default()
+                    .text("body", note.text)
+                    .style("body", note.style),
+            })
+            .collect();
         let data = crate::ui::layout::Presentation::default()
             .text("title", self.model.title())
+            .list("tabs", tab_items.clone())
+            .list("note-items", note_items.clone())
             .slot("header", 0, header_height)
             .slot("body", 0, 0)
             .slot("notes", 0, notes_height)
@@ -615,10 +672,12 @@ impl<M: FormModel> Form<M> {
         let save_area = scene.slot("save");
 
         if header_height > 0 {
-            frame.render_widget(
-                Paragraph::new(header).style(scene.style("header")),
-                header_area,
-            );
+            let data = crate::ui::layout::Presentation::default()
+                .list("tabs", tab_items)
+                .inherit(scene.style("header"), 0);
+            if let Ok(header) = renderer.arrange("form-tabs", header_area, &data) {
+                header.paint_with_slots(frame, |_, _, _, _| {});
+            }
         }
 
         let rows = self.model.rows();
@@ -673,10 +732,12 @@ impl<M: FormModel> Form<M> {
         }
 
         if notes_height > 0 {
-            frame.render_widget(
-                Paragraph::new(notes).style(scene.style("notes")),
-                notes_area,
-            );
+            let data = crate::ui::layout::Presentation::default()
+                .list("notes", note_items)
+                .inherit(scene.style("notes"), 0);
+            if let Ok(notes) = renderer.arrange("form-notes", notes_area, &data) {
+                notes.paint_with_slots(frame, |_, _, _, _| {});
+            }
         }
 
         let save_line = match self.model.save_hint() {

@@ -38,6 +38,12 @@ boundaries determine nested overlay order, including slot callbacks. Modal
 placement constrains dimensions to the entry viewport before text measurement,
 then centers the integer frame using the existing dialog rounding policy.
 
+`Presentation` also owns typed lists of `PresentedItem { key, data }`. Repeat
+expansion carries each item's presentation into measurement and collection,
+including local state and qualified node/source identities. `RenderedScene`
+publishes item bounds alongside text fragments. `FormTab` and `FormNote` keep
+settings fields semantic; small lists render through `form-tabs`/`form-notes`.
+
 The filesystem worker owns notify and compiles candidate bundles after
 debouncing. A separate capacity-one channel retries full delivery, and an
 atomic requested generation makes queued stale candidates ineligible. The

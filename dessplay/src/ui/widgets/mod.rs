@@ -22,7 +22,8 @@ pub mod list;
 pub mod table;
 
 pub use form::{
-    Form, FormControl, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormRow, overlay,
+    Form, FormControl, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormNote, FormRow,
+    FormTab, overlay,
 };
 pub use keymap::{BarEntry, Binding, KeyPattern, Keymap};
 pub(crate) use keys::{plain, typed};

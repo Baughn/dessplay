@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Presentation {
     texts: BTreeMap<String, String>,
+    lists: BTreeMap<String, Vec<PresentedItem>>,
     rich: BTreeMap<String, Vec<RichSpan>>,
     bools: BTreeMap<String, bool>,
     slots: BTreeMap<String, (u16, u16)>,
@@ -32,6 +33,9 @@ pub struct Presentation {
 }
 impl Presentation {
     fn same_measurement(&self, other: &Self) -> bool {
+        if !self.lists.is_empty() || !other.lists.is_empty() {
+            return false;
+        }
         let normalize = |data: &Self| {
             let mut data = data.clone();
             for span in data.rich.values_mut().flatten() {
@@ -49,6 +53,19 @@ impl Presentation {
             data
         };
         normalize(self) == normalize(other)
+    }
+    /// Semantic selection state on the root of a component or repeated item.
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.root_states.retain(|state| state != "selected");
+        if selected {
+            self.root_states.push("selected".into());
+        }
+        self
+    }
+    /// Keyed semantic items for a template-authored repeat.
+    pub fn list(mut self, name: &str, items: Vec<PresentedItem>) -> Self {
+        self.lists.insert(name.into(), items);
+        self
     }
     /// Text properties inherited across a controller primitive boundary.
     pub fn inherit(mut self, style: PaintStyle, indent: u16) -> Self {
@@ -165,7 +182,17 @@ struct TextRun {
     marks: BTreeMap<usize, String>,
 }
 
+/// A stable semantic item; templates own its spacing and composition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresentedItem {
+    /// Stable controller identity, independent of list order.
+    pub key: String,
+    /// Fields in the list's item binding contract.
+    pub data: Presentation,
+}
+
 /// A stable, controller-owned row in a virtualized collection.
+#[derive(Clone, Debug, PartialEq)]
 pub struct PresentedRow {
     /// Semantic identity, independent of ordering.
     pub key: String,
@@ -195,9 +222,26 @@ impl RenderedCollection {
 pub struct RenderedScene {
     nodes: Vec<Arranged>,
     paint_order: Vec<usize>,
+    /// Arranged keyed items for controller navigation and inspection.
+    pub items: Vec<RepeatedItem>,
     /// Rich/plain text source ranges; consumers apply the scene's viewport transform.
     pub text_regions: Vec<TextRegion>,
     pub(crate) splits: Vec<SplitRegion>,
+}
+
+#[derive(Clone, Debug)]
+/// Geometry for one expanded semantic item.
+pub struct RepeatedItem {
+    /// The list binding in the owning presentation.
+    pub binding: String,
+    /// The controller-supplied stable item key.
+    pub key: String,
+    /// Qualified template identity, including enclosing repetition keys.
+    pub instance: String,
+    /// Original allocated item rectangle.
+    pub bounds: Rect,
+    /// Ancestor clip shared with painting.
+    pub clip: Rect,
 }
 
 /// A handle and its adjacent children, derived from the painted scene.
@@ -629,6 +673,9 @@ fn paint_line(
 
 struct Built<'a> {
     node: &'a Node,
+    data: &'a Presentation,
+    namespace: String,
+    item: Option<(&'a str, &'a str)>,
     id: NodeId,
     style: Computed,
     children: Vec<Built<'a>>,
@@ -855,7 +902,11 @@ impl Renderer {
             data,
             &mut Vec::new(),
             &inherited,
-            area,
+            &BuildScope {
+                viewport: area,
+                namespace: String::new(),
+                item: None,
+            },
         )?;
         let available = Size {
             width: AvailableSpace::Definite(area.width as f32),
@@ -923,7 +974,6 @@ impl Renderer {
         collect(
             &self.tree,
             &built,
-            data,
             (area.x as f32, area.y as f32),
             area,
             area,
@@ -1117,6 +1167,21 @@ fn internal(e: impl std::fmt::Display) -> Diagnostic {
     )
 }
 fn validate_rich(data: &Presentation) -> Result<(), Diagnostic> {
+    for items in data.lists.values() {
+        let mut keys = std::collections::BTreeSet::new();
+        if items.len() > 1024
+            || items
+                .iter()
+                .any(|item| item.key.is_empty() || !keys.insert(&item.key))
+        {
+            return Err(internal(
+                "repeated items require nonempty unique keys and at most 1024 items",
+            ));
+        }
+        for item in items {
+            validate_rich(&item.data)?;
+        }
+    }
     for span in data.rich.values().flatten() {
         let length = span.text.chars().count();
         if span.marks.iter().any(|(index, marks)| {
@@ -1258,6 +1323,11 @@ fn constrain_modal(style: &mut taffy::Style, viewport: Rect) {
     );
 }
 
+struct BuildScope<'a> {
+    viewport: Rect,
+    namespace: String,
+    item: Option<(&'a str, &'a str)>,
+}
 fn build<'a>(
     tree: &mut TaffyTree<Measure>,
     bundle: &LayoutBundle,
@@ -1265,20 +1335,20 @@ fn build<'a>(
     data: &'a Presentation,
     path: &mut Vec<(&'a Node, Vec<&'a str>)>,
     parent: &Computed,
-    viewport: Rect,
+    scope: &BuildScope<'a>,
 ) -> Result<Built<'a>, Diagnostic> {
     let mut states: Vec<&str> = data
         .states
         .get(node.attr("id"))
         .map(|s| s.iter().map(String::as_str).collect())
         .unwrap_or_default();
-    if path.is_empty() {
+    if path.is_empty() || scope.item.is_some() {
         states.extend(data.root_states.iter().map(String::as_str));
     }
     path.push((node, states));
     let mut style = resolve(bundle, path, parent)?;
     if node.tag == "overlay" && node.attr("placement") == "modal" {
-        constrain_modal(&mut style.layout, viewport);
+        constrain_modal(&mut style.layout, scope.viewport);
     }
     if let Some(semantic) = data.component_styles.get(node.attr("id")) {
         style.paint = semantic.patch(style.paint);
@@ -1300,8 +1370,40 @@ fn build<'a>(
         style.layout.display = Display::None;
     }
     let mut children = Vec::new();
-    for child in &node.children {
-        children.push(build(tree, bundle, child, data, path, &style, viewport)?);
+    if node.tag == "repeat" {
+        for row in data.lists.get(node.attr("bind")).into_iter().flatten() {
+            let item_scope = BuildScope {
+                viewport: scope.viewport,
+                namespace: format!("{}{}/{:?}/", scope.namespace, node.attr("bind"), row.key),
+                item: Some((node.attr("bind"), row.key.as_str())),
+            };
+            children.push(build(
+                tree,
+                bundle,
+                &node.children[0],
+                &row.data,
+                path,
+                &style,
+                &item_scope,
+            )?);
+        }
+    } else {
+        let child_scope = BuildScope {
+            viewport: scope.viewport,
+            namespace: scope.namespace.clone(),
+            item: None,
+        };
+        for child in &node.children {
+            children.push(build(
+                tree,
+                bundle,
+                child,
+                data,
+                path,
+                &style,
+                &child_scope,
+            )?);
+        }
     }
     path.pop();
     let mut text = data
@@ -1320,7 +1422,7 @@ fn build<'a>(
                 range: start..end,
                 source: start,
                 binding: node.attr("bind").into(),
-                node: node.attr("id").into(),
+                node: format!("{}{}", scope.namespace, node.attr("id")),
                 style: if style.paint.fg.is_some() {
                     span.style
                         .remove_modifier(tuirealm::ratatui::style::Modifier::DIM)
@@ -1374,7 +1476,7 @@ fn build<'a>(
             range: 0..text.chars().count(),
             source: 0,
             binding: node.attr("bind").into(),
-            node: node.attr("id").into(),
+            node: format!("{}{}", scope.namespace, node.attr("id")),
             style: style.paint,
             action: None,
             marks: BTreeMap::new(),
@@ -1399,6 +1501,12 @@ fn build<'a>(
         hanging_indent: style.hanging_indent,
         prefix_chars,
     };
+    if tree.total_node_count() >= 65_536 {
+        return Err(Diagnostic {
+            message: "expanded presentation exceeds 65536 layout nodes".into(),
+            ..node.location.clone()
+        });
+    }
     let id = if children.is_empty() {
         tree.new_leaf_with_context(style.layout.clone(), measure)
     } else {
@@ -1410,6 +1518,9 @@ fn build<'a>(
     .map_err(internal)?;
     Ok(Built {
         node,
+        data,
+        namespace: scope.namespace.clone(),
+        item: scope.item,
         id,
         style,
         children,
@@ -1434,13 +1545,13 @@ fn freeze_widths(tree: &mut TaffyTree<Measure>, built: &Built<'_>) -> Result<(),
 fn collect(
     tree: &TaffyTree<Measure>,
     built: &Built<'_>,
-    data: &Presentation,
     origin: (f32, f32),
     clip: Rect,
     containing: Rect,
     in_overlay: bool,
     scene: &mut RenderedScene,
 ) -> Result<(), Diagnostic> {
+    let data = built.data;
     if built.style.layout.display == Display::None {
         return Ok(());
     }
@@ -1503,6 +1614,15 @@ fn collect(
         cell(layout.size.width - left - layout.border.right - layout.padding.right),
         cell(layout.size.height - top - layout.border.bottom - layout.padding.bottom),
     );
+    if let Some((binding, key)) = built.item {
+        scene.items.push(RepeatedItem {
+            binding: binding.into(),
+            key: key.into(),
+            instance: built.namespace.clone(),
+            bounds,
+            clip,
+        });
+    }
     let text = if data
         .preserve_end
         .iter()
@@ -1602,7 +1722,11 @@ fn collect(
         subtree_end: node_index + 1,
         overlay: in_overlay || built.node.tag == "overlay",
         overlay_root: built.node.tag == "overlay",
-        id: built.node.attr("id").into(),
+        id: if built.node.attr("id").is_empty() {
+            String::new()
+        } else {
+            format!("{}{}", built.namespace, built.node.attr("id"))
+        },
         slot: if built.node.tag == "slot" {
             built.node.attr("name").into()
         } else {
@@ -1634,7 +1758,6 @@ fn collect(
         collect(
             tree,
             child,
-            data,
             (x, y),
             clip.intersection(content),
             content,

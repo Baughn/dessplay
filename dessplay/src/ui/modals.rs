@@ -27,8 +27,8 @@ use super::theme;
 #[cfg(test)]
 use super::widgets::FormControl;
 use super::widgets::{
-    Binding, Form, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormRow, KeyPattern,
-    Keymap, LineBuffer, ListCursor, TextField,
+    Binding, Form, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormNote, FormRow,
+    FormTab, KeyPattern, Keymap, LineBuffer, ListCursor, TextField,
 };
 use crate::config::{Settings, SubtitleMode, format_upload_limit, parse_upload_limit};
 
@@ -1512,41 +1512,37 @@ impl FormModel for SettingsForm {
         Ok(FormEffect::Handled)
     }
 
-    fn header(&self) -> Vec<Line<'static>> {
-        let mut spans = Vec::new();
-        for category in SettingsCategory::ALL {
-            let missing = self.category_missing(category);
-            let label = format!(
-                "[{}{}]",
-                category.caption(),
-                if missing { " !" } else { "" }
-            );
-            let mut style = if category == self.category {
-                theme::highlight_style()
-            } else {
-                Style::default()
-            };
-            if missing {
-                style = style.patch(theme::tone_style(super::props::Tone::Blocked));
-            }
-            spans.push(Span::styled(label, style));
-            spans.push(Span::raw(" "));
-        }
-        vec![Line::from(spans)]
+    fn tabs(&self) -> Vec<FormTab> {
+        SettingsCategory::ALL
+            .into_iter()
+            .map(|category| FormTab {
+                key: category.caption().into(),
+                label: category.caption().into(),
+                selected: category == self.category,
+                missing: self.category_missing(category),
+            })
+            .collect()
     }
 
-    fn notes(&self) -> Vec<Line<'static>> {
-        match self.category {
-            SettingsCategory::Irc => vec![Line::styled(
+    fn notes(&self) -> Vec<FormNote> {
+        let note = match self.category {
+            SettingsCategory::Irc => Some((
+                "irc",
                 "IRC is public; bridged chat leaves the encrypted group.",
-                theme::dim().add_modifier(Modifier::ITALIC),
-            )],
-            SettingsCategory::Commentary => vec![Line::styled(
+            )),
+            SettingsCategory::Commentary => Some((
+                "commentary",
                 "Sends recent subtitles and a player screenshot to Anthropic.",
-                theme::dim().add_modifier(Modifier::ITALIC),
-            )],
-            _ => Vec::new(),
-        }
+            )),
+            _ => None,
+        };
+        note.into_iter()
+            .map(|(key, text)| FormNote {
+                key: key.into(),
+                text: text.into(),
+                style: theme::dim().add_modifier(Modifier::ITALIC),
+            })
+            .collect()
     }
 
     fn enter_label(&self) -> &'static str {

@@ -1003,3 +1003,9 @@ arbitrary small viewport sizes and nonzero origins to the established dialog
 contract. A nested-overlay slot test checks painting order and surviving cells;
 a file-only AniDB result reorder retains the editor and selected link target
 through reload. Existing modal tests retain input capture and action semantics.
+
+Repetition tests validate item contracts, reject duplicate/empty runtime keys,
+reorder selected items without changing their qualified identity, and compare
+Unicode source ranges with painted cells at translated origins. Settings
+snapshots retain the default tab brackets, missing markers, and notes after
+their migration to semantic repeated items.

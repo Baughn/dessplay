@@ -15,6 +15,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
   active imports, local-copy offers, confirmations, and name dialogs in layout
   files. Their frames, row fields, and editor placement now follow templates.
 
+- Added: Customize settings tabs and notes as keyed lists in templates,
+  including their internal fields, spacing, and selected appearance.
+
 ## 2026-09-07
 
 - Added: Image links posted in chat (DessPlay or IRC) now download and

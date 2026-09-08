@@ -93,6 +93,7 @@ pub(super) enum BindingType {
     Rich,
     Bool,
     Slot,
+    List(&'static str),
 }
 
 /// Application-owned binding contract, versioned separately from the binary.
@@ -166,6 +167,13 @@ impl Default for TemplateSchema {
                 &[][..],
             ),
             ("copy-row", &[][..], &["filename", "evidence"][..], &[][..]),
+            (
+                "form-tab",
+                &[][..],
+                &["open", "label", "missing", "close"][..],
+                &["invalid"][..],
+            ),
+            ("form-note", &[][..], &["body"][..], &[][..]),
             ("file-row", &[][..], &["marker", "name"][..], &["entry"][..]),
             (
                 "episode-row",
@@ -391,6 +399,22 @@ impl Default for TemplateSchema {
             "rich-text".into(),
             [("body".into(), BindingType::Rich)].into(),
         );
+        templates.insert(
+            "form-tabs".into(),
+            [("tabs".into(), BindingType::List("form-tab"))].into(),
+        );
+        templates.insert(
+            "form-notes".into(),
+            [("notes".into(), BindingType::List("form-note"))].into(),
+        );
+        templates
+            .entry("form".into())
+            .or_default()
+            .insert("tabs".into(), BindingType::List("form-tab"));
+        templates
+            .entry("form".into())
+            .or_default()
+            .insert("note-items".into(), BindingType::List("form-note"));
         templates
             .entry("file-browser".into())
             .or_default()
@@ -522,7 +546,14 @@ impl LayoutBundle {
             let fields = &schema.templates[name];
             let mut ids = BTreeSet::new();
             let mut slots = BTreeSet::new();
-            validate(&root, fields, &mut ids, &mut slots, false)?;
+            validate(
+                &root,
+                fields,
+                &mut ids,
+                &mut slots,
+                false,
+                &schema.templates,
+            )?;
             templates.insert(name.clone(), root);
         }
         for (name, node) in &definitions {
@@ -629,6 +660,7 @@ fn validate(
     ids: &mut BTreeSet<String>,
     slots: &mut BTreeSet<String>,
     in_inline: bool,
+    schemas: &BTreeMap<String, BTreeMap<String, BindingType>>,
 ) -> Result<(), Diagnostic> {
     if !node.attr("id").is_empty() && !ids.insert(node.attr("id").into()) {
         return Err(error(node, "duplicate node id"));
@@ -651,7 +683,12 @@ fn validate(
         ("if", BindingType::Bool),
         (
             "bind",
-            if node.tag == "rich" {
+            if node.tag == "repeat" {
+                match fields.get(node.attr("bind")) {
+                    Some(kind @ BindingType::List(_)) => *kind,
+                    _ => return Err(error(node, "repeat requires a typed list binding")),
+                }
+            } else if node.tag == "rich" {
                 BindingType::Rich
             } else {
                 BindingType::Text
@@ -725,6 +762,25 @@ fn validate(
             "overlay placement must be center, modal, bottom, before, or after",
         ));
     }
+    if node.tag == "repeat" {
+        let Some(BindingType::List(contract)) = fields.get(node.attr("bind")) else {
+            return Err(error(node, "repeat requires a typed list binding"));
+        };
+        if node.children.len() != 1 || !slots.insert(format!("list:{}", node.attr("bind"))) {
+            return Err(error(
+                node,
+                "repeat requires one item root and a unique list binding",
+            ));
+        }
+        return validate(
+            &node.children[0],
+            &schemas[*contract],
+            &mut BTreeSet::new(),
+            &mut BTreeSet::new(),
+            false,
+            schemas,
+        );
+    }
     for child in &node.children {
         validate(
             child,
@@ -732,6 +788,7 @@ fn validate(
             ids,
             slots,
             in_inline || matches!(node.tag.as_str(), "flow" | "prefix"),
+            schemas,
         )?;
     }
     Ok(())
@@ -799,7 +856,7 @@ fn parse_xml(
                         ][..],
                         "flow" | "prefix" => &["id", "class", "style", "if", "separator"][..],
                         "slot" => &["id", "class", "style", "if", "name"][..],
-                        "text" | "rich" => &["id", "class", "style", "if", "bind"][..],
+                        "text" | "rich" | "repeat" => &["id", "class", "style", "if", "bind"][..],
                         _ => {
                             return Err(Diagnostic::at(
                                 file,
@@ -834,6 +891,7 @@ fn parse_xml(
                     "rich",
                     "flow",
                     "prefix",
+                    "repeat",
                 ]
                 .contains(&tag.as_str())
                 {
