@@ -1,13 +1,10 @@
 # Terminal layout authoring
 
-The layout migration is in progress. Currently the shared settings/List-entry
-forms, their semantic label/value/annotation rows, category tabs and notes, the F11 log viewer's
-controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
-attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
-file/episode browsers, AniDB/Nyaa searches, local-copy offers, confirmations,
-name editing, changelog entries, status text, keybindings, health metrics and progress, work-progress overlays, shared log/dungeon page composition, and the roguelike frame, game, recovery, condition, wound/threat summaries, journal, guide, equipment, and ending pages
-use local templates. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
-for the remaining interaction and terminal verification work.
+The interactive display uses versioned local XML templates and a bounded CSS
+subset. Panes, rows, forms, dialogs, chat attachments, and roguelike pages can
+be edited without rebuilding. Controllers retain drafts, selections, modal
+state, and game state across reloads. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
+for verification status and the remaining physical terminal graphics checks.
 
 ## Files and recovery
 
@@ -123,9 +120,31 @@ The `form` contract exposes lists `tabs` (`form-tab` items) and `note-items`
 put a repeat directly in the main form to move the list. The default header
 reserves one line; change `#form-header` height when arranging tabs vertically.
 Controller-owned editors and Save/footer reservation retain their existing
-behavior. Repeats eagerly arrange small lists (at most 1,024 items each and
-65,536 layout nodes per entry). Long history and browser collections continue
-using the virtualized row renderer.
+behavior. Ordinary repeats arrange small lists (at most 1,024 items each).
+A repeat with `virtual="true"` requires a stable ID and a definite-height flex
+column viewport. It arranges a bounded window plus overscan, preserving item
+keys and source fragments. Item rows retain their natural measured height;
+wrapping never feeds back into horizontal allocation. Expanded trees remain
+limited to 65,536 nodes. Long chat/document histories use their anchored row
+services, while dialog controllers use the same measured collection policies.
+
+Users, Playlist, and Series expose a `rows` list using the `user-row`,
+`playlist-row`, and `series-row` contracts. Their defaults use virtual repeats:
+
+```xml
+<scroll id="playlist-frame" title="title">
+  <repeat id="playlist-items" bind="rows" virtual="true">
+    <use template="playlist-row"/>
+  </repeat>
+</scroll>
+```
+
+Replace the item root or change its fields to customize collection composition.
+Controller selection and centering use stable keys; only intentionally hidden
+or empty rows leave navigation. Offscreen rows remain reachable. The `body`
+slot remains available for existing custom layouts; a view cannot contain both
+that slot and the `rows` repeat. Intrinsically measured small-list helpers such
+as health metrics require ordinary repeats, since they have no fixed viewport.
 
 Current entry templates and bindings:
 

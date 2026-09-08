@@ -53,6 +53,7 @@ impl ConditionViewport {
             .rows
             .get(self.cursor.index())
             .map(|row| (row.part, row.source.clone()));
+        self.cursor.set_hidden(&[]);
         let entries = condition_entries(body, false);
         let rows: Vec<_> = entries.iter().map(|(_, row)| row.clone()).collect();
         let Ok(measured) = renderer.measure_lines("rogue-condition", &rows, width, style) else {
@@ -459,6 +460,9 @@ impl RoguelikeModal {
                             .paint(frame, area, self.condition.cursor.index());
                     }
                 });
+                if scene.slot("body").is_empty() {
+                    self.condition.cursor.hide_all(self.condition.rows.len());
+                }
                 return;
             }
             Page::Equipment => {
@@ -485,16 +489,20 @@ impl RoguelikeModal {
                     .collect::<Vec<_>>();
                 scene.paint_with_slots(frame, |name, frame, area, style| {
                     if name == "body" {
-                        let _ = renderer.paint_rows(
+                        let _ = renderer.paint_cursor_collection(
                             frame,
                             area,
                             "rogue-equipment-row",
                             &rows,
-                            Some(self.cursor.index()),
+                            &mut self.cursor,
+                            rows.len(),
                             style,
                         );
                     }
                 });
+                if scene.slot("body").is_empty() {
+                    self.cursor.hide_all(rows.len());
+                }
                 return;
             }
             _ => {}
@@ -1037,8 +1045,9 @@ impl AppComponent<Msg, NoUserEvent> for RoguelikeModal {
                         Key::Char('a') => {
                             let part = self
                                 .condition
-                                .rows
-                                .get(self.condition.cursor.index())
+                                .cursor
+                                .visible_index()
+                                .and_then(|index| self.condition.rows.get(index))
                                 .map(|row| row.part);
                             return part.map_or(Some(Msg::None), |part| {
                                 self.act(Action::Treat(part.index()))
@@ -1062,7 +1071,7 @@ impl AppComponent<Msg, NoUserEvent> for RoguelikeModal {
                     (Page::Equipment, Key::Enter) => {
                         let index = self.run.as_ref().and_then(|run| {
                             self.cursor
-                                .index()
+                                .visible_index()?
                                 .checked_sub(equipment_rows(run).1)
                                 .filter(|index| *index < run.ground.len())
                         });

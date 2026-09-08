@@ -1338,3 +1338,29 @@ Pointer targeting follows recorded pane paint order in reverse. The prior
 fixed Chat/Series/Users/Playlist search selected an obscured pane when authors
 overlapped grid cells. Click and wheel paths now share the ordered hit lookup,
 including the nonfocusable subtitle viewport; modal capture remains unchanged.
+
+## Authored virtual collections and explicit visibility (2026-09-09)
+
+Eager repetition was appropriate for category tabs and health fields but could
+not expose full collections safely. Users, Playlist, and Series now supply raw
+keyed rows to virtual repeats. A repeat builds a window sized from the terminal
+height plus overscan, then centers using actual measured heights. Nested local
+scenes retain signed scrolling transforms so clipping never changes wrapping,
+source identities, or original borders. Existing body-slot customizations keep
+using the shared collection renderer; displaying both forms of one controller
+is rejected by the compiler.
+
+A viewport window based only on model indices was underfilled by sparse lists
+whose conditional children were empty. Content-existence probes cache by states,
+conditions, and text emptiness before choosing the window. These probes do not
+use clipping to decide whether an item exists. The shared cursor receives the
+explicit hidden indices, also for dialog body slots, so offscreen choices remain
+navigable and completely hidden choices cannot be activated. Save remains a
+global form command. Editors retain their own row identity across those changes.
+
+Search and name editors still owned a border inside their template slot. Their
+remaining wrapper now paints only styled editor contents; the shipped stylesheet
+owns the same default border. Focus fallback likewise needs its appearance in
+the frame that publishes the new target: a bounded second composition pass runs
+before image emission when fallback changes focus, preventing a stale highlight
+and keybar without allowing authored focus styles to create an unbounded loop.

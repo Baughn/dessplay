@@ -1,6 +1,6 @@
 # UI Architecture
 
-## Runtime layout migration (2026-09-07)
+## Runtime layouts
 
 `ui::layout::LayoutBundle` owns validated templates, source diagnostics,
 styles, and a content revision. It is Send + Sync and independent of UI
@@ -964,3 +964,14 @@ pointer bounds use that publication after composition. Scene layer painting
 records visible overlay rectangles in a shared frame record. Chat queues fitted
 attachment/image operations on the renderer, and `Ui` emits eligible operations
 after all foreground composition. This also handles overlapping authored panes.
+
+### Authored virtual collection windows
+
+`Presentation::collection` supplies the raw keyed rows and independent selected/
+center keys. Virtual repeats build only nearby rows, retaining ancestor selector
+context and inherited styles. The collector creates local item scenes with signed
+viewport offsets, publishes visible keyed/source geometry, and paints those same
+scenes in layer order. Color-depth changes recurse through cached item scenes.
+Content-existence probes are cached by conditions, states, and text emptiness;
+clipping is deliberately absent from the cursor's hidden-row filter. Shared
+`paint_cursor_collection` propagates that filter into dialog controllers.

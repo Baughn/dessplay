@@ -18,6 +18,7 @@ pub struct Presentation {
     texts: BTreeMap<String, String>,
     progress: BTreeMap<String, (u64, u64)>,
     lists: BTreeMap<String, Vec<PresentedItem>>,
+    centers: BTreeMap<String, String>,
     rich: BTreeMap<String, Vec<RichSpan>>,
     bools: BTreeMap<String, bool>,
     slots: BTreeMap<String, (u16, u16)>,
@@ -66,6 +67,34 @@ impl Presentation {
     /// Keyed semantic items for a template-authored repeat.
     pub fn list(mut self, name: &str, items: Vec<PresentedItem>) -> Self {
         self.lists.insert(name.into(), items);
+        self
+    }
+    /// Center a virtual list on a stable item key, independently of selection.
+    pub fn center(mut self, list: &str, key: &str) -> Self {
+        self.centers.insert(list.into(), key.into());
+        self
+    }
+    /// Supply a controller collection to an authored repeat without padding fields.
+    pub(crate) fn collection(
+        mut self,
+        name: &str,
+        rows: &[PresentedRow],
+        selected: Option<usize>,
+        center: Option<usize>,
+    ) -> Self {
+        self.lists.insert(
+            name.into(),
+            rows.iter()
+                .enumerate()
+                .map(|(index, row)| PresentedItem {
+                    key: row.key.clone(),
+                    data: row.data.clone().selected(selected == Some(index)),
+                })
+                .collect(),
+        );
+        if let Some(row) = center.and_then(|index| rows.get(index)) {
+            self.centers.insert(name.into(), row.key.clone());
+        }
         self
     }
     /// Text properties inherited across a controller primitive boundary.
@@ -212,8 +241,12 @@ pub struct PresentedRow {
 #[derive(Clone, Debug, Default)]
 pub struct RenderedCollection {
     rows: Vec<(Rect, usize)>,
+    hidden: Vec<usize>,
 }
 impl RenderedCollection {
+    pub(crate) fn hidden(&self) -> &[usize] {
+        &self.hidden
+    }
     /// Controller row identity under the pointer, including scrolled offsets.
     pub fn hit(&self, column: u16, row: u16) -> Option<usize> {
         let point = tuirealm::ratatui::layout::Position::new(column, row);
@@ -241,6 +274,7 @@ struct InlineGeometry {
 pub struct RenderedScene {
     nodes: Vec<Arranged>,
     inline: Vec<InlineGeometry>,
+    hidden_items: Vec<(String, String)>,
     frame_overlays: std::sync::Arc<std::sync::Mutex<Vec<Rect>>>,
     depth: crate::ui::theme::ColorDepth,
     paint_order: Vec<usize>,
@@ -302,7 +336,16 @@ impl SplitRegion {
     }
 }
 #[derive(Clone, Debug)]
+struct VirtualPaint {
+    scene: RenderedScene,
+    viewport: Rect,
+    x: i32,
+    y: i32,
+}
+#[derive(Clone, Debug)]
 struct Arranged {
+    virtual_binding: String,
+    virtual_children: Vec<VirtualPaint>,
     subtree_end: usize,
     progress: Option<(u64, u64)>,
     overlay: bool,
@@ -323,6 +366,16 @@ struct Arranged {
     runs: Vec<TextRun>,
 }
 impl RenderedScene {
+    fn set_depth(&mut self, depth: crate::ui::theme::ColorDepth) {
+        self.depth = depth;
+        for child in self
+            .nodes
+            .iter_mut()
+            .flat_map(|node| &mut node.virtual_children)
+        {
+            child.scene.set_depth(depth);
+        }
+    }
     /// Natural height of the arranged root, including its chrome.
     pub fn height(&self) -> u16 {
         self.height
@@ -381,6 +434,33 @@ impl RenderedScene {
             .iter()
             .find(|n| n.slot == name)
             .map_or(Rect::default(), |n| n.content.intersection(n.clip))
+    }
+    /// Interaction identities for an authored collection, from the painted window.
+    pub(crate) fn collection(&self, binding: &str, rows: &[PresentedRow]) -> RenderedCollection {
+        let indices = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.key.as_str(), index))
+            .collect::<BTreeMap<_, _>>();
+        RenderedCollection {
+            hidden: self
+                .hidden_items
+                .iter()
+                .filter(|(name, _)| name == binding)
+                .filter_map(|(_, key)| indices.get(key.as_str()).copied())
+                .collect(),
+            rows: self
+                .items
+                .iter()
+                .filter(|item| item.binding == binding)
+                .filter_map(|item| {
+                    indices
+                        .get(item.key.as_str())
+                        .map(|index| (item.bounds.intersection(item.clip), *index))
+                })
+                .filter(|(bounds, _)| !bounds.is_empty())
+                .collect(),
+        }
     }
     /// Terminal continuation indentation resolved for a text primitive.
     pub fn hanging_indent(&self, name: &str) -> usize {
@@ -449,6 +529,20 @@ impl RenderedScene {
                     declarations(&n.definition.style)
                 )
             }))
+            .chain(
+                self.nodes
+                    .iter()
+                    .flat_map(|node| &node.virtual_children)
+                    .map(|child| {
+                        format!(
+                            "  virtual item in {:?}, offset ({}, {})\n{}",
+                            child.viewport,
+                            child.x,
+                            child.y,
+                            child.scene.inspect().join("\n")
+                        )
+                    }),
+            )
             .collect()
     }
     /// Whether a visible explicit overlay needs terminal-graphics suppression.
@@ -678,6 +772,19 @@ impl RenderedScene {
                     self.depth,
                 );
             }
+            for child in &n.virtual_children {
+                let nested = PaintView::new(
+                    view.rect(child.viewport.intersection(n.clip)),
+                    view.x + i32::from(child.viewport.x) + child.x,
+                    view.y + i32::from(child.viewport.y) + child.y,
+                );
+                child
+                    .scene
+                    .paint_layer_with_slots(frame, false, nested, paint);
+                child
+                    .scene
+                    .paint_layer_with_slots(frame, true, nested, paint);
+            }
             if let Some((done, total)) = n.progress {
                 let filled = if total == 0 {
                     0
@@ -793,6 +900,8 @@ struct Built<'a> {
     id: NodeId,
     style: Computed,
     children: Vec<Built<'a>>,
+    virtual_center: Option<usize>,
+    hidden_items: Vec<(&'a str, &'a str)>,
     inline: Vec<InlineDefinition>,
     text: String,
     runs: Vec<TextRun>,
@@ -869,7 +978,7 @@ impl Renderer {
         }
         self.depth = depth;
         for cached in self.cache.values_mut() {
-            cached.scene.depth = depth;
+            cached.scene.set_depth(depth);
         }
     }
     /// Resolve a specialized primitive's semantic style before it paints.
@@ -943,7 +1052,16 @@ impl Renderer {
     }
     /// A controller is focusable only where its own template has visible content.
     pub(crate) fn record_controller(&mut self, name: &str, scene: &RenderedScene) {
-        let bounds = if scene.visible_slots().is_empty() {
+        let bounds = if scene.visible_slots().is_empty()
+            && !scene.nodes.iter().any(|n| {
+                !n.virtual_binding.is_empty()
+                    && !n.content.intersection(n.clip).is_empty()
+                    && (!n.virtual_children.is_empty()
+                        || !scene
+                            .hidden_items
+                            .iter()
+                            .any(|(binding, _)| binding == &n.virtual_binding))
+            }) {
             Rect::default()
         } else {
             scene
@@ -1187,6 +1305,7 @@ impl Renderer {
                 viewport: area,
                 namespace: String::new(),
                 item: None,
+                selection: None,
             },
         )?;
         let available = Size {
@@ -1341,6 +1460,31 @@ impl Renderer {
         self.paint_collection(frame, area, template, rows, selected, selected, style)
             .map(|_| ())
     }
+    /// Paint a selectable dialog collection and retain its explicit visibility.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_cursor_collection(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        template: &str,
+        rows: &[PresentedRow],
+        cursor: &mut crate::ui::widgets::ListCursor,
+        navigation_len: usize,
+        style: PaintStyle,
+    ) -> Result<RenderedCollection, Diagnostic> {
+        let rendered = self.paint_collection(
+            frame,
+            area,
+            template,
+            rows,
+            Some(cursor.index()),
+            Some(cursor.index()),
+            style,
+        )?;
+        cursor.set_hidden(rendered.hidden());
+        cursor.reconcile_visible(navigation_len, rendered.hidden());
+        Ok(rendered)
+    }
     /// Paint collection rows and publish their interaction bounds in the same pass.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_collection(
@@ -1358,13 +1502,46 @@ impl Renderer {
         if rows.iter().any(|row| !keys.insert(&row.key)) {
             return Err(internal("duplicate semantic collection key"));
         }
+        let root = self
+            .bundle
+            .templates
+            .get(template)
+            .ok_or_else(|| internal("unknown collection template"))?;
+        let parent = Computed {
+            paint: style,
+            ..Default::default()
+        };
         let mut positions = Vec::new();
+        let mut visibility = BTreeMap::new();
         for (index, row) in rows.iter().enumerate() {
+            let signature = VisibilityKey::of(&row.data);
+            let visible = if let Some(visible) = visibility.get(&signature) {
+                *visible
+            } else {
+                let visible =
+                    item_visible(&self.bundle, root, &row.data, &mut Vec::new(), &parent)?;
+                visibility.insert(signature, visible);
+                visible
+            };
+            if !visible {
+                rendered.hidden.push(index);
+                continue;
+            }
             positions.push(Some(index));
             if row.gap_after {
                 positions.push(None);
             }
         }
+        let nearest = |index: usize| {
+            positions
+                .iter()
+                .flatten()
+                .copied()
+                .find(|candidate| *candidate >= index)
+                .or_else(|| positions.iter().flatten().copied().next_back())
+        };
+        let selected = selected.and_then(nearest);
+        let center = center.and_then(nearest);
         if area.is_empty() || positions.is_empty() {
             return Ok(rendered);
         }
@@ -1489,14 +1666,11 @@ pub(super) fn internal(e: impl std::fmt::Display) -> Diagnostic {
 fn validate_rich(data: &Presentation) -> Result<(), Diagnostic> {
     for items in data.lists.values() {
         let mut keys = std::collections::BTreeSet::new();
-        if items.len() > 1024
-            || items
-                .iter()
-                .any(|item| item.key.is_empty() || !keys.insert(&item.key))
+        if items
+            .iter()
+            .any(|item| item.key.is_empty() || !keys.insert(&item.key))
         {
-            return Err(internal(
-                "repeated items require nonempty unique keys and at most 1024 items",
-            ));
+            return Err(internal("repeated items require nonempty unique keys"));
         }
         for item in items {
             validate_rich(&item.data)?;
@@ -1655,6 +1829,7 @@ struct BuildScope<'a> {
     viewport: Rect,
     namespace: String,
     item: Option<(&'a str, &'a str)>,
+    selection: Option<bool>,
 }
 fn build<'a>(
     tree: &mut TaffyTree<Measure>,
@@ -1672,6 +1847,12 @@ fn build<'a>(
         .unwrap_or_default();
     if path.is_empty() || scope.item.is_some() {
         states.extend(data.root_states.iter().map(String::as_str));
+    }
+    if let Some(selected) = scope.selection {
+        states.retain(|state| *state != "selected");
+        if selected {
+            states.push("selected");
+        }
     }
     path.push((node, states));
     let mut style = resolve(bundle, path, parent)?;
@@ -1693,28 +1874,122 @@ fn build<'a>(
         style.layout.display = Display::None;
     }
     let mut children = Vec::new();
+    let mut virtual_center = None;
+    let mut hidden_items = Vec::new();
     if node.tag == "repeat" {
-        for row in data.lists.get(node.attr("bind")).into_iter().flatten() {
+        let items = data
+            .lists
+            .get(node.attr("bind"))
+            .map_or(&[][..], Vec::as_slice);
+        let virtualized = node.attr("virtual") == "true";
+        if !virtualized && items.len() > 1024 {
+            return Err(internal(
+                "eager repetition supports at most 1024 items; use a virtual repeat",
+            ));
+        }
+        if virtualized
+            && style.layout.display != Display::None
+            && (scope.viewport.height == u16::MAX
+                || style.layout.display != Display::Flex
+                || style.layout.flex_direction != FlexDirection::Column)
+        {
+            return Err(internal(
+                "virtual repetition requires a definite viewport and a flex column",
+            ));
+        }
+        let selected = items
+            .iter()
+            .position(|item| item.data.root_states.iter().any(|s| s == "selected"));
+        let center = data
+            .centers
+            .get(node.attr("bind"))
+            .and_then(|key| items.iter().position(|item| &item.key == key))
+            .or(selected)
+            .unwrap_or(0);
+        let mut available = Vec::new();
+        let mut visibility = BTreeMap::new();
+        for (index, row) in items.iter().enumerate() {
+            let root = &node.children[0];
+            let signature = VisibilityKey::of(&row.data);
+            let visible = if !virtualized {
+                true
+            } else if let Some(visible) = visibility.get(&signature) {
+                *visible
+            } else {
+                let visible = item_visible(bundle, root, &row.data, path, &style)?;
+                visibility.insert(signature, visible);
+                visible
+            };
+            if visible {
+                available.push(index);
+            } else {
+                hidden_items.push((node.attr("bind"), row.key.as_str()));
+            }
+        }
+        let nearest = |index: usize| {
+            available
+                .get(
+                    available
+                        .partition_point(|candidate| *candidate < index)
+                        .min(available.len().saturating_sub(1)),
+                )
+                .copied()
+        };
+        let selected = selected.and_then(nearest);
+        let center = nearest(center);
+        let center_position = center
+            .and_then(|index| available.iter().position(|candidate| *candidate == index))
+            .unwrap_or(0);
+        let overscan = usize::from(scope.viewport.height).saturating_add(4);
+        let first = if virtualized {
+            center_position.saturating_sub(overscan)
+        } else {
+            0
+        };
+        let last = if virtualized {
+            center_position
+                .saturating_add(overscan + 1)
+                .min(available.len())
+        } else {
+            available.len()
+        };
+        for index in available.into_iter().take(last).skip(first) {
+            let row = &items[index];
             let item_scope = BuildScope {
                 viewport: scope.viewport,
                 namespace: format!("{}{}/{:?}/", scope.namespace, node.attr("bind"), row.key),
                 item: Some((node.attr("bind"), row.key.as_str())),
+                selection: virtualized.then_some(selected == Some(index)),
             };
-            children.push(build(
+            let mut parent = style.clone();
+            if virtualized && selected == Some(index) {
+                parent.paint = parent.paint.patch(crate::ui::theme::highlight_style());
+            }
+            let mut child = build(
                 tree,
                 bundle,
                 &node.children[0],
                 &row.data,
                 path,
-                &style,
+                &parent,
                 &item_scope,
-            )?);
+            )?;
+            if virtualized {
+                child.style.layout.flex_shrink = 0.0;
+                tree.set_style(child.id, child.style.layout.clone())
+                    .map_err(internal)?;
+                if Some(index) == center {
+                    virtual_center = Some(children.len());
+                }
+            }
+            children.push(child);
         }
     } else {
         let child_scope = BuildScope {
             viewport: scope.viewport,
             namespace: scope.namespace.clone(),
             item: None,
+            selection: None,
         };
         for child in &node.children {
             children.push(build(
@@ -1853,11 +2128,149 @@ fn build<'a>(
         id,
         style,
         children,
+        virtual_center,
+        hidden_items,
         inline,
         text,
         runs,
         prefix_chars,
     })
+}
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct VisibilityKey<'a> {
+    texts: Vec<(&'a str, bool)>,
+    rich: Vec<(&'a str, bool)>,
+    bools: &'a BTreeMap<String, bool>,
+    states: &'a BTreeMap<String, Vec<String>>,
+    root_states: &'a [String],
+}
+impl<'a> VisibilityKey<'a> {
+    fn of(data: &'a Presentation) -> Self {
+        Self {
+            texts: data
+                .texts
+                .iter()
+                .map(|(name, text)| (name.as_str(), !text.is_empty()))
+                .collect(),
+            rich: data
+                .rich
+                .iter()
+                .map(|(name, spans)| {
+                    (
+                        name.as_str(),
+                        spans.iter().any(|span| !span.text.is_empty()),
+                    )
+                })
+                .collect(),
+            bools: &data.bools,
+            states: &data.states,
+            root_states: &data.root_states,
+        }
+    }
+}
+fn item_visible<'a>(
+    bundle: &LayoutBundle,
+    node: &'a Node,
+    data: &'a Presentation,
+    path: &mut Vec<(&'a Node, Vec<&'a str>)>,
+    parent: &Computed,
+) -> Result<bool, Diagnostic> {
+    probe_extent(bundle, node, data, path, parent, true).map(|(_, extent)| extent)
+}
+/// Content existence is independent of wrapped height. Probe identical condition/
+/// state/empty-text combinations once before selecting a bounded item window.
+fn probe_extent<'a>(
+    bundle: &LayoutBundle,
+    node: &'a Node,
+    data: &'a Presentation,
+    path: &mut Vec<(&'a Node, Vec<&'a str>)>,
+    parent: &Computed,
+    item_root: bool,
+) -> Result<(bool, bool), Diagnostic> {
+    if !node.attr("if").is_empty() && !data.bools.get(node.attr("if")).copied().unwrap_or(false) {
+        return Ok((false, false));
+    }
+    let mut states = data
+        .states
+        .get(node.attr("id"))
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if item_root {
+        states.extend(data.root_states.iter().map(String::as_str));
+    }
+    path.push((node, states));
+    let result = (|| {
+        let style = resolve(bundle, path, parent)?;
+        if style.layout.display == Display::None {
+            return Ok((false, false));
+        }
+        let zero =
+            |dimension| matches!(dimension, Dimension::Length(0.0) | Dimension::Percent(0.0));
+        if [
+            style.layout.size.width,
+            style.layout.size.height,
+            style.layout.max_size.width,
+            style.layout.max_size.height,
+        ]
+        .into_iter()
+        .any(zero)
+        {
+            return Ok((true, false));
+        }
+        let positive = |length| match length {
+            LengthPercentage::Length(value) | LengthPercentage::Percent(value) => value > 0.0,
+        };
+        let definite = |dimension| match dimension {
+            Dimension::Length(value) | Dimension::Percent(value) => value > 0.0,
+            Dimension::Auto => false,
+        };
+        let mut extent = definite(style.layout.size.height)
+            || definite(style.layout.min_size.height)
+            || [
+                style.layout.padding.top,
+                style.layout.padding.bottom,
+                style.layout.border.top,
+                style.layout.border.bottom,
+            ]
+            .into_iter()
+            .any(positive)
+            || data
+                .texts
+                .get(node.attr("bind"))
+                .is_some_and(|text| !text.is_empty())
+            || data
+                .rich
+                .get(node.attr("bind"))
+                .is_some_and(|spans| spans.iter().any(|span| !span.text.is_empty()))
+            || node.tag == "progress"
+            || data
+                .slots
+                .get(node.attr("name"))
+                .is_some_and(|(_, height)| *height > 0);
+        let mut displayed = 0;
+        for child in &node.children {
+            if child.tag == "overlay" {
+                continue;
+            }
+            let (visible, child_extent) = probe_extent(bundle, child, data, path, &style, false)?;
+            displayed += usize::from(visible);
+            extent |= child_extent;
+        }
+        if !matches!(node.tag.as_str(), "flow" | "prefix")
+            && style.layout.flex_direction == FlexDirection::Column
+            && displayed > 1
+        {
+            extent |= positive(style.layout.gap.height);
+        }
+        if style.layout.display == Display::Grid {
+            extent |= style.layout.grid_template_rows.iter().any(|track| matches!(track, TrackSizingFunction::Single(taffy::MinMax { max: MaxTrackSizingFunction::Fixed(length), .. }) if positive(*length)));
+        }
+        Ok((true, extent))
+    })();
+    path.pop();
+    result
 }
 fn node_label(node: &Node, namespace: &str) -> String {
     format!(
@@ -2126,6 +2539,12 @@ fn collect(
         .collect();
     let node_index = scene.nodes.len();
     scene.nodes.push(Arranged {
+        virtual_binding: if built.node.attr("virtual") == "true" {
+            built.node.attr("bind").into()
+        } else {
+            String::new()
+        },
+        virtual_children: Vec::new(),
         subtree_end: node_index + 1,
         label: node_label(built.node, &built.namespace),
         progress: if built.node.tag == "progress" {
@@ -2165,6 +2584,92 @@ fn collect(
         align_offsets,
         runs,
     });
+    scene.hidden_items.extend(
+        built
+            .hidden_items
+            .iter()
+            .map(|(binding, key)| (binding.to_string(), key.to_string())),
+    );
+    if built.node.attr("virtual") == "true" {
+        let origin_y = top;
+        let target = built
+            .virtual_center
+            .and_then(|index| built.children.get(index))
+            .map(|child| tree.layout(child.id))
+            .transpose()
+            .map_err(internal)?;
+        let end = built
+            .children
+            .last()
+            .map(|child| tree.layout(child.id))
+            .transpose()
+            .map_err(internal)?
+            .map_or(0.0, |layout| {
+                layout.location.y + layout.size.height + layout.margin.bottom - origin_y
+            });
+        let offset = target.map_or(0.0, |target| {
+            let before = if target.size.height < f32::from(content.height) {
+                f32::from(content.height / 2)
+            } else {
+                0.0
+            };
+            (target.location.y - origin_y - before)
+                .max(0.0)
+                .min((end - f32::from(content.height)).max(0.0))
+        });
+        let viewport = content.intersection(clip);
+        for child in &built.children {
+            let layout = tree.layout(child.id).map_err(internal)?;
+            let dx = (layout.location.x - left).round() as i32;
+            let dy = (layout.location.y - origin_y - offset).round() as i32;
+            let local = Rect::new(0, 0, cell(layout.size.width), u16::MAX);
+            let mut nested = RenderedScene {
+                depth: scene.depth,
+                frame_overlays: scene.frame_overlays.clone(),
+                ..Default::default()
+            };
+            collect(
+                tree,
+                child,
+                (-layout.location.x, -layout.location.y),
+                local,
+                local,
+                false,
+                &mut nested,
+            )?;
+            nested.paint_order = paint_order(&nested.nodes, 0..nested.nodes.len());
+            let view = PaintView::new(
+                viewport,
+                i32::from(content.x) + dx,
+                i32::from(content.y) + dy,
+            );
+            for item in &nested.items {
+                let bounds = view.rect(item.bounds.intersection(item.clip));
+                if !bounds.is_empty() {
+                    let mut item = item.clone();
+                    item.bounds = bounds;
+                    item.clip = viewport;
+                    scene.items.push(item);
+                }
+            }
+            for region in &nested.text_regions {
+                let bounds = view.rect(region.bounds.intersection(region.clip));
+                if !bounds.is_empty() {
+                    let mut region = region.clone();
+                    region.bounds = bounds;
+                    region.clip = viewport;
+                    scene.text_regions.push(region);
+                }
+            }
+            scene.nodes[node_index].virtual_children.push(VirtualPaint {
+                scene: nested,
+                viewport: content,
+                x: dx,
+                y: dy,
+            });
+        }
+        return Ok(());
+    }
     let mut split_children = Vec::new();
     for child in &built.children {
         let index = scene.nodes.len();

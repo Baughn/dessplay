@@ -42,7 +42,7 @@
   <template name="series">
     <scroll id="series-frame">
       <overlay id="series-caption" placement="before"><flow separator=""><text bind="title"/><text bind="filter-label" if="filter-visible"/><rich bind="filter" if="filter-visible"/></flow></overlay>
-      <slot name="body"/>
+      <repeat id="series-items" bind="rows" virtual="true"><use template="series-row"/></repeat>
     </scroll>
   </template>
   <template name="series-row">
@@ -58,7 +58,7 @@
     </box>
   </template>
   <template name="playlist">
-    <scroll id="playlist-frame" title="title"><slot name="body" /></scroll>
+    <scroll id="playlist-frame" title="title"><repeat id="playlist-items" bind="rows" virtual="true"><use template="playlist-row"/></repeat></scroll>
   </template>
   <template name="playlist-row">
     <row id="playlist-row">
@@ -70,7 +70,7 @@
     </row>
   </template>
   <template name="users">
-    <scroll id="users-frame" title="title"><slot name="body" /></scroll>
+    <scroll id="users-frame" title="title"><repeat id="users-items" bind="rows" virtual="true"><use template="user-row"/></repeat></scroll>
   </template>
   <template name="user-row">
     <row id="user-row">

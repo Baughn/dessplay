@@ -86,8 +86,15 @@ impl FieldEditor {
         None
     }
 
-    fn view(&mut self, frame: &mut Frame, area: Rect) {
-        self.input.render(frame, area, true, false);
+    fn view(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        style: Style,
+        depth: super::theme::ColorDepth,
+    ) {
+        self.input
+            .render_content_styled(frame, area, true, false, style, depth);
     }
 }
 
@@ -670,7 +677,7 @@ impl FileBrowser {
     /// Opening a directory from search results clears the search — the
     /// user has navigated somewhere.
     fn act_enter(&mut self) -> Option<Msg> {
-        let row = self.entries.get(self.cursor.index())?;
+        let row = self.entries.get(self.cursor.visible_index()?)?;
         match row.kind {
             RowKind::Select => return self.cwd.clone().map(Msg::DirChosen),
             RowKind::Parent => {
@@ -802,19 +809,24 @@ impl FileBrowser {
                 }
             })
             .collect();
+        let mut body_visible = false;
         scene.paint_with_slots(frame, |name, frame, area, style| {
             if name == "body" {
-                let _ = renderer.paint_collection(
+                body_visible = true;
+                let _ = renderer.paint_cursor_collection(
                     frame,
                     area,
                     "file-row",
                     &rows,
-                    Some(self.cursor.index()),
-                    Some(self.cursor.index()),
+                    &mut self.cursor,
+                    rows.len(),
                     style,
                 );
             }
         });
+        if !body_visible {
+            self.cursor.hide_all(rows.len());
+        }
     }
 }
 
@@ -1766,7 +1778,7 @@ impl EpisodeBrowser {
         match self.open {
             None => {
                 if !self.seasons.is_empty() {
-                    let index = self.cursor.index();
+                    let index = self.cursor.visible_index()?;
                     self.cursor.set(self.seasons[index].opening_row);
                     self.open = Some(index);
                 }
@@ -1774,7 +1786,7 @@ impl EpisodeBrowser {
             }
             Some(index) => match self.seasons[index]
                 .episodes
-                .get(self.cursor.index())
+                .get(self.cursor.visible_index()?)
                 .and_then(EpisodeRow::hash)
             {
                 Some(hash) => Some(Msg::EpisodeChosen { hash }),
@@ -1817,7 +1829,7 @@ impl EpisodeBrowser {
     /// the harmless side.
     fn act_toggle_watched(&mut self) -> Option<Msg> {
         let Some(index) = self.open else {
-            let season = self.seasons.get(self.cursor.index())?;
+            let season = self.seasons.get(self.cursor.visible_index()?)?;
             let hashes = season.hashes();
             if hashes.is_empty() {
                 return None;
@@ -1931,19 +1943,24 @@ impl EpisodeBrowser {
         ) else {
             return;
         };
+        let mut body_visible = false;
         scene.paint_with_slots(frame, |name, frame, area, style| {
             if name == "body" {
-                let _ = renderer.paint_collection(
+                body_visible = true;
+                let _ = renderer.paint_cursor_collection(
                     frame,
                     area,
                     "episode-row",
                     &rows,
-                    Some(self.cursor.index()),
-                    Some(self.cursor.index()),
+                    &mut self.cursor,
+                    rows.len(),
                     style,
                 );
             }
         });
+        if !body_visible {
+            self.cursor.hide_all(rows.len());
+        }
     }
 
     fn len(&self) -> usize {
@@ -2418,7 +2435,7 @@ impl AniDbSearchModal {
     fn act_enter(&mut self) -> Option<Msg> {
         let query = self.editor.text();
         if self.answered.as_deref() == Some(query.as_str())
-            && let Some(hit) = self.results.get(self.cursor.index())
+            && let Some(hit) = self.results.get(self.cursor.visible_index()?)
         {
             return Some(Msg::ListEntryLinked(self.id, hit.series));
         }
@@ -2477,21 +2494,26 @@ impl AniDbSearchModal {
         let Ok(scene) = renderer.arrange("anidb-search", area, &data) else {
             return;
         };
+        let mut body_visible = false;
         scene.paint_with_slots(frame, |name, frame, area, style| match name {
-            "editor" => self.editor.view(frame, area),
+            "editor" => self.editor.view(frame, area, style, renderer.color_depth()),
             "body" => {
-                let _ = renderer.paint_collection(
+                body_visible = true;
+                let _ = renderer.paint_cursor_collection(
                     frame,
                     area,
                     "anidb-result",
                     &rows,
-                    Some(self.cursor.index()),
-                    Some(self.cursor.index()),
+                    &mut self.cursor,
+                    rows.len(),
                     style,
                 );
             }
             _ => {}
         });
+        if !body_visible {
+            self.cursor.hide_all(rows.len());
+        }
     }
 }
 
@@ -2569,7 +2591,7 @@ impl LocalCopyOfferModal {
     }
 
     fn act_enter(&mut self) -> Option<Msg> {
-        let candidate = self.candidates.get(self.cursor.index())?;
+        let candidate = self.candidates.get(self.cursor.visible_index()?)?;
         Some(Msg::FileMapped {
             file: self.file,
             path: candidate.path.clone(),
@@ -2619,19 +2641,24 @@ impl LocalCopyOfferModal {
             })
             .collect();
         if let Ok(scene) = renderer.arrange("copy-dialog", area, &data) {
+            let mut body_visible = false;
             scene.paint_with_slots(frame, |name, frame, area, style| {
                 if name == "body" {
-                    let _ = renderer.paint_collection(
+                    body_visible = true;
+                    let _ = renderer.paint_cursor_collection(
                         frame,
                         area,
                         "copy-row",
                         &rows,
-                        Some(self.cursor.index()),
-                        Some(self.cursor.index()),
+                        &mut self.cursor,
+                        rows.len(),
                         style,
                     );
                 }
             });
+            if !body_visible {
+                self.cursor.hide_all(rows.len());
+            }
         }
     }
 }
@@ -2858,9 +2885,9 @@ impl NeroNameModal {
             .text("note", "empty clears the name")
             .style("note", theme::dim());
         if let Ok(scene) = renderer.arrange("name-dialog", area, &data) {
-            scene.paint_with_slots(frame, |name, frame, area, _| {
+            scene.paint_with_slots(frame, |name, frame, area, style| {
                 if name == "editor" {
-                    self.editor.view(frame, area);
+                    self.editor.view(frame, area, style, renderer.color_depth());
                 }
             });
         }
@@ -3000,7 +3027,7 @@ impl NyaaSearchModal {
         }
         let query = self.editor.text();
         if self.answered.as_deref() == Some(query.as_str())
-            && let Some(result) = self.results.get(self.cursor.index())
+            && let Some(result) = self.results.get(self.cursor.visible_index()?)
         {
             return Some(Msg::NyaaResultChosen {
                 result: result.clone(),
@@ -3028,7 +3055,7 @@ impl NyaaSearchModal {
 
     fn act_cancel_import(&mut self) -> Option<Msg> {
         self.active
-            .get(self.cursor.index())
+            .get(self.cursor.visible_index()?)
             .map(|row| Msg::CancelNyaaImport(row.id))
     }
 
@@ -3116,21 +3143,26 @@ impl NyaaSearchModal {
         let Ok(scene) = renderer.arrange("nyaa-search", area, &data) else {
             return;
         };
+        let mut body_visible = false;
         scene.paint_with_slots(frame, |name, frame, area, style| match name {
-            "editor" => self.editor.view(frame, area),
+            "editor" => self.editor.view(frame, area, style, renderer.color_depth()),
             "body" => {
-                let _ = renderer.paint_collection(
+                body_visible = true;
+                let _ = renderer.paint_cursor_collection(
                     frame,
                     area,
                     "nyaa-result",
                     &rows,
-                    Some(self.cursor.index()),
-                    Some(self.cursor.index()),
+                    &mut self.cursor,
+                    rows.len(),
                     style,
                 );
             }
             _ => {}
         });
+        if !body_visible {
+            self.cursor.hide_all(rows.len());
+        }
     }
 }
 
@@ -3204,6 +3236,26 @@ static NYAA_ACTIVE_KEYMAP: Keymap<NyaaSearchModal, Msg> = Keymap(&[
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #[test]
+    fn authored_name_editor_chrome_and_color_reach_the_text_primitive() {
+        use crate::ui::layout::{LayoutBundle, Renderer};
+        use tuirealm::ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Color};
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/name.xml"), r#"<templates version="1"><template name="name-dialog"><slot name="editor" style="height: 1lh; color: red"/></template></templates>"#).unwrap();
+        let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+        let mut modal = super::NeroNameModal::new(
+            dessplay_core::types::ListEntryId(1),
+            "Entry".into(),
+            Some("Visible"),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        terminal
+            .draw(|frame| modal.render_layout(frame, Rect::new(3, 2, 20, 4), &mut renderer))
+            .unwrap();
+        assert_eq!(terminal.backend().buffer()[(3, 2)].symbol(), "V");
+        assert_eq!(terminal.backend().buffer()[(3, 2)].fg, Color::Red);
+    }
 
     use tuirealm::event::{KeyEvent, KeyModifiers};
     use tuirealm::ratatui::Terminal;

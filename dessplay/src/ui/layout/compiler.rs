@@ -562,6 +562,16 @@ impl Default for TemplateSchema {
         for name in ["settings-form", "list-edit-form"] {
             templates.insert(name.into(), templates["form"].clone());
         }
+        for (name, item) in [
+            ("playlist", "playlist-row"),
+            ("users", "user-row"),
+            ("series", "series-row"),
+        ] {
+            templates
+                .entry(name.into())
+                .or_default()
+                .insert("rows".into(), BindingType::List(item));
+        }
         Self { templates }
     }
 }
@@ -847,6 +857,16 @@ fn validate(
         }
     }
     if node.tag == "slot"
+        && node.attr("name") == "body"
+        && fields.contains_key("rows")
+        && !slots.insert("collection:rows".into())
+    {
+        return Err(error(
+            node,
+            "a controller collection may appear once: choose rows repetition or the body slot",
+        ));
+    }
+    if node.tag == "slot"
         && (node.attr("name").is_empty() || !slots.insert(node.attr("name").into()))
     {
         return Err(error(node, "slots require a unique controller binding"));
@@ -902,13 +922,44 @@ fn validate(
         ));
     }
     if node.tag == "repeat" {
+        if node.attrs.contains_key("virtual")
+            && (node.attr("virtual") != "true" || node.attr("id").is_empty())
+        {
+            return Err(error(
+                node,
+                "virtual repetition requires virtual=\"true\" and a stable id",
+            ));
+        }
         let Some(BindingType::List(contract)) = fields.get(node.attr("bind")) else {
             return Err(error(node, "repeat requires a typed list binding"));
         };
+        if node.attr("virtual") == "true"
+            && (node.attr("bind") != "rows" || fields.get("body") != Some(&BindingType::Slot))
+        {
+            return Err(error(
+                node,
+                "virtual repetition requires a controller rows list with a definite viewport",
+            ));
+        }
+        if node.attr("bind") == "rows"
+            && fields.get("body") == Some(&BindingType::Slot)
+            && !slots.insert("collection:rows".into())
+        {
+            return Err(error(
+                node,
+                "a controller collection may appear once: choose rows repetition or the body slot",
+            ));
+        }
         if node.children.len() != 1 || !slots.insert(format!("list:{}", node.attr("bind"))) {
             return Err(error(
                 node,
                 "repeat requires one item root and a unique list binding",
+            ));
+        }
+        if node.attr("virtual") == "true" && node.children[0].tag == "overlay" {
+            return Err(error(
+                node,
+                "virtual items require an in-flow root; place overlays inside that root",
             ));
         }
         return validate(
@@ -995,9 +1046,8 @@ fn parse_xml(
                         ][..],
                         "flow" | "prefix" => &["id", "class", "style", "if", "separator"][..],
                         "slot" => &["id", "class", "style", "if", "name"][..],
-                        "text" | "rich" | "repeat" | "progress" => {
-                            &["id", "class", "style", "if", "bind"][..]
-                        }
+                        "repeat" => &["id", "class", "style", "if", "bind", "virtual"][..],
+                        "text" | "rich" | "progress" => &["id", "class", "style", "if", "bind"][..],
                         _ => {
                             return Err(Diagnostic::at(
                                 file,

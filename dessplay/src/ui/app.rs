@@ -2678,6 +2678,16 @@ impl Ui {
         frame: &mut Frame,
         renderer: &mut super::layout::Renderer,
     ) {
+        self.draw_layout_pass(frame, renderer, true);
+    }
+
+    fn draw_layout_pass(
+        &mut self,
+        frame: &mut Frame,
+        renderer: &mut super::layout::Renderer,
+        reconcile_focus: bool,
+    ) {
+        let previous_focus = (self.focus, self.focus_order.is_empty());
         renderer.begin_frame();
         renderer.set_color_depth(self.color_depth);
         renderer.clear(frame, frame.area());
@@ -2807,6 +2817,12 @@ impl Ui {
             self.focus_order = order;
             self.sync_focus_attr();
             self.refresh_keybar();
+        }
+        if reconcile_focus && previous_focus != (self.focus, self.focus_order.is_empty()) {
+            // Focus styling and keybars belong to the same frame as the new targets.
+            // Image operations have not been emitted yet, so the fresh pass is atomic.
+            self.draw_layout_pass(frame, renderer, false);
+            return;
         }
         if page_open {
             if let Ok(shell) = renderer.arrange(
@@ -3243,6 +3259,11 @@ mod tests {
         assert!(!ui.focus_order.contains(&Focus::Chat));
         assert_eq!(ui.focus, Focus::Series);
         assert!(ui.panes.chat.is_empty());
+        assert_eq!(
+            terminal.backend().buffer()[ui.panes.series.as_position()].fg,
+            super::super::theme::border_style(true).fg.unwrap(),
+            "replacement focus must be visible in the same frame"
+        );
         let users = renderer
             .arrange(
                 "users",

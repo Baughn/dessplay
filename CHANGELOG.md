@@ -9,6 +9,15 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-09
+
+- Added: Arrange Users, Playlist, and Series rows directly with keyed virtual
+  repeats in layout templates, including large lists and wrapped rows.
+- Fixed: Hidden collection and dialog choices leave keyboard navigation, while
+  offscreen choices remain reachable. Focus changes caused by layout edits now
+  show their highlight and keybindings immediately.
+- Fixed: Search and name editor borders, spacing, and colors follow layout files.
+
 ## 2026-09-08
 
 - Added: Customize file and episode browsers, AniDB and Nyaa search results,

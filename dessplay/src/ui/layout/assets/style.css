@@ -89,7 +89,7 @@ scroll > slot { flex-grow: 1; }
 
 #search-dialog { width: 60%; height: 60%; min-width: 20ch; min-height: 8lh; max-width: 100%; max-height: 100%; border: 1; border-color: yellow; padding: 0 1ch; }
 .nyaa-dialog #search-dialog { width: 72%; height: 65%; }
-.search-editor { height: 3lh; }
+.search-editor { height: 3lh; border: 1; border-color: var(--accent); }
 .search-message { flex-grow: 1; }
 
 .small-dialog { width: 60%; height: 20%; min-width: 20ch; min-height: 8lh; max-width: 100%; max-height: 100%; border: 1; border-color: yellow; padding: 0 1ch; }

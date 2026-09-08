@@ -1844,7 +1844,7 @@ synced-state schema was introduced.
 
 ## Phase 36: Runtime-editable display layouts
 
-**Status: in progress (2026-09-07); whole-display completion is outstanding.**
+**Status: implementation and automated verification complete (2026-09-09); physical terminal graphics checks pending.**
 
 The accepted implementation is a staged migration to versioned local XML
 component templates, CSS, and one width-first terminal geometry pipeline.
@@ -1863,7 +1863,8 @@ player OSD, and standalone diagnostic output are outside scope.
 - [x] Log control fields, attached dropdown overlays, and semantic option rows.
 - [x] Template-authored keyed repetition for small semantic lists, item-scoped
   binding validation, stable geometry identities, and form tabs/notes.
-- [ ] Extend authored repetition to virtualized collections.
+- [x] Authored virtual repetition for Users, Playlist, and Series, bounded
+  item windows, sparse conditional rows, and shared dialog visibility/navigation.
 - [x] Resolve terminal styles before painting, remove the production frame-wide
   theme pass, and share CSS precedence across semantic/primitive boundaries.
 - [x] Chat/input/suggestion composition, recent projection, semantic separate
@@ -1895,8 +1896,9 @@ player OSD, and standalone diagnostic output are outside scope.
 - [x] All six file-only demonstrations through real filesystem events and
   runtime bundle installation; atomic saves, relative paths, missing-directory
   creation, and whole-directory replacement.
-- [ ] Final geometry/interactions/image/reload/performance audit, including real
-  terminal graphics protocol smoke checks.
+- [x] Final automated compiler/geometry/interaction/image/reload audit: 1,522
+  regular tests and 1,523 release-full tests passed, including performance checks.
+- [ ] Physical terminal graphics protocol smoke checks using `layout_smoke`.
 
 The current usable authoring subset, examples, and migration limitations are
 documented in [ui-layouts.md](ui-layouts.md). Do not mark this phase complete

@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-08
+Last updated: 2026-09-09
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -1683,6 +1683,12 @@ Component roots occupy a viewport grid cell: auto sizes stretch, explicit sizes
 are honored, and outer margins participate in measurement without becoming
 interaction targets. Keyed documents retain item/source anchors rather than
 absolute wrapped-line counters through layout changes.
+Controller collections can declare keyed virtual repetition in a definite-height
+flex column. Visible rows plus overscan become layout trees; explicit hiding and
+empty conditional rows leave navigation, while clipping never does. Collection
+slots and their authored repeat are alternative presentations of one controller.
+Focus fallback is repainted before the frame is published. Dialog editor chrome
+belongs to templates, and hidden choices cannot be activated.
 Small semantic lists use explicit keyed repetition. Item bindings are validated
 in their own contract, keys are nonempty and unique, and item IDs are qualified
 in geometry while remaining local in selectors. Controllers supply list state;

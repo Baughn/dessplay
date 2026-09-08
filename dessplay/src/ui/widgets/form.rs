@@ -394,6 +394,7 @@ impl<M: FormModel> Form<M> {
 
     /// Currently selected semantic row (`None` means Save).
     pub fn selected_row(&self) -> Option<M::RowId> {
+        self.cursor.visible_index()?;
         match &self.selection {
             Selection::Row(id) if self.model.rows().iter().any(|row| &row.id == id) => {
                 Some(id.clone())
@@ -541,6 +542,9 @@ impl<M: FormModel> Form<M> {
         }
         match key {
             Key::Enter => {
+                if self.cursor.visible_index().is_none() {
+                    return FormEvent::Handled;
+                }
                 let rows = self.model.rows();
                 let Some(row) = rows.get(self.cursor.index()) else {
                     return self.try_save();
@@ -686,6 +690,9 @@ impl<M: FormModel> Form<M> {
             }
         };
         let rows = self.model.rows();
+        let mut body_visible = false;
+        let mut save_visible = false;
+        let mut hidden = Vec::new();
         scene.paint_with_slots(frame, |name, frame, body_area, style| match name {
             "header" | "notes" => {
                 let (template, field, items) = if name == "header" {
@@ -709,6 +716,9 @@ impl<M: FormModel> Form<M> {
                 if let Ok(scene) =
                     renderer.arrange(template, body_area, &data.clone().inherit(style, 0))
                 {
+                    if name == "save" {
+                        save_visible = !scene.root_content().is_empty();
+                    }
                     scene.paint_with_slots(frame, |_, _, _, _| {});
                 }
             }
@@ -725,6 +735,7 @@ impl<M: FormModel> Form<M> {
                 }
             }
             "body" if !body_area.is_empty() => {
+                body_visible = true;
                 let items = rows
                     .iter()
                     .map(|row| {
@@ -765,19 +776,32 @@ impl<M: FormModel> Form<M> {
                         }
                     })
                     .collect::<Vec<_>>();
-                if let Err(error) = renderer.paint_rows(
+                match renderer.paint_cursor_collection(
                     frame,
                     body_area,
                     "form-row",
                     &items,
-                    Some(self.cursor.index()),
+                    &mut self.cursor,
+                    rows.len() + 1,
                     style,
                 ) {
-                    tracing::error!(%error, "form row layout failed");
+                    Ok(rendered) => hidden.extend_from_slice(rendered.hidden()),
+                    Err(error) => tracing::error!(%error, "form row layout failed"),
                 }
             }
             _ => {}
         });
+        if !body_visible {
+            hidden.extend(0..rows.len());
+        }
+        if !save_visible {
+            hidden.push(rows.len());
+        }
+        hidden.sort_unstable();
+        hidden.dedup();
+        self.cursor.set_hidden(&hidden);
+        self.cursor.reconcile_visible(rows.len() + 1, &hidden);
+        self.selection_from_cursor();
     }
 }
 
@@ -1028,6 +1052,36 @@ mod tests {
         assert!(form.select_row(&Field::Flag));
         assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
         assert!(form.model.flag);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn hidden_form_controls_leave_navigation_but_global_save_remains_available() {
+        use crate::ui::layout::{LayoutBundle, Renderer};
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("style.css"),
+            ".form-row, #form-save { display: none; }",
+        )
+        .unwrap();
+        let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+        let mut form = Form::new(TestModel {
+            text: "ok".into(),
+            flag: false,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| form.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        assert!(form.selected_row().is_none());
+        assert!(matches!(form.on(&key(Key::Enter)), FormEvent::Handled));
+        assert!(!form.is_editing());
+        assert!(matches!(form.on(&key(Key::Char('S'))), FormEvent::Out(_)));
+        renderer.install(LayoutBundle::builtin().unwrap());
+        terminal
+            .draw(|frame| form.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        assert_eq!(form.selected_row(), Some(Field::Text));
     }
 
     #[test]

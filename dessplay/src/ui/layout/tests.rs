@@ -11,6 +11,125 @@ fn defaults_are_valid_and_transferable() {
 }
 
 #[test]
+fn authored_virtual_repetition_keeps_large_lists_bounded_and_source_mapped() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    std::fs::write(directory.path().join("templates/virtual.xml"), r#"<templates version="1"><template name="playlist"><column><repeat id="entries" bind="rows" virtual="true"><column><text bind="title" style="white-space: normal"/></column></repeat></column></template></templates>"#).unwrap();
+    let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+    let data = Presentation::default().list(
+        "rows",
+        (0..5000)
+            .map(|index| PresentedItem {
+                key: index.to_string(),
+                data: Presentation::default()
+                    .text("title", format!("Item {index} 界 has wrapped text"))
+                    .selected(index == 2500),
+            })
+            .collect(),
+    );
+    let area = Rect::new(4, 3, 20, 12);
+    let scene = renderer.arrange("playlist", area, &data).unwrap();
+    assert!(scene.items.len() < 30);
+    assert!(
+        scene.items.iter().any(|item| item.key == "2500"),
+        "items={:?}\n{}",
+        scene.items,
+        scene.inspect().join("\n")
+    );
+    let mut terminal = Terminal::new(TestBackend::new(30, 20)).unwrap();
+    terminal.draw(|frame| scene.paint(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    for region in &scene.text_regions {
+        assert!(area.contains(region.bounds.as_position()));
+        assert!(
+            scene
+                .items
+                .iter()
+                .any(|item| item.bounds.contains(region.bounds.as_position()))
+        );
+        assert_ne!(buffer[region.bounds.as_position()].symbol(), " ");
+    }
+    let measured = renderer.arrangement_count();
+    renderer.arrange("playlist", area, &data).unwrap();
+    assert_eq!(renderer.arrangement_count(), measured);
+    let tail = renderer
+        .arrange("playlist", area, &data.center("rows", "4999"))
+        .unwrap();
+    assert!(tail.items.iter().any(|item| item.key == "4999"));
+}
+
+#[test]
+fn sparse_virtual_lists_fill_the_viewport_and_choose_a_surviving_selection() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    std::fs::write(directory.path().join("templates/virtual.xml"), r#"<templates version="1"><template name="playlist"><repeat id="rows" bind="rows" virtual="true"><column><text bind="title" if="entry"/></column></repeat></template></templates>"#).unwrap();
+    let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+    let data = Presentation::default().list(
+        "rows",
+        (0..2000)
+            .map(|index| PresentedItem {
+                key: index.to_string(),
+                data: Presentation::default()
+                    .text("title", format!("Row {index}"))
+                    .boolean("entry", index % 50 == 0)
+                    .selected(index == 1599),
+            })
+            .collect(),
+    );
+    let scene = renderer
+        .arrange("playlist", Rect::new(3, 2, 20, 10), &data)
+        .unwrap();
+    assert_eq!(scene.items.len(), 10);
+    let selected = scene.items.iter().find(|item| item.key == "1600").unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(30, 15)).unwrap();
+    terminal.draw(|frame| scene.paint(frame)).unwrap();
+    assert!(
+        terminal.backend().buffer()[selected.bounds.as_position()]
+            .modifier
+            .contains(tuirealm::ratatui::style::Modifier::REVERSED)
+    );
+}
+
+#[test]
+fn virtual_repeat_contract_errors_are_reported_before_installation() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    for contents in [
+        r#"<repeat bind="rows" virtual="true"><text bind="title"/></repeat>"#,
+        r#"<repeat id="rows" bind="rows" virtual="false"><text bind="title"/></repeat>"#,
+        r#"<repeat id="rows" bind="rows" virtual="true" style="flex-direction: row"><text bind="title"/></repeat>"#,
+        r#"<column><slot name="body"/><repeat id="rows" bind="rows" virtual="true"><text bind="title"/></repeat></column>"#,
+        r#"<column><repeat id="rows" bind="rows" virtual="true"><text bind="title"/></repeat><slot name="body"/></column>"#,
+    ] {
+        std::fs::write(directory.path().join("templates/virtual.xml"), format!(r#"<templates version="1"><template name="playlist">{contents}</template></templates>"#)).unwrap();
+        let error = LayoutBundle::load(directory.path()).unwrap_err();
+        assert!(error.file.ends_with("virtual.xml"));
+        assert!(error.line > 0 && error.column > 0);
+    }
+}
+
+proptest! {
+    #[test]
+    fn virtual_repeat_paint_is_translation_invariant(width in 1u16..40, height in 1u16..18, x in 0u16..9, y in 0u16..9, center in 0usize..100) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/virtual.xml"), r#"<templates version="1"><template name="playlist"><repeat id="rows" bind="rows" virtual="true" style="gap: 1lh"><column style="margin: 0 1ch"><text bind="title" style="white-space: normal"/></column></repeat></template></templates>"#).unwrap();
+        let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+        let data = Presentation::default().list("rows", (0..100).map(|index| PresentedItem { key: index.to_string(), data: Presentation::default().text("title", format!("{index} wide 界 😀 wrapped words")).selected(index == center) }).collect());
+        let mut terminal = Terminal::new(TestBackend::new(width + x, height + y)).unwrap();
+        let local = renderer.arrange("playlist", Rect::new(0, 0, width, height), &data).unwrap();
+        let reference = terminal.draw(|frame| local.paint(frame)).unwrap().buffer.clone();
+        let translated = renderer.arrange("playlist", Rect::new(x, y, width, height), &data).unwrap();
+        let output = terminal.draw(|frame| translated.paint(frame)).unwrap().buffer.clone();
+        for row in 0..height {
+            for col in 0..width {
+                prop_assert_eq!(&reference[(col, row)], &output[(col+x, row+y)]);
+            }
+        }
+    }
+}
+
+#[test]
 fn inspector_retains_inline_field_declarations_and_fragment_bounds() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join("templates")).unwrap();

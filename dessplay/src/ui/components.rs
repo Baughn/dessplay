@@ -2333,10 +2333,6 @@ impl UsersPane {
         if self.focused {
             data = data.state("users-frame", "focus");
         }
-        let Ok(scene) = renderer.arrange("users", area, &data) else {
-            return;
-        };
-        renderer.record_controller("users", &scene);
         let mut rows = self
             .props
             .rows
@@ -2379,7 +2375,12 @@ impl UsersPane {
             });
         }
         let selected = (self.focused && self.selectable_len() > 0).then(|| self.cursor.index());
-        self.rendered = Default::default();
+        let data = data.collection("rows", &rows, selected, Some(self.cursor.index()));
+        let Ok(scene) = renderer.arrange("users", area, &data) else {
+            return;
+        };
+        renderer.record_controller("users", &scene);
+        self.rendered = scene.collection("rows", &rows);
         scene.paint_with_slots(frame, |name, frame, area, style| {
             if name == "body" {
                 self.rendered = renderer
@@ -2395,6 +2396,8 @@ impl UsersPane {
                     .unwrap_or_default();
             }
         });
+        self.cursor
+            .reconcile_visible(self.selectable_len(), self.rendered.hidden());
     }
 }
 
@@ -2403,7 +2406,9 @@ passive_component!(UsersPane);
 impl AppComponent<Msg, NoUserEvent> for UsersPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         if let Some(key) = plain(ev)
-            && self.cursor.nav(key, self.selectable_len())
+            && self
+                .cursor
+                .nav_visible(key, self.selectable_len(), self.rendered.hidden())
         {
             return Some(Msg::None);
         }
@@ -2551,10 +2556,6 @@ impl PlaylistPane {
         if self.focused {
             data = data.state("playlist-frame", "focus");
         }
-        let Ok(scene) = renderer.arrange("playlist", area, &data) else {
-            return;
-        };
-        renderer.record_controller("playlist", &scene);
         let watch_tag = |row: &crate::ui::props::PlaylistRow| match row.watch {
             dessplay_core::types::SeriesWatchState::Watching => "watching",
             dessplay_core::types::SeriesWatchState::Maybe => "maybe",
@@ -2611,7 +2612,12 @@ impl PlaylistPane {
         } else {
             self.props.now_index
         };
-        self.rendered = Default::default();
+        let data = data.collection("rows", &rows, selected, center);
+        let Ok(scene) = renderer.arrange("playlist", area, &data) else {
+            return;
+        };
+        renderer.record_controller("playlist", &scene);
+        self.rendered = scene.collection("rows", &rows);
         scene.paint_with_slots(frame, |name, frame, area, style| {
             if name == "body" {
                 self.rendered = renderer
@@ -2619,6 +2625,8 @@ impl PlaylistPane {
                     .unwrap_or_default();
             }
         });
+        self.cursor
+            .reconcile_visible(self.props.rows.len() + 1, self.rendered.hidden());
     }
 }
 
@@ -2628,7 +2636,9 @@ impl AppComponent<Msg, NoUserEvent> for PlaylistPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         // Rows plus the trailing [Add New].
         if let Some(key) = plain(ev)
-            && self.cursor.nav(key, self.props.rows.len() + 1)
+            && self
+                .cursor
+                .nav_visible(key, self.props.rows.len() + 1, self.rendered.hidden())
         {
             return Some(Msg::None);
         }
@@ -3091,10 +3101,6 @@ impl SeriesPane {
         if self.focused {
             data = data.state("series-frame", "focus");
         }
-        let Ok(scene) = renderer.arrange("series", area, &data) else {
-            return;
-        };
-        renderer.record_controller("series", &scene);
         let rows: Vec<PresentedRow> = match self.mode {
             SeriesMode::Recent | SeriesMode::All => self
                 .franchises
@@ -3180,7 +3186,17 @@ impl SeriesPane {
                 })
                 .collect(),
         };
-        self.rendered = Default::default();
+        let data = data.collection(
+            "rows",
+            &rows,
+            self.focused.then(|| self.cursor.index()),
+            Some(self.cursor.index()),
+        );
+        let Ok(scene) = renderer.arrange("series", area, &data) else {
+            return;
+        };
+        renderer.record_controller("series", &scene);
+        self.rendered = scene.collection("rows", &rows);
         scene.paint_with_slots(frame, |name, frame, area, style| {
             if name == "body" {
                 self.rendered = renderer
@@ -3196,6 +3212,8 @@ impl SeriesPane {
                     .unwrap_or_default();
             }
         });
+        self.cursor
+            .reconcile_visible(self.len(), self.rendered.hidden());
     }
 }
 
@@ -3204,7 +3222,9 @@ passive_component!(SeriesPane);
 impl AppComponent<Msg, NoUserEvent> for SeriesPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         if let Some(key) = plain(ev)
-            && self.cursor.nav(key, self.len())
+            && self
+                .cursor
+                .nav_visible(key, self.len(), self.rendered.hidden())
         {
             return Some(Msg::None);
         }
@@ -4437,6 +4457,38 @@ mod playlist_pane_tests {
         let buffer = render(&mut pane, 9); // seven rows inside the border
 
         assert_eq!(row_y(&buffer, "episode-10"), Some(4));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn hidden_collection_items_leave_navigation_while_offscreen_items_remain() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/rows.xml"), r#"<templates version="1"><template name="playlist-row"><text bind="title" if="entry"/></template></templates>"#).unwrap();
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::load(directory.path()).unwrap(),
+        );
+        let mut pane = long_pane(true, 0);
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        terminal
+            .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        for _ in 0..100 {
+            pane.on(&Event::Keyboard(KeyEvent {
+                code: Key::Down,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
+        assert_eq!(
+            pane.cursor.index(),
+            pane.props.rows.len() - 1,
+            "hidden Add New must be skipped even beyond the viewport"
+        );
+        pane.on(&Event::Keyboard(KeyEvent {
+            code: Key::Up,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(pane.cursor.index(), pane.props.rows.len() - 2);
     }
 
     /// When another pane has focus, the playlist follows now-playing with

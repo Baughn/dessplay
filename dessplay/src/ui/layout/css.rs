@@ -393,6 +393,11 @@ pub(super) fn resolve(
         variables: parent.variables.clone(),
         ..Computed::default()
     };
+    if node.tag == "repeat" && node.attr("virtual") == "true" {
+        out.layout.flex_grow = 1.0;
+        out.layout.flex_shrink = 1.0;
+        out.layout.min_size.height = Dimension::Length(0.0);
+    }
     if node.tag == "row" {
         out.layout.flex_direction = FlexDirection::Row;
     }
@@ -472,6 +477,16 @@ pub(super) fn resolve(
             ));
         }
         apply(&mut out, &d.name, &value).map_err(|m| fail(&d, m))?;
+    }
+    if node.attr("virtual") == "true"
+        && out.layout.display != Display::None
+        && (out.layout.display != Display::Flex
+            || out.layout.flex_direction != FlexDirection::Column)
+    {
+        return Err(Diagnostic {
+            message: "virtual repetition requires a flex column".into(),
+            ..node.location.clone()
+        });
     }
     if node.attr("resizable") == "true" && out.layout.display == Display::Grid {
         return Err(Diagnostic {

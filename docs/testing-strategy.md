@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-07
+Last updated: 2026-09-09
 
 ## Table of Contents
 
@@ -1057,3 +1057,11 @@ with a gradient fixture and no external actors. Use the procedure in
 checks. An automated overlapping-pane regression verifies that terminal image
 operations are suppressed by another pane's overlay, and inline-inspector tests
 compare reported bounds with source fragments.
+
+Virtual-repeat tests cover 5,000-item windows, source/hit records, cached repaint,
+independent centering, translation across small nonzero viewports, and sparse
+conditional rows. Compiler cases reject unstable virtual IDs, unsupported flow,
+and duplicate controller presentations. Navigation regressions distinguish
+explicitly hidden rows from offscreen rows, retain global form Save, verify
+editor CSS reaches the intrinsic text painter, and check that replacement focus
+is visible in the same frame.

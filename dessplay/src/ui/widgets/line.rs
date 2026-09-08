@@ -12,7 +12,7 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, Paragraph};
+use tuirealm::ratatui::widgets::Paragraph;
 
 use super::keys::{plain, typed, word_mod};
 use crate::ui::theme;
@@ -383,18 +383,6 @@ impl TextField {
     /// [`LineBuffer::scroll`] directly to simulate a rendered window).
     pub fn buffer_mut(&mut self) -> &mut LineBuffer {
         &mut self.buf
-    }
-
-    /// Render as a bordered one-line input. `focused` drives the border
-    /// color and whether the cursor cell is shown. `masked` replaces every
-    /// character with `*` (password entry).
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, masked: bool) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::border_style(focused));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        self.render_content(frame, inner, focused, masked);
     }
 
     /// Render only editor contents; enclosing chrome belongs to its template.
