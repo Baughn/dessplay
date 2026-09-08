@@ -515,26 +515,34 @@ impl RoguelikeModal {
         if !sidebar.is_empty() {
             let lines = sidebar_rows(run, sidebar.width, sidebar.height);
             frame.render_widget(
-                Paragraph::new(lines.join("\n")).style(scene.style("sidebar")),
+                Paragraph::new(lines.join("\n"))
+                    .style(renderer.paint_style(scene.style("sidebar"))),
                 sidebar,
             );
         }
-        render_map(frame, scene.slot("map"), run);
+        render_map(frame, scene.slot("map"), run, renderer, scene.style("map"));
         inner = scene.slot("journal");
         let mut lines = run
             .journal
             .iter()
             .rev()
             .flat_map(|e| {
+                let style = renderer.paint_style(theme::with_authored_style(
+                    event_style(e.kind),
+                    scene.style("journal"),
+                ));
                 text_rows(&e.text, inner.width)
                     .into_iter()
                     .rev()
-                    .map(move |text| Line::from(Span::styled(text, event_style(e.kind))))
+                    .map(move |text| Line::from(Span::styled(text, style)))
             })
             .take(usize::from(inner.height))
             .collect::<Vec<_>>();
         lines.reverse();
-        frame.render_widget(Paragraph::new(lines).style(scene.style("journal")), inner);
+        frame.render_widget(
+            Paragraph::new(lines).style(renderer.paint_style(scene.style("journal"))),
+            inner,
+        );
         scene.paint_overlays(frame);
         if let Some(recovery) = &self.recovery {
             let mut data = crate::ui::layout::Presentation::default()
@@ -578,7 +586,8 @@ impl RoguelikeModal {
                 let body = scene.slot("wounds");
                 let wounds = wound_rows(run, body.width, body.height);
                 frame.render_widget(
-                    Paragraph::new(wounds.join("\n")).style(scene.style("wounds")),
+                    Paragraph::new(wounds.join("\n"))
+                        .style(renderer.paint_style(scene.style("wounds"))),
                     body,
                 );
             }
@@ -756,7 +765,13 @@ fn render_scroll(
     }
 }
 
-fn render_map(frame: &mut Frame, area: Rect, run: &RunView) {
+fn render_map(
+    frame: &mut Frame,
+    area: Rect,
+    run: &RunView,
+    renderer: &crate::ui::layout::Renderer,
+    inherited: Style,
+) {
     if area.is_empty() {
         return;
     }
@@ -798,11 +813,14 @@ fn render_map(frame: &mut Frame, area: Rect, run: &RunView) {
                         };
                         Span::styled(
                             glyph.to_string(),
-                            if cell.threatened {
-                                style.bg(Color::DarkGray).add_modifier(Modifier::UNDERLINED)
-                            } else {
-                                style
-                            },
+                            renderer.paint_style(theme::with_authored_style(
+                                if cell.threatened {
+                                    style.bg(Color::DarkGray).add_modifier(Modifier::UNDERLINED)
+                                } else {
+                                    style
+                                },
+                                inherited,
+                            )),
                         )
                     })
                     .collect::<Vec<_>>(),

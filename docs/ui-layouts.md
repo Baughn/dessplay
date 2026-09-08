@@ -445,3 +445,8 @@ content box. It has no selectable source text and paints its original fitted
 width through clipping; surrounding brackets and labels belong to the template.
 The default overlay uses 60% width and intrinsic height. `auto` modal dimensions
 fit content; opposite positioning insets do not stretch them to fill the screen.
+
+Text styles resolve before painting. Explicit foreground colors override semantic
+dimming on components and individual fields. Limited terminals quantize authored
+RGB colors; true-color terminals preserve them. Terminal image pixels bypass
+this conversion. A palette change reuses arranged geometry and measured text.

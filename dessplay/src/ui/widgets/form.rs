@@ -714,10 +714,14 @@ impl<M: FormModel> Form<M> {
             }
             "editor" => {
                 if let Some(editor) = &mut self.editor {
-                    editor
-                        .input
-                        .render_content(frame, body_area, true, editor.masked);
-                    frame.buffer_mut().set_style(body_area, style);
+                    editor.input.render_content_styled(
+                        frame,
+                        body_area,
+                        true,
+                        editor.masked,
+                        style,
+                        renderer.color_depth(),
+                    );
                 }
             }
             "body" if !body_area.is_empty() => {

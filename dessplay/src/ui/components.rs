@@ -294,7 +294,7 @@ struct RenderedChatLog {
     area: Rect,
     rows: Vec<RowRecord>,
     /// Screen rects the last render drew inline images into. The
-    /// theme's whole-buffer color pass must leave these cells alone
+    /// renderer records these independently from text-theme painting
     /// (their fg/bg pairs *are* the picture).
     image_areas: Vec<Rect>,
 }
@@ -549,7 +549,7 @@ impl ChatPane {
     }
 
     /// The screen rects the last render drew images into; the theme's
-    /// whole-buffer color pass must skip these cells.
+    /// renderer exposes these alongside the text geometry in layout tools.
     pub(crate) fn image_areas(&self) -> &[Rect] {
         &self.rendered.image_areas
     }
@@ -1106,7 +1106,7 @@ impl ChatPane {
             return;
         };
         let inner = scene.slot("log");
-        frame.render_widget(tuirealm::ratatui::widgets::Clear, area);
+        renderer.clear(frame, area);
         scene.paint(frame);
         let mut messages = Vec::new();
         let mut used = 0usize;
@@ -1197,8 +1197,14 @@ impl ChatPane {
         let max_image_rows = (visible / 3) as u16;
         if log_inner.is_empty() {
             self.rendered = RenderedChatLog::default();
-            self.input
-                .render_content(frame, input_area, self.focused, false);
+            self.input.render_content_styled(
+                frame,
+                input_area,
+                self.focused,
+                false,
+                scene.style("input"),
+                renderer.color_depth(),
+            );
             scene.paint_overlays(frame);
             return;
         }
@@ -1464,11 +1470,14 @@ impl ChatPane {
         for url in broken {
             self.images.insert(url, ImageSlot::Failed);
         }
-        self.input
-            .render_content(frame, input_area, self.focused, false);
-        frame
-            .buffer_mut()
-            .set_style(input_area, scene.style("input"));
+        self.input.render_content_styled(
+            frame,
+            input_area,
+            self.focused,
+            false,
+            scene.style("input"),
+            renderer.color_depth(),
+        );
     }
 }
 

@@ -96,7 +96,7 @@ impl Renderer {
                                 }) {
                                     let pad = pad.min(usize::from(area.width)) as u16;
                                     frame.render_widget(
-                                        Paragraph::new(text).style(style),
+                                        Paragraph::new(text).style(self.paint_style(style)),
                                         Rect {
                                             x: area.x.saturating_add(pad),
                                             width: area.width.saturating_sub(pad),

@@ -1367,7 +1367,7 @@ slots are recycled. Limited terminals deliberately retain the prior direct
 name hash for backward-compatible rendering.
 
 Production asks crossterm for terminal color depth once during setup and
-injects the result into `Ui`. True-color mode gives the completed frame one
+injects the result into `Ui`. True-color mode gives the display one
 explicit dark theme across every pane, modal, and overlay, then generates
 speaker colors without an application cap from a progressive HSLuv palette.
 Each slot deterministically maximizes its minimum CIEDE2000 distance from the
@@ -1863,7 +1863,9 @@ player OSD, and standalone diagnostic output are outside scope.
 - [x] Log control fields, attached dropdown overlays, and semantic option rows.
 - [x] Template-authored keyed repetition for small semantic lists, item-scoped
   binding validation, stable geometry identities, and form tabs/notes.
-- [ ] Extend authored repetition to virtualized collections and finish style integration.
+- [ ] Extend authored repetition to virtualized collections.
+- [x] Resolve terminal styles before painting, remove the production frame-wide
+  theme pass, and share CSS precedence across semantic/primitive boundaries.
 - [x] Chat/input/suggestion composition, recent projection, semantic separate
   subtitle rows, and timestamp-aligned bordered attachments with original scroll crops.
 - [x] Chat rich message variants, authored first-line prefixes, source-mapped

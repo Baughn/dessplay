@@ -399,11 +399,32 @@ impl TextField {
 
     /// Render only editor contents; enclosing chrome belongs to its template.
     pub fn render_content(&mut self, frame: &mut Frame, inner: Rect, focused: bool, masked: bool) {
+        self.render_content_styled(
+            frame,
+            inner,
+            focused,
+            masked,
+            Style::default(),
+            theme::ColorDepth::Limited,
+        );
+    }
+
+    /// Intrinsic editor painting with authored appearance and terminal colors.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_content_styled(
+        &mut self,
+        frame: &mut Frame,
+        inner: Rect,
+        focused: bool,
+        masked: bool,
+        style: Style,
+        depth: theme::ColorDepth,
+    ) {
         if inner.width == 0 || inner.height == 0 {
             return;
         }
         let width = inner.width as usize;
-        let line = if self.buf.is_empty() && !self.placeholder.is_empty() {
+        let mut line = if self.buf.is_empty() && !self.placeholder.is_empty() {
             // Placeholder, dim; the cursor cell (reversed) sits on its
             // first character when focused — where typing would land.
             let text: String = self.placeholder.chars().take(width).collect();
@@ -444,7 +465,13 @@ impl TextField {
                 Line::from(vec![Span::raw(pre), Span::raw(at), Span::raw(post)])
             }
         };
-        frame.render_widget(Paragraph::new(line), inner);
+        for span in &mut line.spans {
+            span.style = theme::paint_style(theme::with_authored_style(span.style, style), depth);
+        }
+        frame.render_widget(
+            Paragraph::new(line).style(theme::paint_style(style, depth)),
+            inner,
+        );
     }
 }
 

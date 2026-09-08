@@ -1031,3 +1031,9 @@ previous two-thirds boundary, then reorder its slots using files alone. Existing
 log snapshots and tiny dungeon scenarios remain gates. Typed progress checks
 verify no source mappings, clipping, and intrinsic overlay height at a 30,000-cell
 viewport, replacing the old controller-rectangle overflow regression.
+
+Prepaint theme tests compare a matrix of semantic colors, backgrounds, and
+modifiers against the previous test-only frame-pass oracle. A regression first
+confirmed component DIM overriding CSS foreground, then verifies authored RGB,
+limited-palette conversion, and cache reuse across a palette change. Whole-UI
+theme, speaker-color, editor, and image regressions exercise production painting.

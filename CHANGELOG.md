@@ -31,6 +31,10 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Rearrange the log/dungeon page and its recent-chat strip in layout
   files, and customize work-progress labels, rows, and overlay appearance.
 
+- Fixed: Layout colors now override dimmed component defaults consistently,
+  including health metrics and form chrome. Image colors remain independent
+  of text themes.
+
 ## 2026-09-07
 
 - Added: Image links posted in chat (DessPlay or IRC) now download and

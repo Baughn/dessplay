@@ -16,6 +16,20 @@ remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
 
+## Styles resolve before painting (2026-09-08)
+
+**Rule:** Scenes and intrinsic primitives resolve terminal colors before they
+paint. The final whole-buffer theme pass is removed. Authored foreground colors
+override semantic dimming at every presentation boundary.
+
+**Why:** A final pass obscured CSS precedence and needed an image-pixel exclusion
+list. Resolving styles at paint time preserves authored colors and lets image
+protocols bypass text conversion structurally. The old pass remains a test-only
+palette oracle; a matrix covers true-color/limited foregrounds, backgrounds,
+and modifiers. A new regression first demonstrated component-level DIM defeating
+an explicit CSS foreground. One shared merge handles component, plain-field,
+rich-span, editor, and dungeon-cell styling to prevent that class recurring.
+
 ## Page shells and intrinsic progress overlays (2026-09-08)
 
 **Rule:** Templates own the full page/recent-chat/keybar split and work-progress

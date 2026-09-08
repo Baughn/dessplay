@@ -132,17 +132,15 @@ Application
 
 The production shell detects terminal color depth once during setup through
 crossterm plus standard `COLORTERM`/`*-direct` hints and injects `Limited` or
-`TrueColor` into this same synchronous `Ui`. Rendering stays
-capability-independent until the completed frame: on a
-true-color terminal the theme layer gives every cell the explicit dark
-background and maps semantic foregrounds to RGB, so panes, modals, and passive
-overlays cannot drift onto different schemes. The same completed-frame pass
-materializes `DIM` as the theme's muted RGB foreground and removes only that
-modifier before crossterm output; this avoids emulator-specific SGR 2 behavior
-while retaining combinations such as dim-plus-italic or selected-row reverse.
-On a limited terminal the pass is a strict no-op, preserving both the
-terminal's configured theme and native dim attribute. Tests inject the
-capability directly rather than consulting the real terminal.
+`TrueColor` into this same synchronous `Ui`. The UI-thread renderer installs
+the semantic canvas and resolves text colors before painting each scene or
+intrinsic primitive. True-color terminals map semantic foregrounds to RGB and
+materialize `DIM` as the muted foreground, preserving other modifiers. Limited
+terminals retain native semantic colors/dimming and quantize authored RGB colors
+to the terminal palette. Authored foregrounds override semantic dimming at
+component, field, rich-span, editor, and dungeon-cell boundaries. Image pixels
+never pass through text conversion. Changing color depth updates cached scene
+paint settings without rebuilding layout trees. Tests inject the capability.
 
 ### Shared Widgets
 

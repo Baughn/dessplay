@@ -227,6 +227,7 @@ impl RenderedCollection {
 #[derive(Clone, Debug, Default)]
 pub struct RenderedScene {
     nodes: Vec<Arranged>,
+    depth: crate::ui::theme::ColorDepth,
     paint_order: Vec<usize>,
     height: u16,
     width: u16,
@@ -476,7 +477,9 @@ impl RenderedScene {
         for bounds in rows.into_values() {
             let visible = view.rect(bounds);
             if !visible.is_empty() {
-                frame.buffer_mut().set_style(visible, style);
+                frame
+                    .buffer_mut()
+                    .set_style(visible, crate::ui::theme::paint_style(style, self.depth));
             }
         }
     }
@@ -518,8 +521,14 @@ impl RenderedScene {
             }
             if n.overlay_root {
                 frame.render_widget(tuirealm::ratatui::widgets::Clear, visible);
+                frame
+                    .buffer_mut()
+                    .set_style(visible, crate::ui::theme::canvas_style(self.depth));
             }
-            frame.buffer_mut().set_style(visible, n.style.paint);
+            frame.buffer_mut().set_style(
+                visible,
+                crate::ui::theme::paint_style(n.style.paint, self.depth),
+            );
             let border = &n.style.layout.border;
             let has_border = [border.left, border.right, border.top, border.bottom]
                 .iter()
@@ -549,9 +558,12 @@ impl RenderedScene {
                                 (true, _, _, _) | (_, true, _, _) => "│",
                                 _ => continue,
                             };
-                            frame.buffer_mut()[(x, y)]
-                                .set_symbol(glyph)
-                                .set_style(n.style.paint.fg(n.style.border));
+                            frame.buffer_mut()[(x, y)].set_symbol(glyph).set_style(
+                                crate::ui::theme::paint_style(
+                                    n.style.paint.fg(n.style.border),
+                                    self.depth,
+                                ),
+                            );
                         }
                     }
                 }
@@ -573,6 +585,7 @@ impl RenderedScene {
                         n.style.paint,
                         Default::default(),
                         view,
+                        self.depth,
                     );
                 }
             }
@@ -604,6 +617,7 @@ impl RenderedScene {
                     n.style.paint,
                     Default::default(),
                     view,
+                    self.depth,
                 );
             }
             if let Some((done, total)) = n.progress {
@@ -622,7 +636,7 @@ impl RenderedScene {
                     let column = i32::from(x) - view.x - i32::from(n.content.x);
                     frame.buffer_mut()[(x, visible.y)]
                         .set_symbol(if column < i32::from(filled) { "#" } else { " " })
-                        .set_style(n.style.paint);
+                        .set_style(crate::ui::theme::paint_style(n.style.paint, self.depth));
                 }
             }
             if !n.slot.is_empty() {
@@ -671,8 +685,14 @@ fn paint_line(
     style: PaintStyle,
     alignment: tuirealm::ratatui::layout::Alignment,
     view: PaintView,
+    depth: crate::ui::theme::ColorDepth,
 ) {
-    let text = text.into();
+    let mut text = text.into();
+    let base = style.patch(text.style);
+    text.style = crate::ui::theme::paint_style(base, depth);
+    for span in &mut text.spans {
+        span.style = crate::ui::theme::paint_style(base.patch(span.style), depth);
+    }
     let visible = view.rect(row.intersection(clip));
     if visible.is_empty() || text.width() == 0 {
         return;
@@ -696,10 +716,12 @@ fn paint_line(
         .intersection(visible);
     if !painted.is_empty() {
         frame.render_widget(
-            Paragraph::new(text).style(style).scroll((
-                0,
-                (i32::from(painted.x) - i32::from(origin) - view.x).max(0) as u16,
-            )),
+            Paragraph::new(text)
+                .style(crate::ui::theme::paint_style(style, depth))
+                .scroll((
+                    0,
+                    (i32::from(painted.x) - i32::from(origin) - view.x).max(0) as u16,
+                )),
             painted,
         );
     }
@@ -730,9 +752,11 @@ struct Measure {
 /// UI-thread renderer. Its Taffy state never crosses the controller's thread move.
 pub struct Renderer {
     bundle: LayoutBundle,
+    depth: crate::ui::theme::ColorDepth,
     tree: TaffyTree<Measure>,
     cache: HashMap<String, CachedScene>,
     cache_clock: u64,
+    image_regions: Vec<Rect>,
     #[cfg(test)]
     arrangements: usize,
     text_cache: HashMap<(String, u16), std::sync::Arc<Vec<Fragment>>>,
@@ -751,9 +775,11 @@ impl Renderer {
     pub fn new(bundle: LayoutBundle) -> Self {
         Self {
             bundle,
+            depth: Default::default(),
             tree: TaffyTree::new(),
             cache: HashMap::new(),
             cache_clock: 0,
+            image_regions: Vec::new(),
             #[cfg(test)]
             arrangements: 0,
             text_cache: HashMap::new(),
@@ -762,6 +788,31 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn arrangement_count(&self) -> usize {
         self.arrangements
+    }
+    /// Color depth changes paint, not measurements or controller state.
+    pub fn set_color_depth(&mut self, depth: crate::ui::theme::ColorDepth) {
+        if self.depth == depth {
+            return;
+        }
+        self.depth = depth;
+        for cached in self.cache.values_mut() {
+            cached.scene.depth = depth;
+        }
+    }
+    /// Resolve a specialized primitive's semantic style before it paints.
+    pub fn paint_style(&self, style: PaintStyle) -> PaintStyle {
+        crate::ui::theme::paint_style(style, self.depth)
+    }
+    /// Terminal palette for intrinsically painted editor/map contents.
+    pub fn color_depth(&self) -> crate::ui::theme::ColorDepth {
+        self.depth
+    }
+    /// Clear a canvas or overlay, installing the terminal's semantic defaults.
+    pub fn clear(&self, frame: &mut Frame, area: Rect) {
+        frame.render_widget(tuirealm::ratatui::widgets::Clear, area);
+        frame
+            .buffer_mut()
+            .set_style(area, crate::ui::theme::canvas_style(self.depth));
     }
     /// Replace definitions atomically; controller state is external to this renderer.
     pub fn install(&mut self, bundle: LayoutBundle) {
@@ -791,15 +842,24 @@ impl Renderer {
         self.text_cache.insert(key, rows.clone());
         rows
     }
+    /// Record protocol image operations alongside the frame's painted geometry.
+    pub fn record_image_regions(&mut self, regions: &[Rect]) {
+        self.image_regions = regions.to_vec();
+    }
     /// Latest arranged templates, including matched declarations and bounds.
     pub fn inspect(&self) -> String {
         let mut names = self.cache.keys().collect::<Vec<_>>();
         names.sort();
-        names
+        let mut rows = names
             .into_iter()
             .map(|name| format!("{name}\n{}", self.cache[name].scene.inspect().join("\n")))
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect::<Vec<_>>();
+        rows.extend(
+            self.image_regions
+                .iter()
+                .map(|area| format!("image {area:?}")),
+        );
+        rows.join("\n")
     }
     /// Expand, style, and allocate a template in terminal cells.
     pub fn arrange(
@@ -1061,6 +1121,7 @@ impl Renderer {
             })
             .map_err(internal)?;
         let mut scene = RenderedScene {
+            depth: self.depth,
             width: self
                 .tree
                 .layout(viewport)
@@ -1469,7 +1530,7 @@ fn build<'a>(
         constrain_modal(&mut style.layout, scope.viewport);
     }
     if let Some(semantic) = data.component_styles.get(node.attr("id")) {
-        style.paint = semantic.patch(style.paint);
+        style.paint = crate::ui::theme::with_authored_style(*semantic, style.paint);
     }
     if let Some(share) = data.shares.get(node.attr("id")) {
         style.layout.flex_basis = Dimension::Percent(f32::from(*share) / 10_000.0);
@@ -1477,12 +1538,7 @@ fn build<'a>(
         style.layout.flex_shrink = 1.0;
     }
     if let Some(semantic) = data.styles.get(node.attr("bind")) {
-        let semantic = if style.paint.fg.is_some() {
-            semantic.remove_modifier(tuirealm::ratatui::style::Modifier::DIM)
-        } else {
-            *semantic
-        };
-        style.paint = semantic.patch(style.paint);
+        style.paint = crate::ui::theme::with_authored_style(*semantic, style.paint);
     }
     if !node.attr("if").is_empty() && !data.bools.get(node.attr("if")).copied().unwrap_or(false) {
         style.layout.display = Display::None;
@@ -1541,13 +1597,7 @@ fn build<'a>(
                 source: start,
                 binding: node.attr("bind").into(),
                 node: format!("{}{}", scope.namespace, node.attr("id")),
-                style: if style.paint.fg.is_some() {
-                    span.style
-                        .remove_modifier(tuirealm::ratatui::style::Modifier::DIM)
-                } else {
-                    span.style
-                }
-                .patch(style.paint),
+                style: crate::ui::theme::with_authored_style(span.style, style.paint),
                 action: span.action.clone(),
                 marks: span
                     .marks

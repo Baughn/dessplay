@@ -1723,8 +1723,9 @@ supplemented by the standard `COLORTERM` and `*-direct` `TERM` hints. A
 true-color terminal gets an explicit app-wide dark theme: the complete
 alternate-screen buffer uses a known dark background and mapped RGB semantic
 foregrounds, including panes, modals, and passive overlays. Dim semantic text
-is materialized as an explicit muted RGB foreground in this final pass, never
-left as SGR 2. Other text modifiers are preserved. A terminal without
+is materialized as an explicit muted RGB foreground before painting, never
+left as SGR 2. Authored foregrounds override semantic dimming. Image pixels
+bypass text-theme resolution. Other text modifiers are preserved. A terminal without
 true-color retains its own foreground/background theme and uses DessPlay's
 finite ten-color application palette where identity colors are needed; its
 dim text uses the terminal's native attribute. The capability is injected

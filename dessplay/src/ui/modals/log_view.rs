@@ -164,7 +164,7 @@ impl LogModal {
                         .take(self.page)
                         .collect::<Vec<_>>(),
                 )
-                .style(scene.style("body")),
+                .style(renderer.paint_style(scene.style("body"))),
                 body,
             );
         }

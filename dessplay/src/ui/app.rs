@@ -2668,6 +2668,8 @@ impl Ui {
         frame: &mut Frame,
         renderer: &mut super::layout::Renderer,
     ) {
+        renderer.set_color_depth(self.color_depth);
+        renderer.clear(frame, frame.area());
         // Inline chat images hide while anything draws over the panes
         // (modals, the work overlay): a graphics-protocol image ignores
         // the cell z-order and would bleed through.
@@ -2909,14 +2911,12 @@ impl Ui {
         ) {
             self.draw_work_overlay(frame, renderer);
         }
-        // The image rects drawn this frame keep their own colors — their
-        // cells *are* the picture (see apply_color_depth).
-        let image_areas: Vec<Rect> = self.chat.image_areas().to_vec();
-        super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth, &image_areas);
+        renderer.record_image_regions(self.chat.image_areas());
         if self.layout_tools
             && let Ok(bundle) = super::layout::LayoutBundle::builtin()
         {
             let mut recovery = super::layout::Renderer::new(bundle);
+            recovery.set_color_depth(self.color_depth);
             let body = format!(
                 "r Reload · b Use bundled · d Reset drag sizes · ↑/↓ Scroll · Esc Close\nDirectory: {}\nActive: {}\n{}\n{}",
                 self.layout_options
@@ -2949,9 +2949,8 @@ impl Ui {
                         .join("\n"),
                 );
             if let Ok(scene) = recovery.arrange("layout-tools", frame.area(), &data) {
-                frame.render_widget(tuirealm::ratatui::widgets::Clear, frame.area());
+                recovery.clear(frame, frame.area());
                 scene.paint(frame);
-                super::theme::apply_color_depth(frame.buffer_mut(), self.color_depth, &[]);
             }
         }
     }

@@ -727,6 +727,61 @@ fn page_shell_preserves_the_two_thirds_boundary_and_accepts_reordering() {
 }
 
 #[test]
+fn authored_color_overrides_a_dimmed_component_before_painting() {
+    use crate::ui::theme::ColorDepth;
+    use tuirealm::ratatui::style::{Color, Modifier, Style};
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("style.css"),
+        "#health-metric { color: #123456; background-color: #456789; }",
+    )
+    .unwrap();
+    let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+    renderer.set_color_depth(ColorDepth::TrueColor);
+    let data = Presentation::default()
+        .boolean("ordinary", true)
+        .text("label", "rtt")
+        .text("value", "89ms")
+        .component_style(
+            "health-metric",
+            Style::default().add_modifier(Modifier::DIM),
+        );
+    let mut terminal = Terminal::new(TestBackend::new(20, 3)).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer.clear(frame, frame.area());
+            renderer
+                .arrange("health-metric", Rect::new(2, 1, 12, 1), &data)
+                .unwrap()
+                .paint(frame);
+        })
+        .unwrap();
+    let cell = &terminal.backend().buffer()[(2, 1)];
+    assert_eq!(cell.fg, Color::Rgb(0x12, 0x34, 0x56));
+    assert_eq!(cell.bg, Color::Rgb(0x45, 0x67, 0x89));
+    assert!(!cell.modifier.contains(Modifier::DIM));
+    let count = renderer.arrangement_count();
+    renderer.set_color_depth(ColorDepth::Limited);
+    terminal
+        .draw(|frame| {
+            renderer
+                .arrange("health-metric", Rect::new(2, 1, 12, 1), &data)
+                .unwrap()
+                .paint(frame);
+        })
+        .unwrap();
+    assert_eq!(
+        renderer.arrangement_count(),
+        count,
+        "palette changes do not remeasure text"
+    );
+    assert!(matches!(
+        terminal.backend().buffer()[(2, 1)].fg,
+        Color::Indexed(_)
+    ));
+}
+
+#[test]
 fn progress_fill_clips_original_geometry_and_has_no_selectable_text() {
     let data = Presentation::default()
         .text("open", "[")

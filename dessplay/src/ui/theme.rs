@@ -2,7 +2,9 @@
 
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(test)]
 use tuirealm::ratatui::buffer::Buffer;
+#[cfg(test)]
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 
@@ -220,6 +222,46 @@ fn unit_interval(value: u64) -> f32 {
     (value >> 40) as f32 / (1_u32 << 24) as f32
 }
 
+/// Authored foreground declarations override semantic dimming as well as color.
+/// Use this at component, field, rich-span, and intrinsic primitive boundaries.
+pub fn with_authored_style(semantic: Style, authored: Style) -> Style {
+    let semantic = if authored.fg.is_some() {
+        semantic.remove_modifier(Modifier::DIM)
+    } else {
+        semantic
+    };
+    semantic.patch(authored)
+}
+
+/// Resolve semantic text appearance before terminal painting. Unspecified
+/// properties remain inherited; this can also safely style selection patches.
+pub fn paint_style(mut style: Style, depth: ColorDepth) -> Style {
+    if depth == ColorDepth::Limited {
+        style.fg = style.fg.map(terminal_palette);
+        style.bg = style.bg.map(terminal_palette);
+    } else {
+        if style.add_modifier.contains(Modifier::DIM) {
+            style.fg = Some(TRUECOLOR_MUTED_FOREGROUND);
+            style = style.remove_modifier(Modifier::DIM);
+        } else {
+            style.fg = style.fg.map(dark_foreground);
+        }
+        style.bg = style.bg.map(|color| {
+            if color == Color::Reset {
+                TRUECOLOR_BACKGROUND
+            } else {
+                dark_foreground(color)
+            }
+        });
+    }
+    style
+}
+
+/// Initial canvas and cleared overlay appearance, before authored styles.
+pub fn canvas_style(depth: ColorDepth) -> Style {
+    paint_style(Style::default().fg(Color::Reset).bg(Color::Reset), depth)
+}
+
 /// Apply the terminal-depth-specific presentation to a completed frame.
 /// Limited terminals retain their configured terminal theme. RGB terminals
 /// get one app-wide dark palette, including every pane, modal and overlay.
@@ -228,7 +270,8 @@ fn unit_interval(value: u64) -> f32 {
 /// through their own cells (half-block fg/bg pairs, or graphics-protocol
 /// payloads), and forcing the canvas colors onto them would corrupt the
 /// picture.
-pub fn apply_color_depth(buffer: &mut Buffer, depth: ColorDepth, keep: &[Rect]) {
+#[cfg(test)]
+fn apply_color_depth(buffer: &mut Buffer, depth: ColorDepth, keep: &[Rect]) {
     let area = buffer.area;
     for (i, cell) in buffer.content.iter_mut().enumerate() {
         if !keep.is_empty() && area.width > 0 {
@@ -641,5 +684,40 @@ mod tests {
         let names = ["Baughn", "Nero", "Quickshot", "Dagger", "Kim", "nas"];
         let colors: std::collections::HashSet<_> = names.iter().map(|n| user_style(n).fg).collect();
         assert!(colors.len() > 1, "all names mapped to the same color");
+    }
+}
+#[test]
+fn prepaint_semantic_styles_preserve_the_existing_terminal_palettes() {
+    let colors = [
+        Color::Reset,
+        Color::Red,
+        Color::Black,
+        Color::DarkGray,
+        Color::Indexed(208),
+        Color::Indexed(42),
+        Color::Rgb(19, 75, 123),
+    ];
+    for depth in [ColorDepth::Limited, ColorDepth::TrueColor] {
+        for foreground in colors {
+            for background in colors {
+                for modifier in [
+                    Modifier::empty(),
+                    Modifier::DIM,
+                    Modifier::REVERSED | Modifier::BOLD,
+                ] {
+                    let style = Style::default()
+                        .fg(foreground)
+                        .bg(background)
+                        .add_modifier(modifier);
+                    let mut expected = Buffer::empty(Rect::new(0, 0, 1, 1));
+                    expected.set_style(expected.area, style);
+                    apply_color_depth(&mut expected, depth, &[]);
+                    let mut actual = Buffer::empty(expected.area);
+                    actual.set_style(actual.area, canvas_style(depth));
+                    actual.set_style(actual.area, paint_style(style, depth));
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
     }
 }
