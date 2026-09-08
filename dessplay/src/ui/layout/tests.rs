@@ -93,6 +93,82 @@ fn repeated_items_validate_their_own_contract() {
         assert!(LayoutBundle::load(directory.path()).is_err(), "{content}");
     }
 }
+
+#[test]
+fn natural_row_margins_count_in_collection_and_document_spacing() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    std::fs::write(directory.path().join("templates/row.xml"), r#"<templates version="1"><template name="playlist-row"><text bind="title" style="margin: 1lh 0"/></template></templates>"#).unwrap();
+    let rows: Vec<_> = ["Alpha", "Beta"]
+        .into_iter()
+        .map(|label| PresentedRow {
+            key: label.into(),
+            data: Presentation::default().text("title", label),
+            gap_after: false,
+        })
+        .collect();
+    for document in [false, true] {
+        let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(30, 15)).unwrap();
+        let area = Rect::new(2, 3, 20, 10);
+        let mut hits = RenderedCollection::default();
+        terminal
+            .draw(|frame| {
+                if document {
+                    renderer
+                        .paint_document(
+                            frame,
+                            area,
+                            "playlist-row",
+                            &rows,
+                            &mut DocumentScroll::default(),
+                            Default::default(),
+                        )
+                        .unwrap();
+                } else {
+                    hits = renderer
+                        .paint_collection(
+                            frame,
+                            area,
+                            "playlist-row",
+                            &rows,
+                            None,
+                            None,
+                            Default::default(),
+                        )
+                        .unwrap();
+                }
+            })
+            .unwrap();
+        assert_eq!(terminal.backend().buffer()[(2, 4)].symbol(), "A");
+        assert_eq!(terminal.backend().buffer()[(2, 7)].symbol(), "B");
+        if !document {
+            assert_eq!(hits.hit(2, 4), Some(0));
+            assert_eq!(hits.hit(2, 7), Some(1));
+            assert_eq!(hits.hit(2, 5), None);
+        }
+    }
+}
+#[test]
+fn component_root_margins_reduce_wrapping_width_and_explicit_sizes_are_honored() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    let path = directory.path().join("templates/row.xml");
+    std::fs::write(&path, r#"<templates version="1"><template name="playlist-row"><text id="cell" bind="title" style="margin: 1lh 2ch; white-space: normal"/></template></templates>"#).unwrap();
+    let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+    let data = Presentation::default().text("title", "alpha beta");
+    let scene = renderer
+        .measure_content("playlist-row", "row", 10, &data)
+        .unwrap();
+    assert_eq!(scene.bounds("cell").width, 6);
+    assert_eq!(scene.height(), 4);
+    std::fs::write(&path, r#"<templates version="1"><template name="playlist-row"><text id="cell" bind="title" style="width: 4ch; height: 2lh"/></template></templates>"#).unwrap();
+    renderer.install(LayoutBundle::load(directory.path()).unwrap());
+    let scene = renderer
+        .arrange("playlist-row", Rect::new(3, 2, 20, 10), &data)
+        .unwrap();
+    assert_eq!(scene.bounds("cell"), Rect::new(3, 2, 4, 2));
+}
 #[test]
 fn nested_overlay_slots_paint_after_their_content_and_before_later_overlays() {
     let directory = tempfile::tempdir().unwrap();

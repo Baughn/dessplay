@@ -16,7 +16,7 @@ use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::{Rect, Size};
 use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, Paragraph};
+use tuirealm::ratatui::widgets::Paragraph;
 use tuirealm::state::State;
 
 use super::msg::Msg;
@@ -3313,48 +3313,63 @@ impl StatusBar {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        // Anything but a healthy link replaces the play-state text: the
-        // gating info is stale while offline, and a silent dead
-        // handshake reads as a hang (design.md UI principles; the
-        // 2026-07-06 post-wake IPv6 black hole).
-        let state = match self.props.link {
-            super::props::LinkStatus::Connecting { attempt } if attempt <= 1 => {
-                Span::styled("⚡ connecting to server…", theme::tone_style(Tone::Paused))
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::props::LinkStatus;
+        let (marker, state, tone, blocked) = match self.props.link {
+            LinkStatus::Connecting { attempt } if attempt <= 1 => {
+                ("⚡", "connecting to server…".into(), Tone::Paused, false)
             }
-            super::props::LinkStatus::Connecting { attempt } => Span::styled(
-                format!("⚡ connecting to server (attempt {attempt})…"),
-                theme::tone_style(Tone::Paused),
+            LinkStatus::Connecting { attempt } => (
+                "⚡",
+                format!("connecting to server (attempt {attempt})…"),
+                Tone::Paused,
+                false,
             ),
-            super::props::LinkStatus::Down => Span::styled(
-                "⚡ connection lost — retrying…",
-                theme::tone_style(Tone::Paused),
+            LinkStatus::Down => (
+                "⚡",
+                "connection lost — retrying…".into(),
+                Tone::Paused,
+                false,
             ),
-            super::props::LinkStatus::Connected => {
-                if self.props.playing {
-                    Span::styled("▶ playing", theme::tone_style(Tone::Good))
-                } else if self.props.blockers.is_empty() {
-                    Span::styled("⏸ paused", theme::dim())
+            LinkStatus::Connected if self.props.playing => {
+                ("▶", "playing".into(), Tone::Good, false)
+            }
+            LinkStatus::Connected if self.props.blockers.is_empty() => {
+                ("⏸", "paused".into(), Tone::Muted, false)
+            }
+            LinkStatus::Connected => ("⏸", "waiting on".into(), Tone::Blocked, true),
+        };
+        let style = theme::tone_style(tone);
+        let data = super::layout::Presentation::default()
+            .text("marker", marker)
+            .text("state", state)
+            .text("blockers", self.props.blockers.join(", "))
+            .boolean("blocked", blocked)
+            .text(
+                "now-label",
+                if self.props.title.is_some() {
+                    "Now Playing:"
                 } else {
-                    Span::styled(
-                        format!("⏸ waiting on {}", self.props.blockers.join(", ")),
-                        theme::tone_style(Tone::Blocked),
-                    )
-                }
-            }
-        };
-        let now = match &self.props.title {
-            Some(title) => format!("Now Playing: {title}"),
-            None => "Nothing playing".to_string(),
-        };
-        let lines = vec![Line::from(vec![state]), Line::from(now)];
-        frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(theme::dim()),
-            ),
-            area,
-        );
+                    "Nothing playing"
+                },
+            )
+            .text("title", self.props.title.as_deref().unwrap_or(""))
+            .boolean("has-title", self.props.title.is_some())
+            .style("marker", style)
+            .style("state", style)
+            .style("blockers", style);
+        if let Ok(scene) = renderer.arrange("status", area, &data) {
+            scene.paint_with_slots(frame, |_, _, _, _| {});
+        }
     }
 
     /// The progress-bar + elapsed/total time text for the bottom line
@@ -3542,18 +3557,48 @@ impl KeyBar {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let mut spans = Vec::new();
-        for (key, label) in &self.items {
-            if !spans.is_empty() {
-                spans.push(Span::styled(" | ", theme::dim()));
-            }
-            spans.push(Span::styled(
-                *key,
-                Style::default().add_modifier(tuirealm::ratatui::style::Modifier::BOLD),
-            ));
-            spans.push(Span::raw(format!(" {label}")));
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
         }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        use super::layout::{Presentation, PresentedItem};
+        let mut occurrences = std::collections::BTreeMap::new();
+        let items = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, (key, label))| {
+                let occurrence = occurrences.entry((*key, *label)).or_insert(0usize);
+                let identity = format!("{key:?}/{label:?}/{occurrence}");
+                *occurrence += 1;
+                PresentedItem {
+                    key: identity,
+                    data: Presentation::default()
+                        .text("separator", "|")
+                        .boolean("separated", index > 0)
+                        .text("key", *key)
+                        .text("label", *label)
+                        .style("separator", theme::dim())
+                        .style(
+                            "key",
+                            Style::default().add_modifier(tuirealm::ratatui::style::Modifier::BOLD),
+                        ),
+                }
+            })
+            .collect();
+        if let Ok(scene) = renderer.arrange(
+            "keybar",
+            area,
+            &Presentation::default().list("bindings", items),
+        ) {
+            scene.paint_with_slots(frame, |_, _, _, _| {});
+        }
     }
 }
 
@@ -3562,6 +3607,46 @@ passive_component!(KeyBar);
 impl AppComponent<Msg, NoUserEvent> for KeyBar {
     fn on(&mut self, _ev: &Event<NoUserEvent>) -> Option<Msg> {
         None
+    }
+}
+
+#[cfg(test)]
+mod chrome_layout_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use crate::ui::layout::{LayoutBundle, Renderer};
+    use tuirealm::ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn files_reorder_status_and_keybinding_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/chrome.xml"), r#"<templates version="1"><template name="status"><column><text bind="title"/><flow><text bind="state"/><text bind="blockers"/></flow></column></template><template name="keybinding"><flow><text bind="label"/><text bind="key"/></flow></template></templates>"#).unwrap();
+        let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+        let mut status = StatusBar::default();
+        status.set_props(StatusProps {
+            link: super::super::props::LinkStatus::Connected,
+            title: Some("episode.mkv".into()),
+            blockers: vec!["kim (paused)".into()],
+            ..Default::default()
+        });
+        let mut keys = KeyBar::default();
+        keys.set_items(vec![("F3", "Settings")]);
+        let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                status.render_layout(frame, Rect::new(3, 2, 40, 3), &mut renderer);
+                keys.render_layout(frame, Rect::new(3, 6, 40, 1), &mut renderer);
+            })
+            .unwrap();
+        let row = |y| {
+            (3..43)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert!(row(2).starts_with("episode.mkv"));
+        assert!(row(3).starts_with("waiting on kim (paused)"));
+        assert!(row(6).starts_with("Settings F3"));
     }
 }
 

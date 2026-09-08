@@ -1,4 +1,7 @@
 <templates version="1">
+  <template name="changelog"><box><overlay id="changelog-dialog" class="browser-dialog" placement="modal" title="title"><scroll><slot name="body"/></scroll><text id="changelog-ok" bind="ok"/></overlay></box></template>
+  <template name="changelog-row"><column><text bind="date" if="day"/><flow class="changelog-entry" if="entry"><prefix><text bind="bullet"/><text bind="category" if="categorized"/></prefix><text bind="body"/></flow></column></template>
+
   <template name="confirm-dialog"><box><overlay id="confirm-dialog" class="small-dialog" placement="modal" title="title"><text class="confirm-prompt" bind="prompt"/><flow class="confirm-answers" separator="    "><text bind="yes"/><text bind="no"/></flow></overlay></box></template>
   <template name="name-dialog"><box><overlay id="name-dialog" class="small-dialog" placement="modal" title="title"><slot class="search-editor" name="editor"/><text bind="note"/></overlay></box></template>
   <template name="copy-dialog"><box><overlay id="copy-dialog" class="small-dialog" placement="modal" title="title"><column class="copy-header"><text bind="filename"/><text bind="note"/></column><scroll><slot name="body"/></scroll></overlay></box></template>

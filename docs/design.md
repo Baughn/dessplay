@@ -1656,6 +1656,10 @@ whole-directory replacement remain reloadable. Legacy PaneLayout percentages imp
 Migrated collections expose unpadded semantic fields. Shared intrinsic column
 widths derive from unwrapped content. Rows measure wrapped height only after
 width allocation; painting and pointer targets consume that same measurement.
+Component roots occupy a viewport grid cell: auto sizes stretch, explicit sizes
+are honored, and outer margins participate in measurement without becoming
+interaction targets. Keyed documents retain item/source anchors rather than
+absolute wrapped-line counters through layout changes.
 Small semantic lists use explicit keyed repetition. Item bindings are validated
 in their own contract, keys are nonempty and unique, and item IDs are qualified
 in geometry while remaining local in selectors. Controllers supply list state;

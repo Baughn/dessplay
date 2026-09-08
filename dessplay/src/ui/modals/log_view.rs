@@ -1,7 +1,8 @@
 use super::*;
 use crate::logging::{LiveLogging, LogLevel, LogScope};
 use tuirealm::event::{KeyEvent, KeyModifiers};
-use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::ratatui::text::Line;
+use tuirealm::ratatui::widgets::{Clear, Paragraph};
 
 /// Live diagnostic log, positioned above the last few chat lines.
 pub struct LogModal {

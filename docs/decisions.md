@@ -589,6 +589,24 @@ repetition is completed. Paint-only cache refresh remains disabled for list
 containers until it can resolve nested rich spans by their complete item scope;
 unchanged lists still hit the exact scene cache.
 
+### Viewport boxes preserve root CSS and document anchors (2026-09-08)
+
+The renderer gives each component a real single-cell containing grid instead
+of overwriting its root width and height. The previous forced dimensions
+ignored root margins when wrapping and omitted them from row extents; adjacent
+rows could consume margin space, and explicit root dimensions did nothing.
+Regression tests confirmed those failures before the shared allocation fix.
+Collection, chat, and document rows now consume the same complete measured
+extent, and hit targets still exclude margins.
+
+Changelog entries use semantic prefix/body fields and the shared document
+scroller. Its controller stores an item/source anchor and pending row deltas.
+An absolute wrapped-row counter would become stale after resizing and could
+prevent scrolling back to the actual beginning. Only the visible window and
+rows traversed by a navigation request need layout; exact scene-cache hits
+avoid remeasurement on redraw. Status and keybinding fields use the same
+text/repetition pipeline while their existing keymaps remain in controllers.
+
 ### Explicit dark theme on true-color terminals
 
 **Rule:** A true-color terminal gets an explicit app-wide dark theme with RGB semantic foregrounds; dim text is an explicit muted RGB, never SGR 2; limited-color terminals keep their own theme and the ten-color palette; see [design.md](design.md#ui-principles).

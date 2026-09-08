@@ -222,6 +222,7 @@ impl RenderedCollection {
 pub struct RenderedScene {
     nodes: Vec<Arranged>,
     paint_order: Vec<usize>,
+    height: u16,
     /// Arranged keyed items for controller navigation and inspection.
     pub items: Vec<RepeatedItem>,
     /// Rich/plain text source ranges; consumers apply the scene's viewport transform.
@@ -299,7 +300,7 @@ struct Arranged {
 impl RenderedScene {
     /// Natural height of the arranged root, including its chrome.
     pub fn height(&self) -> u16 {
-        self.nodes.first().map_or(0, |root| root.bounds.height)
+        self.height
     }
     /// Arranged visible bounds of a named component.
     pub fn bounds(&self, id: &str) -> Rect {
@@ -916,21 +917,34 @@ impl Renderer {
                 AvailableSpace::Definite(area.height as f32)
             },
         };
-        let mut root_style = built.style.layout.clone();
-        root_style.size = Size {
-            width: Dimension::Length(area.width as f32),
-            height: if natural_height {
-                root_style.size.height
-            } else {
-                Dimension::Length(area.height as f32)
-            },
-        };
-        self.tree
-            .set_style(built.id, root_style.clone())
+        // A real containing box preserves authored root dimensions and margins.
+        // Stretching the single grid item supplies the viewport only for auto
+        // dimensions; natural-height rows keep their complete outer extent.
+        let viewport = self
+            .tree
+            .new_with_children(
+                taffy::Style {
+                    display: Display::Grid,
+                    size: Size {
+                        width: Dimension::Length(area.width as f32),
+                        height: if natural_height {
+                            Dimension::Auto
+                        } else {
+                            Dimension::Length(area.height as f32)
+                        },
+                    },
+                    grid_template_columns: vec![fr(1.0_f32)],
+                    grid_template_rows: vec![fr(1.0_f32)],
+                    align_items: Some(AlignItems::Stretch),
+                    justify_items: Some(AlignItems::Stretch),
+                    ..Default::default()
+                },
+                &[built.id],
+            )
             .map_err(internal)?;
         // Pass one depends only on unwrapped width, never on wrapped height.
         self.tree
-            .compute_layout_with_measure(built.id, available, |known, _, _, context, _| {
+            .compute_layout_with_measure(viewport, available, |known, _, _, context, _| {
                 let Some(m) = context else {
                     return Size::ZERO;
                 };
@@ -942,7 +956,7 @@ impl Renderer {
             .map_err(internal)?;
         freeze_widths(&mut self.tree, &built)?;
         self.tree
-            .compute_layout_with_measure(built.id, available, |known, available, _, context, _| {
+            .compute_layout_with_measure(viewport, available, |known, available, _, context, _| {
                 let Some(m) = context else {
                     return Size::ZERO;
                 };
@@ -970,7 +984,17 @@ impl Renderer {
                 }
             })
             .map_err(internal)?;
-        let mut scene = RenderedScene::default();
+        let mut scene = RenderedScene {
+            height: self
+                .tree
+                .layout(viewport)
+                .map_err(internal)?
+                .size
+                .height
+                .round()
+                .clamp(0.0, u16::MAX as f32) as u16,
+            ..Default::default()
+        };
         collect(
             &self.tree,
             &built,
@@ -1070,7 +1094,7 @@ impl Renderer {
                 &data,
                 true,
             )?;
-            let height = scene.nodes.first().map_or(0, |root| root.bounds.height);
+            let height = scene.height();
             measured.insert(position, (height, Some(scene)));
             Ok(height)
         };
@@ -1158,7 +1182,7 @@ fn paint_order(nodes: &[Arranged], range: std::ops::Range<usize>) -> Vec<usize> 
     }
     order
 }
-fn internal(e: impl std::fmt::Display) -> Diagnostic {
+pub(super) fn internal(e: impl std::fmt::Display) -> Diagnostic {
     Diagnostic::at(
         std::path::Path::new("<renderer>"),
         "",

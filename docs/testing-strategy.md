@@ -1009,3 +1009,12 @@ reorder selected items without changing their qualified identity, and compare
 Unicode source ranges with painted cells at translated origins. Settings
 snapshots retain the default tab brackets, missing markers, and notes after
 their migration to semantic repeated items.
+
+Document tests bound initial layout for 5,000 entries, require unchanged redraws
+to reuse geometry, resize a source anchor, navigate back to the true beginning,
+and retain a blank inter-item gap across redraws. Changelog snapshots and
+end-clamping remain unchanged. File-only status/keybinding tests reorder fields
+at a nonzero origin. Root margin tests were confirmed failing before fixing the
+shared viewport allocation; they cover width-dependent wrapping, complete row
+spacing in both collections and documents, explicit sizes, and noninteractive
+margin cells.

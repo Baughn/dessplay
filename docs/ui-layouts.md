@@ -5,7 +5,7 @@ forms, their semantic label/value/annotation rows, category tabs and notes, the 
 controls, dropdowns, log viewport, and footer, application pane composition, chat/input/suggestions,
 attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
 file/episode browsers, AniDB/Nyaa searches, local-copy offers, confirmations,
-name editing, and the roguelike frame, game, recovery, document, equipment, and ending pages
+name editing, changelog entries, status text, keybindings, and the roguelike frame, game, recovery, document, equipment, and ending pages
 use local templates. Other pane interiors still use their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
 for the remaining work; exporting defaults does not yet expose every pane.
 
@@ -177,6 +177,9 @@ lengths, percentages, `auto`, intrinsic unwrapped `max-content`, `fr`, and
 `minmax(min, max)`. Placement uses positive lines and `span N`, optionally
 separated by `/`. Grid repetition is not supported.
 
+A component root sits in a single-cell viewport grid. Auto dimensions stretch
+within that viewport; explicit dimensions and margins retain their CSS meaning.
+Natural row heights include outer margins, while margin cells are not hit targets.
 Horizontal allocation uses unwrapped intrinsic widths. Shared edges snap to
 cells; the renderer freezes widths before measuring wrapped heights. The
 same measured fragments paint text and retain source offsets. Parent clips
@@ -376,3 +379,17 @@ across reload. Search result fields can become columns or separate rows.
 `title`, `note`, and slot `editor`; `copy-dialog` exposes `title`, `filename`,
 `note`, and slot `body`. `copy-row` exposes `filename` and `evidence`.
 Their capture and keyboard actions stay in the existing modal controllers.
+
+## Changelog, status, and keybindings
+
+`changelog` exposes `title`, `ok`, and slot `body`. `changelog-row` exposes
+`date`, `bullet`, `category`, `body`, and booleans `day`, `entry`, `categorized`.
+Its prefix and continuation indentation use the shared flow service. The
+controller retains an item/source anchor across width and layout changes;
+only the visible document window and rows needed to navigate are measured.
+
+`templates/chrome.xml` owns `status` and `keybar`. Status fields are `marker`,
+`state`, `blockers`, `now-label`, `title`, with `blocked` and `has-title`
+booleans. Keybar has a keyed `bindings` list. Its `keybinding` item exposes
+`separator`, `key`, `label`, and boolean `separated`; changing their layout
+never changes the keymap. Health/progress composition remains under migration.

@@ -8,7 +8,8 @@ use crate::roguelike::{
 use crate::roguelike_store::Command;
 use crate::ui::widgets::render_list_body;
 use tuirealm::ratatui::style::Color;
-use tuirealm::ratatui::widgets::Paragraph;
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::{Clear, ListItem, Paragraph};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {

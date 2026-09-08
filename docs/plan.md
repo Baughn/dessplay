@@ -1879,7 +1879,9 @@ player OSD, and standalone diagnostic output are outside scope.
   labeled statistics/supplies and file-only sidebar relocation.
 - [x] Roguelike recovery panel, inspection headings, equipment rows, documents,
   and expedition endings.
-- [ ] Remaining forms/dialogs, changelog, progress/status/keybars, modal layers,
+- [x] Changelog semantic entries and anchored document scrolling; status fields
+  and repeated keybinding entries; authored root dimensions and outer margins.
+- [ ] Remaining form internals, progress/health, modal layers,
   roguelike condition rows and bounded-summary children; remove production legacy adapters.
 - [x] All six file-only demonstrations through real filesystem events and
   runtime bundle installation; atomic saves, relative paths, missing-directory

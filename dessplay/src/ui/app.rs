@@ -2669,7 +2669,6 @@ impl Ui {
         frame: &mut Frame,
         renderer: &mut super::layout::Renderer,
     ) {
-        use tuirealm::component::Component;
         // Inline chat images hide while anything draws over the panes
         // (modals, the work overlay): a graphics-protocol image ignores
         // the cell z-order and would bleed through.
@@ -2864,8 +2863,8 @@ impl Ui {
             // it), so the done-check tracks the real width.
             anim.slot_width = Some(slot_width);
         }
-        self.status.view(frame, status_area);
-        self.keybar.view(frame, keybar_area);
+        self.status.render_layout(frame, status_area, renderer);
+        self.keybar.render_layout(frame, keybar_area, renderer);
         if matches!(
             self.modals.last(),
             Some(Modal::Logs(_) | Modal::Roguelike(_))
@@ -2901,7 +2900,7 @@ impl Ui {
                 Modal::ListEdit(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Logs(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Roguelike(modal) => modal.render_layout(frame, frame.area(), renderer),
-                modal => modal.as_component().view(frame, frame.area()),
+                Modal::Changelog(modal) => modal.render_layout(frame, frame.area(), renderer),
             }
         }
         if !matches!(

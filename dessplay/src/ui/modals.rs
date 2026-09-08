@@ -11,15 +11,12 @@ use tuirealm::props::{AttrValue, Attribute, QueryResult};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Modifier, Style};
-use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, Clear, ListItem};
 use tuirealm::state::State;
 
 use dessplay_core::net::AniDbSearchHit;
 use dessplay_core::types::{Ed2kHash, ListEntryId, ListStatus, NextEpState, SeriesListEntry};
 
 use super::components::plain;
-use unicode_width::UnicodeWidthStr;
 
 use super::msg::Msg;
 use super::props::{self, EpisodeRow};
@@ -2683,9 +2680,8 @@ pub struct ChangelogModal {
     marker: crate::changelog::SeenMarker,
     /// Startup mode ("What's new") vs the full `/changelog` view.
     whats_new: bool,
-    /// Wrapped rows scrolled off the top; clamped at render (the chat
-    /// log's idiom), so over-scrolling is safe.
-    scroll: usize,
+    /// Item/source anchor retained through template reload and wrapping changes.
+    scroll: super::layout::DocumentScroll,
 }
 
 impl ChangelogModal {
@@ -2699,7 +2695,7 @@ impl ChangelogModal {
             days,
             marker,
             whats_new,
-            scroll: 0,
+            scroll: Default::default(),
         }
     }
 
@@ -2714,97 +2710,78 @@ impl ChangelogModal {
         Some(Msg::ChangelogDismissed(self.marker))
     }
 
-    /// One wrapped display line per row: day headers bold, `- ` bullets
-    /// with a dim category prefix, continuations indented under the text.
-    fn rows(&self, width: usize) -> Vec<Line<'static>> {
+    fn rows(&self) -> Vec<super::layout::PresentedRow> {
+        use super::layout::{Presentation, PresentedRow};
         let mut rows = Vec::new();
-        for (idx, day) in self.days.iter().enumerate() {
-            if idx > 0 {
-                rows.push(Line::default());
-            }
-            rows.push(Line::from(Span::styled(
-                day.date.format("%Y-%m-%d").to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
-            )));
-            for entry in &day.entries {
-                let prefix = entry
-                    .category
-                    .as_ref()
-                    .map(|category| format!("{category}: "))
-                    .unwrap_or_default();
-                let body_width = width.saturating_sub(2).max(1);
-                let chunks = super::components::wrap_body(
-                    &entry.text,
-                    body_width.saturating_sub(prefix.width()).max(1),
-                    body_width,
-                );
-                for (line_idx, (chunk, _)) in chunks.into_iter().enumerate() {
-                    rows.push(if line_idx == 0 {
-                        Line::from(vec![
-                            Span::raw("- "),
-                            Span::styled(prefix.clone(), theme::dim()),
-                            Span::raw(chunk),
-                        ])
-                    } else {
-                        Line::from(vec![Span::raw("  "), Span::raw(chunk)])
-                    });
-                }
+        for (day_index, day) in self.days.iter().enumerate() {
+            let date = day.date.format("%Y-%m-%d").to_string();
+            rows.push(PresentedRow {
+                key: format!("{date}/header"),
+                data: Presentation::default()
+                    .text("date", &date)
+                    .boolean("day", true)
+                    .style("date", Style::default().add_modifier(Modifier::BOLD)),
+                gap_after: day.entries.is_empty() && day_index + 1 < self.days.len(),
+            });
+            for (index, entry) in day.entries.iter().enumerate() {
+                rows.push(PresentedRow {
+                    key: format!("{date}/{index}"),
+                    data: Presentation::default()
+                        .boolean("entry", true)
+                        .text("bullet", "-")
+                        .text(
+                            "category",
+                            entry
+                                .category
+                                .as_ref()
+                                .map(|category| format!("{category}:"))
+                                .unwrap_or_default(),
+                        )
+                        .boolean("categorized", entry.category.is_some())
+                        .text("body", &entry.text)
+                        .style("category", theme::dim()),
+                    gap_after: index + 1 == day.entries.len() && day_index + 1 < self.days.len(),
+                });
             }
         }
         rows
     }
-
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let modal = overlay(area, 70, 70);
-        frame.render_widget(Clear, modal);
-        let title = if self.whats_new {
-            "What's new"
-        } else {
-            "Changelog"
-        };
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border_style(true))
-                .title(title),
-            modal,
-        );
-        let inner = Rect {
-            x: modal.x + 2,
-            y: modal.y + 1,
-            width: modal.width.saturating_sub(4),
-            height: modal.height.saturating_sub(2),
-        };
-        // The bottom row is the [ OK ] button — the modal's one control,
-        // so it renders highlighted (the Form save-row convention): the
-        // dismiss affordance must be visible, not guessed.
-        let body = Rect {
-            height: inner.height.saturating_sub(2),
-            ..inner
-        };
-        let rows = self.rows(body.width as usize);
-        let visible = body.height as usize;
-        // Clamp so the view can never scroll past the last row.
-        self.scroll = self.scroll.min(rows.len().saturating_sub(visible));
-        let end = (self.scroll + visible).min(rows.len());
-        let items: Vec<ListItem> = rows[self.scroll..end]
-            .iter()
-            .cloned()
-            .map(ListItem::new)
-            .collect();
-        frame.render_widget(tuirealm::ratatui::widgets::List::new(items), body);
-        if inner.height >= 2 {
-            let button_area = Rect {
-                y: inner.y + inner.height - 1,
-                height: 1,
-                ..inner
-            };
-            let button = tuirealm::ratatui::widgets::Paragraph::new(Line::from(Span::styled(
-                "[ OK ]",
-                theme::highlight_style(),
-            )))
-            .centered();
-            frame.render_widget(button, button_area);
+        if let Ok(bundle) = super::layout::LayoutBundle::builtin() {
+            self.render_layout(frame, area, &mut super::layout::Renderer::new(bundle));
+        }
+    }
+    pub(crate) fn render_layout(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        let data = super::layout::Presentation::default()
+            .text(
+                "title",
+                if self.whats_new {
+                    "What's new"
+                } else {
+                    "Changelog"
+                },
+            )
+            .text("ok", "[ OK ]")
+            .style("ok", theme::highlight_style());
+        let rows = self.rows();
+        if let Ok(scene) = renderer.arrange("changelog", area, &data) {
+            scene.paint_with_slots(frame, |name, frame, area, style| {
+                if name == "body" {
+                    let _ = renderer.paint_document(
+                        frame,
+                        area,
+                        "changelog-row",
+                        &rows,
+                        &mut self.scroll,
+                        style,
+                    );
+                }
+            });
         }
     }
 }
@@ -2813,14 +2790,13 @@ passive_modal!(ChangelogModal);
 
 impl AppComponent<Msg, NoUserEvent> for ChangelogModal {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        // Offset-based scroll, not a selection — `ListCursor` doesn't
-        // fit. Over-scroll clamps at render.
-        const PAGE: usize = 10;
+        // Scrolling requests measured rows; the renderer retains the source anchor.
+        const PAGE: i64 = 10;
         match plain(ev) {
-            Some(Key::Up) => self.scroll = self.scroll.saturating_sub(1),
-            Some(Key::Down) => self.scroll = self.scroll.saturating_add(1),
-            Some(Key::PageUp) => self.scroll = self.scroll.saturating_sub(PAGE),
-            Some(Key::PageDown) => self.scroll = self.scroll.saturating_add(PAGE),
+            Some(Key::Up) => self.scroll.advance(-1),
+            Some(Key::Down) => self.scroll.advance(1),
+            Some(Key::PageUp) => self.scroll.advance(-PAGE),
+            Some(Key::PageDown) => self.scroll.advance(PAGE),
             _ => return CHANGELOG_KEYMAP.dispatch(self, ev).or(Some(Msg::None)),
         }
         Some(Msg::None)

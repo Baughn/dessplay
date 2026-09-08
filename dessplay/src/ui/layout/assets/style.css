@@ -101,3 +101,11 @@ scroll > slot { flex-grow: 1; }
 
 #form-tabs { flex-direction: row; }
 #form-tab { margin: 0 1ch 0 0; }
+
+#changelog-dialog { padding: 0 1ch; }
+#changelog-ok { height: 1lh; margin: 1lh 0 0 0; text-align: center; align-self: center; }
+.changelog-entry { white-space: normal; hanging-indent: 2ch; }
+
+#status-frame { border-top: 1; border-color: var(--muted); }
+#keybindings { flex-direction: row; }
+.key-separator { margin: 0 1ch; }

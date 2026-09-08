@@ -1,0 +1,5 @@
+<templates version="1">
+  <template name="status"><column id="status-frame"><flow><text bind="marker"/><text bind="state"/><text bind="blockers" if="blocked"/></flow><flow><text bind="now-label"/><text bind="title" if="has-title"/></flow></column></template>
+  <template name="keybar"><repeat id="keybindings" bind="bindings"><use template="keybinding"/></repeat></template>
+  <template name="keybinding"><row><text class="key-separator" bind="separator" if="separated"/><flow><text bind="key"/><text bind="label"/></flow></row></template>
+</templates>

@@ -18,6 +18,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Customize settings tabs and notes as keyed lists in templates,
   including their internal fields, spacing, and selected appearance.
 
+- Added: Customize changelog entries, playback status, and keybinding-bar fields
+  in layout templates. Changelog scrolling retains its context when text wraps
+  differently after a layout change.
+- Fixed: Custom component sizes and outer margins now affect row spacing and
+  wrapping consistently, including chat and collection rows.
+
 ## 2026-09-07
 
 - Added: Image links posted in chat (DessPlay or IRC) now download and

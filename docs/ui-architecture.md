@@ -44,6 +44,14 @@ including local state and qualified node/source identities. `RenderedScene`
 publishes item bounds alongside text fragments. `FormTab` and `FormNote` keep
 settings fields semantic; small lists render through `form-tabs`/`form-notes`.
 
+`DocumentScroll` is controller-owned state for keyed documents: an item/source
+anchor plus pending row deltas. `paint_document` measures the required window,
+backfills at the end, and preserves blank-gap anchors. Changelog rows, status,
+and keybindings now use this shared template/text path. A synthetic Taffy
+viewport grid stretches auto-sized component roots while honoring their
+explicit dimensions and margins; natural scene heights include that outer
+extent. Both collection and document painting consume the same height.
+
 The filesystem worker owns notify and compiles candidate bundles after
 debouncing. A separate capacity-one channel retries full delivery, and an
 atomic requested generation makes queued stale candidates ineligible. The

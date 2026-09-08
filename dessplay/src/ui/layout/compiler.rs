@@ -7,6 +7,10 @@ const MAX_FILE: u64 = 1024 * 1024;
 const MAX_NODES: usize = 4096;
 const DEFAULTS: &[(&str, &str)] = &[
     (
+        "templates/chrome.xml",
+        include_str!("assets/templates/chrome.xml"),
+    ),
+    (
         "templates/text.xml",
         include_str!("assets/templates/text.xml"),
     ),
@@ -174,6 +178,25 @@ impl Default for TemplateSchema {
                 &["invalid"][..],
             ),
             ("form-note", &[][..], &["body"][..], &[][..]),
+            ("changelog", &["body"][..], &["title", "ok"][..], &[][..]),
+            (
+                "changelog-row",
+                &[][..],
+                &["date", "bullet", "category", "body"][..],
+                &["day", "entry", "categorized"][..],
+            ),
+            (
+                "status",
+                &[][..],
+                &["marker", "state", "blockers", "now-label", "title"][..],
+                &["has-title", "blocked"][..],
+            ),
+            (
+                "keybinding",
+                &[][..],
+                &["separator", "key", "label"][..],
+                &["separated"][..],
+            ),
             ("file-row", &[][..], &["marker", "name"][..], &["entry"][..]),
             (
                 "episode-row",
@@ -398,6 +421,10 @@ impl Default for TemplateSchema {
         templates.insert(
             "rich-text".into(),
             [("body".into(), BindingType::Rich)].into(),
+        );
+        templates.insert(
+            "keybar".into(),
+            [("bindings".into(), BindingType::List("keybinding"))].into(),
         );
         templates.insert(
             "form-tabs".into(),

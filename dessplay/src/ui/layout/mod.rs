@@ -1,6 +1,7 @@
 //! Local, versioned terminal layout bundles. Controllers never live in templates.
 mod compiler;
 mod css;
+mod document;
 mod reload;
 mod renderer;
 mod settings;
@@ -9,6 +10,7 @@ mod tests;
 mod text;
 
 pub use compiler::{Diagnostic, LayoutBundle, TemplateSchema};
+pub use document::DocumentScroll;
 pub(crate) use reload::Watcher;
 pub(crate) use renderer::SplitRegion;
 pub use renderer::{
