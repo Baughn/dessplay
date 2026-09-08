@@ -131,67 +131,59 @@ impl LogModal {
                 return;
             }
         };
-        scene.paint(frame);
-        let body = scene.slot("body");
-        let Some(logging) = &self.logging else {
-            scene.paint_overlays(frame);
-            return;
-        };
-        // Snapshot before deriving its revision so a concurrent append repaints.
-        let lines = logging.lines();
-        self.revision = lines.last().map_or(0, |line| line.id + 1);
-        if body.width > 0 && body.height > 0 {
-            let mut rows = Vec::new();
-            self.row_keys.clear();
-            for line in lines {
-                for fragment in renderer.measured_text(&line.text, body.width).iter() {
-                    self.row_keys.push((line.id, fragment.source.start));
-                    rows.push(Line::from(fragment.text.clone()));
+        scene.paint_with_slots(frame, |name, frame, body, style| {
+            if name == "body" {
+                let Some(logging) = &self.logging else {
+                    return;
+                };
+                // Snapshot before deriving its revision so a concurrent append repaints.
+                let lines = logging.lines();
+                self.revision = lines.last().map_or(0, |line| line.id + 1);
+                if body.width > 0 && body.height > 0 {
+                    let mut rows = Vec::new();
+                    self.row_keys.clear();
+                    for line in lines {
+                        for fragment in renderer.measured_text(&line.text, body.width).iter() {
+                            self.row_keys.push((line.id, fragment.source.start));
+                            rows.push(Line::from(fragment.text.clone()));
+                        }
+                    }
+                    self.page = body.height as usize;
+                    let max = rows.len().saturating_sub(self.page);
+                    self.top = self
+                        .anchor
+                        .map_or(max, |key| source_anchor(&self.row_keys, key).min(max));
+                    if self.anchor.is_some() {
+                        self.anchor = self.row_keys.get(self.top).copied();
+                    }
+                    frame.render_widget(
+                        Paragraph::new(
+                            rows.into_iter()
+                                .skip(self.top)
+                                .take(self.page)
+                                .collect::<Vec<_>>(),
+                        )
+                        .style(renderer.paint_style(style)),
+                        body,
+                    );
                 }
+            } else if matches!(name, "app-options" | "other-options") {
+                let Some(selected) = self.dropdown else {
+                    return;
+                };
+                let rows = LogLevel::ALL
+                    .iter()
+                    .map(|level| crate::ui::layout::PresentedRow {
+                        key: level.label().into(),
+                        data: crate::ui::layout::Presentation::default()
+                            .text("label", level.label()),
+                        gap_after: false,
+                    })
+                    .collect::<Vec<_>>();
+                let _ =
+                    renderer.paint_rows(frame, body, "log-option", &rows, Some(selected), style);
             }
-            self.page = body.height as usize;
-            let max = rows.len().saturating_sub(self.page);
-            self.top = self
-                .anchor
-                .map_or(max, |key| source_anchor(&self.row_keys, key).min(max));
-            if self.anchor.is_some() {
-                self.anchor = self.row_keys.get(self.top).copied();
-            }
-            frame.render_widget(
-                Paragraph::new(
-                    rows.into_iter()
-                        .skip(self.top)
-                        .take(self.page)
-                        .collect::<Vec<_>>(),
-                )
-                .style(renderer.paint_style(scene.style("body"))),
-                body,
-            );
-        }
-        scene.paint_overlays(frame);
-        if let Some(selected) = self.dropdown {
-            let popup = scene.slot(if self.focus == 1 {
-                "app-options"
-            } else {
-                "other-options"
-            });
-            let rows = LogLevel::ALL
-                .iter()
-                .map(|level| crate::ui::layout::PresentedRow {
-                    key: level.label().into(),
-                    data: crate::ui::layout::Presentation::default().text("label", level.label()),
-                    gap_after: false,
-                })
-                .collect::<Vec<_>>();
-            let _ = renderer.paint_rows(
-                frame,
-                popup,
-                "log-option",
-                &rows,
-                Some(selected),
-                Style::default(),
-            );
-        }
+        });
     }
 }
 

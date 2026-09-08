@@ -881,7 +881,10 @@ fn apply(out: &mut Computed, name: &str, value: &str) -> Result<(), String> {
         "text-decoration" => {
             out.paint = match value {
                 "underline" => out.paint.add_modifier(Modifier::UNDERLINED),
-                "none" => out.paint.remove_modifier(Modifier::UNDERLINED),
+                "reverse" => out.paint.add_modifier(Modifier::REVERSED),
+                "none" => out
+                    .paint
+                    .remove_modifier(Modifier::UNDERLINED | Modifier::REVERSED),
                 _ => return Err(invalid()),
             }
         }

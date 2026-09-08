@@ -39,6 +39,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
   entries, and loading notices in layout files. Treatment keeps targeting the
   selected body region when condition rows are rearranged or rewrapped.
 
+- Fixed: Custom overlays retain their pane contents, hidden pane templates leave
+  Tab navigation, and selected-row styles respect your layout CSS.
+
+- Fixed: Overlays in custom panes suppress overlapping chat images. Layout tools
+  now show styles and measured fragments for inline text fields.
+
 ## 2026-09-07
 
 - Added: Image links posted in chat (DessPlay or IRC) now download and

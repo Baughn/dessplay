@@ -1045,3 +1045,15 @@ at varied nonzero origins and assert that sentinel cells outside its viewport
 remain unchanged. Omission/separator checks also use actual painting. A 5,000-row
 journal tail check bounds layout instantiation to visible entries. Blank guide
 rows retain their source anchor across repaints through the shared document API.
+
+Layout interaction regressions cover controller slots enclosed by authored
+overlays, selected CSS surviving painting, and root visibility/margins limiting
+Tab and pointer targets. Run these through real pane/controller rendering, not
+a second geometry calculation in the test.
+
+The offline `layout_smoke` example runs the production terminal loop and watcher
+with a gradient fixture and no external actors. Use the procedure in
+[ui-layouts.md](ui-layouts.md#offline-terminal-smoke-test) for physical protocol
+checks. An automated overlapping-pane regression verifies that terminal image
+operations are suppressed by another pane's overlay, and inline-inspector tests
+compare reported bounds with source fragments.

@@ -1641,6 +1641,10 @@ Reload, Use bundled, and Reset drag sizes.
 The application template determines pane order, visibility, and rectangles.
 Tab order follows visible, nonzero controller slots in markup order. Surviving
 focus is retained; hiding the focused pane selects the next available pane.
+Controller template visibility and margins further constrain pane focus and pointer
+bounds. Pointer targeting follows the recorded paint order in reverse.
+Controller slots paint within their enclosing template layer. Selection
+is a semantic style resolved before authored declarations, never a final override.
 Global commands remain available when no pane is focusable. Clipped rows in
 scrolling content are not hidden controllers.
 
@@ -1720,6 +1724,10 @@ paint order. Browser and search models provide unpadded semantic row fields.
 RGB text is quantized to the finite terminal palette in limited mode.
 Explicit background colors survive the legacy theme adapter during the
 migration. Image pixels bypass text color conversion.
+
+Terminal image operations are emitted after the complete frame's painted overlay
+regions are known. Overlap suppression applies across pane boundaries. Inline
+text definitions retain declarations and measured fragment bounds for inspection.
 
 ### UI Principles
 

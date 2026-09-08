@@ -1105,39 +1105,41 @@ impl ChatPane {
         ) else {
             return;
         };
-        let inner = scene.slot("log");
         renderer.clear(frame, area);
-        scene.paint(frame);
-        let mut messages = Vec::new();
-        let mut used = 0usize;
-        for line in self.lines.iter().rev() {
-            let Ok((_, message)) = layout_chat_line(
-                line,
-                inner.width,
-                &self.usernames,
-                &self.me,
-                &self.spoilers,
-                scene.hanging_indent("log") as u16,
-                scene.style("log"),
-                "recent",
-                renderer,
-            ) else {
-                continue;
-            };
-            used += usize::from(message.height());
-            messages.push(message);
-            if used >= usize::from(inner.height) {
-                break;
+        scene.paint_with_slots(frame, |name, frame, inner, style| {
+            if name != "log" {
+                return;
             }
-        }
-        let mut offset = -(used
-            .saturating_sub(usize::from(inner.height))
-            .min(i32::MAX as usize) as i32);
-        for message in messages.iter().rev() {
-            message.paint_scrolled(frame, inner, offset);
-            offset += i32::from(message.height());
-        }
-        scene.paint_overlays(frame);
+            let mut messages = Vec::new();
+            let mut used = 0usize;
+            for line in self.lines.iter().rev() {
+                let Ok((_, message)) = layout_chat_line(
+                    line,
+                    inner.width,
+                    &self.usernames,
+                    &self.me,
+                    &self.spoilers,
+                    scene.hanging_indent("log") as u16,
+                    style,
+                    "recent",
+                    renderer,
+                ) else {
+                    continue;
+                };
+                used += usize::from(message.height());
+                messages.push(message);
+                if used >= usize::from(inner.height) {
+                    break;
+                }
+            }
+            let mut offset = -(used
+                .saturating_sub(usize::from(inner.height))
+                .min(i32::MAX as usize) as i32);
+            for message in messages.iter().rev() {
+                message.paint_scrolled(frame, inner, offset);
+                offset += i32::from(message.height());
+            }
+        });
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -1152,6 +1154,7 @@ impl ChatPane {
         area: Rect,
         renderer: &mut super::layout::Renderer,
     ) {
+        renderer.begin_chat();
         let suggestions = super::commands::matching(&self.text());
         let mut data = super::layout::Presentation::default()
             .text("title", "Chat")
@@ -1170,10 +1173,7 @@ impl ChatPane {
         let Ok(scene) = renderer.arrange("chat", area, &data) else {
             return;
         };
-        scene.paint(frame);
-        let log_inner = scene.slot("log");
-        let input_area = scene.slot("input");
-        let sugg_area = scene.slot("suggestions");
+        renderer.record_controller("chat", &scene);
         let suggestion_rows = suggestions
             .iter()
             .map(|cmd| super::layout::PresentedRow {
@@ -1184,28 +1184,55 @@ impl ChatPane {
                 gap_after: false,
             })
             .collect::<Vec<_>>();
-        let _ = renderer.paint_rows(
-            frame,
-            sugg_area,
-            "chat-suggestion",
-            &suggestion_rows,
-            None,
-            Style::default(),
-        );
-        let width = log_inner.width as usize;
-        let visible = log_inner.height as usize;
-        let max_image_rows = (visible / 3) as u16;
-        if log_inner.is_empty() {
-            self.rendered = RenderedChatLog::default();
-            self.input.render_content_styled(
+        self.rendered = RenderedChatLog::default();
+        scene.paint_with_slots(frame, |name, frame, area, style| match name {
+            "log" => self.render_log(
                 frame,
-                input_area,
+                area,
+                style,
+                scene.hanging_indent("log") as u16,
+                scene.has_overlay(),
+                renderer,
+            ),
+            "input" => self.input.render_content_styled(
+                frame,
+                area,
                 self.focused,
                 false,
-                scene.style("input"),
+                style,
                 renderer.color_depth(),
-            );
-            scene.paint_overlays(frame);
+            ),
+            "suggestions" => {
+                let _ = renderer.paint_rows(
+                    frame,
+                    area,
+                    "chat-suggestion",
+                    &suggestion_rows,
+                    None,
+                    style,
+                );
+            }
+            _ => {}
+        });
+        if !renderer.images_deferred() {
+            self.paint_images(frame, renderer);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_log(
+        &mut self,
+        frame: &mut Frame,
+        log_inner: Rect,
+        style: Style,
+        hanging_indent: u16,
+        overlay: bool,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        let width = usize::from(log_inner.width);
+        let visible = usize::from(log_inner.height);
+        let max_image_rows = (visible / 3) as u16;
+        if log_inner.is_empty() {
             return;
         }
         // Start at the live tail and instantiate only the required message window.
@@ -1235,15 +1262,14 @@ impl ChatPane {
                 &self.usernames,
                 &self.me,
                 &self.spoilers,
-                scene.hanging_indent("log") as u16,
-                scene.style("log"),
+                hanging_indent,
+                style,
                 "chat",
                 renderer,
             ) else {
                 continue;
             };
-            let attachment = if self.suppress_images || scene.has_overlay() || message.has_overlay()
-            {
+            let attachment = if self.suppress_images || overlay || message.has_overlay() {
                 None
             } else {
                 line.image_url.as_ref().and_then(|url| {
@@ -1426,8 +1452,27 @@ impl ChatPane {
                 _ => {}
             }
         }
+        for (url, attachment, offset) in image_draws {
+            renderer.queue_image(url, attachment, log_inner, offset);
+        }
+    }
+
+    pub(crate) fn paint_images(
+        &mut self,
+        frame: &mut Frame,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        self.rendered.image_areas.clear();
         let mut broken = Vec::new();
-        for (url, attachment, band_top) in image_draws {
+        for operation in renderer.take_image_operations() {
+            let url = operation.url;
+            let attachment = operation.attachment;
+            let band_top = operation.offset;
+            let log_inner = operation.viewport;
+            let pixels = attachment.scrolled_slot("image", log_inner, band_top);
+            if !pixels.is_empty() {
+                self.rendered.image_areas.push(pixels);
+            }
             attachment.paint_scrolled(frame, log_inner, band_top);
             let interior = attachment.slot("image");
             let size = Size::new(interior.width, interior.height);
@@ -1470,14 +1515,6 @@ impl ChatPane {
         for url in broken {
             self.images.insert(url, ImageSlot::Failed);
         }
-        self.input.render_content_styled(
-            frame,
-            input_area,
-            self.focused,
-            false,
-            scene.style("input"),
-            renderer.color_depth(),
-        );
     }
 }
 
@@ -2299,7 +2336,7 @@ impl UsersPane {
         let Ok(scene) = renderer.arrange("users", area, &data) else {
             return;
         };
-        scene.paint(frame);
+        renderer.record_controller("users", &scene);
         let mut rows = self
             .props
             .rows
@@ -2342,18 +2379,22 @@ impl UsersPane {
             });
         }
         let selected = (self.focused && self.selectable_len() > 0).then(|| self.cursor.index());
-        self.rendered = renderer
-            .paint_collection(
-                frame,
-                scene.slot("body"),
-                "user-row",
-                &rows,
-                selected,
-                Some(self.cursor.index()),
-                scene.style("body"),
-            )
-            .unwrap_or_default();
-        scene.paint_overlays(frame);
+        self.rendered = Default::default();
+        scene.paint_with_slots(frame, |name, frame, area, style| {
+            if name == "body" {
+                self.rendered = renderer
+                    .paint_collection(
+                        frame,
+                        area,
+                        "user-row",
+                        &rows,
+                        selected,
+                        Some(self.cursor.index()),
+                        style,
+                    )
+                    .unwrap_or_default();
+            }
+        });
     }
 }
 
@@ -2513,7 +2554,7 @@ impl PlaylistPane {
         let Ok(scene) = renderer.arrange("playlist", area, &data) else {
             return;
         };
-        scene.paint(frame);
+        renderer.record_controller("playlist", &scene);
         let watch_tag = |row: &crate::ui::props::PlaylistRow| match row.watch {
             dessplay_core::types::SeriesWatchState::Watching => "watching",
             dessplay_core::types::SeriesWatchState::Maybe => "maybe",
@@ -2570,18 +2611,14 @@ impl PlaylistPane {
         } else {
             self.props.now_index
         };
-        self.rendered = renderer
-            .paint_collection(
-                frame,
-                scene.slot("body"),
-                "playlist-row",
-                &rows,
-                selected,
-                center,
-                scene.style("body"),
-            )
-            .unwrap_or_default();
-        scene.paint_overlays(frame);
+        self.rendered = Default::default();
+        scene.paint_with_slots(frame, |name, frame, area, style| {
+            if name == "body" {
+                self.rendered = renderer
+                    .paint_collection(frame, area, "playlist-row", &rows, selected, center, style)
+                    .unwrap_or_default();
+            }
+        });
     }
 }
 
@@ -3057,7 +3094,7 @@ impl SeriesPane {
         let Ok(scene) = renderer.arrange("series", area, &data) else {
             return;
         };
-        scene.paint(frame);
+        renderer.record_controller("series", &scene);
         let rows: Vec<PresentedRow> = match self.mode {
             SeriesMode::Recent | SeriesMode::All => self
                 .franchises
@@ -3143,18 +3180,22 @@ impl SeriesPane {
                 })
                 .collect(),
         };
-        self.rendered = renderer
-            .paint_collection(
-                frame,
-                scene.slot("body"),
-                "series-row",
-                &rows,
-                self.focused.then(|| self.cursor.index()),
-                Some(self.cursor.index()),
-                scene.style("body"),
-            )
-            .unwrap_or_default();
-        scene.paint_overlays(frame);
+        self.rendered = Default::default();
+        scene.paint_with_slots(frame, |name, frame, area, style| {
+            if name == "body" {
+                self.rendered = renderer
+                    .paint_collection(
+                        frame,
+                        area,
+                        "series-row",
+                        &rows,
+                        self.focused.then(|| self.cursor.index()),
+                        Some(self.cursor.index()),
+                        style,
+                    )
+                    .unwrap_or_default();
+            }
+        });
     }
 }
 
@@ -5799,6 +5840,52 @@ mod chat_layout_tests {
     use super::*;
     use crate::ui::layout::{LayoutBundle, Renderer};
     use tuirealm::ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn controller_contents_survive_authored_overlay_slots() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/layers.xml"), r#"<templates version="1">
+          <template name="chat"><box><overlay placement="modal" style="width: 100%; height: 100%"><scroll><slot name="log"/></scroll><slot name="input" style="height: 1lh; flex-shrink: 0"/></overlay></box></template>
+          <template name="recent-chat"><box><overlay placement="modal" style="width: 100%; height: 100%"><scroll><slot name="log"/></scroll></overlay></box></template>
+          <template name="playlist"><box><overlay placement="modal" style="width: 100%; height: 100%"><scroll><slot name="body"/></scroll></overlay></box></template>
+        </templates>"#).unwrap();
+        let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let mut chat = ChatPane::default();
+        chat.set_lines(vec![message(1, "visible message")]);
+        for recent in [false, true] {
+            terminal
+                .draw(|frame| {
+                    if recent {
+                        chat.render_recent(frame, frame.area(), &mut renderer);
+                    } else {
+                        chat.render_layout(frame, frame.area(), &mut renderer);
+                    }
+                })
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains("visible message"), "recent={recent}: {text}");
+        }
+        let mut playlist = PlaylistPane::default();
+        terminal
+            .draw(|frame| playlist.render_layout(frame, frame.area(), &mut renderer))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("[Add New]"), "{text}");
+    }
 
     fn message(millis: u64, text: &str) -> ChatLine {
         ChatLine {

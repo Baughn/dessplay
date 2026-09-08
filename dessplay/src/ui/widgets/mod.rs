@@ -19,7 +19,6 @@ pub mod keymap;
 pub mod keys;
 pub mod line;
 pub mod list;
-pub mod table;
 
 pub use form::{
     Form, FormControl, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormNote, FormRow,
@@ -28,8 +27,7 @@ pub use form::{
 pub use keymap::{BarEntry, Binding, KeyPattern, Keymap};
 pub(crate) use keys::{plain, typed};
 pub use line::{LineBuffer, TextField};
-pub use list::{ListCursor, RenderedList, render_list, render_list_body};
-pub use table::{Align, Cell, table_row, truncate_display};
+pub use list::ListCursor;
 
 #[cfg(test)]
 pub use form::overlay;

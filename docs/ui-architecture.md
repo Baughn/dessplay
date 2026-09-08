@@ -16,8 +16,8 @@ bounds and source-mapped fragments together. Shared forms expose semantic
 label/value/annotation rows keyed by controller identity; only visible rows
 become trees. The form controller retains editors and selection. The log
 viewer measures through the renderer and anchors by line identity plus
-source offset. Existing primitive and unmigrated widget rendering remains
-behind temporary adapters while the migration proceeds.
+source offset. Every controller slot paints at its exact place in the template
+layer order. The old bordered-list and pre-padded-table painters are removed.
 
 Chat and recent-chat build separate keyed message scenes from semantic prefix
 fields and rich body spans. The live tail measures backwards only as far as
@@ -881,8 +881,9 @@ is coalesced and retried by the UI shell when the action channel is full.
 frame/gutter, read-only recent projection, and separate subtitle rows. TextField
 retains its editor state and paints inside its assigned slot. The shared terminal
 text service owns greedy wrapping; `hanging-indent` controls continuation cells.
-Message rich spans still use a temporary presentation adapter pending the rest
-of Phase 36.
+Message rich spans expose typed field/source/action identities to the shared
+flow measurement service. Inline definitions retain their matched declarations
+and measured fragment bounds for F12 without creating separate layout boxes.
 
 `Renderer::attachment` probes the authored interior, fits pixels to that budget,
 and arranges the final frame. Cached scenes use stable URL identities. Signed
@@ -914,7 +915,8 @@ values enter style inheritance before authored declarations; the compiler
 validates against the corresponding semantic defaults. Map cells and bounded
 sidebar summaries consume arranged primitive slots. Recovery phase and metric
 flows, inspection headings, equipment rows, documents, and endings now use
-templates. Condition rows and bounded summary children still need migration.
+templates. Condition rows retain region/source identities; bounded summaries
+measure complete entry scenes and omission markers.
 
 `flow` flattens styled inline children into one intrinsic text measurement. The
 renderer retains field/source/action ranges across that flattening, creates
@@ -956,3 +958,9 @@ whole wound/threat entries and omission templates, applies the bounded-content
 budget, and paints their same fragments. Guide, journal, and recent events use
 `DocumentScroll`; tail opening starts at the last semantic item. Dungeon cells
 are the remaining specialized painter in the modal.
+
+The renderer publishes controller-root rectangles each frame; pane focus and
+pointer bounds use that publication after composition. Scene layer painting
+records visible overlay rectangles in a shared frame record. Chat queues fitted
+attachment/image operations on the renderer, and `Ui` emits eligible operations
+after all foreground composition. This also handles overlapping authored panes.

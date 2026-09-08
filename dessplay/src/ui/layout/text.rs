@@ -205,3 +205,32 @@ pub(crate) fn wrap_body(text: &str, first_width: usize, rest_width: usize) -> Ve
     lines.push((cur, cur_start));
     lines
 }
+
+/// Truncate the start of `s` to at most `max` display cells, retaining its
+/// suffix behind an ellipsis. Useful for paths whose final component is the
+/// part that distinguishes otherwise-identical roots.
+pub(super) fn truncate_display_start(s: &str, max: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+    if max == 0 {
+        return (String::new(), 0);
+    }
+    let full = s.width();
+    if full <= max {
+        return (s.to_string(), full);
+    }
+    let budget = max - 1;
+    let mut suffix = Vec::new();
+    let mut used = 0;
+    for ch in s.chars().rev() {
+        let width = ch.width().unwrap_or(0);
+        if used + width > budget {
+            break;
+        }
+        suffix.push(ch);
+        used += width;
+    }
+    suffix.reverse();
+    let mut out = String::from("…");
+    out.extend(suffix);
+    (out, used + 1)
+}

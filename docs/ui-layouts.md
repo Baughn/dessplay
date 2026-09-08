@@ -6,8 +6,8 @@ controls, dropdowns, log viewport, and footer, application pane composition, cha
 attachments, rich message variants, recent-chat projection, separate subtitle rows, Users, Playlist, all Series modes,
 file/episode browsers, AniDB/Nyaa searches, local-copy offers, confirmations,
 name editing, changelog entries, status text, keybindings, health metrics and progress, work-progress overlays, shared log/dungeon page composition, and the roguelike frame, game, recovery, condition, wound/threat summaries, journal, guide, equipment, and ending pages
-use local templates. Other pane interiors still use their existing presentation adapters. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
-for the remaining work; exporting defaults does not yet expose every pane.
+use local templates. See [the implementation tracker](plan.md#phase-36-runtime-editable-display-layouts)
+for the remaining interaction and terminal verification work.
 
 ## Files and recovery
 
@@ -167,7 +167,7 @@ Properties:
 | Grid | `grid-template-columns`, `grid-template-rows`, `grid-column`, `grid-row` |
 | Color | `color`, `background-color`, `border-color`: #RGB, #RRGGBB, default, black/red/green/yellow/blue/magenta/cyan/white/gray/darkgray |
 | Borders | `border`, `border-top`, `border-right`, `border-bottom`, `border-left`: `0/none/1/1ch/1lh`; single-cell solid edges |
-| Text | `font-weight: normal/bold`, `font-style: normal/italic`, `text-decoration: none/underline`, `text-align: left/center/right`, `white-space: normal/nowrap/pre`, `text-overflow: clip/ellipsis`, terminal `hanging-indent: Nch` |
+| Text | `font-weight: normal/bold`, `font-style: normal/italic`, `text-decoration: none/underline/reverse`, `text-align: left/center/right`, `white-space: normal/nowrap/pre`, `text-overflow: clip/ellipsis`, terminal `hanging-indent: Nch` |
 
 Lengths use `ch`, `lh`, percentages, `0`, and `auto` where meaningful.
 Terminal allocation treats a length unit as a cell in its allocation axis.
@@ -186,9 +186,10 @@ same measured fragments paint text and retain source offsets. Parent clips
 bound all painting, including original border edges of oversized children.
 The form footer reservation remains an explicit measured-content policy;
 row labels/values/annotations have their own boxes. Path values retain their
-ends when clipped. The legacy theme adapter still runs during migration,
-but preserves explicit backgrounds and maps RGB text to the finite terminal
-palette in limited mode. Image regions bypass this conversion.
+ends when clipped. Semantic defaults and authored CSS resolve before painting.
+RGB text maps to the finite terminal palette in limited mode; image pixels
+bypass this conversion. Selection is a semantic default that explicit CSS
+can override, including `text-decoration: none` to remove reversal.
 
 ## File-only examples
 
@@ -225,8 +226,9 @@ bounded `wounds` slot. Its metric flows can be reordered or restyled separately.
 
 `rogue-inspection` supplies `heading`, optional `note` (`has-note`), and a `body`
 slot. `rogue-equipment-row` has `description`; `rogue-document` has plain `body`;
-`rogue-epitaph` has `heading`, `summary`, and `actions`. Condition-row composition
-and bounded wound/threat children still need the remaining semantic migration.
+`rogue-epitaph` has `heading`, `summary`, and `actions`. Condition rows expose
+`region`, `details`, and `injured`; bounded wound/threat summaries measure
+their authored children and omission markers before allocating space.
 
 Built-in semantic color variables are `--surface`, `--text`, `--muted`,
 `--accent`, `--danger`, and `--dungeon-border`. The last follows the existing
@@ -392,7 +394,7 @@ only the visible document window and rows needed to navigate are measured.
 `state`, `blockers`, `now-label`, `title`, with `blocked` and `has-title`
 booleans. Keybar has a keyed `bindings` list. Its `keybinding` item exposes
 `separator`, `key`, `label`, and boolean `separated`; changing their layout
-never changes the keymap. Health/progress composition remains under migration.
+never changes the keymap. Health/progress composition uses measured templates.
 
 ### Health and form chrome
 
@@ -472,3 +474,23 @@ to just the body with the event's semantic tone. Both use keyed document
 scrolling; opening at the tail measures only the entries needed for the viewport.
 The guide uses `rogue-document` and the same source-anchor service.
 `rogue-loading` exposes `notice` and `detail`.
+
+## Offline terminal smoke test
+
+Run `cargo run -p dessplay --example layout_smoke -- /tmp/dessplay-layout-smoke`
+in a graphics-capable terminal. It exports missing defaults and runs the real
+terminal loop, watcher, controllers, and graphics renderer with a local gradient
+fixture. It has no network, player, or persistence actors. Use
+`DESSPLAY_IMAGE_PROTOCOL=kitty`, `sixel`, `iterm2`, or `halfblocks` when checking
+a terminal that supports that protocol; unset it for normal capability detection.
+
+Scroll through the gradient and resize: the image keeps its fitted size while
+its original border clips at the viewport edge. The border starts after the
+timestamp and counts toward the one-third-height budget. The repeated URL
+remains text. Open F3 or F12 and verify that graphics disappear beneath the
+foreground view. Edit the exported attachment CSS, then make and repair an
+invalid edit; the last valid layout should remain usable throughout.
+
+F12 includes inline text field declarations and each measured fragment rectangle.
+Graphics operations are deferred until the frame's overlay regions are known;
+an overlay in another pane also suppresses an overlapping image.

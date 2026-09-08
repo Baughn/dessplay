@@ -1306,3 +1306,35 @@ watching the parent fixes both paths. Tests wait on actual compilation delivery,
 without arbitrary sleeps, and cover initial absence and later replacement.
 The six file-only authoring demonstrations now install their results through
 this actual watcher rather than relying only on direct compiler calls.
+
+## Controller slots share template layer order (2026-09-08)
+
+Painting base chrome, then all controllers, then overlays erased controllers
+placed inside an authored overlay. The same split existed in chat, collections,
+log controls, dungeon inspection, subtitles, and application composition. All
+now use the renderer's ordered slot callbacks; forms and browser dialogs already
+used that path. The split-layer convenience API is removed. Controller roots
+publish their actual bounds so hiding the root also removes its focus target.
+Selection enters the cascade before CSS, since a final reversal pass prevented
+authors from controlling selected appearance. Unused legacy list/table painters
+were removed to keep one production allocation and paint path.
+
+## Frame-wide graphics suppression and inline inspection (2026-09-08)
+
+A child pane can contain an authored overlay that overlaps chat even when the
+application template contains no overlay. Immediate graphics emission could
+therefore bleed through a later pane. The renderer now records painted overlay
+regions across composed scenes and queues image operations until the full frame
+is known. Overlapping operations are dropped; normal modal suppression still
+avoids allocating image rows. The queue belongs to the UI-thread renderer, not
+the controller, and controller ownership remains transferable before startup.
+
+Inline flows retain definition metadata and fragment rectangles for F12. They
+do not create independent boxes or wrap again for inspection. The offline
+layout_smoke example uses the production terminal setup, watcher, and UI loop
+so graphics checks need neither a rendezvous server nor a player.
+
+Pointer targeting follows recorded pane paint order in reverse. The prior
+fixed Chat/Series/Users/Playlist search selected an obscured pane when authors
+overlapped grid cells. Click and wheel paths now share the ordered hit lookup,
+including the nonfocusable subtitle viewport; modal capture remains unchanged.

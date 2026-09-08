@@ -1889,7 +1889,9 @@ player OSD, and standalone diagnostic output are outside scope.
   intrinsic modal height, and explicit terminal cell rounding.
 - [x] Roguelike condition/source navigation, measured bounded-summary children,
   semantic journal projections, and shared guide/journal document scrolling.
-- [ ] Remove remaining production legacy adapters and finish the geometry audit.
+- [x] Remove production legacy list/table and split-layer adapters; audit pane
+  root visibility/margins, selected CSS precedence, inline inspection, and
+  cross-pane overlay/image geometry.
 - [x] All six file-only demonstrations through real filesystem events and
   runtime bundle installation; atomic saves, relative paths, missing-directory
   creation, and whole-directory replacement.

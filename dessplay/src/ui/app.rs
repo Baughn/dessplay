@@ -197,6 +197,19 @@ struct PaneRects {
     playlist: Rect,
 }
 
+impl PaneRects {
+    fn bounds(&self, name: &str) -> Rect {
+        match name {
+            "chat" => self.chat,
+            "series" => self.series,
+            "users" => self.users,
+            "playlist" => self.playlist,
+            "subtitles" => self.subs,
+            _ => Rect::default(),
+        }
+    }
+}
+
 impl Focus {
     fn name(self) -> &'static str {
         match self {
@@ -350,6 +363,7 @@ pub struct Ui {
     logging: Option<crate::logging::LiveLogging>,
     focus: Focus,
     focus_order: Vec<Focus>,
+    pointer_order: Vec<String>,
     pub(crate) layout_settings: super::layout::LayoutSettings,
     pub(crate) layout_settings_dirty: bool,
     layout_source: String,
@@ -486,6 +500,7 @@ impl Ui {
             logging: crate::logging::runtime(),
             focus: Focus::Chat,
             focus_order: vec![Focus::Chat, Focus::Series, Focus::Users, Focus::Playlist],
+            pointer_order: Vec::new(),
             layout_settings: Default::default(),
             layout_settings_dirty: false,
             layout_source: String::new(),
@@ -1435,26 +1450,21 @@ impl Ui {
                 return Vec::new();
             }
         }
-        // The separate subtitle pane is not focusable, so the wheel
-        // works over it regardless of focus (its scroll is visible, so
-        // the accidental-graze objection doesn't apply). Checked before
-        // the chat column, which it overlaps.
-        if matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) && self.panes.subs.contains(position)
-        {
-            self.scroll_subtitles(mouse.kind == MouseEventKind::ScrollUp);
+        let hit = self
+            .pointer_order
+            .iter()
+            .rev()
+            .find(|name| self.panes.bounds(name).contains(position));
+        if hit.is_some_and(|name| name == "subtitles") {
+            if matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) {
+                self.scroll_subtitles(mouse.kind == MouseEventKind::ScrollUp);
+            }
             return Vec::new();
         }
-        let target = [
-            (self.panes.chat, Focus::Chat),
-            (self.panes.series, Focus::Series),
-            (self.panes.users, Focus::Users),
-            (self.panes.playlist, Focus::Playlist),
-        ]
-        .into_iter()
-        .find_map(|(rect, focus)| rect.contains(position).then_some(focus));
+        let target = hit.and_then(|name| Focus::from_name(name));
         let Some(target) = target else {
             return Vec::new(); // status bar, keybar, or off-layout
         };
@@ -2668,6 +2678,7 @@ impl Ui {
         frame: &mut Frame,
         renderer: &mut super::layout::Renderer,
     ) {
+        renderer.begin_frame();
         renderer.set_color_depth(self.color_depth);
         renderer.clear(frame, frame.area());
         // Inline chat images hide while anything draws over the panes
@@ -2705,12 +2716,73 @@ impl Ui {
         if scene.has_overlay() {
             self.chat.set_images_suppressed(true);
         }
-        scene.paint(frame);
         self.split_regions = scene.splits.clone();
         let order = scene
             .visible_slots()
             .into_iter()
             .filter_map(Focus::from_name)
+            .collect::<Vec<_>>();
+        let left = scene.slot("chat");
+        let series_area = scene.slot("series");
+        let users_area = scene.slot("users");
+        let playlist_area = scene.slot("playlist");
+        self.panes = PaneRects {
+            chat: left,
+            subs: scene.slot("subtitles"),
+            series: series_area,
+            users: users_area,
+            playlist: playlist_area,
+        };
+
+        let page_open = matches!(
+            self.modals.last(),
+            Some(Modal::Logs(_) | Modal::Roguelike(_))
+        );
+        if self.subtitle_mode != SubtitleMode::SeparatePane {
+            self.subtitle_scroll = 0;
+        }
+        self.pointer_order.clear();
+        scene.paint_with_slots(frame, |name, frame, area, _| {
+            if Focus::from_name(name).is_some() || name == "subtitles" {
+                self.pointer_order.push(name.into());
+            }
+            match name {
+                "chat" => self.chat.render_layout(frame, area, renderer),
+                "subtitles" if self.subtitle_mode == SubtitleMode::SeparatePane => {
+                    self.render_subtitles(frame, area, renderer)
+                }
+                "series" => self.series.render_layout(frame, area, renderer),
+                "users" => self.users.render_layout(frame, area, renderer),
+                "playlist" => self.playlist.render_layout(frame, area, renderer),
+                "health" => {
+                    let progress = self.status.progress_presentation();
+                    let marquee_frame = self
+                        .marquee
+                        .as_ref()
+                        .filter(|anim| !anim.done)
+                        .map(|anim| (anim.text.as_str(), anim.offset));
+                    let slot_width =
+                        self.health
+                            .render_layout(frame, area, &progress, marquee_frame, renderer);
+                    if let Some(anim) = &mut self.marquee {
+                        // Measure the slot every draw (even while a warning owns
+                        // it), so the done-check tracks the real width.
+                        anim.slot_width = Some(slot_width);
+                    }
+                }
+                "status" => self.status.render_layout(frame, area, renderer),
+                "keybar" if !page_open => self.keybar.render_layout(frame, area, renderer),
+                _ => {}
+            }
+        });
+        self.panes.subs = renderer.controller_bounds("subtitles");
+        self.panes.chat = renderer.controller_bounds("chat");
+        self.panes.series = renderer.controller_bounds("series");
+        self.panes.users = renderer.controller_bounds("users");
+        self.panes.playlist = renderer.controller_bounds("playlist");
+        let order = order
+            .into_iter()
+            .filter(|focus| !renderer.controller_bounds(focus.name()).is_empty())
             .collect::<Vec<_>>();
         if !order.contains(&self.focus) {
             let previous = self
@@ -2736,143 +2808,6 @@ impl Ui {
             self.sync_focus_attr();
             self.refresh_keybar();
         }
-        let left = scene.slot("chat");
-        let series_area = scene.slot("series");
-        let users_area = scene.slot("users");
-        let playlist_area = scene.slot("playlist");
-        let bottom_area = scene.slot("health");
-        let status_area = scene.slot("status");
-        let keybar_area = scene.slot("keybar");
-        self.panes = PaneRects {
-            chat: left,
-            subs: scene.slot("subtitles"),
-            series: series_area,
-            users: users_area,
-            playlist: playlist_area,
-        };
-
-        if self.subtitle_mode == SubtitleMode::SeparatePane {
-            let chat_area = scene.slot("chat");
-            let subs_area = scene.slot("subtitles");
-            self.chat.render_layout(frame, chat_area, renderer);
-            // The newest lines that fit, newest first (top) — the input box
-            // sits just below, so the freshest line is closest to the eye.
-            // A wheel scroll-back skips `subtitle_scroll` newest entries,
-            // clamped so the oldest entry never rises above the bottom.
-            // Each line: a dim in-video timestamp, then text colored by its
-            // ASS speaker. Limited terminals preserve the existing name hash
-            // into the app palette; RGB terminals use the stable
-            // activity-window slot to generate another perceptually spaced
-            // color as needed. Speaker names are opt-in and formatted by the
-            // same helper used for Intermixed mode.
-            let subtitle_data = super::layout::Presentation::default().text("title", "Subtitles");
-            let subtitle_scene = renderer
-                .arrange("subtitles", subs_area, &subtitle_data)
-                .ok();
-            let visible = subtitle_scene
-                .as_ref()
-                .map_or(0, |scene| scene.slot("body").height as usize);
-            self.subtitle_scroll = self
-                .subtitle_scroll
-                .min(self.subtitles.len().saturating_sub(visible));
-            let limited_palette_overflow = self.color_depth == ColorDepth::Limited
-                && self.speaker_colors.len() > super::theme::LIMITED_SPEAKER_CAPACITY;
-            let speaker_colors_enabled = self.settings.subtitle_speaker_colors
-                && !(limited_palette_overflow
-                    && self.settings.subtitle_speaker_overflow
-                        == SubtitleSpeakerOverflow::DisableColors);
-            let rows: Vec<super::layout::PresentedRow> = self
-                .subtitles
-                .iter()
-                .rev()
-                .skip(self.subtitle_scroll)
-                .take(visible)
-                .map(|entry| {
-                    let text_style = if !speaker_colors_enabled {
-                        super::theme::dim()
-                    } else {
-                        match entry.speaker_slot {
-                            Some(slot) if self.color_depth == ColorDepth::TrueColor => {
-                                super::theme::speaker_truecolor(slot)
-                            }
-                            _ => match &entry.speaker {
-                                Some(name) => super::theme::user_style(name),
-                                None => tuirealm::ratatui::style::Style::default(),
-                            },
-                        }
-                    };
-                    let named = self.settings.subtitle_speaker_names && entry.speaker.is_some();
-                    super::layout::PresentedRow {
-                        key: entry.key.to_string(),
-                        data: super::layout::Presentation::default()
-                            .text("timestamp", props::mmss(entry.video_millis))
-                            .text(
-                                "speaker",
-                                entry
-                                    .speaker
-                                    .as_ref()
-                                    .map_or_else(String::new, |name| format!("{name}:")),
-                            )
-                            .boolean("named", named)
-                            .text("body", &entry.text)
-                            .style("speaker", text_style)
-                            .style("body", text_style),
-                        gap_after: false,
-                    }
-                })
-                .collect();
-            let data = subtitle_data.text(
-                "title",
-                if self.subtitle_scroll == 0 {
-                    "Subtitles".to_string()
-                } else {
-                    format!("Subtitles (-{})", self.subtitle_scroll)
-                },
-            );
-            if let Ok(scene) = renderer.arrange("subtitles", subs_area, &data) {
-                scene.paint(frame);
-                let _ = renderer.paint_rows(
-                    frame,
-                    scene.slot("body"),
-                    "subtitle-row",
-                    &rows,
-                    None,
-                    scene.style("body"),
-                );
-            }
-        } else {
-            // Hidden pane: forget any scroll-back so it comes back live.
-            self.subtitle_scroll = 0;
-            // Off and Intermixed both use the full-height chat pane
-            // (Intermixed shows subtitles inside the chat log).
-            self.chat.render_layout(frame, left, renderer);
-        }
-        self.series.render_layout(frame, series_area, renderer);
-        self.users.render_layout(frame, users_area, renderer);
-        self.playlist.render_layout(frame, playlist_area, renderer);
-        let progress = self.status.progress_presentation();
-        let marquee_frame = self
-            .marquee
-            .as_ref()
-            .filter(|anim| !anim.done)
-            .map(|anim| (anim.text.as_str(), anim.offset));
-        let slot_width =
-            self.health
-                .render_layout(frame, bottom_area, &progress, marquee_frame, renderer);
-        if let Some(anim) = &mut self.marquee {
-            // Measure the slot every draw (even while a warning owns
-            // it), so the done-check tracks the real width.
-            anim.slot_width = Some(slot_width);
-        }
-        self.status.render_layout(frame, status_area, renderer);
-        let page_open = matches!(
-            self.modals.last(),
-            Some(Modal::Logs(_) | Modal::Roguelike(_))
-        );
-        if !page_open {
-            self.keybar.render_layout(frame, keybar_area, renderer);
-        }
-        scene.paint_overlays(frame);
         if page_open {
             if let Ok(shell) = renderer.arrange(
                 "page-shell",
@@ -2911,6 +2846,8 @@ impl Ui {
         ) {
             self.draw_work_overlay(frame, renderer);
         }
+        self.chat.paint_images(frame, renderer);
+        renderer.end_frame();
         renderer.record_image_regions(self.chat.image_areas());
         if self.layout_tools
             && let Ok(bundle) = super::layout::LayoutBundle::builtin()
@@ -2950,8 +2887,98 @@ impl Ui {
                 );
             if let Ok(scene) = recovery.arrange("layout-tools", frame.area(), &data) {
                 recovery.clear(frame, frame.area());
-                scene.paint(frame);
+                scene.paint_with_slots(frame, |_, _, _, _| {});
             }
+        }
+    }
+
+    fn render_subtitles(
+        &mut self,
+        frame: &mut Frame,
+        subs_area: Rect,
+        renderer: &mut super::layout::Renderer,
+    ) {
+        // The newest lines that fit, newest first (top) — the input box
+        // sits just below, so the freshest line is closest to the eye.
+        // A wheel scroll-back skips `subtitle_scroll` newest entries,
+        // clamped so the oldest entry never rises above the bottom.
+        // Each line: a dim in-video timestamp, then text colored by its
+        // ASS speaker. Limited terminals preserve the existing name hash
+        // into the app palette; RGB terminals use the stable
+        // activity-window slot to generate another perceptually spaced
+        // color as needed. Speaker names are opt-in and formatted by the
+        // same helper used for Intermixed mode.
+        let subtitle_data = super::layout::Presentation::default().text("title", "Subtitles");
+        let subtitle_scene = renderer
+            .arrange("subtitles", subs_area, &subtitle_data)
+            .ok();
+        let visible = subtitle_scene
+            .as_ref()
+            .map_or(0, |scene| scene.slot("body").height as usize);
+        self.subtitle_scroll = self
+            .subtitle_scroll
+            .min(self.subtitles.len().saturating_sub(visible));
+        let limited_palette_overflow = self.color_depth == ColorDepth::Limited
+            && self.speaker_colors.len() > super::theme::LIMITED_SPEAKER_CAPACITY;
+        let speaker_colors_enabled = self.settings.subtitle_speaker_colors
+            && !(limited_palette_overflow
+                && self.settings.subtitle_speaker_overflow
+                    == SubtitleSpeakerOverflow::DisableColors);
+        let rows: Vec<super::layout::PresentedRow> = self
+            .subtitles
+            .iter()
+            .rev()
+            .skip(self.subtitle_scroll)
+            .take(visible)
+            .map(|entry| {
+                let text_style = if !speaker_colors_enabled {
+                    super::theme::dim()
+                } else {
+                    match entry.speaker_slot {
+                        Some(slot) if self.color_depth == ColorDepth::TrueColor => {
+                            super::theme::speaker_truecolor(slot)
+                        }
+                        _ => match &entry.speaker {
+                            Some(name) => super::theme::user_style(name),
+                            None => tuirealm::ratatui::style::Style::default(),
+                        },
+                    }
+                };
+                let named = self.settings.subtitle_speaker_names && entry.speaker.is_some();
+                super::layout::PresentedRow {
+                    key: entry.key.to_string(),
+                    data: super::layout::Presentation::default()
+                        .text("timestamp", props::mmss(entry.video_millis))
+                        .text(
+                            "speaker",
+                            entry
+                                .speaker
+                                .as_ref()
+                                .map_or_else(String::new, |name| format!("{name}:")),
+                        )
+                        .boolean("named", named)
+                        .text("body", &entry.text)
+                        .style("speaker", text_style)
+                        .style("body", text_style),
+                    gap_after: false,
+                }
+            })
+            .collect();
+        let data = subtitle_data.text(
+            "title",
+            if self.subtitle_scroll == 0 {
+                "Subtitles".to_string()
+            } else {
+                format!("Subtitles (-{})", self.subtitle_scroll)
+            },
+        );
+        if let Ok(scene) = renderer.arrange("subtitles", subs_area, &data) {
+            renderer.record_controller("subtitles", &scene);
+            scene.paint_with_slots(frame, |name, frame, area, style| {
+                if name == "body" {
+                    let _ = renderer.paint_rows(frame, area, "subtitle-row", &rows, None, style);
+                }
+            });
         }
     }
 
@@ -3202,6 +3229,38 @@ mod tests {
     }
 
     #[test]
+    fn component_root_visibility_and_margins_define_focus_and_pointer_bounds() {
+        use tuirealm::ratatui::{Terminal, backend::TestBackend};
+        let mut ui = ui_with_view(StateView::default());
+        let mut renderer = custom_renderer(
+            include_str!("layout/assets/templates/app.xml"),
+            "#chat-pane { display: none; } #users-frame { margin: 1ch; }",
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|f| ui.draw_with_renderer(f, &mut renderer))
+            .unwrap();
+        assert!(!ui.focus_order.contains(&Focus::Chat));
+        assert_eq!(ui.focus, Focus::Series);
+        assert!(ui.panes.chat.is_empty());
+        let users = renderer
+            .arrange(
+                "users",
+                Rect::new(50, 0, 50, 10),
+                &super::super::layout::Presentation::default(),
+            )
+            .unwrap();
+        assert!(users.root_content().x > 50);
+        // The pane's authored margin cannot focus it through a pointer event.
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            ui.panes.users.x - 1,
+            ui.panes.users.y,
+        ));
+        assert_ne!(ui.focus, Focus::Users);
+    }
+
+    #[test]
     fn hiding_focused_panes_preserves_drafts_and_keeps_global_recovery_available() {
         use tuirealm::ratatui::{Terminal, backend::TestBackend};
         let mut ui = ui_with_view(StateView::default());
@@ -3323,6 +3382,41 @@ mod tests {
             ui.take_image_fetches(),
             vec![URL.to_string()],
             "re-fetch on re-enable"
+        );
+    }
+
+    #[test]
+    fn overlays_in_other_panes_suppress_terminal_image_operations() {
+        use tuirealm::ratatui::{Terminal, backend::TestBackend};
+        const URL: &str = "https://x.example/a.png";
+        let mut ui = ui_with_view(StateView::default());
+        ui.set_image_picker(ratatui_image::picker::Picker::halfblocks());
+        ui.push_irc(1_000, "dagger".into(), URL.into(), false);
+        ui.set_chat_image(
+            URL,
+            Ok(image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_pixel(100, 100, image::Rgba([200, 40, 40, 255])),
+            )),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("templates")).unwrap();
+        std::fs::write(directory.path().join("templates/overlap.xml"), r#"<templates version="1">
+        <template name="app"><grid style="grid-template-columns: 1fr; grid-template-rows: 1fr"><slot name="chat" style="grid-column: 1; grid-row: 1"/><slot name="users" style="grid-column: 1; grid-row: 1"/></grid></template>
+        <template name="users"><box><overlay placement="modal" style="width: 100%; height: 100%"><text bind="title"/><scroll><slot name="body"/></scroll></overlay></box></template>
+        </templates>"#).unwrap();
+        let mut renderer = super::super::layout::Renderer::new(
+            super::super::layout::LayoutBundle::load(directory.path()).unwrap(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal
+            .draw(|frame| ui.draw_with_renderer(frame, &mut renderer))
+            .unwrap();
+        assert!(ui.chat.image_areas().is_empty());
+        ui.handle(mouse_at(MouseEventKind::Down(MouseButton::Left), 2, 2));
+        assert_eq!(
+            ui.focus,
+            Focus::Users,
+            "the last painted pane receives the click"
         );
     }
 

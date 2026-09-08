@@ -397,7 +397,7 @@ impl RoguelikeModal {
     fn render_page(
         &mut self,
         frame: &mut Frame,
-        mut inner: Rect,
+        inner: Rect,
         renderer: &mut crate::ui::layout::Renderer,
     ) {
         if inner.is_empty() {
@@ -450,14 +450,15 @@ impl RoguelikeModal {
                 let Ok(scene) = renderer.arrange("rogue-inspection", inner, &data) else {
                     return;
                 };
-                scene.paint(frame);
-                inner = scene.slot("body");
-                self.condition
-                    .refresh(&run.body, inner.width, renderer, scene.style("body"));
-                self.condition
-                    .measured
-                    .paint(frame, inner, self.condition.cursor.index());
-                scene.paint_overlays(frame);
+                scene.paint_with_slots(frame, |name, frame, area, style| {
+                    if name == "body" {
+                        self.condition
+                            .refresh(&run.body, area.width, renderer, style);
+                        self.condition
+                            .measured
+                            .paint(frame, area, self.condition.cursor.index());
+                    }
+                });
                 return;
             }
             Page::Equipment => {
@@ -471,7 +472,6 @@ impl RoguelikeModal {
                 let Ok(scene) = renderer.arrange("rogue-inspection", inner, &data) else {
                     return;
                 };
-                scene.paint(frame);
                 let (lines, _) = equipment_rows(run);
                 self.cursor.clamp(lines.len());
                 let rows = lines
@@ -483,15 +483,18 @@ impl RoguelikeModal {
                         gap_after: false,
                     })
                     .collect::<Vec<_>>();
-                let _ = renderer.paint_rows(
-                    frame,
-                    scene.slot("body"),
-                    "rogue-equipment-row",
-                    &rows,
-                    Some(self.cursor.index()),
-                    scene.style("body"),
-                );
-                scene.paint_overlays(frame);
+                scene.paint_with_slots(frame, |name, frame, area, style| {
+                    if name == "body" {
+                        let _ = renderer.paint_rows(
+                            frame,
+                            area,
+                            "rogue-equipment-row",
+                            &rows,
+                            Some(self.cursor.index()),
+                            style,
+                        );
+                    }
+                });
                 return;
             }
             _ => {}
@@ -775,8 +778,7 @@ fn render_epitaph(
         .text("summary", run.summary())
         .text("actions", "n: new expedition   p: journal   F4 / Esc: chat");
     if let Ok(scene) = renderer.arrange("rogue-epitaph", area, &data) {
-        scene.paint(frame);
-        scene.paint_overlays(frame);
+        scene.paint_with_slots(frame, |_, _, _, _| {});
     }
 }
 

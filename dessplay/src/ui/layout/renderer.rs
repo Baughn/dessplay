@@ -223,10 +223,25 @@ impl RenderedCollection {
     }
 }
 
+#[derive(Clone, Debug)]
+struct InlineDefinition {
+    label: String,
+    range: std::ops::Range<usize>,
+    style: Computed,
+}
+#[derive(Clone, Debug)]
+struct InlineGeometry {
+    definition: InlineDefinition,
+    fragments: Vec<Rect>,
+    clip: Rect,
+}
+
 /// Painted geometry and semantic slots, published as one immutable frame result.
 #[derive(Clone, Debug, Default)]
 pub struct RenderedScene {
     nodes: Vec<Arranged>,
+    inline: Vec<InlineGeometry>,
+    frame_overlays: std::sync::Arc<std::sync::Mutex<Vec<Rect>>>,
     depth: crate::ui::theme::ColorDepth,
     paint_order: Vec<usize>,
     height: u16,
@@ -293,6 +308,7 @@ struct Arranged {
     overlay: bool,
     overlay_root: bool,
     id: String,
+    label: String,
     slot: String,
     bounds: Rect,
     margin_bottom: u16,
@@ -395,29 +411,44 @@ impl RenderedScene {
     }
     /// Arranged bounds and matched declarations for the layout inspector.
     pub fn inspect(&self) -> Vec<String> {
+        let declarations = |style: &Computed| {
+            style
+                .matched
+                .iter()
+                .map(|d| {
+                    format!(
+                        "  {}: {} ({}:{}:{})",
+                        d.name,
+                        d.value,
+                        d.location.file.display(),
+                        d.location.line,
+                        d.location.column
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         self.nodes
             .iter()
             .map(|n| {
                 format!(
                     "{} {} {:?} clip {:?}\n{}",
-                    n.id,
+                    n.label,
                     n.slot,
                     n.bounds,
                     n.clip,
-                    n.style
-                        .matched
-                        .iter()
-                        .map(|d| format!(
-                            "  {}: {} ({}:{})",
-                            d.name,
-                            d.value,
-                            d.location.file.display(),
-                            d.location.line
-                        ))
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    declarations(&n.style)
                 )
             })
+            .chain(self.inline.iter().map(|n| {
+                format!(
+                    "  inline {} {:?} clip {:?}\n{}",
+                    n.definition.label,
+                    n.fragments,
+                    n.clip,
+                    declarations(&n.definition.style)
+                )
+            }))
             .collect()
     }
     /// Whether a visible explicit overlay needs terminal-graphics suppression.
@@ -426,13 +457,9 @@ impl RenderedScene {
             .iter()
             .any(|n| n.overlay_root && !n.bounds.intersection(n.clip).is_empty())
     }
-    /// Paint container chrome and already-measured text. Slots are filled by primitives.
+    /// Paint a complete scene containing no controller primitives.
     pub fn paint(&self, frame: &mut Frame<'_>) {
-        self.paint_layer(frame, false, PaintView::new(frame.area(), 0, 0));
-    }
-    /// Paint declared overlays after ordinary content primitives.
-    pub fn paint_overlays(&self, frame: &mut Frame<'_>) {
-        self.paint_layer(frame, true, PaintView::new(frame.area(), 0, 0));
+        self.paint_with_slots(frame, |_, _, _, _| {});
     }
     /// Fill primitive slots in the same layer order as their template chrome.
     pub fn paint_with_slots(
@@ -547,6 +574,10 @@ impl RenderedScene {
                 continue;
             }
             if n.overlay_root {
+                self.frame_overlays
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(visible);
                 frame.render_widget(tuirealm::ratatui::widgets::Clear, visible);
                 frame
                     .buffer_mut()
@@ -762,6 +793,7 @@ struct Built<'a> {
     id: NodeId,
     style: Computed,
     children: Vec<Built<'a>>,
+    inline: Vec<InlineDefinition>,
     text: String,
     runs: Vec<TextRun>,
     prefix_chars: usize,
@@ -784,9 +816,19 @@ pub struct Renderer {
     cache: HashMap<String, CachedScene>,
     cache_clock: u64,
     image_regions: Vec<Rect>,
+    controller_regions: BTreeMap<String, Rect>,
+    frame_overlays: std::sync::Arc<std::sync::Mutex<Vec<Rect>>>,
+    deferred_images: bool,
+    image_operations: Vec<ImageOperation>,
     #[cfg(test)]
     arrangements: usize,
     text_cache: HashMap<(String, u16), std::sync::Arc<Vec<Fragment>>>,
+}
+pub(crate) struct ImageOperation {
+    pub url: String,
+    pub attachment: RenderedScene,
+    pub viewport: Rect,
+    pub offset: i32,
 }
 struct CachedScene {
     template: String,
@@ -807,6 +849,10 @@ impl Renderer {
             cache: HashMap::new(),
             cache_clock: 0,
             image_regions: Vec::new(),
+            controller_regions: BTreeMap::new(),
+            frame_overlays: Default::default(),
+            deferred_images: false,
+            image_operations: Vec::new(),
             #[cfg(test)]
             arrangements: 0,
             text_cache: HashMap::new(),
@@ -833,6 +879,85 @@ impl Renderer {
     /// Terminal palette for intrinsically painted editor/map contents.
     pub fn color_depth(&self) -> crate::ui::theme::ColorDepth {
         self.depth
+    }
+    /// Start a new publication of painted controller geometry.
+    pub(crate) fn begin_frame(&mut self) {
+        self.controller_regions.clear();
+        self.image_regions.clear();
+        self.image_operations.clear();
+        self.frame_overlays
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.deferred_images = true;
+    }
+    pub(crate) fn images_deferred(&self) -> bool {
+        self.deferred_images
+    }
+    pub(crate) fn end_frame(&mut self) {
+        self.deferred_images = false;
+    }
+    pub(crate) fn begin_chat(&mut self) {
+        if !self.deferred_images {
+            self.frame_overlays
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            self.image_operations.clear();
+        }
+    }
+    pub(crate) fn queue_image(
+        &mut self,
+        url: String,
+        attachment: RenderedScene,
+        viewport: Rect,
+        offset: i32,
+    ) {
+        self.image_operations.push(ImageOperation {
+            url,
+            attachment,
+            viewport,
+            offset,
+        });
+    }
+    /// Terminal graphics are emitted only after every painted overlay is known.
+    pub(crate) fn take_image_operations(&mut self) -> Vec<ImageOperation> {
+        let overlays = self
+            .frame_overlays
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::mem::take(&mut self.image_operations)
+            .into_iter()
+            .filter(|op| {
+                let bounds = PaintView::new(
+                    op.viewport,
+                    i32::from(op.viewport.x),
+                    i32::from(op.viewport.y) + op.offset,
+                )
+                .rect(Rect::new(0, 0, op.attachment.width, op.attachment.height));
+                !overlays
+                    .iter()
+                    .any(|overlay| !overlay.intersection(bounds).is_empty())
+            })
+            .collect()
+    }
+    /// A controller is focusable only where its own template has visible content.
+    pub(crate) fn record_controller(&mut self, name: &str, scene: &RenderedScene) {
+        let bounds = if scene.visible_slots().is_empty() {
+            Rect::default()
+        } else {
+            scene
+                .nodes
+                .first()
+                .map_or(Rect::default(), |n| n.bounds.intersection(n.clip))
+        };
+        self.controller_regions.insert(name.into(), bounds);
+    }
+    pub(crate) fn controller_bounds(&self, name: &str) -> Rect {
+        self.controller_regions
+            .get(name)
+            .copied()
+            .unwrap_or_default()
     }
     /// Clear a canvas or overlay, installing the terminal's semantic defaults.
     pub fn clear(&self, frame: &mut Frame, area: Rect) {
@@ -1149,6 +1274,7 @@ impl Renderer {
             .map_err(internal)?;
         let mut scene = RenderedScene {
             depth: self.depth,
+            frame_overlays: self.frame_overlays.clone(),
             width: self
                 .tree
                 .layout(viewport)
@@ -1259,6 +1385,7 @@ impl Renderer {
             data.inherited_style = style;
             if selected == Some(index) {
                 data.root_states.push("selected".into());
+                data.inherited_style = style.patch(crate::ui::theme::highlight_style());
             }
             let scene = renderer.arrange_instance_mode(
                 template,
@@ -1324,11 +1451,6 @@ impl Renderer {
                             .rect(root.bounds.intersection(root.clip));
                     if !bounds.is_empty() {
                         rendered.rows.push((bounds, index));
-                        if selected == Some(index) {
-                            frame
-                                .buffer_mut()
-                                .set_style(bounds, crate::ui::theme::highlight_style());
-                        }
                     }
                 }
             }
@@ -1614,6 +1736,7 @@ fn build<'a>(
         .unwrap_or_default();
     let mut runs = Vec::new();
     let mut prefix_chars = 0;
+    let mut inline = Vec::new();
     if node.tag == "rich" {
         text.clear();
         let mut start = 0;
@@ -1650,6 +1773,15 @@ fn build<'a>(
                 text.push_str(separator);
                 offset += separator.chars().count();
             }
+            inline.push(InlineDefinition {
+                label: node_label(child.node, &child.namespace),
+                range: offset..offset + child.text.chars().count(),
+                style: child.style.clone(),
+            });
+            inline.extend(child.inline.iter().cloned().map(|mut definition| {
+                definition.range = definition.range.start + offset..definition.range.end + offset;
+                definition
+            }));
             for run in &child.runs {
                 let mut run = run.clone();
                 run.range = run.range.start + offset..run.range.end + offset;
@@ -1721,10 +1853,34 @@ fn build<'a>(
         id,
         style,
         children,
+        inline,
         text,
         runs,
         prefix_chars,
     })
+}
+fn node_label(node: &Node, namespace: &str) -> String {
+    format!(
+        "{}<{}{}{}>",
+        namespace,
+        node.tag,
+        if node.attr("id").is_empty() {
+            String::new()
+        } else {
+            format!(" #{}", node.attr("id"))
+        },
+        if node.attr("class").is_empty() {
+            String::new()
+        } else {
+            format!(
+                " .{}",
+                node.attr("class")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(".")
+            )
+        }
+    )
 }
 fn freeze_widths(tree: &mut TaffyTree<Measure>, built: &Built<'_>) -> Result<(), Diagnostic> {
     let mut width = tree.layout(built.id).map_err(internal)?.size.width;
@@ -1838,7 +1994,7 @@ fn collect(
         .iter()
         .any(|name| name == built.node.attr("bind"))
     {
-        crate::ui::widgets::table::truncate_display_start(&built.text, content.width as usize).0
+        super::text::truncate_display_start(&built.text, content.width as usize).0
     } else {
         built.text.clone()
     };
@@ -1868,6 +2024,47 @@ fn collect(
             }
         })
         .collect();
+    for definition in &built.inline {
+        let rectangles = fragments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, fragment)| {
+                let start = definition.range.start.max(fragment.source.start);
+                let end = definition.range.end.min(fragment.source.end);
+                if start >= end {
+                    return None;
+                }
+                let prefix: String = fragment
+                    .text
+                    .chars()
+                    .take(start - fragment.source.start)
+                    .collect();
+                let text: String = fragment
+                    .text
+                    .chars()
+                    .skip(start - fragment.source.start)
+                    .take(end - start)
+                    .collect();
+                Some(Rect::new(
+                    content
+                        .x
+                        .saturating_add(align_offsets[index])
+                        .saturating_add(fragment.indent as u16)
+                        .saturating_add(prefix.width() as u16),
+                    content
+                        .y
+                        .saturating_add(fragment.row.min(u16::MAX as usize) as u16),
+                    text.width().min(u16::MAX as usize) as u16,
+                    1,
+                ))
+            })
+            .collect();
+        scene.inline.push(InlineGeometry {
+            definition: definition.clone(),
+            fragments: rectangles,
+            clip: content.intersection(clip),
+        });
+    }
     let mut runs = built.runs.clone();
     if text != built.text {
         // A filename-preserving ellipsis is decoration, not a source character.
@@ -1930,6 +2127,7 @@ fn collect(
     let node_index = scene.nodes.len();
     scene.nodes.push(Arranged {
         subtree_end: node_index + 1,
+        label: node_label(built.node, &built.namespace),
         progress: if built.node.tag == "progress" {
             data.progress.get(built.node.attr("bind")).copied()
         } else {

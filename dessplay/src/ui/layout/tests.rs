@@ -9,6 +9,74 @@ fn defaults_are_valid_and_transferable() {
     send_sync::<LayoutBundle>();
     assert!(LayoutBundle::builtin().is_ok());
 }
+
+#[test]
+fn inspector_retains_inline_field_declarations_and_fragment_bounds() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    std::fs::write(directory.path().join("templates/message.xml"), r#"<templates version="1"><template name="chat-message"><flow><text id="when" bind="timestamp" style="color: red"/><rich id="body-text" bind="body" style="font-style: italic"/></flow></template></templates>"#).unwrap();
+    let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+    let scene = renderer
+        .arrange(
+            "chat-message",
+            Rect::new(3, 2, 12, 6),
+            &Presentation::default().text("timestamp", "12:00").rich(
+                "body",
+                vec![RichSpan {
+                    text: "two wide 界 words".into(),
+                    ..Default::default()
+                }],
+            ),
+        )
+        .unwrap();
+    let inspection = scene.inspect().join("\n");
+    assert!(inspection.contains("when"), "{inspection}");
+    assert!(inspection.contains("color: red"), "{inspection}");
+    assert!(inspection.contains("font-style: italic"), "{inspection}");
+    for region in &scene.text_regions {
+        assert!(
+            inspection.contains(&format!("{:?}", region.bounds)),
+            "{inspection}"
+        );
+    }
+}
+
+#[test]
+fn selected_collection_appearance_is_resolved_before_painting() {
+    use tuirealm::ratatui::style::{Color, Modifier, Style};
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("templates")).unwrap();
+    std::fs::write(directory.path().join("templates/row.xml"), r#"<templates version="1"><template name="playlist-row"><text bind="title"/></template></templates>"#).unwrap();
+    std::fs::write(
+        directory.path().join("style.css"),
+        "text:selected { text-decoration: none; color: red; }",
+    )
+    .unwrap();
+    let mut renderer = Renderer::new(LayoutBundle::load(directory.path()).unwrap());
+    let rows = vec![PresentedRow {
+        key: "entry".into(),
+        data: Presentation::default().text("title", "Selected"),
+        gap_after: false,
+    }];
+    let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer
+                .paint_rows(
+                    frame,
+                    frame.area(),
+                    "playlist-row",
+                    &rows,
+                    Some(0),
+                    Style::default(),
+                )
+                .unwrap()
+        })
+        .unwrap();
+    let cell = &terminal.backend().buffer()[(0, 0)];
+    assert_eq!(cell.fg, Color::Red);
+    assert!(!cell.modifier.contains(Modifier::REVERSED));
+}
 #[test]
 fn keyed_repetition_uses_item_bindings_states_and_stable_geometry_identities() {
     let directory = tempfile::tempdir().unwrap();
