@@ -11,48 +11,14 @@ Add new days at the top. Add new entries at the bottom of existing days.
 
 ## 2026-09-09
 
-- Added: Arrange Users, Playlist, and Series rows directly with keyed virtual
-  repeats in layout templates, including large lists and wrapped rows.
-- Fixed: Hidden collection and dialog choices leave keyboard navigation, while
-  offscreen choices remain reachable. Focus changes caused by layout edits now
-  show their highlight and keybindings immediately.
-- Fixed: Search and name editor borders, spacing, and colors follow layout files.
-
-## 2026-09-08
-
-- Added: Customize file and episode browsers, AniDB and Nyaa search results,
-  active imports, local-copy offers, confirmations, and name dialogs in layout
-  files. Their frames, row fields, and editor placement now follow templates.
-
-- Added: Customize settings tabs and notes as keyed lists in templates,
-  including their internal fields, spacing, and selected appearance.
-
-- Added: Customize changelog entries, playback status, and keybinding-bar fields
-  in layout templates. Changelog scrolling retains its context when text wraps
-  differently after a layout change.
-- Fixed: Custom component sizes and outer margins now affect row spacing and
-  wrapping consistently, including chat and collection rows.
-
-- Added: Customize health metrics, progress fields, form sizes, Save rows, and
-  validation messages in layout files. Narrow terminals retain useful health
-  suggestions while the progress bar yields space.
-
-- Added: Rearrange the log/dungeon page and its recent-chat strip in layout
-  files, and customize work-progress labels, rows, and overlay appearance.
-
-- Fixed: Layout colors now override dimmed component defaults consistently,
-  including health metrics and form chrome. Image colors remain independent
-  of text themes.
-
-- Added: Customize dungeon condition fields, wound and threat summaries, journal
-  entries, and loading notices in layout files. Treatment keeps targeting the
-  selected body region when condition rows are rearranged or rewrapped.
-
-- Fixed: Custom overlays retain their pane contents, hidden pane templates leave
-  Tab navigation, and selected-row styles respect your layout CSS.
-
-- Fixed: Overlays in custom panes suppress overlapping chat images. Layout tools
-  now show styles and measured fragments for inline text fields.
+- Added: Make DessPlay's interface your own with local XML templates and CSS.
+  Move or hide panes, rearrange table columns and chat fields, restyle forms
+  and dialogs, or relocate the dungeon sidebar. Customize colors, borders,
+  spacing, and text; edits apply live without rebuilding or losing your place.
+  Run `dessplay layout init` to export the defaults and `dessplay layout check`
+  to validate your edits. F12 opens layout tools and lets you restore the
+  bundled layout if needed. Chat images now have a border aligned after the
+  timestamp that scrolls with the image.
 
 ## 2026-09-07
 
@@ -69,45 +35,6 @@ Add new days at the top. Add new entries at the bottom of existing days.
   protocol (Kitty, sixel, or iTerm2) when it has one, showing real pixels
   instead of half-block art; terminals without one still get half-blocks.
   Set `DESSPLAY_IMAGE_PROTOCOL=halfblocks` to go back to the old look.
-- Added: Settings and List-entry forms, their field layouts, and the log
-  viewer's sections can now be customized with local XML templates and CSS.
-  Use `dessplay layout init` to export defaults, `layout check` to validate,
-  and F12 for live-reload diagnostics and recovery tools.
-- Added: Move or hide panes by editing the application layout template. Tab
-  order and mouse targets follow your layout; named splitters support dragging
-  and remember sizes until the layout files change. F12 resets drag sizes.
-
-- Improved: Chat images now have a border aligned after the timestamp. The
-  frame fits within the existing height limit and scrolls with the image.
-  Edit the chat template or stylesheet to change its border and alignment.
-- Added: Customize chat composition, command suggestions, recent chat, and
-  separate subtitle rows in layout files. Scrolled-back chat keeps its context
-  when the layout changes or new messages arrive.
-
-- Added: Rearrange Playlist columns and customize Users rows in layout files.
-  Wrapped rows and row padding keep mouse clicks attached to the right item.
-
-- Added: Customize the dungeon frame, statistics, map, sidebar, and recent
-  journal in layout files. Moving the sidebar keeps your expedition intact.
-
-
-- Added: Restyle dungeon recovery, equipment rows, guide and journal text,
-  and expedition endings through layout templates. Recovery labels and values
-  wrap together and remain independently editable.
-
-- Added: Customize log-viewer controls, dropdown options, and footer in layout
-  files. Dropdowns follow their controls when you move them.
-
-- Fixed: Layout auto-reload now works with relative directory paths and keeps
-  watching when the override directory is created or replaced.
-
-- Added: Customize chat timestamp, sender, action markers, message body, and
-  day separators in layout files. Selection and spoiler clicks follow the layout.
-- Fixed: Wide characters after a long chat prefix continue onto the next line
-  instead of disappearing when the remaining space is too narrow.
-
-- Added: Customize Recent Series, All Series, and The List in layout files,
-  including episode and watcher columns, group headings, and the filter caption.
 
 ## 2026-09-06
 
