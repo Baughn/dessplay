@@ -31,6 +31,10 @@ This section describes the full workflow from a user's perspective.
 
 ### First Launch
 
+The installed launcher preserves the caller's working directory in both the
+Nix and system-Cargo paths, including the first-install handoff. Relative
+command-line paths and startup `.env` lookup use that directory.
+
 1. **Launch DessPlay** from the terminal: `dessplay`
 2. **Settings screen** appears (automatically on first run; reopen any time
    later with `F3` or the `/settings` chat command):

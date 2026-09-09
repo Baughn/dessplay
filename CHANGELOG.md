@@ -19,6 +19,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   to validate your edits. F12 opens layout tools and lets you restore the
   bundled layout if needed. Chat images now have a border aligned after the
   timestamp that scrolls with the image.
+- Fixed: Installed launchers preserve your current directory, so commands like
+  `dessplay layout init dirname` use paths relative to where you ran DessPlay.
 
 ## 2026-09-07
 

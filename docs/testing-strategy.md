@@ -144,6 +144,12 @@ overlay, reopening active imports, and `d` cancellation.
 
 ## Running the Suite
 
+The Unix launcher integration tests run the real `install.sh` with isolated
+Git, Cargo, and Nix shell substitutes. Both launch branches cover an installed
+symlink and the first-install handoff, failed updates, caller-directory
+preservation, quoted paths/arguments, empty arguments, and exit-status forwarding.
+They require neither a network connection nor a nested release build.
+
 The slow-mpv-startup Unix-socket regression is ignored by default because
 restricted sandboxes cannot bind its socket. Run it explicitly with
 `cargo nextest run --run-ignored only -E 'test(a_slow_mpv_startup_is_not_a_crash)'`

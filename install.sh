@@ -121,12 +121,15 @@ require_tools() {
 }
 
 run_mode() {
-    cd "$REPO_DIR" || die "clone missing at $REPO_DIR; re-run the installer"
-
-    if have git; then
-        say "Updating ($REPO_DIR)"
-        git pull --ff-only || warn "git pull failed; running the existing checkout"
-    fi
+    # Only the update runs in the checkout. Keep the caller's directory for
+    # Cargo and the application so every relative path retains its meaning.
+    (
+        cd "$REPO_DIR" || die "clone missing at $REPO_DIR; re-run the installer"
+        if have git; then
+            say "Updating ($REPO_DIR)"
+            git pull --ff-only || warn "git pull failed; running the existing checkout"
+        fi
+    )
 
     if have_nix; then
         say "Nix detected; building inside nix-shell"
@@ -138,7 +141,7 @@ in pkgs.mkShell {
   buildInputs = [ pkgs.cargo pkgs.rustc pkgs.pkg-config pkgs.openssl pkgs.libwebp pkgs.mpv pkgs.git ];
   PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
 }'
-        run_cmd="cargo run --release -p dessplay --"
+        run_cmd="cargo run --release --manifest-path $(quote "$REPO_DIR/Cargo.toml") -p dessplay --"
         for arg in "$@"; do
             run_cmd="$run_cmd $(quote "$arg")"
         done
@@ -146,7 +149,7 @@ in pkgs.mkShell {
     else
         require_tools
         say "Building and launching dessplay"
-        exec cargo run --release -p dessplay -- "$@"
+        exec cargo run --release --manifest-path "$REPO_DIR/Cargo.toml" -p dessplay -- "$@"
     fi
 }
 

@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-07
+Last updated: 2026-09-09
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,20 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## Installed launcher preserves the caller's directory (2026-09-09)
+
+**Rule:** Installation and launch preserve the caller's working directory;
+see [design.md](design.md#first-launch).
+
+**Why:** The launcher changed into the checkout for `git pull` and left
+`cargo run` there, so `layout init dirname` exported into the repository.
+Both the Nix and system-Cargo branches affected every relative path, including
+layout validation/overrides, CSV imports, database/cache/media/socket paths,
+and startup `.env` lookup. The update now changes directory only in a subshell;
+Cargo receives the checkout's explicit manifest path and runs from the caller's
+directory. This preserves Cargo's executable discovery and runtime environment
+without hardcoding a build-output path or repairing individual CLI arguments.
 
 ## Measured dungeon inspection and summaries (2026-09-08)
 

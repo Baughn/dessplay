@@ -12,6 +12,8 @@ for verification status and the remaining physical terminal graphics checks.
 are kept, including files whose contents differ from the defaults.
 `dessplay layout check [PATH]` compiles the complete candidate without starting
 a terminal, player, network connection, or storage session.
+Explicit relative paths, including `--layout-dir`, resolve from your current
+directory, also when launching through `install.sh`.
 
 The default directory is `dirs::config_dir()/dessplay/ui` (on macOS, normally
 `~/Library/Application Support/dessplay/ui`). `--layout-dir PATH` overrides
