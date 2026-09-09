@@ -22,6 +22,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: Installed launchers preserve your current directory, so commands like
   `dessplay layout init dirname` use paths relative to where you ran DessPlay.
 
+- Added: Installed clients can choose master or stable in F3 → Account → Update
+  track. Stable gets protocol changes and critical fixes with fewer rebuilds;
+  your saved choice takes effect the next time you run the launcher.
+- Fixed: When the launcher updates itself, it restarts before building so the
+  new launch instructions apply immediately.
+
 ## 2026-09-07
 
 - Added: Image links posted in chat (DessPlay or IRC) now download and

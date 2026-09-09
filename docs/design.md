@@ -43,6 +43,29 @@ command-line paths and startup `.env` lookup use that directory.
    - Add media root directories (where your anime/shows live; terminal version only)
 3. **Main screen** appears with chat pane, users list, playlist and video library
 
+### Launcher update tracks
+
+The installed launcher follows `master` by default. `stable` points to an ancestor
+of (or the same commit as) `master` on the same linear history, with no separate
+release branch. Protocol changes and critical fixes advance `stable` on commit;
+routine features and non-critical fixes do not.
+
+F3 → Account → **Update track** cycles `master` / `stable`. Save writes the choice
+atomically to the file supplied by `--update-track-file`; Cancel leaves it alone.
+The control is greyed out and cannot change without that flag. This file is the
+single source of truth, outside SQLite and synced state. The installer supplies
+`${XDG_CACHE_HOME:-$HOME/.cache}/dessplay/update-track`; a missing file means
+`master`, while invalid or unreadable contents are errors. The file contains only
+the bookmark name, optionally followed by newlines. Changes apply on the next
+launcher invocation, including switches backward to stable or forward to master.
+
+The launcher fetches the selected bookmark explicitly, including in existing
+shallow clones, and checks it out detached without forcing local modifications.
+Failed updates retain the existing checkout. Cargo builds as needed. If an update
+changes `install.sh`, the launcher re-executes it before building, skipping a
+second update and retaining arguments, exit status and the caller's directory.
+First installation clones master and then uses this same launch path.
+
 ### Settings Screen
 
 The settings screen is divided into five tabs, selected with Left/Right;
@@ -55,7 +78,8 @@ working copy atomically. Tabs containing a missing required value carry a
   equivalent on Windows), server (defaults to `dessplay.brage.info`), room
   password, and Ready on startup. When Ready on startup is off the user joins
   Paused; when on they join Ready. Server and password changes apply on the
-  next launch. Also carries the **Reset synced state** action row, the
+  next launch. **Update track** selects master or stable for the next launcher
+  run (see above). Also carries the **Reset synced state** action row, the
   modal path to `/resync` (see docs/sync-state.md, Manual Reset): it clears
   the local replica and restarts the client, and the restart re-adopts the
   server's copy. There is no confirm step; local-only tables are untouched

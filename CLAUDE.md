@@ -28,6 +28,22 @@ A `.env` file (gitignored) contains `DESSPLAY_PASSWORD` for the default rendezvo
 
 The rendezvous server and the primary seeder run on **tsugumi.local** as systemd services **`dessplay-rendezvous`** and **`dessplay-seeder`**. Their NixOS configuration lives in `~/nixos/machines/tsugumi`.
 
+# Update tracks
+
+`install.sh` follows `master` by default. F3 → Account → Update track lets installed
+clients choose `stable` for fewer rebuilds on slow computers. The launcher passes
+`--update-track-file` with its plain-text choice file outside the checkout; the
+setting is disabled without that flag and applies on the next launcher run.
+
+`stable` is a bookmark on the same linear history as `master`, usually some
+revisions behind. There is no release branch and no cherry-picking/backporting.
+**When committing protocol changes or critical fixes, advance `stable` to that
+commit** (`jj bookmark set stable -r @-` after `jj commit`). Routine features and
+non-critical fixes leave it alone. Keep `stable` an ancestor of (or equal to)
+`master`, and publish the advanced bookmark with master when pushing those
+changes. The initial tracks implementation advances both bookmarks once so
+stable also understands the launcher flag and settings control.
+
 # Changelog
 
 Every **user-visible** change (a new feature, a fix a user would notice, a

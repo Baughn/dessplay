@@ -25,6 +25,8 @@ use crate::storage::Storage;
 /// stored settings / environment / defaults".
 #[derive(Debug, Default)]
 pub struct HeadlessArgs {
+    /// Launcher-owned track file (interactive settings only).
+    pub update_track_file: Option<PathBuf>,
     /// Runtime terminal layout discovery (interactive mode only).
     pub layout_options: crate::ui::layout::LayoutOptions,
     /// Run as a seeder: no settings database, flags/env only, never
@@ -745,6 +747,11 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
     let mut settings: crate::config::Settings = setup_storage
         .load_settings()
         .map_err(|e| format!("loading settings: {e}"))?;
+    settings.launcher_track = args
+        .update_track_file
+        .clone()
+        .map(crate::update_track::LauncherTrack::load)
+        .transpose()?;
     // `--media-root` overrides the stored roots for this run (never
     // persisted): `resolve_runtime_media_roots` returns the runtime roots
     // (used by the file actor) alongside the *persistable* base (seeded into
@@ -890,6 +897,17 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
                     }
                 }
                 Some(UserAction::SaveSettings(saved, roots)) => {
+                    if let Err(error) = crate::update_track::LauncherTrack::save_change(
+                        settings.launcher_track.as_ref(),
+                        saved.launcher_track.as_ref(),
+                    ) {
+                        tracing::error!(%error);
+                        let _ = input_tx.try_send(UiInput::System {
+                            timestamp: (system_clock())(),
+                            text: error,
+                        });
+                        continue;
+                    }
                     setup_storage
                         .save_settings(&saved)
                         .map_err(|e| format!("saving settings: {e}"))?;
@@ -1702,6 +1720,15 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             }
                         }
                         Some(UserAction::SaveSettings(saved, roots)) => {
+                            if let Err(error) = crate::update_track::LauncherTrack::save_change(
+                                self.settings.launcher_track.as_ref(), saved.launcher_track.as_ref(),
+                            ) {
+                                tracing::error!(%error);
+                                let _ = self.ui.try_send(UiInput::System {
+                                    timestamp: (system_clock())(), text: error,
+                                });
+                                continue;
+                            }
                             if let Err(e) = self.storage.save_settings(&saved) {
                                 tracing::error!("saving settings: {e}");
                             }

@@ -148,7 +148,12 @@ The Unix launcher integration tests run the real `install.sh` with isolated
 Git, Cargo, and Nix shell substitutes. Both launch branches cover an installed
 symlink and the first-install handoff, failed updates, caller-directory
 preservation, quoted paths/arguments, empty arguments, and exit-status forwarding.
-They require neither a network connection nor a nested release build.
+The same matrix covers missing/default/master/stable choices, invalid files,
+unchanged scripts, changed-script re-execution before building, a single fetch
+per invocation, and checkout failures. Launcher settings tests cover both toggle
+directions, Save/Cancel, disabled styling without a flag, atomic file persistence,
+error reporting, and exclusion from SQLite. These tests require neither a network
+connection nor a nested release build.
 
 The slow-mpv-startup Unix-socket regression is ignored by default because
 restricted sandboxes cannot bind its socket. Run it explicitly with

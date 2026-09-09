@@ -103,9 +103,19 @@ Afterwards just run:
 dessplay
 ```
 
-Every launch does a `git pull --ff-only` and rebuilds, so you always run the
-latest commit. (If the pull fails — e.g. you're offline — it runs the existing
-checkout instead.)
+Every launch fetches the selected update track and builds as needed. The default
+is **master**, which follows every change. Choose **stable** in F3 → Account →
+Update track, then Save, to rebuild less often on slower computers. Stable points
+to an earlier revision of the same history and advances for protocol changes or
+critical fixes; it has no separate release branch. The choice takes effect the
+next time you run the launcher. Failed updates (for example, while offline)
+leave you running the existing checkout.
+
+The launcher supplies `--update-track-file` pointing at
+`${XDG_CACHE_HOME:-$HOME/.cache}/dessplay/update-track`, a plain file containing
+`master` or `stable`; a missing file means `master`. The setting is greyed out
+without this flag. If an update changes the launcher itself, it restarts before
+building, preserving your arguments and working directory.
 
 ## Requirements
 

@@ -487,11 +487,13 @@ pub(crate) fn format_upload_limit(limit: Option<u64>) -> String {
     format!("{bytes_per_second} B/s")
 }
 
-/// All persisted client settings. `username` and `password` are `None`
+/// Client settings (launcher configuration is runtime-only). `username` and `password` are `None`
 /// until first-run setup completes — that's the "show the settings
 /// screen" signal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
+    /// Launcher file and working choice; never persisted in SQLite.
+    pub launcher_track: Option<crate::update_track::LauncherTrack>,
     /// Self-chosen nickname. Defaults to `$USER` in the settings screen,
     /// but is only persisted once confirmed.
     pub username: Option<String>,
@@ -586,6 +588,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            launcher_track: None,
             username: None,
             server: "dessplay.brage.info".into(),
             password: None,
@@ -725,6 +728,7 @@ impl Settings {
     pub(crate) fn load(storage: &Storage) -> Result<Self> {
         let defaults = Settings::default();
         Ok(Settings {
+            launcher_track: None,
             username: storage.setting("username")?,
             server: storage.setting("server")?.unwrap_or(defaults.server),
             password: storage.setting("password")?,
@@ -969,6 +973,7 @@ mod tests {
     fn settings_round_trip() {
         let storage = Storage::open_in_memory().unwrap();
         let settings = Settings {
+            launcher_track: None,
             username: Some("Baughn".into()),
             server: "localhost".into(),
             password: Some("hunter2".into()),

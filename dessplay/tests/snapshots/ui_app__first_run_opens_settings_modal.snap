@@ -13,8 +13,8 @@ expression: screen
 │              │Password                                                 next launch│──────────────┘
 │              │Ready on startup        no                               next launch│──────────────┐
 │              │                                                                    │              │
+│              │Update track            master           requires installed launcher│              │
 │              │[Reset synced state]                  discard + re-adopt from server│              │
-│              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │
 │              │                                                                    │              │

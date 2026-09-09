@@ -1026,6 +1026,7 @@ enum SettingId {
     Server,
     Password,
     ReadyOnStartup,
+    UpdateTrack,
     Player,
     SubtitleMode,
     SubtitleSpeakerNames,
@@ -1199,6 +1200,24 @@ impl SettingsForm {
             )
             .annotated("next launch", theme::dim())
             .with_gap_after(),
+            {
+                let row = FormRow::choice(
+                    SettingId::UpdateTrack,
+                    "Update track",
+                    self.settings
+                        .launcher_track
+                        .as_ref()
+                        .map(|launcher| launcher.track)
+                        .unwrap_or_default()
+                        .label(),
+                );
+                if self.settings.launcher_track.is_some() {
+                    row.annotated("next launcher run", theme::dim())
+                } else {
+                    row.styled(theme::dim())
+                        .annotated("requires installed launcher", theme::dim())
+                }
+            },
             // The modal path to `/resync` (docs/sync-state.md,
             // Divergence Alarm): applies immediately, no confirm —
             // activating the row is the deliberate act, and the state
@@ -1426,6 +1445,11 @@ impl FormModel for SettingsForm {
             }
             (SettingId::SubtitleMode, FormEdit::Cycle) => {
                 self.settings.subtitle_mode = self.settings.subtitle_mode.next();
+            }
+            (SettingId::UpdateTrack, FormEdit::Cycle) => {
+                if let Some(launcher) = &mut self.settings.launcher_track {
+                    launcher.track = launcher.track.next();
+                }
             }
             (SettingId::SubtitleSpeakerNames, FormEdit::SetBool(value)) => {
                 self.settings.subtitle_speaker_names = value;
@@ -4349,6 +4373,57 @@ mod tests {
         );
         modal.form.select_save();
         assert_eq!(modal.on(&enter()), Some(Msg::None));
+    }
+
+    #[test]
+    fn update_track_requires_launcher_and_edits_only_the_saved_draft() {
+        use crate::update_track::{LauncherTrack, UpdateTrack};
+        let mut disabled = saveable_settings();
+        let row = disabled
+            .form
+            .model
+            .rows()
+            .into_iter()
+            .find(|row| row.id == SettingId::UpdateTrack)
+            .unwrap();
+        assert_eq!(row.style, theme::dim());
+        assert!(disabled.form.select_row(&SettingId::UpdateTrack));
+        disabled.on(&enter());
+        assert!(disabled.form.model.settings.launcher_track.is_none());
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("update-track");
+        let mut initial = saveable_settings().form.model.settings;
+        initial.launcher_track = Some(LauncherTrack::load(path.clone()).unwrap());
+        for save in [false, true] {
+            let mut modal = SettingsModal::new(initial.clone(), vec!["/anime".into()]);
+            assert!(modal.form.select_row(&SettingId::UpdateTrack));
+            modal.on(&enter());
+            assert!(!path.exists(), "editing must not persist before Save");
+            if save {
+                let Some(Msg::SettingsSaved(saved, _)) =
+                    modal.on(&key(Key::Char('S'), KeyModifiers::SHIFT))
+                else {
+                    panic!("expected settings save");
+                };
+                assert_eq!(
+                    saved.launcher_track.as_ref().unwrap().track,
+                    UpdateTrack::Stable
+                );
+                LauncherTrack::save_change(
+                    initial.launcher_track.as_ref(),
+                    saved.launcher_track.as_ref(),
+                )
+                .unwrap();
+                assert_eq!(
+                    LauncherTrack::load(path.clone()).unwrap().track,
+                    UpdateTrack::Stable
+                );
+            } else {
+                modal.on(&key(Key::Esc, KeyModifiers::NONE));
+                assert!(!path.exists(), "cancel must leave the track unchanged");
+            }
+        }
     }
 
     #[test]

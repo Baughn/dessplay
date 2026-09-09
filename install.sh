@@ -10,7 +10,7 @@
 #   Run after: dessplay [args...]
 #
 # On first run (no clone yet) it clones the repo and symlinks itself into
-# ~/.local/bin, then launches. On every later run it pulls the latest commit and
+# ~/.local/bin, then launches. On every later run it fetches the selected track and
 # builds/runs the main `dessplay` binary -- via nix-shell whenever Nix is
 # installed (NixOS, or any distro / macOS with the Nix package manager), or via
 # the system's own cargo otherwise.
@@ -20,6 +20,7 @@ set -eu
 REPO_URL="https://github.com/Baughn/dessplay.git"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dessplay"
 REPO_DIR="$CACHE_DIR/repo"
+TRACK_FILE="$CACHE_DIR/update-track"
 BIN_DIR="$HOME/.local/bin"
 BIN_LINK="$BIN_DIR/dessplay"
 
@@ -79,7 +80,7 @@ install_mode() {
     if [ ! -d "$REPO_DIR/.git" ]; then
         say "Cloning dessplay into $REPO_DIR"
         mkdir -p "$CACHE_DIR"
-        git clone --depth 1 "$REPO_URL" "$REPO_DIR"
+        git clone --depth 1 --branch master "$REPO_URL" "$REPO_DIR"
     fi
 
     mkdir -p "$BIN_DIR"
@@ -97,7 +98,7 @@ install_mode() {
 }
 
 # ---------------------------------------------------------------------------
-# Run mode: pull, then build/run the main binary.
+# Run mode: select the track, update, then build/run the main binary.
 # ---------------------------------------------------------------------------
 
 require_tools() {
@@ -121,15 +122,43 @@ require_tools() {
 }
 
 run_mode() {
-    # Only the update runs in the checkout. Keep the caller's directory for
-    # Cargo and the application so every relative path retains its meaning.
-    (
-        cd "$REPO_DIR" || die "clone missing at $REPO_DIR; re-run the installer"
-        if have git; then
-            say "Updating ($REPO_DIR)"
-            git pull --ff-only || warn "git pull failed; running the existing checkout"
+    track=master
+    if [ -e "$TRACK_FILE" ]; then
+        track=$(cat "$TRACK_FILE") || die "cannot read $TRACK_FILE"
+    fi
+    case "$track" in
+        master|stable) ;;
+        *) die "invalid update track in $TRACK_FILE (expected master or stable)" ;;
+    esac
+
+    # An update may replace this very script. Restart once, before using any
+    # build/launch logic, and skip the second fetch (also prevents loops if
+    # the remote moves again). Do not leak the handoff marker to the app.
+    reexec=${DESSPLAY_LAUNCHER_REEXEC:-0}
+    unset DESSPLAY_LAUNCHER_REEXEC
+    if [ "$reexec" != 1 ]; then
+        launcher_before=$(cksum < "$REPO_DIR/install.sh")
+        # Keep the caller's directory for Cargo, application paths and .env.
+        (
+            cd "$REPO_DIR" || die "clone missing at $REPO_DIR; re-run the installer"
+            if have git; then
+                say "Updating $track ($REPO_DIR)"
+                # Explicit refspec also works for old single-branch shallow
+                # clones. Detached checkout permits switching backwards to
+                # stable; without --force it protects local modifications.
+                if git fetch --depth 1 origin "+refs/heads/$track:refs/remotes/origin/$track"; then
+                    git checkout --detach "refs/remotes/origin/$track" ||
+                        warn "could not switch to $track; running the existing checkout"
+                else
+                    warn "git fetch failed; running the existing checkout"
+                fi
+            fi
+        )
+        if [ "$launcher_before" != "$(cksum < "$REPO_DIR/install.sh")" ]; then
+            say "Launcher updated; restarting"
+            DESSPLAY_LAUNCHER_REEXEC=1 exec sh "$REPO_DIR/install.sh" "$@"
         fi
-    )
+    fi
 
     if have_nix; then
         say "Nix detected; building inside nix-shell"
@@ -141,7 +170,7 @@ in pkgs.mkShell {
   buildInputs = [ pkgs.cargo pkgs.rustc pkgs.pkg-config pkgs.openssl pkgs.libwebp pkgs.mpv pkgs.git ];
   PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
 }'
-        run_cmd="cargo run --release --manifest-path $(quote "$REPO_DIR/Cargo.toml") -p dessplay --"
+        run_cmd="cargo run --release --manifest-path $(quote "$REPO_DIR/Cargo.toml") -p dessplay -- --update-track-file $(quote "$TRACK_FILE")"
         for arg in "$@"; do
             run_cmd="$run_cmd $(quote "$arg")"
         done
@@ -149,7 +178,7 @@ in pkgs.mkShell {
     else
         require_tools
         say "Building and launching dessplay"
-        exec cargo run --release --manifest-path "$REPO_DIR/Cargo.toml" -p dessplay -- "$@"
+        exec cargo run --release --manifest-path "$REPO_DIR/Cargo.toml" -p dessplay -- --update-track-file "$TRACK_FILE" "$@"
     fi
 }
 

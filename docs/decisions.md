@@ -16,6 +16,31 @@ remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
 
+## Stable is a delayed bookmark, with launcher-owned selection (2026-09-09)
+
+**Rule:** See [Launcher update tracks](design.md#launcher-update-tracks).
+
+**Why:** Dagger's older computer should not need to rebuild for every feature or
+non-critical fix. A delayed bookmark keeps everyone on one development history
+while protocol changes and critical fixes still reach stable users promptly.
+Release branches and backports would add maintenance without helping this goal.
+The initial implementation advances stable once to ensure either track supports
+the flag and control; subsequent routine commits can leave stable behind.
+
+The installer has no selection UI. The application edits the exact file named by
+the launcher, so a build launched directly cannot claim to configure an installer
+it knows nothing about. This runtime capability travels with the settings working
+copy but never enters SQLite. First-run and in-session saves share the same atomic
+file writer; unrelated saves do not rewrite the choice.
+
+A fast-forward pull cannot switch to an older stable revision. An explicit shallow
+fetch and detached checkout handle both directions and migrate existing
+single-branch clones without discarding local edits. Script replacement is checked
+before either build path: otherwise a launch can use obsolete flags or build
+commands after updating. Re-execution skips its second fetch to avoid update loops.
+The first upgrade from the legacy launcher may still need the already-accepted
+second launch before the settings control is enabled.
+
 ## Installed launcher preserves the caller's directory (2026-09-09)
 
 **Rule:** Installation and launch preserve the caller's working directory;

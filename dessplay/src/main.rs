@@ -20,6 +20,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Cli {
+    /// Launcher track file; enables master/stable selection in settings.
+    #[arg(long, value_name = "PATH")]
+    update_track_file: Option<std::path::PathBuf>,
     /// Override the local terminal layout directory.
     #[arg(long, conflicts_with = "builtin_layout")]
     layout_dir: Option<std::path::PathBuf>,
@@ -214,6 +217,7 @@ fn main() -> color_eyre::Result<()> {
     }
 
     let args = HeadlessArgs {
+        update_track_file: cli.update_track_file,
         layout_options: dessplay::ui::layout::LayoutOptions {
             directory: cli.layout_dir,
             builtin: cli.builtin_layout,

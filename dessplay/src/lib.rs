@@ -35,3 +35,4 @@ pub mod sync_storage;
 pub mod timeutil;
 pub mod torrent;
 pub mod ui;
+pub mod update_track;
