@@ -9,6 +9,11 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-11
+
+- Added: Click a chat image to view it fullscreen. Press any key or click again
+  to return to chat.
+
 ## 2026-09-09
 
 - Added: Make DessPlay's interface your own with local XML templates and CSS.

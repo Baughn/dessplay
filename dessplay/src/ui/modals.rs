@@ -51,6 +51,8 @@ macro_rules! passive_modal {
     };
 }
 
+mod image_view;
+pub(crate) use image_view::ImageModal;
 mod log_view;
 pub use log_view::LogModal;
 mod roguelike;

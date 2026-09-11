@@ -297,6 +297,8 @@ struct RenderedChatLog {
     /// renderer records these independently from text-theme painting
     /// (their fg/bg pairs *are* the picture).
     image_areas: Vec<Rect>,
+    /// URL identities for successfully painted, visible image pixels.
+    image_hits: Vec<(Rect, String)>,
 }
 
 impl RenderedChatLog {
@@ -540,6 +542,24 @@ impl ChatPane {
             }
         }
         fetches
+    }
+
+    /// Open only pixels that survived the final overlay/clip pass. Keep an
+    /// owned source so later chat compaction cannot remove the open image.
+    pub(crate) fn image_at(&self, column: u16, row: u16) -> Option<super::modals::ImageModal> {
+        let position = tuirealm::ratatui::layout::Position::new(column, row);
+        let (_, url) = self
+            .rendered
+            .image_hits
+            .iter()
+            .find(|(area, _)| area.contains(position))?;
+        let ImageSlot::Ready { image, .. } = self.images.get(url)? else {
+            return None;
+        };
+        Some(super::modals::ImageModal::new(
+            image.clone(),
+            self.picker.clone()?,
+        ))
     }
 
     /// Hide inline images this frame (a modal is open — graphics
@@ -1415,6 +1435,7 @@ impl ChatPane {
                 })
                 .collect(),
             image_areas,
+            image_hits: Vec::new(),
         };
         let selection = self.selection_range();
         for (idx, first, message) in message_bands {
@@ -1463,6 +1484,7 @@ impl ChatPane {
         renderer: &mut super::layout::Renderer,
     ) {
         self.rendered.image_areas.clear();
+        self.rendered.image_hits.clear();
         let mut broken = Vec::new();
         for operation in renderer.take_image_operations() {
             let url = operation.url;
@@ -1500,6 +1522,9 @@ impl ChatPane {
                 }
             }
             if let Some((_, protocol)) = sliced {
+                if !pixels.is_empty() {
+                    self.rendered.image_hits.push((pixels, url.clone()));
+                }
                 frame.render_widget(
                     ratatui_image::sliced::SlicedImage::new(
                         protocol,
@@ -2157,6 +2182,7 @@ impl ChatPane {
                 selectable: true,
             }],
             image_areas: Vec::new(),
+            image_hits: Vec::new(),
         };
     }
 
@@ -4942,6 +4968,7 @@ mod chat_spoiler_tests {
                 })
                 .collect(),
             image_areas: Vec::new(),
+            image_hits: Vec::new(),
         };
         pane
     }

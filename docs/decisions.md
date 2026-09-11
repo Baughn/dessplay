@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-09
+Last updated: 2026-09-11
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,23 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## Click-to-expand chat images (2026-09-11)
+
+**Rule:** See [Inline Chat Images](design.md#inline-chat-images).
+
+**Why:** Inline previews keep chat readable but are too small for inspecting
+pictures. A mouse-only fullscreen view provides more space without another
+keyboard binding. Every key dismisses it before global shortcuts run, so
+closing the picture cannot accidentally quit, toggle readiness, or edit chat.
+The opening press's release is ignored so a normal click leaves the viewer open.
+
+Hit targets come from the final painted image operations, after clipping and
+overlay suppression. This keeps scrolled and customized layouts aligned with
+what is visible. The viewer owns a decoded source and a separate size-cached
+encoding; it survives chat-window pruning and never magnifies an inline crop.
+Background layout is suspended while viewing to retain the chat scroll anchor
+and prevent graphics protocols or passive overlays from covering the picture.
 
 ## Stable is a delayed bookmark, with launcher-owned selection (2026-09-09)
 

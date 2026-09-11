@@ -1076,3 +1076,10 @@ and duplicate controller presentations. Navigation regressions distinguish
 explicitly hidden rows from offscreen rows, retain global form Save, verify
 editor CSS reaches the intrinsic text painter, and check that replacement focus
 is visible in the same frame.
+
+Fullscreen image scenarios click painted pixels through the whole-app dispatcher,
+including clipped previews, and verify enlargement, image-only rendering, tiny
+terminal resizes, selection between multiple images, retention after chat-window
+pruning, and dismissal by ordinary keys, global shortcuts, and mouse buttons. The opening release, drags, wheel, and paste cannot dismiss the viewer.
+Closing restores the exact rendered draft, focus, and scroll position; border
+cells and covered previews do not open it.

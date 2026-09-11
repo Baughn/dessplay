@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-09
+Last updated: 2026-09-11
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -930,6 +930,15 @@ failure, the link stays plain text with no error chrome.
   while a modal or overlay is up
   (why: [decisions](decisions.md#inline-images-hide-under-modals)), and
   never appear in the under-modal recent-chat tail.
+- **Fullscreen viewer.** Left-clicking visible image pixels opens a fullscreen
+  modal showing only that image, centered on black and scaled up or down to
+  fit the terminal while preserving its aspect ratio. Terminal resize refits
+  the image. Any keypress (including global shortcuts) or another mouse click
+  anywhere dismisses the viewer and consumes that input. The opening click's
+  release, pointer motion, wheel scrolling, and paste do not dismiss it.
+  Chat drafts, focus, and scroll position are retained. Only painted pixels
+  are clickable, including a partially scrolled image; borders and URL text
+  do not open the viewer. There is no keyboard command to open it.
 - **Terminal state.** Right after entering the alternate screen the
   client resets left/right margin mode, the scroll region, and origin
   mode (`CSI ?69l`, `CSI r`, `CSI ?6l`). Every frame assumes absolute

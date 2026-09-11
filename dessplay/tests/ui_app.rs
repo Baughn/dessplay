@@ -3098,6 +3098,186 @@ fn image_renders_inline_with_halfblocks_picker() {
     insta::assert_snapshot!(render(&mut ui, 100, 30));
 }
 
+/// Locate actual painted pixels, so these scenarios also exercise the final
+/// clipping/overlay pass rather than assuming an attachment's layout geometry.
+fn image_pixel(buffer: &tuirealm::ratatui::buffer::Buffer) -> (u16, u16) {
+    for y in buffer.area.y..buffer.area.bottom() {
+        for x in buffer.area.x..buffer.area.right() {
+            if matches!(buffer[(x, y)].symbol(), "▀" | "▄") {
+                return (x, y);
+            }
+        }
+    }
+    panic!("no image pixels painted");
+}
+
+fn image_ui() -> Ui {
+    let mut ui = ui();
+    ui.set_image_picker(ratatui_image::picker::Picker::halfblocks());
+    ui.apply_snapshot(snapshot(StateView::default(), vec![peer("kim")]));
+    ui.push_irc(1_000, "dagger".into(), format!("look {IMAGE_URL}"), false);
+    ui.take_image_fetches();
+    ui.set_chat_image(IMAGE_URL, Ok(gradient_image()));
+    ui
+}
+
+#[test]
+fn fullscreen_image_captures_every_key_before_global_actions() {
+    for dismiss in [
+        key(Key::Char('x')),
+        key(Key::Enter),
+        key(Key::Esc),
+        key(Key::Tab),
+        key(Key::Function(2)),
+        key(Key::Function(3)),
+        key(Key::Function(4)),
+        key(Key::Function(11)),
+        key(Key::Function(12)),
+        ctrl('c'),
+        ctrl('r'),
+        Event::Keyboard(KeyEvent {
+            code: Key::Up,
+            modifiers: KeyModifiers::SHIFT,
+        }),
+    ] {
+        let mut ui = image_ui();
+        ui.handle(paste("unsent draft"));
+        ui.handle(key(Key::Tab)); // Preserve the previously focused pane.
+        let before = render_buffer(&mut ui, 100, 30);
+        let (x, y) = image_pixel(&before);
+        assert!(ui.handle(click(x, y)).is_empty());
+        assert!(ui.modal_open());
+        // Opening on press must survive that same click's release/drag.
+        assert!(ui.handle(drag_to(x, y)).is_empty());
+        assert!(ui.handle(release(x, y)).is_empty());
+        assert!(ui.modal_open());
+        let expanded = render_buffer(&mut ui, 100, 30);
+        let pixel_count = |buffer: &tuirealm::ratatui::buffer::Buffer| {
+            buffer
+                .content
+                .iter()
+                .filter(|c| matches!(c.symbol(), "▀" | "▄"))
+                .count()
+        };
+        assert!(pixel_count(&expanded) > pixel_count(&before));
+        assert!(
+            expanded
+                .content
+                .iter()
+                .all(|c| matches!(c.symbol(), " " | "▀" | "▄")),
+            "fullscreen must contain only the image"
+        );
+        assert!(ui.handle(wheel(x, y, true)).is_empty());
+        assert!(ui.handle(paste("ignored paste")).is_empty());
+        assert!(ui.modal_open());
+        assert!(
+            ui.handle(dismiss).is_empty(),
+            "dismissal must not emit actions"
+        );
+        assert!(!ui.modal_open());
+        assert_eq!(
+            render_buffer(&mut ui, 100, 30),
+            before,
+            "dismissal restores focus, draft, and chat position"
+        );
+    }
+}
+
+#[test]
+fn fullscreen_image_resizes_and_closes_on_another_click_anywhere() {
+    for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+        let mut ui = image_ui();
+        let before = render_buffer(&mut ui, 100, 30);
+        let (x, y) = image_pixel(&before);
+        ui.handle(click(x, y));
+        for (width, height) in [(1, 1), (10, 4), (40, 12), (120, 50), (100, 30)] {
+            let expanded = render_buffer(&mut ui, width, height);
+            assert!(
+                expanded
+                    .content
+                    .iter()
+                    .all(|c| matches!(c.symbol(), " " | "▀" | "▄"))
+            );
+            assert!(ui.modal_open());
+        }
+        assert!(
+            ui.handle(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(button),
+                modifiers: KeyModifiers::NONE,
+                column: 0,
+                row: 0,
+            }))
+            .is_empty()
+        );
+        assert!(!ui.modal_open());
+        assert_eq!(render_buffer(&mut ui, 100, 30), before);
+    }
+}
+
+#[test]
+fn fullscreen_image_uses_the_clicked_source_and_survives_chat_pruning() {
+    let mut ui = image_ui();
+    const SECOND_URL: &str = "https://x.example/wide.png";
+    let wide = image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(400, 100, |x, y| {
+        image::Rgba([(y * 2) as u8, (x / 2) as u8, 255 - (x / 2) as u8, 255])
+    }));
+    ui.push_irc(2_000, "kim".into(), SECOND_URL.into(), false);
+    ui.set_chat_image(SECOND_URL, Ok(wide));
+    let before = render_buffer(&mut ui, 100, 45);
+    let (x, y) = (0..45)
+        .rev()
+        .find_map(|y| {
+            (0..100)
+                .find(|&x| matches!(before[(x, y)].symbol(), "▀" | "▄"))
+                .map(|x| (x, y))
+        })
+        .unwrap();
+    ui.handle(click(x, y));
+    assert!(ui.modal_open());
+    let expanded = render_buffer(&mut ui, 100, 45);
+    // 400:100 pixels at a 10:20 cell aspect fill all 100 columns,
+    // centered vertically; the first (portrait) source cannot do this.
+    for x in [0, 99] {
+        assert!(matches!(expanded[(x, 22)].symbol(), "▀" | "▄"));
+    }
+    assert_eq!(expanded[(50, 0)].bg, tuirealm::ratatui::style::Color::Black);
+    assert_eq!(
+        expanded[(50, 44)].bg,
+        tuirealm::ratatui::style::Color::Black
+    );
+    // The local IRC window holds 100 messages; these arrivals evict both
+    // image sources while the viewer is open.
+    for millis in 0..101 {
+        ui.push_irc(3_000 + millis, "kim".into(), "later".into(), false);
+    }
+    assert_eq!(render_buffer(&mut ui, 100, 45), expanded);
+    ui.handle(key(Key::Esc));
+    assert!(!ui.modal_open());
+    let restored = render(&mut ui, 100, 45);
+    assert!(restored.contains("later"));
+    assert!(!restored.contains(SECOND_URL));
+}
+
+#[test]
+fn fullscreen_image_only_opens_on_visible_pixels() {
+    let mut ui = image_ui();
+    let before = render_buffer(&mut ui, 100, 30);
+    let (x, y) = image_pixel(&before);
+    // The attachment's border and the URL remain normal chat targets.
+    ui.handle(click(x - 1, y));
+    assert!(!ui.modal_open());
+    ui.handle(release(x - 1, y));
+    ui.handle(click(x, y - 1));
+    assert!(!ui.modal_open());
+    ui.handle(release(x, y - 1));
+    ui.handle(key(Key::Function(3)));
+    render(&mut ui, 100, 30);
+    ui.handle(click(x, y));
+    assert!(render(&mut ui, 100, 30).contains("Settings"));
+    ui.handle(key(Key::Esc));
+    assert!(!ui.modal_open());
+}
+
 /// One log row of the chat column as comparable cell values (symbol +
 /// colors) — buffer_to_string drops colors, and the gradient test image
 /// distinguishes rows *only* by color.
@@ -3170,6 +3350,19 @@ fn scrolled_image_crops_at_the_top_edge() {
             "log line {line} should show band row {band_row}"
         );
     }
+    let (x, y) = image_pixel(&scrolled);
+    ui.handle(click(x, y));
+    assert!(
+        ui.modal_open(),
+        "clipped image pixels still open the full source"
+    );
+    let expanded = render_buffer(&mut ui, 100, 30);
+    let mut reference = image_ui();
+    let (rx, ry) = image_pixel(&render_buffer(&mut reference, 100, 30));
+    reference.handle(click(rx, ry));
+    assert_eq!(expanded, render_buffer(&mut reference, 100, 30));
+    ui.handle(key(Key::Esc));
+    assert_eq!(render_buffer(&mut ui, 100, 30), scrolled);
     assert_eq!(scrolled[(7, 1)].symbol(), "│");
     assert_eq!(scrolled[(7, 2)].symbol(), "└");
     // And the clipped view differs from the band's top — rows really

@@ -647,14 +647,14 @@ pub fn run_input_thread(inputs: std::sync::mpsc::SyncSender<UiInput>) {
         if matches!(event, Event::None) {
             continue;
         }
-        // Mouse capture reports every motion, but only left-button
-        // events (click / selection drag / release) and wheel ticks do
+        // Mouse capture reports every motion, but only button presses,
+        // left-button selection drag / release, and wheel ticks do
         // anything — and each forwarded event costs a full redraw on
         // the UI thread, so drop the rest here.
         if let Event::Mouse(mouse) = &event
             && !matches!(
                 mouse.kind,
-                MouseEventKind::Down(MouseButton::Left)
+                MouseEventKind::Down(_)
                     | MouseEventKind::Drag(MouseButton::Left)
                     | MouseEventKind::Up(MouseButton::Left)
                     | MouseEventKind::ScrollUp

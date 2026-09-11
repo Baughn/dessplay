@@ -244,6 +244,7 @@ enum Modal {
     Logs(super::modals::LogModal),
     Roguelike(Box<super::modals::RoguelikeModal>),
     Confirm(ConfirmModal),
+    Image(super::modals::ImageModal),
 }
 
 impl Modal {
@@ -261,6 +262,7 @@ impl Modal {
             Modal::Logs(modal) => modal,
             Modal::Roguelike(modal) => modal.as_mut(),
             Modal::Confirm(modal) => modal,
+            Modal::Image(modal) => modal,
         }
     }
 
@@ -278,6 +280,7 @@ impl Modal {
             Modal::Logs(modal) => modal.keybindings(),
             Modal::Roguelike(modal) => modal.keybindings(),
             Modal::Confirm(modal) => modal.keybindings(),
+            Modal::Image(_) => Vec::new(),
         }
     }
 
@@ -296,6 +299,7 @@ impl Modal {
             Modal::Logs(_) => "Logs",
             Modal::Roguelike(_) => "Roguelike",
             Modal::Confirm(_) => "Confirm",
+            Modal::Image(_) => "Image",
         }
     }
 }
@@ -1386,8 +1390,8 @@ impl Ui {
     /// only when it is *already focused* — touchpads emit wheel events by
     /// accident, and an unfocused pane scrolling invisibly (or stealing
     /// focus) would turn each graze into a surprise. Ignored while a
-    /// modal is open — modals capture all input and none of them speak
-    /// mouse yet — and before the first draw (the stored rects are
+    /// modal is open (the image viewer captures dismissal before this
+    /// handler) and before the first draw (the stored rects are
     /// zero-sized, so every hit-test misses).
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<UserAction> {
         if !self.modals.is_empty() {
@@ -1479,6 +1483,13 @@ impl Ui {
                     // spoiler reveal state machine (and focuses, below) —
                     // and arms a potential selection drag.
                     Focus::Chat => {
+                        if let Some(image) = self.chat.image_at(mouse.column, mouse.row) {
+                            self.cancel_layout_grabs();
+                            self.push_modal(Modal::Image(image));
+                            self.sync_focus_attr();
+                            self.refresh_keybar();
+                            return Vec::new();
+                        }
                         self.chat.click(mouse.column, mouse.row, self.clock);
                         self.chat.mouse_down(mouse.column, mouse.row);
                     }
@@ -1512,6 +1523,16 @@ impl Ui {
 
     /// Route one input event; returns the actions it produced.
     pub fn handle(&mut self, ev: Event<NoUserEvent>) -> Vec<UserAction> {
+        // The image viewer owns even global shortcuts. Consume dismissal so
+        // typing, Ready, Quit, and modal-opening keys cannot leak through.
+        if let Some(Modal::Image(modal)) = self.modals.last_mut() {
+            if modal.on(&ev).is_some() {
+                self.pop_modal();
+                self.sync_focus_attr();
+                self.refresh_keybar();
+            }
+            return Vec::new();
+        }
         if super::components::plain(&ev) == Some(Key::Function(12)) {
             self.layout_tools = !self.layout_tools;
             self.cancel_layout_grabs();
@@ -2691,6 +2712,14 @@ impl Ui {
         renderer.begin_frame();
         renderer.set_color_depth(self.color_depth);
         renderer.clear(frame, frame.area());
+        if let Some(Modal::Image(modal)) = self.modals.last_mut() {
+            // Do not arrange the background: suppressing inline images would
+            // change the scroll anchor, and graphics ignore cell z-order.
+            let pixels = modal.render(frame, frame.area());
+            renderer.end_frame();
+            renderer.record_image_regions(&[pixels]);
+            return;
+        }
         // Inline chat images hide while anything draws over the panes
         // (modals, the work overlay): a graphics-protocol image ignores
         // the cell z-order and would bleed through.
@@ -2853,7 +2882,7 @@ impl Ui {
                 Modal::Settings(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::ListEdit(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Changelog(modal) => modal.render_layout(frame, frame.area(), renderer),
-                Modal::Logs(_) | Modal::Roguelike(_) => {}
+                Modal::Logs(_) | Modal::Roguelike(_) | Modal::Image(_) => {}
             }
         }
         if !matches!(

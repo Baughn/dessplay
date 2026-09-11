@@ -571,13 +571,20 @@ the handler hit-tests against them:
   first) takes the wheel regardless of focus and moves
   `Ui::subtitle_scroll` — entries back from newest, clamped at render,
   reset to live whenever the pane is hidden. Mouse-only by design.
-- **Modals**: while any modal is open, mouse events are ignored entirely
-  (modals capture all input, and none of them speak mouse yet).
+- **Image viewer**: a left press on a successfully painted image opens a
+  fullscreen modal. URL hit records come from the final image pass after
+  clipping and overlay filtering. The modal owns the source and a separate
+  terminal encoding cached by viewport size; it scales with preserved aspect
+  ratio and centers on black. Its draw path skips background layout to retain
+  chat geometry and exclude all other overlays. Its input capture precedes
+  global shortcuts: every keyboard event or mouse press dismisses and consumes
+  the input; release, drag, wheel, and paste are swallowed.
+- **Other modals**: mouse events are ignored while open; they capture all input.
 
 The production shell enables crossterm mouse capture at setup (non-fatal
 if the terminal refuses; the adapter's `restore()` disables it on exit)
-and the input thread forwards only left-button events (click, selection
-drag — runs of drags coalesced to their newest point — and release) and
+and the input thread forwards button presses, left-button events (selection
+drag — runs of drags coalesced to their newest point — and release), and
 wheel ticks: capture also reports every motion, and each forwarded event
 costs a full redraw.
 Tests inject `Event::Mouse` through the same `Ui::handle` as keys; the
@@ -592,7 +599,8 @@ dynamically. When a modal is active:
 
 1. The modal component receives focus
 2. Background components are rendered but don't receive input
-3. The modal is rendered as an overlay (centered, except the upper-screen log viewer)
+3. The modal is rendered as an overlay (centered, except the upper-screen pages
+   and fullscreen image viewer)
 4. Closing the modal restores focus to the previous component
 
 Modal types:
