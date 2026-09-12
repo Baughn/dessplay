@@ -208,10 +208,11 @@ impl SyncStorage {
     }
 
     /// Persist the latest full-state snapshot (single implicit room).
+    /// Borrows the actor's state so saving needs no full replica clone.
     /// Stored in the tagged snapshot envelope (magic + version), not the
     /// raw wire shape — see [`CrdtState::encode_snapshot`].
-    pub fn save_state(&self, snapshot: &StateSnapshot, now: i64) -> Result<()> {
-        let blob = snapshot.state.encode_snapshot()?;
+    pub fn save_state(&self, epoch: Epoch, state: &CrdtState, now: i64) -> Result<()> {
+        let blob = state.encode_snapshot()?;
         let bytes = blob.len();
         self.conn.execute(
             "INSERT INTO crdt_state (room, epoch, state, saved_at)
@@ -219,12 +220,12 @@ impl SyncStorage {
              ON CONFLICT (room) DO UPDATE
              SET epoch = excluded.epoch, state = excluded.state,
                  saved_at = excluded.saved_at",
-            params![snapshot.epoch.0 as i64, blob, now],
+            params![epoch.0 as i64, blob, now],
         )?;
         // No timing field here: storage never reads the clock (module doc;
         // design.md, Schema) -- `Instant::now()` is a clock read, and the
         // invariant keeps the layer fully deterministic for tests.
-        tracing::debug!(epoch = snapshot.epoch.0, bytes, "state snapshot saved");
+        tracing::debug!(epoch = epoch.0, bytes, "state snapshot saved");
         Ok(())
     }
 
@@ -366,7 +367,9 @@ mod tests {
         assert!(storage.load_state().unwrap().is_none());
 
         let snapshot = snapshot(42);
-        storage.save_state(&snapshot, 1000).unwrap();
+        storage
+            .save_state(snapshot.epoch, &snapshot.state, 1000)
+            .unwrap();
         let loaded = storage.load_state().unwrap().unwrap();
         assert_eq!(loaded, snapshot);
         assert_eq!(loaded.state.view(), snapshot.state.view());
@@ -376,7 +379,7 @@ mod tests {
             epoch: Epoch(43),
             state: snapshot.state.clone(),
         };
-        storage.save_state(&newer, 2000).unwrap();
+        storage.save_state(newer.epoch, &newer.state, 2000).unwrap();
         assert_eq!(storage.load_state().unwrap().unwrap().epoch, Epoch(43));
     }
 
@@ -401,12 +404,16 @@ mod tests {
     #[test]
     fn clear_discards_the_snapshot_but_keeps_the_schema() {
         let storage = SyncStorage::open_in_memory().unwrap();
-        storage.save_state(&snapshot(7), 1000).unwrap();
+        let before = snapshot(7);
+        storage
+            .save_state(before.epoch, &before.state, 1000)
+            .unwrap();
         storage.clear().unwrap();
         assert!(storage.load_state().unwrap().is_none());
         // The table survives (clear is SQL, not file deletion): a
         // subsequent save must work without re-migrating.
-        storage.save_state(&snapshot(8), 2000).unwrap();
+        let after = snapshot(8);
+        storage.save_state(after.epoch, &after.state, 2000).unwrap();
         assert_eq!(storage.load_state().unwrap().unwrap().epoch, Epoch(8));
     }
 
@@ -445,7 +452,7 @@ mod tests {
         // the split code wrote it; the legacy row is a leftover).
         SyncStorage::open_at(&SyncStorage::derive_path(&main))
             .unwrap()
-            .save_state(&newer, 2000)
+            .save_state(newer.epoch, &newer.state, 2000)
             .unwrap();
 
         let storage = SyncStorage::open(&main).unwrap();
@@ -471,7 +478,7 @@ mod tests {
         legacy_main_db(&main, Some(&state));
         SyncStorage::open_at(&SyncStorage::derive_path(&main))
             .unwrap()
-            .save_state(&state, 1000)
+            .save_state(state.epoch, &state.state, 1000)
             .unwrap();
 
         let storage = SyncStorage::open(&main).unwrap();

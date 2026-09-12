@@ -1416,22 +1416,23 @@ impl ChatPane {
         // columns in the arranged log viewport.
         self.rendered = RenderedChatLog {
             area: log_inner,
-            rows: rows[start..end]
-                .iter()
-                .map(|(idx, row)| RowRecord {
-                    hits: row
-                        .hits
-                        .iter()
-                        .map(|hit| SpoilerHit {
-                            cols: hit.cols.start + log_inner.x..hit.cols.end + log_inner.x,
-                            key: hit.key.clone(),
-                        })
-                        .collect(),
-                    line: *idx,
-                    body: row.body.clone(),
-                    char_start: row.char_start,
-                    body_col: row.body_col + log_inner.x,
-                    selectable: row.selectable,
+            rows: rows
+                .into_iter()
+                .skip(start)
+                .take(end - start)
+                .map(|(idx, mut row)| {
+                    for hit in &mut row.hits {
+                        hit.cols.start += log_inner.x;
+                        hit.cols.end += log_inner.x;
+                    }
+                    RowRecord {
+                        hits: row.hits,
+                        line: idx,
+                        body: row.body,
+                        char_start: row.char_start,
+                        body_col: row.body_col + log_inner.x,
+                        selectable: row.selectable,
+                    }
                 })
                 .collect(),
             image_areas,
@@ -2847,12 +2848,12 @@ impl SeriesPane {
         }
         let anchor = self
             .nav_rows()
-            .get(self.cursor.index())
+            .nth(self.cursor.index())
             .map(|row| match row {
-                ListNavRow::Heading(g) => ListAnchor::Heading(self.groups[*g].heading.clone()),
+                ListNavRow::Heading(g) => ListAnchor::Heading(self.groups[g].heading.clone()),
                 ListNavRow::Entry(g, e) => ListAnchor::Entry {
-                    heading: self.groups[*g].heading.clone(),
-                    id: self.groups[*g].rows[*e].id,
+                    heading: self.groups[g].heading.clone(),
+                    id: self.groups[g].rows[e].id,
                 },
             });
         self.groups = groups.to_vec();
@@ -2867,23 +2868,22 @@ impl SeriesPane {
     /// per-user groups — then the id under any heading, then the bare
     /// heading. `None` when it vanished entirely.
     fn anchor_position(&self, anchor: &ListAnchor) -> Option<usize> {
-        let rows = self.nav_rows();
-        let find = |pred: &dyn Fn(&ListNavRow) -> bool| rows.iter().position(pred);
+        let find = |pred: &dyn Fn(ListNavRow) -> bool| self.nav_rows().position(pred);
         match anchor {
             ListAnchor::Heading(heading) => find(&|row| {
-                matches!(row, ListNavRow::Heading(g) if self.groups[*g].heading == *heading)
+                matches!(row, ListNavRow::Heading(g) if self.groups[g].heading == *heading)
             }),
             ListAnchor::Entry { heading, id } => find(&|row| {
                 matches!(row, ListNavRow::Entry(g, e)
-                    if self.groups[*g].rows[*e].id == *id
-                        && self.groups[*g].heading == *heading)
+                    if self.groups[g].rows[e].id == *id
+                        && self.groups[g].heading == *heading)
             })
             .or_else(|| {
-                find(&|row| matches!(row, ListNavRow::Entry(g, e) if self.groups[*g].rows[*e].id == *id))
+                find(&|row| matches!(row, ListNavRow::Entry(g, e) if self.groups[g].rows[e].id == *id))
             })
             .or_else(|| {
                 find(&|row| {
-                    matches!(row, ListNavRow::Heading(g) if self.groups[*g].heading == *heading)
+                    matches!(row, ListNavRow::Heading(g) if self.groups[g].heading == *heading)
                 })
             }),
         }
@@ -2903,23 +2903,22 @@ impl SeriesPane {
     }
 
     /// Rows in List mode, flattened for navigation.
-    fn nav_rows(&self) -> Vec<ListNavRow> {
-        let mut rows = Vec::new();
-        for (g, group) in self.groups.iter().enumerate() {
-            rows.push(ListNavRow::Heading(g));
-            if self.expanded(group) {
-                for e in 0..group.rows.len() {
-                    rows.push(ListNavRow::Entry(g, e));
-                }
-            }
-        }
-        rows
+    fn nav_rows(&self) -> impl Iterator<Item = ListNavRow> + '_ {
+        self.groups.iter().enumerate().flat_map(|(g, group)| {
+            let entries = if self.expanded(group) {
+                group.rows.len()
+            } else {
+                0
+            };
+            std::iter::once(ListNavRow::Heading(g))
+                .chain((0..entries).map(move |e| ListNavRow::Entry(g, e)))
+        })
     }
 
     fn len(&self) -> usize {
         match self.mode {
             SeriesMode::Recent | SeriesMode::All => self.franchises.len(),
-            SeriesMode::TheList => self.nav_rows().len(),
+            SeriesMode::TheList => self.nav_rows().count(),
         }
     }
 
@@ -3027,9 +3026,10 @@ impl SeriesPane {
     /// Enter (The List): toggle a heading, open a linked entry, or edit
     /// an unlinked one.
     fn act_list_enter(&mut self) -> Option<Msg> {
-        match self.nav_rows().get(self.cursor.index())? {
+        let row = self.nav_rows().nth(self.cursor.index())?;
+        match row {
             ListNavRow::Heading(g) => {
-                let group = &self.groups[*g];
+                let group = &self.groups[g];
                 let now = self.expanded(group);
                 let heading = group.heading.clone();
                 self.expanded.insert(heading, !now);
@@ -3039,15 +3039,15 @@ impl SeriesPane {
                 // Linked or not, the dispatcher resolves what opening the
                 // entry means (episode browser / candidate view / editor)
                 // — it has the view; this pane only has the row.
-                Some(Msg::BrowseListEntry(self.groups[*g].rows[*e].id))
+                Some(Msg::BrowseListEntry(self.groups[g].rows[e].id))
             }
         }
     }
 
     /// `e` (The List): edit the selected entry.
     fn act_list_edit(&mut self) -> Option<Msg> {
-        match self.nav_rows().get(self.cursor.index())? {
-            ListNavRow::Entry(g, e) => Some(Msg::EditListEntry(self.groups[*g].rows[*e].id)),
+        match self.nav_rows().nth(self.cursor.index())? {
+            ListNavRow::Entry(g, e) => Some(Msg::EditListEntry(self.groups[g].rows[e].id)),
             ListNavRow::Heading(_) => None,
         }
     }
@@ -3055,16 +3055,16 @@ impl SeriesPane {
     /// `n` (The List): the minimal `nero_name` editor for the selected
     /// entry — the fast path for the group's renaming culture.
     fn act_list_nero(&mut self) -> Option<Msg> {
-        match self.nav_rows().get(self.cursor.index())? {
-            ListNavRow::Entry(g, e) => Some(Msg::EditNeroName(self.groups[*g].rows[*e].id)),
+        match self.nav_rows().nth(self.cursor.index())? {
+            ListNavRow::Entry(g, e) => Some(Msg::EditNeroName(self.groups[g].rows[e].id)),
             ListNavRow::Heading(_) => None,
         }
     }
 
     /// `l` (The List): link the selected entry to AniDB.
     fn act_list_link(&mut self) -> Option<Msg> {
-        match self.nav_rows().get(self.cursor.index())? {
-            ListNavRow::Entry(g, e) => Some(Msg::LinkListEntry(self.groups[*g].rows[*e].id)),
+        match self.nav_rows().nth(self.cursor.index())? {
+            ListNavRow::Entry(g, e) => Some(Msg::LinkListEntry(self.groups[g].rows[e].id)),
             ListNavRow::Heading(_) => None,
         }
     }
@@ -3146,10 +3146,9 @@ impl SeriesPane {
                 .collect(),
             SeriesMode::TheList => self
                 .nav_rows()
-                .iter()
                 .map(|row| match row {
                     ListNavRow::Heading(g) => {
-                        let group = &self.groups[*g];
+                        let group = &self.groups[g];
                         PresentedRow {
                             key: format!("heading/{:?}", group.heading),
                             data: Presentation::default()
@@ -3164,8 +3163,8 @@ impl SeriesPane {
                         }
                     }
                     ListNavRow::Entry(g, e) => {
-                        let group = &self.groups[*g];
-                        let entry = &group.rows[*e];
+                        let group = &self.groups[g];
+                        let entry = &group.rows[e];
                         let name_style = if entry.dimmed {
                             theme::dim()
                         } else {

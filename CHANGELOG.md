@@ -14,6 +14,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Improved: Reduced CPU work and temporary memory use when updating the media
   library, checking for group activity, and building the episode browser.
 
+- Improved: Reduced temporary memory use during playback, downloads, chat and
+  series navigation, and periodic state saves.
+
 ## 2026-09-11
 
 - Added: Click a chat image to view it fullscreen. Press any key or click again

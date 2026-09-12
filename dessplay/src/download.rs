@@ -1112,13 +1112,12 @@ fn plan_requests(
         // we aren't already getting from this source. A chunk in flight
         // *elsewhere* is off-limits in bulk mode but fair game when
         // urgent — that duplication is the whole point.
-        let src_in_flight = src.in_flight.clone();
         let mut candidates: Vec<u32> = needed
             .iter()
             .copied()
             .filter(|&c| {
                 src.bitfield.get(c)
-                    && !src_in_flight.contains(&c)
+                    && !src.in_flight.contains(&c)
                     && if urgent.contains(&c) {
                         true
                     } else {

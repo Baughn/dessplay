@@ -1584,7 +1584,7 @@ mod tests {
             storage.set_media_roots(&roots).unwrap();
             crate::sync_storage::SyncStorage::open(&db_path)
                 .unwrap()
-                .save_state(&snapshot, 1000)
+                .save_state(snapshot.epoch, &snapshot.state, 1000)
                 .unwrap();
             storage
                 .record_watched(&WatchRecord {

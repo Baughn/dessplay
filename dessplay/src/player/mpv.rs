@@ -515,7 +515,7 @@ async fn read_loop(
         if let Some(id) = msg.get("request_id").and_then(Value::as_u64) {
             log_reply(&pending, id, &msg);
         }
-        for event in translate(&msg, &mut state, &loading) {
+        if let Some(event) = translate(&msg, &mut state, &loading) {
             let to_send = match event {
                 PlayerEvent::PauseChanged(true) => {
                     held_pause = true;
@@ -583,19 +583,19 @@ async fn query_paused_position(
     let _ = send_command(writer, pending, json!(["get_property", "time-pos"]), id).await;
 }
 
-/// Translate one mpv IPC message into player events.
-pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Vec<PlayerEvent> {
+/// Translate one mpv IPC message into at most one player event.
+pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Option<PlayerEvent> {
     // The reply to our post-seek position query.
     if let Some(id) = state.seek_pos_request
         && msg.get("request_id").and_then(Value::as_u64) == Some(id)
     {
         state.seek_pos_request = None;
         if let Some(seconds) = msg.get("data").and_then(Value::as_f64) {
-            return vec![PlayerEvent::Seeked {
+            return Some(PlayerEvent::Seeked {
                 position_millis: (seconds * 1000.0).max(0.0) as u64,
-            }];
+            });
         }
-        return vec![];
+        return None;
     }
 
     // The reply to our paused-position query, forwarded as an ordinary
@@ -608,94 +608,81 @@ pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Ve
     {
         state.pause_pos_request = None;
         if let Some(seconds) = msg.get("data").and_then(Value::as_f64) {
-            return vec![PlayerEvent::Position {
+            return Some(PlayerEvent::Position {
                 position_millis: (seconds * 1000.0).max(0.0) as u64,
-            }];
+            });
         }
-        return vec![];
+        return None;
     }
 
-    let Some(event) = msg.get("event").and_then(Value::as_str) else {
-        return vec![];
-    };
+    let event = msg.get("event").and_then(Value::as_str)?;
     match event {
         "property-change" => {
             let data = msg.get("data");
             match msg.get("id").and_then(Value::as_u64) {
                 Some(OBS_PAUSE) => {
-                    let Some(paused) = data.and_then(Value::as_bool) else {
-                        return vec![];
-                    };
+                    let paused = data.and_then(Value::as_bool)?;
                     if state.last_pause == Some(paused) {
-                        return vec![];
+                        return None;
                     }
                     state.last_pause = Some(paused);
                     if loading.load(Ordering::Relaxed) {
                         // Our own pre-load pause: the contract, not news.
-                        return vec![];
+                        return None;
                     }
                     if paused && state.eof_reached {
                         // keep-open pauses at EOF by itself; the server
                         // owns that transition.
-                        return vec![];
+                        return None;
                     }
-                    vec![PlayerEvent::PauseChanged(paused)]
+                    Some(PlayerEvent::PauseChanged(paused))
                 }
-                Some(OBS_TIME_POS) => data
-                    .and_then(Value::as_f64)
-                    .map(|seconds| PlayerEvent::Position {
-                        position_millis: (seconds * 1000.0).max(0.0) as u64,
-                    })
-                    .into_iter()
-                    .collect(),
+                Some(OBS_TIME_POS) => {
+                    data.and_then(Value::as_f64)
+                        .map(|seconds| PlayerEvent::Position {
+                            position_millis: (seconds * 1000.0).max(0.0) as u64,
+                        })
+                }
                 // A non-positive duration is mpv not knowing (a file it
                 // could not really open), not a duration; say nothing.
                 Some(OBS_DURATION) => data
                     .and_then(Value::as_f64)
                     .and_then(|seconds| NonZeroU64::new((seconds * 1000.0).max(0.0) as u64))
-                    .map(|duration_millis| PlayerEvent::DurationKnown { duration_millis })
-                    .into_iter()
-                    .collect(),
+                    .map(|duration_millis| PlayerEvent::DurationKnown { duration_millis }),
                 Some(OBS_SUB_TEXT) => {
                     let raw = data.and_then(Value::as_str).unwrap_or_default();
                     let (text, speaker) = parse_ass_full(raw);
-                    vec![PlayerEvent::SubtitleLine { text, speaker }]
+                    Some(PlayerEvent::SubtitleLine { text, speaker })
                 }
                 Some(OBS_EOF) => {
                     let reached = data.and_then(Value::as_bool).unwrap_or(false);
                     let rising = reached && !state.eof_reached;
                     state.eof_reached = reached;
-                    if rising {
-                        vec![PlayerEvent::Eof]
-                    } else {
-                        vec![]
-                    }
+                    if rising { Some(PlayerEvent::Eof) } else { None }
                 }
                 Some(OBS_PATH) => {
                     // mpv re-announces on observe and on every load; emit only
                     // on a real change (idle/cleared `path` is null → none).
-                    let Some(path) = data.and_then(Value::as_str) else {
-                        return vec![];
-                    };
+                    let path = data.and_then(Value::as_str)?;
                     if state.last_path.as_deref() == Some(path) {
-                        return vec![];
+                        return None;
                     }
                     state.last_path = Some(path.to_string());
-                    vec![PlayerEvent::PathChanged {
+                    Some(PlayerEvent::PathChanged {
                         path: path.to_string(),
-                    }]
+                    })
                 }
-                _ => vec![],
+                _ => None,
             }
         }
         "seek" => {
             state.seek_pending = true;
-            vec![]
+            None
         }
         "file-loaded" => {
             loading.store(false, Ordering::Relaxed);
             state.eof_reached = false;
-            vec![PlayerEvent::Loaded]
+            Some(PlayerEvent::Loaded)
         }
         "end-file" => {
             // `loadfile` is accepted asynchronously, so a file that cannot
@@ -711,12 +698,12 @@ pub fn translate(msg: &Value, state: &mut Translate, loading: &AtomicBool) -> Ve
             // swallow later user pauses as pre-load mechanics.
             if msg.get("reason").and_then(Value::as_str) == Some("error") {
                 loading.store(false, Ordering::Relaxed);
-                vec![PlayerEvent::LoadFailed]
+                Some(PlayerEvent::LoadFailed)
             } else {
-                vec![]
+                None
             }
         }
-        _ => vec![],
+        _ => None,
     }
 }
 
@@ -921,6 +908,8 @@ mod tests {
     fn ev(json: &str, state: &mut Translate, loading: bool) -> Vec<PlayerEvent> {
         let loading = AtomicBool::new(loading);
         translate(&serde_json::from_str(json).unwrap(), state, &loading)
+            .into_iter()
+            .collect()
     }
 
     #[test]
@@ -1050,7 +1039,7 @@ mod tests {
             &mut state,
             &loading,
         );
-        assert_eq!(out, vec![PlayerEvent::LoadFailed]);
+        assert_eq!(out, Some(PlayerEvent::LoadFailed));
         assert!(
             !loading.load(Ordering::Relaxed),
             "load is over, even failed"

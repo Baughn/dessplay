@@ -2703,10 +2703,8 @@ mod tests {
         // ...and synced state in the sync DB.
         let sync = crate::sync_storage::SyncStorage::open(&db_path).unwrap();
         sync.save_state(
-            &dessplay_core::StateSnapshot {
-                epoch: dessplay_core::types::Epoch(4),
-                state: dessplay_core::CrdtState::new(),
-            },
+            dessplay_core::types::Epoch(4),
+            &dessplay_core::CrdtState::new(),
             1000,
         )
         .unwrap();
@@ -2779,7 +2777,7 @@ mod tests {
         };
         crate::sync_storage::SyncStorage::open(&db_path)
             .unwrap()
-            .save_state(&snapshot, 1000)
+            .save_state(snapshot.epoch, &snapshot.state, 1000)
             .unwrap();
         assert_eq!(load_dump_snapshot(&db_path).unwrap(), Some(snapshot));
     }

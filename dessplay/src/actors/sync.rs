@@ -518,12 +518,8 @@ impl SyncActor {
         };
         if let Some(storage) = &*guard {
             let started = std::time::Instant::now();
-            let snapshot = StateSnapshot {
-                epoch: self.epoch(),
-                state: self.state.clone(),
-            };
             let now = (self.clock)() as i64;
-            match storage.save_state(&snapshot, now) {
+            match storage.save_state(self.epoch(), &self.state, now) {
                 Ok(()) => {
                     self.dirty = false;
                     tracing::debug!(
