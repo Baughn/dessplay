@@ -692,8 +692,8 @@ struct Actor {
     cache_dir: PathBuf,
     clock: Clock,
     /// In-memory hash cache, shared with blocking subtasks as an
-    /// immutable snapshot (replaced on change — changes are rare
-    /// relative to lookups).
+    /// immutable snapshot; mutations copy only while a subtask holds a
+    /// snapshot, otherwise they update the map in place.
     hash_cache: Arc<HashMap<PathBuf, (i64, Ed2kFileHash)>>,
     /// Manual mappings (hash → user-picked path); checked before the
     /// matcher and exempt from hash verification by design.
@@ -904,13 +904,11 @@ struct PendingNyaaImport {
 }
 
 /// How many library-scan hash results to buffer before folding them into
-/// `hash_cache` in a single clone, instead of cloning the whole map once
-/// per file. A full scan hashes one file at a time
-/// ([`Actor::pump_library_scan`]), so without batching a large library
-/// makes the per-file `commit_fresh_hashes` clone O(n) work n times —
-/// O(n^2) total, and a burst of ever-larger transient allocations that
-/// fragments the allocator (2026-07-03: `malloc_trim` recovered ~360MB
-/// RSS on the primary seeder after a scan).
+/// `hash_cache` in a single update. Copy-on-write avoids cloning unless
+/// a blocking subtask holds a snapshot; batching also bounds those
+/// clones when readers overlap the scan. Previously, cloning the whole
+/// map per file made a scan O(n^2), fragmenting the allocator
+/// (2026-07-03: `malloc_trim` recovered ~360MB RSS on the primary seeder).
 const SCAN_COMMIT_BATCH: usize = 64;
 
 /// One watched mismatch (#26): poll the path's `(mtime, size)` about
@@ -2319,9 +2317,7 @@ impl Actor {
             if let Err(e) = self.storage.remove_hash_cache(&path) {
                 tracing::error!("pruning hash cache: {e}");
             }
-            let mut cache = (*self.hash_cache).clone();
-            cache.remove(&path);
-            self.hash_cache = Arc::new(cache);
+            Arc::make_mut(&mut self.hash_cache).remove(&path);
             // A torrent seeding this payload has lost its file too.
             self.drop_torrent(file);
         }
@@ -2967,7 +2963,7 @@ impl Actor {
         if stale.is_empty() {
             return Vec::new();
         }
-        let mut cache = (*self.hash_cache).clone();
+        let cache = Arc::make_mut(&mut self.hash_cache);
         let mut lost = Vec::new();
         for path in stale {
             tracing::info!(path = %path.display(), "index row for a vanished file; pruning");
@@ -2983,7 +2979,6 @@ impl Actor {
                 }
             }
         }
-        self.hash_cache = Arc::new(cache);
         lost
     }
 
@@ -3086,9 +3081,8 @@ impl Actor {
         if purged.is_empty() {
             return;
         }
-        let mut cache = (*self.hash_cache).clone();
-        cache.retain(|path, _| !purged.iter().any(|root| path.starts_with(root)));
-        self.hash_cache = Arc::new(cache);
+        Arc::make_mut(&mut self.hash_cache)
+            .retain(|path, _| !purged.iter().any(|root| path.starts_with(root)));
         for root in purged {
             tracing::info!(root = %root.display(), "purged removed media-root index after grace period");
         }
@@ -3122,16 +3116,15 @@ impl Actor {
         }
     }
 
-    /// Fold any buffered scan hash results into `hash_cache` in one clone.
+    /// Fold any buffered scan hash results into one copy-on-write update.
     fn flush_scan_hash_commits(&mut self) {
         if self.scan_pending_commits.is_empty() {
             return;
         }
-        let mut cache = (*self.hash_cache).clone();
+        let cache = Arc::make_mut(&mut self.hash_cache);
         for (path, mtime, hash) in self.scan_pending_commits.drain(..) {
             cache.insert(path, (mtime, hash));
         }
-        self.hash_cache = Arc::new(cache);
     }
 
     /// Commit freshly-computed hashes to the in-memory cache and SQLite.
@@ -3140,7 +3133,7 @@ impl Actor {
             return;
         }
         let now = (self.clock)() as i64;
-        let mut cache = (*self.hash_cache).clone();
+        let cache = Arc::make_mut(&mut self.hash_cache);
         for (path, mtime, hash) in fresh {
             if let Err(e) = self.storage.upsert_hash_cache(&path, mtime, &hash, now) {
                 tracing::error!("persisting hash cache: {e}");
@@ -3152,7 +3145,6 @@ impl Actor {
             }
             cache.insert(path, (mtime, hash));
         }
-        self.hash_cache = Arc::new(cache);
     }
 
     /// The paths resolution (and serve-time index recovery) may draw
@@ -3483,7 +3475,7 @@ impl Actor {
         // on the now-deleted cache path makes the serve path read a dead
         // file and flip us to Missing for a file we still hold.
         self.local_files.insert(file, dest.clone());
-        let mut cache = (*self.hash_cache).clone();
+        let cache = Arc::make_mut(&mut self.hash_cache);
         if let Some((_, hash)) = cache.remove(&source) {
             let now = (self.clock)() as i64;
             if let Ok(metadata) = std::fs::metadata(&dest)
@@ -3495,7 +3487,6 @@ impl Actor {
                 cache.insert(dest.clone(), (mtime, hash));
             }
         }
-        self.hash_cache = Arc::new(cache);
         if copied
             && let Err(e) = std::fs::remove_file(&source)
             && e.kind() != std::io::ErrorKind::NotFound
@@ -3584,9 +3575,7 @@ impl Actor {
             if let Err(e) = self.storage.remove_hash_cache(&entry.path) {
                 tracing::error!("hash-cache cleanup: {e}");
             }
-            let mut cache = (*self.hash_cache).clone();
-            cache.remove(&entry.path);
-            self.hash_cache = Arc::new(cache);
+            Arc::make_mut(&mut self.hash_cache).remove(&entry.path);
             // Drop it from the in-memory servable set too: the file is gone
             // from disk, so we must not keep advertising/serving it. Without
             // this, local_files still points at the deleted path until a
@@ -4991,6 +4980,7 @@ mod tests {
         let n = 250;
         let mut rebuilds = 0usize;
         let mut last_ptr = Arc::as_ptr(&actor.hash_cache);
+        let original_ptr = last_ptr;
         for i in 0..n {
             let path = PathBuf::from(format!("/media/ep{i}.mkv"));
             let hash = ed2k_hash_bytes(format!("episode {i}").as_bytes());
@@ -5016,6 +5006,23 @@ mod tests {
             "hash_cache was rebuilt {rebuilds} times for {n} files -- \
              it must not be cloned once per scanned file"
         );
+        assert_eq!(
+            Arc::as_ptr(&actor.hash_cache),
+            original_ptr,
+            "without snapshot readers, scan commits must reuse the cache"
+        );
+
+        let snapshot = Arc::clone(&actor.hash_cache);
+        let path = PathBuf::from("/media/added.mkv");
+        let hash = ed2k_hash_bytes(b"added episode");
+        actor.commit_fresh_hashes(vec![(path.clone(), 2, hash.clone())]);
+        assert!(!snapshot.contains_key(&path));
+        assert_eq!(actor.hash_cache.get(&path), Some(&(2, hash)));
+
+        let snapshot_after_add = Arc::clone(&actor.hash_cache);
+        actor.prune_stale_index(vec![path.clone()]);
+        assert!(snapshot_after_add.contains_key(&path));
+        assert!(!actor.hash_cache.contains_key(&path));
     }
 
     /// The overhaul's core property (2026-07-28 proposal, Testing

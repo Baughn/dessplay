@@ -1528,14 +1528,12 @@ impl EpisodeRow {
 /// #31: the episode browser's per-copy "who has it" list). Sorted for a
 /// stable display order.
 pub fn ready_holders(view: &StateView, hash: Ed2kHash) -> Vec<UserId> {
-    let mut holders: Vec<UserId> = view
-        .file_availability
+    // Filtering the (user, hash) BTreeMap retains username order.
+    view.file_availability
         .iter()
         .filter(|((_, h), avail)| *h == hash && **avail == FileAvailability::Ready)
         .map(|((user, _), _)| user.clone())
-        .collect();
-    holders.sort();
-    holders
+        .collect()
 }
 
 /// Group and order a season's known files into episode rows (design.md
@@ -1584,72 +1582,47 @@ pub fn episode_rows(
         .collect();
     entries.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
 
-    // Group adjacent entries sharing the same parsed key; an unparseable
-    // (`None`) key always starts its own singleton group. `episode` is
-    // computed once here so the flat_map below never needs to re-derive
-    // "is this really a shared-key group" from `Option` alone.
-    struct Group {
-        episode: Option<String>,
-        members: Vec<Entry>,
-    }
-    let mut groups: Vec<Group> = Vec::new();
-    for entry in entries {
-        if let Some(key) = entry.key
-            && let Some(last) = groups.last_mut()
-            && last
-                .members
-                .last()
-                .is_some_and(|prev| prev.key == Some(key))
-        {
-            last.members.push(entry);
-            continue;
-        }
-        let episode = entry
-            .key
-            .and(entry.episode_number.as_deref())
-            .map(|epno| format!("Episode {epno}"));
-        groups.push(Group {
-            episode,
-            members: vec![entry],
-        });
-    }
-
-    let copy_of = |entry: &Entry| EpisodeCopy {
+    let copy_of = |entry: Entry| EpisodeCopy {
         hash: entry.hash,
-        filename: entry.label.clone(),
+        filename: entry.label,
         holders: ready_holders(view, entry.hash),
         watched: view.watched.get(&entry.hash) == Some(&true)
             || personally_watched.contains_key(&entry.hash),
     };
 
-    groups
-        .into_iter()
-        .flat_map(|group| {
-            if let [entry] = group.members.as_slice() {
-                vec![EpisodeRow::Single {
-                    episode: group.episode,
-                    copy: copy_of(entry),
-                }]
-            } else {
-                let copies: Vec<EpisodeCopy> = group.members.iter().map(copy_of).collect();
-                // Any watched copy mutes the episode: the group saw it,
-                // whichever encoding carried it. Copies keep their own
-                // per-file marks.
-                let watched = copies.iter().any(|copy| copy.watched);
-                // A multi-member group only ever forms from a shared
-                // `Some` key (the loop above never merges `None`-keyed
-                // entries), so `episode` is always `Some` here;
-                // `unwrap_or_default` keeps this total rather than
-                // panicking on that invariant.
-                let mut rows = vec![EpisodeRow::Header {
-                    episode: group.episode.unwrap_or_default(),
-                    watched,
-                }];
-                rows.extend(copies.into_iter().map(EpisodeRow::Child));
-                rows
-            }
-        })
-        .collect()
+    // Consume adjacent entries sharing a parsed key. An unparseable
+    // (`None`) key always remains a singleton, even next to another `None`.
+    let mut entries = entries.into_iter().peekable();
+    let mut rows = Vec::new();
+    while let Some(entry) = entries.next() {
+        let key = entry.key;
+        let episode = key
+            .and(entry.episode_number.as_deref())
+            .map(|epno| format!("Episode {epno}"));
+        let first = copy_of(entry);
+        if key.is_none() || entries.peek().is_none_or(|next| next.key != key) {
+            rows.push(EpisodeRow::Single {
+                episode,
+                copy: first,
+            });
+            continue;
+        }
+
+        let mut copies = vec![first];
+        while let Some(entry) = entries.next_if(|entry| entry.key == key) {
+            copies.push(copy_of(entry));
+        }
+        // Any watched copy mutes the episode; copies keep their own marks.
+        let watched = copies.iter().any(|copy| copy.watched);
+        rows.push(EpisodeRow::Header {
+            // Only a shared parsed key reaches this path, so the episode
+            // label is present. Keep the conversion total nevertheless.
+            episode: episode.unwrap_or_default(),
+            watched,
+        });
+        rows.extend(copies.into_iter().map(EpisodeRow::Child));
+    }
+    rows
 }
 
 /// The index of the first unwatched row (design.md #11: the browser's

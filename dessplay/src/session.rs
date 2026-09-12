@@ -495,7 +495,6 @@ const SEEK_NARRATE_MILLIS: u64 = 5_000;
 /// deliberately small — it is captured every UI tick, so cloning the
 /// whole `StateView` (chat, playlist, metadata maps) would be wasteful
 /// (see the perf notes on the ~100ms tick).
-#[derive(Clone)]
 struct NarratorState {
     now_playing: Option<Ed2kHash>,
     /// Whether `now_playing`'s watched flag was set at capture time — the
@@ -562,28 +561,18 @@ fn log_series_preference_changes(
 ) {
     let empty = BTreeMap::new();
     let previous = previous.unwrap_or(&empty);
-    let keys = previous
-        .keys()
-        .chain(view.series_preference.keys())
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    for (user, entry) in keys {
-        let was = previous.get(&(user.clone(), entry));
-        let now = view.series_preference.get(&(user.clone(), entry));
-        if was == now {
+    for (key @ (user, entry), now) in &view.series_preference {
+        let was = previous.get(key);
+        if was == Some(now) {
             continue;
         }
-        let Some(now) = now else {
-            continue;
-        };
         let prior = was.map_or(SeriesWatchState::Maybe, |pref| pref.state);
         let name = view
             .list_entries
-            .get(&entry)
+            .get(entry)
             .map_or("<missing List entry>", |list| list.name.as_str());
-        let set_by = now.set_by.as_ref().unwrap_or(&user);
-        let implied = list_implied_pref(view, entry, &user);
+        let set_by = now.set_by.as_ref().unwrap_or(user);
+        let implied = list_implied_pref(view, *entry, user);
         let cause = if now.set_by.is_some() {
             "explicit change by another user"
         } else if was.is_none() && implied == Some(now.state) {
@@ -591,7 +580,7 @@ fn log_series_preference_changes(
         } else {
             "self action or local automation"
         };
-        let watchers = view.list_entries.get(&entry).map(|list| &list.watchers);
+        let watchers = view.list_entries.get(entry).map(|list| &list.watchers);
         tracing::info!(
             %user,
             entry = entry.0,
@@ -831,8 +820,9 @@ impl PlayerWiring {
     /// more than [`NARRATOR_BURST_CAP`] lines is read as a wholesale
     /// replacement (reconnect / compaction) and suppressed.
     fn narrate(&mut self, view: &StateView, peers: &[PeerInfo]) -> Vec<Directive> {
-        let current = NarratorState::capture(view, peers);
-        let Some(prev) = self.narrator.replace(current.clone()) else {
+        let prev = self.narrator.take();
+        let current = self.narrator.insert(NarratorState::capture(view, peers));
+        let Some(prev) = prev else {
             // First snapshot: baseline only for chat, but record existing
             // preferences so a restart tells us the state was restored
             // rather than changed during this process lifetime.
@@ -882,15 +872,15 @@ impl PlayerWiring {
         // play press that doesn't start playback (others still block) is
         // "ready" — the intent latch means playback then starts without a
         // further override change, narrated by whoever clears last.
-        let active_now = derive::playback_active(view, peers);
+        let active_now = current.active;
         let users = prev
             .manual_override
             .keys()
             .chain(view.manual_override.keys())
             .collect::<std::collections::BTreeSet<_>>();
         for user in users {
-            let was = prev.manual_override.get(user).cloned().flatten();
-            let now = view.manual_override.get(user).cloned().flatten();
+            let was = prev.manual_override.get(user).and_then(Option::as_ref);
+            let now = view.manual_override.get(user).and_then(Option::as_ref);
             if was == now {
                 continue;
             }
@@ -903,7 +893,7 @@ impl PlayerWiring {
                 Some(ManualState::Away { set_by })
                     if !matches!(was, Some(ManualState::Away { .. })) =>
                 {
-                    lines.push(if &set_by == user {
+                    lines.push(if set_by == user {
                         format!("{user} is away")
                     } else {
                         format!("{set_by} marked {user} away")
@@ -920,28 +910,21 @@ impl PlayerWiring {
 
         // Watch-preference change for the *now-playing* series (the /skip,
         // /ready, Ctrl-R surface). Scoping to now-playing keeps the List's
-        // bulk auto-writes for other series out of the chat; the local
-        // user's own auto-writes (tracked in `watcher_prefs_written`) are
-        // skipped too. Attribution is the subject until the "mark others
-        // not-watching" feature lands and adds a real setter.
+        // bulk auto-writes for other series out of the chat. Initial
+        // List-derived preferences are suppressed below for every client.
         if let Some(file) = view.now_playing
             && let Some(entry) =
                 dessplay_core::series_identity::resolve_series_entry_for_file(view, file)
         {
-            let keys = prev
+            for (key @ (user, _), now) in view
                 .series_preference
-                .keys()
-                .chain(view.series_preference.keys())
-                .filter(|(_, e)| *e == entry)
-                .cloned()
-                .collect::<std::collections::BTreeSet<_>>();
-            for key in keys {
-                let was = prev.series_preference.get(&key).cloned();
-                let now = view.series_preference.get(&key).cloned();
-                if was == now {
+                .iter()
+                .filter(|((_, e), _)| *e == entry)
+            {
+                let was = prev.series_preference.get(key);
+                if was == Some(now) {
                     continue;
                 }
-                let (user, _) = &key;
                 // Skip a List-derived auto-write — but *only* the initial
                 // `None -> value` transition it produces, not every later
                 // change. The auto-write fires once per (user, linked
@@ -955,9 +938,7 @@ impl PlayerWiring {
                 // function of synced state: every client suppresses the same
                 // lines (design.md, System Messages — "every client diffs
                 // the same synced inputs ... narrates the same lines").
-                if was.is_none()
-                    && now.as_ref().map(|p| p.state) == list_implied_pref(view, entry, user)
-                {
+                if was.is_none() && Some(now.state) == list_implied_pref(view, entry, user) {
                     continue;
                 }
                 // Coalesce the become_ready (Ctrl-R / /ready) action: it
@@ -968,32 +949,35 @@ impl PlayerWiring {
                 // same diff (design.md, System Messages: one line per action).
                 // Derived from synced state (prev/view), so consistent across
                 // clients.
-                let override_cleared = prev.manual_override.get(user).cloned().flatten().is_some()
-                    && view.manual_override.get(user).cloned().flatten().is_none();
-                let Some(name) = view.list_entries.get(&entry).map(|e| e.name.clone()) else {
+                let override_cleared = prev
+                    .manual_override
+                    .get(user)
+                    .and_then(Option::as_ref)
+                    .is_some()
+                    && view
+                        .manual_override
+                        .get(user)
+                        .and_then(Option::as_ref)
+                        .is_none();
+                let Some(name) = view.list_entries.get(&entry).map(|e| &e.name) else {
                     continue;
                 };
-                let name = &name;
                 // Attribution: the real setter when recorded (design.md
                 // #7/#13 — `n` on the Users pane, `/skip <name>`), else the
                 // subject themself (every self-directed write and system
                 // auto-write, unchanged from before this feature existed).
-                let by = now
-                    .as_ref()
-                    .and_then(|p| p.set_by.clone())
-                    .unwrap_or_else(|| user.clone());
-                match now.as_ref().map(|p| p.state) {
-                    Some(SeriesWatchState::NotWatching) => {
+                let by = now.set_by.as_ref().unwrap_or(user);
+                match now.state {
+                    SeriesWatchState::NotWatching => {
                         lines.push(format!("{user} set to not-watching {name} (by {by})"))
                     }
-                    Some(SeriesWatchState::Watching) => {
+                    SeriesWatchState::Watching => {
                         lines.push(format!("{user} is committed to {name} (by {by})"))
                     }
-                    Some(SeriesWatchState::Maybe) if !override_cleared => {
+                    SeriesWatchState::Maybe if !override_cleared => {
                         lines.push(format!("{user} set {name} to maybe (by {by})"))
                     }
-                    Some(SeriesWatchState::Maybe) => {}
-                    None => {}
+                    SeriesWatchState::Maybe => {}
                 }
             }
         }
@@ -1001,27 +985,24 @@ impl PlayerWiring {
         // Acknowledged a committed-absent blocker of the now-playing file:
         // a new `(now_playing, user)` pair (the per-file "play anyway").
         if let Some(file) = view.now_playing {
-            for (acked_file, user) in &view.acknowledged_absent {
-                if *acked_file == file && !prev.acknowledged_absent.contains(&(file, user.clone()))
-                {
+            for ack @ (acked_file, user) in &view.acknowledged_absent {
+                if *acked_file == file && !prev.acknowledged_absent.contains(ack) {
                     lines.push(format!("Playing past {user} (committed, away)"));
                 }
             }
         }
 
         // Presence changes (join / leave / lost / back), seeders excluded.
-        let now_peers = current_interactive(peers);
         let peer_users = prev
             .peers
             .keys()
-            .chain(now_peers.keys())
-            .cloned()
+            .chain(current.peers.keys())
             .collect::<std::collections::BTreeSet<_>>();
-        for user in &peer_users {
+        for user in peer_users {
             if let Some(line) = presence_line(
                 user,
                 prev.peers.get(user).copied(),
-                now_peers.get(user).copied(),
+                current.peers.get(user).copied(),
             ) {
                 lines.push(line);
             }
