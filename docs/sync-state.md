@@ -1,6 +1,6 @@
 # Sync State Design
 
-Last updated: 2026-08-30
+Last updated: 2026-09-12
 
 DessPlay uses the **`crdts`** crate for state synchronization. All shared state
 is expressed as CRDT types from this library, synced through the server as
@@ -147,9 +147,14 @@ and the wire protocol uniform.
 
 #### crdts API Notes
 
-- **Map return types:** `Map::get()` returns `ReadCtx<Option<V>>` (cloned value
-  via `.val`), while `Map::iter()` yields `ReadCtx<(&K, &V)>` (references via
-  `.val`). Always access the `.val` field to get the inner data.
+- **Read-only Map traversal:** the vendored `crdts` 7.3.2 adds
+  `Map::iter_entries()`, yielding borrowed `(&K, &V)` pairs in key order.
+  View resolution, timestamp scans and metadata migrations use it without
+  allocating causal clocks. This addition changes no storage or wire format.
+- **Mutation contexts:** `Map::get()` returns `ReadCtx<Option<V>>` (cloned
+  value via `.val`), while upstream `Map::iter()` yields `ReadCtx<(&K, &V)>`
+  (references via `.val`, but owned copies of the add/remove clocks).
+  Keep these context-bearing APIs wherever an operation needs that context.
 - **GSet::apply():** Takes the element directly as the op (no separate insert +
   apply pattern).
 - **GList::read():** Returns references (`FromIterator<&T>`), not owned values.

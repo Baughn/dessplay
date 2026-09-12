@@ -2037,8 +2037,9 @@ fn build<'a>(
         text.clear();
         let separator = node.attrs.get("separator").map_or(" ", String::as_str);
         let mut offset = 0;
+        // Inline children share the flow's measured lines, not separate boxes.
         for child in children
-            .iter()
+            .drain(..)
             .filter(|child| child.style.layout.display != Display::None)
         {
             if child.text.is_empty() {
@@ -2051,14 +2052,13 @@ fn build<'a>(
             inline.push(InlineDefinition {
                 label: node_label(child.node, &child.namespace),
                 range: offset..offset + child.text.chars().count(),
-                style: child.style.clone(),
+                style: child.style,
             });
-            inline.extend(child.inline.iter().cloned().map(|mut definition| {
+            inline.extend(child.inline.into_iter().map(|mut definition| {
                 definition.range = definition.range.start + offset..definition.range.end + offset;
                 definition
             }));
-            for run in &child.runs {
-                let mut run = run.clone();
+            for mut run in child.runs {
                 run.range = run.range.start + offset..run.range.end + offset;
                 runs.push(run);
             }
@@ -2071,8 +2071,6 @@ fn build<'a>(
         if prefix_chars > 0 && prefix_chars < offset {
             prefix_chars += separator.chars().count();
         }
-        // Inline children share the flow's measured lines, not separate boxes.
-        children.clear();
     } else if !text.is_empty() {
         runs.push(TextRun {
             range: 0..text.chars().count(),

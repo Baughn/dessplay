@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-11
+Last updated: 2026-09-12
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -2187,6 +2187,11 @@ only for display and message identity (see ui-architecture.md).
 ### State Sync Protocol
 
 Full details in [sync-state.md](sync-state.md). Summary of replicated data types:
+
+Read-only map traversals borrow entries without constructing mutation contexts.
+Writes retain the CRDT's causal-context API; resolved views and serialization
+keep the same contents and ordering
+(why: [decisions](decisions.md#borrowed-crdt-map-traversal-2026-09-12)).
 
 | Data | CRDT Type | Notes |
 |------|-----------|-------|

@@ -446,22 +446,22 @@ pub(super) fn resolve(
         }
     }
     matched.sort_by_key(|(specificity, _)| *specificity);
-    out.matched = matched
+    let declarations: Vec<_> = matched
         .into_iter()
         .flat_map(|(_, d)| d.iter().cloned())
         .chain(node.inline.iter().cloned())
         .collect();
-    for d in &out.matched {
+    for d in &declarations {
         if d.name.starts_with("--") {
             out.variables.insert(d.name.clone(), d.value.clone());
         }
     }
-    for d in out.matched.clone() {
+    for d in &declarations {
         if d.name.starts_with("--") {
             continue;
         }
         let value =
-            substitute(&d.value, &out.variables, &mut Vec::new()).map_err(|m| fail(&d, m))?;
+            substitute(&d.value, &out.variables, &mut Vec::new()).map_err(|m| fail(d, m))?;
         if path[..path.len() - 1]
             .iter()
             .any(|(ancestor, _)| ancestor.tag == "flow")
@@ -472,12 +472,13 @@ pub(super) fn resolve(
             && !(d.name == "display" && value == "none")
         {
             return Err(fail(
-                &d,
+                d,
                 "inline flow children accept text appearance and display: none; put box and wrapping rules on the enclosing flow",
             ));
         }
-        apply(&mut out, &d.name, &value).map_err(|m| fail(&d, m))?;
+        apply(&mut out, &d.name, &value).map_err(|m| fail(d, m))?;
     }
+    out.matched = declarations;
     if node.attr("virtual") == "true"
         && out.layout.display != Display::None
         && (out.layout.display != Display::Flex

@@ -1,0 +1,492 @@
+This is a catalogue of problems found in quickcheck tests, and problems quickcheck tests found in this library.
+
+opvec: OpVec { ops: [
+  Add { member: 10, dest: 1, actor: 0 },
+  Add { member: 5, dest: 0, actor: 6 }] }
+
+witnesses: [
+  Orswot {
+    clock: VClock { dots: {1: 1} },
+    entries: {5: VClock { dots: {1: 1} }},
+    deferred: {} },
+  Orswot {
+    clock: VClock { dots: {0: 1} },
+    entries: {10: VClock { dots: {0: 1} }},
+    deferred: {} },
+  Orswot {
+    clock: VClock { dots: {} },
+    entries: {},
+    deferred: {} },
+  Orswot {
+    clock: VClock { dots: {} },
+    entries: {},
+    deferred: {} },
+  Orswot {
+    clock: VClock { dots: {} },
+    entries: {},
+    deferred: {} }]
+
+merged:
+  Orswot {
+    clock: VClock { dots: {0: 1, 1: 1} },
+    entries: {5: VClock { dots: {1: 1} }, 10: VClock { dots: {0: 1} }},
+    deferred: {} }
+
+witnesses: [
+  Orswot {
+    clock: VClock { dots: {0: 1} },
+    entries: {5: VClock { dots: {0: 1} }},
+    deferred: {} }, 
+  Orswot {
+    clock: VClock { dots: {0: 1} }, 
+    entries: {10: VClock { dots: {0: 1} }}, 
+    deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} },
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged:
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {}, deferred: {} }
+
+summary:
+  when the dots for different adds are the same, the adds don't add up
+
+post mortem:
+  the whole point of the witness is to come from a single mutator.  don't add the same
+  mutator from different nodes, because it seems like a delete has happened when both
+  clocks are the same but the element is not present (orsWOT).
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+opvec: OpVec { ops: [
+  Add { member: 0, actor: 6 (modded to actual number of witnesses) }, 
+  Remove { member: 0, actor: 7 (modded to actual number of witnesses), ctx: None }] }
+divergent results: {[], [0]}
+
+
+1 witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {}, deferred: {} }]
+merged:
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {}, deferred: {} }
+
+2 witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {0: VClock { dots: {0: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged:
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {0: VClock { dots: {0: 1} }}, deferred: {} }
+
+summary:
+  when you delete elements without a context, and we don't have the element, it will work sometimes but can result in divergence
+
+post mortem:
+  always use context?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+opvec: OpVec { ops: [Add { member: 4, actor: 6 }, Add { member: 4, actor: 5 }] }
+divergent results: {[], [4]}
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 2} }, entries: {4: VClock { dots: {0: 2} }}, deferred: {} }]
+merged:
+  Orswot { clock: VClock { dots: {0: 2} }, entries: {4: VClock { dots: {0: 2} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {4: VClock { dots: {0: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {1: 1} }, entries: {4: VClock { dots: {1: 1} }}, deferred: {} }]
+merged:
+  Orswot { clock: VClock { dots: {0: 1, 1: 1} }, entries: {}, deferred: {} }
+
+riak_dt:
+10> {ok, A2} = riak_dt_orswot:update({add, <<"foo">>}, a, riak_dt_orswot:new()).
+11> {ok, B2} = riak_dt_orswot:update({add, <<"foo">>}, b, riak_dt_orswot:new()).
+12> Merged2 = riak_dt_orswot:merge(A2, B2).
+13> riak_dt_orswot:value(Merged2).
+[<<"foo">>]
+16> dict:fetch(<<"foo">>, Merged2Elems).
+[{a,1},{b,1}]
+
+summary:
+  BUG: this should converge to common entries
+  specifically, found that we were comparing the RHSClock rather than RHSDots (entry clock) in merge
+
+post mortem:
+  add new test
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+opvec: OpVec { ops: [
+  Add { member: 7, actor: 3 }, 
+  Remove { member: 7, actor: 10, ctx: Some(VClock { dots: {0: 6, 1: 6, 2: 1, 3: 3} }) }] }
+divergent results: {[], [7]}
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 6, 1: 6, 2: 1, 3: 3} }: {7}} }, 
+  Orswot { clock: VClock { dots: {1: 1} }, entries: {7: VClock { dots: {1: 1} }}, deferred: {} }]
+merged:
+  Orswot { clock: VClock { dots: {1: 1} }, entries: {7: VClock { dots: {1: 1} }}, deferred: {} }
+
+...
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} },
+  Orswot { clock: VClock { dots: {3: 1} }, entries: {7: VClock { dots: {3: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 6, 1: 6, 2: 1, 3: 3} }: {7}} },
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {3: 1} }, entries: {7: VClock { dots: {3: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} },
+  Orswot { clock: VClock { dots: {3: 1} }, entries: {}, deferred: {VClock { dots: {0: 6, 1: 6, 2: 1, 3: 3} }: {7}} },
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} },
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged:
+  Orswot { clock: VClock { dots: {3: 1} }, entries: {}, deferred: {} }
+
+riak_dt:
+1> {ok, A} = riak_dt_orswot:update({add, <<"A">>}, a, riak_dt_orswot:new()).
+2> {ok, A2} = riak_dt_orswot:update({remove, <<"A">>}, a, A, [{a,3}]).
+3> riak_dt_orswot:value(A2).
+[]
+4> {ok, A3} = riak_dt_orswot:update({remove, <<"A">>}, a, A, [{a,3}, {z, 7}]).
+5> riak_dt_orswot:value(A3).
+[]
+
+12> {ok, B1} = riak_dt_orswot:update({remove, <<"A">>}, a, riak_dt_orswot:new(), [{a,3}, {z, 7}]).
+13> C = riak_dt_orswot:merge(A, B1).
+14> riak_dt_orswot:value(A).
+[<<"A">>]
+16> riak_dt_orswot:value(C).
+[]
+17> riak_dt_orswot:value(B1).
+[]
+
+18> D = riak_dt_orswot:merge(B1, riak_dt_orswot:new()).
+{[],
+ {dict,0,16,16,8,80,48,
+       {[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]},
+       {{[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]}}},
+ {dict,1,16,16,8,80,48,
+       {[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]},
+       {{[[[{a,3},{z,7}],<<"A">>]],
+         [],[],[],[],[],[],[],[],[],[],[],[],[],[],[]}}}}
+
+summary:
+  BUG with merge.  we don't consider deferred values properly.
+
+  specifically, found that we were not considering deferred elements only present in the other set
+
+post mortem:
+  add new test
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+opvec: OpVec { ops: [
+  Remove { member: 3, actor: 0, ctx: Some(VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }) }, 
+  Add { member: 3, actor: 8 }] }
+divergent results: {[], [3]}
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {3: VClock { dots: {0: 1} }}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {2: 1} }, entries: {3: VClock { dots: {2: 1} }}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {2: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {3: VClock { dots: {0: 1} }}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {3: 1} }, entries: {3: VClock { dots: {3: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {3: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }
+
+witnesses: [Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot
+{ clock: VClock { dots: {2: 1} }, entries: {3: VClock { dots: {2: 1} }}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, de
+ferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: Orswot { clock: VClock { dots: {2: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }
+
+witnesses: [Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, Orswot { clock: VClock { dots: {1: 1} }, entries: {3: VClock { dots: {1:
+1} }}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, de
+ferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: Orswot { clock: VClock { dots: {1: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {3: VClock { dots: {0: 1} }}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {}}]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} },
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {3: VClock { dots: {8: 1} }}, deferred: {} }]
+merged:
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {3: VClock { dots: {8: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 2, 2: 6, 3: 3, 4: 4, 5: 4} }: {3}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {3: VClock { dots: {8: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {3: VClock { dots: {8: 1} }}, deferred: {} }
+
+summary:
+  a bug with the test suite, because generated vclock context is not modded, but the witness is
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+opvec: OpVec { ops: [
+  Remove { member: 5, actor: 7, ctx: Some(VClock { dots: {0: 2, 1: 4, 2: 3, 3: 3, 4: 3, 5: 3} }) }, 
+  Add { member: 0, actor: 8 }, 
+  Add { member: 5, actor: 4 }] }
+divergent results: {[0], [0, 5]}
+
+witnesses: [
+  Orswot { clock: VClock { dots: {4: 1, 8: 1} }, entries: {0: VClock { dots: {8: 1} }, 5: VClock { dots: {4: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} },
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 4, 2: 3, 3: 3, 4: 3, 5: 3} }: {5}} }]
+merged: 
+  Orswot { clock: VClock { dots: {4: 1, 8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 4, 2: 3, 3: 3, 4: 3, 5: 3} }: {5}} }, 
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {4: 1} }, entries: {5: VClock { dots: {4: 1} }}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {4: 1, 8: 1} }, entries: {0: VClock { dots: {8: 1} }, 5: VClock { dots: {4: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 4, 2: 3, 3: 3, 4: 3, 5: 3} }: {5}} }, 
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {4: 1} }, entries: {5: VClock { dots: {4: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {4: 1, 8: 1} }, entries: {0: VClock { dots: {8: 1} }, 5: VClock { dots: {4: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 4, 2: 3, 3: 3, 4: 3, 5: 3} }: {5}} }, 
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {4: 1} }, entries: {5: VClock { dots: {4: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {4: 1, 8: 1} }, entries: {0: VClock { dots: {8: 1} }, 5: VClock { dots: {4: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {}}, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {4: 1} }, entries: {5: VClock { dots: {4: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 4, 2: 3, 3: 3, 4: 3, 5: 3} }: {5}} }]
+merged: 
+  Orswot { clock: VClock { dots: {4: 1, 8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {4: 1} }, entries: {5: VClock { dots: {4: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 4, 2: 3, 3: 3, 4: 3, 5: 3} }: {5}}}, 
+  Orswot { clock: VClock { dots: {8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {4: 1, 8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }
+
+witnesses: [Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }
+, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {4: 1} }, entries: {5: VClock { dots: {4: 1} }}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries
+: {}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 4, 2: 3, 3: 3, 4: 3, 5: 3} }: {5}}
+}, Orswot { clock: VClock { dots: {8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }, Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {4: 1, 8: 1} }, entries: {0: VClock { dots: {8: 1} }}, deferred: {} }
+
+summary:
+  deferred operations are only applied during merges, not considered during adds
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+opvec: OpVec { ops: [
+  Add { member: 1, actor: 5 }, 
+  Remove { member: 1, actor: 9, ctx: Some(VClock { dots: {0: 3, 1: 5, 2: 4, 3: 5, 4: 6, 5: 4} }) }, 
+  Add { member: 4, actor: 6 }, 
+  Remove { member: 9, actor: 3, ctx: Some(VClock { dots: {0: 6, 1: 1, 2: 6, 3: 1, 4: 4} }) }] }
+divergent results: {[1, 4], [4]}
+
+witnesses: [
+  Orswot { clock: VClock { dots: {6: 1} }, entries: {4: VClock { dots: {6: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {5: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 5, 2: 4, 3: 5, 4: 6, 5: 4} }: {1}} }]
+merged: 
+  Orswot { clock: VClock { dots: {5: 1, 6: 1} }, entries: {4: VClock { dots: {6: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {6: 1} }, entries: {4: VClock { dots: {6: 1} }}, deferred: {VClock { dots: {0: 3, 1: 5, 2: 4, 3: 5, 4: 6, 5: 4} }: {1}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {5: 1} }, entries: {1: VClock { dots: {5: 1} }}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {5: 1, 6: 1} }, entries: {1: VClock { dots: {5: 1} }, 4: VClock { dots: {6: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {5: 1} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 5, 2: 4, 3: 5, 4: 6, 5: 4} }: {1}} },
+  Orswot { clock: VClock { dots: {6: 1} }, entries: {4: VClock { dots: {6: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 6, 1: 1, 2: 6, 3: 1, 4: 4} }: {9}}}]
+merged: 
+  Orswot { clock: VClock { dots: {5: 1, 6: 1} }, entries: {4: VClock { dots: {6: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {5: 1} }, entries: {1: VClock { dots: {5: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {6: 1} }, entries: {4: VClock { dots: {6: 1} }}, deferred: {} },
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 6, 1: 1, 2: 6, 3: 1, 4: 4} }: {9}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 5, 2: 4, 3: 5, 4: 6, 5: 4} }: {1}} }]
+merged: 
+  Orswot { clock: VClock { dots: {5: 1, 6: 1} }, entries: {4: VClock { dots: {6: 1} }}, deferred: {} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {6: 1} }, entries: {4: VClock { dots: {6: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 3, 1: 5, 2: 4, 3: 5, 4: 6, 5: 4} }: {1}, VClock { dots: {0: 6, 1: 1, 2: 6, 3: 1, 4: 4} }: {9}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {5: 1} }, entries: {1: VClock { dots: {5: 1} }}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {5: 1, 6: 1} }, entries: {1: VClock { dots: {5: 1} }, 4: VClock { dots: {6: 1} }}, deferred: {} }
+
+summary:
+  unseen defers don't seem to be present in the merged deferred map
+  BUG: was checking for descendence rather than partial unseen dots
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+opvec: OpVec { ops: [
+  Add { member: 2, actor: 7 }, 
+  Remove { member: 2, actor: 8, ctx: Some(VClock { dots: {0: 2, 1: 2} }) }, 
+  Add { member: 2, actor: 0 }] }
+divergent results: {[], [2]}
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {2: VClock { dots: {0: 1} }}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }, 
+  Orswot { clock: VClock { dots: {7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1, 7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {2: VClock { dots: {0: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1, 7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {2: VClock { dots: {0: 1} }}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} },
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1, 7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {2: VClock { dots: {0: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, Orswot { clock: VClock { dots: {7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1, 7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1} }, entries: {2: VClock { dots: {0: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1, 7: 1} }, entries: {2: VClock { dots: {7: 1} }}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }
+
+witnesses: [
+  Orswot { clock: VClock { dots: {0: 1, 7: 1} }, entries: {2: VClock { dots: {0: 1} }}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }, 
+  Orswot { clock: VClock { dots: {} }, entries: {}, deferred: {} }]
+merged: 
+  Orswot { clock: VClock { dots: {0: 1, 7: 1} }, entries: {}, deferred: {VClock { dots: {0: 2, 1: 2} }: {2}} }
+
+summary:
+  because add blindly overwrites causality info, if adds hit a replica for the same element, then it may diverge

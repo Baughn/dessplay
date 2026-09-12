@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-09
+Last updated: 2026-09-12
 
 ## Table of Contents
 
@@ -479,6 +479,13 @@ Layering mirrors the player tests:
 ## CRDT Property Tests
 
 Using proptest to verify convergence properties.
+
+`dessplay-core/tests/map_read.rs` checks the vendored borrowed map iterator
+against the upstream contextual iterator after generated writes, removals and
+merges between two replicas. It verifies matching values, key order, borrowed
+pointer identity and unchanged serialized bytes. Removal here exercises the
+dependency's API; production still uses tombstones. The existing snapshot
+migration and convergence suites cover the view consumers.
 
 ### Core Property: Convergence
 

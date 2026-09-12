@@ -17,6 +17,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Improved: Reduced temporary memory use during playback, downloads, chat and
   series navigation, and periodic state saves.
 
+- Improved: Reduced temporary memory use when laying out terminal panes and
+  wrapping chat messages.
+
+- Improved: Reduced playback CPU and temporary memory use with large media
+  libraries.
+
 ## 2026-09-11
 
 - Added: Click a chat image to view it fullscreen. Press any key or click again

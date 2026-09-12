@@ -293,8 +293,7 @@ fn upgrade_relations_map(
     old: &LwwMap<AniDbSeriesId, SeriesRelationsV10>,
 ) -> LwwMap<AniDbSeriesId, SeriesRelations> {
     let mut fresh = LwwMap::default();
-    for entry in old.iter() {
-        let (series, reg) = entry.val;
+    for (series, reg) in old.iter_entries() {
         if let Some(lww) = reg.read() {
             map_put(
                 &mut fresh,
@@ -317,8 +316,7 @@ fn downgrade_relations_map(
     live: &LwwMap<AniDbSeriesId, SeriesRelations>,
 ) -> LwwMap<AniDbSeriesId, SeriesRelationsV10> {
     let mut old = LwwMap::default();
-    for entry in live.iter() {
-        let (series, reg) = entry.val;
+    for (series, reg) in live.iter_entries() {
         if let Some(lww) = reg.read() {
             let value = lww.value.clone();
             map_put(
@@ -677,11 +675,8 @@ where
     K: Ord + Clone,
     V: Ord + Clone,
 {
-    map.iter()
-        .filter_map(|entry| {
-            let (key, reg) = entry.val;
-            resolve_value(reg).map(|value| (key.clone(), value))
-        })
+    map.iter_entries()
+        .filter_map(|(key, reg)| resolve_value(reg).map(|value| (key.clone(), value)))
         .collect()
 }
 
@@ -1038,8 +1033,8 @@ impl CrdtState {
             K: Ord + Clone + Debug,
             V: Ord + Clone + Debug,
         {
-            map.iter()
-                .filter_map(|entry| entry.val.1.timestamp())
+            map.iter_entries()
+                .filter_map(|(_, reg)| reg.timestamp())
                 .max()
                 .unwrap_or_default()
         }

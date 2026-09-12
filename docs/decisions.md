@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-11
+Last updated: 2026-09-12
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,35 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## Borrowed CRDT map traversal (2026-09-12)
+
+**Rule:** Read-only map traversal borrows entries without constructing mutation
+contexts; see [State Sync Protocol](design.md#state-sync-protocol).
+
+**Why:** Samply profiling during real playback with about 52,000 catalog and
+metadata entries attributed roughly three quarters of client CPU time to view
+construction. `crdts::Map::iter()` cloned two causal clocks for every entry;
+our read-only callers discarded both. A borrowed iterator removes that work
+without changing the state model, merge behavior or snapshot representation.
+On the copied replica, an isolated complete-view benchmark roughly halved
+construction time and reduced allocations from 397,474 to 175,244 per view.
+These are operation measurements, not a claim that all view costs disappear.
+
+Three 30-second real-playback samples with the List expanded measured 16.3%
+of one CPU core before, 10.2% after, and 15.9% when returning to the original
+binary. Median RSS varied enough between runs that no consistent resident-memory
+reduction was established; the reliable memory result is reduced allocation
+traffic (104,368,055 to 40,365,815 requested bytes per view in the isolated probe).
+
+We vendor the published `crdts` 7.3.2 with one iterator addition and explicit
+lifetimes on four existing iterator signatures to keep current Rust builds
+warning-free. The iterator addition is marked in `map.rs`; `Cargo.toml`
+documents both kinds of local change. The user accepted
+maintaining this dependency patch. It can be retired when an upstream
+release supplies equivalent borrowed traversal. Caching resolved maps was
+deferred: it would add invalidation obligations across writes, merges and
+replica replacement, whereas this change keeps every view freshly resolved.
 
 ## Click-to-expand chat images (2026-09-11)
 

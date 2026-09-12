@@ -48,9 +48,8 @@ impl CrdtState {
     pub fn playlist_entries(&self) -> Vec<PlaylistEntry> {
         let mut entries: Vec<PlaylistEntry> = self
             .playlist
-            .iter()
-            .filter_map(|entry| {
-                let (hash, reg) = entry.val;
+            .iter_entries()
+            .filter_map(|(hash, reg)| {
                 // Outer None: never written. Inner None: tombstoned.
                 crate::lww::resolve_value(reg)
                     .flatten()

@@ -48,13 +48,15 @@
         # Build *only* the dependencies. Cached until Cargo.lock changes.
         #
         # extraDummyScript: crane stubs out every path crate in the
-        # deps-only phase, but vendor/quinn-udp is a [patch.crates-io]
-        # target that registry quinn compiles against — an empty stub
-        # breaks the quinn build. Keep the real sources.
+        # deps-only phase. Keep real sources for both [patch.crates-io]
+        # targets: registry quinn needs quinn-udp's API, and retaining
+        # crdts avoids rebuilding it when the workspace replaces its stub.
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           extraDummyScript = ''
             rm -rf $out/vendor/quinn-udp
             cp -r ${src}/vendor/quinn-udp $out/vendor/quinn-udp
+            rm -rf $out/vendor/crdts
+            cp -r ${src}/vendor/crdts $out/vendor/crdts
           '';
         });
 

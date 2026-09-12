@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["dessplay-core", "dessplay", "dessplay-rendezvous"]
-# vendor/quinn-udp is a patched dependency, not a workspace crate — kept
-# out so workspace-wide fmt/clippy/test leave upstream's code style alone.
-exclude = ["dessplay-core/fuzz", "dessplay/fuzz", "vendor/quinn-udp"]
+# Vendored patches are dependencies, not workspace crates — kept out so
+# workspace-wide fmt/clippy/test leave upstream's code style alone.
+exclude = ["dessplay-core/fuzz", "dessplay/fuzz", "vendor/quinn-udp", "vendor/crdts"]
 
 # quinn-udp attaches a per-packet IP_TOS/IPV6_TCLASS cmsg carrying only
 # the ECN bits, which overrides — and so zeroes — the socket-level DSCP
@@ -14,6 +14,14 @@ exclude = ["dessplay-core/fuzz", "dessplay/fuzz", "vendor/quinn-udp"]
 # in vendor/quinn-udp/src/unix.rs.
 [patch.crates-io]
 quinn-udp = { path = "vendor/quinn-udp" }
+# Published crdts 7.3.2 (rust-crdt/rust-crdt, Apache-2.0):
+# DESSPLAY PATCH in src/map.rs adds borrowed iter_entries(), avoiding two
+# unused VClock clones per entry when resolving state. No wire/data changes.
+# Four explicit elided lifetimes in glist.rs/merkle_reg.rs also silence newer
+# Rust lifetime-syntax warnings; compatibility-only, with identical semantics.
+# Remove this patch when upstream provides context-free borrowed iteration.
+# Equivalence: dessplay-core/tests/map_read.rs (updates/removals/merges).
+crdts = { path = "vendor/crdts" }
 
 [workspace.package]
 version = "0.1.0"
