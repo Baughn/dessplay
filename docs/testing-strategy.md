@@ -1108,3 +1108,11 @@ terminal resizes, selection between multiple images, retention after chat-window
 pruning, and dismissal by ordinary keys, global shortcuts, and mouse buttons. The opening release, drags, wheel, and paste cannot dismiss the viewer.
 Closing restores the exact rendered draft, focus, and scroll position; border
 cells and covered previews do not open it.
+
+IRC duplex-session tests cover local join/part/quit/kick notices, departure
+reason formatting, silent initial rosters, bridge-nick filtering (based on the
+person leaving, not the kicker), duplicate joins, case-insensitive membership,
+and unrelated-channel/global events. They verify that departed users disappear
+from `/summon` and that our own kick ends the session for reconnect. These
+regressions failed before implementation; PING/PONG barriers make delivery
+checks deterministic without sleeps.

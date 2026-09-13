@@ -603,7 +603,10 @@ idle), `Shutdown` (QUIT and exit).
 
 **Produces (`IrcEvent`):** `Connected` / `Disconnected { reason }`
 (mapped to local system lines), `Message { from, text, action }` (an
-external user's line, mapped to a local-only `UiInput::Irc` chat line).
+external user's line, mapped to a local-only `UiInput::Irc` chat line), and
+`Presence { text }` (external JOIN/PART/QUIT/KICK, mapped to `UiInput::System`).
+Presence notices and `/summon` share the channel membership set, populated
+silently by NAMES and maintained by live membership events and nick changes.
 
 **Wiring.** The bridge loop taps `Mutation::Chat` in its `UserAction::
 Mutate` arm and forwards the text via a lossy `try_send` (never awaiting

@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-12
+Last updated: 2026-09-13
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -884,10 +884,19 @@ channel `#dess`.
   from `*Dess` nicks are dropped. Known cost: a genuine IRC user whose
   nick ends in "dess", e.g. `Goddess`, is also dropped
   (why: [decisions](decisions.md#inbound-irc-lines-are-local-and-dess-nicks-are-dropped)).
+- **Presence.** External IRC users' JOIN, PART, QUIT, and KICK events
+  appear as local system notices naming the channel, with departure reasons
+  when supplied. The same `*Dess` filter applies to the joining/departing
+  nick. Initial NAMES rosters do not announce joins; QUIT notices require
+  known channel membership, and nick changes silently update that membership.
+  Other channels do not affect the roster or produce notices. Presence
+  notices are never synced or forwarded back to IRC
+  (why: [decisions](decisions.md#irc-presence-notices-2026-09-13)).
 - **Lifecycle.** A dedicated [IRC actor](architecture.md#ircactor) owns
   the TLS connection, reconnects with capped backoff, answers PING, and
   is reconfigured live when the IRC settings change (disabling it makes
-  it QUIT and idle). Connect/disconnect post local system lines. The
+  it QUIT and idle). Connect/disconnect post local system lines. If the
+  bridge is kicked, it reconnects using the rejection backoff. The
   channel is **public and unauthenticated** -- unlike the encrypted QUIC
   group, anything said in DessPlay chat is visible (and bot-loggable) on
   IRC; the settings screen says so.

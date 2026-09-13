@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-12
+Last updated: 2026-09-13
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -441,6 +441,22 @@ The OSD and IRC deliberately have no reveal: IRC is public, logged, and one grou
 **Rule:** messages from IRC nicks not ending in `Dess` are shown locally and never synced; messages from `*Dess` nicks are dropped; see [design.md](design.md#irc-bridge).
 
 **Why:** each client runs its own bridge, so syncing inbound lines would duplicate them once per client. `*Dess` nicks are other bridges echoing DessPlay users who are already present via CRDT sync. The heuristic cost, that a genuine IRC user whose nick ends in "dess" (e.g. `Goddess`) is also dropped, is accepted: the actor deliberately does not hold the roster.
+
+### IRC presence notices (2026-09-13)
+
+**Rule:** External IRC joins and departures become local system notices, with
+QUIT and KICK included, while initial rosters and bridge nicks stay quiet;
+see [design.md](design.md#irc-bridge).
+
+**Why:** People chatting through IRC should be visibly arriving and leaving,
+just like DessPlay participants. QUIT and KICK are departures too; ignoring
+kicks also leaves stale `/summon` candidates. Notices use the same membership
+tracking as `/summon`, so a global QUIT from someone outside the channel cannot
+manufacture a departure. NAMES is a snapshot, not a burst of arrivals on every
+reconnect. The existing bridge-nick filter avoids duplicate DessPlay presence,
+and local-only delivery avoids one synced copy per bridge. A kick targeting
+our own bridge ends the session and uses rejection backoff, restoring the
+bridge without a tight reconnect loop.
 
 ### System messages are derived, not synced
 

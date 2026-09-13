@@ -2169,8 +2169,8 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                 }
                 event = self.irc_events.recv(), if self.irc_alive => {
                     // Incoming from the IRC bridge. Messages from external
-                    // users become local-only chat lines; connect/disconnect
-                    // become local system notices. None means the actor exited
+                    // users become local-only chat lines; presence and connection
+                    // events become local system notices. None means the actor exited
                     // — disable this arm so it can't busy-loop. (Crucially it
                     // does NOT end the session, unlike handle.events.)
                     use crate::actors::irc::IrcEvent;
@@ -2194,6 +2194,12 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             let _ = self.ui.try_send(UiInput::System {
                                 timestamp: (system_clock())(),
                                 text: format!("IRC disconnected: {reason}"),
+                            });
+                        }
+                        Some(IrcEvent::Presence { text }) => {
+                            let _ = self.ui.try_send(UiInput::System {
+                                timestamp: (system_clock())(),
+                                text,
                             });
                         }
                         Some(IrcEvent::Summoned { pinged, unmatched }) => {

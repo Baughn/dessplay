@@ -21,7 +21,8 @@
 //! no chat).
 //!
 //! The IRC protocol surface is tiny — NICK/USER registration, JOIN,
-//! PRIVMSG, PING/PONG, 433 nick-collision fallback, and CTCP ACTION —
+//! PART/QUIT/KICK/NICK, NAMES, PRIVMSG, PING/PONG, 433 nick-collision
+//! fallback, and CTCP ACTION —
 //! so it is hand-rolled over `tokio-rustls` (reusing the project's
 //! pinned rustls, no native-tls) rather than pulling a heavier crate.
 //! The line parsing/formatting lives in pure functions that are unit
@@ -125,6 +126,11 @@ pub enum IrcEvent {
     Disconnected {
         /// Human-readable reason.
         reason: String,
+    },
+    /// A local-only notice about an external IRC user's channel presence.
+    Presence {
+        /// Human-readable notice, including its IRC channel.
+        text: String,
     },
     /// A message from an external IRC user (a non-`Dess` nick).
     Message {
@@ -401,7 +407,7 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
     // "353" arm below).
     let mut joined = false;
     let mut nick_tries: u32 = 0;
-    // Channel membership, tracked from NAMES + JOIN/PART/QUIT/NICK so
+    // Channel membership, tracked from NAMES + JOIN/PART/QUIT/KICK/NICK so
     // `/summon` (design.md #4) can match an absent dessplay username to
     // whoever is actually in the channel right now. Reset per session:
     // a fresh NAMES reply always follows a JOIN.
@@ -482,50 +488,41 @@ pub(crate) async fn run_session<S: AsyncRead + AsyncWrite + Unpin + Send>(
                     // the first one is also when `IrcEvent::Connected`
                     // fires.
                     "353" => {
-                        if let Some(list) = parsed.params.last() {
-                            members.extend(parse_names(list));
-                        }
-                        if !joined
-                            && parsed
-                                .params
-                                .get(2)
-                                .is_some_and(|c| c.eq_ignore_ascii_case(&config.channel))
+                        if !parsed.params.get(2)
+                            .is_some_and(|c| c.eq_ignore_ascii_case(&config.channel))
                         {
+                            continue;
+                        }
+                        if let Some(list) = parsed.params.get(3) {
+                            for member in parse_names(list) {
+                                insert_member(&mut members, member);
+                            }
+                        }
+                        if !joined {
                             joined = true;
                             tracing::info!(channel = %config.channel, "joined IRC channel");
                             let _ = events.send(IrcEvent::Connected).await;
                         }
                     }
-                    "JOIN" => {
-                        if let (Some(prefix), Some(channel)) =
-                            (parsed.prefix.as_deref(), parsed.params.first())
-                            && channel.eq_ignore_ascii_case(&config.channel)
+                    "JOIN" | "PART" | "QUIT" | "KICK" | "NICK" => {
+                        // Losing our own channel membership must restart the
+                        // connection, just like a rejected JOIN. Other bridge
+                        // departures are filtered only from narration.
+                        let target = match parsed.command.to_ascii_uppercase().as_str() {
+                            "KICK" => parsed.params.get(1).map(String::as_str),
+                            "PART" => parsed.prefix.as_deref().map(nick_of_prefix),
+                            _ => None,
+                        };
+                        if target.is_some_and(|target| target.eq_ignore_ascii_case(nick))
+                            && parsed.params.first().is_some_and(|c| c.eq_ignore_ascii_case(&config.channel))
                         {
-                            members.insert(nick_of_prefix(prefix).to_string());
+                            return SessionEnd::Rejected {
+                                reason: format!("removed from {}{}", config.channel, departure_reason(&parsed)),
+                            };
                         }
-                    }
-                    "PART" => {
-                        if let (Some(prefix), Some(channel)) =
-                            (parsed.prefix.as_deref(), parsed.params.first())
-                            && channel.eq_ignore_ascii_case(&config.channel)
-                        {
-                            members.remove(nick_of_prefix(prefix));
-                        }
-                    }
-                    // QUIT carries no channel param (it leaves every channel
-                    // the nick was in); we only ever track one, so a global
-                    // removal is correct.
-                    "QUIT" => {
-                        if let Some(prefix) = parsed.prefix.as_deref() {
-                            members.remove(nick_of_prefix(prefix));
-                        }
-                    }
-                    "NICK" => {
-                        if let (Some(prefix), Some(new_nick)) =
-                            (parsed.prefix.as_deref(), parsed.params.first())
-                        {
-                            members.remove(nick_of_prefix(prefix));
-                            members.insert(new_nick.clone());
+                        if let Some(text) = membership_notice(&parsed, &config.channel, &mut members) {
+                            tracing::info!(%text, "IRC presence changed");
+                            let _ = events.send(IrcEvent::Presence { text }).await;
                         }
                     }
                     _ => {}
@@ -817,6 +814,97 @@ fn chunk_str(s: &str, max: usize) -> Vec<&str> {
         chunks.push(&s[start..]);
     }
     chunks
+}
+
+/// Remove a known channel member using the same case-insensitive matching
+/// as channel routing. Keep the server's spelling for `/summon` output.
+fn remove_member(members: &mut HashSet<String>, nick: &str) -> bool {
+    let previous = members
+        .iter()
+        .find(|m| m.eq_ignore_ascii_case(nick))
+        .cloned();
+    previous.is_some_and(|previous| members.remove(&previous))
+}
+
+fn insert_member(members: &mut HashSet<String>, nick: String) -> bool {
+    let existed = remove_member(members, &nick);
+    members.insert(nick);
+    !existed
+}
+
+/// Optional departure text, stripped of IRC formatting like incoming chat.
+fn departure_reason(parsed: &ParsedLine) -> String {
+    let index = match parsed.command.to_ascii_uppercase().as_str() {
+        "QUIT" => 0,
+        "KICK" => 2,
+        _ => 1,
+    };
+    parsed
+        .params
+        .get(index)
+        .map(|reason| strip_controls(reason))
+        .filter(|reason| !reason.is_empty())
+        .map(|reason| format!(" ({reason})"))
+        .unwrap_or_default()
+}
+
+/// Update the one channel roster and derive any live presence notice from
+/// that transition. Snapshots are populated separately, without narration.
+fn membership_notice(
+    parsed: &ParsedLine,
+    channel: &str,
+    members: &mut HashSet<String>,
+) -> Option<String> {
+    let from = nick_of_prefix(parsed.prefix.as_deref()?);
+    let command = parsed.command.to_ascii_uppercase();
+    if matches!(command.as_str(), "JOIN" | "PART" | "KICK")
+        && !parsed.params.first()?.eq_ignore_ascii_case(channel)
+    {
+        return None;
+    }
+    let (subject, description) = match command.as_str() {
+        "JOIN" => {
+            if !insert_member(members, from.to_string()) {
+                return None;
+            }
+            (from, format!("joined {channel}"))
+        }
+        "PART" | "QUIT" => {
+            if !remove_member(members, from) {
+                return None;
+            }
+            let verb = if command == "QUIT" { "quit" } else { "left" };
+            (
+                from,
+                format!("{verb} {channel}{}", departure_reason(parsed)),
+            )
+        }
+        "KICK" => {
+            let target = parsed.params.get(1)?;
+            if !remove_member(members, target) {
+                return None;
+            }
+            (
+                target.as_str(),
+                format!(
+                    "was kicked from {channel} by {from}{}",
+                    departure_reason(parsed)
+                ),
+            )
+        }
+        "NICK" => {
+            let new_nick = parsed.params.first()?;
+            if remove_member(members, from) {
+                insert_member(members, new_nick.clone());
+            }
+            return None;
+        }
+        _ => return None,
+    };
+    if is_bridge_nick(subject) {
+        return None;
+    }
+    Some(format!("IRC: {subject} {description}."))
 }
 
 /// Turn a parsed PRIVMSG into an [`IrcEvent::Message`], or `None` if it
@@ -1226,6 +1314,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_presence_notices_follow_channel_membership() {
+        let (cmd, mut events, mut lines, mut server, _h) = spawn_session();
+        let _ = next_line(&mut lines).await;
+        let _ = next_line(&mut lines).await;
+        write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
+        let _ = next_line(&mut lines).await;
+        write_server(
+            &mut server,
+            ":srv 353 BaughnDess = #dess :BaughnDess @Alice Bob",
+        )
+        .await;
+        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
+
+        // Snapshot members, bridge nicks, other channels, and strangers'
+        // global events must not manufacture presence or summon candidates.
+        for line in [
+            ":srv 353 BaughnDess = #elsewhere :Decoy",
+            ":NeroDess!u@h JOIN #dess",
+            ":NeroDess!u@h PART #dess :bye",
+            ":NeroDess!u@h JOIN #dess",
+            ":op!u@h KICK #dess nerodess :bye",
+            ":NeroDess!u@h JOIN #dess",
+            ":nerodess!u@h QUIT :bye",
+            ":ALICE!u@h JOIN #dess",
+            ":BaughnDess!u@h JOIN #dess",
+            ":Ghost!u@h JOIN #elsewhere",
+            ":Ghost!u@h NICK :Decoy2",
+            ":Ghost!u@h QUIT :gone",
+            ":Alice!u@h PART #elsewhere :still here",
+            ":op!u@h KICK #elsewhere Bob :still here",
+        ] {
+            write_server(&mut server, line).await;
+        }
+        sync_via_ping(&mut lines, &mut server).await;
+        assert!(events.try_recv().is_err());
+
+        for (line, expected) in [
+            (":Tomoko!u@h JOIN :#DESS", "IRC: Tomoko joined #dess."),
+            (
+                ":Tomoko!u@h PART #dess :bye",
+                "IRC: Tomoko left #dess (bye).",
+            ),
+            (
+                ":alice!u@h QUIT :\x0304connection lost",
+                "IRC: alice quit #dess (connection lost).",
+            ),
+            (
+                ":OpDess!u@h KICK #dess Bob :bye",
+                "IRC: Bob was kicked from #dess by OpDess (bye).",
+            ),
+            (":Tomoko!u@h JOIN #dess", "IRC: Tomoko joined #dess."),
+            (":Tomoko!u@h PART #dess", "IRC: Tomoko left #dess."),
+        ] {
+            write_server(&mut server, line).await;
+            sync_via_ping(&mut lines, &mut server).await;
+            assert_eq!(
+                events.try_recv().ok(),
+                Some(IrcEvent::Presence {
+                    text: expected.into()
+                })
+            );
+        }
+        write_server(&mut server, ":Bob!u@h QUIT :already kicked").await;
+        sync_via_ping(&mut lines, &mut server).await;
+        assert!(events.try_recv().is_err());
+        cmd.send(IrcCommand::Summon(vec![
+            UserId::new("Decoy"),
+            UserId::new("Bob"),
+            UserId::new("Alice"),
+        ]))
+        .await
+        .unwrap();
+        assert_eq!(
+            events.recv().await,
+            Some(IrcEvent::Summoned {
+                pinged: vec![],
+                unmatched: vec![
+                    UserId::new("Decoy"),
+                    UserId::new("Bob"),
+                    UserId::new("Alice")
+                ],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn kicked_bridge_ends_session_for_reconnect() {
+        let (_cmd, mut events, mut lines, mut server, h) = spawn_session();
+        let _ = next_line(&mut lines).await;
+        let _ = next_line(&mut lines).await;
+        write_server(&mut server, ":srv 001 BaughnDess :Welcome").await;
+        let _ = next_line(&mut lines).await;
+        write_join_confirmed(&mut server, "BaughnDess", "#dess").await;
+        assert_eq!(events.recv().await, Some(IrcEvent::Connected));
+        write_server(&mut server, ":op!u@h KICK #dess baughndess :bye").await;
+        drop(server);
+        drop(lines);
+        assert!(matches!(h.await.unwrap(), SessionEnd::Rejected { .. }));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn answers_ping() {
         let (_cmd, _events, mut lines, mut server, _h) = spawn_session();
         let _ = next_line(&mut lines).await; // NICK
@@ -1298,6 +1488,12 @@ mod tests {
 
         // Nero200 joins live (no NAMES reply involved)...
         write_server(&mut server, ":Nero200!u@h JOIN #dess").await;
+        assert_eq!(
+            events.recv().await,
+            Some(IrcEvent::Presence {
+                text: "IRC: Nero200 joined #dess.".into(),
+            })
+        );
         // ...then renames...
         write_server(&mut server, ":Nero200!u@h NICK :Nero201").await;
         // ...and a decoy in an unrelated channel must not be tracked.
@@ -1321,6 +1517,12 @@ mod tests {
 
         // Nero201 leaves; a second summon finds nobody.
         write_server(&mut server, ":Nero201!u@h PART #dess :bye").await;
+        assert_eq!(
+            events.recv().await,
+            Some(IrcEvent::Presence {
+                text: "IRC: Nero201 left #dess (bye).".into(),
+            })
+        );
         sync_via_ping(&mut lines, &mut server).await;
         cmd.send(IrcCommand::Summon(vec![UserId::new("Nero")]))
             .await

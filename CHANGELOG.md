@@ -9,6 +9,11 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-13
+
+- Added: Chat now shows when IRC users join or leave, including quits and
+  kicks, with departure reasons when available.
+
 ## 2026-09-12
 
 - Improved: Reduced CPU work and temporary memory use when updating the media
