@@ -17,8 +17,12 @@
         };
         lib = pkgs.lib;
 
+        # rustc-codegen-cranelift-preview backs the opt-in
+        # `cargo --config .cargo/cranelift.toml` dev-profile build (not the
+        # default: catch_unwind doesn't work under Cranelift yet, see that
+        # file). Release and `nix build` use LLVM either way.
         rustToolchain = pkgs.rust-bin.nightly.latest.default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
+          extensions = [ "rust-src" "rust-analyzer" "rustc-codegen-cranelift-preview" ];
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;

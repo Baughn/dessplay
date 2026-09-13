@@ -9,15 +9,30 @@
 #
 # Tests run under cargo-nextest (parallel across test binaries, per-test
 # timeouts, perf tests filtered — see .config/nextest.toml), falling back
-# to plain `cargo test` when nextest isn't on PATH (stale dev shell).
+# to plain `cargo test` when nextest isn't on PATH.
 # Nextest does not run doctests; the workspace has none (checked
 # 2026-08-31) — add a `cargo test --doc` step if that ever changes.
+#
+# The hook always re-executes itself inside `nix develop` so it runs
+# with the toolchain flake.nix declares *now*, not whatever the Claude
+# session inherited from direnv at startup (a flake.nix change mid-session
+# would otherwise leave the hook on a stale sysroot). Same nixpkgs
+# override as .envrc, so the shell derivation matches the developer's.
 #
 # Press Ctrl-C if a genuinely unfixable failure makes this loop.
 
 set -uo pipefail
 
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
+
+if [ -z "${DESSPLAY_STOP_HOOK_IN_FLAKE:-}" ] && command -v nix >/dev/null 2>&1; then
+  export DESSPLAY_STOP_HOOK_IN_FLAKE=1
+  nix_args=(develop .)
+  if nixpkgs_path=$(nix-instantiate --find-file nixpkgs 2>/dev/null); then
+    nix_args+=(--override-input nixpkgs "path:$nixpkgs_path")
+  fi
+  exec nix "${nix_args[@]}" --command "$0" "$@"
+fi
 
 out=""
 fail=0

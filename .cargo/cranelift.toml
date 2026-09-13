@@ -1,0 +1,54 @@
+# Opt-in Cranelift backend for the dev profile. NOT loaded automatically:
+#
+#     cargo --config .cargo/cranelift.toml nextest run
+#
+# (the flag is per-invocation; switching backends re-fingerprints every
+# crate, so set CARGO_TARGET_DIR=target/cranelift to keep both builds).
+#
+# Measured 2026-09-13 (32 cores, nightly 2026-06-13): full debug build of
+# all targets 50s -> 34s wall (553 -> 187 CPU-s); `touch dessplay-core/
+# src/lib.rs && cargo test --no-run` 20.5s -> 15.7s. It is not the
+# default because rustc_codegen_cranelift's unwinding is experimental:
+# `catch_unwind` in Cranelift-compiled code never catches, so the
+# commentary engine's panic guard and tokio's task-panic isolation abort
+# the process instead, and commentary::tests::
+# a_panicking_job_still_delivers_a_failure_and_releases_the_guard fails
+# (`-Cpanic=unwind` changes nothing; the toolchain's std still unwinds).
+# Re-evaluate when https://github.com/rust-lang/rustc_codegen_cranelift/
+# issues/1567 closes. Details: docs/testing-strategy.md.
+#
+# Needs the nightly toolchain's rustc-codegen-cranelift-preview
+# component, which the flake's dev shell provides. Release stays on LLVM.
+[unstable]
+codegen-backend = true
+
+[profile.dev]
+codegen-backend = "cranelift"
+
+# The hash inner loops (see Cargo.toml's opt-level = 3 overrides) stay
+# on LLVM: Cranelift at opt-level 3 hashes at ~190 MiB/s, LLVM at
+# >1 GiB/s, and a 1.4GB episode must not take 7s to hash.
+[profile.dev.package.md4]
+codegen-backend = "llvm"
+[profile.dev.package.digest]
+codegen-backend = "llvm"
+[profile.dev.package.block-buffer]
+codegen-backend = "llvm"
+[profile.dev.package.generic-array]
+codegen-backend = "llvm"
+[profile.dev.package.typenum]
+codegen-backend = "llvm"
+
+# aws-lc-sys declares its FFI with `#[link_name = "\u{1}..."]` (the
+# LLVM "verbatim, don't mangle" prefix). LLVM strips the byte; Cranelift
+# emits it, so every object that references those symbols -- the sys
+# crate, aws-lc-rs, and callers that instantiate aws-lc-rs's #[inline]
+# helpers -- links against `\x01aws_lc_...` and fails with "undefined
+# symbol". Those crates stay on LLVM. If a new dependency fails to link
+# under Cranelift with ^A-prefixed symbols, add it here.
+[profile.dev.package.aws-lc-sys]
+codegen-backend = "llvm"
+[profile.dev.package.aws-lc-rs]
+codegen-backend = "llvm"
+[profile.dev.package.librqbit-sha1-wrapper]
+codegen-backend = "llvm"

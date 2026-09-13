@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-12
+Last updated: 2026-09-13
 
 ## Table of Contents
 
@@ -205,6 +205,24 @@ where mold's single-link advantages invert; cargo also fingerprints the
 linker, so switching it rebuilds the workspace. Don't re-add mold
 without re-measuring `touch dessplay-core/src/lib.rs && time cargo test
 --no-run` both ways.
+
+Codegen backend: Cranelift measured 2026-09-13 and kept **opt-in only**
+(`cargo --config .cargo/cranelift.toml …`; the flake's toolchain ships
+the `rustc-codegen-cranelift-preview` component). Full debug build of
+all targets 50s → 34s wall (553 → 187 CPU-s), core-crate touch rebuild
+20.5s → 15.7s — a real win, especially on few cores. Two crate classes
+must stay on LLVM and the config file pins them: the MD4 hash crates
+(Cranelift ignores most of `opt-level = 3`; 190 MiB/s vs 1.3 GiB/s) and
+aws-lc-sys plus every crate that instantiates its `#[inline]` callers
+(its FFI uses the `\u{1}` "verbatim symbol" link-name prefix, which LLVM
+strips and Cranelift emits, so the link fails with `^A`-prefixed
+undefined symbols). The blocker is unwinding: cg_clif's is experimental
+and `catch_unwind` in Cranelift-compiled code never catches (verified on
+a minimal program; `-Cpanic=unwind` doesn't help), so tokio's task-panic
+isolation and the commentary engine's panic guard abort the process, and
+`a_panicking_job_still_delivers_a_failure_and_releases_the_guard` fails.
+Everything else (1532 tests) passes. Make it the default once
+rustc_codegen_cranelift#1567 closes and that test is green.
 
 ---
 
