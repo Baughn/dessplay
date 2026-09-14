@@ -369,9 +369,9 @@ blocking or allocating without bounds on the UI thread.
 
 ## Series rows
 
-`series` exposes `title`, `filter-label`, rich `filter`, boolean `filter-visible`,
-and a `body` slot. Its caption is an attached flow, so the filter cursor keeps
-its measured cell when the pane moves. `series-row` exposes `title`, `year`,
+`series` exposes `title` and its row collection / `body` slot. Its caption is
+an attached flow. The old `filter-visible` caption remains false for custom
+layout compatibility; Series now uses the shared search dialog. `series-row` exposes `title`, `year`,
 `marker`, `count`, `unavailable`, `name`, `nero`, `episode`, `available`, and
 `watchers`; booleans are `franchise`, `heading`, `entry`, `has-year`, `has-nero`,
 and `unlinked`. Move these text elements to reorder columns or put them on
@@ -381,6 +381,11 @@ reload, wrapping, and changes in the List's ordering.
 ## Browsers, searches, and small dialogs
 
 Browser and search definitions are in `templates/collections.xml`.
+`pane-search` reuses `search-dialog`: `title`, `message`, `editor`/`body` slots,
+and `editing`, `has-message`, `has-results` booleans. `pane-search-result` exposes
+literal `text`. The shared controller owns query editing and stable selection.
+Chat reuses its `input` slot for the search editor while searching; `input-title`
+labels search and `title` carries the match count. The draft remains independent.
 `file-browser` exposes `title`, `filter-label`, rich `filter`, boolean
 `filter-visible`, and slot `body`. `file-row` exposes `marker`, `name`, and
 boolean `entry`, including directory, file, parent, selection, and note rows.

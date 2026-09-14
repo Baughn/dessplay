@@ -20,6 +20,12 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: Nyaa results now require Tab before editing the query, so typing or
   pasting cannot accidentally clear your checked downloads.
 
+- Added: Ctrl-F searches every content pane, including chat, The List,
+  subtitles, and logs. Slash also opens search in panes without a text field.
+- Changed: Local searches accept fuzzy abbreviations and rank matching words
+  above scattered letters. Chat search jumps between messages without losing
+  your draft; list searches select a result back in its pane.
+
 ## 2026-09-13
 
 - Added: Chat now shows when IRC users join or leave, including quits and

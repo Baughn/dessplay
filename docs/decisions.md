@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-13
+Last updated: 2026-09-14
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,32 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## Shared pane search (2026-09-14)
+
+**Rule:** [Pane search](design.md#pane-search) shares one fuzzy matcher and
+editor/selection controller across local searches. Collection panes share a
+ranked picker; chat jumps through the conversation using that controller in
+source order. Ctrl-F opens search and `/` is an alias outside text fields.
+
+**Why:** Series and file browsing had separate substring filters, while chat,
+The List, Users, Playlist, subtitles, and logs lacked find. One matching rule
+makes abbreviations work everywhere and avoids per-pane editing drift. A small
+linear-scan matcher suffices: whole words, substring words, then subsequences;
+there is no new dependency or remote search protocol change.
+
+The user explicitly chose contextual jumps for chat rather than ranked message
+results. Chat therefore keeps chronology, a separate search editor, and the
+existing stable source-anchor renderer. Collection results carry source keys,
+not mutable row indices, so accepting a result after a snapshot cannot play or
+edit another entry. Selection itself only navigates. Search includes collapsed
+List groups and unwatched franchises; accepting an unwatched Recent result
+switches to All so the result remains visible.
+
+Ctrl-F has a distinct legacy byte (0x06), decoded as Control-f by crossterm;
+it has none of the Enter/Tab/flow-control collisions behind the earlier
+bare-letter policy. That policy still applies to the existing mode/sort keys.
+This supersedes the old Series-only slash filter and its inline caption.
 
 ## Borrowed CRDT map traversal (2026-09-12)
 

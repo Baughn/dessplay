@@ -178,15 +178,16 @@ fn log_action(action: &UserAction) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
     Chat,
+    Subtitles,
     Series,
     Users,
     Playlist,
 }
 
-/// Screen rectangles of the four panes as of the last draw, for mouse
+/// Screen rectangles of the content panes as of the last draw, for mouse
 /// hit-testing. Zero-sized until the first draw, so every click misses
 /// — no `Option` dance needed. Each rectangle is the painted semantic
-/// controller slot; the separate subtitle slot handles wheel input only.
+/// controller slot, including the optional separate subtitle pane.
 #[derive(Clone, Copy, Default)]
 struct PaneRects {
     chat: Rect,
@@ -214,6 +215,7 @@ impl Focus {
     fn name(self) -> &'static str {
         match self {
             Self::Chat => "chat",
+            Self::Subtitles => "subtitles",
             Self::Series => "series",
             Self::Users => "users",
             Self::Playlist => "playlist",
@@ -222,6 +224,7 @@ impl Focus {
     fn from_name(name: &str) -> Option<Self> {
         match name {
             "chat" => Some(Self::Chat),
+            "subtitles" => Some(Self::Subtitles),
             "series" => Some(Self::Series),
             "users" => Some(Self::Users),
             "playlist" => Some(Self::Playlist),
@@ -232,6 +235,7 @@ impl Focus {
 
 /// An open modal.
 enum Modal {
+    Search(super::modals::PaneSearch),
     Files(FileBrowser),
     Settings(SettingsModal),
     Episodes(EpisodeBrowser),
@@ -250,6 +254,7 @@ enum Modal {
 impl Modal {
     fn as_component(&mut self) -> &mut dyn AppComponent<Msg, NoUserEvent> {
         match self {
+            Modal::Search(modal) => modal,
             Modal::Files(modal) => modal,
             Modal::Settings(modal) => modal,
             Modal::Episodes(modal) => modal,
@@ -268,6 +273,7 @@ impl Modal {
 
     fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
         match self {
+            Modal::Search(modal) => modal.keybindings(),
             Modal::Files(modal) => modal.keybindings(),
             Modal::Settings(modal) => modal.keybindings(),
             Modal::Episodes(modal) => modal.keybindings(),
@@ -287,6 +293,7 @@ impl Modal {
     /// The modal's name, for logging.
     fn name(&self) -> &'static str {
         match self {
+            Modal::Search(_) => "Search",
             Modal::Files(_) => "Files",
             Modal::Settings(_) => "Settings",
             Modal::Episodes(_) => "Episodes",
@@ -1297,12 +1304,7 @@ impl Ui {
         // The grouping comes through the cache, which recomputes only when
         // the metadata/relations maps change -- not on every position tick.
         let franchises = self.franchise_cache.get(&self.snapshot.view);
-        let rows = props::franchise_rows_from(
-            franchises,
-            self.series.sort(),
-            recency,
-            &self.series.filter(),
-        );
+        let rows = props::franchise_rows_from(franchises, self.series.sort(), recency, "");
         self.series.set_franchises(rows);
     }
 
@@ -1353,10 +1355,14 @@ impl Ui {
             None => {
                 let mut items = match self.focus {
                     Focus::Chat => self.chat.keybindings(),
+                    Focus::Subtitles => vec![("↑↓", "Scroll"), ("Ctrl-f /", "Search")],
                     Focus::Series => self.series.keybindings(),
                     Focus::Users => self.users.keybindings(),
                     Focus::Playlist => self.playlist.keybindings(),
                 };
+                if matches!(self.focus, Focus::Users | Focus::Playlist | Focus::Series) {
+                    items.push(("Ctrl-f /", "Search"));
+                }
                 items.insert(0, ("Tab", "Next pane"));
                 // F2 cycles subtitle mode; F3 opens settings. Only shown
                 // when no modal is up.
@@ -1483,7 +1489,12 @@ impl Ui {
             .iter()
             .rev()
             .find(|name| self.panes.bounds(name).contains(position));
-        if hit.is_some_and(|name| name == "subtitles") {
+        if hit.is_some_and(|name| name == "subtitles")
+            && matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
             if matches!(
                 mouse.kind,
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -1517,6 +1528,7 @@ impl Ui {
                         self.chat.click(mouse.column, mouse.row, self.clock);
                         self.chat.mouse_down(mouse.column, mouse.row);
                     }
+                    Focus::Subtitles => {}
                     Focus::Series => self.series.click(mouse.column, mouse.row),
                     Focus::Users => self.users.click(mouse.column, mouse.row),
                     Focus::Playlist => self.playlist.click(mouse.column, mouse.row),
@@ -1535,6 +1547,7 @@ impl Ui {
                 let up = mouse.kind == MouseEventKind::ScrollUp;
                 match target {
                     Focus::Chat => self.chat.scroll_wheel(up),
+                    Focus::Subtitles => self.scroll_subtitles(up),
                     Focus::Series => self.series.scroll_wheel(up),
                     Focus::Users => self.users.scroll_wheel(up),
                     Focus::Playlist => self.playlist.scroll_wheel(up),
@@ -1680,6 +1693,77 @@ impl Ui {
             }
             return actions;
         }
+        if super::widgets::search::opens(&ev, self.focus != Focus::Chat || !self.modals.is_empty())
+        {
+            if self.modals.is_empty() && !self.focus_order.is_empty() {
+                tracing::debug!(pane = self.focus.name(), "user action: open search");
+                if self.focus == Focus::Chat {
+                    self.chat.start_search();
+                } else {
+                    let (title, entries) = match self.focus {
+                        Focus::Users => ("Users", self.users.search_entries()),
+                        Focus::Playlist => ("Playlist", self.playlist.search_entries()),
+                        Focus::Series if self.series.mode() == SeriesMode::TheList => {
+                            ("The List", self.series.search_entries())
+                        }
+                        Focus::Series => (
+                            "Series",
+                            self.franchise_cache
+                                .get(&self.snapshot.view)
+                                .iter()
+                                .map(|row| super::widgets::search::Entry {
+                                    key: super::modals::pane_search::Target::Franchise(
+                                        row.key.clone(),
+                                    ),
+                                    text: row.title.clone(),
+                                })
+                                .collect(),
+                        ),
+                        Focus::Subtitles => (
+                            "Subtitles",
+                            self.subtitles
+                                .iter()
+                                .rev()
+                                .map(|entry| super::widgets::search::Entry {
+                                    key: super::modals::pane_search::Target::Subtitle(entry.key),
+                                    text: format!(
+                                        "{} {}",
+                                        props::mmss(entry.video_millis),
+                                        entry.text
+                                    ),
+                                })
+                                .collect(),
+                        ),
+                        Focus::Chat => unreachable!(),
+                    };
+                    self.push_modal(Modal::Search(super::modals::PaneSearch::new(
+                        title, entries,
+                    )));
+                }
+                self.sync_focus_attr();
+                self.refresh_keybar();
+                return Vec::new();
+            }
+            if let Some(Modal::Logs(logs)) = self.modals.last() {
+                tracing::debug!("user action: search logs");
+                let entries = logs.search_entries();
+                self.push_modal(Modal::Search(super::modals::PaneSearch::new(
+                    "Logs", entries,
+                )));
+                self.sync_focus_attr();
+                self.refresh_keybar();
+                return Vec::new();
+            }
+        }
+        if self.modals.is_empty()
+            && self.focus == Focus::Chat
+            && self.chat.searching()
+            && matches!(ev, Event::Paste(_))
+        {
+            self.chat.on(&ev);
+            self.refresh_keybar();
+            return Vec::new();
+        }
         // Bracketed paste (design.md #33). A pasted single existing-file
         // path — dragged in from anywhere, whichever pane is focused —
         // becomes a playlist add, exactly like picking it in the file
@@ -1763,6 +1847,15 @@ impl Ui {
             None if self.focus_order.is_empty() => None,
             None => match self.focus {
                 Focus::Chat => self.chat.on(&ev),
+                Focus::Subtitles => {
+                    match super::components::plain(&ev) {
+                        Some(Key::Up | Key::PageUp) => self.scroll_subtitles(true),
+                        Some(Key::Down | Key::PageDown) => self.scroll_subtitles(false),
+                        Some(Key::End) => self.subtitle_scroll = 0,
+                        _ => {}
+                    }
+                    Some(Msg::None)
+                }
                 Focus::Series => self.series.on(&ev),
                 Focus::Users => self.users.on(&ev),
                 Focus::Playlist => self.playlist.on(&ev),
@@ -2040,6 +2133,39 @@ impl Ui {
         match msg {
             Msg::Roguelike(command) => Some(UserAction::Roguelike(command)),
             Msg::None => None,
+            Msg::SearchChosen(target) => {
+                self.pop_modal();
+                use super::modals::pane_search::Target;
+                match target {
+                    Target::Playlist(hash) => self.playlist.select_search(hash),
+                    Target::User(name) => self.users.select_search(&name),
+                    Target::List { heading, id } => self.series.select_search(heading, id),
+                    Target::Franchise(key) => {
+                        if !self.series.contains_franchise(&key) {
+                            self.series.show_all();
+                            self.refresh_series();
+                        }
+                        self.series.select_franchise_search(&key);
+                    }
+                    Target::Subtitle(key) => {
+                        if let Some(i) = self
+                            .subtitles
+                            .iter()
+                            .rev()
+                            .position(|entry| entry.key == key)
+                        {
+                            self.subtitle_scroll = i;
+                        }
+                    }
+                    Target::Log(id) => {
+                        if let Some(Modal::Logs(logs)) = self.modals.last_mut() {
+                            logs.select_search(id);
+                        }
+                    }
+                }
+                self.sync_focus_attr();
+                None
+            }
             // `Msg::SendChat`, `Msg::Command`, `Msg::PlaySelected`,
             // `Msg::ListEntrySaved`, `Msg::CycleSeriesWatch`,
             // `Msg::SetNotWatching`, and `Msg::ToggleEpisodeWatched` are
@@ -2059,7 +2185,7 @@ impl Ui {
                 self.sync_focus_attr();
                 None
             }
-            Msg::CycleSeriesMode | Msg::SeriesFilterChanged => {
+            Msg::CycleSeriesMode => {
                 self.refresh_series();
                 None
             }
@@ -2930,6 +3056,7 @@ impl Ui {
             }
         } else if let Some(modal) = self.modals.last_mut() {
             match modal {
+                Modal::Search(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::AniDbSearch(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::NyaaSearch(modal) => modal.render_layout(frame, frame.area(), renderer),
                 Modal::Confirm(modal) => modal.render_layout(frame, frame.area(), renderer),
@@ -3011,7 +3138,10 @@ impl Ui {
         // activity-window slot to generate another perceptually spaced
         // color as needed. Speaker names are opt-in and formatted by the
         // same helper used for Intermixed mode.
-        let subtitle_data = super::layout::Presentation::default().text("title", "Subtitles");
+        let mut subtitle_data = super::layout::Presentation::default().text("title", "Subtitles");
+        if self.focus == Focus::Subtitles && self.modals.is_empty() {
+            subtitle_data = subtitle_data.state("subtitle-frame", "focus");
+        }
         let subtitle_scene = renderer
             .arrange("subtitles", subs_area, &subtitle_data)
             .ok();
@@ -3262,6 +3392,169 @@ mod tests {
         super::super::layout::Renderer::new(
             super::super::layout::LayoutBundle::load(dir.path()).unwrap(),
         )
+    }
+
+    fn ctrl_f() -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code: Key::Char('f'),
+            modifiers: KeyModifiers::CONTROL,
+        })
+    }
+
+    #[test]
+    fn all_list_panes_open_the_same_search_and_letters_cannot_trigger_pane_actions() {
+        for focus in [
+            Focus::Series,
+            Focus::Users,
+            Focus::Playlist,
+            Focus::Subtitles,
+        ] {
+            for shortcut in [ctrl_f(), key(Key::Char('/'))] {
+                let mut ui = ui_with_view(StateView::default());
+                ui.focus = focus;
+                assert!(ui.handle(shortcut).is_empty());
+                assert!(matches!(ui.modals.last(), Some(Modal::Search(_))));
+                for c in "msdn/".chars() {
+                    assert!(ui.handle(key(Key::Char(c))).is_empty());
+                }
+                let Some(Modal::Search(search)) = ui.modals.last() else {
+                    panic!("search closed");
+                };
+                assert_eq!(search.search.editor.text(), "msdn/");
+                ui.handle(key(Key::Esc));
+                assert!(ui.modals.is_empty());
+                assert_eq!(ui.focus, focus);
+            }
+        }
+    }
+
+    #[test]
+    fn search_paste_stays_in_chat_search_and_slash_still_types_commands() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.handle(key(Key::Char('/')));
+        assert!(!ui.chat.searching());
+        assert_eq!(ui.chat.text(), "/");
+        ui.handle(ctrl_f());
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let actions = ui.handle(Event::Paste(file.path().to_string_lossy().into_owned()));
+        assert!(actions.is_empty());
+        assert_eq!(ui.chat.text(), "/");
+        ui.handle(key(Key::Esc));
+        assert_eq!(ui.chat.text(), "/");
+    }
+
+    #[test]
+    fn recent_search_reveals_unwatched_franchises_in_all_mode() {
+        let mut state = CrdtState::new();
+        state.set_anidb_metadata(
+            A,
+            SharedTimestamp(1),
+            Ed2kHash([1; 16]),
+            Some(AniDbMetadata {
+                source: MetadataSource::FilenameDerived,
+                series_name: "Haibane Renmei".into(),
+                series_id: None,
+                episode_number: None,
+            }),
+        );
+        state.set_file_catalog(
+            A,
+            SharedTimestamp(2),
+            Ed2kHash([1; 16]),
+            dessplay_core::types::FileCatalogEntry {
+                filename: "Haibane Renmei - 01.mkv".into(),
+                size_bytes: 1,
+                duration_millis: None,
+            },
+        );
+        let mut ui = ui_with_view(state.view());
+        ui.focus = Focus::Series;
+        ui.handle(key(Key::Char('m')));
+        assert_eq!(ui.series.mode(), SeriesMode::Recent);
+        ui.handle(ctrl_f());
+        ui.handle(Event::Paste("hbn rnm".into()));
+        let Some(Modal::Search(search)) = ui.modals.last() else {
+            panic!("no search");
+        };
+        assert_eq!(search.search.matches.len(), 1);
+        ui.handle(key(Key::Enter));
+        assert_eq!(ui.series.mode(), SeriesMode::All);
+        assert!(buffer_contains(
+            &render_test_buffer(&mut ui),
+            "Haibane Renmei"
+        ));
+    }
+
+    #[test]
+    fn playlist_search_ranks_then_resolves_the_hash_after_reordering() {
+        let mut ui = ui_with_view(StateView::default());
+        let row = |i, title: &str| props::PlaylistRow {
+            hash: Ed2kHash([i; 16]),
+            title: title.into(),
+            tone: props::Tone::Muted,
+            is_now: false,
+            temporary: false,
+            download: None,
+            watch: SeriesWatchState::Maybe,
+        };
+        let a = row(1, "f r i e r e n");
+        let b = row(2, "Frieren");
+        ui.playlist.set_props(props::PlaylistProps {
+            rows: vec![a.clone(), b.clone()],
+            now_index: None,
+        });
+        ui.focus = Focus::Playlist;
+        ui.handle(ctrl_f());
+        ui.handle(Event::Paste("frieren".into()));
+        let buffer = render_test_buffer(&mut ui);
+        assert!(buffer_contains(&buffer, "Search Playlist"));
+        let Some(Modal::Search(search)) = ui.modals.last() else {
+            panic!("no search");
+        };
+        assert_eq!(
+            search.search.selected().unwrap().key,
+            super::super::modals::pane_search::Target::Playlist(b.hash)
+        );
+        ui.playlist.set_props(props::PlaylistProps {
+            rows: vec![b.clone(), a],
+            now_index: None,
+        });
+        assert!(ui.handle(key(Key::Enter)).is_empty());
+        assert_eq!(ui.playlist.selected_hash(), Some(b.hash));
+        assert!(!ui.modal_open());
+    }
+
+    #[test]
+    fn subtitles_are_focusable_and_search_returns_to_the_retained_cue() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.subtitle_mode = SubtitleMode::SeparatePane;
+        for i in 0..40 {
+            ui.push_subtitle(i, i, format!("cue{i:02}"), None);
+        }
+        render_test_buffer(&mut ui);
+        assert!(ui.focus_order.contains(&Focus::Subtitles));
+        let rect = ui.panes.subs;
+        ui.handle(mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            rect.x + 1,
+            rect.y + 1,
+        ));
+        assert_eq!(ui.focus, Focus::Subtitles);
+        ui.handle(ctrl_f());
+        ui.handle(Event::Paste("cue05".into()));
+        ui.handle(key(Key::Enter));
+        assert!(buffer_contains(&render_test_buffer(&mut ui), "cue05"));
+    }
+
+    #[test]
+    fn log_search_closes_back_to_the_log_page() {
+        let mut ui = ui_with_view(StateView::default());
+        ui.handle(key(Key::Function(11)));
+        ui.handle(ctrl_f());
+        assert!(matches!(ui.modals.last(), Some(Modal::Search(_))));
+        assert!(buffer_contains(&render_test_buffer(&mut ui), "Search Logs"));
+        ui.handle(key(Key::Esc));
+        assert!(matches!(ui.modals.last(), Some(Modal::Logs(_))));
     }
 
     #[test]

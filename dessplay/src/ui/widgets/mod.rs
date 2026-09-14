@@ -19,6 +19,7 @@ pub mod keymap;
 pub mod keys;
 pub mod line;
 pub mod list;
+pub(crate) mod search;
 
 pub use form::{
     Form, FormControl, FormEdit, FormEffect, FormError, FormEvent, FormModel, FormNote, FormRow,

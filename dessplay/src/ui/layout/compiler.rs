@@ -130,6 +130,13 @@ impl Default for TemplateSchema {
             ),
             ("episode-browser", &["body"][..], &["title"][..], &[][..]),
             (
+                "pane-search",
+                &["body", "editor"][..],
+                &["title", "message"][..],
+                &["editing", "has-message", "has-results"][..],
+            ),
+            ("pane-search-result", &[][..], &["text"][..], &[][..]),
+            (
                 "anidb-search",
                 &["body", "editor"][..],
                 &["title", "message"][..],

@@ -16,6 +16,8 @@ use crate::config::Settings;
 /// Messages produced by components.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg {
+    /// Return from local search to a stable item in its owning pane.
+    SearchChosen(super::modals::pane_search::Target),
     /// A local dungeon command; the session persists it before replying.
     Roguelike(crate::roguelike_store::Command),
     // Chat
@@ -31,8 +33,6 @@ pub enum Msg {
     ToggleSeriesSort,
     /// Toggle recency/alphabetical sort (The List mode).
     ToggleListSort,
-    /// The Recent/All filter text changed (typed/backspace/clear).
-    SeriesFilterChanged,
     /// Open a franchise (episode browser).
     BrowseFranchise(FranchiseKey),
     /// Edit a List entry.
@@ -193,13 +193,13 @@ impl Msg {
     /// `SettingsSaved` carries the password.
     pub(crate) fn name(&self) -> &'static str {
         match self {
+            Msg::SearchChosen(_) => "SearchChosen",
             Msg::Roguelike(_) => "Roguelike",
             Msg::SendChat(_) => "SendChat",
             Msg::Command(_) => "Command",
             Msg::CycleSeriesMode => "CycleSeriesMode",
             Msg::ToggleSeriesSort => "ToggleSeriesSort",
             Msg::ToggleListSort => "ToggleListSort",
-            Msg::SeriesFilterChanged => "SeriesFilterChanged",
             Msg::BrowseFranchise(_) => "BrowseFranchise",
             Msg::EditListEntry(_) => "EditListEntry",
             Msg::EditNeroName(_) => "EditNeroName",

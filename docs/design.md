@@ -180,12 +180,11 @@ sync state with each other. See [network-design.md](network-design.md).
    - **The List** (default): see [The List](#the-list-series-tracker).
    - **Recent Series**: only franchises the user has *watched*, most
      recently watched first (then title). Unwatched series are hidden. Press
-     `/` to filter by title substring (case-insensitive); the filter *removes*
-     the watched-only restriction, so any series can be found. `Esc` clears the
-     filter. Filtering is gated behind `/`, so the bare `m` / `s` keys stay
-     live (why: [decisions](decisions.md#bare-letter-keys-instead-of-ctrl-modified-letters)).
+     `Ctrl-F` or `/` to search every franchise, including unwatched ones.
+     Choosing a franchise selects it in the pane; if it is outside Recent,
+     the pane switches to All Series so the selected result remains visible.
    - **All Series**: every franchise, sorted by title or year (toggle with
-     `s`). `/` filters the same way.
+     `s`). `Ctrl-F` or `/` opens the same search.
 3. Related anime are grouped into **franchises** using AniDB's relations graph
    (sequel, prequel, side story, etc.). Each franchise shows as one entry. The
    browser spans the group's **collective library** -- every file any client
@@ -248,7 +247,7 @@ sync state with each other. See [network-design.md](network-design.md).
    and files you (or the group) have watched are greyed out, matching
    the playlist's muting
 5. Or **type to search**: any typed text filters the *whole library
-   index* recursively (case-insensitive substring over root-relative
+   index* recursively (the shared fuzzy matcher over root-relative
    paths, so deep hierarchies don't hide anything). Matching directories
    list first — e.g. `haibane` finds `Anime/Purgatory/Haibane Renmei` —
    then matching files; selecting a directory clears the search and
@@ -288,7 +287,8 @@ sync state with each other. See [network-design.md](network-design.md).
 
 **Sort order:** `Tab` toggles the add/map browser between
 alphabetical (the default) and newest-mtime-first, both in a plain
-directory listing and in search results. Newest mtime comes from the
+directory listing and as the tie-breaker within fuzzy search results.
+Search relevance takes precedence, with directories before files. Newest mtime comes from the
 **library index** when the file is already hashed, or a live stat for one
 that isn't yet; directories always stay alphabetical. Not available in
 the media-root directory picker (no library index there). The mapping
@@ -2043,11 +2043,9 @@ line and other non-selectable rows are ignored). The wheel scrolls the
 pane under the pointer only when that pane is **already focused** (the
 chat scrolls its log, list panes move their selection like Up/Down);
 over an unfocused pane it is ignored. The one exception is the separate
-[subtitle pane](#subtitle-display): it is not focusable, so the wheel
-scrolls it back through the subtitle log whenever the pointer is over
-it (its title shows the offset, e.g. `Subtitles (-6)`). This is
-mouse-only; keyboard users scroll subtitles in Intermixed mode, where
-they share the chat log.
+[subtitle pane](#subtitle-display): the wheel scrolls its log whenever the
+pointer is over it (its title shows the offset, e.g. `Subtitles (-6)`). It
+also accepts click/Tab focus, keyboard scrolling, and shared search.
 (why: [decisions](decisions.md#wheel-scrolls-only-the-focused-pane))
 Clicking never activates a row (no double-click Enter); the one
 click-driven action is the chat [spoiler](#chat) reveal, whose key
@@ -2083,6 +2081,48 @@ or the timeout — dismisses the highlight; the clipboard keeps the last
 copy. A motionless click never touches the clipboard.
 (why: [decisions](decisions.md#chat-selection-copies-on-release-with-no-copy-key))
 
+### Pane search
+
+`Ctrl-F` opens search in Chat, Series (all three modes), Users, Playlist,
+Subtitles, and the log viewer. `/` also opens search in panes without a text
+field; in Chat it remains ordinary command text. Ctrl-F uses the distinct
+legacy control byte and requires no enhanced keyboard protocol. Terminal
+shortcuts configured to intercept it can still prevent delivery.
+
+All local searches use case-insensitive Unicode character subsequences:
+query letters must occur in order, ignoring query whitespace. Complete query
+words occurring in order rank above contiguous word substrings, which rank
+above scattered letters. Within a class, smaller gaps, earlier starts, and
+shorter candidates rank first; equal scores retain the source order.
+
+Collection panes use one shared search dialog. Type or paste to search,
+Up/Down and PageUp/PageDown select ranked matches, Enter selects the source
+item, and Esc closes search. Search selection alone never plays, deletes, or
+edits an item. The List includes collapsed groups and alternate Nero titles;
+choosing a result expands its group. Users includes online and known-offline
+interactive users. Recent/All search spans all franchises. Dialogs search the
+source snapshot taken when opened and resolve stable identities when accepting;
+a vanished result does not trigger an action on a replacement row.
+
+Chat search keeps the conversation in chronological order and preserves the
+message draft and its cursor. Editing the query jumps to the newest match;
+Up/Down visits older/newer matches, PageUp/PageDown skips ten matches, and Enter
+visits the older match. Navigation stops at the ends. The current message is
+underlined and the title shows the match count. Esc closes the search editor,
+restoring the draft while retaining the conversation position. Search includes
+sender names, timestamps, and displayed message bodies (including local and
+intermixed subtitle lines), excludes day separators, and tracks message
+identities across incoming messages, compaction, and resizing.
+
+The separate subtitle pane participates in Tab order when visible and accepts
+click-to-focus. Its search chooses a retained cue to scroll into view. Log search
+chooses a retained log line. Neither search fetches older history from disk or
+the network. File add/map search keeps recursive type-to-search and directory
+navigation, using the same fuzzy matcher and relevance order. Remote AniDB and
+Nyaa queries retain their service-specific search behavior.
+
+(why: [decisions](decisions.md#shared-pane-search-2026-09-14))
+
 ### Keyboard Shortcuts
 
 | Key | Context | Action |
@@ -2090,9 +2130,9 @@ copy. A motionless click never touches the clipboard.
 | `Ctrl-C` | Any | Quit |
 | `Shift-Up` / `Shift-Down` | Held chat selection | Extend the selection one whole line up/down (re-copies) |
 | `Ctrl-R` | Any | Toggle your own ready/unready (clears a manual pause; flips the now-playing series from NotWatching back to Maybe -- does **not** commit to Watching) |
-| `Tab` | Any | Cycle focus: Chat -> Series -> Users -> Playlist -> Chat |
+| `Tab` | Any | Cycle visible panes in layout order, including Subtitles when separate |
 | `Tab` | Chat | Complete a username if the end of the input is a prefix of one (see below); otherwise cycle focus |
-| `Shift-Tab` | Any | Cycle focus in reverse: Chat -> Playlist -> Users -> Series -> Chat (never username-completes) |
+| `Shift-Tab` | Any | Cycle visible panes in reverse layout order (never username-completes) |
 | `F2` | Any | Cycle subtitle mode: Off -> Intermixed -> Separate pane (persisted) |
 | `F3` | Any | Open the settings screen (also `/settings`) |
 | `Enter` | Chat | Send message (or execute `/command`) |
@@ -2107,10 +2147,9 @@ copy. A motionless click never touches the clipboard.
 | `m` | Series | Cycle mode: Recent Series -> All Series -> The List |
 | `s` | Series (All mode) | Toggle sort: by title <-> by year |
 | `s` | Series (List mode) | Toggle sort: recency <-> alphabetical |
-| `/` | Series (Recent / All) | Start filtering franchises by title (removes Recent's watched-only default) |
-| _printable_ | Series (filtering) | Add to the filter text |
-| `Backspace` | Series (filtering) | Delete a filter character; on an empty filter, exit filtering |
-| `Esc` | Series (Recent / All) | Clear the filter (and exit filtering) |
+| `Ctrl-F` | Any content pane / Logs | Open fuzzy search |
+| `/` | Series / Users / Playlist / Subtitles / Logs | Open fuzzy search |
+| `Esc` | Search | Close search and restore the pane/editor |
 | `PgUp` / `PgDn` | Series | Move the selection by a page |
 | `Enter` | Series | Browse franchise (episode browser or file browser) |
 | `Enter` | Series (List mode) | Jump to next episode / open entry |

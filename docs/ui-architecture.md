@@ -29,8 +29,8 @@ visual row; their measured source records also supply selection highlights.
 
 Series modes use the same keyed collection renderer as Users and Playlist.
 List keys include group and entry identity, while franchise keys use the
-controller franchise identity. The caption is a before-attached flow whose
-rich filter binding contains the existing LineBuffer cursor spans.
+controller franchise identity. The caption is a before-attached title flow;
+search uses the shared modal editor.
 
 Browser/search and small-dialog controllers now provide semantic rows and
 editor primitives through `RenderedScene::paint_with_slots`. Arranged subtree
@@ -153,12 +153,23 @@ A behavior that exists in one place cannot drift.
 
 | Widget | Job | Guarantee |
 |--------|-----|-----------|
-| `LineBuffer` / `TextField` (`widgets/line.rs`) | The one line editor: text, cursor, horizontal scroll as pure state; `TextField` adds the bordered box, placeholder, cursor cell | The full editing vocabulary (word motion via Ctrl/Alt-arrows and Alt-b/f, word kill via Ctrl-W and Ctrl/Alt-Backspace, Ctrl-A/E, Home/End) works in **every** field — chat input, modal field editors, the series filter. Scroll invariants (`offset <= cursor <= len`, reset on set/clear) are property-tested; the "field renders from a stale column" bug class is unrepresentable |
+| `LineBuffer` / `TextField` (`widgets/line.rs`) | The one line editor: text, cursor, horizontal scroll as pure state; `TextField` adds the bordered box, placeholder, cursor cell | The full editing vocabulary (word motion via Ctrl/Alt-arrows and Alt-b/f, word kill via Ctrl-W and Ctrl/Alt-Backspace, Ctrl-A/E, Home/End) works in **every** field — chat input, modal field editors, local search. Scroll invariants (`offset <= cursor <= len`, reset on set/clear) are property-tested; the "field renders from a stale column" bug class is unrepresentable |
 | `ListCursor` (`widgets/list.rs`) | The one selection cursor + shared bordered/body list renders | Up/Down/PgUp/PgDn, edge clamping, and cursor-centered viewports behave identically in every selectable list (panes, browsers, forms, search results); selection highlighting remains separate from the scroll target so unfocused panes can retain context |
 | `Form` / `FormModel` (`widgets/form.rs`) | Field modals as typed data: models project semantic row IDs plus text / secret / toggle / choice / read-only / action controls, optional non-selectable spacing, and accept `FormEdit` at one mutation boundary. Form owns semantic selection, scrolling, masked editing, validation errors, category chrome hooks, and the save triple (capital `S`, fixed `[Save]`, unadvertised Ctrl-S alias) | Display order is not identity: insertion/reorder or visual spacing cannot retarget a field or active editor. Settings layers tabs over the same Form used by the typed List-entry editor |
 | `Keymap` (`widgets/keymap.rs`) | Bindings as data: (pattern, bar entry, action method), one table per component or mode | The keybinding bar and the dispatch derive from the same table — a key shown in the bar always dispatches; a dispatched key is advertised or deliberately hidden. Actions return `None` to *decline* (guards), letting the event fall through to the structural layers |
 | `widgets/keys.rs` | Key-event matchers | The terminal-compatibility policy lives in one place: bare letters over Ctrl-letters (Ctrl-J == LF, Ctrl-M == Enter, Ctrl-S == XOFF without the enhanced keyboard protocol); Ctrl *and* Alt accepted for word ops (macOS terminals send Alt); `.contains` matching for kitty's extra modifier bits |
 | `table_row` / `Cell` (`widgets/table.rs`) | The one table row: a flexible name cell (styled spans, truncated with `…`) plus fixed-width columns, all in display cells (CJK-aware) | Columns never drift with content: whatever the name's length or script, every fixed cell starts at the same column (property-tested) — used by the playlist's `temp`/watch-state columns and The List's episode/watchers spreadsheet; "a long filename shoved the tags off the pane" is unrepresentable |
+
+Local search uses `widgets/search.rs`: `Query` compiles the query once,
+`Search<K>` owns the shared TextField, ListCursor, source entries, and match
+projection. Ranked mode sorts by word quality and subsequence compactness;
+source-order mode keeps chat chronological. `modals/pane_search.rs` is the one
+collection picker for Series, Users, Playlist, Subtitles, and Logs. Its typed
+`Target` resolves against the owning controller on acceptance. Chat embeds the
+same controller beside its untouched draft and jumps via LineKey source anchors.
+Search dialogs own all query input, including paste. The old Series-specific
+filter controller is removed. File navigation retains its existing input flow
+and calls the same Query scorer. No new actor or wire message is involved.
 
 Event routing inside a component is layered, most-specific first:
 
@@ -209,7 +220,7 @@ enum Msg {
     CycleSeriesMode,            // Recent -> All -> The List (m)
     ToggleSeriesSort,           // All mode (s)
     ToggleListSort,             // The List mode (s)
-    SeriesFilterChanged,        // filter text changed (/ to start, Recent / All)
+    SearchChosen(Target),       // resolve a stable local search result
     BrowseFranchise(FranchiseId),
 
     // The List
@@ -379,9 +390,9 @@ snapshot data to component props:
   all separate-pane lines uniformly dim; Intermixed is always dim.
 - **SeriesPane**: snapshot.anidb_metadata + snapshot.series_relations + local
   watch history -> franchise list (Recent/All modes). Recent shows only
-  *watched* franchises (recency-keyed), newest first; a `/`-initiated filter
-  string (held in the component, applied in `props::franchise_rows`) narrows
-  by title and lifts the watched-only default. snapshot.list_entries +
+  *watched* franchises (recency-keyed), newest first. The shared search picker
+  spans every franchise; selecting an unwatched result switches to All.
+  snapshot.list_entries +
   snapshot.list_next_ep + series preferences/availability/watched flags +
   local watch history -> grouped List rows (List mode, the default), one
   row per franchise: `franchise::series_components` groups linked
@@ -566,11 +577,12 @@ the handler hit-tests against them:
   list panes move their cursor like Up/Down. Over an unfocused pane it
   is ignored: touchpads emit wheel events by accident, and the tick
   must neither move an invisible cursor nor steal focus. The separate
-  subtitle pane is the exception: unfocusable, so `PaneRects::subs`
+  subtitle pane also accepts focus and search; `PaneRects::subs`
   (zero-sized unless drawn, overlapping the chat column and hit-tested
   first) takes the wheel regardless of focus and moves
   `Ui::subtitle_scroll` — entries back from newest, clamped at render,
-  reset to live whenever the pane is hidden. Mouse-only by design.
+  reset to live whenever the pane is hidden. Keyboard focus also supports
+  scrolling and the shared search picker.
 - **Image viewer**: a left press on a successfully painted image opens a
   fullscreen modal. URL hit records come from the final image pass after
   clipping and overlay filtering. The modal owns the source and a separate

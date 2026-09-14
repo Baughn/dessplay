@@ -19,6 +19,24 @@ pub struct LogModal {
 }
 
 impl LogModal {
+    pub(crate) fn search_entries(
+        &self,
+    ) -> Vec<crate::ui::widgets::search::Entry<super::pane_search::Target>> {
+        self.logging.as_ref().map_or_else(Vec::new, |logging| {
+            logging
+                .lines()
+                .into_iter()
+                .map(|line| crate::ui::widgets::search::Entry {
+                    key: super::pane_search::Target::Log(line.id),
+                    text: line.text.to_string(),
+                })
+                .collect()
+        })
+    }
+    pub(crate) fn select_search(&mut self, id: u64) {
+        self.anchor = Some((id, 0));
+    }
+
     /// Open on the newest retained lines.
     pub fn new(logging: Option<LiveLogging>) -> Self {
         Self {
@@ -44,6 +62,7 @@ impl LogModal {
     /// Bindings are visible even when the terminal is too short for the footer.
     pub fn keybindings(&self) -> Vec<(&'static str, &'static str)> {
         vec![
+            ("Ctrl-f /", "Search"),
             ("Tab", "Control"),
             ("Enter", "Choose"),
             ("↑/↓", "Scroll/select"),

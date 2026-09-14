@@ -1269,9 +1269,9 @@ pub fn watch_recency(
 /// Visibility:
 /// - **Recent mode, no filter**: only *watched* franchises (those with a
 ///   recency entry), newest first then title. Unwatched shows are hidden.
-/// - **A non-empty `filter`** (either mode): case-insensitive substring on
+/// - **A non-empty `filter`** (either mode): case-insensitive fuzzy matching on
 ///   the title, which *removes* the watched-only restriction so any series
-///   can be found by typing. Recent still orders watched matches first.
+///   can be found by typing. Relevance precedes the normal mode sort.
 /// - **All mode, no filter**: every franchise, by title or year-then-title.
 pub fn franchise_rows_from(
     franchises: &[franchise::Franchise],
@@ -1304,8 +1304,9 @@ pub fn franchise_rows_from(
         .collect();
 
     let needle = filter.trim().to_lowercase();
+    let query = super::widgets::search::Query::new(&needle);
     if !needle.is_empty() {
-        rows.retain(|(_, row)| row.title.to_lowercase().contains(&needle));
+        rows.retain(|(_, row)| query.score(&row.title).is_some());
     } else if recency.is_some() {
         // Recent mode default: watched franchises only.
         rows.retain(|(watched, _)| watched.is_some());
@@ -1320,6 +1321,10 @@ pub fn franchise_rows_from(
                 .cmp(&b.1.year.unwrap_or(u16::MAX))
                 .then_with(|| a.1.title.cmp(&b.1.title))
         }),
+    }
+    if !needle.is_empty() {
+        let query = super::widgets::search::Query::new(&needle);
+        rows.sort_by_cached_key(|(_, row)| query.score(&row.title));
     }
     rows.into_iter().map(|(_, row)| row).collect()
 }
@@ -4620,10 +4625,10 @@ mod tests {
         assert_eq!(titles(&rows), vec!["Bersaga", "Berserk"]);
     }
 
-    /// All mode (recency `None`) shows every franchise; a filter narrows by
-    /// substring while the title sort is preserved.
+    /// All mode (recency `None`) shows every franchise; search ranks shorter
+    /// matching titles before longer ones.
     #[test]
-    fn all_mode_filter_narrows_and_keeps_sort() {
+    fn all_mode_filter_ranks_fuzzy_matches() {
         let mut state = CrdtState::new();
         let mut recency = BTreeMap::new();
         add_series(&mut state, &mut recency, 1, "Monster", None);
@@ -4632,7 +4637,7 @@ mod tests {
         let all = franchise_rows(&state.view(), SeriesSort::Title, None, "");
         assert_eq!(titles(&all), vec!["Akira", "Monogatari", "Monster"]);
         let mono = franchise_rows(&state.view(), SeriesSort::Title, None, "mon");
-        assert_eq!(titles(&mono), vec!["Monogatari", "Monster"]);
+        assert_eq!(titles(&mono), vec!["Monster", "Monogatari"]);
     }
 
     fn watched_meta(state: &mut CrdtState, h: u8, id: u32) {

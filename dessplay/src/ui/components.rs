@@ -26,7 +26,7 @@ use super::props::{
     StatusProps, Tone, UsersProps,
 };
 use super::theme;
-use super::widgets::{Binding, KeyPattern, Keymap, LineBuffer, ListCursor, TextField};
+use super::widgets::{Binding, KeyPattern, Keymap, ListCursor, TextField};
 
 /// A key the pane responds to, for the keybinding bar.
 pub type Keybinding = (&'static str, &'static str);
@@ -396,6 +396,7 @@ impl RenderedChatLog {
 /// Chat log + always-visible input line.
 pub struct ChatPane {
     lines: Vec<ChatLine>,
+    search: Option<super::widgets::search::Search<LineKey>>,
     input: TextField,
     focused: bool,
     /// Visual lines scrolled up from the bottom (0 = pinned to newest).
@@ -483,6 +484,7 @@ impl Default for ChatPane {
     fn default() -> Self {
         Self {
             lines: Vec::new(),
+            search: None,
             input: TextField::new("say something…"),
             focused: false,
             scroll_offset: 0,
@@ -506,7 +508,72 @@ impl Default for ChatPane {
 impl ChatPane {
     /// Replace the log.
     pub fn set_lines(&mut self, lines: Vec<ChatLine>) {
+        if self.lines == lines {
+            return;
+        }
         self.lines = lines;
+        let entries = self.search.as_ref().map(|_| self.search_entries());
+        if let (Some(search), Some(entries)) = (&mut self.search, entries) {
+            search.replace(entries);
+        }
+    }
+
+    fn search_entries(&self) -> Vec<super::widgets::search::Entry<LineKey>> {
+        self.lines
+            .iter()
+            .filter(|line| !line.separator)
+            .map(|line| super::widgets::search::Entry {
+                key: LineKey::of(line),
+                text: format!("{} {} {}", line.time, line.sender, line.text),
+            })
+            .collect()
+    }
+
+    pub(crate) fn searching(&self) -> bool {
+        self.search.is_some()
+    }
+
+    pub(crate) fn start_search(&mut self) {
+        if self.search.is_none() {
+            self.search = Some(super::widgets::search::Search::new(
+                self.search_entries(),
+                false,
+            ));
+        }
+    }
+
+    fn jump_to_search_match(&mut self) {
+        if let Some(key) = self
+            .search
+            .as_ref()
+            .and_then(|search| search.selected())
+            .map(|entry| entry.key.clone())
+        {
+            self.scroll_offset = 1;
+            self.rendered_offset = 1;
+            self.scroll_anchor = Some((key, 0, 0));
+        }
+    }
+
+    fn search_on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        use super::widgets::search::Effect;
+        let search = self.search.as_mut()?;
+        match search.on(ev) {
+            Effect::Close => self.search = None,
+            Effect::Changed => {
+                search.cursor.set(search.matches.len().saturating_sub(1));
+                if !search.editor.text().trim().is_empty() {
+                    self.jump_to_search_match();
+                }
+            }
+            Effect::Moved => self.jump_to_search_match(),
+            Effect::Accept(_) => {
+                search.cursor.nav(Key::Up, search.matches.len());
+                self.jump_to_search_match();
+            }
+            Effect::Consumed => {}
+        }
+        Some(Msg::None)
     }
 
     /// Set the detected image-protocol capability (production: once at
@@ -972,6 +1039,9 @@ impl ChatPane {
     /// its normal pane-cycling job). Repeated Tab without an intervening edit
     /// cycles through multiple matches.
     pub fn try_tab_complete(&mut self) -> bool {
+        if self.searching() {
+            return false;
+        }
         let text = self.text();
         // Continue an in-flight cycle iff the buffer is still exactly what we
         // last wrote.
@@ -1030,7 +1100,16 @@ impl ChatPane {
 
     /// Keys shown in the keybinding bar (derived from the keymap).
     pub fn keybindings(&self) -> Vec<Keybinding> {
-        CHAT_KEYMAP.bar()
+        if let Some(search) = &self.search {
+            let mut items = search.keybindings();
+            items.retain(|(key, _)| *key != "Enter");
+            items.push(("Enter", "Older match"));
+            items
+        } else {
+            let mut items = CHAT_KEYMAP.bar();
+            items.push(("Ctrl-f", "Search"));
+            items
+        }
     }
 
     /// Enter: send the input as chat or a `/command`. Declines on empty.
@@ -1175,9 +1254,37 @@ impl ChatPane {
         renderer: &mut super::layout::Renderer,
     ) {
         renderer.begin_chat();
-        let suggestions = super::commands::matching(&self.text());
+        let suggestions = if self.searching() {
+            Vec::new()
+        } else {
+            super::commands::matching(&self.text())
+        };
         let mut data = super::layout::Presentation::default()
-            .text("title", "Chat")
+            .text(
+                "title",
+                self.search.as_ref().map_or_else(
+                    || "Chat".to_string(),
+                    |search| {
+                        if search.matches.is_empty() {
+                            "Chat · No matches".into()
+                        } else {
+                            format!(
+                                "Chat · Match {}/{}",
+                                search.cursor.index() + 1,
+                                search.matches.len()
+                            )
+                        }
+                    },
+                ),
+            )
+            .text(
+                "input-title",
+                if self.searching() {
+                    "Search · ↑ older / ↓ newer · Esc close"
+                } else {
+                    ""
+                },
+            )
             .boolean("suggesting", !suggestions.is_empty())
             .slot(
                 "suggestions",
@@ -1214,14 +1321,18 @@ impl ChatPane {
                 scene.has_overlay(),
                 renderer,
             ),
-            "input" => self.input.render_content_styled(
-                frame,
-                area,
-                self.focused,
-                false,
-                style,
-                renderer.color_depth(),
-            ),
+            "input" => self
+                .search
+                .as_mut()
+                .map_or(&mut self.input, |search| &mut search.editor)
+                .render_content_styled(
+                    frame,
+                    area,
+                    self.focused,
+                    false,
+                    style,
+                    renderer.color_depth(),
+                ),
             "suggestions" => {
                 let _ = renderer.paint_rows(
                     frame,
@@ -1276,6 +1387,17 @@ impl ChatPane {
         let mut measured_rows = 0usize;
         let mut older_needed = None;
         for (idx, line) in self.lines.iter().enumerate().rev() {
+            let style = if self
+                .search
+                .as_ref()
+                .filter(|s| !s.editor.text().trim().is_empty())
+                .and_then(|s| s.selected())
+                .is_some_and(|entry| entry.key.matches(line))
+            {
+                style.add_modifier(tuirealm::ratatui::style::Modifier::UNDERLINED)
+            } else {
+                style
+            };
             let Ok((message_rows, message)) = layout_chat_line(
                 line,
                 width as u16,
@@ -2205,6 +2327,13 @@ passive_component!(ChatPane);
 
 impl AppComponent<Msg, NoUserEvent> for ChatPane {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
+        if super::widgets::search::opens(ev, false) {
+            self.start_search();
+            return Some(Msg::None);
+        }
+        if self.searching() {
+            return self.search_on(ev);
+        }
         // Tab is intercepted in `Ui::handle` (it drives completion / pane
         // cycling), so every event reaching this method is a non-Tab key:
         // any of them ends an in-flight completion cycle.
@@ -2275,6 +2404,33 @@ pub struct UsersPane {
 }
 
 impl UsersPane {
+    pub(crate) fn search_entries(
+        &self,
+    ) -> Vec<super::widgets::search::Entry<super::modals::pane_search::Target>> {
+        self.props
+            .rows
+            .iter()
+            .map(|r| &r.name)
+            .chain(self.props.known_offline.iter().map(|r| &r.name))
+            .map(|name| super::widgets::search::Entry {
+                key: super::modals::pane_search::Target::User(name.clone()),
+                text: name.clone(),
+            })
+            .collect()
+    }
+    pub(crate) fn select_search(&mut self, name: &str) {
+        if let Some(i) = self
+            .props
+            .rows
+            .iter()
+            .map(|r| &r.name)
+            .chain(self.props.known_offline.iter().map(|r| &r.name))
+            .position(|n| n == name)
+        {
+            self.cursor.set(i);
+        }
+    }
+
     /// Replace props, clamping the selection (rows + selectable
     /// known-offline entries -- see `selectable_len`).
     pub fn set_props(&mut self, props: UsersProps) {
@@ -2470,6 +2626,24 @@ pub struct PlaylistPane {
 }
 
 impl PlaylistPane {
+    pub(crate) fn search_entries(
+        &self,
+    ) -> Vec<super::widgets::search::Entry<super::modals::pane_search::Target>> {
+        self.props
+            .rows
+            .iter()
+            .map(|row| super::widgets::search::Entry {
+                key: super::modals::pane_search::Target::Playlist(row.hash),
+                text: row.title.clone(),
+            })
+            .collect()
+    }
+    pub(crate) fn select_search(&mut self, hash: dessplay_core::types::Ed2kHash) {
+        if let Some(i) = self.props.rows.iter().position(|row| row.hash == hash) {
+            self.cursor.set(i);
+        }
+    }
+
     /// Replace props, clamping the selection (rows + the Add New row).
     pub fn set_props(&mut self, props: PlaylistProps) {
         self.props = props;
@@ -2772,17 +2946,6 @@ pub struct SeriesPane {
     groups: Vec<ListGroup>,
     /// Expanded-state override per group heading.
     expanded: std::collections::BTreeMap<String, bool>,
-    /// Filter text for Recent / All modes (case-insensitive substring on
-    /// title). A non-empty filter also drops Recent's watched-only
-    /// default. Empty in The List mode. A full [`LineBuffer`], so the
-    /// filter edits exactly like every other text field.
-    filter: LineBuffer,
-    /// Whether we're editing the filter. Gated behind `/` (rather than
-    /// typing directly) so the bare `m` / `s` mode/sort keys stay live —
-    /// and reliable: Ctrl-modified letters collide with control codes
-    /// (Ctrl-M == Enter) in terminals without the enhanced keyboard
-    /// protocol, so they can't be used for the binding.
-    filtering: bool,
     cursor: ListCursor,
     focused: bool,
     /// The viewport of the last render, for mouse hit-testing.
@@ -2790,6 +2953,57 @@ pub struct SeriesPane {
 }
 
 impl SeriesPane {
+    pub(crate) fn search_entries(
+        &self,
+    ) -> Vec<super::widgets::search::Entry<super::modals::pane_search::Target>> {
+        self.groups
+            .iter()
+            .flat_map(|group| {
+                group.rows.iter().map(|row| super::widgets::search::Entry {
+                    key: super::modals::pane_search::Target::List {
+                        heading: group.heading.clone(),
+                        id: row.id,
+                    },
+                    text: format!(
+                        "{} {} · {}",
+                        row.name,
+                        row.nero_name.as_deref().unwrap_or(""),
+                        group.heading
+                    ),
+                })
+            })
+            .collect()
+    }
+    pub(crate) fn select_search(&mut self, heading: String, id: ListEntryId) {
+        let group = self
+            .groups
+            .iter()
+            .find(|g| g.heading == heading && g.rows.iter().any(|r| r.id == id))
+            .or_else(|| {
+                self.groups
+                    .iter()
+                    .find(|g| g.rows.iter().any(|r| r.id == id))
+            });
+        let Some(heading) = group.map(|g| g.heading.clone()) else {
+            return;
+        };
+        self.expanded.insert(heading.clone(), true);
+        let anchor = ListAnchor::Entry { heading, id };
+        if let Some(i) = self.anchor_position(&anchor) {
+            self.cursor.set(i);
+        }
+    }
+    pub(crate) fn show_all(&mut self) {
+        self.mode = SeriesMode::All;
+    }
+    pub(crate) fn select_franchise_search(&mut self, key: &dessplay_core::franchise::FranchiseKey) {
+        if let Some(i) = self.franchises.iter().position(|row| &row.key == key) {
+            self.cursor.set(i);
+        }
+    }
+    pub(crate) fn contains_franchise(&self, key: &dessplay_core::franchise::FranchiseKey) -> bool {
+        self.franchises.iter().any(|row| &row.key == key)
+    }
     /// Current mode (the dispatcher rebuilds props on mode change).
     pub fn mode(&self) -> SeriesMode {
         self.mode
@@ -2815,16 +3029,11 @@ impl SeriesPane {
         self.list_sort = sort;
     }
 
-    /// Current type-to-filter text (Recent / All modes).
-    pub fn filter(&self) -> String {
-        self.filter.text()
-    }
-
     /// Replace franchise rows (Recent / All modes).
     ///
     /// No identity re-anchoring here, unlike [`Self::set_groups`]: the
     /// franchise order only moves on rare events (a watch completing, a
-    /// filter edit — which resets the cursor anyway — or metadata
+    /// a mode/sort change or metadata
     /// arriving), and the sole row action is the non-destructive
     /// `BrowseFranchise`, so a shifted row can't mis-aim a synced write.
     pub fn set_franchises(&mut self, rows: Vec<FranchiseRow>) {
@@ -2926,31 +3135,17 @@ impl SeriesPane {
         self.cursor.clamp(self.len());
     }
 
-    /// The active keymap: per mode, with a dedicated one while the
-    /// filter is being edited (letters must type, not bind).
     fn keymap(&self) -> &'static Keymap<SeriesPane, Msg> {
-        if self.filtering {
-            &SERIES_FILTERING_KEYMAP
-        } else {
-            match self.mode {
-                SeriesMode::Recent => &SERIES_RECENT_KEYMAP,
-                SeriesMode::All => &SERIES_ALL_KEYMAP,
-                SeriesMode::TheList => &SERIES_LIST_KEYMAP,
-            }
+        match self.mode {
+            SeriesMode::Recent => &SERIES_RECENT_KEYMAP,
+            SeriesMode::All => &SERIES_ALL_KEYMAP,
+            SeriesMode::TheList => &SERIES_LIST_KEYMAP,
         }
     }
 
-    /// Keys shown in the keybinding bar: derived from the active keymap,
-    /// plus the structural "type to filter" entry while filtering (the
-    /// edit fall-through exists exactly when `filtering` is set).
+    /// Actions for the current Series mode.
     pub fn keybindings(&self) -> Vec<Keybinding> {
-        let mut items = if self.filtering {
-            vec![("type", "Filter")]
-        } else {
-            Vec::new()
-        };
-        items.extend(self.keymap().bar());
-        items
+        self.keymap().bar()
     }
 
     /// `m`: cycle Recent -> All -> The List.
@@ -2960,7 +3155,6 @@ impl SeriesPane {
             SeriesMode::All => SeriesMode::TheList,
             SeriesMode::TheList => SeriesMode::Recent,
         };
-        self.filter.clear();
         self.cursor.reset();
         Some(Msg::CycleSeriesMode)
     }
@@ -2980,44 +3174,7 @@ impl SeriesPane {
         Some(Msg::ToggleListSort)
     }
 
-    /// `/`: begin editing the filter.
-    fn act_filter_start(&mut self) -> Option<Msg> {
-        self.filtering = true;
-        Some(Msg::None)
-    }
-
-    /// Esc outside filter editing: clear a set filter. Declines when no
-    /// filter is set.
-    fn act_filter_clear(&mut self) -> Option<Msg> {
-        if self.filter.is_empty() {
-            return None;
-        }
-        self.filter.clear();
-        self.cursor.reset();
-        Some(Msg::SeriesFilterChanged)
-    }
-
-    /// Backspace while filtering: on an *empty* filter, exit filtering
-    /// (the escape hatch alongside Esc). With text present it declines so
-    /// the shared editor deletes a character instead.
-    fn act_filter_backspace_exit(&mut self) -> Option<Msg> {
-        if !self.filter.is_empty() {
-            return None;
-        }
-        self.filtering = false;
-        self.cursor.reset();
-        Some(Msg::SeriesFilterChanged)
-    }
-
-    /// Esc while filtering: clear the filter and stop editing it.
-    fn act_filter_esc(&mut self) -> Option<Msg> {
-        self.filter.clear();
-        self.filtering = false;
-        self.cursor.reset();
-        Some(Msg::SeriesFilterChanged)
-    }
-
-    /// Enter (Recent / All, filtering or not): browse the franchise.
+    /// Enter: browse the selected franchise.
     fn act_browse(&mut self) -> Option<Msg> {
         let row = self.franchises.get(self.cursor.index())?;
         Some(Msg::BrowseFranchise(row.key.clone()))
@@ -3095,35 +3252,13 @@ impl SeriesPane {
         area: Rect,
         renderer: &mut super::layout::Renderer,
     ) {
-        use super::layout::{Presentation, PresentedRow, RichSpan};
+        use super::layout::{Presentation, PresentedRow};
         let base = match self.mode {
             SeriesMode::Recent => "Recent Series",
             SeriesMode::All => "All Series",
             SeriesMode::TheList => "The List",
         };
-        let filter = if self.filtering {
-            self.filter.cursor_spans()
-        } else {
-            vec![Span::raw(self.filter.text())]
-        };
-        let mut data = Presentation::default()
-            .text("title", base)
-            .text("filter-label", "  /")
-            .boolean(
-                "filter-visible",
-                self.mode != SeriesMode::TheList && (self.filtering || !self.filter.is_empty()),
-            )
-            .rich(
-                "filter",
-                filter
-                    .into_iter()
-                    .map(|span| RichSpan {
-                        text: span.content.into_owned(),
-                        style: span.style,
-                        ..Default::default()
-                    })
-                    .collect(),
-            );
+        let mut data = Presentation::default().text("title", base);
         if self.focused {
             data = data.state("series-frame", "focus");
         }
@@ -3256,65 +3391,16 @@ impl AppComponent<Msg, NoUserEvent> for SeriesPane {
         if let Some(msg) = self.keymap().dispatch(self, ev) {
             return Some(msg);
         }
-        // While filtering, everything else edits the filter text — the
-        // shared vocabulary (word ops included). Only a text *change*
-        // re-filters and resets the selection; bare cursor motion inside
-        // the filter keeps it.
-        if self.filtering {
-            let before = self.filter.text();
-            if self.filter.edit(ev) {
-                return Some(if self.filter.text() == before {
-                    Msg::None
-                } else {
-                    self.cursor.reset();
-                    Msg::SeriesFilterChanged
-                });
-            }
-        }
         None
     }
 }
 
-/// While editing the filter: letters type (no Char bindings here), the
-/// bindings below act. Mode and sort keys are deliberately absent so any
-/// letter can be typed.
-static SERIES_FILTERING_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
-    Binding {
-        pattern: KeyPattern::Plain(Key::Backspace),
-        bar: None,
-        action: SeriesPane::act_filter_backspace_exit,
-    },
-    Binding {
-        pattern: KeyPattern::Plain(Key::Esc),
-        bar: Some(("Esc", "Clear")),
-        action: SeriesPane::act_filter_esc,
-    },
-    Binding {
-        pattern: KeyPattern::Plain(Key::Enter),
-        bar: Some(("Enter", "Browse")),
-        action: SeriesPane::act_browse,
-    },
-]);
-
-/// Recent mode. Filtering is gated behind `/` so the bare `m`/`s` keys
-/// stay live — and reliable: Ctrl-modified letters collide with control
-/// codes (Ctrl-M == Enter) in terminals lacking the enhanced keyboard
-/// protocol.
+/// Recent mode. Search is shared by the dispatcher across panes.
 static SERIES_RECENT_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
     Binding {
         pattern: KeyPattern::Char('m'),
         bar: Some(("m", "Mode")),
         action: SeriesPane::act_mode,
-    },
-    Binding {
-        pattern: KeyPattern::Char('/'),
-        bar: Some(("/", "Filter")),
-        action: SeriesPane::act_filter_start,
-    },
-    Binding {
-        pattern: KeyPattern::Plain(Key::Esc),
-        bar: None,
-        action: SeriesPane::act_filter_clear,
     },
     Binding {
         pattern: KeyPattern::Plain(Key::Enter),
@@ -3336,23 +3422,13 @@ static SERIES_ALL_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
         action: SeriesPane::act_sort,
     },
     Binding {
-        pattern: KeyPattern::Char('/'),
-        bar: Some(("/", "Filter")),
-        action: SeriesPane::act_filter_start,
-    },
-    Binding {
-        pattern: KeyPattern::Plain(Key::Esc),
-        bar: None,
-        action: SeriesPane::act_filter_clear,
-    },
-    Binding {
         pattern: KeyPattern::Plain(Key::Enter),
         bar: Some(("Enter", "Browse")),
         action: SeriesPane::act_browse,
     },
 ]);
 
-/// The List mode: no filter (`/` deliberately unbound so it stays inert).
+/// The List mode actions; the dispatcher owns the shared search shortcut.
 static SERIES_LIST_KEYMAP: Keymap<SeriesPane, Msg> = Keymap(&[
     Binding {
         pattern: KeyPattern::Char('m'),
@@ -3726,77 +3802,6 @@ mod series_pane_tests {
         })
     }
 
-    /// Mode/sort live on the bare `m` / `s` keys (reliable across
-    /// terminals); filtering is gated behind `/` so those letters can be
-    /// typed into the filter without cycling the mode. Regression for
-    /// Ctrl-m being indistinguishable from Enter in konsole (2026-06-14).
-    #[test]
-    fn slash_gated_filter_leaves_mode_keys_live() {
-        let mut p = SeriesPane::default();
-        assert_eq!(p.mode(), SeriesMode::TheList);
-
-        // Bare `m` cycles mode when not filtering.
-        p.on(&key(Key::Char('m')));
-        assert_eq!(p.mode(), SeriesMode::Recent);
-
-        // `/` starts filtering; now letters — including `m` and `s` —
-        // build the filter instead of cycling/sorting.
-        p.on(&key(Key::Char('/')));
-        for c in ['m', 'o', 'n'] {
-            p.on(&key(Key::Char(c)));
-        }
-        assert_eq!(p.filter(), "mon");
-        assert_eq!(
-            p.mode(),
-            SeriesMode::Recent,
-            "mode must not change while filtering"
-        );
-
-        // Backspace edits; Esc clears and exits filtering.
-        p.on(&key(Key::Backspace));
-        assert_eq!(p.filter(), "mo");
-        p.on(&key(Key::Esc));
-        assert_eq!(p.filter(), "");
-
-        // After Esc, `m` cycles again.
-        p.on(&key(Key::Char('m')));
-        assert_eq!(p.mode(), SeriesMode::All);
-    }
-
-    /// Backspace deletes filter characters; once the filter is empty, a
-    /// further Backspace exits filtering entirely (an escape hatch alongside
-    /// Esc). Regression for filtering being a one-way trip via `/`
-    /// (2026-06-15).
-    #[test]
-    fn backspace_on_empty_filter_exits_filtering() {
-        // Filtering only applies in Recent/All (The List, the default,
-        // doesn't filter — see `the_list_mode_does_not_filter`), so step
-        // off the default mode first.
-        let mut p = SeriesPane::default();
-        p.on(&key(Key::Char('m')));
-        assert_eq!(p.mode(), SeriesMode::Recent);
-
-        p.on(&key(Key::Char('/')));
-        p.on(&key(Key::Char('a')));
-        assert_eq!(p.filter(), "a");
-
-        // First Backspace empties the filter (still filtering).
-        p.on(&key(Key::Backspace));
-        assert_eq!(p.filter(), "");
-        // Proof we're still in filter mode: `m` types, it does not cycle.
-        p.on(&key(Key::Char('m')));
-        assert_eq!(p.filter(), "m");
-        assert_eq!(p.mode(), SeriesMode::Recent);
-
-        // Empty it again, then Backspace once more to leave filtering.
-        p.on(&key(Key::Backspace)); // "" again
-        p.on(&key(Key::Backspace)); // exits filtering
-        assert_eq!(p.filter(), "");
-        // Now `m` cycles the mode again — filtering really ended.
-        p.on(&key(Key::Char('m')));
-        assert_eq!(p.mode(), SeriesMode::All);
-    }
-
     fn franchises(n: usize) -> Vec<FranchiseRow> {
         (0..n)
             .map(|i| FranchiseRow {
@@ -3840,8 +3845,7 @@ mod series_pane_tests {
         assert_eq!(y, Some(4));
     }
 
-    /// PageUp/PageDown jump the selection by a page in both Recent/All and
-    /// while filtering. Regression for the series browser ignoring the page
+    /// PageUp/PageDown jump the selection by a page in Recent/All. Regression for the series browser ignoring the page
     /// keys (2026-06-15). Selection is observed through the franchise Enter
     /// resolves to.
     #[test]
@@ -3870,29 +3874,6 @@ mod series_pane_tests {
                 dessplay_core::franchise::FranchiseKey::Name("0".to_string())
             ))
         );
-
-        // The page keys also work while filtering (filter empty = all rows).
-        p.on(&key(Key::Char('/')));
-        p.on(&key(Key::PageDown));
-        assert_eq!(
-            p.on(&key(Key::Enter)),
-            Some(Msg::BrowseFranchise(
-                dessplay_core::franchise::FranchiseKey::Name(PAGE_STEP.to_string())
-            ))
-        );
-    }
-
-    /// The List mode has no filter: `/` is inert and the bare letters keep
-    /// their List bindings.
-    #[test]
-    fn the_list_mode_does_not_filter() {
-        let mut p = SeriesPane::default();
-        assert_eq!(p.mode(), SeriesMode::TheList);
-        p.on(&key(Key::Char('/')));
-        assert_eq!(p.filter(), "");
-        // `m` still cycles (to Recent), proving `/` didn't start a filter.
-        p.on(&key(Key::Char('m')));
-        assert_eq!(p.mode(), SeriesMode::Recent);
     }
 
     fn list_row(
@@ -4282,31 +4263,6 @@ mod series_pane_tests {
             .draw(|frame| pane.render_layout(frame, Rect::new(3, 2, 24, 11), &mut renderer))
             .unwrap();
         assert_eq!(pane.act_list_edit(), Some(Msg::EditListEntry(expected)));
-    }
-    #[test]
-    #[allow(clippy::unwrap_used)]
-    fn series_filter_cursor_is_painted_in_the_measured_caption() {
-        let mut pane = SeriesPane {
-            mode: SeriesMode::All,
-            focused: true,
-            ..Default::default()
-        };
-        pane.act_filter_start();
-        pane.filter.set_text("filter");
-        let mut renderer = super::super::layout::Renderer::new(
-            super::super::layout::LayoutBundle::builtin().unwrap(),
-        );
-        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
-        terminal
-            .draw(|frame| pane.render_layout(frame, Rect::new(2, 3, 35, 8), &mut renderer))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(3, 3)].symbol(), "A");
-        assert!(
-            buffer[(22, 3)]
-                .modifier
-                .contains(tuirealm::ratatui::style::Modifier::REVERSED)
-        );
     }
 }
 
@@ -6097,5 +6053,135 @@ mod chat_layout_tests {
             .collect();
         assert!(text.contains("hidden words"));
         assert!(!pane.reveal_newest_visible());
+    }
+}
+
+#[cfg(test)]
+mod pane_search_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use tuirealm::event::{KeyEvent, KeyModifiers};
+    use tuirealm::ratatui::{Terminal, backend::TestBackend};
+
+    fn key(code: Key) -> Event<NoUserEvent> {
+        Event::Keyboard(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+    fn line(i: u64, text: &str) -> ChatLine {
+        ChatLine {
+            time: "12:00".into(),
+            sender: "Nero".into(),
+            text: text.into(),
+            system: false,
+            subtitle: false,
+            separator: false,
+            action: false,
+            irc: false,
+            millis: i,
+            image_url: None,
+        }
+    }
+    fn draw(pane: &mut ChatPane, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        let buffer = terminal
+            .draw(|f| pane.render(f, f.area()))
+            .unwrap()
+            .buffer
+            .clone();
+        tuirealm::testing::buffer_to_string(&buffer)
+    }
+
+    #[test]
+    fn chat_find_jumps_in_order_preserves_draft_and_anchor_through_refresh_and_resize() {
+        let mut pane = ChatPane::default();
+        let lines: Vec<_> = (0..60)
+            .map(|i| {
+                line(
+                    i,
+                    if i == 5 {
+                        "Frieren first"
+                    } else if i == 25 {
+                        "Frieren second"
+                    } else {
+                        "ordinary message"
+                    },
+                )
+            })
+            .collect();
+        pane.set_lines(lines.clone());
+        pane.insert_text("unsent /draft");
+        pane.on(&Event::Keyboard(KeyEvent {
+            code: Key::Char('f'),
+            modifiers: KeyModifiers::CONTROL,
+        }));
+        pane.on(&Event::Paste("fr rn".into()));
+        assert_eq!(pane.search.as_ref().unwrap().matches.len(), 2);
+        assert!(draw(&mut pane, 55).contains("Frieren second"));
+        pane.on(&key(Key::Up));
+        assert!(draw(&mut pane, 55).contains("Frieren first"));
+        assert_eq!(pane.text(), "unsent /draft");
+        let mut updated = vec![line(0, "earlier arrival")];
+        updated.extend(lines);
+        updated.push(line(80, "Frieren newest"));
+        pane.set_lines(updated);
+        assert_eq!(
+            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
+            5
+        );
+        assert!(draw(&mut pane, 35).contains("Frieren first"));
+        pane.on(&key(Key::Down));
+        assert!(draw(&mut pane, 35).contains("Frieren second"));
+        assert_eq!(pane.on(&key(Key::Enter)), Some(Msg::None));
+        assert!(draw(&mut pane, 35).contains("Frieren first"));
+        pane.on(&key(Key::Esc));
+        assert!(!pane.searching());
+        assert_eq!(pane.text(), "unsent /draft");
+    }
+
+    #[test]
+    fn no_chat_matches_does_not_send_or_clear_the_draft() {
+        let mut pane = ChatPane::default();
+        pane.set_lines(vec![line(1, "hello")]);
+        pane.insert_text("draft");
+        pane.start_search();
+        pane.on(&Event::Paste("not present".into()));
+        assert!(draw(&mut pane, 55).contains("No matches"));
+        assert_eq!(pane.on(&key(Key::Enter)), Some(Msg::None));
+        pane.on(&key(Key::Esc));
+        assert_eq!(pane.text(), "draft");
+    }
+
+    #[test]
+    fn list_search_includes_collapsed_groups_and_follows_entries_that_change_groups() {
+        let row = super::super::props::ListRow {
+            id: ListEntryId(7),
+            name: "Frieren".into(),
+            nero_name: Some("Furiren".into()),
+            next_ep: None,
+            available: false,
+            watchers: String::new(),
+            series_id: None,
+            anidb_unavailable: false,
+            dimmed: false,
+        };
+        let mut pane = SeriesPane::default();
+        pane.set_groups(&[ListGroup {
+            heading: "Finished".into(),
+            rows: vec![row.clone()],
+            collapsed: true,
+        }]);
+        assert!(pane.search_entries()[0].text.contains("Furiren"));
+        pane.set_groups(&[ListGroup {
+            heading: "Dropped".into(),
+            rows: vec![row],
+            collapsed: true,
+        }]);
+        pane.select_search("Finished".into(), ListEntryId(7));
+        assert_eq!(
+            pane.act_list_edit(),
+            Some(Msg::EditListEntry(ListEntryId(7)))
+        );
     }
 }

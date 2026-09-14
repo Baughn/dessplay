@@ -1,5 +1,6 @@
 ---
 source: dessplay/tests/ui_app.rs
+assertion_line: 3095
 expression: screen
 ---
 ┌Logs · LIVE───────────────────────────────────────────────────────────────────────────────────────┐
@@ -31,4 +32,4 @@ expression: screen
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-Tab Control | Enter Choose | ↑/↓ Scroll/select | End Live | Esc Close | F4 Dungeon | F11 Logs | F12
+Ctrl-f / Search | Tab Control | Enter Choose | ↑/↓ Scroll/select | End Live | Esc Close | F4 Dungeon

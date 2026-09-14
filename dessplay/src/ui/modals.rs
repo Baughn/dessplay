@@ -55,6 +55,8 @@ mod image_view;
 pub(crate) use image_view::ImageModal;
 mod log_view;
 pub use log_view::LogModal;
+pub(crate) mod pane_search;
+pub(crate) use pane_search::PaneSearch;
 mod roguelike;
 pub use roguelike::RoguelikeModal;
 
@@ -438,10 +440,10 @@ impl FileBrowser {
     /// directories always stay alphabetical, since a directory has no
     /// single meaningful mtime in the index.
     fn refresh_search(&mut self) {
-        let query = self.filter.text().to_lowercase();
+        let query = super::widgets::search::Query::new(&self.filter.text());
         let mut dir_rows: Vec<DirRow> = Vec::new();
         for dir in &self.library.dirs {
-            if dir.display.to_lowercase().contains(&query) {
+            if query.score(&dir.display).is_some() {
                 dir_rows.push(DirRow {
                     name: dir.display.clone(),
                     path: dir.path.clone(),
@@ -454,7 +456,7 @@ impl FileBrowser {
         }
         let mut file_rows: Vec<DirRow> = Vec::new();
         for file in &self.library.files {
-            if file.display.to_lowercase().contains(&query) {
+            if query.score(&file.display).is_some() {
                 file_rows.push(DirRow {
                     name: file.display.clone(),
                     path: file.path.clone(),
@@ -468,6 +470,8 @@ impl FileBrowser {
         if self.sort == super::props::BrowserSort::Newest {
             file_rows.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
         }
+        dir_rows.sort_by_cached_key(|row| query.score(&row.name));
+        file_rows.sort_by_cached_key(|row| query.score(&row.name));
         let mut rows = dir_rows;
         rows.append(&mut file_rows);
         let overflow = rows.len().saturating_sub(SEARCH_CAP);

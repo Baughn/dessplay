@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-13
+Last updated: 2026-09-14
 
 ## Table of Contents
 
@@ -146,6 +146,12 @@ Storage tests pin history deduplication, the 100-query cap, and persistence acro
 restarts and unrelated settings saves.
 
 ---
+
+Local search tests compare fuzzy eligibility to an independent Unicode
+subsequence oracle and pin whole-word ranking. Controller and whole-app tests
+cover shared shortcuts, typed action-key isolation, paste routing, draft
+preservation, chat chronology and source anchors after refresh/resize, collapsed
+List groups, subtitle focus, and stable playlist targets after reordering.
 
 ## Running the Suite
 
