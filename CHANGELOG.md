@@ -17,6 +17,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Added: Nyaa results have checkboxes: Space selects releases and Enter
   downloads the selected files concurrently. Tab returns to query editing.
 
+- Fixed: Nyaa results now require Tab before editing the query, so typing or
+  pasting cannot accidentally clear your checked downloads.
+
 ## 2026-09-13
 
 - Added: Chat now shows when IRC users join or leave, including quits and

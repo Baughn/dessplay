@@ -2560,7 +2560,11 @@ Enter on the initial history row recalls for editing; it does not search yet.
 
 Space toggles result checkboxes, and Enter submits all checked rows in result
 order. With none checked, Enter submits the highlighted result. Tab returns to
-query editing; editing or starting a new search clears results and checks.
+query editing, clearing results and checks. While results are shown, typing,
+paste, deletion, and readline commands cannot edit the query; Tab is required.
+The query cursor is hidden while selecting results. Empty searches, history,
+and error responses remain directly editable. Starting a new search also
+clears results and checks.
 Selected results start independent concurrent imports, each retaining the
 playlist anchor captured when the dialog opened. They enter the playlist as
 they complete, without waiting for the other selected downloads. The active

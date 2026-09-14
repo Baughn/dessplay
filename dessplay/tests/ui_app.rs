@@ -1126,6 +1126,62 @@ fn nyaa_progress_and_results_belong_to_one_request_even_for_identical_queries() 
 
 proptest::proptest! {
     #[test]
+    fn nyaa_results_require_tab_before_any_query_editing(
+        edits in proptest::collection::vec(0usize..15, 1..24),
+    ) {
+        let mut ui = torrent_ui();
+        open_nyaa(&mut ui);
+        type_str(&mut ui, "episode");
+        ui.handle(key(Key::Enter));
+        ui.set_nyaa_results(1, "episode", Ok(vec![nyaa_result(1), nyaa_result(2)]));
+        render(&mut ui, 100, 30);
+        ui.handle(key(Key::Down));
+        ui.handle(key(Key::Char(' ')));
+        let selected = render(&mut ui, 100, 30);
+        proptest::prop_assert!(selected.contains("1 checked"));
+        for edit in edits {
+            let event = match edit {
+                0 => key(Key::Char('x')),
+                1 => key(Key::Char('魔')),
+                2 => paste(" pasted query"),
+                3 => key(Key::Backspace),
+                4 => key(Key::Delete),
+                5 => key(Key::Left),
+                6 => key(Key::Right),
+                7 => key(Key::Home),
+                8 => key(Key::End),
+                9 => ctrl('a'),
+                10 => ctrl('e'),
+                11 => ctrl('w'),
+                12 => ctrl('t'),
+                13 => Event::Keyboard(KeyEvent { code: Key::Char('b'), modifiers: KeyModifiers::ALT }),
+                _ => Event::Keyboard(KeyEvent { code: Key::Backspace, modifiers: KeyModifiers::ALT }),
+            };
+            proptest::prop_assert!(ui.handle(event).is_empty());
+            proptest::prop_assert_eq!(render(&mut ui, 100, 30), selected.clone(), "query editing event {} changed result selection before Tab", edit);
+        }
+        // Tab alone unlocks the same query, with its cursor still at the end.
+        ui.handle(key(Key::Tab));
+        let screen = render(&mut ui, 100, 30);
+        proptest::prop_assert!(!screen.contains("episode-01.mkv"));
+        proptest::prop_assert!(!screen.contains("1 checked"));
+        ui.handle(paste(" revised"));
+        proptest::prop_assert_eq!(ui.handle(key(Key::Enter)), vec![UserAction::SearchNyaa {
+            request_id: 2, query: "episode revised".into(),
+        }]);
+        // The next reply must lock editing again, and ordinary result controls still work.
+        ui.set_nyaa_results(2, "episode revised", Ok(vec![nyaa_result(3)]));
+        render(&mut ui, 100, 30);
+        ui.handle(key(Key::Char('x')));
+        ui.handle(key(Key::Char(' ')));
+        proptest::prop_assert_eq!(ui.handle(key(Key::Enter)), vec![UserAction::StartNyaaImport {
+            id: TorrentImportId(1), result: nyaa_result(3), after: None,
+        }]);
+    }
+}
+
+proptest::proptest! {
+    #[test]
     fn nyaa_checkboxes_submit_exactly_the_checked_rows(
         toggles in proptest::collection::vec((0usize..6, 0usize..4), 1..30)
     ) {

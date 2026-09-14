@@ -1492,3 +1492,20 @@ the UI emits one action per selection and registers every job immediately so
 reopening permits cancellation even before the first actor progress report.
 Downloads retain the original playlist anchor and publish independently when
 verified; waiting for a slower selected download would unnecessarily delay use.
+
+
+## Nyaa results require explicit query editing (2026-09-14)
+
+The initial multi-selection UI advertised Tab for query editing but still let
+unhandled keys and pastes fall through to the editor, discarding checked results.
+Results now own input until Tab returns to editing. One editability predicate
+gates the entire editor and its visible cursor, covering typed characters,
+paste, deletion, and readline shortcuts together. Active imports already exclude
+the editor; history, empty results, and errors remain directly editable because
+there is no result selection to lose. AniDB's separate search deliberately keeps
+its existing type-to-rearm behavior.
+
+A whole-app property regression was run and confirmed to fail on one typed `x`
+before the fix. It exercises mixed editing events without changing results or
+checks, verifies Tab restores editing with the original cursor, and checks that
+a subsequent response captures input again while checkbox/download keys work.

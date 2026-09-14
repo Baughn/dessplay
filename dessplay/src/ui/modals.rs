@@ -3078,6 +3078,10 @@ impl NyaaSearchModal {
         self.answered.is_some() && !self.results.is_empty()
     }
 
+    fn query_editable(&self) -> bool {
+        !self.showing_active && !self.has_results()
+    }
+
     fn showing_history(&self) -> bool {
         !self.showing_active
             && self.search.is_none()
@@ -3351,8 +3355,16 @@ impl NyaaSearchModal {
             return;
         };
         let mut body_visible = false;
+        let query_editable = self.query_editable();
         scene.paint_with_slots(frame, |name, frame, area, style| match name {
-            "editor" => self.editor.view(frame, area, style, renderer.color_depth()),
+            "editor" => self.editor.input.render_content_styled(
+                frame,
+                area,
+                query_editable,
+                false,
+                style,
+                renderer.color_depth(),
+            ),
             "body" => {
                 body_visible = true;
                 let _ = renderer.paint_cursor_collection(
@@ -3379,7 +3391,7 @@ impl AppComponent<Msg, NoUserEvent> for NyaaSearchModal {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         let len = self.row_count();
         if let Some(key) = plain(ev) {
-            if !self.showing_active && !self.has_results() && matches!(key, Key::Up | Key::Down) {
+            if self.query_editable() && matches!(key, Key::Up | Key::Down) {
                 self.recall(key == Key::Up);
                 return Some(Msg::None);
             }
@@ -3416,7 +3428,9 @@ impl AppComponent<Msg, NoUserEvent> for NyaaSearchModal {
         if let Some(msg) = keymap.dispatch(self, ev) {
             return Some(msg);
         }
-        if !self.showing_active {
+        // Result selection owns input until Tab clears it. Gate the shared editor,
+        // including paste and readline commands, rather than individual keys.
+        if self.query_editable() {
             let before = self.editor.text();
             self.editor.on(ev);
             if self.editor.text() != before {
@@ -3425,9 +3439,8 @@ impl AppComponent<Msg, NoUserEvent> for NyaaSearchModal {
                     self.cursor.set(pos);
                 }
             }
-            return Some(Msg::None);
         }
-        None
+        Some(Msg::None)
     }
 }
 

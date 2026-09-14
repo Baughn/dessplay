@@ -665,7 +665,9 @@ Modal types:
   and counts metadata inspection; request IDs reject superseded replies.
   Empty queries show persisted local history, with Up/Down recall and draft
   restoration. Space toggles result checkboxes, Enter submits checked rows (or
-  the highlight when none are checked), and Tab edits the query. Submission
+  the highlight when none are checked). Tab is required to edit the query
+  while results are shown; other editing keys and pastes are ignored, and the
+  query cursor is hidden. Submission
   emits one action per independent import and registers all progress rows
   immediately, then closes the modal so the rest of the TUI remains usable.
 - **Logs**: `F11` toggles `LogModal` over the current modal, using the full
