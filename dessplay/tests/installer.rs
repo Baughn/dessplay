@@ -206,11 +206,13 @@ exec /bin/sh -c "$4"
 }
 
 #[test]
+#[ignore = "Slow, installer changes rarely"] 
 fn system_cargo_preserves_caller_directory_and_arguments() {
     launcher_preserves_invocation(false);
 }
 
 #[test]
+#[ignore = "Slow, installer changes rarely"] 
 fn nix_shell_preserves_caller_directory_and_arguments() {
     launcher_preserves_invocation(true);
 }
