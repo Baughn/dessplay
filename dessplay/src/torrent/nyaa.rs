@@ -121,6 +121,31 @@ impl NyaaSource for HttpNyaaSource {
     }
 }
 
+/// Search work reported before and during metadata inspection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NyaaSearchProgress {
+    /// Waiting for Nyaa's RSS response; the result count is not known yet.
+    Fetching,
+    /// Entries inspected, including skipped or invalid entries.
+    Inspecting {
+        /// Number of entries inspected so far.
+        done: usize,
+        /// Number of entries in the capped feed prefix.
+        total: usize,
+    },
+}
+
+/// Keep the most recent 100 distinct, nonblank queries, newest first.
+pub fn remember_search(history: &mut Vec<String>, query: &str) {
+    let query = query.trim();
+    if query.is_empty() {
+        return;
+    }
+    history.retain(|old| old != query);
+    history.insert(0, query.to_string());
+    history.truncate(100);
+}
+
 /// Search the anime category and inspect at most `limit` RSS entries,
 /// returning only safe, single-file torrents in feed order. A bad individual
 /// result is skipped so one removed or malformed torrent does not fail the
@@ -129,29 +154,42 @@ pub fn browse_single_file_results(
     source: &dyn NyaaSource,
     query: &str,
     limit: usize,
+    mut progress: impl FnMut(NyaaSearchProgress),
 ) -> std::io::Result<Vec<NyaaBrowseResult>> {
+    progress(NyaaSearchProgress::Fetching);
     let xml = source.search_anime(query)?;
     let mut results = Vec::new();
-    for item in parse_rss(&xml).into_iter().take(limit) {
-        if item.seeders == 0 {
-            continue;
-        }
-        let Ok(bytes) = source.fetch_torrent(&item.torrent_url) else {
-            continue;
-        };
-        let Some((filename, size_bytes)) = single_file_payload(&bytes) else {
-            continue;
-        };
-        results.push(NyaaBrowseResult {
-            title: item.title.clone(),
-            filename,
-            size_bytes,
-            seeders: item.seeders,
-            chosen: NyaaMatch {
-                title: item.title,
-                torrent_url: item.torrent_url,
-                info_hash: item.info_hash,
-            },
+    let items: Vec<_> = parse_rss(&xml).into_iter().take(limit).collect();
+    let total = items.len();
+    progress(NyaaSearchProgress::Inspecting { done: 0, total });
+    for (index, item) in items.into_iter().enumerate() {
+        // Count every inspected entry, including unseeded, failed and batch entries.
+        let result = (|| {
+            if item.seeders == 0 {
+                return None;
+            }
+            let Ok(bytes) = source.fetch_torrent(&item.torrent_url) else {
+                return None;
+            };
+            let Some((filename, size_bytes)) = single_file_payload(&bytes) else {
+                return None;
+            };
+            Some(NyaaBrowseResult {
+                title: item.title.clone(),
+                filename,
+                size_bytes,
+                seeders: item.seeders,
+                chosen: NyaaMatch {
+                    title: item.title,
+                    torrent_url: item.torrent_url,
+                    info_hash: item.info_hash,
+                },
+            })
+        })();
+        results.extend(result);
+        progress(NyaaSearchProgress::Inspecting {
+            done: index + 1,
+            total,
         });
     }
     Ok(results)
@@ -387,10 +425,11 @@ mod tests {
             )
         };
         let rss = format!(
-            r#"<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>{}{}{}</channel></rss>"#,
+            r#"<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>{}{}{}{}</channel></rss>"#,
             item(1, 10),
             item(2, 20),
             item(3, 0),
+            item(4, 1), // Missing metadata must advance progress too.
         );
         let source = BrowseSource {
             rss,
@@ -406,7 +445,20 @@ mod tests {
             ]
             .into(),
         };
-        let results = browse_single_file_results(&source, "release", 20).unwrap();
+        let mut progress = Vec::new();
+        let results =
+            browse_single_file_results(&source, "release", 20, |p| progress.push(p)).unwrap();
+        assert_eq!(
+            progress,
+            [
+                NyaaSearchProgress::Fetching,
+                NyaaSearchProgress::Inspecting { done: 0, total: 4 },
+                NyaaSearchProgress::Inspecting { done: 1, total: 4 },
+                NyaaSearchProgress::Inspecting { done: 2, total: 4 },
+                NyaaSearchProgress::Inspecting { done: 3, total: 4 },
+                NyaaSearchProgress::Inspecting { done: 4, total: 4 },
+            ]
+        );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].filename, "one.mkv");
         assert_eq!(results[0].title, "Release 1");
@@ -429,7 +481,7 @@ mod tests {
             ),
             torrents,
         };
-        let results = browse_single_file_results(&source, "r", 20).unwrap();
+        let results = browse_single_file_results(&source, "r", 20, |_| {}).unwrap();
         assert_eq!(results.len(), 20);
         assert_eq!(results.first().unwrap().filename, "0.mkv");
         assert_eq!(results.last().unwrap().filename, "19.mkv");

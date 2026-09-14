@@ -2975,7 +2975,11 @@ pub struct NyaaSearchModal {
     answered: Option<String>,
     results: Vec<crate::torrent::nyaa::NyaaBrowseResult>,
     error: Option<String>,
-    searching: bool,
+    search: Option<(u64, crate::torrent::nyaa::NyaaSearchProgress)>,
+    checked: std::collections::BTreeSet<usize>,
+    history: Vec<String>,
+    history_pos: Option<usize>,
+    draft: String,
     active: Vec<NyaaActiveImport>,
     showing_active: bool,
     cursor: ListCursor,
@@ -2983,7 +2987,11 @@ pub struct NyaaSearchModal {
 
 impl NyaaSearchModal {
     /// Open on active imports when any exist, otherwise on an empty query.
-    pub fn new(after: Option<Ed2kHash>, active: Vec<NyaaActiveImport>) -> Self {
+    pub fn new(
+        after: Option<Ed2kHash>,
+        active: Vec<NyaaActiveImport>,
+        history: Vec<String>,
+    ) -> Self {
         let showing_active = !active.is_empty();
         Self {
             after,
@@ -2991,7 +2999,11 @@ impl NyaaSearchModal {
             answered: None,
             results: Vec::new(),
             error: None,
-            searching: false,
+            search: None,
+            checked: Default::default(),
+            history,
+            history_pos: None,
+            draft: String::new(),
             active,
             showing_active,
             cursor: ListCursor::default(),
@@ -3001,10 +3013,14 @@ impl NyaaSearchModal {
     /// Deliver a search answer, dropping stale or no-longer-visible replies.
     pub fn set_results(
         &mut self,
+        request_id: u64,
         query: &str,
         result: Result<Vec<crate::torrent::nyaa::NyaaBrowseResult>, String>,
     ) {
-        if query != self.editor.text() || self.showing_active {
+        if self.search.map(|(id, _)| id) != Some(request_id)
+            || query != self.editor.text()
+            || self.showing_active
+        {
             return;
         }
         self.answered = Some(query.to_string());
@@ -3018,7 +3034,8 @@ impl NyaaSearchModal {
                 self.error = Some(error);
             }
         }
-        self.searching = false;
+        self.search = None;
+        self.checked.clear();
         self.cursor.reset();
     }
 
@@ -3028,11 +3045,7 @@ impl NyaaSearchModal {
         if self.showing_active && self.active.is_empty() {
             self.showing_active = false;
         }
-        let len = if self.showing_active {
-            self.active.len()
-        } else {
-            self.results.len()
-        };
+        let len = self.row_count();
         self.cursor.clamp(len);
     }
 
@@ -3043,29 +3056,141 @@ impl NyaaSearchModal {
         } else {
             NYAA_SEARCH_KEYMAP.bar()
         };
-        items.insert(1, ("↑↓", "Pick"));
+        items.insert(
+            1,
+            (
+                "↑↓",
+                if self.has_results() || self.showing_active {
+                    "Pick"
+                } else {
+                    "History"
+                },
+            ),
+        );
+        if self.has_results() {
+            items.insert(2, ("Space", "Check"));
+            items.insert(3, ("Tab", "Edit query"));
+        }
         items
     }
 
-    fn act_enter(&mut self) -> Option<Msg> {
+    fn has_results(&self) -> bool {
+        self.answered.is_some() && !self.results.is_empty()
+    }
+
+    fn showing_history(&self) -> bool {
+        !self.showing_active
+            && self.search.is_none()
+            && self.answered.is_none()
+            && (self.editor.text().is_empty() || self.history_pos.is_some())
+    }
+
+    fn row_count(&self) -> usize {
         if self.showing_active {
+            self.active.len()
+        } else if self.showing_history() {
+            self.history.len()
+        } else {
+            self.results.len()
+        }
+    }
+
+    fn clear_search(&mut self) {
+        self.search = None;
+        self.answered = None;
+        self.results.clear();
+        self.checked.clear();
+        self.error = None;
+        self.cursor = ListCursor::default();
+    }
+
+    /// Attach the UI-allocated identity before any asynchronous replies arrive.
+    pub fn begin_search(&mut self, request_id: u64) {
+        self.search = Some((
+            request_id,
+            crate::torrent::nyaa::NyaaSearchProgress::Fetching,
+        ));
+    }
+
+    /// Late progress cannot revive finished, edited, or replaced searches.
+    pub fn set_search_progress(
+        &mut self,
+        request_id: u64,
+        progress: crate::torrent::nyaa::NyaaSearchProgress,
+    ) {
+        if let Some((id, current)) = &mut self.search
+            && *id == request_id
+        {
+            *current = progress;
+        }
+    }
+
+    fn recall_position(&mut self, pos: Option<usize>) {
+        if self.history_pos.is_none() {
+            self.draft = self.editor.text();
+        }
+        self.clear_search();
+        self.history_pos = pos;
+        self.editor.input.set_text(
+            pos.and_then(|i| self.history.get(i))
+                .map(String::as_str)
+                .unwrap_or(&self.draft),
+        );
+        self.cursor.set(pos.unwrap_or(0));
+    }
+
+    fn recall(&mut self, older: bool) {
+        if self.history.is_empty() {
+            return;
+        }
+        let pos = match (self.history_pos, older) {
+            (None, true) => Some(0),
+            (Some(pos), true) => Some((pos + 1).min(self.history.len() - 1)),
+            (Some(0), false) => None,
+            (Some(pos), false) => Some(pos - 1),
+            (None, false) => return,
+        };
+        self.recall_position(pos);
+    }
+
+    fn act_enter(&mut self) -> Option<Msg> {
+        if self.showing_active || self.search.is_some() {
             return Some(Msg::None);
         }
-        let query = self.editor.text();
-        if self.answered.as_deref() == Some(query.as_str())
-            && let Some(result) = self.results.get(self.cursor.visible_index()?)
-        {
-            return Some(Msg::NyaaResultChosen {
-                result: result.clone(),
+        if self.has_results() {
+            let results = if self.checked.is_empty() {
+                self.results
+                    .get(self.cursor.visible_index()?)
+                    .cloned()
+                    .into_iter()
+                    .collect()
+            } else {
+                self.checked
+                    .iter()
+                    .filter_map(|&i| self.results.get(i).cloned())
+                    .collect()
+            };
+            return Some(Msg::NyaaResultsChosen {
+                results,
                 after: self.after,
             });
         }
-        if query.trim().is_empty() {
+        if self.editor.text().trim().is_empty() {
+            // Choosing a recent query only recalls it; a second Enter searches.
+            if self.showing_history()
+                && let Some(index) = self.cursor.visible_index()
+                && index < self.history.len()
+            {
+                self.recall_position(Some(index));
+            }
             return Some(Msg::None);
         }
-        self.searching = true;
-        self.answered = None;
-        self.error = None;
+        let query = self.editor.text().trim().to_string();
+        self.clear_search();
+        self.editor.input.set_text(&query);
+        self.history_pos = None;
+        self.draft.clear();
+        crate::torrent::nyaa::remember_search(&mut self.history, &query);
         Some(Msg::NyaaSearchRequested(query))
     }
 
@@ -3075,7 +3200,10 @@ impl NyaaSearchModal {
 
     fn act_new_search(&mut self) -> Option<Msg> {
         self.showing_active = false;
-        self.cursor.reset();
+        self.clear_search();
+        self.editor.input.set_text("");
+        self.history_pos = None;
+        self.draft.clear();
         Some(Msg::NewNyaaSearch)
     }
 
@@ -3097,10 +3225,19 @@ impl NyaaSearchModal {
         renderer: &mut super::layout::Renderer,
     ) {
         use super::layout::{Presentation, PresentedRow};
+        let progress_message = match self.search {
+            Some((_, crate::torrent::nyaa::NyaaSearchProgress::Fetching)) => {
+                "Fetching Nyaa search results…".to_string()
+            }
+            Some((_, crate::torrent::nyaa::NyaaSearchProgress::Inspecting { done, total })) => {
+                format!("Inspecting torrent metadata: {done}/{total}")
+            }
+            None => String::new(),
+        };
         let message = if self.showing_active {
             ""
-        } else if self.searching {
-            "searching and inspecting torrent metadata…"
+        } else if self.search.is_some() {
+            &progress_message
         } else if let Some(error) = &self.error {
             error
         } else if self.answered.is_some() && self.results.is_empty() {
@@ -3108,7 +3245,7 @@ impl NyaaSearchModal {
         } else {
             ""
         };
-        let data = Presentation::default()
+        let mut data = Presentation::default()
             .text(
                 "title",
                 if self.showing_active {
@@ -3120,7 +3257,32 @@ impl NyaaSearchModal {
             .text("message", message)
             .boolean("editing", !self.showing_active)
             .boolean("has-message", !message.is_empty())
-            .boolean("has-results", message.is_empty());
+            .boolean("has-results", message.is_empty())
+            .boolean(
+                "has-history",
+                self.showing_history() && !self.history.is_empty(),
+            )
+            .text(
+                "history-label",
+                "Recent searches — ↑↓ recall, then edit and Enter to search",
+            )
+            .boolean("has-selection", self.has_results())
+            .text(
+                "selection",
+                format!(
+                    "{} checked — Space toggles, Enter downloads, Tab edits query",
+                    self.checked.len()
+                ),
+            );
+        if let Some((_, crate::torrent::nyaa::NyaaSearchProgress::Inspecting { done, total })) =
+            self.search
+        {
+            data = data.boolean("has-search-progress", true).progress(
+                "search-progress",
+                done as u64,
+                total as u64,
+            );
+        }
         let rows: Vec<_> = if self.showing_active {
             self.active
                 .iter()
@@ -3147,13 +3309,32 @@ impl NyaaSearchModal {
                     }
                 })
                 .collect()
+        } else if self.showing_history() {
+            self.history
+                .iter()
+                .enumerate()
+                .map(|(index, query)| PresentedRow {
+                    key: format!("history/{index}"),
+                    data: Presentation::default().text("filename", query),
+                    gap_after: false,
+                })
+                .collect()
         } else {
             self.results
                 .iter()
-                .map(|result| PresentedRow {
+                .enumerate()
+                .map(|(index, result)| PresentedRow {
                     key: format!("result/{}", result.chosen.info_hash),
                     data: Presentation::default()
                         .boolean("result", true)
+                        .text(
+                            "checkbox",
+                            if self.checked.contains(&index) {
+                                "[x]"
+                            } else {
+                                "[ ]"
+                            },
+                        )
                         .text("filename", &result.filename)
                         .text("title", &result.title)
                         .boolean("alias", result.title != result.filename)
@@ -3196,15 +3377,36 @@ passive_modal!(NyaaSearchModal);
 
 impl AppComponent<Msg, NoUserEvent> for NyaaSearchModal {
     fn on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
-        let len = if self.showing_active {
-            self.active.len()
-        } else {
-            self.results.len()
-        };
-        if let Some(key) = plain(ev)
-            && self.cursor.nav(key, len)
-        {
-            return Some(Msg::None);
+        let len = self.row_count();
+        if let Some(key) = plain(ev) {
+            if !self.showing_active && !self.has_results() && matches!(key, Key::Up | Key::Down) {
+                self.recall(key == Key::Up);
+                return Some(Msg::None);
+            }
+            if self.cursor.nav(key, len) {
+                if self.showing_history()
+                    && let Some(index) = self.cursor.visible_index()
+                    && index < self.history.len()
+                {
+                    self.recall_position(Some(index));
+                }
+                return Some(Msg::None);
+            }
+            if !self.showing_active && self.has_results() {
+                if key == Key::Char(' ') {
+                    if let Some(index) = self.cursor.visible_index()
+                        && index < self.results.len()
+                        && !self.checked.remove(&index)
+                    {
+                        self.checked.insert(index);
+                    }
+                    return Some(Msg::None);
+                }
+                if key == Key::Tab {
+                    self.clear_search();
+                    return Some(Msg::None);
+                }
+            }
         }
         let keymap = if self.showing_active {
             &NYAA_ACTIVE_KEYMAP
@@ -3218,9 +3420,10 @@ impl AppComponent<Msg, NoUserEvent> for NyaaSearchModal {
             let before = self.editor.text();
             self.editor.on(ev);
             if self.editor.text() != before {
-                self.answered = None;
-                self.error = None;
-                self.searching = false;
+                self.clear_search();
+                if let Some(pos) = self.history_pos {
+                    self.cursor.set(pos);
+                }
             }
             return Some(Msg::None);
         }

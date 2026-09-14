@@ -943,6 +943,7 @@ fn nyaa_search_select_progress_reopen_and_cancel() {
     assert_eq!(
         ui.handle(key(Key::Enter)),
         vec![UserAction::SearchNyaa {
+            request_id: 1,
             query: "karen".into()
         }]
     );
@@ -957,7 +958,7 @@ fn nyaa_search_select_progress_reopen_and_cancel() {
             info_hash: "0123456789abcdef0123456789abcdef01234567".into(),
         },
     };
-    ui.set_nyaa_results("karen", Ok(vec![result.clone()]));
+    ui.set_nyaa_results(1, "karen", Ok(vec![result.clone()]));
     assert!(render(&mut ui, 100, 30).contains("karen-01.mkv"));
     assert_eq!(
         ui.handle(key(Key::Enter)),
@@ -985,6 +986,187 @@ fn nyaa_search_select_progress_reopen_and_cancel() {
             id: TorrentImportId(1)
         }]
     );
+}
+
+fn open_nyaa(ui: &mut Ui) {
+    for _ in 0..3 {
+        ui.handle(key(Key::Tab));
+    }
+    ui.handle(key(Key::Char('n')));
+    render(ui, 100, 30);
+}
+
+fn nyaa_result(index: usize) -> NyaaBrowseResult {
+    NyaaBrowseResult {
+        title: format!("Episode {index}"),
+        filename: format!("episode-{index:02}.mkv"),
+        size_bytes: 1_000_000,
+        seeders: 42,
+        chosen: NyaaMatch {
+            title: format!("Episode {index}"),
+            torrent_url: format!("https://nyaa.si/download/{index}.torrent"),
+            info_hash: format!("{index:040x}"),
+        },
+    }
+}
+
+#[test]
+fn nyaa_history_is_visible_editable_and_restores_the_draft() {
+    let mut ui = torrent_ui();
+    ui.set_nyaa_history(vec!["newest search".into(), "older search".into()]);
+    open_nyaa(&mut ui);
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Recent searches"), "{screen}");
+    assert!(screen.contains("newest search") && screen.contains("older search"));
+    // Enter on the initially selected recent query recalls without submitting.
+    assert!(ui.handle(key(Key::Enter)).is_empty());
+    type_str(&mut ui, " edited");
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::SearchNyaa {
+            request_id: 1,
+            query: "newest search edited".into(),
+        }]
+    );
+    ui.handle(key(Key::Esc));
+    ui.handle(key(Key::Char('n')));
+    type_str(&mut ui, "unfinished draft");
+    ui.handle(key(Key::Up));
+    ui.handle(key(Key::Up));
+    ui.handle(key(Key::Down));
+    ui.handle(key(Key::Down));
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::SearchNyaa {
+            request_id: 2,
+            query: "unfinished draft".into(),
+        }]
+    );
+    ui.handle(key(Key::Esc));
+    ui.handle(key(Key::Char('n')));
+    ui.handle(key(Key::Up));
+    ui.handle(key(Key::Up));
+    // Editing a recall never overwrote the original history entry.
+    ui.handle(key(Key::Up));
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::SearchNyaa {
+            request_id: 3,
+            query: "newest search".into(),
+        }]
+    );
+}
+
+#[test]
+fn nyaa_progress_and_results_belong_to_one_request_even_for_identical_queries() {
+    use dessplay::torrent::nyaa::NyaaSearchProgress::Inspecting;
+    let mut ui = torrent_ui();
+    open_nyaa(&mut ui);
+    type_str(&mut ui, "episode");
+    ui.handle(key(Key::Enter));
+    assert!(render(&mut ui, 100, 30).contains("Fetching Nyaa"));
+    assert!(
+        ui.handle(key(Key::Enter)).is_empty(),
+        "Enter cannot duplicate an in-flight search"
+    );
+    ui.set_nyaa_search_progress(1, Inspecting { done: 7, total: 20 });
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("7/20"), "{screen}");
+    assert!(
+        screen.contains('#'),
+        "search must paint a filled progress bar: {screen}"
+    );
+    ui.handle(key(Key::Esc));
+    ui.handle(key(Key::Char('n')));
+    ui.handle(key(Key::Up));
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::SearchNyaa {
+            request_id: 2,
+            query: "episode".into()
+        }]
+    );
+    ui.set_nyaa_search_progress(
+        1,
+        Inspecting {
+            done: 19,
+            total: 20,
+        },
+    );
+    ui.set_nyaa_results(1, "episode", Ok(vec![nyaa_result(1)]));
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("Fetching Nyaa"), "{screen}");
+    assert!(!screen.contains("episode-01.mkv"));
+    ui.set_nyaa_results(2, "episode", Ok(vec![nyaa_result(2)]));
+    ui.set_nyaa_search_progress(
+        2,
+        Inspecting {
+            done: 20,
+            total: 20,
+        },
+    );
+    let screen = render(&mut ui, 100, 30);
+    assert!(screen.contains("episode-02.mkv"), "{screen}");
+    assert!(!screen.contains("Inspecting"));
+    // Editing discards both checks and results. Pasted spaces are query text.
+    ui.handle(key(Key::Char(' ')));
+    ui.handle(key(Key::Tab));
+    ui.handle(Event::Paste(" revised".into()));
+    ui.set_nyaa_results(2, "episode", Ok(vec![nyaa_result(1)]));
+    assert_eq!(
+        ui.handle(key(Key::Enter)),
+        vec![UserAction::SearchNyaa {
+            request_id: 3,
+            query: "episode revised".into()
+        }]
+    );
+    ui.set_nyaa_results(3, "episode revised", Ok(vec![nyaa_result(3)]));
+    assert!(render(&mut ui, 100, 30).contains("0 checked"));
+}
+
+proptest::proptest! {
+    #[test]
+    fn nyaa_checkboxes_submit_exactly_the_checked_rows(
+        toggles in proptest::collection::vec((0usize..6, 0usize..4), 1..30)
+    ) {
+        let mut ui = torrent_ui();
+        open_nyaa(&mut ui);
+        type_str(&mut ui, "episode");
+        ui.handle(key(Key::Enter));
+        let results: Vec<_> = (0..6).map(nyaa_result).collect();
+        ui.set_nyaa_results(1, "episode", Ok(results.clone()));
+        render(&mut ui, 100, 30);
+        let mut checked = std::collections::BTreeSet::new();
+        let mut cursor = 0;
+        for (row, times) in toggles {
+            while cursor < row { ui.handle(key(Key::Down)); cursor += 1; }
+            while cursor > row { ui.handle(key(Key::Up)); cursor -= 1; }
+            for _ in 0..times {
+                ui.handle(key(Key::Char(' ')));
+                if !checked.remove(&row) { checked.insert(row); }
+            }
+        }
+        let screen = render(&mut ui, 100, 30);
+        proptest::prop_assert!(screen.contains(&format!("{} checked", checked.len())), "missing selection count");
+        if checked.is_empty() { checked.insert(cursor); }
+        let expected: Vec<_> = checked.iter().enumerate().map(|(i, &row)| UserAction::StartNyaaImport {
+            id: TorrentImportId(i as u64 + 1), result: results[row].clone(), after: None,
+        }).collect();
+        proptest::prop_assert_eq!(ui.handle(key(Key::Enter)), expected);
+        proptest::prop_assert!(!ui.modal_open());
+        // All jobs are immediately available for management, before actor replies.
+        ui.handle(key(Key::Char('n')));
+        let screen = render(&mut ui, 100, 30);
+        proptest::prop_assert!(screen.contains("Nyaa imports"));
+        for &row in &checked { proptest::prop_assert!(screen.contains(&results[row].filename)); }
+        for (i, _) in checked.iter().enumerate() {
+            proptest::prop_assert_eq!(ui.handle(key(Key::Char('d'))), vec![UserAction::CancelNyaaImport { id: TorrentImportId(i as u64 + 1) }]);
+            ui.finish_nyaa_import(TorrentImportId(i as u64 + 1));
+        }
+        ui.handle(key(Key::Esc));
+        ui.handle(key(Key::Char('n')));
+        proptest::prop_assert!(render(&mut ui, 100, 30).contains("Recent searches"));
+    }
 }
 
 /// Selecting a *different* entry pauses (EOF parity); re-selecting the

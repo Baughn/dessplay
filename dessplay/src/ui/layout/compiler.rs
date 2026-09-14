@@ -138,8 +138,15 @@ impl Default for TemplateSchema {
             (
                 "nyaa-search",
                 &["body", "editor"][..],
-                &["title", "message"][..],
-                &["editing", "has-message", "has-results"][..],
+                &["title", "message", "history-label", "selection"][..],
+                &[
+                    "editing",
+                    "has-message",
+                    "has-results",
+                    "has-history",
+                    "has-selection",
+                    "has-search-progress",
+                ][..],
             ),
             (
                 "anidb-result",
@@ -150,7 +157,9 @@ impl Default for TemplateSchema {
             (
                 "nyaa-result",
                 &[][..],
-                &["filename", "title", "size", "seeders", "stage", "progress"][..],
+                &[
+                    "checkbox", "filename", "title", "size", "seeders", "stage", "progress",
+                ][..],
                 &["alias", "result", "active"][..],
             ),
             (
@@ -555,6 +564,10 @@ impl Default for TemplateSchema {
             ]
             .into(),
         );
+        templates
+            .entry("nyaa-search".into())
+            .or_default()
+            .insert("search-progress".into(), BindingType::Progress);
         templates
             .entry("work-row".into())
             .or_default()

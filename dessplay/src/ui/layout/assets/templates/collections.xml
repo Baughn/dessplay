@@ -8,7 +8,14 @@
   <template name="copy-row"><flow separator="  "><text bind="filename"/><text bind="evidence"/></flow></template>
 
   <template name="anidb-search"><box class="anidb-dialog"><use template="search-dialog"/></box></template>
-  <template name="nyaa-search"><box class="nyaa-dialog"><use template="search-dialog"/></box></template>
+  <template name="nyaa-search"><box class="nyaa-dialog"><overlay id="search-dialog" placement="modal" title="title">
+    <slot class="search-editor" name="editor" if="editing"/>
+    <text bind="message" if="has-message"/>
+    <row if="has-search-progress"><progress class="work-progress" bind="search-progress"/></row>
+    <text bind="history-label" if="has-history"/>
+    <text bind="selection" if="has-selection"/>
+    <scroll if="has-results"><slot name="body"/></scroll>
+  </overlay></box></template>
   <template name="search-dialog">
     <overlay id="search-dialog" placement="modal" title="title">
       <slot class="search-editor" name="editor" if="editing"/>
@@ -17,7 +24,7 @@
     </overlay>
   </template>
   <template name="anidb-result"><flow separator="  "><text bind="title"/><text bind="matched" if="alias"/><text bind="series"/></flow></template>
-  <template name="nyaa-result"><flow separator="  "><text bind="filename"/><text bind="title" if="alias"/><text bind="size" if="result"/><text bind="seeders" if="result"/><flow if="active"><text bind="stage"/><text bind="progress"/></flow></flow></template>
+  <template name="nyaa-result"><flow separator="  "><text bind="checkbox" if="result"/><text bind="filename"/><text bind="title" if="alias"/><text bind="size" if="result"/><text bind="seeders" if="result"/><flow if="active"><text bind="stage"/><text bind="progress"/></flow></flow></template>
 
   <template name="file-browser">
     <box><overlay id="file-browser-frame" class="browser-dialog" placement="modal">

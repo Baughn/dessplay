@@ -138,7 +138,12 @@ sweep (seeding torrents removed, pending imports cancelled), eviction
 ending seeding, and the startup sweep of the torrents dir. One
 `#[ignore]`d smoke test starts a real librqbit session. Whole-app UI
 tests cover the disabled-setting notice, `n` routing, the progress
-overlay, reopening active imports, and `d` cancellation.
+overlay, reopening active imports, and `d` cancellation. Search tests check
+inspection progress through filtered entries, request identity across identical
+queries and reopened dialogs, editable history and draft restoration, and a
+property test for arbitrary checkbox toggles yielding exactly the chosen imports.
+Storage tests pin history deduplication, the 100-query cap, and persistence across
+restarts and unrelated settings saves.
 
 ---
 

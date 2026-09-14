@@ -469,8 +469,8 @@ video_millis, arrival_millis }` (the rolling subtitle log), `Hashing { filename,
 finished }` (playlist-add hash progress), and `SearchResults { query,
 results }` (AniDB name-search answers, routed to the search modal if
 it is open; the modal drops results for superseded queries). The Nyaa
-workflow similarly uses `NyaaResults` plus local import-progress inputs;
-its pending-import map feeds both a passive add-progress overlay and the
+workflow uses request-identified `NyaaSearchProgress` and `NyaaResults` plus
+local import-progress inputs; its pending-import map feeds both a passive add-progress overlay and the
 modal's cancellable active list. None of this is snapshot or replicated
 state. Progress rows render as a centered overlay drawn on top of everything —
 design.md's no-silent-work rule — but the overlay is *not* in the
@@ -661,8 +661,13 @@ Modal types:
   editing the query re-arms search
 - **NyaaSearch**: Playlist `n`; query/results mode lists inspected single-file
   torrents, while reopening during background imports defaults to an active
-  list with `d` cancel and `s` new search. Selection closes the modal so the
-  rest of the TUI remains usable during the download.
+  list with `d` cancel and `s` new search. Search progress names the RSS stage
+  and counts metadata inspection; request IDs reject superseded replies.
+  Empty queries show persisted local history, with Up/Down recall and draft
+  restoration. Space toggles result checkboxes, Enter submits checked rows (or
+  the highlight when none are checked), and Tab edits the query. Submission
+  emits one action per independent import and registers all progress rows
+  immediately, then closes the modal so the rest of the TUI remains usable.
 - **Logs**: `F11` toggles `LogModal` over the current modal, using the full
   width and upper two-thirds of the frame. Its two dropdowns call the injected
   `LiveLogging` controller to reload independent workspace/dependency filters.

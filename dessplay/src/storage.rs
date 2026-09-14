@@ -502,6 +502,25 @@ impl Storage {
         Ok(())
     }
 
+    /// Recent Nyaa queries, newest first; independent of editable settings.
+    pub fn nyaa_search_history(&self) -> Result<Vec<String>> {
+        self.setting("nyaa_search_history")?
+            .map(|value| {
+                serde_json::from_str(&value)
+                    .map_err(|e| StorageError::Corrupt(format!("Nyaa search history: {e}")))
+            })
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    /// Record a submitted query while bounding and deduplicating the history.
+    pub fn remember_nyaa_search(&self, query: &str) -> Result<()> {
+        let mut history = self.nyaa_search_history()?;
+        crate::torrent::nyaa::remember_search(&mut history, query);
+        let value =
+            serde_json::to_string(&history).map_err(|e| StorageError::Corrupt(e.to_string()))?;
+        self.set_setting("nyaa_search_history", Some(&value))
+    }
+
     /// Load typed settings (defaults fill any missing keys).
     pub fn load_settings(&self) -> Result<Settings> {
         Settings::load(self)
@@ -1092,6 +1111,36 @@ mod tests {
 
     fn hash(i: u8) -> Ed2kHash {
         Ed2kHash([i; 16])
+    }
+
+    #[test]
+    fn nyaa_history_survives_restart_and_settings_saves_with_a_bounded_mru() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        {
+            let storage = Storage::open(&path).unwrap();
+            assert!(storage.nyaa_search_history().unwrap().is_empty());
+            for i in 0..110 {
+                storage.remember_nyaa_search(&format!("query {i}")).unwrap();
+            }
+            storage.remember_nyaa_search(" query 50 ").unwrap();
+            storage.remember_nyaa_search(" ").unwrap();
+            storage
+                .remember_nyaa_search("魔法 \"quoted\" \\name")
+                .unwrap();
+            storage.save_settings(&Settings::default()).unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        let history = storage.nyaa_search_history().unwrap();
+        assert_eq!(history.len(), 100);
+        assert_eq!(history[0], "魔法 \"quoted\" \\name");
+        assert_eq!(history[1], "query 50");
+        assert_eq!(history[2], "query 109");
+        assert_eq!(
+            history.iter().filter(|q| q.as_str() == "query 50").count(),
+            1
+        );
+        assert!(!history.contains(&"query 0".to_string()));
     }
 
     #[test]

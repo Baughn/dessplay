@@ -1465,3 +1465,30 @@ owns the same default border. Focus fallback likewise needs its appearance in
 the frame that publishes the new target: a bounded second composition pass runs
 before image emission when fallback changes focus, preventing a stale highlight
 and keybar without allowing authored focus styles to create an unbounded loop.
+
+
+## Nyaa search progress, history, and multiple selection (2026-09-14)
+
+The downloader now reports RSS fetching followed by measured metadata-inspection
+progress. The denominator is the capped feed prefix, and every inspected entry
+advances it, even when unseeded, malformed, unavailable, or a multi-file batch.
+A percentage during the RSS request would invent progress, so that stage has an
+explicit status label. Request identities, rather than query text alone, keep
+late replies from a closed dialog or a repeated query from changing current work.
+
+Repeated episode searches benefit from shell-style recall: an empty query shows
+recent searches, Up/Down recalls into the existing line editor, and Down past the
+newest restores the draft. The latest 100 distinct trimmed submissions persist
+locally, with repeats moved to the front. This is query convenience data, separate
+from both editable settings snapshots and the torrent engine's session-only state.
+Selecting a history entry permits editing before any network request.
+
+Checkboxes let users pick several individual releases without weakening the
+single-file metainfo filter. Space toggles, Enter downloads checked rows, and
+with no checks Enter retains the existing single-highlight behavior. Tab returns
+to query editing, allowing spaces without toggling a result. Edits clear all old
+results and checks. The existing import engine already supports independent jobs;
+the UI emits one action per selection and registers every job immediately so
+reopening permits cancellation even before the first actor progress report.
+Downloads retain the original playlist anchor and publish independently when
+verified; waiting for a slower selected download would unnecessarily delay use.

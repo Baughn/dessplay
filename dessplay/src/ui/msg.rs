@@ -165,10 +165,10 @@ pub enum Msg {
     ChangelogDismissed(crate::changelog::SeenMarker),
     /// Nyaa modal: execute the current query.
     NyaaSearchRequested(String),
-    /// Nyaa modal: download the selected inspected result.
-    NyaaResultChosen {
-        /// Inspected single-file search result.
-        result: crate::torrent::nyaa::NyaaBrowseResult,
+    /// Nyaa modal: download the selected inspected results.
+    NyaaResultsChosen {
+        /// Checked single-file search results in feed order.
+        results: Vec<crate::torrent::nyaa::NyaaBrowseResult>,
         /// Playlist anchor captured when search opened.
         after: Option<Ed2kHash>,
     },
@@ -226,7 +226,7 @@ impl Msg {
             Msg::LocalCopyOfferDismissed(_) => "LocalCopyOfferDismissed",
             Msg::ChangelogDismissed(_) => "ChangelogDismissed",
             Msg::NyaaSearchRequested(_) => "NyaaSearchRequested",
-            Msg::NyaaResultChosen { .. } => "NyaaResultChosen",
+            Msg::NyaaResultsChosen { .. } => "NyaaResultsChosen",
             Msg::CancelNyaaImport(_) => "CancelNyaaImport",
             Msg::NewNyaaSearch => "NewNyaaSearch",
             Msg::CloseModal => "CloseModal",
@@ -306,6 +306,8 @@ pub enum UserAction {
     },
     /// Search Nyaa's anime category.
     SearchNyaa {
+        /// Unique local search request.
+        request_id: u64,
         /// Free-form query.
         query: String,
     },

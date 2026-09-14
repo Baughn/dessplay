@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-13
+Last updated: 2026-09-14
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -268,11 +268,20 @@ sync state with each other. See [network-design.md](network-design.md).
    inspects the first 20 RSS results' `.torrent` metadata. Only torrents with
    at least one seeder and exactly one safe payload file are listed, with
    filename, exact size, release title, and seeder count.
-3. Select a result to download it in the background. The search modal closes
-   and the non-blocking add-progress overlay shows download and ed2k-hashing
-   stages. Reopening with `n` shows active imports; `s` starts another search
-   and `d` cancels the selected import and deletes its partial data.
-4. The shared playlist entry is created only after the payload finishes and
+3. Search progress shows the RSS fetch stage, then a bar counting inspected
+   entries (including filtered and failed entries). Empty search dialogs show
+   recent local searches; Up/Down recalls older/newer queries for editing and
+   restores the draft past the newest entry. Enter on the initial history row
+   recalls it without searching. The latest 100 distinct submitted queries are
+   retained across restarts, newest first.
+4. Results have checkboxes: Space toggles the highlighted row, Enter starts all
+   checked results (or the highlighted result when none are checked), and Tab
+   returns to query editing. Each selected result downloads concurrently as its
+   own single-file import. The search modal closes and the non-blocking
+   add-progress overlay shows download and ed2k-hashing stages. Reopening with
+   `n` shows active imports; `s` starts another search and `d` cancels the
+   selected import and deletes its partial data.
+5. Each shared playlist entry is created only after its payload finishes and
    its ed2k identity is known, inserted after the row selected when the search
    opened. Failed/cancelled imports remain local notices and never create a
    provisional shared entry.
@@ -2511,11 +2520,11 @@ same anchored order with watched back-catalog last (see
 ### BitTorrent Downloads
 
 BitTorrent exists in DessPlay for exactly one thing: the Playlist
-pane's explicit **browse search** (`n`) — a user types a query, picks a
-release by hand, and it downloads in the background. Missing playlist
-files are **never** fetched via torrent: the peer relay is the only
-automatic fetch path. The torrent footprint is session-scoped: nothing
-torrent-related survives a restart.
+pane's explicit **browse search** (`n`) — a user types a query, picks one
+or more releases by hand, and they download in the background. Missing
+playlist files are **never** fetched via torrent: the peer relay is the only
+automatic fetch path. Active torrent and seeding state is session-scoped
+and does not survive a restart. Local search history persists.
 (why: [decisions](decisions.md#bittorrent-is-browse-only-2026-08))
 
 The feature is gated behind the **BitTorrent downloads** setting
@@ -2535,7 +2544,29 @@ inspects at most the first 20 RSS entries in feed order, and fetches
 their torrent metainfo before display so multi-file batches are
 excluded rather than failing after selection. Only torrents with at
 least one seeder and exactly one safe payload file are listed, with
-filename, exact size, release title, and seeder count.
+filename, exact size, release title, and seeder count. During the RSS fetch,
+the dialog names that stage; once the entry count is known, a progress bar
+counts inspected entries, including skipped, invalid, and failed metainfo.
+Only the current request's progress and completion may update the dialog;
+editing, replacing, or closing a search invalidates its replies, including
+replies for identical query text.
+
+Search history is local to the client, stored separately from editable settings
+as the latest 100 distinct nonblank submitted queries, trimmed and newest first.
+Opening an empty search displays that history. Up/Down recalls older/newer
+queries into the ordinary line editor; Down past the newest restores the draft.
+Recalling and editing never changes a stored query until it is submitted.
+Enter on the initial history row recalls for editing; it does not search yet.
+
+Space toggles result checkboxes, and Enter submits all checked rows in result
+order. With none checked, Enter submits the highlighted result. Tab returns to
+query editing; editing or starting a new search clears results and checks.
+Selected results start independent concurrent imports, each retaining the
+playlist anchor captured when the dialog opened. They enter the playlist as
+they complete, without waiting for the other selected downloads. The active
+import list includes every submitted job immediately, and each can be cancelled
+independently. Multi-file torrents remain excluded.
+(why: [decisions](decisions.md#nyaa-search-progress-history-and-multiple-selection-2026-09-14))
 
 **Import lifecycle.** The selected torrent has no ed2k identity yet, so
 it remains a **local pending import** while it downloads into its own
@@ -2552,8 +2583,9 @@ shared entry.
 import directory until the app closes, the cached file is evicted
 (retention or a lost local copy), or the setting is disabled; upload is
 capped by the existing `upload_limit` setting. Seeding does **not** resume
-on the next launch. The engine runs with no persistence, nothing about a
-torrent is recorded in SQLite, and at startup the file actor sweeps
+on the next launch. The engine runs with no persistence, nothing about an
+active torrent is recorded in SQLite (only search queries persist), and at
+startup the file actor sweeps
 everything under `<cache>/torrents/` — abandoned import payloads and any
 prior version's leftovers — sparing only a directory that still hosts a
 registered cache file (the rare failed-hardlink fallback, where the

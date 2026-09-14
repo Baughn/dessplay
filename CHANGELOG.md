@@ -9,6 +9,14 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-14
+
+- Added: Nyaa searches show progress while inspecting torrent results.
+- Added: Recent Nyaa searches are saved across restarts and can be recalled
+  with Up/Down for editing.
+- Added: Nyaa results have checkboxes: Space selects releases and Enter
+  downloads the selected files concurrently. Tab returns to query editing.
+
 ## 2026-09-13
 
 - Added: Chat now shows when IRC users join or leave, including quits and

@@ -2672,8 +2672,11 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
     }
 
     /// Search Nyaa without blocking the bridge loop.
-    pub async fn search_nyaa(&self, query: String) {
-        let _ = self.file.send(FileCommand::SearchNyaa { query }).await;
+    pub async fn search_nyaa(&self, request_id: u64, query: String) {
+        let _ = self
+            .file
+            .send(FileCommand::SearchNyaa { request_id, query })
+            .await;
     }
 
     /// Start a selected, inspected single-file torrent import.
@@ -3215,9 +3218,22 @@ impl<F: crate::player::PlayerFactory> SessionShell<F> {
                 self.on_hashed(done).await;
                 FileEffect::HashDone { path }
             }
-            FileOutput::NyaaSearchFinished { query, result } => {
-                FileEffect::NyaaSearchFinished { query, result }
-            }
+            FileOutput::NyaaSearchProgress {
+                request_id,
+                progress,
+            } => FileEffect::NyaaSearchProgress {
+                request_id,
+                progress,
+            },
+            FileOutput::NyaaSearchFinished {
+                request_id,
+                query,
+                result,
+            } => FileEffect::NyaaSearchFinished {
+                request_id,
+                query,
+                result,
+            },
             FileOutput::NyaaImportProgress {
                 id,
                 filename,
@@ -3479,8 +3495,17 @@ pub enum FileEffect {
         /// The file that finished.
         path: PathBuf,
     },
+    /// Live work for a locally requested Nyaa search.
+    NyaaSearchProgress {
+        /// Unique local search request.
+        request_id: u64,
+        /// Current search work.
+        progress: crate::torrent::nyaa::NyaaSearchProgress,
+    },
     /// Results for the Nyaa search modal.
     NyaaSearchFinished {
+        /// Unique local search request.
+        request_id: u64,
         /// Echoed query.
         query: String,
         /// Safe single-file results or a request error.

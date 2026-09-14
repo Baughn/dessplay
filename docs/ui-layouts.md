@@ -391,10 +391,13 @@ The default episode row gives filenames priority over holders when narrow.
 Change its flex rules to allocate a reserved holder column instead.
 
 `anidb-search` and `nyaa-search` expose `title`, `message`, `editor`/`body`
-slots, and `editing`, `has-message`, `has-results` booleans. Both reuse the
-`search-dialog` helper. `anidb-result` exposes `title`, `matched`, `series`,
-and boolean `alias`. `nyaa-result` exposes `filename`, `title`, `size`,
-`seeders`, `stage`, `progress`, and booleans `alias`, `result`, `active`.
+slots, and `editing`, `has-message`, `has-results` booleans. AniDB reuses the
+`search-dialog` helper; Nyaa adds `history-label`/`has-history`,
+`selection`/`has-selection`, and typed progress `search-progress` plus boolean `has-search-progress`.
+`anidb-result` exposes `title`, `matched`, `series`, and boolean `alias`.
+`nyaa-result` exposes `checkbox`, `filename`, `title`, `size`, `seeders`,
+`stage`, `progress`, and booleans `alias`, `result`, `active`. History rows use
+`filename` for the query and leave the result/active booleans false.
 Search editors, results, in-progress work, and errors retain controller state
 across reload. Search result fields can become columns or separate rows.
 

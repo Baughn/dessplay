@@ -108,8 +108,17 @@ pub enum UiInput {
         /// The hits.
         results: Vec<dessplay_core::net::AniDbSearchHit>,
     },
+    /// Live work for a locally requested Nyaa search.
+    NyaaSearchProgress {
+        /// Unique local search request.
+        request_id: u64,
+        /// Current search work.
+        progress: crate::torrent::nyaa::NyaaSearchProgress,
+    },
     /// Nyaa single-file browse results for the open modal.
     NyaaResults {
+        /// Unique local search request.
+        request_id: u64,
         /// Echoed query.
         query: String,
         /// Safe results or request-level failure.
@@ -450,7 +459,15 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                     }
                 }
             }
-            UiInput::NyaaResults { query, result } => ui.set_nyaa_results(&query, result),
+            UiInput::NyaaSearchProgress {
+                request_id,
+                progress,
+            } => ui.set_nyaa_search_progress(request_id, progress),
+            UiInput::NyaaResults {
+                request_id,
+                query,
+                result,
+            } => ui.set_nyaa_results(request_id, &query, result),
             UiInput::NyaaImportProgress {
                 id,
                 filename,

@@ -119,7 +119,7 @@ fn log_action(action: &UserAction) {
         UserAction::AddByHash { hash, .. } => {
             tracing::debug!(%hash, "user action: AddByHash");
         }
-        UserAction::SearchNyaa { query } => {
+        UserAction::SearchNyaa { query, .. } => {
             tracing::debug!(%query, "user action: SearchNyaa");
         }
         UserAction::FetchChatImage { url } => {
@@ -422,6 +422,8 @@ pub struct Ui {
     /// their playlist identity.
     nyaa_imports: BTreeMap<crate::torrent::engine::TorrentImportId, NyaaActiveImport>,
     next_nyaa_import_id: u64,
+    next_nyaa_search_id: u64,
+    nyaa_history: Vec<String>,
     /// Local-only system chat lines (archive results, etc.), merged into
     /// the chat log by timestamp. Never synced.
     system_log: Vec<props::ChatLine>,
@@ -523,6 +525,8 @@ impl Ui {
             hashing: Vec::new(),
             nyaa_imports: BTreeMap::new(),
             next_nyaa_import_id: 1,
+            next_nyaa_search_id: 1,
+            nyaa_history: Vec::new(),
             system_log: Vec::new(),
             irc_log: Vec::new(),
             pending_image_fetches: Vec::new(),
@@ -910,16 +914,36 @@ impl Ui {
         vec![UserAction::Mutate(Mutation::PutListEntry { id, entry })]
     }
 
+    /// Seed persisted local search history at startup (newest first).
+    pub fn set_nyaa_history(&mut self, history: Vec<String>) {
+        self.nyaa_history.clear();
+        for query in history.iter().rev() {
+            crate::torrent::nyaa::remember_search(&mut self.nyaa_history, query);
+        }
+    }
+
+    /// Deliver live work only to the modal owning this request.
+    pub fn set_nyaa_search_progress(
+        &mut self,
+        request_id: u64,
+        progress: crate::torrent::nyaa::NyaaSearchProgress,
+    ) {
+        if let Some(Modal::NyaaSearch(modal)) = self.modals.last_mut() {
+            modal.set_search_progress(request_id, progress);
+        }
+    }
+
     /// Deliver a Nyaa browse answer to the open modal. The modal rejects
     /// stale queries and answers that arrive after it switched to active
     /// imports.
     pub fn set_nyaa_results(
         &mut self,
+        request_id: u64,
         query: &str,
         result: Result<Vec<crate::torrent::nyaa::NyaaBrowseResult>, String>,
     ) {
         if let Some(Modal::NyaaSearch(modal)) = self.modals.last_mut() {
-            modal.set_results(query, result);
+            modal.set_results(request_id, query, result);
         }
     }
 
@@ -1764,6 +1788,34 @@ impl Ui {
         // to their handlers (like the Ctrl-R global above) rather than
         // through the single-action `update()`.
         match &msg {
+            Some(Msg::NyaaResultsChosen { results, after }) => {
+                let actions: Vec<_> = results
+                    .iter()
+                    .map(|result| {
+                        let id = crate::torrent::engine::TorrentImportId(self.next_nyaa_import_id);
+                        self.next_nyaa_import_id += 1;
+                        self.set_nyaa_import_progress(
+                            id,
+                            result.filename.clone(),
+                            crate::actors::file::NyaaImportStage::Downloading,
+                            0,
+                            result.size_bytes,
+                        );
+                        UserAction::StartNyaaImport {
+                            id,
+                            result: result.clone(),
+                            after: *after,
+                        }
+                    })
+                    .collect();
+                self.pop_modal();
+                self.sync_focus_attr();
+                self.refresh_keybar();
+                for action in &actions {
+                    log_action(action);
+                }
+                return actions;
+            }
             Some(Msg::Command(cmd)) => {
                 let actions = self.command(cmd);
                 for action in &actions {
@@ -2177,7 +2229,11 @@ impl Ui {
                 let after =
                     after.or_else(|| self.snapshot.view.playlist.last().map(|entry| entry.hash));
                 let active = self.nyaa_imports.values().cloned().collect();
-                self.push_modal(Modal::NyaaSearch(NyaaSearchModal::new(after, active)));
+                self.push_modal(Modal::NyaaSearch(NyaaSearchModal::new(
+                    after,
+                    active,
+                    self.nyaa_history.clone(),
+                )));
                 None
             }
             Msg::MoveUp(hash) => {
@@ -2237,14 +2293,16 @@ impl Ui {
                 self.sync_focus_attr();
                 Some(UserAction::ChangelogSeen { marker })
             }
-            Msg::NyaaSearchRequested(query) => Some(UserAction::SearchNyaa { query }),
-            Msg::NyaaResultChosen { result, after } => {
-                self.pop_modal();
-                self.sync_focus_attr();
-                let id = crate::torrent::engine::TorrentImportId(self.next_nyaa_import_id);
-                self.next_nyaa_import_id = self.next_nyaa_import_id.saturating_add(1);
-                Some(UserAction::StartNyaaImport { id, result, after })
+            Msg::NyaaSearchRequested(query) => {
+                let request_id = self.next_nyaa_search_id;
+                self.next_nyaa_search_id += 1;
+                crate::torrent::nyaa::remember_search(&mut self.nyaa_history, &query);
+                if let Some(Modal::NyaaSearch(modal)) = self.modals.last_mut() {
+                    modal.begin_search(request_id);
+                }
+                Some(UserAction::SearchNyaa { request_id, query })
             }
+            Msg::NyaaResultsChosen { .. } => None, // Handled by the multi-action dispatcher.
             Msg::CancelNyaaImport(id) => Some(UserAction::CancelNyaaImport { id }),
             Msg::NewNyaaSearch => None,
             Msg::ArchiveFile(hash) => {

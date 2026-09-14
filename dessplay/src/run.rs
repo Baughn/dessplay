@@ -830,6 +830,10 @@ pub async fn run_interactive(args: HeadlessArgs) -> Result<(), String> {
         media_roots.persistable.clone(),
         needs_setup,
     );
+    match setup_storage.nyaa_search_history() {
+        Ok(history) => ui.set_nyaa_history(history),
+        Err(e) => tracing::warn!("loading Nyaa search history: {e}"),
+    }
     // What's-new gate (design.md, Changelog): entries newer than the
     // persisted `changelog_seen` marker open the changelog modal before
     // the UI thread starts. First run skips it — the user is in the
@@ -1545,8 +1549,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             tracing::debug!(path = %path.display(), "session loop: HashAndAdd received");
                             self.shell.hash_and_add(path, after).await;
                         }
-                        Some(UserAction::SearchNyaa { query }) => {
-                            self.shell.search_nyaa(query).await;
+                        Some(UserAction::SearchNyaa { request_id, query }) => {
+                            if let Err(e) = self.storage.remember_nyaa_search(&query) {
+                                tracing::warn!("saving Nyaa search history: {e}");
+                            }
+                            self.shell.search_nyaa(request_id, query).await;
                         }
                         Some(UserAction::FetchChatImage { url }) => {
                             // Blocking ureq + decode on the blocking pool
@@ -2239,8 +2246,11 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 finished: true,
                             });
                         }
-                        crate::session::FileEffect::NyaaSearchFinished { query, result } => {
-                            let _ = self.ui.try_send(UiInput::NyaaResults { query, result });
+                        crate::session::FileEffect::NyaaSearchProgress { request_id, progress } => {
+                            let _ = self.ui.try_send(UiInput::NyaaSearchProgress { request_id, progress });
+                        }
+                        crate::session::FileEffect::NyaaSearchFinished { request_id, query, result } => {
+                            let _ = self.ui.try_send(UiInput::NyaaResults { request_id, query, result });
                         }
                         crate::session::FileEffect::NyaaImportProgress {
                             id,

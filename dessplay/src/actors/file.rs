@@ -108,6 +108,8 @@ pub enum FileCommand {
     },
     /// Search Nyaa's anime category for safe single-file torrents.
     SearchNyaa {
+        /// Unique local search request.
+        request_id: u64,
         /// Free-form user query.
         query: String,
     },
@@ -309,8 +311,17 @@ pub enum FileOutput {
     },
     /// Playlist-add hashing progress or completion.
     Hash(HashEvent),
+    /// Live work for a locally requested Nyaa search.
+    NyaaSearchProgress {
+        /// Unique local search request.
+        request_id: u64,
+        /// Current search work.
+        progress: crate::torrent::nyaa::NyaaSearchProgress,
+    },
     /// A user-initiated Nyaa search completed.
     NyaaSearchFinished {
+        /// Unique local search request.
+        request_id: u64,
         /// Echoed query, used to reject stale modal results.
         query: String,
         /// Safe single-file results or a request-level error.
@@ -579,6 +590,7 @@ enum Done {
     },
     /// User-initiated browse search completed.
     NyaaBrowseSearched {
+        request_id: u64,
         query: String,
         result: Result<Vec<NyaaBrowseResult>, String>,
     },
@@ -1160,7 +1172,9 @@ impl Actor {
         match cmd {
             FileCommand::Resolve { file, filename } => self.resolve(file, filename).await,
             FileCommand::HashAdd { path, after } => self.hash_add(path, after).await,
-            FileCommand::SearchNyaa { query } => self.search_nyaa(query).await,
+            FileCommand::SearchNyaa { request_id, query } => {
+                self.search_nyaa(request_id, query).await
+            }
             FileCommand::StartNyaaImport { id, result, after } => {
                 self.start_nyaa_import(id, result, after).await;
             }
@@ -1346,13 +1360,14 @@ impl Actor {
         self.pump_library_scan();
     }
 
-    async fn search_nyaa(&mut self, query: String) {
+    async fn search_nyaa(&mut self, request_id: u64, query: String) {
         let source = match self.nyaa.clone() {
             Some(source) if self.torrent_enabled => source,
             _ => {
                 let _ = self
                     .out
                     .send(FileOutput::NyaaSearchFinished {
+                        request_id,
                         query,
                         result: Err(
                             "BitTorrent downloads are disabled; enable them in Settings."
@@ -1364,10 +1379,21 @@ impl Actor {
             }
         };
         let done_tx = self.done_tx.clone();
+        let out = self.out.clone();
         tokio::task::spawn_blocking(move || {
-            let result = nyaa::browse_single_file_results(source.as_ref(), &query, 20)
+            let result =
+                nyaa::browse_single_file_results(source.as_ref(), &query, 20, |progress| {
+                    let _ = out.try_send(FileOutput::NyaaSearchProgress {
+                        request_id,
+                        progress,
+                    });
+                })
                 .map_err(|e| e.to_string());
-            let _ = done_tx.blocking_send(Done::NyaaBrowseSearched { query, result });
+            let _ = done_tx.blocking_send(Done::NyaaBrowseSearched {
+                request_id,
+                query,
+                result,
+            });
         });
     }
 
@@ -2742,10 +2768,18 @@ impl Actor {
                     tracing::debug!(path = %path.display(), "hashing manual mapping failed: {e}");
                 }
             },
-            Done::NyaaBrowseSearched { query, result } => {
+            Done::NyaaBrowseSearched {
+                request_id,
+                query,
+                result,
+            } => {
                 let _ = self
                     .out
-                    .send(FileOutput::NyaaSearchFinished { query, result })
+                    .send(FileOutput::NyaaSearchFinished {
+                        request_id,
+                        query,
+                        result,
+                    })
                     .await;
             }
             Done::NyaaImportHashed {
