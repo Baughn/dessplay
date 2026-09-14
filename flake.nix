@@ -34,6 +34,8 @@
           filter = path: type:
             (lib.hasSuffix ".ttf" path)
             || (lib.hasSuffix ".md" path)
+            || (lib.hasSuffix ".xml" path)
+            || (lib.hasSuffix ".css" path)
             || (craneLib.filterCargoSources path type);
           name = "dessplay-source";
         };
