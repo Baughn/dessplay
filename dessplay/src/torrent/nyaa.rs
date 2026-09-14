@@ -171,9 +171,7 @@ pub fn browse_single_file_results(
             let Ok(bytes) = source.fetch_torrent(&item.torrent_url) else {
                 return None;
             };
-            let Some((filename, size_bytes)) = single_file_payload(&bytes) else {
-                return None;
-            };
+            let (filename, size_bytes) = single_file_payload(&bytes)?;
             Some(NyaaBrowseResult {
                 title: item.title.clone(),
                 filename,
