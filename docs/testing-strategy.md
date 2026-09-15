@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Last updated: 2026-09-14
+Last updated: 2026-09-15
 
 ## Table of Contents
 
@@ -165,6 +165,14 @@ An anchored-chat property, derived from a recording of blank completed frames,
 requires a full viewport on the first paint and identical output on an unchanged
 redraw. It varies Unicode wrapping, viewport dimensions, result navigation,
 resize, and history truncation; it was confirmed failing before the fix.
+
+Long-chat coverage includes a release performance test with 10,000 Unicode
+messages: matching and painting the oldest result, fresh snapshots with incoming
+messages, repeated paints, wheel scrolling, and resize must each fit a 50 ms
+budget. It runs in the existing full nextest profile. Deterministic properties
+bound the number of arranged trees by viewport height rather than history length,
+and cap image slots across history changes and delayed fetch completion. A wheel
+scenario checks exact row steps, clamping, and resumed tail following.
 
 ## Running the Suite
 

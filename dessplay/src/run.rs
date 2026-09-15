@@ -1559,11 +1559,9 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                             // Blocking ureq + decode on the blocking pool
                             // (the nyaa pattern), gated by the semaphore so
                             // a burst of posted URLs can't monopolize it.
-                            // The UI's image store dedups requests; this arm
-                            // can stay stateless. Lossy try_send back: a
-                            // dropped answer leaves the slot loading until
-                            // its message leaves the log — acceptable for a
-                            // full channel, which only happens mid-flood.
+                            // The UI bounds all outstanding requests. Deliver
+                            // every answer so an occupied loading slot is always
+                            // released, even after scrolling away or disabling images.
                             let permits = Arc::clone(&self.image_fetch_permits);
                             let cache_dir = self.cache_dir.clone();
                             let ui = self.ui.clone();
@@ -1571,18 +1569,16 @@ impl<F: crate::player::PlayerFactory> SessionLoop<F> {
                                 let Ok(_permit) = permits.acquire_owned().await else {
                                     return;
                                 };
-                                let result = tokio::task::spawn_blocking(move || {
+                                let _ = tokio::task::spawn_blocking(move || {
                                     let result = crate::chat_images::fetch(&url, &cache_dir);
-                                    (url, result)
-                                })
-                                .await;
-                                let Ok((url, result)) = result else {
-                                    return;
-                                };
-                                let _ = ui.try_send(UiInput::ChatImage {
-                                    url,
-                                    result: result.map(Box::new),
-                                });
+                                    // Blocking send belongs on this pool, never a
+                                    // tokio worker or the session loop. The permit
+                                    // stays held through delivery (two workers max).
+                                    let _ = ui.send(UiInput::ChatImage {
+                                        url,
+                                        result: result.map(Box::new),
+                                    });
+                                }).await;
                             });
                         }
                         Some(UserAction::StartNyaaImport { id, result, after }) => {

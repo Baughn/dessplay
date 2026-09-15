@@ -2,7 +2,7 @@
 //!
 //! One database (default `$XDG_DATA_HOME/dessplay-rendezvous/rendezvous.db`,
 //! overridable via `--db-path`) holds the authoritative CRDT snapshot, the
-//! full chat archive (compaction trims the replicated chat to 500 messages
+//! full chat archive (compaction trims the replicated chat to 10,000 messages
 //! after archiving here), and the AniDB validation queue. Scheduling logic
 //! for the queue arrives in Phase 8; this module only stores it.
 //!

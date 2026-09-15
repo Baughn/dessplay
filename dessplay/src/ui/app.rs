@@ -810,6 +810,8 @@ impl Ui {
     /// as a [`UserAction::FetchChatImage`] and answers with
     /// [`Ui::set_chat_image`].
     pub fn take_image_fetches(&mut self) -> Vec<String> {
+        self.pending_image_fetches
+            .extend(self.chat.sync_images(self.settings.chat_images));
         std::mem::take(&mut self.pending_image_fetches)
     }
 

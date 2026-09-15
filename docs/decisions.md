@@ -16,6 +16,41 @@ remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
 
+## Larger chat history with bounded viewport work (2026-09-15)
+
+**Rule:** [Chat](design.md#chat) retains 10,000 synced messages after compaction,
+without archive backfill. [Chat layout](design.md#runtime-layout-templates)
+measures around the source anchor; [inline images](design.md#inline-chat-images)
+have an independent eight-slot budget for pixels and outstanding requests.
+
+**Why:** Search makes a 100-message history unnecessarily restrictive. A release
+probe with 10,000 synthetic messages found a modest 1.34 MB serialized state and
+sub-millisecond matching, but about 0.55 seconds per old-history redraw: the
+renderer measured every message between the tail and the search result. A source
+anchor plus pending visual-row movement removes that dependency for search,
+wheel/page scrolling, redraw, resize, and message refresh. The recent-chat
+projection already measures just its tail. Existing first-frame backfill,
+selection, spoilers, and attachment geometry remain required.
+
+Images previously fetched and retained every URL in the log. Enlarging that log
+would scale downloads and decoded memory along with it, despite the disk cache
+cap. A small nearby window keeps old images available on demand without retaining
+all their pixels. Loading slots survive viewport changes, preventing rapid
+navigation from creating an unbounded fetch queue. Reliable result delivery is
+necessary now: a dropped answer would permanently consume the bounded budget.
+Disabled images release pixels immediately; outstanding results are discarded.
+Failed images may retry after leaving and revisiting the working window.
+
+A release performance regression failed before the change at 524 ms (50 ms
+budget). After the change, the oldest-result search and first paint took 2.6 ms;
+the worst incoming-message refresh, wheel step, or resize took 7.2 ms on the
+same development machine. These synthetic timings are local measurements, not
+a guarantee for every terminal or machine. Coverage also bounds layout-tree counts independently of wall-clock
+speed, checks exact wheel steps and tail following, and varies image histories
+and navigation before fetch completion. The image-budget property failed before
+the fix with 100 startup requests. No backfill was requested; archived messages
+remain archived and the larger retained history accumulates going forward.
+
 ## Anchored chat windows fill the first frame (2026-09-15)
 
 **Rule:** [Chat layout](design.md#runtime-layout-templates) requires both the

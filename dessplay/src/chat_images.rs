@@ -56,7 +56,9 @@ pub fn fetch(url: &str, cache_dir: &Path) -> Result<image::DynamicImage, String>
         }
     };
     let image = decode_capped(&bytes)?;
-    Ok(prescale(image))
+    Ok(image::DynamicImage::ImageRgba8(
+        prescale(image).into_rgba8(),
+    ))
 }
 
 /// Where `url`'s wire bytes are cached: a sha256-named file under

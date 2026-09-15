@@ -71,6 +71,9 @@ const CHAT_PAGE_STEP: usize = 5;
 /// How many visual lines one mouse-wheel tick moves the chat view —
 /// smaller than a page, matching the wheel's fine-grained feel.
 const CHAT_WHEEL_STEP: usize = 3;
+/// Image pixels and outstanding requests have a budget independent of history.
+const CHAT_IMAGE_SLOTS: usize = 8;
+const CHAT_IMAGE_CONTEXT: usize = 32;
 /// Indent applied to wrapped continuation lines in the chat log.
 #[cfg(test)]
 const CHAT_WRAP_INDENT: usize = 2;
@@ -401,9 +404,8 @@ pub struct ChatPane {
     search_clock: u64,
     input: TextField,
     focused: bool,
-    /// Visual lines scrolled up from the bottom (0 = pinned to newest).
-    scroll_offset: usize,
-    rendered_offset: usize,
+    /// Pending visual-row movement relative to the source anchor; positive is down.
+    scroll_delta: i64,
     scroll_anchor: Option<(LineKey, usize, usize)>,
     /// Text of every message this client has sent this session, for
     /// shell-style Up/Down recall. Never touches the synced chat.
@@ -433,10 +435,10 @@ pub struct ChatPane {
     /// Inline chat images, keyed by URL (design.md, Inline chat
     /// images). URL-keyed on purpose: the whole log is replaced from
     /// scratch ~10Hz, and a `StatefulProtocol`'s cached terminal encode
-    /// must survive that. Pruned in [`ChatPane::sync_images`] to the
-    /// URLs present in the current log window, so memory stays bounded
-    /// by the log caps.
+    /// must survive that. [`ChatPane::sync_images`] bounds decoded pixels and
+    /// pending fetches independently of retained history.
     images: HashMap<String, ImageSlot>,
+    image_wanted: std::collections::HashSet<String>,
     /// Set by `Ui::draw` while a modal is open: a graphics-protocol
     /// image ignores the cell z-order, so it could bleed through
     /// whatever is drawn on top. Suppressed images reserve no rows.
@@ -448,7 +450,7 @@ enum ImageSlot {
     /// Requested, no answer yet. Reserves no rows.
     Loading,
     /// Fetch or decode failed; the URL stays plain text. Kept so the
-    /// URL is never re-requested while its message remains in the log.
+    /// URL is not re-requested while it stays in the image working set.
     Failed,
     /// Decoded and ready to render.
     Ready {
@@ -491,8 +493,7 @@ impl Default for ChatPane {
             search_clock: 0,
             input: TextField::new("say something…"),
             focused: false,
-            scroll_offset: 0,
-            rendered_offset: 0,
+            scroll_delta: 0,
             scroll_anchor: None,
             sent_history: Vec::new(),
             history_pos: None,
@@ -504,6 +505,7 @@ impl Default for ChatPane {
             selection: None,
             picker: None,
             images: HashMap::new(),
+            image_wanted: Default::default(),
             suppress_images: false,
         }
     }
@@ -553,8 +555,7 @@ impl ChatPane {
             .and_then(|search| search.selected())
             .map(|entry| entry.key.clone())
         {
-            self.scroll_offset = 1;
-            self.rendered_offset = 1;
+            self.scroll_delta = 0;
             self.scroll_anchor = Some((key, 0, 0));
         }
     }
@@ -625,29 +626,53 @@ impl ChatPane {
         self.picker = Some(picker);
     }
 
-    /// Reconcile the image store with the current log: prune entries
-    /// whose message left the window, and (when inline images are
-    /// enabled and a terminal protocol exists) mark unseen URLs as
-    /// loading, returning them for the shell to fetch. A URL already
-    /// tracked — loading, failed, or ready — is never re-requested.
-    /// Disabling clears the store, freeing the decoded pixels; on
-    /// re-enable everything re-fetches through the disk cache.
+    /// Keep at most eight images near the current source anchor. Loading slots
+    /// survive a window change until their answer arrives, so rapid scrolling
+    /// cannot enqueue an unbounded number of background jobs.
     pub fn sync_images(&mut self, enabled: bool) -> Vec<String> {
-        if !enabled || self.picker.is_none() {
-            self.images.clear();
-            return Vec::new();
+        self.image_wanted.clear();
+        if enabled && self.picker.is_some() {
+            let target = self
+                .scroll_anchor
+                .as_ref()
+                .and_then(|(key, _, _)| self.lines.iter().position(|line| key.matches(line)));
+            let mut candidates = Vec::new();
+            if let Some(target) = target {
+                candidates.extend(target..self.lines.len().min(target + CHAT_IMAGE_CONTEXT));
+                candidates.extend((target.saturating_sub(CHAT_IMAGE_CONTEXT)..target).rev());
+            } else {
+                candidates.extend(
+                    (self.lines.len().saturating_sub(2 * CHAT_IMAGE_CONTEXT)..self.lines.len())
+                        .rev(),
+                );
+            }
+            for index in candidates {
+                if let Some(url) = &self.lines[index].image_url {
+                    // An attachment belongs only to its first occurrence.
+                    if self.lines[..index]
+                        .iter()
+                        .any(|line| line.image_url.as_ref() == Some(url))
+                    {
+                        continue;
+                    }
+                    self.image_wanted.insert(url.clone());
+                    if self.image_wanted.len() == CHAT_IMAGE_SLOTS {
+                        break;
+                    }
+                }
+            }
         }
-        let wanted: std::collections::HashSet<&str> = self
-            .lines
-            .iter()
-            .filter_map(|line| line.image_url.as_deref())
-            .collect();
-        self.images.retain(|url, _| wanted.contains(url.as_str()));
+        self.images.retain(|url, slot| {
+            matches!(slot, ImageSlot::Loading) || self.image_wanted.contains(url)
+        });
         let mut fetches = Vec::new();
-        for url in wanted {
+        for url in &self.image_wanted {
+            if self.images.len() == CHAT_IMAGE_SLOTS {
+                break;
+            }
             if !self.images.contains_key(url) {
-                self.images.insert(url.to_owned(), ImageSlot::Loading);
-                fetches.push(url.to_owned());
+                self.images.insert(url.clone(), ImageSlot::Loading);
+                fetches.push(url.clone());
             }
         }
         fetches
@@ -688,6 +713,10 @@ impl ChatPane {
     /// disabled meanwhile.
     pub fn set_image(&mut self, url: &str, result: Result<image::DynamicImage, String>) {
         if self.picker.is_none() {
+            return;
+        }
+        if !self.image_wanted.contains(url) {
+            self.images.remove(url);
             return;
         }
         let Some(slot) = self.images.get_mut(url) else {
@@ -1163,7 +1192,8 @@ impl ChatPane {
         self.clear();
         self.sent_history.push(text.clone());
         self.history_pos = None;
-        self.scroll_offset = 0; // jump to newest so you see it
+        self.scroll_anchor = None; // jump to newest so you see it
+        self.scroll_delta = 0;
         Some(if text.starts_with('/') {
             Msg::Command(text)
         } else {
@@ -1179,7 +1209,7 @@ impl ChatPane {
     }
 
     fn act_scroll_up(&mut self) -> Option<Msg> {
-        self.scroll_offset += CHAT_PAGE_STEP;
+        self.scroll_delta = self.scroll_delta.saturating_sub(CHAT_PAGE_STEP as i64);
         Some(Msg::None)
     }
 
@@ -1187,14 +1217,14 @@ impl ChatPane {
     /// the offset to the top of the history, so over-scrolling is safe.
     pub(crate) fn scroll_wheel(&mut self, up: bool) {
         if up {
-            self.scroll_offset += CHAT_WHEEL_STEP;
+            self.scroll_delta = self.scroll_delta.saturating_sub(CHAT_WHEEL_STEP as i64);
         } else {
-            self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_WHEEL_STEP);
+            self.scroll_delta = self.scroll_delta.saturating_add(CHAT_WHEEL_STEP as i64);
         }
     }
 
     fn act_scroll_down(&mut self) -> Option<Msg> {
-        self.scroll_offset = self.scroll_offset.saturating_sub(CHAT_PAGE_STEP);
+        self.scroll_delta = self.scroll_delta.saturating_add(CHAT_PAGE_STEP as i64);
         Some(Msg::None)
     }
 
@@ -1410,27 +1440,31 @@ impl ChatPane {
         if log_inner.is_empty() {
             return;
         }
-        // Start at the live tail and instantiate only the required message window.
-        // Source anchoring may extend that window to the retained scrollback item.
-        let anchor = (self.scroll_offset > 0 && self.scroll_offset == self.rendered_offset)
-            .then_some(self.scroll_anchor.as_ref())
-            .flatten()
+        // Resolve an identity once, then measure outwards from it. Never walk
+        // the intervening history between an old search result and the live tail.
+        let anchor = self
+            .scroll_anchor
+            .as_ref()
             .and_then(|(key, source, old_row)| {
                 self.lines
                     .iter()
                     .position(|line| key.matches(line))
                     .map(|index| (index, *source, *old_row))
             });
+        if self.lines.is_empty() {
+            self.scroll_anchor = None;
+            self.scroll_delta = 0;
+            self.rendered = RenderedChatLog::default();
+            return;
+        }
         let mut first_images = HashMap::new();
         for (index, line) in self.lines.iter().enumerate() {
             if let Some(url) = &line.image_url {
                 first_images.entry(url.as_str()).or_insert(index);
             }
         }
-        let mut groups = Vec::new();
-        let mut measured_rows = 0usize;
-        let mut older_needed = None;
-        for (idx, line) in self.lines.iter().enumerate().rev() {
+        let mut measure = |idx: usize| {
+            let line = &self.lines[idx];
             let style = if self
                 .search
                 .as_ref()
@@ -1453,7 +1487,7 @@ impl ChatPane {
                 "chat",
                 renderer,
             ) else {
-                continue;
+                return None;
             };
             let attachment = if self.suppress_images || overlay || message.has_overlay() {
                 None
@@ -1481,37 +1515,73 @@ impl ChatPane {
                 + attachment.as_ref().map_or(0, |(_, attachment)| {
                     usize::from(attachment.occupied_height().min(max_image_rows))
                 });
-            measured_rows += height;
-            if let Some((target, source, old_row)) = anchor {
-                if idx == target {
-                    let at = message_rows
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, row)| row.selectable && row.char_start <= source)
-                        .map(|(index, _)| index)
-                        .next_back()
-                        .unwrap_or(0);
-                    older_needed = Some(old_row.saturating_sub(at));
-                } else if let Some(remaining) = &mut older_needed {
-                    *remaining = remaining.saturating_sub(height);
-                }
+            Some((height, (idx, message_rows, message, attachment)))
+        };
+        let target = anchor.map_or(self.lines.len() - 1, |(index, _, _)| index);
+        let mut first = target;
+        let mut after = target + 1;
+        let mut groups = std::collections::VecDeque::new();
+        let mut measured_rows = 0usize;
+        let mut source_row = 0;
+        if let Some((height, group)) = measure(target) {
+            if let Some((_, source, _)) = anchor {
+                source_row = group
+                    .1
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.selectable && row.char_start <= source)
+                    .map(|(index, _)| index)
+                    .next_back()
+                    .unwrap_or(0);
             }
-            groups.push((idx, message_rows, message, attachment));
-            let position_reached = if anchor.is_some() {
-                older_needed == Some(0)
-            } else {
-                measured_rows >= self.scroll_offset.saturating_add(visible)
-            };
-            // Reaching an anchor near the tail can leave less than one screen.
-            // Measure older context now so end-clamping fills this very frame.
-            if position_reached && measured_rows >= visible {
-                break;
+            measured_rows = height;
+            groups.push_back(group);
+        }
+        let mut desired_start = if let Some((_, _, old_row)) = anchor {
+            (source_row as i64).saturating_sub(old_row as i64)
+        } else {
+            measured_rows as i64 - visible as i64
+        }
+        .saturating_add(self.scroll_delta);
+        // Recover context above the anchor, including explicit upward scrolling.
+        while desired_start < 0 && first > 0 {
+            first -= 1;
+            if let Some((height, group)) = measure(first) {
+                desired_start = desired_start.saturating_add(height as i64);
+                measured_rows += height;
+                groups.push_front(group);
             }
         }
+        desired_start = desired_start.max(0);
+        // Fill below it, including explicit downward scrolling.
+        while (measured_rows as i64) < desired_start.saturating_add(visible as i64)
+            && after < self.lines.len()
+        {
+            let index = after;
+            after += 1;
+            if let Some((height, group)) = measure(index) {
+                measured_rows += height;
+                groups.push_back(group);
+            }
+        }
+        // Near the live tail, backfill on this first frame if there isn't a
+        // complete viewport below the requested source position.
+        while measured_rows < visible && first > 0 {
+            first -= 1;
+            if let Some((height, group)) = measure(first) {
+                desired_start = desired_start.saturating_add(height as i64);
+                measured_rows += height;
+                groups.push_front(group);
+            }
+        }
+        let start = (desired_start as usize).min(measured_rows.saturating_sub(visible));
+        let end = start.saturating_add(visible).min(measured_rows);
+        let at_tail = after == self.lines.len() && end == measured_rows;
+        self.scroll_delta = 0;
         let mut rows: Vec<(usize, ChatRow)> = Vec::new();
         let mut image_bands = Vec::new();
         let mut message_bands = Vec::new();
-        for (idx, message_rows, message, attachment) in groups.into_iter().rev() {
+        for (idx, message_rows, message, attachment) in groups {
             message_bands.push((idx, rows.len(), message));
             rows.extend(message_rows.into_iter().map(|row| (idx, row)));
             if let Some((url, attachment)) = attachment {
@@ -1533,37 +1603,14 @@ impl ChatPane {
                 }
             }
         }
-        // A stable source anchor retains context when wrapping, files, or history
-        // changes. Explicit scroll input still chooses a new visual offset.
-        if self.scroll_offset > 0
-            && self.scroll_offset == self.rendered_offset
-            && let Some((key, source, old_row)) = &self.scroll_anchor
-            && let Some(line) = self.lines.iter().position(|line| key.matches(line))
-            && let Some(at) = rows
-                .iter()
-                .enumerate()
-                .filter(|(_, (index, row))| {
-                    *index == line && row.selectable && row.char_start <= *source
-                })
-                .map(|(i, _)| i)
-                .next_back()
-        {
-            let start = at.saturating_sub(*old_row);
-            self.scroll_offset = rows.len().saturating_sub(start + visible);
-        }
-        // Clamp the scroll so it can never run past the top of the log.
-        let max_offset = rows.len().saturating_sub(visible);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
-        let end = rows.len().saturating_sub(self.scroll_offset);
-        let start = end.saturating_sub(visible);
-        self.rendered_offset = self.scroll_offset;
         self.scroll_anchor = rows[start..end]
             .iter()
             .enumerate()
             .find(|(_, (_, row))| row.selectable)
             .map(|(position, (idx, row))| {
                 (LineKey::of(&self.lines[*idx]), row.char_start, position)
-            });
+            })
+            .filter(|_| !at_tail);
         // The bands intersecting the viewport, as (url, fitted size,
         // row offset relative to the viewport top — negative when the
         // band starts above it). The sliced widget crops the *fitted*
@@ -5721,7 +5768,7 @@ mod chat_image_tests {
     #[test]
     fn resizing_and_new_messages_preserve_scrolled_source_context() {
         let mut pane = ChatPane {
-            scroll_offset: 20,
+            scroll_delta: -20,
             ..Default::default()
         };
         pane.set_lines(
@@ -5810,11 +5857,11 @@ mod chat_image_tests {
     #[test]
     fn scroll_clamp_counts_image_rows() {
         let mut pane = ready_pane();
-        pane.scroll_offset = usize::MAX;
+        pane.scroll_delta = i64::MIN;
         draw(&mut pane, 40, 30);
         // 1 text row + 8 image rows, all visible in a 25-row viewport:
         // nothing to scroll.
-        assert_eq!(pane.scroll_offset, 0);
+        assert!(pane.scroll_anchor.is_none());
     }
 
     /// Half-block pixels actually land in the reserved band.
@@ -5888,7 +5935,7 @@ mod chat_image_tests {
     }
 
     /// A failed fetch reserves nothing and is never re-requested while
-    /// its message stays in the log.
+    /// it stays in the image working set.
     #[test]
     fn failed_fetch_reserves_nothing() {
         let mut pane = ChatPane::default();
@@ -5914,6 +5961,33 @@ mod chat_image_tests {
         pane.set_image(URL, Ok(tall_image()));
         draw(&mut pane, 40, 30);
         assert!(pane.rendered.image_areas.is_empty());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn image_history_does_not_expand_the_working_set(count in 100usize..400, target in 0usize..100) {
+            let mut pane = ChatPane::default();
+            pane.set_picker(ratatui_image::picker::Picker::halfblocks());
+            pane.set_lines((0..count).map(|i| {
+                let mut line = image_line(i as u64, "picture");
+                line.image_url = Some(format!("https://example.test/{i}.png"));
+                line
+            }).collect());
+            let fetches = pane.sync_images(true);
+            proptest::prop_assert!(fetches.len() <= 8, "{} image requests at startup", fetches.len());
+            // Move before answers arrive: pending work still consumes the same
+            // budget, and stale answers must free it without keeping old pixels.
+            pane.scroll_anchor = Some((LineKey::of(&pane.lines[target]), 0, 0));
+            proptest::prop_assert!(pane.sync_images(true).is_empty());
+            for url in fetches { pane.set_image(&url, Ok(tall_image())); }
+            let fetches = pane.sync_images(true);
+            for url in fetches { pane.set_image(&url, Ok(tall_image())); }
+            proptest::prop_assert!(pane.images.len() <= 8);
+            let target_url = format!("https://example.test/{target}.png");
+            proptest::prop_assert!(pane.images.contains_key(&target_url));
+            pane.sync_images(false);
+            proptest::prop_assert!(pane.images.is_empty());
+        }
     }
 }
 
@@ -6007,6 +6081,63 @@ mod chat_layout_tests {
             .draw(|frame| pane.render_layout(frame, frame.area(), &mut renderer))
             .unwrap();
         assert_eq!(renderer.arrangement_count(), first + 1);
+    }
+
+    #[test]
+    fn anchored_wheel_steps_are_visual_rows_and_tail_resumes_following() {
+        let mut pane = ChatPane::default();
+        pane.set_lines((0..300).map(|id| message(id, "one line")).collect());
+        pane.scroll_anchor = Some((LineKey::of(&pane.lines[100]), 0, 0));
+        let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut draw = |pane: &mut ChatPane| {
+            terminal
+                .draw(|f| pane.render_layout(f, f.area(), &mut renderer))
+                .unwrap();
+            pane.rendered
+                .rows
+                .iter()
+                .find(|row| row.selectable)
+                .unwrap()
+                .line
+        };
+        assert_eq!(draw(&mut pane), 100);
+        pane.scroll_wheel(false);
+        assert_eq!(draw(&mut pane), 103);
+        pane.scroll_wheel(true);
+        assert_eq!(draw(&mut pane), 100);
+        pane.scroll_delta = i64::MIN;
+        assert_eq!(draw(&mut pane), 0);
+        pane.scroll_delta = i64::MAX;
+        draw(&mut pane);
+        assert!(pane.scroll_anchor.is_none());
+        pane.set_lines((0..301).map(|id| message(id, "one line")).collect());
+        draw(&mut pane);
+        assert_eq!(pane.rendered.rows.last().unwrap().line, 300);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn old_chat_windows_measure_only_nearby_messages(
+            count in 1_000usize..10_001,
+            target in 0usize..500,
+            width in 30u16..100,
+            height in 10u16..40,
+        ) {
+            let mut pane = ChatPane::default();
+            pane.set_lines((0..count).map(|id| message(id as u64, "Unicode 猫 café conversation")).collect());
+            pane.scroll_anchor = Some((LineKey::of(&pane.lines[target]), 0, 0));
+            let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for direction in [None, Some(false), Some(true)] {
+                if let Some(up) = direction { pane.scroll_wheel(up); }
+                let before = renderer.arrangement_count();
+                terminal.draw(|f| pane.render_layout(f, f.area(), &mut renderer)).unwrap();
+                let work = renderer.arrangement_count() - before;
+                proptest::prop_assert!(work < 2 * usize::from(height) + 10, "{} layout trees", work);
+                proptest::prop_assert_eq!(pane.rendered.rows.len(), usize::from(pane.rendered.area.height));
+            }
+        }
     }
     #[test]
     fn spoiler_animation_reuses_measured_geometry() {

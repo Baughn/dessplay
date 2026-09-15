@@ -747,6 +747,9 @@ blocks unpause (File State -> Missing). This prevents sync issues from
 different encodes/versions. See [Content Hash](#content-hash).
 ### Chat
 
+- Daily compaction retains the latest **10,000 synced messages**, plus new
+  messages between compactions. The server archives full history. Increasing
+  retention does not backfill messages already trimmed from replicated state.
 - Type in the chat input (always visible at bottom of chat pane)
 - Press Enter to send
 - Messages appear in the chat pane AND as OSD in the video player — a
@@ -934,6 +937,17 @@ failure, the link stays plain text with no error chrome.
   extension. At most two fetches run at once. An animated GIF shows its
   first frame. Wire bytes are cached under `cache_dir/images/` (names
   are `sha256(url)`), evicted oldest-first past 64 MB.
+- **Working set.** Each client keeps at most eight image slots, including
+  outstanding requests, independently of chat retention. Candidates come from
+  32 messages starting at the scroll anchor followed by the previous 32;
+  at the live tail, from the newest 64 messages. Only first occurrences of
+  URLs qualify. Offscreen pixels outside this window are released; visiting
+  older history loads its images on demand, using the disk cache when present.
+  Completed images are at most 1280 px per edge in RGBA8 (at most 50 MiB
+  for eight decoded images, excluding terminal encodings and an open viewer).
+  In-flight requests retain their slots until delivery, including after moving
+  away or disabling images; unwanted results are discarded. Results use reliable
+  delivery so full UI queues cannot permanently exhaust the request budget.
 - **Display.** The image occupies blank, non-selectable rows reserved
   under its message, at most **one third of the chat log's height**,
   aspect preserved. It scrolls with the log and is cropped at the
@@ -1762,8 +1776,10 @@ wide body glyph that cannot fit its remainder continues on the next row.
 Rich bindings occur once per entry and preserve source/action identity.
 Chat continuation indentation is an inherited terminal text property; source
 anchors retain scrolled-back context through layout changes and new messages.
-Reaching a source anchor does not end measurement until at least one viewport
-of rows is available, or the beginning of history is reached. Search jumps,
+Chat measures outwards from its source anchor, applying wheel/page movement
+in visual rows and laying out only enough adjacent messages to fill the viewport.
+It does not lay out the intervening history back to the live tail. Reaching the
+live tail resumes following new messages. Search jumps,
 resize, and content changes near the tail backfill older context in the first
 frame; an unchanged redraw must not repair or reposition that frame.
 

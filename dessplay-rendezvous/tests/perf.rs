@@ -96,6 +96,122 @@ const FLOOD_CPU: Duration = Duration::from_millis(10);
 const SEED_LATENCY: u32 = 2500;
 const FLOOD_LATENCY: Duration = Duration::from_millis(1);
 
+/// Long retained chat must stay interactive at both ends of history, including
+/// search submission, repeated paints, incoming snapshots, and wheel scrolling.
+#[test]
+fn ten_thousand_chat_messages_remain_responsive() {
+    use dessplay::ui::app::UiSnapshot;
+    use dessplay_core::{
+        CrdtState,
+        types::{ChatMessage, SharedTimestamp},
+    };
+    use tuirealm::{
+        event::{Event, Key, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
+        ratatui::{Terminal, backend::TestBackend},
+        testing::buffer_to_string,
+    };
+    let mut state = CrdtState::new();
+    for i in 0..10_000 {
+        state.append_chat(ChatMessage {
+            timestamp: SharedTimestamp(1_789_400_000_000 + i * 60_000),
+            sender: UserId::new("kim"),
+            text: format!("{} Message {i}: animation, music, and 猫 café. Let's watch the next episode tomorrow.", if i == 0 { "ancientneedle" } else { "ordinary" }),
+        });
+    }
+    let snapshot = UiSnapshot {
+        view: Arc::new(state.view()),
+        ..Default::default()
+    };
+    let mut ui = Ui::new(
+        UserId::new("kim"),
+        Settings {
+            username: Some("kim".into()),
+            password: Some("probe".into()),
+            ..Default::default()
+        },
+        vec!["/media".into()],
+    );
+    ui.apply_snapshot(snapshot.clone());
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let mut renderer =
+        dessplay::ui::layout::Renderer::new(dessplay::ui::layout::LayoutBundle::builtin().unwrap());
+    terminal
+        .draw(|f| ui.draw_with_renderer(f, &mut renderer))
+        .unwrap();
+    ui.handle(Event::Keyboard(KeyEvent {
+        code: Key::Char('f'),
+        modifiers: KeyModifiers::CONTROL,
+    }));
+    ui.handle(Event::Paste("ancientneedle".into()));
+    let start = Instant::now();
+    ui.handle(Event::Keyboard(KeyEvent {
+        code: Key::Enter,
+        modifiers: KeyModifiers::NONE,
+    }));
+    terminal
+        .draw(|f| ui.draw_with_renderer(f, &mut renderer))
+        .unwrap();
+    let search = start.elapsed();
+    assert!(buffer_to_string(terminal.backend().buffer()).contains("ancientneedle"));
+    let mut worst = search;
+    for step in 0..10 {
+        let start = Instant::now();
+        // A fresh view and an incoming line exercise active-search replacement,
+        // not only the equal-chat shortcut on playback-position updates.
+        state.append_chat(ChatMessage {
+            timestamp: SharedTimestamp(1_789_400_000_000 + (10_000 + step) * 60_000),
+            sender: UserId::new("kim"),
+            text: format!("New arrival {step}"),
+        });
+        ui.apply_snapshot(UiSnapshot {
+            view: Arc::new(state.view()),
+            ..snapshot.clone()
+        });
+        terminal
+            .draw(|f| ui.draw_with_renderer(f, &mut renderer))
+            .unwrap();
+        worst = worst.max(start.elapsed());
+    }
+    ui.handle(Event::Keyboard(KeyEvent {
+        code: Key::Esc,
+        modifiers: KeyModifiers::NONE,
+    }));
+    for kind in [
+        MouseEventKind::ScrollDown,
+        MouseEventKind::ScrollDown,
+        MouseEventKind::ScrollUp,
+    ] {
+        let start = Instant::now();
+        ui.handle(Event::Mouse(MouseEvent {
+            kind,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        terminal
+            .draw(|f| ui.draw_with_renderer(f, &mut renderer))
+            .unwrap();
+        worst = worst.max(start.elapsed());
+    }
+    for (width, height) in [(80, 30), (160, 50)] {
+        terminal.backend_mut().resize(width, height);
+        let start = Instant::now();
+        terminal
+            .draw(|f| ui.draw_with_renderer(f, &mut renderer))
+            .unwrap();
+        worst = worst.max(start.elapsed());
+    }
+    eprintln!(
+        "10,000 chat messages: search + first paint {search:?}, worst refresh + paint {worst:?}"
+    );
+    if !cfg!(debug_assertions) {
+        assert!(
+            worst < Duration::from_millis(50),
+            "long chat blocked UI for {worst:?}"
+        );
+    }
+}
+
 /// A real `SessionLoop` + the real (headless) UI loop, wired exactly as
 /// `run_interactive` wires them, minus the terminal. Holds the levers a
 /// perf test needs: inject load (`sync`), inject UI latency probes

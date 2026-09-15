@@ -99,7 +99,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     /// Defaults with the given password: daily compaction at 12:00 UTC,
-    /// 100 chat messages kept.
+    /// 10,000 chat messages kept.
     pub fn new(password: impl Into<String>) -> Self {
         Self {
             password: password.into(),
@@ -108,7 +108,7 @@ impl ServerConfig {
                 hour: 12,
                 minute: 0,
             },
-            chat_keep: 100,
+            chat_keep: 10_000,
             anidb: None,
         }
     }

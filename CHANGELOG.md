@@ -18,6 +18,11 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Fixed: Chat search no longer briefly blanks most of the pane when visiting
   recent matches. Resizing near the end of chat also fills the pane immediately.
 
+- Changed: Chat now retains the latest 10,000 messages after daily cleanup,
+  giving search and scrollback a longer history as new messages arrive.
+- Improved: Searching and scrolling old chat stays responsive with long histories.
+  Chat images load near your reading position with bounded memory use.
+
 ## 2026-09-14
 
 - Added: Nyaa searches show progress while inspecting torrent results.

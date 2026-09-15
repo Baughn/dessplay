@@ -947,7 +947,7 @@ debt taken on by session-scoped ActorIds). Around it, the server:
    wholesale, resurrecting long-finished episodes as "unwatched"); the
    lookup and acknowledged-absent GSets and
    the marquee register empty; chat keeps its
-   trailing `chat_keep` messages (default 100); playback positions come
+   trailing `chat_keep` messages (default 10,000); playback positions come
    along already coalesced (the view holds one per user); The List is
    untouched — permanent state. Stamps come from the server's Lamport
    clock, so they dominate everything in the old state.
