@@ -813,6 +813,20 @@ So entries carry confirmed aliases (seeded from the first file's derived name, g
 
 **Why:** The titles dump's kind-3 rows are lowercase search tags ("gochiusa s2", "s;g", "HnNKn") and only a quarter of series have one, so they cannot be read raw. The answer is trusted as returned because the human-name precedence above is the backstop; answers for series not in the batch are dropped as a sanity guard. Settling after a few declines means no series is billed indefinitely. The token is client-provisioned rather than server-configured so the settings screen is the whole lifecycle interface for rotating or removing the server-side credential, reusing the `anthropic_token` the commentary engine already stores.
 
+## Real QUIC/UDP tests are opt-in (2026-09-15)
+
+The real-socket QUIC, localhost integration, and DSCP wire tests retain their
+OS interfaces and carry `#[ignore = "Requires sandbox escalation"]`. The
+ordinary gate runs in restricted sandboxes; transport, socket configuration,
+and QUIC dependency changes explicitly run this socket coverage with suitable
+permissions, as documented in testing-strategy.md.
+
+The transport is stable enough that running these tests on every unrelated
+change adds little value. In-memory substitutes would lose the important OS
+integration checks. Explicit ignore annotations replace the separate sandbox
+profile and work with both Cargo's built-in runner and nextest. Simulated
+network and pure protocol tests remain in the default gate.
+
 ## TUI Layout
 
 ### Layout watches exclude unrelated directory trees (2026-09-15)

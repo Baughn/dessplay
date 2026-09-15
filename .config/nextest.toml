@@ -1,5 +1,6 @@
 # Nextest configuration. The default profile is the stop-hook / dev gate;
-# `--profile full` (or --ignore-default-filter) runs everything.
+# `--profile full` (or --ignore-default-filter) includes perf tests.
+# Ignored OS/socket tests still require explicit --run-ignored selection.
 
 [profile.default]
 # The perf.rs wall-clock regression tests sample real CPU/latency over 3s+
@@ -13,21 +14,6 @@ default-filter = "not binary(perf)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 [profile.full]
-# Everything, including the perf regression tests.
+# Include perf regression tests; ignored tests still need --run-ignored.
 default-filter = "all()"
 slow-timeout = { period = "60s", terminate-after = 2 }
-
-# Explicit partial gate for environments that deny local sockets. The default
-# profile still runs real QUIC/UDP coverage; run it with socket access before
-# merging. Protocol-only mpv tests and native layout watchers run in both.
-[profile.sandbox]
-default-filter = """
-not (binary(perf)
-    | test(net::quic::socket_tests::)
-    | binary(dscp_wire)
-    | binary(quic_localhost)
-    | binary(mpv_real)
-    | binary(live_rqbit)
-    | test(=player::mpv::tests::a_slow_mpv_startup_is_not_a_crash)
-    | test(=torrent::rqbit::tests::session_starts_without_persistence))
-"""

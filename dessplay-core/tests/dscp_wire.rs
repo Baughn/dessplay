@@ -165,11 +165,13 @@ fn assert_dscp_survives(ipv4: bool) {
 }
 
 #[test]
+#[ignore = "Requires sandbox escalation"]
 fn dscp_survives_ecn_cmsg_ipv6() {
     assert_dscp_survives(false);
 }
 
 #[test]
+#[ignore = "Requires sandbox escalation"]
 fn dscp_survives_ecn_cmsg_ipv4() {
     assert_dscp_survives(true);
 }

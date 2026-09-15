@@ -220,17 +220,26 @@ The release full profile remains the responsiveness/CPU gate during migration.
 
 ### Restricted local sandboxes
 
-Run `PROPTEST_CASES=32 cargo nextest run --profile sandbox` for an explicit
-partial gate when the environment denies local sockets. Native layout watcher
-tests run in this profile. mpv protocol tests drive the production JSON reader
+Run `PROPTEST_CASES=32 cargo nextest run` for the ordinary gate, including in
+environments that deny local sockets. Native layout watcher tests run in this
+gate. mpv protocol tests drive the production JSON reader
 and command writer through bounded `tokio::io::duplex` streams with paused time;
 they need no Unix sockets or player process.
 
-The sandbox profile excludes the real-socket module in `net::quic`, the
-`dscp_wire` and `quic_localhost` binaries, and optional real-mpv, live torrent,
-slow-player socket startup, and rqbit listener tests. Address-ordering logic
-and simulated-network convergence remain covered. The default/full profiles
-retain real-socket coverage; a sandbox-profile pass does not replace them.
+The five real-socket tests in `net::quic`, two `dscp_wire` tests, and four
+`quic_localhost` tests carry `#[ignore = "Requires sandbox escalation"]`.
+They preserve OS-level QUIC/UDP coverage and run explicitly when changing the
+transport, socket configuration, or QUIC dependencies. Address-ordering logic
+and simulated-network convergence remain in the ordinary gate. There is no
+separate sandbox profile. `--profile full` includes performance tests but does
+not enable ignored tests.
+
+Run the real-socket coverage with local socket access:
+
+```sh
+cargo nextest run --run-ignored only \
+  -E 'test(net::quic::socket_tests::) | binary(dscp_wire) | binary(quic_localhost)'
+```
 
 The Linux Codex audit on 2026-09-15 reproduced 14 socket failures: three mpv
 protocol tests (now in-memory), five QUIC socket tests, two DSCP wire tests,
@@ -239,7 +248,7 @@ when run with local socket access. The separate layout-watch failures came
 from recursively traversing unrelated unreadable directories, not from a
 sandbox ban on filesystem notifications.
 
-To run the complete gate, the runner needs UDP sockets on IPv4/IPv6 loopback
+To run these real-socket tests, the runner needs UDP sockets on IPv4/IPv6 loopback
 and ephemeral ports. Optional real-player/socket startup tests also need local
 Unix sockets in temporary directories, and real-player tests need mpv. Run the
 test command with an approved sandbox exception, in an ordinary dev shell, or
@@ -268,10 +277,9 @@ warm cache vs ~4s under nextest (measured 2026-08-31, 32 cores).
   debug gate they cost ~4s and verify nothing) and flags any test slower
   than 30s as SLOW, killing it at 60s. A SLOW flag usually means an
   accidental real (non-paused) sleep.
-- **full**: everything, for release perf runs:
-  `cargo nextest run --profile full --release`.
-- **sandbox**: the partial gate described above, excluding tests that require
-  real local sockets and the release-only perf binary.
+- **full**: includes release perf tests:
+  `cargo nextest run --profile full --release`. Ignored tests still require
+  explicit `--run-ignored` selection.
 
 Nextest does not run doctests; the workspace has none — add a
 `cargo test --doc` step to the hook if that changes.
