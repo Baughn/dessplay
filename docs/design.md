@@ -1,6 +1,6 @@
 # DessPlay Design Document
 
-Last updated: 2026-09-14
+Last updated: 2026-09-15
 
 A synchronized video player for watch parties. Terminal-first, built for
 reliability over flaky connections. Server-coordinated, including relayed
@@ -2105,9 +2105,16 @@ source snapshot taken when opened and resolve stable identities when accepting;
 a vanished result does not trigger an action on a replacement row.
 
 Chat search keeps the conversation in chronological order and preserves the
-message draft and its cursor. Editing the query jumps to the newest match;
+message draft and its cursor. Query edits appear immediately; matching and the
+jump to the newest match run after one second without a text edit. Further text
+edits restart the delay; editor cursor motion does not. While pending, the title
+says so and the previous query's results remain active, including on incoming
+message refreshes. Clearing the query removes the highlight after the same delay
+without moving the conversation. Esc cancels any pending search.
 Up/Down visits older/newer matches, PageUp/PageDown skips ten matches, and Enter
-visits the older match. Navigation stops at the ends. The current message is
+visits the older match. These keys work immediately: pending edits are applied
+first, with Enter submitting to the newest match and the navigation keys moving
+from that match. Navigation stops at the ends. The current message is
 underlined and the title shows the match count. Esc closes the search editor,
 restoring the draft while retaining the conversation position. Search includes
 sender names, timestamps, and displayed message bodies (including local and
@@ -2122,6 +2129,18 @@ navigation, using the same fuzzy matcher and relevance order. Remote AniDB and
 Nyaa queries retain their service-specific search behavior.
 
 (why: [decisions](decisions.md#shared-pane-search-2026-09-14))
+
+### Terminal frame presentation
+
+Every production redraw, including startup, input, timer updates, and resize,
+uses synchronized output (DEC mode 2026). Frame output and cursor updates are
+bracketed by begin/end commands on the same output stream, and the end is
+flushed before waiting for input. Error and unwind paths attempt to release
+synchronization. Supporting terminals display the completed frame atomically;
+other terminals retain ordinary incremental output. The renderer continues to
+send only changed cells.
+
+(why: [decisions](decisions.md#chat-search-pause-and-terminal-frame-boundaries-2026-09-15))
 
 ### Keyboard Shortcuts
 

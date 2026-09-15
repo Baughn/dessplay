@@ -592,13 +592,14 @@ impl Ui {
         let marquee = self.advance_marquee(now);
         let spoilers = self.chat.advance_spoilers(now);
         let selection = self.chat.expire_selection(now);
+        let search = self.chat.advance_search(now);
         let logs = matches!(self.modals.last(), Some(Modal::Logs(modal)) if modal.refresh_needed());
         let dungeon = if let Some(Modal::Roguelike(modal)) = self.modals.last_mut() {
             modal.advance_clock(now)
         } else {
             false
         };
-        speakers || marquee || spoilers || selection || logs || dungeon
+        speakers || marquee || spoilers || selection || search || logs || dungeon
     }
 
     /// How soon the shell should tick again: fast while a marquee pass
@@ -609,13 +610,16 @@ impl Ui {
         let marquee_live = matches!(&self.marquee, Some(anim) if !anim.done);
         let dungeon_live =
             matches!(self.modals.last(), Some(Modal::Roguelike(modal)) if modal.ticking());
-        if dungeon_live {
+        let cadence = if dungeon_live {
             std::time::Duration::from_millis(50)
         } else if marquee_live || self.chat.spoiler_animating() {
             std::time::Duration::from_millis(100)
         } else {
             std::time::Duration::from_secs(1)
-        }
+        };
+        self.chat
+            .search_tick_hint()
+            .map_or(cadence, |due| cadence.min(due))
     }
 
     /// Recompute the marquee offset from wall time; returns whether
@@ -3399,6 +3403,36 @@ mod tests {
             code: Key::Char('f'),
             modifiers: KeyModifiers::CONTROL,
         })
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn chat_search_waits_for_a_full_pause(gaps in proptest::collection::vec(1u64..1000, 6)) {
+            let mut ui = ui_with_view(StateView::default());
+            for i in 1..80 {
+                ui.push_system(i, if i == 5 { "needle".into() } else { format!("filler {i}") });
+            }
+            ui.chat.insert_text("unsent draft");
+            let mut now = 10_000;
+            ui.advance_clock(now);
+            ui.handle(ctrl_f());
+            for (c, gap) in "needle".chars().zip(gaps) {
+                now += gap;
+                ui.advance_clock(now);
+                ui.handle(key(Key::Char(c)));
+                let text = tuirealm::testing::buffer_to_string(&render_test_buffer(&mut ui));
+                proptest::prop_assert!(text.contains("filler 79"), "typing moved the conversation");
+            }
+            ui.advance_clock(now + 999);
+            let text = tuirealm::testing::buffer_to_string(&render_test_buffer(&mut ui));
+            proptest::prop_assert!(text.contains("filler 79"));
+            proptest::prop_assert_eq!(ui.next_tick_hint(), std::time::Duration::from_millis(1));
+            proptest::prop_assert!(ui.advance_clock(now + 1000));
+            let text = tuirealm::testing::buffer_to_string(&render_test_buffer(&mut ui));
+            proptest::prop_assert!(!text.contains("filler 79"));
+            proptest::prop_assert!(text.contains("needle"));
+            proptest::prop_assert_eq!(ui.chat.text(), "unsent draft");
+        }
     }
 
     #[test]

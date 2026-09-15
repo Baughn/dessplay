@@ -11,6 +11,60 @@ use tuirealm::terminal::{CrosstermTerminalAdapter, TerminalAdapter};
 use super::app::{Ui, UiSnapshot};
 use super::msg::UserAction;
 
+/// Frame boundaries for physical output; headless buffers need no escape codes.
+pub trait FrameBackend: tuirealm::ratatui::backend::Backend {
+    /// Hold the displayed frame while the next frame is written.
+    fn begin_frame(&mut self) -> Result<(), Self::Error>;
+    /// Publish the completed frame and flush the output stream.
+    fn end_frame(&mut self) -> Result<(), Self::Error>;
+}
+
+impl<W: std::io::Write> FrameBackend for tuirealm::ratatui::backend::CrosstermBackend<W> {
+    fn begin_frame(&mut self) -> std::io::Result<()> {
+        crossterm::queue!(self, crossterm::terminal::BeginSynchronizedUpdate)
+    }
+    fn end_frame(&mut self) -> std::io::Result<()> {
+        crossterm::execute!(self, crossterm::terminal::EndSynchronizedUpdate)
+    }
+}
+
+impl FrameBackend for tuirealm::ratatui::backend::TestBackend {
+    fn begin_frame(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn end_frame(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+/// The only draw boundary in the shell, including startup, input, and idle ticks.
+/// The guard also releases synchronization after an I/O error or render panic.
+fn draw_frame<B: FrameBackend>(
+    terminal: &mut tuirealm::ratatui::Terminal<B>,
+    render: impl FnOnce(&mut tuirealm::ratatui::Frame<'_>),
+) -> Result<(), B::Error> {
+    struct Guard<'a, B: FrameBackend> {
+        terminal: &'a mut tuirealm::ratatui::Terminal<B>,
+        finished: bool,
+    }
+    impl<B: FrameBackend> Drop for Guard<'_, B> {
+        fn drop(&mut self) {
+            if !self.finished {
+                let _ = self.terminal.backend_mut().end_frame();
+            }
+        }
+    }
+    let mut guard = Guard {
+        terminal,
+        finished: false,
+    };
+    guard.terminal.backend_mut().begin_frame()?;
+    let drawn = guard.terminal.draw(render).map(|_| ());
+    let ended = guard.terminal.backend_mut().end_frame();
+    guard.finished = ended.is_ok();
+    drawn.and(ended)
+}
+
 /// Everything the UI thread consumes.
 pub enum UiInput {
     /// A dungeon snapshot after its turn has been saved, or a storage error.
@@ -342,7 +396,9 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     inputs: std::sync::mpsc::Receiver<UiInput>,
     actions: mpsc::Sender<UserAction>,
     adapter: &mut A,
-) {
+) where
+    A::Backend: FrameBackend,
+{
     let builtin = match super::layout::LayoutBundle::builtin() {
         Ok(bundle) => bundle,
         Err(error) => {
@@ -375,9 +431,9 @@ pub fn run_ui_loop<A: TerminalAdapter>(
     // so the query burns its full 2-second timeout. The alternate
     // screen is already blank and the first fullscreen draw paints
     // every cell.
-    let _ = adapter
-        .raw_mut()
-        .draw(|frame| ui.draw_with_renderer(frame, &mut renderer));
+    let _ = draw_frame(adapter.raw_mut(), |frame| {
+        ui.draw_with_renderer(frame, &mut renderer)
+    });
     loop {
         if ui.layout_settings_dirty {
             match actions.try_send(UserAction::SaveLayoutSettings(ui.layout_settings.clone())) {
@@ -397,10 +453,10 @@ pub fn run_ui_loop<A: TerminalAdapter>(
                 redraw |= dispatch_due_recovery(&mut ui, &actions);
                 dispatch_image_fetches(&mut ui, &actions);
                 if redraw
-                    && adapter
-                        .raw_mut()
-                        .draw(|frame| ui.draw_with_renderer(frame, &mut renderer))
-                        .is_err()
+                    && draw_frame(adapter.raw_mut(), |frame| {
+                        ui.draw_with_renderer(frame, &mut renderer)
+                    })
+                    .is_err()
                 {
                     break;
                 }
@@ -515,10 +571,10 @@ pub fn run_ui_loop<A: TerminalAdapter>(
             _ => {}
         }
         poll_layout(&mut ui, &mut renderer, watcher.as_ref(), custom_enabled);
-        if adapter
-            .raw_mut()
-            .draw(|frame| ui.draw_with_renderer(frame, &mut renderer))
-            .is_err()
+        if draw_frame(adapter.raw_mut(), |frame| {
+            ui.draw_with_renderer(frame, &mut renderer)
+        })
+        .is_err()
         {
             break;
         }
@@ -795,5 +851,95 @@ mod prologue_tests {
     #[test]
     fn prologue_resets_margin_region_and_origin() {
         assert_eq!(TERMINAL_STATE_PROLOGUE, "\x1b[?69l\x1b[r\x1b[?6l");
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::draw_frame;
+    use std::{cell::RefCell, io, rc::Rc};
+    use tuirealm::ratatui::{
+        Terminal, TerminalOptions, Viewport, backend::CrosstermBackend, layout::Rect,
+    };
+
+    #[derive(Clone, Default)]
+    struct Output(Rc<RefCell<Vec<u8>>>);
+    impl io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn synchronization_is_released_after_output_failure_and_render_panic() {
+        struct FailOnce {
+            output: Output,
+            failed: bool,
+        }
+        impl io::Write for FailOnce {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if !self.failed && bytes.contains(&b'X') {
+                    self.failed = true;
+                    return Err(io::Error::other("injected output failure"));
+                }
+                self.output.write(bytes)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let output = Output::default();
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(FailOnce {
+                output: output.clone(),
+                failed: false,
+            }),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, 30, 6)),
+            },
+        )
+        .unwrap();
+        let error = draw_frame(&mut terminal, |frame| {
+            frame.render_widget("X", frame.area())
+        });
+        assert!(error.is_err());
+        assert!(output.0.borrow().starts_with(b"\x1b[?2026h"));
+        assert!(output.0.borrow().ends_with(b"\x1b[?2026l"));
+
+        output.0.borrow_mut().clear();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = draw_frame(&mut terminal, |_| panic!("injected render panic"));
+        }));
+        assert!(panic.is_err());
+        assert!(output.0.borrow().starts_with(b"\x1b[?2026h"));
+        assert!(output.0.borrow().ends_with(b"\x1b[?2026l"));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn terminal_repaints_are_complete_synchronized_frames(
+            texts in proptest::collection::vec("[a-z ]{1,120}", 2..8)
+        ) {
+            let output = Output::default();
+            let mut terminal = Terminal::with_options(
+                CrosstermBackend::new(output.clone()),
+                TerminalOptions { viewport: Viewport::Fixed(Rect::new(0, 0, 30, 6)) },
+            ).unwrap();
+            for text in texts {
+                output.0.borrow_mut().clear();
+                draw_frame(&mut terminal, |frame| {
+                    frame.render_widget(text.as_str(), frame.area());
+                    frame.set_cursor_position((1, 1));
+                }).unwrap();
+                let bytes = output.0.borrow();
+                proptest::prop_assert!(bytes.starts_with(b"\x1b[?2026h"), "repaint starts without synchronization");
+                proptest::prop_assert!(bytes.ends_with(b"\x1b[?2026l"), "repaint does not release synchronization");
+            }
+        }
     }
 }

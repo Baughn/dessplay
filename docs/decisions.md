@@ -1,6 +1,6 @@
 # DessPlay Decision Log
 
-Last updated: 2026-09-14
+Last updated: 2026-09-15
 
 The reasoning behind the rules in [design.md](design.md): the failure that
 motivated each one, the alternatives that were rejected, and the date it
@@ -15,6 +15,32 @@ and links back to the section that states it; design.md links here with
 remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
+
+## Chat search pause and terminal frame boundaries (2026-09-15)
+
+**Rule:** [Chat search](design.md#pane-search) applies text edits after a
+one-second pause, while explicit navigation submits pending edits immediately.
+[Terminal frames](design.md#terminal-frame-presentation) use synchronized output
+for every production draw.
+
+**Why:** Searching immediately on each keystroke repeatedly replaced most of the
+visible conversation. The user chose a full one-second pause rather than periodic
+updates while typing. The UI's existing monotonic clock owns the deadline; idle
+wakeups honor its remaining duration, so the final edit runs without another key
+or actor message. Matching retains the applied query separately from the editor,
+preventing incoming chat snapshots from accidentally submitting pending edits.
+Collection pickers retain immediate filtering.
+
+The user also reported intermittent blank/repaint flashes while navigating
+results in Ghostty directly, without tmux or SSH. The shell sent frame diffs
+without declaring frame boundaries, allowing terminal refresh to race with output
+delivery. Ratatui's in-memory double buffers do not synchronize physical display.
+[Ghostty documents this failure mode](https://ghostty.org/docs/help/synchronized-output)
+and recommends DEC mode 2026. One shared draw boundary covers initial frames,
+input (including result navigation and resize), and idle animation; a guard
+attempts to release the mode on errors and unwinding. Output-stream regression
+tests confirmed the missing markers before implementation. They verify the
+protocol contract, not the appearance of the user's physical Ghostty window.
 
 ## Shared pane search (2026-09-14)
 

@@ -108,6 +108,7 @@ pub struct Search<K> {
     pub entries: Vec<Entry<K>>,
     pub matches: Vec<usize>,
     ranked: bool,
+    query: String,
 }
 
 impl<K: Clone + PartialEq> Search<K> {
@@ -118,6 +119,7 @@ impl<K: Clone + PartialEq> Search<K> {
             entries,
             matches: Vec::new(),
             ranked,
+            query: String::new(),
         };
         search.rebuild();
         search
@@ -143,7 +145,7 @@ impl<K: Clone + PartialEq> Search<K> {
     }
 
     fn rebuild(&mut self) {
-        let query = Query::new(&self.editor.text());
+        let query = Query::new(&self.query);
         let mut hits: Vec<_> = self
             .entries
             .iter()
@@ -160,6 +162,25 @@ impl<K: Clone + PartialEq> Search<K> {
     }
 
     pub fn on(&mut self, ev: &Event<NoUserEvent>) -> Effect<K> {
+        self.on_edit(ev, true)
+    }
+
+    /// Edit immediately but let the caller schedule applying the query.
+    pub fn on_deferred(&mut self, ev: &Event<NoUserEvent>) -> Effect<K> {
+        self.on_edit(ev, false)
+    }
+
+    /// The query represented by the current matches, which may lag the editor.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn apply_query(&mut self) {
+        self.query = self.editor.text();
+        self.rebuild();
+    }
+
+    fn on_edit(&mut self, ev: &Event<NoUserEvent>, immediate: bool) -> Effect<K> {
         match plain(ev) {
             Some(Key::Esc) => return Effect::Close,
             Some(Key::Enter) => {
@@ -176,7 +197,9 @@ impl<K: Clone + PartialEq> Search<K> {
         let before = self.editor.text();
         self.editor.edit(ev);
         if before != self.editor.text() {
-            self.rebuild();
+            if immediate {
+                self.apply_query();
+            }
             Effect::Changed
         } else {
             Effect::Consumed

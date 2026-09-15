@@ -9,6 +9,13 @@ append-only; you cannot reword or remove existing entries.
 
 Add new days at the top. Add new entries at the bottom of existing days.
 
+## 2026-09-15
+
+- Changed: Chat search waits for a one-second typing pause before jumping to
+  matches. Enter and result navigation apply pending searches immediately.
+- Fixed: Terminal redraws use synchronized output to prevent partially painted
+  frames from flashing during search, scrolling, and other screen updates.
+
 ## 2026-09-14
 
 - Added: Nyaa searches show progress while inspecting torrent results.

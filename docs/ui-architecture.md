@@ -171,6 +171,15 @@ Search dialogs own all query input, including paste. The old Series-specific
 filter controller is removed. File navigation retains its existing input flow
 and calls the same Query scorer. No new actor or wire message is involved.
 
+Chat schedules query application after a one-second editing pause on the injected
+UI clock. The shared search controller stores the applied query separately from
+its editor, so refreshing source entries preserves the displayed search until
+the deadline or explicit navigation submits it. The shell's next wakeup includes
+the remaining search delay. All shell draws go through one frame boundary that
+brackets physical output with DEC mode 2026; headless backends use the same draw
+path without terminal commands. The end command is flushed on completion and
+attempted on errors and unwinding.
+
 Event routing inside a component is layered, most-specific first:
 
 ```

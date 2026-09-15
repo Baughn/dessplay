@@ -397,6 +397,8 @@ impl RenderedChatLog {
 pub struct ChatPane {
     lines: Vec<ChatLine>,
     search: Option<super::widgets::search::Search<LineKey>>,
+    search_due: Option<u64>,
+    search_clock: u64,
     input: TextField,
     focused: bool,
     /// Visual lines scrolled up from the bottom (0 = pinned to newest).
@@ -485,6 +487,8 @@ impl Default for ChatPane {
         Self {
             lines: Vec::new(),
             search: None,
+            search_due: None,
+            search_clock: 0,
             input: TextField::new("say something…"),
             focused: false,
             scroll_offset: 0,
@@ -557,14 +561,26 @@ impl ChatPane {
 
     fn search_on(&mut self, ev: &Event<NoUserEvent>) -> Option<Msg> {
         use super::widgets::search::Effect;
+        if self.search_due.is_some()
+            && matches!(
+                plain(ev),
+                Some(Key::Enter | Key::Up | Key::Down | Key::PageUp | Key::PageDown)
+            )
+        {
+            self.apply_search_query();
+            // Enter submits the pending query; subsequent presses visit older matches.
+            if plain(ev) == Some(Key::Enter) {
+                return Some(Msg::None);
+            }
+        }
         let search = self.search.as_mut()?;
-        match search.on(ev) {
-            Effect::Close => self.search = None,
+        match search.on_deferred(ev) {
+            Effect::Close => {
+                self.search = None;
+                self.search_due = None;
+            }
             Effect::Changed => {
-                search.cursor.set(search.matches.len().saturating_sub(1));
-                if !search.editor.text().trim().is_empty() {
-                    self.jump_to_search_match();
-                }
+                self.search_due = Some(self.search_clock.saturating_add(1000));
             }
             Effect::Moved => self.jump_to_search_match(),
             Effect::Accept(_) => {
@@ -574,6 +590,32 @@ impl ChatPane {
             Effect::Consumed => {}
         }
         Some(Msg::None)
+    }
+
+    fn apply_search_query(&mut self) {
+        self.search_due = None;
+        if let Some(search) = &mut self.search {
+            search.apply_query();
+            search.cursor.set(search.matches.len().saturating_sub(1));
+            if !search.query().trim().is_empty() {
+                self.jump_to_search_match();
+            }
+        }
+    }
+
+    pub(crate) fn advance_search(&mut self, now: u64) -> bool {
+        self.search_clock = self.search_clock.max(now);
+        if self.search_due.is_some_and(|due| due <= self.search_clock) {
+            self.apply_search_query();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn search_tick_hint(&self) -> Option<std::time::Duration> {
+        self.search_due
+            .map(|due| std::time::Duration::from_millis(due.saturating_sub(self.search_clock)))
     }
 
     /// Set the detected image-protocol capability (production: once at
@@ -1265,7 +1307,9 @@ impl ChatPane {
                 self.search.as_ref().map_or_else(
                     || "Chat".to_string(),
                     |search| {
-                        if search.matches.is_empty() {
+                        if self.search_due.is_some() {
+                            "Chat · Search pending".into()
+                        } else if search.matches.is_empty() {
                             "Chat · No matches".into()
                         } else {
                             format!(
@@ -1390,7 +1434,7 @@ impl ChatPane {
             let style = if self
                 .search
                 .as_ref()
-                .filter(|s| !s.editor.text().trim().is_empty())
+                .filter(|s| !s.query().trim().is_empty())
                 .and_then(|s| s.selected())
                 .is_some_and(|entry| entry.key.matches(line))
             {
@@ -6117,6 +6161,7 @@ mod pane_search_tests {
             modifiers: KeyModifiers::CONTROL,
         }));
         pane.on(&Event::Paste("fr rn".into()));
+        pane.advance_search(1000);
         assert_eq!(pane.search.as_ref().unwrap().matches.len(), 2);
         assert!(draw(&mut pane, 55).contains("Frieren second"));
         pane.on(&key(Key::Up));
@@ -6147,10 +6192,106 @@ mod pane_search_tests {
         pane.insert_text("draft");
         pane.start_search();
         pane.on(&Event::Paste("not present".into()));
+        pane.advance_search(1000);
         assert!(draw(&mut pane, 55).contains("No matches"));
         assert_eq!(pane.on(&key(Key::Enter)), Some(Msg::None));
         pane.on(&key(Key::Esc));
         assert_eq!(pane.text(), "draft");
+    }
+
+    #[test]
+    fn chat_pending_query_survives_refresh_and_navigation_submits_immediately() {
+        let mut pane = ChatPane::default();
+        let lines = vec![
+            line(1, "needle older"),
+            line(2, "needle newer"),
+            line(3, "unrelated"),
+        ];
+        pane.set_lines(lines.clone());
+        pane.start_search();
+        pane.on(&Event::Paste("needle".into()));
+        assert_eq!(pane.search.as_ref().unwrap().matches.len(), 3);
+        let mut refreshed = lines;
+        refreshed.push(line(4, "another arrival"));
+        pane.set_lines(refreshed);
+        assert_eq!(
+            pane.search.as_ref().unwrap().matches.len(),
+            4,
+            "refresh uses the applied query"
+        );
+        pane.on(&key(Key::Enter));
+        assert_eq!(pane.search.as_ref().unwrap().matches.len(), 2);
+        assert_eq!(
+            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
+            2
+        );
+        assert!(pane.search_due.is_none());
+        pane.on(&key(Key::Up));
+        assert_eq!(
+            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
+            1
+        );
+        pane.on(&key(Key::Down));
+        assert_eq!(
+            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
+            2
+        );
+        assert!(
+            !pane.advance_search(10_000),
+            "no delayed jump after submission"
+        );
+
+        pane.on(&Event::Paste(" older".into()));
+        pane.on(&key(Key::Down));
+        assert_eq!(
+            pane.search.as_ref().unwrap().selected().unwrap().key.millis,
+            1
+        );
+        assert!(
+            pane.search_due.is_none(),
+            "navigation also submits pending edits"
+        );
+    }
+
+    #[test]
+    fn chat_search_cancellation_empty_query_and_editor_motion_do_not_jump_later() {
+        let mut pane = ChatPane::default();
+        pane.set_lines(
+            (1..80)
+                .map(|i| line(i, if i == 5 { "needle" } else { "filler" }))
+                .collect(),
+        );
+        pane.start_search();
+        pane.on(&Event::Paste("needle".into()));
+        pane.advance_search(999);
+        pane.on(&key(Key::Left));
+        assert!(
+            pane.advance_search(1000),
+            "cursor motion does not delay search"
+        );
+        let positioned = draw(&mut pane, 55);
+        assert!(positioned.contains("needle"));
+        let anchor = pane.scroll_anchor.clone();
+        // Delete the query through the same shared editor as ordinary input.
+        pane.on(&key(Key::End));
+        for _ in 0..6 {
+            pane.on(&key(Key::Backspace));
+        }
+        assert!(pane.advance_search(2000));
+        draw(&mut pane, 55);
+        assert_eq!(
+            pane.scroll_anchor, anchor,
+            "empty queries leave the conversation in place"
+        );
+        pane.on(&Event::Paste("missing".into()));
+        pane.on(&key(Key::Esc));
+        pane.start_search();
+        assert!(
+            !pane.advance_search(10_000),
+            "closing discards the old deadline"
+        );
+        assert_eq!(pane.search.as_ref().unwrap().editor.text(), "");
+        assert_eq!(pane.scroll_anchor, anchor);
     }
 
     #[test]

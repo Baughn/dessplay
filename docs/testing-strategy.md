@@ -153,6 +153,15 @@ cover shared shortcuts, typed action-key isolation, paste routing, draft
 preservation, chat chronology and source anchors after refresh/resize, collapsed
 List groups, subtitle focus, and stable playlist targets after reordering.
 
+Chat search timing uses injected monotonic time: a property test varies typing
+intervals and requires the viewport to stay put until a full one-second pause,
+then checks that the final query executes on a timer alone. Scenarios cover
+paste, source refresh while pending, immediate navigation/submission, empty
+queries, editor cursor motion, and cancellation/reopening. Real crossterm output
+is captured through an in-memory writer to verify synchronized frame boundaries
+over successive repaints and cleanup after output failure or render panic.
+These tests cannot establish whether a physical terminal visibly flickers.
+
 ## Running the Suite
 
 The Unix launcher integration tests run the real `install.sh` with isolated
