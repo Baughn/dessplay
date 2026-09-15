@@ -161,6 +161,10 @@ queries, editor cursor motion, and cancellation/reopening. Real crossterm output
 is captured through an in-memory writer to verify synchronized frame boundaries
 over successive repaints and cleanup after output failure or render panic.
 These tests cannot establish whether a physical terminal visibly flickers.
+An anchored-chat property, derived from a recording of blank completed frames,
+requires a full viewport on the first paint and identical output on an unchanged
+redraw. It varies Unicode wrapping, viewport dimensions, result navigation,
+resize, and history truncation; it was confirmed failing before the fix.
 
 ## Running the Suite
 

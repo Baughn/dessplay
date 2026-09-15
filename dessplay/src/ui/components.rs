@@ -1497,9 +1497,14 @@ impl ChatPane {
                 }
             }
             groups.push((idx, message_rows, message, attachment));
-            if older_needed == Some(0)
-                || (anchor.is_none() && measured_rows >= self.scroll_offset.saturating_add(visible))
-            {
+            let position_reached = if anchor.is_some() {
+                older_needed == Some(0)
+            } else {
+                measured_rows >= self.scroll_offset.saturating_add(visible)
+            };
+            // Reaching an anchor near the tail can leave less than one screen.
+            // Measure older context now so end-clamping fills this very frame.
+            if position_reached && measured_rows >= visible {
                 break;
             }
         }
@@ -6135,6 +6140,52 @@ mod pane_search_tests {
             .buffer
             .clone();
         tuirealm::testing::buffer_to_string(&buffer)
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn chat_anchored_viewport_is_complete_on_its_first_frame(
+            width in 24u16..100,
+            height in 8u16..40,
+            older in 0usize..15,
+            repetitions in 1usize..8,
+            navigation in proptest::collection::vec(0u8..4, 1..8),
+        ) {
+            use super::super::layout::{LayoutBundle, Renderer};
+            let mut renderer = Renderer::new(LayoutBundle::builtin().unwrap());
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut pane = ChatPane::default();
+            let lines: Vec<_> = (0..100).map(|i| line(i, &format!("item {i}: {}", "猫 café ".repeat(repetitions)))).collect();
+            pane.set_lines(lines.clone());
+            pane.start_search();
+            pane.on(&Event::Paste("item".into()));
+            pane.advance_search(1000);
+            for _ in 0..older { pane.on(&key(Key::Up)); }
+
+            // A redraw without input must never repair a partially filled viewport.
+            let mut verify = |pane: &mut ChatPane, width, height| {
+                terminal.backend_mut().resize(width, height);
+                let first = terminal.draw(|f| pane.render_layout(f, f.area(), &mut renderer)).unwrap().buffer.clone();
+                proptest::prop_assert_eq!(pane.rendered.rows.len(), usize::from(pane.rendered.area.height));
+                let next = terminal.draw(|f| pane.render_layout(f, f.area(), &mut renderer)).unwrap().buffer.clone();
+                proptest::prop_assert_eq!(first, next);
+                Ok(())
+            };
+            verify(&mut pane, width, height)?;
+            for direction in navigation {
+                pane.on(&key(match direction {
+                    0 => Key::Up,
+                    1 => Key::Down,
+                    2 => Key::PageUp,
+                    _ => Key::PageDown,
+                }));
+                verify(&mut pane, width, height)?;
+            }
+            // Rewrapping and removing newer messages can shorten the anchored tail too.
+            verify(&mut pane, width + 30, height + 10)?;
+            pane.set_lines(lines[..95].to_vec());
+            verify(&mut pane, width + 30, height + 10)?;
+        }
     }
 
     #[test]

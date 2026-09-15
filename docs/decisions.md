@@ -16,7 +16,37 @@ remembering (a bug, a review finding, a user decision), the rule goes in
 design.md and the reason goes here, in the same commit. Entries are never
 deleted; a superseded decision gets a note saying what replaced it.
 
+## Anchored chat windows fill the first frame (2026-09-15)
+
+**Rule:** [Chat layout](design.md#runtime-layout-templates) requires both the
+requested source position and a viewport's worth of measured rows before
+stopping, unless the beginning of history is reached.
+
+**Why:** A terminal recording showed that synchronization did not resolve the
+reported chat-search flash. All 100 recorded frames had balanced mode-2026
+boundaries, but a completed frame at 3.560 seconds placed the newest search
+match near the top and left most of the log blank. At 3.626 seconds, an ordinary
+redraw restored the surrounding history. The renderer stopped its backward
+scan as soon as it found the anchor, even when that left fewer rows than the
+viewport. End-clamping then set the scroll offset to zero; the next live-tail
+draw measured a full viewport. Refresh timing determined how visible this
+deterministic two-frame error was.
+
+The minimum-row requirement now applies to both branches of the measurement
+loop. It covers search submission and result navigation, as well as anchors
+retained through resize, history replacement, or attachment-height changes.
+Ordinary offset scrolling already requested the viewport plus its offset;
+recent-chat already measures a complete viewport, and the shared document
+renderer explicitly backfills at the tail. A property regression failed before
+the fix with 12 rendered rows in a 30-row viewport. It varies Unicode wrapping,
+viewport size, search navigation, resize, and history truncation, requiring the
+first frame to be full and identical to an unchanged redraw.
+
 ## Chat search pause and terminal frame boundaries (2026-09-15)
+
+**Follow-up:** The recording diagnosed the remaining flash as an underfilled
+anchored chat frame; see the entry above. Synchronization remains useful for
+atomic terminal output but cannot correct an incomplete application frame.
 
 **Rule:** [Chat search](design.md#pane-search) applies text edits after a
 one-second pause, while explicit navigation submits pending edits immediately.

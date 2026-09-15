@@ -21,7 +21,9 @@ layer order. The old bordered-list and pre-padded-table painters are removed.
 
 Chat and recent-chat build separate keyed message scenes from semantic prefix
 fields and rich body spans. The live tail measures backwards only as far as
-the viewport or retained source anchor requires. An LRU bounds cached scenes;
+both a full viewport and the retained source anchor require. Near-tail anchors
+backfill older context before the first paint, including after rewrapping or
+history changes. An LRU bounds cached scenes;
 cache identity includes fixed versus natural height. Combining spoiler marks
 and equal-width ASCII scrambling refresh painted spans without rebuilding
 Taffy geometry or source/action regions. Prefix/body fragments can share a

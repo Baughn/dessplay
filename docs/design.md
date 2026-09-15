@@ -1762,6 +1762,10 @@ wide body glyph that cannot fit its remainder continues on the next row.
 Rich bindings occur once per entry and preserve source/action identity.
 Chat continuation indentation is an inherited terminal text property; source
 anchors retain scrolled-back context through layout changes and new messages.
+Reaching a source anchor does not end measurement until at least one viewport
+of rows is available, or the beginning of history is reached. Search jumps,
+resize, and content changes near the tail backfill older context in the first
+frame; an unchanged redraw must not repair or reposition that frame.
 
 Frame captions, including bottom captions, belong to templates. Semantic theme
 colors are available through custom properties; authored declarations override

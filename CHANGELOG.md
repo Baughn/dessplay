@@ -15,6 +15,8 @@ Add new days at the top. Add new entries at the bottom of existing days.
   matches. Enter and result navigation apply pending searches immediately.
 - Fixed: Terminal redraws use synchronized output to prevent partially painted
   frames from flashing during search, scrolling, and other screen updates.
+- Fixed: Chat search no longer briefly blanks most of the pane when visiting
+  recent matches. Resizing near the end of chat also fills the pane immediately.
 
 ## 2026-09-14
 
