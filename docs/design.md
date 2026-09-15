@@ -66,6 +66,30 @@ changes `install.sh`, the launcher re-executes it before building, skipping a
 second update and retaining arguments, exit status and the caller's directory.
 First installation clones master and then uses this same launch path.
 
+### Installed build-cache retention
+
+After a successful release build, the launcher removes obsolete compilation
+units from its own checkout's `target/release`. It retains the current executable,
+all current dependencies, fingerprints, native build-script outputs, and their
+incremental compiler state. An unchanged build remains fully cached after cleanup.
+There is no age or size limit on the current build, and no periodic full clean.
+
+Cargo's complete build report, including reused artifacts, selects the retained
+units. Cleanup verifies that their fingerprints form a complete dependency graph
+and holds Cargo's build/artifact locks during deletion. A failed build does not
+trigger cleanup. Contention, a superseded or incomplete report, an unfamiliar
+layout, and cleanup errors retain the cache and do not prevent launching.
+Units modified since the reported build began are also retained.
+
+The launcher's rustc wrapper records incremental-directory ownership without
+changing compiler arguments, relocating caches, or replacing an existing compiler
+wrapper. Shared incremental directories survive while any retained unit uses
+them. Untracked legacy directories and unrecognized files are retained; legacy
+incremental ownership is learned when the compiler next uses those directories.
+The policy bounds obsolete build history for the supported installer layout, not
+the size of the current build or caches in developer/custom target directories.
+Both Nix and system-Cargo launchers use this same sequence.
+
 ### Settings Screen
 
 The settings screen is divided into five tabs, selected with Left/Right;

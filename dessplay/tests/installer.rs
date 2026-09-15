@@ -18,7 +18,14 @@ fn launcher_preserves_invocation(nix: bool) {
             Some("invalid"),
             Some(""),
         ] {
-            for update in ["unchanged", "changed", "offline", "checkout-failed"] {
+            for update in [
+                "unchanged",
+                "changed",
+                "offline",
+                "checkout-failed",
+                "build-failed",
+                "prune-failed",
+            ] {
                 let offline = update == "offline";
                 let temp = tempfile::tempdir().unwrap();
                 let home = temp.path().join("home with ' quotes");
@@ -31,7 +38,9 @@ fn launcher_preserves_invocation(nix: bool) {
                 std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).unwrap();
                 // Keep real Cargo/Nix/Git out of PATH, even on distributions that
                 // install them in /usr/bin. Only these filesystem tools are real.
-                for tool in ["mkdir", "cp", "ln", "sed", "cat", "cksum"] {
+                for tool in [
+                    "mkdir", "cp", "ln", "sed", "cat", "cksum", "mktemp", "rm", "rmdir",
+                ] {
                     let path = std::env::split_paths(&std::env::var_os("PATH").unwrap())
                         .map(|dir| dir.join(tool))
                         .find(|path| path.is_file())
@@ -81,7 +90,30 @@ esac
                 );
                 executable(
                     &bin.join("cargo"),
-                    "#!/bin/sh\n[ -z \"${DESSPLAY_LAUNCHER_REEXEC:-}\" ] || exit 94\nprintf '%s\\0' \"$PWD\" \"$@\"\nexit 23\n",
+                    r#"#!/bin/sh
+set -eu
+[ -z "${DESSPLAY_LAUNCHER_REEXEC:-}" ] || exit 94
+[ -z "${DESSPLAY_LAUNCHER_BUILD:-}" ] || exit 95
+[ "$RUSTC_WRAPPER" = "$TEST_REPO/build-cache-rustc.sh" ] || exit 96
+case "$1" in
+    build)
+        printf 'build\n' >> "$TEST_BUILD_LOG"
+        [ "$TEST_UPDATE" != build-failed ] || exit 24
+        printf '{"reason":"build-finished","success":true}\n'
+        exit 0 ;;
+    run)
+        if [ "$2" = --quiet ]; then
+            printf 'prune\n' >> "$TEST_BUILD_LOG"
+            [ "${10}" = -- ] && [ "${11}" = launcher-prune-build-cache ] || exit 97
+            [ -f "${12}" ] && [ "${13}" = "$TEST_REPO/target" ] && [ -f "${14}" ] || exit 98
+            [ "$TEST_UPDATE" != prune-failed ] || exit 27
+            exit 0
+        fi ;;
+esac
+printf 'run\n' >> "$TEST_BUILD_LOG"
+printf '%s\0' "$PWD" "$@"
+exit 23
+"#,
                 );
                 for tool in ["pkg-config", "mpv"] {
                     executable(&bin.join(tool), "#!/bin/sh\nexit 0\n");
@@ -121,6 +153,7 @@ exec /bin/sh -c "$4"
                     .unwrap();
                 }
                 let update_log = temp.path().join("update.log");
+                let build_log = temp.path().join("build.log");
                 let output = Command::new(if first_install {
                     source.clone()
                 } else {
@@ -136,6 +169,7 @@ exec /bin/sh -c "$4"
                 .env("TEST_REEXEC_LOG", &reexec_log)
                 .env("TEST_CHECKOUT_LOG", &checkout_log)
                 .env("TEST_UPDATE_LOG", &update_log)
+                .env("TEST_BUILD_LOG", &build_log)
                 .env("TEST_UPDATE", update)
                 .env("TEST_TRACK", track.unwrap_or("master"))
                 .args(args)
@@ -150,11 +184,43 @@ exec /bin/sh -c "$4"
                     assert!(output.stdout.is_empty());
                     continue;
                 }
+                if update == "build-failed" {
+                    assert_eq!(output.status.code(), Some(24));
+                    assert_eq!(fs::read_to_string(&build_log).unwrap(), "build\n");
+                    assert!(output.stdout.is_empty());
+                    assert!(
+                        !fs::read_dir(home.join(".cache/dessplay"))
+                            .unwrap()
+                            .any(|e| e
+                                .unwrap()
+                                .file_name()
+                                .to_string_lossy()
+                                .starts_with("build-report."))
+                    );
+                    continue;
+                }
                 assert_eq!(
                     output.status.code(),
                     Some(23),
                     "nix={nix}, first_install={first_install}, offline={offline}: {}",
                     String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stderr).contains("build-cache cleanup skipped"),
+                    update == "prune-failed"
+                );
+                assert_eq!(
+                    fs::read_to_string(build_log).unwrap(),
+                    "build\nprune\nrun\n"
+                );
+                assert!(
+                    !fs::read_dir(home.join(".cache/dessplay"))
+                        .unwrap()
+                        .any(|e| e
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("build-report."))
                 );
                 assert_eq!(
                     fs::read_to_string(update_log).unwrap(),
@@ -191,6 +257,8 @@ exec /bin/sh -c "$4"
                         repo.join("Cargo.toml").to_str().unwrap(),
                         "-p",
                         "dessplay",
+                        "--bin",
+                        "dessplay",
                         "--",
                         "--update-track-file",
                         home.join(".cache/dessplay/update-track").to_str().unwrap(),
@@ -206,13 +274,13 @@ exec /bin/sh -c "$4"
 }
 
 #[test]
-#[ignore = "Slow, installer changes rarely"] 
+#[ignore = "Slow, installer changes rarely"]
 fn system_cargo_preserves_caller_directory_and_arguments() {
     launcher_preserves_invocation(false);
 }
 
 #[test]
-#[ignore = "Slow, installer changes rarely"] 
+#[ignore = "Slow, installer changes rarely"]
 fn nix_shell_preserves_caller_directory_and_arguments() {
     launcher_preserves_invocation(true);
 }

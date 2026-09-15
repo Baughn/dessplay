@@ -113,6 +113,13 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
+    /// Installer maintenance, before launching the client.
+    #[command(hide = true)]
+    LauncherPruneBuildCache {
+        messages: std::path::PathBuf,
+        target: std::path::PathBuf,
+        started: std::path::PathBuf,
+    },
     /// Export or validate local terminal layouts without starting the client.
     Layout {
         #[command(subcommand)]
@@ -146,6 +153,20 @@ fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     load_dotenv();
     let cli = Cli::parse();
+    if let Some(Command::LauncherPruneBuildCache {
+        messages,
+        target,
+        started,
+    }) = &cli.command
+    {
+        let started = std::fs::metadata(started)?.modified()?;
+        match dessplay::build_cache::prune(messages, target, started) {
+            Ok(count) if count > 0 => eprintln!("Removed {count} obsolete build-cache units"),
+            Ok(_) => {}
+            Err(message) => eprintln!("Build-cache cleanup skipped: {message}"),
+        }
+        return Ok(());
+    }
     if let Some(Command::Layout { command }) = &cli.command {
         use dessplay::ui::layout::{LayoutBundle, default_directory};
         match command {
@@ -256,7 +277,7 @@ fn main() -> color_eyre::Result<()> {
             watchers,
             dry_run,
         }) => runtime.block_on(run_import(args, files, watchers, dry_run)),
-        Some(Command::Layout { .. }) => Ok(()),
+        Some(Command::Layout { .. } | Command::LauncherPruneBuildCache { .. }) => Ok(()),
     };
     if let Err(message) = result {
         eprintln!("error: {message}");

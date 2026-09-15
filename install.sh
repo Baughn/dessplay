@@ -121,6 +121,38 @@ require_tools() {
     fi
 }
 
+build_and_run() {
+    # Only RUSTC_WORKSPACE_WRAPPER changes artifact hashes. This wrapper just
+    # records incremental-directory ownership, preserving an existing wrapper.
+    if [ "${RUSTC_WRAPPER:-}" != "$REPO_DIR/build-cache-rustc.sh" ]; then
+        DESSPLAY_ORIGINAL_RUSTC_WRAPPER=${RUSTC_WRAPPER:-}
+    fi
+    RUSTC_WRAPPER="$REPO_DIR/build-cache-rustc.sh"
+    export DESSPLAY_ORIGINAL_RUSTC_WRAPPER RUSTC_WRAPPER
+
+    cleanup_report() {
+        rm -f "$build_report/started" "$build_report/artifacts" || true
+        rmdir "$build_report" || true
+    }
+    if build_report=$(mktemp -d "$CACHE_DIR/build-report.XXXXXX"); then
+        trap cleanup_report 0
+        : > "$build_report/started"
+        # Fresh dependencies appear in this report too. Do not replace this with
+        # age/size-based sweeping: slow machines must retain their warm build.
+        cargo build --release --manifest-path "$REPO_DIR/Cargo.toml" -p dessplay --bin dessplay \
+            --message-format=json-render-diagnostics > "$build_report/artifacts"
+        cargo run --quiet --release --manifest-path "$REPO_DIR/Cargo.toml" -p dessplay --bin dessplay -- \
+            launcher-prune-build-cache "$build_report/artifacts" "$REPO_DIR/target" "$build_report/started" ||
+            warn "build-cache cleanup skipped; keeping the cache"
+        cleanup_report
+        trap - 0
+    else
+        warn "cannot prepare build-cache cleanup; keeping the cache"
+    fi
+    exec cargo run --release --manifest-path "$REPO_DIR/Cargo.toml" -p dessplay --bin dessplay -- \
+        --update-track-file "$TRACK_FILE" "$@"
+}
+
 run_mode() {
     track=master
     if [ -e "$TRACK_FILE" ]; then
@@ -170,7 +202,8 @@ in pkgs.mkShell {
   buildInputs = [ pkgs.cargo pkgs.rustc pkgs.pkg-config pkgs.openssl pkgs.libwebp pkgs.mpv pkgs.git ];
   PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
 }'
-        run_cmd="cargo run --release --manifest-path $(quote "$REPO_DIR/Cargo.toml") -p dessplay -- --update-track-file $(quote "$TRACK_FILE")"
+        # Use the same build/cleanup/launch sequence inside the Nix environment.
+        run_cmd="DESSPLAY_LAUNCHER_BUILD=1 sh $(quote "$REPO_DIR/install.sh")"
         for arg in "$@"; do
             run_cmd="$run_cmd $(quote "$arg")"
         done
@@ -178,11 +211,16 @@ in pkgs.mkShell {
     else
         require_tools
         say "Building and launching dessplay"
-        exec cargo run --release --manifest-path "$REPO_DIR/Cargo.toml" -p dessplay -- --update-track-file "$TRACK_FILE" "$@"
+        build_and_run "$@"
     fi
 }
 
 # ---------------------------------------------------------------------------
+
+if [ "${DESSPLAY_LAUNCHER_BUILD:-0}" = 1 ]; then
+    unset DESSPLAY_LAUNCHER_BUILD
+    build_and_run "$@"
+fi
 
 if [ ! -f "$REPO_DIR/flake.nix" ]; then
     install_mode "$@"

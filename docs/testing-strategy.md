@@ -191,6 +191,20 @@ directions, Save/Cancel, disabled styling without a flag, atomic file persistenc
 error reporting, and exclusion from SQLite. These tests require neither a network
 connection nor a nested release build.
 
+Installer tests also check build → cleanup → launch ordering, report-file
+cleanup, build failures stopping launch, and cleanup failures still launching in
+both toolchain paths. They remain ignored in the fast gate; run explicitly with
+`cargo nextest run --test installer --run-ignored all --profile full`.
+
+Build-cache retention has a property test that varies unit identities and graph
+membership independently of old artifact timestamps. A real, offline Cargo
+fixture builds two configurations with a local dependency, a build script and
+incremental compilation, rejects a superseded report, prunes the obsolete build,
+and requires every artifact in the next build to be fresh. The resulting binary
+must still run. These tests were confirmed failing before implementation. Other
+scenarios cover incomplete reports, all Cargo lock variants, shared/untracked
+incremental state, newer artifacts and symlinked trees. No timing sleeps are used.
+
 The slow-mpv-startup Unix-socket regression is ignored by default because
 restricted sandboxes cannot bind its socket. Run it explicitly with
 `cargo nextest run --run-ignored only -E 'test(a_slow_mpv_startup_is_not_a_crash)'`

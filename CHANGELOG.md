@@ -26,6 +26,9 @@ Add new days at the top. Add new entries at the bottom of existing days.
 - Changed: Chat search shows results by relevance. Use arrow keys to select a
   match, then Enter to return to the conversation with that message centered.
 
+- Improved: Installed clients clean up obsolete build files after updates while
+  keeping the current binary, dependencies, and incremental compilation cache.
+
 ## 2026-09-14
 
 - Added: Nyaa searches show progress while inspecting torrent results.

@@ -179,6 +179,39 @@ encoding; it survives chat-window pruning and never magnifies an inline crop.
 Background layout is suspended while viewing to retain the chat scroll anchor
 and prevent graphics protocols or passive overlays from covering the picture.
 
+## Installed builds retain their active compilation cache (2026-09-15)
+
+**Rule:** See [Installed build-cache retention](design.md#installed-build-cache-retention).
+
+**Why:** Script-managed installations should not accumulate every historical
+compiler/dependency configuration. However, Dagger's machine takes twenty minutes
+to build the client. A byte cap, periodic `cargo clean`, or expiry of otherwise
+useful artifacts exchanges disk growth for unacceptable rebuilds. The retention
+boundary is the current successful build and its complete dependency closure.
+
+`cargo-sweep` was considered. Its age-based policy reads fingerprint access times,
+which may not advance on all filesystems, and it does not track incremental
+directories. It also does not acquire Cargo's build locks. Instead the launcher
+captures Cargo's JSON report and invokes maintenance in the newly built client,
+using its existing JSON/hash dependencies. Additional Cargo invocations remain
+fresh; no Python installation, extra Cargo plugin, nightly-only flag, compiler
+option change, or cold-cache migration is needed.
+
+Cargo's report includes fresh libraries and cached build-script results, but its
+binary entries name the uplifted executable rather than its hashed intermediate.
+Matching both contents and modification time covers hardlinks and macOS's
+clonefile copies. Verifying the retained fingerprints' dependency edges catches
+a later build replacing that executable, even when the replacement was already
+cached. Unknown Cargo formats fail closed. Cleanup takes both legacy and newer
+Cargo locks nonblockingly and retains units changed since the build began.
+
+Incremental directory names use rustc's own disambiguator, not Cargo's artifact
+hash. A transparent rustc wrapper records the crate directories changed during
+successful compilation. Concurrent invocations may record overlapping ownership;
+retention uses the union for live units. Existing caches remain in place, and
+missing ownership information protects a live crate's legacy directories. The
+launcher does not trade twenty minutes of compilation for a smaller migration.
+
 ## Stable is a delayed bookmark, with launcher-owned selection (2026-09-09)
 
 **Rule:** See [Launcher update tracks](design.md#launcher-update-tracks).
