@@ -24,7 +24,9 @@ read in filename order; duplicate names within the custom bundle are errors.
 
 Changes are watched, including rename-based editor saves, and debounced for
 200 ms. Relative directory arguments are normalized for event matching. The
-watch survives creation or replacement of the override directory. Compilation
+watch survives creation or replacement of the override directory and its
+ancestors. Only the override tree is watched recursively; unrelated sibling
+directories do not need to be readable. Compilation
 happens on a worker thread. A complete valid candidate
 is installed at a frame boundary; an invalid candidate leaves the last good
 layout installed. Startup initially uses the embedded layout. Files and

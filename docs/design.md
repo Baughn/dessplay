@@ -1746,9 +1746,12 @@ handles come from arranged adjacent boundaries. Dragging trades only the
 adjacent shares, retaining ten-percent minima where possible. Drag sizes are
 stored independently of application settings and authored files, by source,
 revision, and split ID. A successfully installed revision clears that source's
-old sizes, including on restart. Watch events use normalized absolute paths
-and a surviving ancestor watch so relative paths, missing directories, and
-whole-directory replacement remain reloadable. Legacy PaneLayout percentages import once.
+old sizes, including on restart. Watch events use normalized absolute paths.
+Only the layout tree is watched recursively; shallow watches on its ancestors
+observe creation and replacement without traversing unrelated directories.
+Watches are refreshed before compilation so relative paths, missing directories,
+and replacement of the layout directory or its ancestors remain reloadable.
+Legacy PaneLayout percentages import once.
 
 Dungeon condition continuations retain anatomical keys and source positions
 from measured template fragments. Bounded wound/threat summaries keep complete

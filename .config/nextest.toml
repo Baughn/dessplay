@@ -16,3 +16,18 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # Everything, including the perf regression tests.
 default-filter = "all()"
 slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Explicit partial gate for environments that deny local sockets. The default
+# profile still runs real QUIC/UDP coverage; run it with socket access before
+# merging. Protocol-only mpv tests and native layout watchers run in both.
+[profile.sandbox]
+default-filter = """
+not (binary(perf)
+    | test(net::quic::socket_tests::)
+    | binary(dscp_wire)
+    | binary(quic_localhost)
+    | binary(mpv_real)
+    | binary(live_rqbit)
+    | test(=player::mpv::tests::a_slow_mpv_startup_is_not_a_crash)
+    | test(=torrent::rqbit::tests::session_starts_without_persistence))
+"""

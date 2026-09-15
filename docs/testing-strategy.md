@@ -218,6 +218,43 @@ stale-result rejection without filesystem timing. Existing form snapshots,
 editor behavior, and log scrollback scenarios remain compatibility checks.
 The release full profile remains the responsiveness/CPU gate during migration.
 
+### Restricted local sandboxes
+
+Run `PROPTEST_CASES=32 cargo nextest run --profile sandbox` for an explicit
+partial gate when the environment denies local sockets. Native layout watcher
+tests run in this profile. mpv protocol tests drive the production JSON reader
+and command writer through bounded `tokio::io::duplex` streams with paused time;
+they need no Unix sockets or player process.
+
+The sandbox profile excludes the real-socket module in `net::quic`, the
+`dscp_wire` and `quic_localhost` binaries, and optional real-mpv, live torrent,
+slow-player socket startup, and rqbit listener tests. Address-ordering logic
+and simulated-network convergence remain covered. The default/full profiles
+retain real-socket coverage; a sandbox-profile pass does not replace them.
+
+The Linux Codex audit on 2026-09-15 reproduced 14 socket failures: three mpv
+protocol tests (now in-memory), five QUIC socket tests, two DSCP wire tests,
+and four localhost QUIC integration tests. The complete default gate passed
+when run with local socket access. The separate layout-watch failures came
+from recursively traversing unrelated unreadable directories, not from a
+sandbox ban on filesystem notifications.
+
+To run the complete gate, the runner needs UDP sockets on IPv4/IPv6 loopback
+and ephemeral ports. Optional real-player/socket startup tests also need local
+Unix sockets in temporary directories, and real-player tests need mpv. Run the
+test command with an approved sandbox exception, in an ordinary dev shell, or
+in an isolated test environment that permits these local operations. No public
+internet access is needed by the default gate. Keep live external-service tests
+opt-in. Replacing real QUIC/DSCP tests with mocks would remove the OS/backend
+behavior those tests are meant to verify.
+
+Codex test subprocesses inherit its filesystem and network restrictions; see
+the [official sandbox documentation](https://learn.chatgpt.com/docs/sandboxing).
+Allowlisting an HTTP destination is not a substitute for permission to create
+raw UDP listeners and Unix sockets.
+
+### Nextest profiles and case counts
+
 The stop hook and the dev loop run tests under **cargo-nextest** (in the
 dev shell; the hook falls back to plain `cargo test` when nextest is not
 on PATH). Nextest runs tests from all ~50 test binaries in parallel —
@@ -233,6 +270,8 @@ warm cache vs ~4s under nextest (measured 2026-08-31, 32 cores).
   accidental real (non-paused) sleep.
 - **full**: everything, for release perf runs:
   `cargo nextest run --profile full --release`.
+- **sandbox**: the partial gate described above, excluding tests that require
+  real local sockets and the release-only perf binary.
 
 Nextest does not run doctests; the workspace has none — add a
 `cargo test --doc` step to the hook if that changes.
@@ -1066,10 +1105,12 @@ and the default full-view snapshot.
 Real watcher tests use a successful requested compilation as the registration
 handshake, then wait on bounded channel delivery for atomic file edits. They
 cover invalid-then-repaired CSS, relative directory arguments, initial directory
-absence, and whole-directory replacement followed by another edit. The six
+absence, unreadable sibling directories, and replacement of the directory or an
+ancestor followed by another edit. The six
 customization demonstrations verify arranged results after real watcher delivery.
-These tests need operating-system filesystem events; run the full gate outside
-restricted sandboxes, as for the existing local-network integration tests.
+These tests need operating-system filesystem events and pass in the Linux Codex
+workspace sandbox. An unreadable unrelated directory must not disable watching;
+the regression was confirmed failing before narrowing the production watch scope.
 
 Chat template scenarios reorder sender/timestamp and body using files only,
 then retain drafts, held selection, and spoiler actions through reload. A

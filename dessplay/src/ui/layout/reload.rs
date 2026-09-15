@@ -1,5 +1,4 @@
 use super::{Diagnostic, LayoutBundle};
-use notify::Watcher as _;
 use std::{
     path::PathBuf,
     sync::{
@@ -38,17 +37,9 @@ impl Watcher {
             // Backends report absolute/canonical paths (not the spelling from
             // --layout-dir). Keep the same path identity on both sides of the filter.
             let watch_directory = watch_target(&directory).unwrap_or_else(|_| directory.clone());
-            let mut watch_root = watch_directory
-                .parent()
-                .unwrap_or(&watch_directory)
-                .to_path_buf();
-            while !watch_root.is_dir() {
-                if !watch_root.pop() {
-                    break;
-                }
-            }
             let event_generation = requested.clone();
             let event_errors = error_sender.clone();
+            let event_directory = watch_directory.clone();
             let mut watcher =
                 notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                     if let Ok(event) = event {
@@ -56,35 +47,38 @@ impl Watcher {
                             return;
                         }
                         if event.paths.iter().any(|path| {
-                            path.starts_with(&watch_directory) || watch_directory.starts_with(path)
+                            path.starts_with(&event_directory) || event_directory.starts_with(path)
                         }) {
                             event_generation.fetch_add(1, Ordering::SeqCst);
                             let _ = events.try_send(());
                         }
                     } else if let Err(error) = event {
                         let _ = event_errors.try_send(Diagnostic::at(
-                            &watch_directory,
+                            &event_directory,
                             "",
                             0,
                             format!("layout watch error: {error}; use Reload manually"),
                         ));
                     }
                 });
-            let watch_error = match &mut watcher {
-                Ok(watcher) => watcher
-                    .watch(&watch_root, notify::RecursiveMode::Recursive)
-                    .err()
-                    .map(|e| e.to_string()),
-                Err(error) => Some(error.to_string()),
+            let mut registered = Vec::new();
+            let mut refresh = || {
+                let watch_error = match &mut watcher {
+                    Ok(watcher) => refresh_watches(watcher, &mut registered, &watch_directory)
+                        .err()
+                        .map(|e| e.to_string()),
+                    Err(error) => Some(error.to_string()),
+                };
+                if let Some(message) = watch_error {
+                    let _ = error_sender.try_send(Diagnostic::at(
+                        &directory,
+                        "",
+                        0,
+                        format!("cannot watch layouts: {message}; use Reload manually"),
+                    ));
+                }
             };
-            if let Some(message) = watch_error {
-                let _ = error_sender.try_send(Diagnostic::at(
-                    &directory,
-                    "",
-                    0,
-                    format!("cannot watch layouts: {message}; use Reload manually"),
-                ));
-            }
+            refresh();
             let mut pending = None;
             loop {
                 if worker_stopped.load(Ordering::Relaxed) {
@@ -104,6 +98,11 @@ impl Watcher {
                                 return;
                             }
                         }
+                        // Paths may now name different inodes, including any
+                        // ancestor of a deleted/recreated override directory.
+                        // Register before loading: changes during registration
+                        // are included in this read; later ones wake us again.
+                        refresh();
                         let generation = requested.load(Ordering::SeqCst);
                         pending = Some(Candidate {
                             generation,
@@ -142,6 +141,35 @@ impl Watcher {
         }
         latest
     }
+}
+fn refresh_watches(
+    watcher: &mut impl notify::Watcher,
+    registered: &mut Vec<PathBuf>,
+    directory: &std::path::Path,
+) -> notify::Result<()> {
+    for path in registered.drain(..).rev() {
+        // A deleted directory may already have been removed by the backend.
+        let _ = watcher.unwatch(&path);
+    }
+    // Shallow ancestor watches observe creation/replacement without traversing
+    // unrelated siblings (e.g. private Nix directories under /tmp on Linux).
+    // Root first closes the race with creation while registering descendants.
+    let ancestors: Vec<_> = directory.ancestors().collect();
+    for path in ancestors.into_iter().rev() {
+        if !path.is_dir() {
+            break;
+        }
+        let mode = if path == directory {
+            notify::RecursiveMode::Recursive
+        } else {
+            notify::RecursiveMode::NonRecursive
+        };
+        // Track even a failed recursive watch: some backends install a prefix
+        // of the tree before failing, which must be cleaned up on the retry.
+        registered.push(path.to_path_buf());
+        watcher.watch(path, mode)?;
+    }
+    Ok(())
 }
 // Resolve existing ancestors too: the override directory need not exist yet.
 fn watch_target(directory: &std::path::Path) -> std::io::Result<PathBuf> {
@@ -230,6 +258,41 @@ mod tests {
         std::fs::write(directory.join("style.next"), css).unwrap();
         std::fs::rename(directory.join("style.next"), directory.join("style.css")).unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn unrelated_unreadable_directories_do_not_disable_live_reload() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = tempfile::tempdir().unwrap();
+        let unrelated = parent.path().join("unrelated");
+        std::fs::create_dir(&unrelated).unwrap();
+        struct RestorePermissions(PathBuf);
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        let _restore = RestorePermissions(unrelated.clone());
+        std::fs::set_permissions(&unrelated, std::fs::Permissions::from_mode(0)).unwrap();
+        // Exercise registration both before and after the override tree exists.
+        for initially_present in [false, true] {
+            let directory = parent.path().join(if initially_present {
+                "ui"
+            } else {
+                "missing/ui"
+            });
+            if initially_present {
+                std::fs::create_dir_all(&directory).unwrap();
+            }
+            let watcher = ready(directory.clone());
+            assert!(
+                watcher.error().is_none(),
+                "unrelated sibling broke registration"
+            );
+            std::fs::create_dir_all(&directory).unwrap();
+            atomic_css(&directory, "#users { padding:");
+            receive(&watcher, Result::is_err).unwrap_err();
+        }
+    }
     #[test]
     fn atomic_saves_deliver_invalid_then_repaired_bundles() {
         let dir = tempfile::tempdir().unwrap();
@@ -276,6 +339,20 @@ mod tests {
         // A later edit must be observed too, after the old watched inode is gone.
         atomic_css(&directory, "#users { padding:");
         receive(&watcher, Result::is_err).unwrap_err();
+    }
+    #[test]
+    fn replacing_an_ancestor_keeps_live_reload_working() {
+        let parent = tempfile::tempdir().unwrap();
+        let ancestor = parent.path().join("config");
+        let directory = ancestor.join("dessplay/ui");
+        std::fs::create_dir_all(&directory).unwrap();
+        let watcher = ready(directory.clone());
+        std::fs::rename(&ancestor, parent.path().join("previous")).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        atomic_css(&directory, "#users { padding:");
+        receive(&watcher, Result::is_err).unwrap_err();
+        atomic_css(&directory, "#users { display: none; }");
+        receive(&watcher, Result::is_ok).unwrap();
     }
     #[test]
     fn creating_a_missing_override_directory_is_observed() {

@@ -702,7 +702,7 @@ impl Listener for QuicListener {
 }
 
 #[cfg(test)]
-mod tests {
+mod socket_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
@@ -913,6 +913,13 @@ mod tests {
             "IPv6 traffic class should carry the DSCP in its upper six bits"
         );
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
 
     #[test]
     fn interleave_families_alternates_starting_with_resolver_preference() {

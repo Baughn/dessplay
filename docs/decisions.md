@@ -815,6 +815,23 @@ So entries carry confirmed aliases (seeded from the first file's derived name, g
 
 ## TUI Layout
 
+### Layout watches exclude unrelated directory trees (2026-09-15)
+
+Recursively watching the override directory's parent made Linux live reload
+depend on access to every sibling. The two tests with overrides directly under
+`/tmp` failed because notify's inotify backend stopped registration at an
+unreadable Nix directory. macOS's different watcher backend hid the problem.
+This was a production watch-scope bug, independent of Codex's socket restrictions.
+
+Only the override tree now gets recursive watches. Non-recursive watches follow
+its ancestor chain, and registration is rebuilt before each debounced load.
+This retains atomic saves and missing/replaced-directory recovery, including
+replacement of an ancestor, without crawling siblings or consuming watches for
+their descendants. Registering before reading includes changes made while
+watches were being replaced; subsequent events invalidate that compilation.
+Moving tests into private parents alone would have hidden the production bug.
+An unreadable-sibling regression was confirmed failing before the fix.
+
 ### Runtime templates retain synchronous controllers (2026-09-07)
 
 Layout authoring must reach semantic widget interiors, rather than only

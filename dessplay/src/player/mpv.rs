@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::process::{Child, Command};
@@ -242,8 +242,8 @@ impl MpvPlayer {
     }
 }
 
-async fn send_command(
-    writer: &Mutex<OwnedWriteHalf>,
+async fn send_command<W: AsyncWrite + Unpin>(
+    writer: &Mutex<W>,
     pending: &PendingCommands,
     command: Value,
     request_id: u64,
@@ -472,9 +472,9 @@ pub struct Translate {
 /// mpv emits the two in the same wakeup; the window only pads scheduling.
 const EOF_PAUSE_WINDOW: Duration = Duration::from_millis(250);
 
-async fn read_loop(
-    reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-    writer: Arc<Mutex<OwnedWriteHalf>>,
+async fn read_loop<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: BufReader<R>,
+    writer: Arc<Mutex<W>>,
     request_id: Arc<AtomicU64>,
     loading: Arc<AtomicBool>,
     pending: PendingCommands,
@@ -572,8 +572,8 @@ async fn read_loop(
 /// 2026-07-20, paused at 12.095s, reported 12.392) stays frozen in for the
 /// whole pause. The reply is translated to a Position event, which
 /// re-anchors the estimate on the paused frame.
-async fn query_paused_position(
-    writer: &Mutex<OwnedWriteHalf>,
+async fn query_paused_position<W: AsyncWrite + Unpin>(
+    writer: &Mutex<W>,
     request_id: &AtomicU64,
     pending: &PendingCommands,
     state: &mut Translate,
@@ -1287,17 +1287,17 @@ mod tests {
     /// stream, plus the app-side command writer and pending table for
     /// tests that send commands through [`send_command`].
     type FakeMpvEnd = (
-        tokio::net::unix::OwnedWriteHalf,
-        tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
         mpsc::Receiver<PlayerEvent>,
-        Arc<Mutex<OwnedWriteHalf>>,
+        Arc<Mutex<tokio::io::WriteHalf<tokio::io::DuplexStream>>>,
         PendingCommands,
     );
 
-    /// Drive a real [`read_loop`] over a socketpair; see [`FakeMpvEnd`].
+    /// Drive the production [`read_loop`] over bounded in-memory I/O.
     fn spawn_read_loop() -> FakeMpvEnd {
-        let (app, mpv) = UnixStream::pair().unwrap();
-        let (app_read, app_write) = app.into_split();
+        let (app, mpv) = tokio::io::duplex(4096);
+        let (app_read, app_write) = tokio::io::split(app);
         let (event_tx, event_rx) = mpsc::channel(64);
         let writer = Arc::new(Mutex::new(app_write));
         let pending = PendingCommands::default();
@@ -1309,7 +1309,7 @@ mod tests {
             Arc::clone(&pending),
             event_tx,
         ));
-        let (mpv_read, mpv_write) = mpv.into_split();
+        let (mpv_read, mpv_write) = tokio::io::split(mpv);
         (
             mpv_write,
             BufReader::new(mpv_read).lines(),
@@ -1334,7 +1334,7 @@ mod tests {
     /// pause. A genuine user pause must therefore be followed by a
     /// `get_property time-pos` query whose reply lands as a Position event,
     /// re-anchoring the estimate on where mpv actually stopped.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn user_pause_queries_where_playback_actually_stopped() {
         let (mut mpv, mut commands, mut events, _writer, _pending) = spawn_read_loop();
         // Playback is near 12s when the user hits space; the last time-pos
@@ -1384,7 +1384,7 @@ mod tests {
     /// PauseChanged is emitted, and no paused-position query must be issued
     /// (the server owns the EOF transition; a stray query reply must not
     /// re-anchor anything).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn keep_open_eof_pause_issues_no_position_query() {
         let (mut mpv, mut commands, mut events, _writer, _pending) = spawn_read_loop();
         mpv.write_all(
@@ -1414,7 +1414,7 @@ mod tests {
     /// rejections too (where `log_reply` reports the command by name;
     /// before the table, an mpv-side error such as `apply-profile` with
     /// no `[dessplay]` profile vanished without a trace).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn command_replies_settle_their_pending_entries() {
         let (mut mpv, mut commands, _events, writer, pending) = spawn_read_loop();
         send_command(&writer, &pending, json!(["apply-profile", "dessplay"]), 9)
